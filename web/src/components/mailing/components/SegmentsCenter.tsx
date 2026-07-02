@@ -80,7 +80,6 @@ import { SEGMENT_CATEGORIES_BY_ID, SegmentCategoryMeta } from './segCategoryMeta
 import {
   colors,
   alpha,
-  panelStyle,
   btnStyle,
   cardGrid,
   thStyle,
@@ -90,15 +89,24 @@ import {
   tableStyle,
 } from '../shared/theme';
 import { Panel, Stat, SectionError, EmptyState, Pill, LivePill, PortalKeyframes } from '../shared/ui';
-import { usePolling } from '../shared/usePolling';
+import { usePolling, PollingState } from '../shared/usePolling';
 
-// PAGE_VERSION 3.1 (2026-06-29) — indigo redesign. The DEFAULT view is now the
-// brand-grouped Engagement Growth board (7D Openers + 30D Clickers per brand,
-// from GET /v2/segments/engagement-growth), modeled on the Delivery Queue's
-// Stat-tile layout. The full ~350-row operated catalog (search / refresh /
-// archive / export / request-segment) is preserved behind the "All Segments"
-// toggle. The whole screen is restyled onto the shared indigo tokens.
-export const SEGMENTS_PAGE_VERSION = '3.1';
+// PAGE_VERSION 3.2 (2026-07-02) — "lifeblood" flow pass. The engagement summary
+// (Σ 7D Openers + Σ 30D Clickers across all brands, each with its aggregate
+// build-to-build Δ) is now PINNED at the very top, ABOVE the view toggle, so the
+// lifeblood numbers are the first thing seen in EITHER view. Growth polling is
+// lifted to the parent so the pinned bar and the board share one poll. The
+// Growth board reads top-down: pinned summary → per-brand cards → All Segments
+// drill-down. Δ is honestly labeled "Δ since last build" (build-to-build, NOT a
+// time-windowed acquisition/churn trend — no per-day size history exists yet;
+// see TODO(growth-history)).
+//
+// 3.1 (2026-06-29) — indigo redesign. The DEFAULT view is the brand-grouped
+// Engagement Growth board (7D Openers + 30D Clickers per brand, from GET
+// /v2/segments/engagement-growth), modeled on the Delivery Queue's Stat-tile
+// layout. The full ~350-row operated catalog (search / refresh / archive /
+// export / request-segment) is preserved behind the "All Segments" toggle.
+export const SEGMENTS_PAGE_VERSION = '3.2';
 
 // Engagement growth board polls a cheap read (ledger point-read) — slow cadence.
 const GROWTH_POLL_MS = 30_000;
@@ -348,6 +356,36 @@ const brandPeakDelta = (b: GrowthBrand): number => {
   return peak === -Infinity ? -Infinity : peak;
 };
 
+/**
+ * Portfolio build-to-build Δ for one metric selector (Σ 7D Openers / Σ 30D
+ * Clickers) across all brands. HONEST derivation: each brand only exposes its
+ * current count + a per-cell build-to-build delta_pct (no size history), so we
+ * reconstruct each brand's PREVIOUS-build size as count / (1 + delta_pct/100)
+ * and aggregate Δ = (ΣcurrentWithDelta − Σprevious) / Σprevious. Brands whose
+ * cell has a null delta ("new", no prior build) are excluded from the Δ base
+ * but still counted in the headline sum. Returns pct=null when no brand has a
+ * prior build to compare against. `coverage` = how many brands fed the Δ.
+ */
+const portfolioDelta = (
+  brands: GrowthBrand[],
+  pick: (b: GrowthBrand) => GrowthMetric | null,
+): { pct: number | null; coverage: number; total: number } => {
+  let curSum = 0, prevSum = 0, withDelta = 0, total = 0;
+  brands.forEach((b) => {
+    const m = pick(b);
+    if (!m) return;
+    total += 1;
+    if (m.delta_pct == null) return;
+    const prev = m.count / (1 + m.delta_pct / 100);
+    if (!Number.isFinite(prev) || prev <= 0) return;
+    curSum += m.count;
+    prevSum += prev;
+    withDelta += 1;
+  });
+  if (withDelta === 0 || prevSum <= 0) return { pct: null, coverage: 0, total };
+  return { pct: ((curSum - prevSum) / prevSum) * 100, coverage: withDelta, total };
+};
+
 // Build-to-build delta badge: up = green ▲, down = red ▼, flat = idle, none = —.
 const DeltaBadge: React.FC<{ pct: number | null | undefined; size?: 'sm' | 'lg' }> = ({ pct, size = 'sm' }) => {
   const fontSize = size === 'lg' ? 13 : 11;
@@ -461,21 +499,107 @@ const BrandGrowthCard: React.FC<{ brand: GrowthBrand }> = ({ brand }) => {
   );
 };
 
+/**
+ * The always-visible "lifeblood" bar. Rendered ABOVE the view toggle so the
+ * portfolio engagement numbers are the first thing seen in EITHER view. Uses
+ * the shared Panel + Stat kit; each engagement tile carries its aggregate
+ * build-to-build Δ (honestly labeled — see portfolioDelta / the note below).
+ */
+const PinnedEngagementSummary: React.FC<{ growth: PollingState<GrowthResponse> }> = ({ growth }) => {
+  const brands = growth.data?.brands ?? [];
+
+  const totals = useMemo(() => {
+    let openers = 0, clickers = 0, segs = 0;
+    brands.forEach((b) => {
+      if (b.seven_day_openers) openers += b.seven_day_openers.count;
+      if (b.thirty_day_clickers) clickers += b.thirty_day_clickers.count;
+      segs += b.segment_count;
+    });
+    return { openers, clickers, segs };
+  }, [brands]);
+
+  const openersDelta = useMemo(() => portfolioDelta(brands, (b) => b.seven_day_openers), [brands]);
+  const clickersDelta = useMemo(() => portfolioDelta(brands, (b) => b.thirty_day_clickers), [brands]);
+
+  const deltaSub = (d: { pct: number | null; coverage: number; total: number }) => {
+    if (d.pct == null) {
+      return <span style={{ fontSize: 11, color: colors.textFaint }}>— no prior build · Δ since last build</span>;
+    }
+    const up = d.pct > 0.05, down = d.pct < -0.05;
+    const color = up ? colors.success : down ? colors.danger : colors.idle;
+    const icon = up ? faArrowTrendUp : down ? faArrowTrendDown : faMinus;
+    return (
+      <span
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontVariantNumeric: 'tabular-nums' }}
+        title={`Δ since last build — Σ current vs Σ previous build across ${d.coverage}/${d.total} brands that have a prior build. Build-to-build, NOT a time-windowed acquisition/churn trend.`}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700, color }}>
+          <FontAwesomeIcon icon={icon} style={{ fontSize: 10 }} />
+          {d.pct > 0 ? '+' : ''}{d.pct.toFixed(1)}%
+        </span>
+        <span style={{ color: colors.textFaint }}>Δ since last build</span>
+      </span>
+    );
+  };
+
+  return (
+    <Panel accent={colors.indigo500} style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.heading, textTransform: 'uppercase', letterSpacing: 0.6, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <FontAwesomeIcon icon={faChartLine} style={{ color: colors.indigo400 }} />
+          Engagement — the lifeblood
+        </div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+          <LivePill live={growth.live} agoSeconds={growth.secondsSinceUpdate} />
+          <button type="button" style={btnStyle} onClick={growth.refresh} title="Refresh engagement summary">
+            <FontAwesomeIcon icon={faSyncAlt} style={{ marginRight: 6 }} />Refresh
+          </button>
+        </div>
+      </div>
+
+      {growth.error && !growth.data ? (
+        <SectionError label="Engagement summary" error={growth.error} />
+      ) : growth.loading && !growth.data ? (
+        <div style={{ padding: '8px 2px', color: colors.textMuted, fontSize: 13 }}>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} />Loading engagement summary…
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <Stat label="Brands" value={fmtInt(growth.data?.brand_count ?? brands.length)} color={colors.indigo200} />
+            <Stat label="Tracked segments" value={fmtInt(totals.segs)} color={colors.indigo200} />
+            <Stat
+              label="Σ 7D Openers"
+              value={fmtInt(totals.openers)}
+              color={colors.successText}
+              sub={deltaSub(openersDelta)}
+              title="Sum of every brand's 7-day opener segment (seven_day_openers.count)"
+            />
+            <Stat
+              label="Σ 30D Clickers"
+              value={fmtInt(totals.clickers)}
+              color={colors.successText}
+              sub={deltaSub(clickersDelta)}
+              title="Sum of every brand's 30-day clicker segment (thirty_day_clickers.count)"
+            />
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: colors.textFaint, lineHeight: 1.5 }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6, color: colors.warning, opacity: 0.8 }} />
+            <strong style={{ color: colors.textMuted }}>Δ since last build</strong> is the build-to-build change (current audience vs the previous build) — <em>not</em> time-windowed acquisition/churn. No per-day size history exists yet; per-day trend coming soon.
+            {growth.error && <span style={{ color: colors.warningText }}> · showing last good data (refresh failed)</span>}
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+};
+
 const GrowthBoard: React.FC<{
-  orgFetchRef: React.MutableRefObject<(url: string, options?: RequestInit) => Promise<Response>>;
+  growth: PollingState<GrowthResponse>;
   onViewAll: () => void;
   onRequestSegment: () => void;
-}> = ({ orgFetchRef, onViewAll, onRequestSegment }) => {
+}> = ({ growth, onViewAll, onRequestSegment }) => {
   const [sort, setSort] = useState<GrowthSort>('size');
-
-  const growth = usePolling<GrowthResponse>(
-    useCallback(async (signal: AbortSignal) => {
-      const res = await orgFetchRef.current('/api/mailing/v2/segments/engagement-growth', { signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return (await res.json()) as GrowthResponse;
-    }, [orgFetchRef]),
-    GROWTH_POLL_MS,
-  );
 
   const brands = useMemo(() => {
     const list = growth.data?.brands ? [...growth.data.brands] : [];
@@ -486,17 +610,6 @@ const GrowthBoard: React.FC<{
     }
     return list;
   }, [growth.data, sort]);
-
-  // Aggregate hero tiles across all brands.
-  const totals = useMemo(() => {
-    let openers = 0, clickers = 0, segs = 0;
-    (growth.data?.brands ?? []).forEach((b) => {
-      if (b.seven_day_openers) openers += b.seven_day_openers.count;
-      if (b.thirty_day_clickers) clickers += b.thirty_day_clickers.count;
-      segs += b.segment_count;
-    });
-    return { openers, clickers, segs };
-  }, [growth.data]);
 
   const sortBtn = (key: GrowthSort): React.CSSProperties => ({
     ...btnStyle,
@@ -509,41 +622,19 @@ const GrowthBoard: React.FC<{
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* Hero strip */}
-      <section style={{ ...panelStyle, display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', borderLeft: `4px solid ${colors.indigo500}` }}>
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: colors.heading, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FontAwesomeIcon icon={faChartLine} style={{ color: colors.indigo400 }} />
-            Engagement Growth by Brand
-          </div>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>
-            7D Openers &amp; 30D Clickers per brand. Growth is{' '}
-            <span style={{ color: colors.indigo200, fontWeight: 600 }}>Δ since last build</span>{' '}
-            (build-to-build), not a daily trend — no size history exists yet.
-          </div>
-        </div>
-        <Stat label="Brands" value={fmtInt(growth.data?.brand_count ?? 0)} color={colors.indigo200} />
-        <Stat label="Tracked segments" value={fmtInt(totals.segs)} color={colors.indigo200} />
-        <Stat label="Σ 7D Openers" value={fmtInt(totals.openers)} color={colors.successText} />
-        <Stat label="Σ 30D Clickers" value={fmtInt(totals.clickers)} color={colors.successText} />
-      </section>
-
-      {/* Controls */}
+      {/* Controls — the portfolio hero now lives in the pinned summary above. */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Sort</span>
           <button type="button" style={sortBtn('size')} onClick={() => setSort('size')}>Largest</button>
           <button type="button" style={sortBtn('growth')} onClick={() => setSort('growth')}>Fastest growing</button>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <LivePill live={growth.live} agoSeconds={growth.secondsSinceUpdate} />
-          <button type="button" style={btnStyle} onClick={growth.refresh} title="Refresh growth board">
-            <FontAwesomeIcon icon={faSyncAlt} style={{ marginRight: 6 }} />Refresh
-          </button>
+        <div style={{ fontSize: 11, color: colors.textFaint }}>
+          Each card: size · <span style={{ color: colors.textMuted }}>Δ since last build</span> · freshness. Per-day trend coming soon.
         </div>
       </div>
 
-      {growth.error && (
+      {growth.error && growth.data && (
         <SectionError label="Engagement growth" error={growth.error} />
       )}
 
@@ -568,9 +659,17 @@ const GrowthBoard: React.FC<{
           </div>
         </Panel>
       ) : (
-        <div style={cardGrid(320)}>
-          {brands.map((b) => <BrandGrowthCard key={b.brand} brand={b} />)}
-        </div>
+        <>
+          <div style={cardGrid(320)}>
+            {brands.map((b) => <BrandGrowthCard key={b.brand} brand={b} />)}
+          </div>
+          {/* Drill-down: the full operated catalog is the next level of detail. */}
+          <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+            <button type="button" style={btnStyle} onClick={onViewAll} title="Drill into the full operated segment catalog">
+              <FontAwesomeIcon icon={faTable} style={{ marginRight: 6 }} />Drill down · All Segments
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
@@ -624,6 +723,18 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
   // Keep latest orgFetch visible to long-lived interval closures.
   const orgFetchRef = useRef(orgFetch);
   orgFetchRef.current = orgFetch;
+
+  // Growth/engagement polling is lifted here (from the old in-board hook) so the
+  // always-visible pinned summary AND the Growth board share ONE poll of
+  // GET /v2/segments/engagement-growth.
+  const growth = usePolling<GrowthResponse>(
+    useCallback(async (signal: AbortSignal) => {
+      const res = await orgFetchRef.current('/api/mailing/v2/segments/engagement-growth', { signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()) as GrowthResponse;
+    }, []),
+    GROWTH_POLL_MS,
+  );
 
   // --- search debounce (300ms → server q=) -----------------------------------
   useEffect(() => {
@@ -1197,6 +1308,11 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         </div>
       </header>
 
+      {/* Pinned engagement summary — ALWAYS visible, above the view toggle, so
+          the lifeblood numbers (Σ 7D Openers / Σ 30D Clickers + Δ) are the first
+          thing seen in EITHER view. */}
+      <PinnedEngagementSummary growth={growth} />
+
       {/* View toggle: brand growth board (default) vs the full catalog */}
       <div style={{ display: 'inline-flex', background: colors.panelBg, border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: 4, marginBottom: 16, gap: 4 }}>
         <button type="button" style={viewToggleStyle(view === 'growth')} onClick={() => setView('growth')}>
@@ -1209,7 +1325,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
       {view === 'growth' ? (
         <GrowthBoard
-          orgFetchRef={orgFetchRef}
+          growth={growth}
           onViewAll={() => setView('all')}
           onRequestSegment={() => { setReqError(null); setShowRequestModal(true); }}
         />
