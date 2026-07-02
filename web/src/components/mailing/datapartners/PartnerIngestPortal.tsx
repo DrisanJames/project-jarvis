@@ -14,36 +14,11 @@ import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { PreviousActivationsPanel } from './PreviousActivationsPanel';
 import { apiFetch } from '../shared/apiFetch';
+import { labelForVertical } from './verticalLabels';
 
-// 1.3: deterministic 3-per-row card grids (minmax(0,1fr)), governed-slug label
-// humanizer, and overflow-safe card headers/mini-stats (no label/cell spillover).
-const PAGE_VERSION = '1.3';
-
-const VERTICAL_LABEL: Record<string, string> = {
-  refi_heloc: 'Refi / HELOC',
-  personal_loans: 'Personal Loans',
-  tax_relief: 'Tax Relief',
-  remodel: 'Remodel',
-};
-
-// labelForVertical resolves a vertical slug to a display label. Mapped slugs win;
-// unmapped slugs (e.g. the "<vertical>:governed" governed-pass pointer, which has
-// no map entry and would otherwise render raw and unbreakable) are humanized:
-// a trailing ":governed" becomes a " (governed)" suffix, and remaining
-// underscores/colons become spaces with each word title-cased —
-// so `direct_offer:governed` → "Direct Offer (governed)".
-const labelForVertical = (slug: string): string => {
-  const mapped = VERTICAL_LABEL[slug];
-  if (mapped) return mapped;
-  let rest = slug;
-  let governed = false;
-  if (rest.endsWith(':governed')) { rest = rest.slice(0, -':governed'.length); governed = true; }
-  const pretty = rest
-    .replace(/[_:]+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, c => c.toUpperCase());
-  return governed ? `${pretty} (governed)` : pretty;
-};
+// 1.4: shared vertical-label map (both DP screens agree), governed base-slug
+// re-lookup, filtered landing cards (hide 0/0 governed-pointer/followup noise).
+const PAGE_VERSION = '1.4';
 
 interface VerticalState {
   vertical: string;
@@ -94,6 +69,16 @@ interface DashboardResponse {
 }
 
 type TabId = 'overview' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
+
+// isRealLandingVertical hides the noise landing cards: a partner_drip_state row
+// that is a governed-pass pointer ("<vertical>:governed") or the internal
+// "followup" bookkeeping row shows up with all-zero counts and isn't a real
+// vertical the operator manages. Keep it only if it actually has volume.
+const isRealLandingVertical = (v: VerticalState): boolean => {
+  const isNoiseRow = v.vertical.endsWith(':governed') || v.vertical === 'followup';
+  const allZero = v.ready_queue === 0 && v.pending_eo === 0 && v.mailed_total === 0;
+  return !(isNoiseRow && allZero);
+};
 
 export const PartnerIngestPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
@@ -214,7 +199,7 @@ export const PartnerIngestPortal: React.FC = () => {
           {/* Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
               below content min-width so a long label can't distort the row. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16, marginBottom: 24 }}>
-            {dashboard.verticals.map(v => (
+            {dashboard.verticals.filter(isRealLandingVertical).map(v => (
               <DripStateCard
                 key={v.vertical}
                 vertical={v.vertical}

@@ -900,15 +900,31 @@ func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[
 	defer campRows.Close()
 	for campRows.Next() {
 		var tag, brand string
-		var g group
-		if err := campRows.Scan(&tag, &brand, &g.waves, &g.recipients, &g.active, &g.lastWaveAt); err != nil {
+		var waves, recipients, active int
+		var lastWaveAt sql.NullTime
+		if err := campRows.Scan(&tag, &brand, &waves, &recipients, &active, &lastWaveAt); err != nil {
 			continue
 		}
-		g.vertical, g.partnerSlug = parsePartnerDripTag(tag)
-		g.brand = brand
-		key := g.vertical + "|" + brand
-		groups[key] = &g
-		order = append(order, key)
+		vertical, partnerSlug := parsePartnerDripTag(tag)
+		// A vertical can be fed by MORE THAN ONE partner tag (e.g. direct_offer =
+		// aarp_direct + attribits), so the (vertical, brand) map key can collide
+		// across the tag-grouped SQL rows. MERGE into the existing group instead
+		// of overwriting — otherwise the second tag clobbers the first and the
+		// key gets appended to `order` twice (duplicate rows, waves/recipients
+		// reflecting only one slug while event sums add both).
+		key := vertical + "|" + brand
+		g := groups[key]
+		if g == nil {
+			g = &group{vertical: vertical, brand: brand, partnerSlug: partnerSlug}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.waves += waves
+		g.recipients += recipients
+		g.active += active
+		if lastWaveAt.Valid && (!g.lastWaveAt.Valid || lastWaveAt.Time.After(g.lastWaveAt.Time)) {
+			g.lastWaveAt = lastWaveAt
+		}
 	}
 	if err := campRows.Err(); err != nil {
 		return nil, err
@@ -917,7 +933,10 @@ func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[
 	hb := HardBounceSQL("t")
 	evRows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(c.partner_drip_tag, ''), split_part(c.name, ' ', 3),
-		       COALESCE(SUM(CASE WHEN t.event_type = 'sent' THEN 1 ELSE 0 END), 0),
+		       -- distinct recipients, NOT raw 'sent' events: deferral retries emit a
+		       -- fresh 'sent' per attempt (~1.6x inflation) while 'delivered' is deduped,
+		       -- so a raw denominator understates the delivery rate badly.
+		       COUNT(DISTINCT (t.campaign_id, t.subscriber_id)) FILTER (WHERE t.event_type = 'sent'),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
@@ -1045,13 +1064,15 @@ func (h *PartnerAdminHandler) dripTotals24h(ctx context.Context) (map[string]int
 	hb := HardBounceSQL("mailing_tracking_events")
 	var sent, delivered, opens, clicks, hard, soft, deferred int
 	if err := h.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COALESCE(SUM(CASE WHEN event_type = 'sent' THEN 1 ELSE 0 END), 0),
+		SELECT COUNT(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE event_type = 'sent'),
 		       COALESCE(SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND NOT (%s) THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type IN ('deferred','deferral') THEN 1 ELSE 0 END), 0)
+		-- 'sent' counted as DISTINCT recipients (deferral retries re-emit 'sent';
+		-- delivered is deduped) so the delivery-rate denominator isn't inflated.
 		FROM mailing_tracking_events
 		WHERE campaign_id IN (
 		    SELECT id FROM mailing_campaigns

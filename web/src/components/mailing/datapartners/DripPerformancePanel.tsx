@@ -9,6 +9,7 @@ import {
   Tooltip, Legend, CartesianGrid,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
+import { labelForVertical } from './verticalLabels';
 
 // DripPerformancePanel — the live "how are the drips actually doing" view on
 // the Data Partners screen. Polling cadences against one endpoint:
@@ -19,36 +20,6 @@ import { apiFetch } from '../shared/apiFetch';
 //     move as PMTA accounting events are ingested ("stats as they are received")
 // Bounces are ALWAYS split hard (red) vs soft (amber) — never combined.
 // Rates are computed against SENT (mail actually dispatched), never planned.
-
-const VERTICAL_LABEL: Record<string, string> = {
-  refi_heloc: 'Refi / HELOC',
-  personal_loans: 'Personal Loans',
-  tax_relief: 'Tax Relief',
-  remodel: 'Remodel',
-  direct_offer: 'Direct Offer',
-  samsclub_internal: "Sam's Club (internal)",
-  clickers_samsclub: "Sam's Club (clickers)",
-  metal_roofing_signal: 'Metal Roofing (signal)',
-};
-
-// labelForVertical resolves a vertical slug to a display label. Mapped slugs win;
-// unmapped slugs (e.g. the "<vertical>:governed" governed-pass pointer, which has
-// no map entry and would otherwise render raw and unbreakable) are humanized:
-// a trailing ":governed" becomes a " (governed)" suffix, and remaining
-// underscores/colons become spaces with each word title-cased —
-// so `direct_offer:governed` → "Direct Offer (governed)".
-const labelForVertical = (slug: string): string => {
-  const mapped = VERTICAL_LABEL[slug];
-  if (mapped) return mapped;
-  let rest = slug;
-  let governed = false;
-  if (rest.endsWith(':governed')) { rest = rest.slice(0, -':governed'.length); governed = true; }
-  const pretty = rest
-    .replace(/[_:]+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, c => c.toUpperCase());
-  return governed ? `${pretty} (governed)` : pretty;
-};
 
 const FAST_POLL_MS = 10_000;
 const SLOW_POLL_MS = 30_000;
@@ -287,6 +258,11 @@ export const DripPerformancePanel: React.FC = () => {
         Send batches — last {WINDOW_HOURS}h, rolled up per <b>vertical × brand</b>, biggest senders first. Expand a lane for its
         hourly delivery graph and individual send batches. Rates are against sent, not planned.
       </div>
+      <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} />
+        Drip open-tracking is limited — <b>opens/clicks are under-reported for partner-drip waves</b> (the tracking pixel isn&apos;t
+        reliably injected in the drip creative). Read ~0 opens as a template/tracking gap, not a performance signal.
+      </div>
 
       <table style={tableStyle}>
         <thead>
@@ -298,8 +274,8 @@ export const DripPerformancePanel: React.FC = () => {
             <th style={thNum} title="Delivered, as % of sent">Delivered</th>
             <th style={thNum} title="Hard bounces — permanent failures, reputation risk (% of sent)">Hard</th>
             <th style={thNum} title="Soft bounces — usually transient">Soft</th>
-            <th style={thNum} title="Raw opens — includes automated privacy and scanner traffic">Opens</th>
-            <th style={thNum}>Clicks</th>
+            <th style={thNum} title="Raw opens — includes automated privacy and scanner traffic. NOTE: under-reported for partner-drip waves (drip open-pixel not reliably injected).">Opens*</th>
+            <th style={thNum} title="Clicks — under-reported for partner-drip waves (drip tracking limited).">Clicks*</th>
             <th style={th}>Last batch</th>
           </tr>
         </thead>
@@ -492,8 +468,8 @@ const OverallStrip: React.FC<{
         <BigStat label="Delivered" value={totals.delivered.toLocaleString()} sub={pct(totals.delivered)} accent="#10b981" />
         <BigStat label="Hard bounce" value={totals.hard_bounces.toLocaleString()} sub={pct(totals.hard_bounces)} accent="#ef4444" />
         <BigStat label="Soft bounce" value={totals.soft_bounces.toLocaleString()} sub={pct(totals.soft_bounces)} accent="#f59e0b" />
-        <BigStat label="Opens" value={totals.opens.toLocaleString()} title="Raw opens — includes automated privacy and scanner traffic" />
-        <BigStat label="Clicks" value={totals.clicks.toLocaleString()} accent="#a78bfa" />
+        <BigStat label="Opens*" value={totals.opens.toLocaleString()} title="Raw opens — includes automated privacy and scanner traffic. *Under-reported for partner-drip waves: the drip open-pixel isn't reliably injected, so treat ~0 as a tracking gap, not a performance signal." />
+        <BigStat label="Clicks*" value={totals.clicks.toLocaleString()} accent="#a78bfa" title="*Under-reported for partner-drip waves — drip tracking limited." />
         <BigStat label="Ready pending" value={overall.ready.toLocaleString()} title="Verified leads waiting for their first send" />
         <BigStat label="In follow-up" value={overall.inDrip.toLocaleString()} title="Recipients somewhere in the T1–T4 journey" />
         <BigStat label="Engaged" value={overall.engaged.toLocaleString()} accent="#10b981" title="Opened/clicked — exited the follow-up sequence as a win" />
@@ -684,13 +660,23 @@ const TouchBar: React.FC<{ t1: number; t2: number; t3: number; t4: number }> = (
   );
 };
 
+// compactNum abbreviates 6+ digit values so they don't overflow the narrow
+// 5-column nowrap mini-stat grid: 1,164,343 → "1.16M", 528,343 → "528k".
+// The full comma-grouped value is preserved in the cell's title tooltip.
+const compactNum = (n: number): string => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`;
+  if (n >= 100_000) return `${Math.round(n / 1_000).toLocaleString()}k`;
+  return n.toLocaleString();
+};
+
 // overflowWrap:'break-word' (not 'anywhere') on the container lets the label
 // wrap between words but never mid-token; the value gets nowrap so a long
-// number like 1,234,567 can't break mid-digit on a narrow column.
+// number like 1,234,567 can't break mid-digit on a narrow column. Large values
+// (>=100k) are compacted (see compactNum) with the full number in the tooltip.
 const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string; sub?: string }> = ({ label, value, accent, title, sub }) => (
   <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center', minWidth: 0, overflowWrap: 'break-word' }}>
     <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe', whiteSpace: 'nowrap' }}>{value.toLocaleString()}</div>
+    <div title={value.toLocaleString()} style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe', whiteSpace: 'nowrap' }}>{compactNum(value)}</div>
     {sub && <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)', marginTop: 1 }}>{sub}</div>}
   </div>
 );
