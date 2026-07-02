@@ -703,7 +703,7 @@ func (po *PartnerDripOrchestrator) refreshVerticalState(ctx context.Context, ver
 			JOIN (
 				SELECT COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
 				FROM partner_clean_queue
-				WHERE status = 'ready' AND vertical = $1
+				WHERE status = 'ready' AND validated_at IS NOT NULL AND vertical = $1
 			) agg ON true
 			WHERE s.vertical = $1
 		`, vertical).Scan(&v.brandIndex, &readyTotal, &oldestAt)
@@ -732,7 +732,7 @@ func (po *PartnerDripOrchestrator) refreshVerticalState(ctx context.Context, ver
 			FROM (
 				SELECT dataset_id
 				FROM partner_clean_queue
-				WHERE vertical = $1 AND status = 'ready'
+				WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 				ORDER BY ingested_at ASC
 				LIMIT 1
 			) AS dom
@@ -846,7 +846,7 @@ func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Contex
 			JOIN (
 				SELECT vertical, COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
 				FROM partner_clean_queue
-				WHERE status = 'ready'
+				WHERE status = 'ready' AND validated_at IS NOT NULL
 				GROUP BY vertical
 			) agg ON agg.vertical = s.vertical
 			ORDER BY s.vertical
@@ -888,7 +888,7 @@ func (po *PartnerDripOrchestrator) activeVerticalsWithBacklog(ctx context.Contex
 				FROM (
 					SELECT dataset_id
 					FROM partner_clean_queue
-					WHERE vertical = $1 AND status = 'ready'
+					WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 					ORDER BY ingested_at ASC
 					LIMIT 1
 				) AS dom
@@ -1630,7 +1630,13 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		WITH picked AS (
 			SELECT id
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1
+			-- validated_at IS NOT NULL is the EO-evidence gate: a row is only
+			-- mailable if PartnerValidator stamped it after a passing Email
+			-- Oversight verdict. Gating on evidence (not just status='ready')
+			-- closes the direct-insert bypass — a row set to 'ready' outside the
+			-- validator (off-pipeline load) has validated_at NULL and can never
+			-- be claimed. See the ready_requires_eo CHECK constraint.
+			WHERE status = 'ready' AND validated_at IS NOT NULL AND vertical = $1
 			ORDER BY ingested_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
@@ -2013,7 +2019,8 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 			           ORDER BY ingested_at ASC
 			       ) AS rn
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1
+			-- EO-evidence gate (see claimRecords): only validator-passed rows mail.
+			WHERE status = 'ready' AND validated_at IS NOT NULL AND vertical = $1
 		),
 		caps(isp, cap) AS (
 			VALUES %s
@@ -2029,7 +2036,7 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 		picked AS (
 			SELECT id FROM partner_clean_queue
 			WHERE id IN (SELECT id FROM eligible)
-			  AND status = 'ready'
+			  AND status = 'ready' AND validated_at IS NOT NULL
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q
@@ -2077,6 +2084,11 @@ func (po *PartnerDripOrchestrator) releaseStaleClaims(ctx context.Context) (int6
 			  AND claimed_at < $1
 			  AND subscriber_id IS NULL
 			  AND mailed_campaign_id IS NULL
+			  -- Only re-ready VALIDATED zombies: releasing an unvalidated claimed
+			  -- row back to 'ready' would violate ready_requires_eo and abort this
+			  -- whole batched UPDATE, wedging the janitor. Unvalidated claimed rows
+			  -- (pre-gate bypass residue) are left as-is — they must not mail anyway.
+			  AND validated_at IS NOT NULL
 		`, cutoff)
 		if err != nil {
 			return err
@@ -2129,6 +2141,10 @@ func (po *PartnerDripOrchestrator) releaseClaim(ctx context.Context, recs []clai
 		UPDATE partner_clean_queue
 		SET status = 'ready', claimed_at = NULL
 		WHERE id = ANY($1::uuid[])
+		  -- Same ready_requires_eo guard as releaseStaleClaims: never re-ready an
+		  -- unvalidated row. Post-gate all claimed recs are validated, so this only
+		  -- matters for rows claimed by a pre-gate binary in the deploy window.
+		  AND validated_at IS NOT NULL
 	`, "{"+strings.Join(ids, ",")+"}")
 	return err
 }
@@ -2418,7 +2434,7 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 	query := `
 		SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
 		FROM partner_clean_queue
-		WHERE vertical = $1 AND status = 'ready'
+		WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 		GROUP BY 1
 	`
 	if followup {
@@ -2477,7 +2493,7 @@ func (po *PartnerDripOrchestrator) readyCountByISP(ctx context.Context, vertical
 		rows, err := tx.QueryContext(ctx, `
 			SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
 			FROM partner_clean_queue
-			WHERE vertical = $1 AND status = 'ready'
+			WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 			GROUP BY 1
 		`, vertical)
 		if err != nil {
@@ -3028,7 +3044,7 @@ func (po *PartnerDripOrchestrator) governedVerticalsWithBacklog(ctx context.Cont
 			FROM (
 				SELECT vertical, COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
 				FROM partner_clean_queue
-				WHERE status = 'ready'
+				WHERE status = 'ready' AND validated_at IS NOT NULL
 				GROUP BY vertical
 			) agg
 			LEFT JOIN partner_drip_state gs ON gs.vertical = agg.vertical || ':governed'
@@ -3076,7 +3092,7 @@ func (po *PartnerDripOrchestrator) governedVerticalsWithBacklog(ctx context.Cont
 				FROM (
 					SELECT dataset_id
 					FROM partner_clean_queue
-					WHERE vertical = $1 AND status = 'ready'
+					WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 					ORDER BY ingested_at ASC
 					LIMIT 1
 				) AS dom
@@ -3132,7 +3148,7 @@ func (po *PartnerDripOrchestrator) refreshGovernedVerticalState(ctx context.Cont
 			FROM (
 				SELECT COUNT(*) AS ready_total, MIN(ingested_at) AS oldest_at
 				FROM partner_clean_queue
-				WHERE status = 'ready' AND vertical = $1
+				WHERE status = 'ready' AND validated_at IS NOT NULL AND vertical = $1
 			) agg
 			LEFT JOIN partner_drip_state gs ON gs.vertical = $1 || ':governed'
 		`, vertical).Scan(&v.brandIndex, &readyTotal, &oldestAt)
@@ -3160,7 +3176,7 @@ func (po *PartnerDripOrchestrator) refreshGovernedVerticalState(ctx context.Cont
 			FROM (
 				SELECT dataset_id
 				FROM partner_clean_queue
-				WHERE vertical = $1 AND status = 'ready'
+				WHERE vertical = $1 AND status = 'ready' AND validated_at IS NOT NULL
 				ORDER BY ingested_at ASC
 				LIMIT 1
 			) AS dom
@@ -3492,6 +3508,10 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			       ) AS rn
 			FROM partner_clean_queue
 			WHERE status = 'mailed'
+			  -- EO-evidence gate: a follow-up touch is still a SEND, so an
+			  -- unvalidated row that reached 'mailed' via the bypass (before this
+			  -- gate) must not be re-mailed. validated_at IS NOT NULL enforces it.
+			  AND validated_at IS NOT NULL
 			  AND vertical = $1
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()
@@ -3512,7 +3532,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 		picked AS (
 			SELECT id FROM partner_clean_queue
 			WHERE id IN (SELECT id FROM eligible)
-			  AND status = 'mailed'
+			  AND status = 'mailed' AND validated_at IS NOT NULL
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()
 			  AND engaged_at IS NULL
