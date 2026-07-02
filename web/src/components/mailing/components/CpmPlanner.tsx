@@ -73,6 +73,9 @@ interface DealProgress {
   required_daily: number;
   actual_daily: number;
   on_pace: boolean;
+  // Deadline pacing — non-null only when the deal has an end_date (see Deal).
+  days_to_deadline: number | null;
+  required_daily_to_deadline: number | null;
 }
 
 interface Deal {
@@ -86,6 +89,7 @@ interface Deal {
   ecpa_goal: number;
   avg_campaign_size: number;
   start_date: string;
+  end_date: string; // YYYY-MM-DD, '' when no deadline
   status: string;
   notes: string;
   conversions_override: number | null;
@@ -411,6 +415,7 @@ interface FormState {
   ecpa_goal: string;
   avg_campaign_size: string;
   start_date: string;
+  end_date: string;
   status: string;
   notes: string;
   conversions_override: string;
@@ -425,6 +430,7 @@ const emptyForm = (): FormState => ({
   ecpa_goal: '',
   avg_campaign_size: '160000',
   start_date: new Date().toISOString().slice(0, 10),
+  end_date: '',
   status: 'active',
   notes: '',
   conversions_override: '',
@@ -443,6 +449,8 @@ export const CpmPlanner: React.FC = () => {
   const [form, setForm] = useState<FormState>(emptyForm());
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  // Transient "recalculated" flash shown after a deal save refreshes all surfaces.
+  const [recalcFlash, setRecalcFlash] = useState(false);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [insights, setInsights] = useState<Record<string, Insights>>({});
@@ -842,6 +850,7 @@ export const CpmPlanner: React.FC = () => {
       ecpa_goal: d.ecpa_goal > 0 ? String(d.ecpa_goal) : '',
       avg_campaign_size: String(d.avg_campaign_size),
       start_date: d.start_date,
+      end_date: d.end_date || '',
       status: d.status,
       notes: d.notes,
       conversions_override: d.conversions_override != null ? String(d.conversions_override) : '',
@@ -868,6 +877,8 @@ export const CpmPlanner: React.FC = () => {
         ecpa_goal: parseFloat(form.ecpa_goal) || 0,
         avg_campaign_size: parseInt(form.avg_campaign_size, 10) || 160000,
         start_date: form.start_date,
+        // '' clears the deadline server-side; a date sets the "finish sooner" lever.
+        end_date: form.end_date.trim(),
         notes: form.notes,
       };
       if (editingId) {
@@ -888,7 +899,14 @@ export const CpmPlanner: React.FC = () => {
       setShowModal(false);
       setInsights({}); // invalidate cached insights
       setOfferPerf({}); // offer mapping may have changed — refetch performance
-      await loadAll();
+      // A deal edit changes budget/eCPM → planned volume, which every dependent
+      // surface reads. Refresh them ALL (same loaders the Refresh buttons use),
+      // not just the deal table — otherwise the Pacing board + Planner grid show
+      // stale volume until a manual Refresh (the static-volume bug, 2026-07-02).
+      await Promise.all([loadAll(), loadPacing(), loadMonths()]);
+      // Tiny affordance so the operator sees the numbers were recomputed.
+      setRecalcFlash(true);
+      window.setTimeout(() => setRecalcFlash(false), 2500);
     } catch (e) {
       setFormError(e instanceof Error ? e.message : 'save failed');
     } finally {
@@ -1395,6 +1413,12 @@ export const CpmPlanner: React.FC = () => {
         <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
           {fmtInt(d.progress.delivered)} / {fmtInt(d.planned_volume)} ({(d.progress.pct_volume_delivered * 100).toFixed(1)}%)
         </div>
+        {d.end_date && d.progress.required_daily_to_deadline != null && (
+          <div style={{ fontSize: 10, color: C.amber, marginTop: 2 }}
+            title={`Deliver the remaining volume by ${d.end_date}`}>
+            ⏱ {d.end_date} · {d.progress.days_to_deadline}d left · need {fmtInt(d.progress.required_daily_to_deadline)}/day
+          </div>
+        )}
       </div>
     );
   };
@@ -1870,6 +1894,19 @@ export const CpmPlanner: React.FC = () => {
     const chartData = ins.daily_series.map(p => ({ date: p.date.slice(5), sent: p.sent, conversions: p.conversions || 0 }));
     return (
       <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* Deadline pace — the "finish sooner" lever (only when end_date is set) */}
+        {d.end_date && d.progress.required_daily_to_deadline != null && (
+          <div style={{
+            padding: '10px 14px', borderRadius: 8, fontSize: 13,
+            background: 'rgba(245,158,11,0.08)', border: `1px solid ${C.amber}`, color: C.heading,
+          }}>
+            <span style={{ fontWeight: 700, color: C.amber }}>Deadline: {d.end_date}</span>
+            {' · '}{d.progress.days_to_deadline}d left · need{' '}
+            <span style={{ fontWeight: 700 }}>{fmtInt(d.progress.required_daily_to_deadline)}/day</span>
+            {' '}to deliver the remaining {fmtInt(Math.max(0, d.planned_volume - d.progress.delivered))} by then
+            {' '}(vs {fmtInt(d.progress.required_daily)}/day on the {d.days_to_finish}-day plan).
+          </div>
+        )}
         {/* Recommendations */}
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.heading, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -2133,6 +2170,19 @@ export const CpmPlanner: React.FC = () => {
                 value={form.start_date}
                 onChange={e => setForm({ ...form, start_date: e.target.value })}
               />
+            </div>
+            <div>
+              <label style={labelStyle}>Deadline (optional)</label>
+              <input
+                style={inputStyle} type="date"
+                value={form.end_date}
+                min={form.start_date || undefined}
+                onChange={e => setForm({ ...form, end_date: e.target.value })}
+              />
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
+                Finish-sooner lever: set an end date and the deal shows the
+                required/day to deliver the remaining volume by then. Blank = no deadline.
+              </div>
             </div>
             {editingId && (
               <div>
@@ -2451,17 +2501,28 @@ export const CpmPlanner: React.FC = () => {
             is pacing against it, and which creatives, subjects and brands are earning it.
           </div>
         </div>
-        <button
-          onClick={openCreate}
-          style={{
-            padding: '9px 18px', borderRadius: 8, border: 'none',
-            background: `linear-gradient(135deg, ${C.indigo}, #8b5cf6)`,
-            color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}
-        >
-          <FontAwesomeIcon icon={faPlus} /> New Deal
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {recalcFlash && (
+            <span style={{
+              padding: '5px 12px', borderRadius: 999, fontSize: 12, fontWeight: 700,
+              color: C.green, border: `1px solid ${C.green}`, background: 'rgba(16,185,129,0.1)',
+              whiteSpace: 'nowrap',
+            }}>
+              Recalculated
+            </span>
+          )}
+          <button
+            onClick={openCreate}
+            style={{
+              padding: '9px 18px', borderRadius: 8, border: 'none',
+              background: `linear-gradient(135deg, ${C.indigo}, #8b5cf6)`,
+              color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            <FontAwesomeIcon icon={faPlus} /> New Deal
+          </button>
+        </div>
       </div>
 
       {error && (

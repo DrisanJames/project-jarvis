@@ -148,6 +148,13 @@ type cpmDealProgress struct {
 	RequiredDaily      float64 `json:"required_daily"`
 	ActualDaily        float64 `json:"actual_daily"`
 	OnPace             bool    `json:"on_pace"`
+	// Deadline pacing (operator 2026-07-02): populated only when the deal has an
+	// end_date. DaysToDeadline = calendar days from today to end_date (>=0, incl.
+	// today); RequiredDailyToDeadline = remaining planned volume ÷ those days —
+	// the "finish sooner" pace. Both nil when no end_date is set (JSON null), so
+	// the UI shows the deadline row only for deals that have one.
+	DaysToDeadline          *int64   `json:"days_to_deadline"`
+	RequiredDailyToDeadline *float64 `json:"required_daily_to_deadline"`
 }
 
 type cpmDeal struct {
@@ -161,6 +168,7 @@ type cpmDeal struct {
 	EcpaGoal        float64 `json:"ecpa_goal"`
 	AvgCampaignSize int     `json:"avg_campaign_size"`
 	StartDate       string  `json:"start_date"` // YYYY-MM-DD
+	EndDate         string  `json:"end_date"`   // YYYY-MM-DD, '' when no deadline set
 	Status          string  `json:"status"`
 	Notes           string  `json:"notes"`
 	// CampaignNamePattern: ILIKE pattern that attributes offer_id=NULL broadcasts/
@@ -178,7 +186,9 @@ type cpmDeal struct {
 
 	Progress cpmDealProgress `json:"progress"`
 
-	startDate time.Time `json:"-"`
+	startDate  time.Time `json:"-"`
+	endDate    time.Time `json:"-"` // zero when no deadline (see hasEndDate)
+	hasEndDate bool      `json:"-"`
 }
 
 type cpmCapacity struct {
@@ -199,6 +209,7 @@ type cpmDealInput struct {
 	EcpaGoal            *float64 `json:"ecpa_goal"`
 	AvgCampaignSize     *int     `json:"avg_campaign_size"`
 	StartDate           *string  `json:"start_date"`
+	EndDate             *string  `json:"end_date"` // '' clears the deadline; YYYY-MM-DD sets it
 	Status              *string  `json:"status"`
 	Notes               *string  `json:"notes"`
 	CampaignNamePattern *string  `json:"campaign_name_pattern"`
@@ -246,6 +257,32 @@ func cpmActualEcpa(budget float64, conversions int64) float64 {
 	return budget / float64(conversions)
 }
 
+// cpmDeadlinePace is the "finish sooner" lever (operator 2026-07-02): given a
+// deal's end_date, how many recipients per day must go out to deliver the
+// remaining planned volume by the deadline. days is the calendar days from
+// today to end_date (clamped >=0 for display); the required-daily divisor
+// floors at 1 day so a today/past deadline yields "all remaining today" rather
+// than a divide-by-zero. An earlier end_date → fewer days → higher required/day.
+func cpmDeadlinePace(planned, delivered int64, endDate time.Time) (days int64, requiredDaily float64) {
+	// Date-granularity difference in UTC (end_date is a DATE = UTC midnight).
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	end := endDate.UTC().Truncate(24 * time.Hour)
+	days = int64(end.Sub(today).Hours() / 24)
+	if days < 0 {
+		days = 0
+	}
+	remaining := planned - delivered
+	if remaining < 0 {
+		remaining = 0
+	}
+	divisor := days
+	if divisor < 1 {
+		divisor = 1
+	}
+	requiredDaily = math.Ceil(float64(remaining) / float64(divisor))
+	return days, requiredDaily
+}
+
 // ─── Deal loading + live progress ───────────────────────────────────────────
 
 const cpmDealSelect = `
@@ -254,7 +291,7 @@ const cpmDealSelect = `
 	       COALESCE(o.name, o2.name, '') AS offer_name,
 	       COALESCE(d.everflow_offer_id, ''),
 	       d.budget, d.ecpm_goal, COALESCE(d.ecpa_goal, 0),
-	       d.avg_campaign_size, d.start_date, d.status, COALESCE(d.notes, ''),
+	       d.avg_campaign_size, d.start_date, d.end_date, d.status, COALESCE(d.notes, ''),
 	       COALESCE(d.campaign_name_pattern, ''),
 	       d.conversions_override,
 	       d.created_at, d.updated_at,
@@ -271,9 +308,10 @@ func scanCpmDeal(rows interface{ Scan(...interface{}) error }) (cpmDeal, float64
 	var d cpmDeal
 	var payout float64
 	var start time.Time
+	var end sql.NullTime
 	var convOverride sql.NullInt64
 	err := rows.Scan(&d.ID, &d.Name, &d.OfferID, &d.OfferName, &d.EverflowOfferID,
-		&d.Budget, &d.EcpmGoal, &d.EcpaGoal, &d.AvgCampaignSize, &start,
+		&d.Budget, &d.EcpmGoal, &d.EcpaGoal, &d.AvgCampaignSize, &start, &end,
 		&d.Status, &d.Notes, &d.CampaignNamePattern, &convOverride, &d.CreatedAt, &d.UpdatedAt, &payout)
 	if err != nil {
 		return d, 0, err
@@ -284,6 +322,11 @@ func scanCpmDeal(rows interface{ Scan(...interface{}) error }) (cpmDeal, float64
 	}
 	d.startDate = start
 	d.StartDate = start.Format("2006-01-02")
+	if end.Valid {
+		d.endDate = end.Time
+		d.hasEndDate = true
+		d.EndDate = end.Time.Format("2006-01-02")
+	}
 	d.PlannedVolume, d.ConversionsNeeded, d.DaysToFinish = cpmPlanNumbers(d.Budget, d.EcpmGoal, d.EcpaGoal, d.AvgCampaignSize)
 	return d, payout, nil
 }
@@ -444,6 +487,14 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	}
 	p.ActualDaily = float64(p.Delivered) / float64(elapsed)
 	p.OnPace = p.ActualDaily >= p.RequiredDaily
+
+	// Deadline pacing — only when the deal carries an end_date (NULL-tolerant:
+	// both fields stay nil → JSON null → the UI hides the deadline row).
+	if d.hasEndDate {
+		days, reqDaily := cpmDeadlinePace(d.PlannedVolume, p.Delivered, d.endDate)
+		p.DaysToDeadline = &days
+		p.RequiredDailyToDeadline = &reqDaily
+	}
 	return p
 }
 
@@ -562,6 +613,14 @@ func (h *CpmPlannerHandlers) HandleCreateDeal(w http.ResponseWriter, r *http.Req
 		}
 		startDate = *in.StartDate
 	}
+	var endDate interface{} // NULL unless a valid deadline is supplied
+	if in.EndDate != nil && strings.TrimSpace(*in.EndDate) != "" {
+		if _, err := time.Parse("2006-01-02", *in.EndDate); err != nil {
+			respondError(w, http.StatusBadRequest, "end_date must be YYYY-MM-DD")
+			return
+		}
+		endDate = strings.TrimSpace(*in.EndDate)
+	}
 	notes := ""
 	if in.Notes != nil {
 		notes = *in.Notes
@@ -575,11 +634,11 @@ func (h *CpmPlannerHandlers) HandleCreateDeal(w http.ResponseWriter, r *http.Req
 	err := h.db.QueryRow(`
 		INSERT INTO mailing_cpm_deals
 			(organization_id, name, offer_id, everflow_offer_id, budget, ecpm_goal,
-			 ecpa_goal, avg_campaign_size, start_date, notes, campaign_name_pattern)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			 ecpa_goal, avg_campaign_size, start_date, end_date, notes, campaign_name_pattern)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING id`,
 		orgID, strings.TrimSpace(*in.Name), offerID, everflowID, *in.Budget, *in.EcpmGoal,
-		ecpaGoal, avgSize, startDate, notes, namePattern).Scan(&id)
+		ecpaGoal, avgSize, startDate, endDate, notes, namePattern).Scan(&id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("create deal: %v", err))
 		return
@@ -659,6 +718,17 @@ func (h *CpmPlannerHandlers) HandleUpdateDeal(w http.ResponseWriter, r *http.Req
 			return
 		}
 		add("start_date", *in.StartDate)
+	}
+	if in.EndDate != nil {
+		// '' clears the deadline (NULL); a valid date sets it.
+		if strings.TrimSpace(*in.EndDate) == "" {
+			add("end_date", nil)
+		} else if _, err := time.Parse("2006-01-02", *in.EndDate); err != nil {
+			respondError(w, http.StatusBadRequest, "end_date must be YYYY-MM-DD")
+			return
+		} else {
+			add("end_date", strings.TrimSpace(*in.EndDate))
+		}
 	}
 	if in.Status != nil {
 		s := strings.ToLower(strings.TrimSpace(*in.Status))
@@ -2127,7 +2197,7 @@ type cpmPacingDeal struct {
 	MonthlyEcpm      *float64 `json:"monthly_ecpm"`
 	MonthlyEcpa      *float64 `json:"monthly_ecpa"`
 	MonthlyNotes     string   `json:"monthly_notes"` // PUT always replaces notes — edit surface must echo it back
-	Ecpm             float64  `json:"ecpm"` // effective (monthly target if set, else deal goal)
+	Ecpm             float64  `json:"ecpm"`          // effective (monthly target if set, else deal goal)
 	MtdDelivered     int64    `json:"mtd_delivered"`
 	MtdConversions   int64    `json:"mtd_conversions"`
 	// Month-scoped versions of the deal card's "strong metrics":

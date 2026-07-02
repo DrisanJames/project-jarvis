@@ -2128,6 +2128,12 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"idx_cpm_manual_conversions_org_deal_time", `CREATE INDEX IF NOT EXISTS idx_cpm_manual_conversions_org_deal_time ON mailing_cpm_manual_conversions (organization_id, deal_id, converted_at)`},
 		{"uniq_cpm_manual_conversions_dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cpm_manual_conversions_dedupe ON mailing_cpm_manual_conversions (deal_id, conversion_id) WHERE conversion_id <> ''`},
+		// Optional deal DEADLINE (operator 2026-07-02): the "finish sooner" lever.
+		// When set, cpm_planner_handlers.go derives required_daily_to_deadline
+		// (remaining planned volume ÷ days left to end_date) so an earlier date
+		// raises the daily pace the deal needs. NULL = no deadline (falls back to
+		// the avg-size-derived days_to_finish). Tiny, idempotent, NULL-tolerant.
+		{"add_cpm_deals_end_date", `ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS end_date DATE`},
 		// Creative registry — browse/preview surface for the send-day creative
 		// archive (ReviewForge phase 2). Synced from operator tooling via
 		// /api/admin/creatives-sync; read by the portal Creative Studio tab.
