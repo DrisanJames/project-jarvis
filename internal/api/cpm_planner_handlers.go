@@ -93,6 +93,18 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		// ([partner-drip] samsclub_internal…, jun27 - … - sams-club, SPICY-COLD … SAMS).
 		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sam%'
 		   WHERE lower(name) ~ 'sam' AND COALESCE(campaign_name_pattern,'') = ''`,
+		// Same fix for Liberty Mutual and Metal Roofing (operator 2026-07-02): both
+		// deals mail entirely as board/broadcast sends that carry offer_id=NULL and
+		// are NOT hand-earmarked, so with no name pattern they attributed ZERO —
+		// pacing and dynamic metrics rendered empty while Sam's (which has a pattern)
+		// worked. Every send carries the offer slug verbatim in the campaign name
+		// ("… - liberty-mutual", "… - metal-roofing[-ses]"); both patterns are
+		// exact — they match only their own offer's campaigns (verified: 2,493
+		// liberty rows all end "liberty-mutual", metal all "metal-roofing").
+		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%liberty%'
+		   WHERE lower(name) ~ 'liberty' AND COALESCE(campaign_name_pattern,'') = ''`,
+		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%metal-roofing%'
+		   WHERE lower(name) ~ 'metal' AND COALESCE(campaign_name_pattern,'') = ''`,
 		// Per-deal MONTHLY TARGETS (operator 2026-06-30): the operator commits a
 		// budget/volume/eCPM/eCPA target for a calendar month, and next month's
 		// actuals are measured against it. Only the TARGET is stored here —
