@@ -177,6 +177,18 @@ const BUILD_REQUEST_KNOWN_ISPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast
 const LAKE_BUILD_SOURCES = ['lake-builder', 'lake-standard', 'lake-engaged'];
 const isLakeRow = (s: SegmentRow): boolean => LAKE_BUILD_SOURCES.includes(s.build_source || '');
 
+// A2 guard — suppression/exclusion lists (e.g. "EXCL Charter Family Domains")
+// are sometimes stored on the server with category 'engagement_brand'. That
+// miscategorization inflates the engagement_brand chip count and renders the
+// list as a never-built "engagement" row in All Segments. We treat any
+// EXCL-named engagement_brand segment as NOT engagement in the UI: it is
+// dropped from the engagement_brand chip count and from the rendered rows. DB
+// rows are left untouched (backend recategorization is a separate, deferred
+// change — do NOT mutate them here).
+const EXCLUSION_NAME_RE = /^EXCL\b/i;
+const isMiscategorizedExclusion = (s: SegmentRow): boolean =>
+  (s.category ?? '') === 'engagement_brand' && EXCLUSION_NAME_RE.test((s.name ?? '').trim());
+
 const BUILD_STATUS_DOT: Record<string, string> = {
   ok: '#10b981',
   failed: '#ef4444',
@@ -320,12 +332,17 @@ const BRAND_CODE_TO_DOMAIN: Record<string, string> = {
   MH: 'myownhealth.net',
   QF: 'quizfiesta.com',
   BW: 'businessweeklypro.com',
+  BWP: 'businessweeklypro.com',
   FC: 'financialcalculate.com',
   CP: 'consumerpro.net',
   HW: 'homewarrantyservices.org',
+  HWS: 'homewarrantyservices.org',
   RR: 'refinanceratesusa.com',
+  RRU: 'refinanceratesusa.com',
   TT: 'thingoftheday.org',
+  TOT: 'thingoftheday.org',
   YI: 'yourinsurancehub.com',
+  YIH: 'yourinsurancehub.com',
   MR: 'myrepairdiy.com',
   CI: 'casainsure.com',
   LP: 'learnpersonalloans.com',
@@ -687,6 +704,11 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
   const [rows, setRows] = useState<SegmentRow[]>([]);
   const [total, setTotal] = useState(0);
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
+  // A2: session-sticky set of miscategorized-exclusion segment ids we've seen.
+  // Kept in state (not a ref) so the chip-count adjustment stays stable even
+  // when a non-'all' category is selected and the current page no longer
+  // contains those rows.
+  const [exclSegIds, setExclSegIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -793,6 +815,19 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
   fetchListRef.current = fetchList;
 
   useEffect(() => { fetchList(0, false); }, [fetchList]);
+
+  // A2: remember any miscategorized-exclusion rows the current page revealed so
+  // the engagement_brand chip stays corrected across category switches.
+  useEffect(() => {
+    const found = rows.filter(isMiscategorizedExclusion).map(r => r.id);
+    if (found.length === 0) return;
+    setExclSegIds(prev => {
+      let changed = false;
+      const next = new Set(prev);
+      found.forEach(id => { if (!next.has(id)) { next.add(id); changed = true; } });
+      return changed ? next : prev;
+    });
+  }, [rows]);
 
   const patchRow = (id: string, patch: Partial<SegmentRow>) =>
     setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
@@ -1108,23 +1143,34 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
   const reqChipWindows = Array.from(new Set([...BUILD_REQUEST_PRESET_WINDOWS, ...reqWindows])).sort((a, b) => a - b);
 
   // --- derived ------------------------------------------------------------------
-  const machineCount = categoryCounts[MACHINE_CATEGORY] || 0;
-  const operatedCount = Object.entries(categoryCounts)
+  // A2: drop known miscategorized-exclusion segments from the engagement_brand
+  // count so the chip (and the operated total) don't include them.
+  const adjustedCategoryCounts = useMemo(() => {
+    const excl = exclSegIds.size;
+    if (excl === 0) return categoryCounts;
+    const next = { ...categoryCounts };
+    next.engagement_brand = Math.max(0, (next.engagement_brand || 0) - excl);
+    return next;
+  }, [categoryCounts, exclSegIds]);
+
+  const machineCount = adjustedCategoryCounts[MACHINE_CATEGORY] || 0;
+  const operatedCount = Object.entries(adjustedCategoryCounts)
     .filter(([cat]) => cat !== MACHINE_CATEGORY)
     .reduce((sum, [, n]) => sum + n, 0);
 
   // Chips: every non-machine category with rows, sorted by count desc; the
   // Machine chip is pinned last and is the ONLY way to see machine rows.
   const chipCategories = useMemo(
-    () => Object.entries(categoryCounts)
+    () => Object.entries(adjustedCategoryCounts)
       .filter(([cat, n]) => cat !== MACHINE_CATEGORY && n > 0)
       .sort((a, b) => b[1] - a[1]),
-    [categoryCounts],
+    [adjustedCategoryCounts],
   );
 
   const sortedRows = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1;
-    const arr = [...rows];
+    // A2: never surface EXCL-named engagement_brand rows as engagement/all rows.
+    const arr = rows.filter(r => !isMiscategorizedExclusion(r));
     arr.sort((a, b) => {
       if (sortKey === 'name') return a.name.localeCompare(b.name) * dir;
       if (sortKey === 'members') return (memberCount(a) - memberCount(b)) * dir;
