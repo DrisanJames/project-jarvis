@@ -908,7 +908,7 @@ const EnhancedDashboard: React.FC = () => {
             title="In Transit · Now Mailing"
             icon={faTruckFast}
             right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Broadcast waves only — continuous partner-drip micro-campaigns are excluded (exclude_drip). Count = all non-drip campaigns in the sending state; the list shows the most recently started of them.">
-              {inTransitTotal.toLocaleString()} sending{inTransit && inTransit.length < inTransitTotal ? ` · top ${inTransit.length} by start` : ''} · live 45s
+              {inTransit === null ? '…' : `${inTransitTotal.toLocaleString()} sending${inTransit.length < inTransitTotal ? ` · top ${inTransit.length} by start` : ''}`} · live 45s
             </span>}
           />
           {inTransitErr ? (

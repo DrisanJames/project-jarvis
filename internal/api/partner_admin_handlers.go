@@ -933,11 +933,12 @@ func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[
 	hb := HardBounceSQL("t")
 	evRows, err := h.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT COALESCE(c.partner_drip_tag, ''), split_part(c.name, ' ', 3),
-		       -- distinct recipients, NOT raw 'sent' events: deferral retries emit a
-		       -- fresh 'sent' per attempt (~1.6x inflation) while 'delivered' is deduped,
-		       -- so a raw denominator understates the delivery rate badly.
+		       -- distinct recipients, NOT raw events: deferral retries emit a fresh
+		       -- 'sent' per attempt (~1.6x inflation). delivered is counted DISTINCT
+		       -- on the SAME (campaign,subscriber) basis as sent, so the delivery
+		       -- rate is a true per-recipient rate that can never exceed 100%.
 		       COUNT(DISTINCT (t.campaign_id, t.subscriber_id)) FILTER (WHERE t.event_type = 'sent'),
-		       COALESCE(SUM(CASE WHEN t.event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+		       COUNT(DISTINCT (t.campaign_id, t.subscriber_id)) FILTER (WHERE t.event_type = 'delivered'),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
@@ -1065,7 +1066,7 @@ func (h *PartnerAdminHandler) dripTotals24h(ctx context.Context) (map[string]int
 	var sent, delivered, opens, clicks, hard, soft, deferred int
 	if err := h.db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE event_type = 'sent'),
-		       COALESCE(SUM(CASE WHEN event_type = 'delivered' THEN 1 ELSE 0 END), 0),
+		       COUNT(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE event_type = 'delivered'),
 		       COALESCE(SUM(CASE WHEN event_type = 'opened' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'clicked' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN event_type = 'bounced' AND %s THEN 1 ELSE 0 END), 0),
