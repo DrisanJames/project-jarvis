@@ -1004,9 +1004,12 @@
   color: #e5e7eb;
 }
 
+/* 6 KPI tiles divide evenly into two tidy rows of 3 (was repeat(4,1fr),
+   which orphaned the last 2 cards). min-height keeps rows even when the
+   Open/Click cards carry an extra "machine incl. · human N" subtext line. */
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 
@@ -1017,6 +1020,7 @@
   display: flex;
   align-items: center;
   gap: 16px;
+  min-height: 104px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(99, 102, 241, 0.08);
 }

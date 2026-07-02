@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { 
+import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faCalculator,
   faListUl, faCrosshairs, faBolt,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faSeedling, faWandMagicSparkles,
+  faTruckFast, faFire, faTriangleExclamation, faRoute,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -13,8 +14,8 @@ import './MailingPortal.css';
 import '../shared/animations.css';
 import { ToastProvider } from '../shared/ToastSystem';
 import { apiFetch } from '../shared/apiFetch';
-import { colors } from '../shared/theme';
-import { Panel, Stat, SectionHeader, EmptyState } from '../shared/ui';
+import { colors, stateColor, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
+import { Panel, Stat, SectionHeader, EmptyState, ProgressBar, Pill, SectionError } from '../shared/ui';
 import { WorkerHealthWidget } from '../components/WorkerHealthDashboard';
 
 // ── Lazy-loaded heavy components (code-split into separate chunks) ──────────
@@ -365,7 +366,16 @@ export const MailingPortal: React.FC = () => {
 //     opens/clicks tiles now show RAW counts from /analytics/engagement with a
 //     "machine incl. · human N" subtext (fail-soft to lake raw counts); bounce
 //     denominator = delivered + hard + soft + untyped 'bounced'.
-const PAGE_VERSION_DASHBOARD = '1.2';
+//   1.3 (2026-07-02) — Central operations console rebuild (PORTAL_DESIGN_SYSTEM
+//     §1 hierarchy). Bug fixes: 6-KPI grid is now repeat(3,1fr) (was repeat(4)
+//     which orphaned 2 cards); Audience Growth sumRows reads r.count (was r.c —
+//     the backend serializes AudienceRow as json:"count", so it always read 0).
+//     New modules, each fail-soft (one failed fetch never blanks the console):
+//     In-Transit (top-5 most-recently-started sending campaigns, polled 45s),
+//     Deferring ISPs + reason codes (polled 45s), Trending Offers (24h
+//     conversions), Click Funnels (live click-drip lanes — replaces the dead
+//     /journey-center/overview source), and a shared-table Recent Campaigns.
+const PAGE_VERSION_DASHBOARD = '1.3';
 
 // Today's lake counts (reclassified event_type buckets from the canonical
 // /analytics/lake/breakdown query — Denver day, source_in=pmta,ses; see
@@ -412,26 +422,66 @@ const denverDaysAgo = (n: number): string => {
   return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
 };
 
-// --- Audience growth (acquisition vs churn) + funnel membership ----------
+// --- Audience growth (acquisition vs churn) ------------------------------
 interface AudienceGrowth {
   acquired7d: number;
   churned7d: number;
 }
-interface FunnelItem {
+
+// --- In-transit campaigns (GET /campaigns?status=sending) ----------------
+// Fields per CampaignBuilder.HandleListCampaigns (campaign_builder_crud.go);
+// the campaigns array arrives under the paginated envelope's `data` key.
+interface InTransitCampaign {
   id: string;
   name: string;
-  active_enrolled: number;
-  converted: number;
-}
-interface FunnelOverview {
-  total_active_enrollments: number;
-  enrollments_today: number;
-  top_journeys: FunnelItem[];
+  status: string;
+  total_recipients: number;
+  sent_count: number;
+  from_name?: string;
+  profile_name?: string;
+  started_at?: string;
+  scheduled_at?: string;
 }
 
+// --- Deferring ISPs (GET /dashboard/deferring-isps) ----------------------
+interface DeferReason { code: string; count: number; sample: string }
+interface DeferringISP { isp: string; deferred: number; reasons: DeferReason[] }
+
+// --- Trending offers (GET /dashboard/trending-offers) --------------------
+interface TrendingOffer { offer_id: string; name: string; conversions: number }
+
+// --- Click funnels (GET /dashboard/click-funnels) — LIVE click-drip lanes.
+// Replaces the dead /journey-center/overview source (METRIC per handler doc).
+interface ClickFunnelLane {
+  offer_id: string;
+  name: string;
+  enabled: boolean;
+  payout_type: string;
+  active_enrolled: number;
+  completed_or_converted: number; // LIFETIME (all-time), not windowed
+}
+interface ClickFunnelsOverview {
+  lanes: ClickFunnelLane[];
+  total_active_lanes: number;
+  total_enrolled: number;
+}
+
+// Bug fix (2026-07-02): the backend serializes AudienceRow as json:"count"
+// (internal/analytics/reader_audience.go), NOT "c" — reading r.c always
+// summed 0, which is why Audience Growth showed 0/0. Read r.count.
 const sumRows = (rows: unknown): number => {
   if (!Array.isArray(rows)) return 0;
-  return rows.reduce((acc: number, r: any) => acc + (Number(r?.c) || 0), 0);
+  return rows.reduce((acc: number, r: any) => acc + (Number(r?.count) || 0), 0);
+};
+
+// Short "HH:MM" Denver clock for a timestamp (in-transit "started" column).
+const denverClock = (iso?: string): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Denver', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d);
 };
 
 const EnhancedDashboard: React.FC = () => {
@@ -443,11 +493,19 @@ const EnhancedDashboard: React.FC = () => {
   // Raw+human engagement for today (PG + verdict). Fail-soft: null → the
   // open/click tiles fall back to the lake's raw counts (never blank).
   const [engToday, setEngToday] = useState<EngTodayCounts | null>(null);
-  // Audience growth (acquisition vs churn) + click-funnel membership. Both are
-  // optional/failure-tolerant — a slow or unavailable source never blocks the
-  // rest of the dashboard (mirrors the lakeToday pattern above).
+  // Console modules — each is optional/failure-tolerant. A slow or unavailable
+  // source shows a per-panel error/empty state and never blanks the console
+  // (fail-soft, PORTAL_DESIGN_SYSTEM §1.6). `null` = still loading / no data;
+  // the paired *Err string flips a panel into its SectionError shell.
   const [growth, setGrowth] = useState<AudienceGrowth | null>(null);
-  const [funnels, setFunnels] = useState<FunnelOverview | null>(null);
+  const [inTransit, setInTransit] = useState<InTransitCampaign[] | null>(null);
+  const [inTransitErr, setInTransitErr] = useState<string | null>(null);
+  const [deferring, setDeferring] = useState<DeferringISP[] | null>(null);
+  const [deferringErr, setDeferringErr] = useState<string | null>(null);
+  const [trending, setTrending] = useState<{ rows: TrendingOffer[]; total: number } | null>(null);
+  const [trendingErr, setTrendingErr] = useState<string | null>(null);
+  const [funnels, setFunnels] = useState<ClickFunnelsOverview | null>(null);
+  const [funnelsErr, setFunnelsErr] = useState<string | null>(null);
 
   // Acquisition vs churn over the trailing 7 days (analytics lake).
   useEffect(() => {
@@ -474,23 +532,95 @@ const EnhancedDashboard: React.FC = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Click-funnel membership (PG journey-center; reliable).
+  // Click funnels — LIVE click-drip lanes (replaces the dead journey-center
+  // overview). One-shot; the lane membership changes slowly.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await apiFetch('/api/mailing/journey-center/overview', { credentials: 'include' });
-        if (!res.ok) return;
+        const res = await apiFetch('/api/mailing/dashboard/click-funnels', { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!cancelled) {
           setFunnels({
-            total_active_enrollments: data?.total_active_enrollments || 0,
-            enrollments_today: data?.enrollments_today || 0,
-            top_journeys: Array.isArray(data?.top_journeys) ? data.top_journeys : [],
+            lanes: Array.isArray(data?.lanes) ? data.lanes : [],
+            total_active_lanes: Number(data?.total_active_lanes) || 0,
+            total_enrolled: Number(data?.total_enrolled) || 0,
           });
+          setFunnelsErr(null);
         }
-      } catch {
-        // Journey center unreachable → funnels stays null → friendly empty state.
+      } catch (e: any) {
+        if (!cancelled) setFunnelsErr(e?.message || 'unreachable');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // In-transit campaigns — the "what's mailing right now" hero. Polled every
+  // 45s so the console feels live. Sort client-side by started_at desc (fall
+  // back to scheduled_at) and keep the 5 most-recently-started.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/mailing/campaigns?status=sending&limit=50', { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const rows: InTransitCampaign[] = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.campaigns) ? data.campaigns : []);
+        const startedMs = (c: InTransitCampaign) => {
+          const t = c.started_at || c.scheduled_at;
+          const ms = t ? new Date(t).getTime() : 0;
+          return isNaN(ms) ? 0 : ms;
+        };
+        const top5 = [...rows].sort((a, b) => startedMs(b) - startedMs(a)).slice(0, 5);
+        if (!cancelled) { setInTransit(top5); setInTransitErr(null); }
+      } catch (e: any) {
+        if (!cancelled) setInTransitErr(e?.message || 'unreachable');
+      }
+    };
+    load();
+    const id = window.setInterval(load, 45000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, []);
+
+  // Deferring ISPs + reason codes (last 24h). Polled every 45s.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await apiFetch('/api/mailing/dashboard/deferring-isps?hours=24', { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) {
+          setDeferring(Array.isArray(data?.rows) ? data.rows : []);
+          setDeferringErr(null);
+        }
+      } catch (e: any) {
+        if (!cancelled) setDeferringErr(e?.message || 'unreachable');
+      }
+    };
+    load();
+    const id = window.setInterval(load, 45000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, []);
+
+  // Trending offers (24h conversions). One-shot — conversions are sparse.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/dashboard/trending-offers?hours=24', { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) {
+          setTrending({
+            rows: Array.isArray(data?.rows) ? data.rows : [],
+            total: Number(data?.total_conversions) || 0,
+          });
+          setTrendingErr(null);
+        }
+      } catch (e: any) {
+        if (!cancelled) setTrendingErr(e?.message || 'unreachable');
       }
     })();
     return () => { cancelled = true; };
@@ -629,132 +759,13 @@ const EnhancedDashboard: React.FC = () => {
     ? (todayProcessed > 0 ? (todaySoft / todayProcessed) * 100 : 0)
     : (perf.soft_bounce_rate ?? null);
 
+  // Deferring-ISP count severity accent (magnitude bands).
+  const deferSeverity = (n: number): string =>
+    n >= 5000 ? colors.danger : n >= 500 ? colors.warning : colors.text;
+
   return (
     <div className="enhanced-dashboard ig-fade-in">
-      {/* System Overview Cards */}
-      <div className="system-overview ig-stagger">
-        <WorkerHealthWidget />
-        <div className="system-card sending ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
-            <h3>Email Sending</h3>
-            <span className="status-badge active">Active</span>
-          </div>
-          <div className="system-description">
-            <p>Your emails are sent through high-deliverability infrastructure, optimized for each mailbox provider.</p>
-          </div>
-          {/* Daily Cap Gauge */}
-          <div className="daily-cap-section">
-            <div className="daily-cap-header">
-              <span className="daily-cap-title">Platform Sending Cap</span>
-              <span className={`daily-cap-pct ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}>
-                {(dashboard?.platform_daily_utilization || 0).toFixed(1)}% used
-              </span>
-            </div>
-            <div className="daily-cap-bar">
-              <div
-                className={`daily-cap-fill ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}
-                style={{ width: `${Math.min(dashboard?.platform_daily_utilization || 0, 100)}%` }}
-              />
-            </div>
-            <div className="daily-cap-details">
-              <span className="daily-cap-used">{(dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent today (platform)</span>
-              <span className="daily-cap-total">{(dashboard?.platform_daily_capacity || 0).toLocaleString()} platform cap</span>
-            </div>
-            <div className="daily-cap-details" style={{ fontSize: '0.78em', opacity: 0.75 }}>
-              <span>Your org: {(dashboard?.org_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent</span>
-              <span>v{PAGE_VERSION_DASHBOARD}</span>
-            </div>
-            <div className="daily-cap-remaining">
-              <strong>{(dashboard?.daily_remaining || 0).toLocaleString()}</strong> emails remaining today
-            </div>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{throttle?.minute_used || 0}/{throttle?.minute_limit || 1000}</span>
-              <span className="stat-label">This Minute</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value">{throttle?.hour_used || 0}/{throttle?.hour_limit || 50000}</span>
-              <span className="stat-label">This Hour</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="system-card intelligence ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBrain} /></span>
-            <h3>Inbox Intelligence</h3>
-            <span className="status-badge active">Learning</span>
-          </div>
-          <div className="system-description">
-            <p>AI builds a <strong>profile for every recipient</strong> to optimize delivery.</p>
-            <ul>
-              <li>Tracks engagement per email address</li>
-              <li>Learns best send times</li>
-              <li>Predicts open/click probability</li>
-            </ul>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()}</span>
-              <span className="stat-label">Built Today</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.platform_intelligence?.inbox_profiles || 0).toLocaleString()}</span>
-              <span className="stat-label">Total Profiles</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="system-card suppression ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBan} /></span>
-            <h3>Deliverability Protection</h3>
-            <span className="status-badge active">Protected</span>
-          </div>
-          <div className="system-description">
-            <p><strong>Global suppression</strong> prevents sending to risky addresses.</p>
-            <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: '4px 0 0' }}>
-              {(dashboard?.global_suppressions_total || 0).toLocaleString()} total blocked addresses
-            </p>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{(dashboard?.suppressions_today || 0).toLocaleString()}</span>
-              <span className="stat-label">Added Today</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value" style={{ fontSize: '1.2rem', opacity: 0.7 }}>{(dashboard?.suppressions_yesterday || 0).toLocaleString()}</span>
-              <span className="stat-label">Added Yesterday</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="system-card automation ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBolt} /></span>
-            <h3>Automation Engine</h3>
-            <span className="status-badge active">Running</span>
-          </div>
-          <div className="system-description">
-            <p><strong>Drip campaigns</strong> send automatically based on triggers.</p>
-            <ul>
-              <li>Welcome series on subscribe</li>
-              <li>Timed email sequences</li>
-              <li>Behavior-based triggers</li>
-            </ul>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{dashboard?.active_automations || 0}</span>
-              <span className="stat-label">Active Workflows</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Performance Metrics */}
+      {/* ── Row 1 · Today's Performance — the answer at the top (KPIs) ────── */}
       <div className="metrics-section">
         <h3>
           <FontAwesomeIcon icon={faChartLine} /> Today's Performance
@@ -851,8 +862,223 @@ const EnhancedDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Audience Growth (acquisition vs churn) + Click Funnels */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, marginTop: 18 }}>
+      {/* ── Row 2 · In-Transit (hero) + Platform Sending Cap ─────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(320px, 1fr)', gap: 14, marginBottom: 18, alignItems: 'stretch' }}>
+        {/* In-transit: "what's mailing right now" — top 5 most recently started */}
+        <Panel accent={colors.indigo500}>
+          <SectionHeader
+            title="In Transit · Now Mailing"
+            icon={faTruckFast}
+            right={<span style={{ fontSize: 11, color: colors.textMuted }}>top 5 most recently started · live 45s</span>}
+          />
+          {inTransitErr ? (
+            <SectionError label="In-transit campaigns" error={inTransitErr} />
+          ) : inTransit == null ? (
+            <div style={{ fontSize: 12, color: colors.textMuted, padding: '18px 4px' }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading in-transit campaigns…
+            </div>
+          ) : inTransit.length === 0 ? (
+            <EmptyState icon={faPaperPlane} title="Nothing in transit" hint="Campaigns appear here the moment they enter the sending state." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {inTransit.map((c) => {
+                const pct = c.total_recipients > 0 ? c.sent_count / c.total_recipients : 0;
+                return (
+                  <div key={c.id} style={{ padding: '10px 0', borderTop: `1px solid ${colors.divider}` }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
+                      <span title={c.name} style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '62%' }}>{c.name}</span>
+                      <span style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>started {denverClock(c.started_at || c.scheduled_at)}</span>
+                    </div>
+                    <ProgressBar pct={pct} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 5, fontSize: 11, color: colors.textMuted }}>
+                      <span title={c.profile_name ? `profile: ${c.profile_name}` : undefined} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
+                        {c.from_name || c.profile_name || '—'}
+                      </span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        <strong style={{ color: colors.indigo200 }}>{c.sent_count.toLocaleString()}</strong> / {c.total_recipients.toLocaleString()} ({(pct * 100).toFixed(0)}%)
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+
+        {/* Platform Sending Cap / throttle (kept — existing system card) */}
+        <div className="system-card sending ig-card-hover ig-scan-line">
+          <div className="system-header">
+            <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
+            <h3>Email Sending</h3>
+            <span className="status-badge active">Active</span>
+          </div>
+          {/* Daily Cap Gauge */}
+          <div className="daily-cap-section">
+            <div className="daily-cap-header">
+              <span className="daily-cap-title">Platform Sending Cap</span>
+              <span className={`daily-cap-pct ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}>
+                {(dashboard?.platform_daily_utilization || 0).toFixed(1)}% used
+              </span>
+            </div>
+            <div className="daily-cap-bar">
+              <div
+                className={`daily-cap-fill ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}
+                style={{ width: `${Math.min(dashboard?.platform_daily_utilization || 0, 100)}%` }}
+              />
+            </div>
+            <div className="daily-cap-details">
+              <span className="daily-cap-used">{(dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent today (platform)</span>
+              <span className="daily-cap-total">{(dashboard?.platform_daily_capacity || 0).toLocaleString()} platform cap</span>
+            </div>
+            <div className="daily-cap-details" style={{ fontSize: '0.78em', opacity: 0.75 }}>
+              <span>Your org: {(dashboard?.org_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent</span>
+              <span>v{PAGE_VERSION_DASHBOARD}</span>
+            </div>
+            <div className="daily-cap-remaining">
+              <strong>{(dashboard?.daily_remaining || 0).toLocaleString()}</strong> emails remaining today
+            </div>
+          </div>
+          <div className="system-stats">
+            <div className="stat">
+              <span className="stat-value">{throttle?.minute_used || 0}/{throttle?.minute_limit || 1000}</span>
+              <span className="stat-label">This Minute</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{throttle?.hour_used || 0}/{throttle?.hour_limit || 50000}</span>
+              <span className="stat-label">This Hour</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Row 3 · Deferring ISPs · Trending Offers · Click Funnels ──────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 18, alignItems: 'start' }}>
+        {/* Deferring ISPs + reason codes (last 24h, live 45s) */}
+        <Panel accent={colors.warning}>
+          <SectionHeader
+            title="Deferring ISPs · 24h"
+            icon={faTriangleExclamation}
+            right={<span style={{ fontSize: 11, color: colors.textMuted }}>PMTA · live 45s</span>}
+          />
+          {deferringErr ? (
+            <SectionError label="Deferring ISPs" error={deferringErr} />
+          ) : deferring == null ? (
+            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading deferrals…
+            </div>
+          ) : deferring.length === 0 ? (
+            <EmptyState icon={faServer} title="No deferrals in the last 24h" hint="ISPs deferring PMTA mail (with DSN reason codes) appear here." />
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={tableStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>ISP</th>
+                    <th style={numTh}>Deferred</th>
+                    <th style={thStyle}>Top reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deferring.slice(0, 8).map((d) => {
+                    const top = d.reasons && d.reasons[0];
+                    return (
+                      <tr key={d.isp}>
+                        <td style={tdStyle}>{d.isp}</td>
+                        <td style={{ ...numTd, color: deferSeverity(d.deferred), fontWeight: 700 }}>{d.deferred.toLocaleString()}</td>
+                        <td style={tdStyle} title={top?.sample || 'no DSN sample'}>
+                          {top ? `${top.code} (${top.count.toLocaleString()})` : '—'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Panel>
+
+        {/* Trending offers — 24h conversions (sparse by design) */}
+        <Panel accent={colors.success}>
+          <SectionHeader
+            title="Trending Offers · 24h"
+            icon={faFire}
+            right={trending ? (
+              <span style={{ fontSize: 11, color: colors.textMuted }}>
+                {trending.total.toLocaleString()} conversions
+              </span>
+            ) : undefined}
+          />
+          {trendingErr ? (
+            <SectionError label="Trending offers" error={trendingErr} />
+          ) : trending == null ? (
+            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading conversions…
+            </div>
+          ) : trending.rows.length === 0 ? (
+            <EmptyState icon={faFire} title="No conversions in last 24h" hint="Conversions are sparse — only CPA/CPL offers write a conversion ledger row." />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {trending.rows.map((o, i) => (
+                <div key={o.offer_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '7px 0', borderTop: `1px solid ${colors.divider}` }}>
+                  <span style={{ fontSize: 13, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '72%' }} title={o.name || o.offer_id}>
+                    <span style={{ color: colors.textFaint, marginRight: 6 }}>{i + 1}.</span>{o.name || o.offer_id}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: colors.successText, fontVariantNumeric: 'tabular-nums' }}>{o.conversions.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        {/* Click funnels — LIVE click-drip lanes */}
+        <Panel accent={colors.indigo500}>
+          <SectionHeader
+            title="Click Funnels"
+            icon={faRoute}
+            right={funnels ? (
+              <span style={{ fontSize: 11, color: colors.textMuted }}>
+                {funnels.total_active_lanes.toLocaleString()} active lanes · {funnels.total_enrolled.toLocaleString()} enrolled
+              </span>
+            ) : undefined}
+          />
+          {funnelsErr ? (
+            <SectionError label="Click funnels" error={funnelsErr} />
+          ) : funnels == null ? (
+            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading lanes…
+            </div>
+          ) : funnels.lanes.length === 0 ? (
+            <EmptyState icon={faRoute} title="No click-drip lanes" hint="Live click-drip offer lanes and their enrollment appear here." />
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: 24, marginBottom: 8 }}>
+                <Stat label="Active lanes" value={funnels.total_active_lanes.toLocaleString()} color={colors.indigo200} title="Lanes with enabled=true in mailing_offer_journey_map" />
+                <Stat label="Enrolled" value={funnels.total_enrolled.toLocaleString()} color={colors.text} title="Sum of currently-active enrollments across all lanes" />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {[...funnels.lanes].sort((a, b) => b.active_enrolled - a.active_enrolled).slice(0, 5).map((l) => (
+                  <div key={l.offer_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '6px 0', borderTop: `1px solid ${colors.divider}` }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                      <span style={{ fontSize: 13, color: colors.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 }} title={l.name || `offer ${l.offer_id}`}>
+                        {l.name || `offer ${l.offer_id}`}
+                      </span>
+                      {!l.enabled && <Pill color={colors.idle} style={{ padding: '0 6px', fontSize: 9 }}>off</Pill>}
+                    </span>
+                    <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                      <strong style={{ color: colors.indigo200 }}>{l.active_enrolled.toLocaleString()}</strong> active
+                      <span title="lifetime (all-time), not windowed"> · {l.completed_or_converted.toLocaleString()} done*</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}>* completed/converted is lifetime (all-time), not last-24h.</div>
+            </>
+          )}
+        </Panel>
+      </div>
+
+      {/* ── Row 4 · Audience Growth + Recent Campaigns ───────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(0, 1.4fr)', gap: 14, marginBottom: 18, alignItems: 'start' }}>
         <Panel accent={growth && growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
           <SectionHeader title="Audience Growth · 7d" icon={faSeedling} />
           {growth ? (
@@ -868,7 +1094,7 @@ const EnhancedDashboard: React.FC = () => {
                 />
               </div>
               <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
-                Activating vs losing across the trailing 7 days.
+                Activating vs losing across the trailing 7 days (analytics lake).
               </div>
             </>
           ) : (
@@ -877,82 +1103,95 @@ const EnhancedDashboard: React.FC = () => {
         </Panel>
 
         <Panel accent={colors.indigo500}>
-          <SectionHeader
-            title="Click Funnels"
-            icon={faChartPie}
-            right={funnels ? (
-              <span style={{ fontSize: 11, color: colors.textMuted }}>
-                {funnels.total_active_enrollments.toLocaleString()} active · {funnels.enrollments_today.toLocaleString()} joined today
-              </span>
-            ) : undefined}
-          />
-          {funnels && funnels.top_journeys.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {funnels.top_journeys.map((f) => (
-                <div key={f.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderTop: `1px solid ${colors.divider}` }}>
-                  <span style={{ fontSize: 13, color: colors.text, fontWeight: 600 }}>{f.name}</span>
-                  <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
-                    <strong style={{ color: colors.indigo200 }}>{f.active_enrolled.toLocaleString()}</strong> members
-                    {f.converted > 0 ? <span style={{ color: colors.successText }}> · {f.converted.toLocaleString()} converted</span> : null}
-                  </span>
-                </div>
-              ))}
+          <SectionHeader title="Recent Campaigns" icon={faListUl} />
+          {Array.isArray(dashboard?.recent_campaigns) && dashboard.recent_campaigns.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={tableStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Campaign</th>
+                    <th style={thStyle}>Status</th>
+                    <th style={numTh}>Sent</th>
+                    <th style={numTh}>Opens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboard.recent_campaigns.map((c: any, i: number) => (
+                    <tr key={c.id || i}>
+                      <td style={{ ...tdStyle, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.name}>{c.name}</td>
+                      <td style={tdStyle}>
+                        <Pill color={stateColor(c.status || '')} style={{ padding: '1px 8px', fontSize: 10 }}>{c.status || 'unknown'}</Pill>
+                      </td>
+                      <td style={numTd}>{Number(c.sent_count || 0).toLocaleString()}</td>
+                      <td style={numTd}>{Number(c.open_count || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
-            <EmptyState icon={faChartPie} title="No active funnels" hint="Audience members in each click funnel will appear here once journeys are active." />
+            <EmptyState icon={faListUl} title="No campaigns yet" hint="Recently created campaigns and their send/open counts appear here." />
           )}
         </Panel>
       </div>
 
-      {/* Quick Actions - disabled
-      <div className="quick-actions">
-        <h3><FontAwesomeIcon icon={faBolt} /> Quick Actions</h3>
-        <div className="actions-grid">
-          <button className="action-btn primary" onClick={() => window.location.hash = '#send'}>
-            <span><FontAwesomeIcon icon={faPaperPlane} /></span>
-            <div>
-              <strong>Send Test Email</strong>
-              <small>Verify delivery is working</small>
-            </div>
-          </button>
-          <button className="action-btn" onClick={() => window.location.hash = '#campaigns'}>
-            <span><FontAwesomeIcon icon={faEnvelope} /></span>
-            <div>
-              <strong>New Campaign</strong>
-              <small>Create a broadcast email</small>
-            </div>
-          </button>
-          <button className="action-btn" onClick={() => window.location.hash = '#import'}>
-            <span><FontAwesomeIcon icon={faFileImport} /></span>
-            <div>
-              <strong>Import Subscribers</strong>
-              <small>Upload a CSV file</small>
-            </div>
-          </button>
-          <button className="action-btn" onClick={() => window.location.hash = '#automations'}>
-            <span><FontAwesomeIcon icon={faBolt} /></span>
-            <div>
-              <strong>Create Automation</strong>
-              <small>Set up a drip campaign</small>
-            </div>
-          </button>
-        </div>
-      </div>
-      */}
+      {/* ── System Health (kept working pieces) ──────────────────────────── */}
+      <div className="system-overview ig-stagger">
+        <WorkerHealthWidget />
 
-      {/* Recent Activity */}
-      <div className="recent-activity">
-        <h3><FontAwesomeIcon icon={faListUl} /> Recent Campaigns</h3>
-        <div className="activity-list">
-          {dashboard?.recent_campaigns?.map((c: any, i: number) => (
-            <div key={i} className="activity-item">
-              <span className="activity-name">{c.name}</span>
-              <span className="activity-status">{c.status}</span>
-              <span className="activity-stats">
-                {c.sent_count?.toLocaleString()} sent • {c.open_count?.toLocaleString()} opens
-              </span>
+        <div className="system-card intelligence ig-card-hover ig-scan-line">
+          <div className="system-header">
+            <span className="system-icon"><FontAwesomeIcon icon={faBrain} /></span>
+            <h3>Inbox Intelligence</h3>
+            <span className="status-badge active">Learning</span>
+          </div>
+          <div className="system-stats">
+            <div className="stat">
+              <span className="stat-value">{(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()}</span>
+              <span className="stat-label">Built Today</span>
             </div>
-          )) || <p className="no-data">No campaigns yet</p>}
+            <div className="stat">
+              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.platform_intelligence?.inbox_profiles || 0).toLocaleString()}</span>
+              <span className="stat-label">Total Profiles</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="system-card suppression ig-card-hover ig-scan-line">
+          <div className="system-header">
+            <span className="system-icon"><FontAwesomeIcon icon={faBan} /></span>
+            <h3>Deliverability Protection</h3>
+            <span className="status-badge active">Protected</span>
+          </div>
+          <div className="system-description">
+            <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: 0 }}>
+              {(dashboard?.global_suppressions_total || 0).toLocaleString()} total blocked addresses
+            </p>
+          </div>
+          <div className="system-stats">
+            <div className="stat">
+              <span className="stat-value">{(dashboard?.suppressions_today || 0).toLocaleString()}</span>
+              <span className="stat-label">Added Today</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value" style={{ fontSize: '1.2rem', opacity: 0.7 }}>{(dashboard?.suppressions_yesterday || 0).toLocaleString()}</span>
+              <span className="stat-label">Added Yesterday</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="system-card automation ig-card-hover ig-scan-line">
+          <div className="system-header">
+            <span className="system-icon"><FontAwesomeIcon icon={faBolt} /></span>
+            <h3>Automation Engine</h3>
+            <span className="status-badge active">Running</span>
+          </div>
+          <div className="system-stats">
+            <div className="stat">
+              <span className="stat-value">{dashboard?.active_automations || 0}</span>
+              <span className="stat-label">Active Workflows</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
