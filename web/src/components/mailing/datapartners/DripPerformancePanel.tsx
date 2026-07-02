@@ -31,6 +31,25 @@ const VERTICAL_LABEL: Record<string, string> = {
   metal_roofing_signal: 'Metal Roofing (signal)',
 };
 
+// labelForVertical resolves a vertical slug to a display label. Mapped slugs win;
+// unmapped slugs (e.g. the "<vertical>:governed" governed-pass pointer, which has
+// no map entry and would otherwise render raw and unbreakable) are humanized:
+// a trailing ":governed" becomes a " (governed)" suffix, and remaining
+// underscores/colons become spaces with each word title-cased —
+// so `direct_offer:governed` → "Direct Offer (governed)".
+const labelForVertical = (slug: string): string => {
+  const mapped = VERTICAL_LABEL[slug];
+  if (mapped) return mapped;
+  let rest = slug;
+  let governed = false;
+  if (rest.endsWith(':governed')) { rest = rest.slice(0, -':governed'.length); governed = true; }
+  const pretty = rest
+    .replace(/[_:]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+  return governed ? `${pretty} (governed)` : pretty;
+};
+
 const FAST_POLL_MS = 10_000;
 const SLOW_POLL_MS = 30_000;
 const WINDOW_HOURS = 48;
@@ -252,7 +271,10 @@ export const DripPerformancePanel: React.FC = () => {
       {totals && <OverallStrip totals={totals} overall={overall} />}
 
       {/* ───── Per-vertical lifecycle funnels ───── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 18 }}>
+      {/* Deterministic 3-per-row grid (5 cards → 3 + 2). minmax(0,1fr), not 1fr,
+          so tracks can shrink below content min-width and card overflow can't
+          distort the row. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14, marginBottom: 18 }}>
         {funnel.map(v => <FunnelCard key={v.vertical} v={v} isps={funnelISP.filter(i => i.vertical === v.vertical)} />)}
         {funnel.length === 0 && (
           <div style={{ color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>No queue data yet.</div>
@@ -290,7 +312,7 @@ export const DripPerformancePanel: React.FC = () => {
                 <tr onClick={() => toggleGroup(key)} style={{ cursor: 'pointer', background: isOpen ? 'rgba(99,102,241,0.10)' : undefined }}>
                   <td style={td}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ color: '#6366f1', fontSize: 12 }} /></td>
                   <td style={td}>
-                    <div>{VERTICAL_LABEL[g.vertical] ?? g.vertical}</div>
+                    <div>{labelForVertical(g.vertical)}</div>
                     <div style={{ fontSize: 11, color: '#a5b4fc', fontFamily: 'ui-monospace, monospace' }}>{g.brand.toUpperCase()}</div>
                   </td>
                   <td style={tdNum}>
@@ -345,7 +367,7 @@ export const DripPerformancePanel: React.FC = () => {
                   <div style={{ fontWeight: 600 }}>{g.partner_name}</div>
                   <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>{g.dataset_name}</div>
                 </td>
-                <td style={td}>{VERTICAL_LABEL[g.vertical] ?? g.vertical}</td>
+                <td style={td}>{labelForVertical(g.vertical)}</td>
                 <td style={tdNum}>{g.posts.toLocaleString()}</td>
                 <td style={tdNum}><b style={{ color: '#10b981' }}>{g.records.toLocaleString()}</b></td>
                 <td style={tdNum}>
@@ -382,7 +404,7 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
   return (
     <div style={{ background: 'rgba(0,0,0,0.22)', borderTop: '1px solid rgba(99,102,241,0.25)', borderBottom: '1px solid rgba(99,102,241,0.25)', padding: '14px 16px' }}>
       <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginBottom: 6 }}>
-        Hourly delivery & performance — {VERTICAL_LABEL[group.vertical] ?? group.vertical} / {group.brand.toUpperCase()} (delivery activity as received)
+        Hourly delivery & performance — {labelForVertical(group.vertical)} / {group.brand.toUpperCase()} (delivery activity as received)
       </div>
       {chartData.length > 0 ? (
         <ResponsiveContainer width="100%" height={210}>
@@ -547,13 +569,13 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
   const allISPs = [...isps].sort((a, b) => (b.sent_24h - a.sent_24h) || (b.ready - a.ready));
   return (
     <div style={card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-        <h4 style={{ margin: 0, color: '#dbeafe', fontSize: 14 }}>{VERTICAL_LABEL[v.vertical] ?? v.vertical}</h4>
-        <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600 }}>{v.sent_24h.toLocaleString()} sent / 24h</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 10, minWidth: 0 }}>
+        <h4 style={{ margin: 0, color: '#dbeafe', fontSize: 14, minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{labelForVertical(v.vertical)}</h4>
+        <span style={{ fontSize: 12, color: '#10b981', fontWeight: 600, whiteSpace: 'nowrap' }}>{v.sent_24h.toLocaleString()} sent / 24h</span>
       </div>
 
       {/* Lifecycle: pending → ready → mailed */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 6, marginBottom: 10 }}>
         <MiniStat label="Pending verification" value={v.pending_eo} accent="#a78bfa" />
         <MiniStat
           label="Verification credits"
@@ -663,7 +685,7 @@ const TouchBar: React.FC<{ t1: number; t2: number; t3: number; t4: number }> = (
 };
 
 const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string; sub?: string }> = ({ label, value, accent, title, sub }) => (
-  <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center' }}>
+  <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center', minWidth: 0, overflowWrap: 'anywhere' }}>
     <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe' }}>{value.toLocaleString()}</div>
     {sub && <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)', marginTop: 1 }}>{sub}</div>}
@@ -706,7 +728,7 @@ function relativeTime(iso: string): string {
 const card: React.CSSProperties = {
   background: 'linear-gradient(135deg, rgba(15,30,60,0.65) 0%, rgba(20,40,80,0.5) 100%)',
   border: '1px solid rgba(120,150,200,0.18)',
-  borderRadius: 10, padding: 14,
+  borderRadius: 10, padding: 14, minWidth: 0,
 };
 const overallBox: React.CSSProperties = {
   background: 'linear-gradient(135deg, rgba(30,40,90,0.55) 0%, rgba(50,30,90,0.45) 100%)',

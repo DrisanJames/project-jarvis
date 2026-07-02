@@ -27,8 +27,8 @@ export const DripStateCard: React.FC<Props> = ({
 
   return (
     <div style={card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
-        <h3 style={{ margin: 0, color: '#dbeafe', fontSize: 15 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8, minWidth: 0 }}>
+        <h3 style={{ margin: 0, color: '#dbeafe', fontSize: 15, minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
           <FontAwesomeIcon icon={faRoute} style={{ marginRight: 6, color: '#6366f1' }} />
           {verticalLabel}
         </h3>
@@ -67,7 +67,7 @@ const Stat: React.FC<{ label: string; value: string; accent?: string }> = ({ lab
 const card: React.CSSProperties = {
   background: 'linear-gradient(135deg, rgba(15,30,60,0.65) 0%, rgba(20,40,80,0.5) 100%)',
   border: '1px solid rgba(120,150,200,0.18)',
-  borderRadius: 10, padding: 16,
+  borderRadius: 10, padding: 16, minWidth: 0,
 };
 const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 };
 const divider: React.CSSProperties = { height: 1, background: 'rgba(120,150,200,0.12)', margin: '12px 0' };
@@ -75,4 +75,5 @@ const badge: React.CSSProperties = {
   fontSize: 10, padding: '2px 8px', borderRadius: 12,
   background: 'rgba(99,102,241,0.18)', color: '#a5b4fc',
   fontFamily: 'ui-monospace, monospace',
+  whiteSpace: 'nowrap', flexShrink: 0,
 };

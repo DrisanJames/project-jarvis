@@ -15,13 +15,34 @@ import { AuditLogPanel } from './AuditLogPanel';
 import { PreviousActivationsPanel } from './PreviousActivationsPanel';
 import { apiFetch } from '../shared/apiFetch';
 
-const PAGE_VERSION = '1.2';
+// 1.3: deterministic 3-per-row card grids (minmax(0,1fr)), governed-slug label
+// humanizer, and overflow-safe card headers/mini-stats (no label/cell spillover).
+const PAGE_VERSION = '1.3';
 
 const VERTICAL_LABEL: Record<string, string> = {
   refi_heloc: 'Refi / HELOC',
   personal_loans: 'Personal Loans',
   tax_relief: 'Tax Relief',
   remodel: 'Remodel',
+};
+
+// labelForVertical resolves a vertical slug to a display label. Mapped slugs win;
+// unmapped slugs (e.g. the "<vertical>:governed" governed-pass pointer, which has
+// no map entry and would otherwise render raw and unbreakable) are humanized:
+// a trailing ":governed" becomes a " (governed)" suffix, and remaining
+// underscores/colons become spaces with each word title-cased —
+// so `direct_offer:governed` → "Direct Offer (governed)".
+const labelForVertical = (slug: string): string => {
+  const mapped = VERTICAL_LABEL[slug];
+  if (mapped) return mapped;
+  let rest = slug;
+  let governed = false;
+  if (rest.endsWith(':governed')) { rest = rest.slice(0, -':governed'.length); governed = true; }
+  const pretty = rest
+    .replace(/[_:]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+  return governed ? `${pretty} (governed)` : pretty;
 };
 
 interface VerticalState {
@@ -190,12 +211,14 @@ export const PartnerIngestPortal: React.FC = () => {
 
       {activeTab === 'overview' && dashboard && (
         <div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 24 }}>
+          {/* Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
+              below content min-width so a long label can't distort the row. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16, marginBottom: 24 }}>
             {dashboard.verticals.map(v => (
               <DripStateCard
                 key={v.vertical}
                 vertical={v.vertical}
-                verticalLabel={VERTICAL_LABEL[v.vertical] ?? v.vertical}
+                verticalLabel={labelForVertical(v.vertical)}
                 readyQueue={v.ready_queue}
                 pendingEO={v.pending_eo}
                 mailedTotal={v.mailed_total}
@@ -239,7 +262,7 @@ export const PartnerIngestPortal: React.FC = () => {
                     <div style={{ fontWeight: 600 }}>{d.partner_name}</div>
                     <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>{d.name}</div>
                   </td>
-                  <td style={td}>{VERTICAL_LABEL[d.vertical] ?? d.vertical}</td>
+                  <td style={td}>{labelForVertical(d.vertical)}</td>
                   <td style={tdNum}>{d.flush_window_hours}h</td>
                   <td style={tdNum}>{d.ready_queue_count.toLocaleString()}</td>
                   <td style={tdNum}>{d.mailed_count.toLocaleString()}</td>
@@ -290,7 +313,7 @@ export const PartnerIngestPortal: React.FC = () => {
               style={selectInput}
             >
               {datasets.map(d => (
-                <option key={d.id} value={d.id}>{d.partner_name} / {d.name} ({VERTICAL_LABEL[d.vertical] ?? d.vertical})</option>
+                <option key={d.id} value={d.id}>{d.partner_name} / {d.name} ({labelForVertical(d.vertical)})</option>
               ))}
             </select>
           </div>
@@ -324,7 +347,7 @@ export const PartnerIngestPortal: React.FC = () => {
                     <tr key={b.id} style={tr}>
                       <td style={tdMono}>{b.id.slice(0, 8)}…</td>
                       <td style={td}>{b.partner_name} / {b.dataset_name}</td>
-                      <td style={td}>{VERTICAL_LABEL[b.vertical] ?? b.vertical}</td>
+                      <td style={td}>{labelForVertical(b.vertical)}</td>
                       <td style={td}><StatusBadge status={b.status} emergencyStopped={b.emergency_stopped} /></td>
                       <td style={tdNum}>{b.record_count.toLocaleString()}</td>
                       <td style={td}>{new Date(b.received_at).toLocaleString()}</td>
@@ -412,7 +435,7 @@ const CreativesPanel: React.FC = () => {
       </div>
       {Object.entries(grid).map(([vertical, rows]) => (
         <div key={vertical} style={{ marginBottom: 24 }}>
-          <h3 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>{VERTICAL_LABEL[vertical] ?? vertical}</h3>
+          <h3 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>{labelForVertical(vertical)}</h3>
           <table style={tableStyle}>
             <thead>
               <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
@@ -498,7 +521,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
   return (
     <div style={modalBackdrop}>
       <div style={modalBody}>
-        <h3 style={{ marginTop: 0, color: '#dbeafe' }}>Edit creative — {VERTICAL_LABEL[vertical] ?? vertical} / {brand.toUpperCase()}</h3>
+        <h3 style={{ marginTop: 0, color: '#dbeafe' }}>Edit creative — {labelForVertical(vertical)} / {brand.toUpperCase()}</h3>
         <label style={fieldLabel}>Creative filename (must exist in the creative library)</label>
         <input value={filename} onChange={e => setFilename(e.target.value)} style={input} />
         <label style={fieldLabel}>Subject line</label>
