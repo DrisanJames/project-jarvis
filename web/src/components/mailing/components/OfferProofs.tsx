@@ -87,6 +87,12 @@ const chip = (active: boolean): React.CSSProperties => ({
   borderRadius: 999, color: active ? '#e0e7ff' : '#94a3b8',
   padding: '4px 11px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
 });
+// Small text-link control for the per-category Select all / Clear actions.
+const bulkLink: React.CSSProperties = {
+  background: 'none', border: 'none', color: '#818cf8', fontSize: 11,
+  fontWeight: 600, cursor: 'pointer', padding: 0, textTransform: 'uppercase',
+  letterSpacing: 0.4,
+};
 
 export const OfferProofs: React.FC = () => {
   const { addToast } = useToast();
@@ -361,6 +367,10 @@ export const OfferProofs: React.FC = () => {
     const has = selected.approved_isps.includes(isp);
     updateSelected({ approved_isps: has ? selected.approved_isps.filter((x) => x !== isp) : [...selected.approved_isps, isp] });
   };
+  // Per-category bulk toggles — approve every domain / every ISP at once
+  // instead of clicking each chip (operator request 2026-07-02).
+  const setAllDomains = (on: boolean) => selected && updateSelected({ approved_domains: on ? domains.map((d) => d.domain) : [] });
+  const setAllISPs = (on: boolean) => selected && updateSelected({ approved_isps: on ? [...isps] : [] });
 
   return (
     <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0, width: '100%' }}>
@@ -567,14 +577,28 @@ export const OfferProofs: React.FC = () => {
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
                 <FontAwesomeIcon icon={faCircleCheck} style={{ color: '#22c55e' }} /> Approve — where this proof may mail
               </div>
-              <label style={label}>Approved sending domains</label>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
+                <label style={{ ...label, marginBottom: 0 }}>Approved sending domains</label>
+                <span style={{ fontSize: 11, color: '#64748b' }}>{selected.approved_domains.length}/{domains.length}</span>
+                <button style={bulkLink} disabled={domains.length === 0 || selected.approved_domains.length === domains.length}
+                  onClick={() => setAllDomains(true)}>Select all</button>
+                <button style={bulkLink} disabled={selected.approved_domains.length === 0}
+                  onClick={() => setAllDomains(false)}>Clear</button>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
                 {domains.map((d) => (
                   <button key={d.domain} style={chip(selected.approved_domains.includes(d.domain))}
                     onClick={() => toggleApprovedDomain(d.domain)}>{d.domain}</button>
                 ))}
               </div>
-              <label style={label}>Approved ISPs</label>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
+                <label style={{ ...label, marginBottom: 0 }}>Approved ISPs</label>
+                <span style={{ fontSize: 11, color: '#64748b' }}>{selected.approved_isps.length}/{isps.length}</span>
+                <button style={bulkLink} disabled={isps.length === 0 || selected.approved_isps.length === isps.length}
+                  onClick={() => setAllISPs(true)}>Select all</button>
+                <button style={bulkLink} disabled={selected.approved_isps.length === 0}
+                  onClick={() => setAllISPs(false)}>Clear</button>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
                 {isps.map((isp) => (
                   <button key={isp} style={chip(selected.approved_isps.includes(isp))}
