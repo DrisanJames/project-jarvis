@@ -26,6 +26,10 @@ import CampaignExpand from './CampaignExpand';
 const PAGE_SIZE = 50;
 
 type SortKey =
+  // 'live' is the DEFAULT status-priority ordering (a "what's happening now"
+  // snapshot); it is not a clickable column — clicking any header switches to
+  // that column's sort and never comes back to 'live' until the view resets.
+  | 'live'
   | 'name' | 'offer' | 'domain' | 'status' | 'first_wave' | 'planned'
   | 'attempted' | 'delivered' | 'opens' | 'clicks' | 'unsubs' | 'hard' | 'soft' | 'complaints';
 
@@ -46,6 +50,24 @@ const STATUS_COLORS: Record<string, string> = {
   paused: '#f59e0b', sent: '#22c55e', completed: '#22c55e',
   completed_with_errors: '#f59e0b', cancelled: '#64748b', failed: '#ef4444',
 };
+
+// Status priority for the DEFAULT "live" ordering — lower rank = higher in the
+// list, so the operator sees what's happening NOW first: in-flight sends, then
+// upcoming scheduled, then finished, then idle, then dead. Unknown/unexpected
+// statuses fall into the idle tier (above terminal) so they stay visible.
+const STATUS_RANK: Record<string, number> = {
+  // in-flight (actively sending / spinning up)
+  sending: 0, preparing: 0, finalizing_audience: 0,
+  // upcoming
+  scheduled: 1,
+  // finished
+  sent: 2, completed: 2, completed_with_errors: 2,
+  // idle
+  draft: 3, paused: 3,
+  // terminal / dead
+  cancelled: 4, failed: 4, deleted: 4,
+};
+const statusRank = (status: string): number => STATUS_RANK[status] ?? 3;
 
 const inputStyle: React.CSSProperties = {
   background: 'rgba(15,22,41,0.9)', border: '1px solid rgba(99,102,241,0.2)',
@@ -106,7 +128,7 @@ export const CampaignCenterList: React.FC<{
   const [offerText, setOfferText] = useState('');
   const [showDrips, setShowDrips] = useState(false); // default OFF per spec
   const [groupByOffer, setGroupByOffer] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>('first_wave');
+  const [sortKey, setSortKey] = useState<SortKey>('live'); // status-priority default
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -273,6 +295,27 @@ export const CampaignCenterList: React.FC<{
 
   // ── sorting ────────────────────────────────────────────────────────────────
   const sorted = useMemo(() => {
+    const firstWaveMs = (r: DisplayRow): number => (r.firstWaveAt ? new Date(r.firstWaveAt).getTime() : 0);
+
+    // DEFAULT status-priority ("live") ordering — a "what's happening now"
+    // snapshot: in-flight sends first, then scheduled, then finished/idle/dead
+    // (see STATUS_RANK). Within a rank, scheduled shows the SOONEST upcoming
+    // send first (firstWaveAt ASC) while every other rank shows the MOST
+    // RECENTLY started first (firstWaveAt DESC). The stable row-key tiebreaker
+    // is kept last so equal rows don't reshuffle across the 15s refresh polls.
+    if (sortKey === 'live') {
+      return [...domainFiltered].sort((a, b) => {
+        const ra = statusRank(a.identity.status);
+        const rb = statusRank(b.identity.status);
+        if (ra !== rb) return ra - rb;
+        const ta = firstWaveMs(a); const tb = firstWaveMs(b);
+        if (ta !== tb) return ra === 1 ? ta - tb : tb - ta; // scheduled=soonest-first, else most-recent-first
+        if (a.key < b.key) return -1;
+        if (a.key > b.key) return 1;
+        return 0;
+      });
+    }
+
     const val = (r: DisplayRow): string | number => {
       switch (sortKey) {
         case 'name': return r.identity.name.toLowerCase();

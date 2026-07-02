@@ -13,7 +13,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../../contexts/AuthContext';
 import { SideShelf } from './shared/SideShelf';
-import { colors, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
+import { colors, alpha, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
 import { SectionHeader, SectionError, EmptyState, Pill } from '../shared/ui';
 
 const DEFAULT_ORG = '00000000-0000-0000-0000-000000000001';
@@ -48,6 +48,24 @@ const ISP_ORDER: string[] = ['microsoft', 'gmail', 'apple', 'yahoo', 'comcast', 
 const ISP_LABEL: Record<string, string> = {
   microsoft: 'Microsoft', gmail: 'Gmail', apple: 'Apple', yahoo: 'Yahoo', comcast: 'Comcast',
   charter: 'Charter', att: 'AT&T', aol: 'AOL', cox: 'Cox', sbcglobal: 'SBCGlobal', verizon: 'Verizon', other: 'Other',
+};
+
+// Volume categories for the sending-domain columns. Group the brand columns into volume
+// bands so the whole board reads at a glance (operator request 2026-07-01: "break the
+// columns into volume categories to make the screen easier to read"). Thresholds (operator
+// rule): MATURE  volume > 50,000 · WARMING  volume 10,000–50,000 (>=10000 and <=50000) ·
+// NEW  volume < 10,000. A zero/low-volume domain lands in New.
+const MATURE_MIN = 50000;   // volume STRICTLY GREATER than this => Mature
+const WARMING_MIN = 10000;  // volume in [WARMING_MIN, MATURE_MIN] => Warming; below => New
+type VolCategory = 'mature' | 'warming' | 'new';
+const categoryOf = (vol: number): VolCategory =>
+  (vol || 0) > MATURE_MIN ? 'mature' : (vol || 0) >= WARMING_MIN ? 'warming' : 'new';
+const CATEGORY_RANK: Record<VolCategory, number> = { mature: 0, warming: 1, new: 2 }; // Mature→Warming→New
+// Semantic feel (subtle): mature = healthy/indigo, warming = amber, new = neutral/slate.
+const CATEGORY_META: Record<VolCategory, { label: string; color: string; bg: string; border: string }> = {
+  mature:  { label: 'Mature',  color: colors.indigo300,  bg: alpha(colors.indigo500, '14'), border: alpha(colors.indigo500, '44') },
+  warming: { label: 'Warming', color: colors.warningText, bg: alpha(colors.warning, '14'),  border: alpha(colors.warning, '44') },
+  new:     { label: 'New',     color: colors.textMuted,   bg: 'rgba(148,163,184,0.08)',      border: 'rgba(148,163,184,0.32)' },
 };
 
 const num = (n: number): string => (n || 0).toLocaleString();
@@ -233,7 +251,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
   // Build the (domain × wave) matrix. Brand IDENTITY = the authoritative from_email DOMAIN
   // (so two domains can never collapse into one column, and a stray dash in a label can't
   // mis-bucket). Cancelled campaigns are excluded from the plan view.
-  const { brands, waves, matrix, totalsByBrand } = useMemo(() => {
+  const { brands, waves, matrix, totalsByBrand, categoryGroups } = useMemo(() => {
     const active = rows.filter(r => r.status !== 'cancelled');
     const mtx: Record<string, Record<string, Cell>> = {};   // wave -> domain -> cell
     const labelOfDomain = new Map<string, string>();        // domain -> display label
@@ -255,15 +273,40 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
       }
       totals[domain] = (totals[domain] || 0) + (r.total_recipients || 0);
     }
-    const domainList = [...labelOfDomain.keys()].sort((a, b) => (totals[b] || 0) - (totals[a] || 0)); // biggest first
+    // Order columns by VOLUME CATEGORY first (Mature → Warming → New), then by volume
+    // descending WITHIN each band — so the operator reads left-to-right in maturity bands.
+    const domainList = [...labelOfDomain.keys()].sort((a, b) => {
+      const ca = categoryOf(totals[a] || 0), cb = categoryOf(totals[b] || 0);
+      return CATEGORY_RANK[ca] - CATEGORY_RANK[cb] || (totals[b] || 0) - (totals[a] || 0);
+    });
     const waveList = [...waveSet].sort((a, b) => waveRank(a) - waveRank(b) || a.localeCompare(b));
+    const brandsOut = domainList.map(domain => ({
+      domain,
+      label: labelOfDomain.get(domain) ?? labelFromDomain(domain),
+      category: categoryOf(totals[domain] || 0),
+    }));
+    // Contiguous category runs (columns are already category-ordered) → band spans + counts.
+    const groups: { category: VolCategory; count: number }[] = [];
+    for (const b of brandsOut) {
+      const last = groups[groups.length - 1];
+      if (last && last.category === b.category) last.count += 1;
+      else groups.push({ category: b.category, count: 1 });
+    }
     return {
-      brands: domainList.map(domain => ({ domain, label: labelOfDomain.get(domain) ?? labelFromDomain(domain) })),
-      waves: waveList, matrix: mtx, totalsByBrand: totals,
+      brands: brandsOut,
+      waves: waveList, matrix: mtx, totalsByBrand: totals, categoryGroups: groups,
     };
   }, [rows]);
 
   const grandTotal = useMemo(() => Object.values(totalsByBrand).reduce((s, n) => s + n, 0), [totalsByBrand]);
+
+  // Column indices where a new volume-category band begins (for the left divider between bands).
+  const catStartIdx = useMemo(() => {
+    const set = new Set<number>();
+    let prev: VolCategory | null = null;
+    brands.forEach((b, i) => { if (b.category !== prev) { set.add(i); prev = b.category; } });
+    return set;
+  }, [brands]);
 
   if (loading) return <div style={msg}>Loading the plan for {date}…</div>;
   if (error) return <div style={{ ...msg, color: '#e94560' }}>Failed to load plan: {error}</div>;
@@ -281,10 +324,36 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
       <div style={{ overflowX: 'auto', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 8, background: 'rgba(13,21,38,0.45)' }}>
         <table style={{ borderCollapse: 'separate', borderSpacing: 0, minWidth: '100%' }}>
           <thead>
+            {/* Volume-category band row: one header spanning each contiguous group of brand
+                columns (Mature → Warming → New) with the count of domains in that band. */}
+            <tr>
+              <th style={{ ...thBase, ...stickyLeft, textAlign: 'left', borderBottom: 'none', padding: '5px 12px' }} aria-hidden />
+              {categoryGroups.map((g, gi) => {
+                const meta = CATEGORY_META[g.category];
+                return (
+                  <th
+                    key={`${g.category}-${gi}`}
+                    colSpan={g.count}
+                    style={{
+                      padding: '5px 12px', textAlign: 'left', whiteSpace: 'nowrap',
+                      background: meta.bg, color: meta.color,
+                      borderBottom: `1px solid ${meta.border}`,
+                      borderLeft: gi > 0 ? `2px solid ${meta.border}` : undefined,
+                      fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6,
+                    }}
+                  >
+                    {meta.label} · {g.count} {g.count === 1 ? 'domain' : 'domains'}
+                  </th>
+                );
+              })}
+            </tr>
             <tr>
               <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Send batch</th>
-              {brands.map(b => (
-                <th key={b.domain} style={thBase}>
+              {brands.map((b, i) => (
+                <th
+                  key={b.domain}
+                  style={{ ...thBase, ...(catStartIdx.has(i) && i > 0 ? { borderLeft: `2px solid ${CATEGORY_META[b.category].border}` } : {}) }}
+                >
                   <div style={{ fontWeight: 700, color: '#00e5ff', fontSize: 12 }}>{b.label}</div>
                   <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)' }}>{b.domain}</div>
                   <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.7)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
@@ -303,9 +372,11 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                     <div style={{ fontWeight: 700, fontSize: 12, color: 'rgba(220,235,250,0.92)' }}>{w}</div>
                     <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}>{mtTime(repTime)} MT</div>
                   </td>
-                  {brands.map(b => {
+                  {brands.map((b, i) => {
+                    // Left divider at the start of each volume-category band (mirrors the header).
+                    const catDivider = catStartIdx.has(i) && i > 0 ? { borderLeft: `2px solid ${CATEGORY_META[b.category].border}` } : {};
                     const cell = matrix[w]?.[b.domain];
-                    if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
+                    if (!cell) return <td key={b.domain} style={{ ...tdBase, ...catDivider, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
                     const isSel = selected?.wave === w && selected?.domain === b.domain;
                     const st = cellStatus(cell.statuses);
                     const clickable = cell.volume > 0;
@@ -318,7 +389,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                       </>
                     );
                     return (
-                      <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
+                      <td key={b.domain} style={{ ...tdBase, ...catDivider, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
                         {clickable ? (
                           <button
                             className="bwg-cell"

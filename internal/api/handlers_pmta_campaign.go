@@ -2049,6 +2049,11 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 		FROM mailing_campaigns
 		WHERE organization_id = $1
 		  AND status IN ('completed', 'sent', 'cancelled', 'completed_with_errors', 'sending', 'draft')
+		  -- BROADCAST campaigns only (operator 2026-07-02): the clone picker must
+		  -- not offer partner-drip / click-drip mini-campaigns (hundreds/day) —
+		  -- you clone an operator broadcast, never a drip wave.
+		  AND partner_drip_tag IS NULL
+		  AND COALESCE(campaign_type, '') <> 'click_drip'
 		ORDER BY COALESCE(completed_at, started_at, created_at) DESC
 		LIMIT 20
 	`, configSelect)
