@@ -70,7 +70,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip,
+  CartesianGrid, Tooltip, ReferenceLine,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
@@ -938,6 +938,17 @@ const TREND_SERIES: TrendSeriesDef[] = [
   { id: 'compPct', label: 'complaint %', kind: 'line', axis: 'right', color: COMPLAINT_ROSE },
 ];
 
+// Baseline thresholds drawn as dashed reference lines on the right (%) axis so
+// the operator reads each rate against its intervention line (operator 2026-07-02):
+//   - complaint threshold 0.3% — our hard ceiling for the complaint rate.
+//   - deferral (soft-bounce) baseline 10% — target ceiling for soft/deferral rate.
+// Each line only renders when its companion series is visible, keyed to the
+// series id so the gate is exact.
+const TREND_BASELINES: { seriesId: string; y: number; label: string; color: string }[] = [
+  { seriesId: 'compPct', y: 0.3, label: 'complaint threshold 0.3%', color: COMPLAINT_ROSE },
+  { seriesId: 'softPct', y: 10, label: 'deferral baseline 10%', color: SOFT_AMBER },
+];
+
 // Delivery-Queue gold-standard style: volume series render as smooth gradient
 // AREAS (matching OutboxDashboard's Throughput chart), rate series stay as
 // monotone lines on the right axis. One gradient <def> per volume-series color.
@@ -994,6 +1005,20 @@ const TrendChart: React.FC<{
       {TREND_SERIES.filter((s) => s.kind === 'line' && visible.has(s.id)).map((s) => (
         <Line key={s.id} yAxisId="right" dataKey={s.id} name={s.label} stroke={s.color}
           strokeWidth={2} dot={{ r: 2, fill: s.color, strokeWidth: 0 }} connectNulls type="monotone" />
+      ))}
+      {/* Dashed baseline/threshold lines — drawn last so they sit on top of the
+          rate lines; each only when its companion rate series is visible. */}
+      {TREND_BASELINES.filter((b) => visible.has(b.seriesId)).map((b) => (
+        <ReferenceLine
+          key={b.seriesId}
+          yAxisId="right"
+          y={b.y}
+          stroke={b.color}
+          strokeDasharray="5 4"
+          strokeOpacity={0.85}
+          ifOverflow="extendDomain"
+          label={{ value: b.label, position: 'insideTopRight', fill: b.color, fontSize: 10, fontWeight: 600 }}
+        />
       ))}
     </ComposedChart>
   </ResponsiveContainer>
