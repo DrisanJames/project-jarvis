@@ -85,6 +85,12 @@ type clickPostbackInput struct {
 	EverflowOfferID string
 	TransactionID   string
 	ClickURL        string
+	// Click-session facts from Everflow macros (optional): the CLICKER's
+	// IP and user agent. Carried into the tracking event so the human-
+	// verdict fn can separate real people from Azure/Fastly scanner clicks
+	// (~70% of raw Everflow clicks in the 2026-07-01 exports were scanners).
+	ClickIP string
+	ClickUA string
 
 	subscriberID uuid.UUID
 	campaignID   uuid.UUID
@@ -117,6 +123,18 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 	}
 
 	ctx := r.Context()
+
+	// CLOSED-LOOP ENGAGEMENT (2026-07-02): record the click as a real
+	// mailing_tracking_events row BEFORE any journey-eligibility gate.
+	// A money-CTA click is engagement regardless of whether the offer is
+	// CPC / unmapped / already-converted — without this insert the click
+	// exists only inside Everflow and the person never enters the engaged
+	// tier (the leak that hid 313 of 333 clickers on 2026-07-01, including
+	// four same-day buyers). Downstream is all existing machinery: the
+	// partner engagement marker flips engaged_at, dynamic segments pick the
+	// subscriber up on recalc, and follow-up touches stop. Best-effort:
+	// a failure here never blocks the 200 or the enrollment path.
+	h.recordClickEngagement(ctx, in)
 
 	// Conversion event on the click endpoint.
 	//
@@ -261,6 +279,99 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 // parseClickPostback extracts the click postback fields from query params,
 // falling back to a JSON body when sub1 is empty (matches the Everflow
 // conversion-postback pattern).
+// firstNonEmpty returns the first non-empty string.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// recordClickEngagement writes the postback click into mailing_tracking_events
+// so segments / engaged_at / rings see money-CTA clicks (direct affiliate links
+// bypass t.em tracking entirely). Two dedup layers keep one physical click =
+// one logical event:
+//   - transaction idempotency: the Everflow transaction_id is embedded in
+//     link_url; a repeat postback for the same transaction is dropped.
+//   - first-party correlation: when the clicked link WAS t.em-wrapped, our
+//     tracking service already logged it seconds earlier — any clicked event
+//     for the same (subscriber, campaign) within ±120s wins and the postback
+//     copy is dropped.
+//
+// The click IP/UA from the Everflow macros are stored verbatim so
+// ignite_event_verdict classifies scanners (Azure/Fastly) honestly — scanner
+// events are recorded but never counted human downstream.
+func (h *EverflowClickPostbackHandler) recordClickEngagement(ctx context.Context, in clickPostbackInput) {
+	marker := "everflow-postback:offer=" + in.EverflowOfferID
+	if in.TransactionID != "" {
+		marker += ":tx=" + in.TransactionID
+	}
+
+	// Transaction idempotency (Everflow retries on network flaps).
+	if in.TransactionID != "" {
+		var exists bool
+		if err := h.db.QueryRowContext(ctx,
+			`SELECT EXISTS(SELECT 1 FROM mailing_tracking_events
+			  WHERE link_url = $1 AND event_at > NOW() - INTERVAL '7 days')`, marker).Scan(&exists); err == nil && exists {
+			return
+		}
+	}
+
+	// First-party correlation: same physical click already captured by t.em.
+	var campaignArg interface{}
+	if in.campaignID != uuid.Nil {
+		campaignArg = in.campaignID
+	}
+	var firstParty bool
+	if err := h.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM mailing_tracking_events
+		  WHERE subscriber_id = $1 AND event_type = 'clicked'
+		    AND ($2::uuid IS NULL OR campaign_id = $2::uuid)
+		    AND event_at > NOW() - INTERVAL '120 seconds'
+		    AND COALESCE(link_url,'') NOT LIKE 'everflow-postback:%')`,
+		in.subscriberID, campaignArg).Scan(&firstParty); err == nil && firstParty {
+		log.Printf("[EverflowClickPostback] engagement dedup: first-party click already recorded (subscriber=%s offer=%s)",
+			in.subscriberID, in.EverflowOfferID)
+		return
+	}
+
+	var recipientDomain interface{}
+	var email string
+	if err := h.db.QueryRowContext(ctx,
+		`SELECT email FROM mailing_subscribers WHERE id=$1`, in.subscriberID).Scan(&email); err == nil {
+		if i := strings.LastIndex(email, "@"); i > 0 {
+			recipientDomain = email[i+1:]
+		}
+	}
+
+	var ipArg interface{}
+	if in.ClickIP != "" {
+		ipArg = in.ClickIP
+	}
+	var uaArg interface{} = "everflow-postback (no UA)"
+	if in.ClickUA != "" {
+		uaArg = in.ClickUA
+	}
+
+	if _, err := h.db.ExecContext(ctx, `
+		INSERT INTO mailing_tracking_events
+			(id, organization_id, campaign_id, subscriber_id, event_type, event_at, created_at,
+			 user_agent, ip_address, recipient_domain, link_url)
+		VALUES ($1, '00000000-0000-0000-0000-000000000001', $2, $3, 'clicked', NOW(), NOW(),
+			 $4, NULLIF($5::text,'')::inet, $6, $7)`,
+		uuid.New(), campaignArg, in.subscriberID, uaArg, in.ClickIP, recipientDomain, marker); err != nil {
+		log.Printf("[EverflowClickPostback] ERROR recording click engagement (subscriber=%s offer=%s): %v",
+			in.subscriberID, in.EverflowOfferID, err)
+		return
+	}
+	if ipArg == nil {
+		log.Printf("[EverflowClickPostback] engagement recorded WITHOUT click IP (subscriber=%s offer=%s) — add &ip={session_ip} macro for verdict quality",
+			in.subscriberID, in.EverflowOfferID)
+	}
+}
+
 func parseClickPostback(r *http.Request) clickPostbackInput {
 	q := r.URL.Query()
 	in := clickPostbackInput{
@@ -270,6 +381,8 @@ func parseClickPostback(r *http.Request) clickPostbackInput {
 		EverflowOfferID: q.Get("offer_id"),
 		TransactionID:   q.Get("transaction_id"),
 		ClickURL:        q.Get("click_url"),
+		ClickIP:         firstNonEmpty(q.Get("ip"), q.Get("session_ip")),
+		ClickUA:         firstNonEmpty(q.Get("ua"), q.Get("user_agent")),
 	}
 
 	if in.SubscriberIDStr == "" {
