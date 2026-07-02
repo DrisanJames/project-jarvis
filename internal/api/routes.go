@@ -63,6 +63,10 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 		r.Get("/auth/callback", authManager.HandleCallback)
 		r.Get("/auth/logout", authManager.HandleLogout)
 		r.Get("/auth/user", authManager.HandleUserInfo)
+		// Off-by-default UI-test access (404 unless TEST_ACCESS_TOKEN is set on
+		// the task); mints a single test@<domain> session. See HandleTestLogin.
+		r.Get("/auth/test-login", authManager.HandleTestLogin)
+		r.Post("/auth/test-login", authManager.HandleTestLogin)
 	} else {
 		r.Get("/auth/user", func(w http.ResponseWriter, r *http.Request) {
 			respondJSON(w, http.StatusOK, map[string]interface{}{

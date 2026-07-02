@@ -3,12 +3,14 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +214,71 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+}
+
+// HandleTestLogin mints a session for UI testing WITHOUT Google OAuth — a
+// deliberately narrow, off-by-default access path (operator-authorized
+// 2026-07-02 for the screen-by-screen browser audit). Security properties:
+//   - DISABLED BY DEFAULT: returns 404 unless env TEST_ACCESS_TOKEN is set on
+//     the running task. With it unset (the default) this endpoint does not
+//     exist as far as callers can tell — no bypass ships active.
+//   - Token-gated: the caller must present the exact TEST_ACCESS_TOKEN (header
+//     X-Test-Token or ?token=); any mismatch is 403.
+//   - Single principal: the minted session is ALWAYS test@<AllowedDomain>
+//     (the operator's own domain) — it cannot impersonate an arbitrary email.
+//   - Loudly audited: every success/failure is logged with the source IP.
+//   - Revoked by unsetting the env var + redeploy (no code change).
+// This is intentionally not a general "disable auth" switch.
+func (am *AuthManager) HandleTestLogin(w http.ResponseWriter, r *http.Request) {
+	token := os.Getenv("TEST_ACCESS_TOKEN")
+	if token == "" {
+		// Off by default — indistinguishable from "no such route".
+		http.NotFound(w, r)
+		return
+	}
+	provided := r.Header.Get("X-Test-Token")
+	if provided == "" {
+		provided = r.URL.Query().Get("token")
+	}
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		log.Printf("Auth: TEST-LOGIN REJECTED (bad token) from %s", r.RemoteAddr)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	sessionID, err := generateSessionID()
+	if err != nil {
+		http.Error(w, "session_failed", http.StatusInternalServerError)
+		return
+	}
+	email := "test@" + am.config.AllowedDomain
+	session := &Session{
+		UserID:    "test-access",
+		Email:     email,
+		Name:      "Test Access",
+		Domain:    am.config.AllowedDomain,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Duration(am.config.CookieMaxAge) * time.Second),
+	}
+	am.storeSession(sessionID, session)
+	log.Printf("Auth: TEST-LOGIN GRANTED session for %s from %s (TEST_ACCESS_TOKEN active)", email, r.RemoteAddr)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     am.config.CookieName,
+		Value:    sessionID,
+		Path:     "/",
+		MaxAge:   am.config.CookieMaxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	respondAuthJSON(w, map[string]interface{}{"authenticated": true, "email": email})
+}
+
+// respondAuthJSON writes a small JSON body (local helper to avoid importing api).
+func respondAuthJSON(w http.ResponseWriter, body map[string]interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // HandleLogout logs out the user
