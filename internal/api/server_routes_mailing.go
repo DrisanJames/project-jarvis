@@ -1164,6 +1164,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/deliverability/fbl", delivH.HandleGetFBL)
 			r.Get("/deliverability/ip-activity", delivH.HandleGetIPActivity)
 
+			// === DASHBOARD CONSOLE (v1.0) — read-only cards for the dashboard
+			// rebuild. Each handler lives in dashboard_console_*.go, carries a
+			// Version const + doc header, and follows METRIC_CONTRACT.md. ===
+			r.Get("/dashboard/deferring-isps", s.HandleDashboardDeferringISPs)
+			r.Get("/dashboard/trending-offers", s.HandleDashboardTrendingOffers)
+			r.Get("/dashboard/click-funnels", s.HandleDashboardClickFunnels)
+
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			if s.OfferSuppMgr != nil {
