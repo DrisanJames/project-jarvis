@@ -69,7 +69,7 @@ import {
   faCheckCircle, faTimesCircle, faBullseye, faHistory, faImages,
 } from '@fortawesome/free-solid-svg-icons';
 import {
-  ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
   CartesianGrid, Tooltip,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
@@ -938,42 +938,58 @@ const TREND_SERIES: TrendSeriesDef[] = [
   { id: 'compPct', label: 'complaint %', kind: 'line', axis: 'right', color: COMPLAINT_ROSE },
 ];
 
+// Delivery-Queue gold-standard style: volume series render as smooth gradient
+// AREAS (matching OutboxDashboard's Throughput chart), rate series stay as
+// monotone lines on the right axis. One gradient <def> per volume-series color.
 const TrendChart: React.FC<{
   data: DailyPoint[];
   visible: Set<string>;
   height: number;
-}> = ({ data, visible, height }) => (
+}> = ({ data, visible, height }) => {
+  const volSeries = TREND_SERIES.filter((s) => s.kind === 'bar' && visible.has(s.id));
+  return (
   <ResponsiveContainer width="100%" height={height}>
-    <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-      <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+    <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+      <defs>
+        {volSeries.map((s) => (
+          <linearGradient key={s.id} id={`lakeTrendFill-${s.id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={s.color} stopOpacity={0.5} />
+            <stop offset="100%" stopColor={s.color} stopOpacity={0.04} />
+          </linearGradient>
+        ))}
+      </defs>
+      <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
       <XAxis
         dataKey="day"
         tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
-        tick={{ fill: COLORS.textMuted, fontSize: 10 }}
+        tick={{ fill: '#94a3b8', fontSize: 11 }}
+        interval="preserveStartEnd"
+        minTickGap={40}
         axisLine={{ stroke: COLORS.borderStrong }}
         tickLine={false}
       />
       <YAxis
         yAxisId="left"
         tickFormatter={(v: number) => fmtCompact(v)}
-        tick={{ fill: COLORS.textMuted, fontSize: 10 }}
+        tick={{ fill: '#94a3b8', fontSize: 11 }}
         axisLine={false}
         tickLine={false}
-        width={48}
+        width={52}
       />
       <YAxis
         yAxisId="right"
         orientation="right"
         tickFormatter={(v: number) => `${v}%`}
-        tick={{ fill: COLORS.textMuted, fontSize: 10 }}
+        tick={{ fill: '#94a3b8', fontSize: 11 }}
         axisLine={false}
         tickLine={false}
         width={44}
       />
-      <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-      {TREND_SERIES.filter((s) => s.kind === 'bar' && visible.has(s.id)).map((s) => (
-        <Bar key={s.id} yAxisId="left" dataKey={s.id} name={s.label} fill={s.color}
-          fillOpacity={0.75} radius={[2, 2, 0, 0]} maxBarSize={28} />
+      <Tooltip content={<ChartTip />} cursor={{ stroke: 'rgba(148,163,184,0.3)', strokeWidth: 1 }} />
+      {volSeries.map((s) => (
+        <Area key={s.id} yAxisId="left" dataKey={s.id} name={s.label} type="monotone"
+          stroke={s.color} strokeWidth={2} fill={`url(#lakeTrendFill-${s.id})`}
+          dot={false} activeDot={{ r: 3, fill: s.color, strokeWidth: 0 }} connectNulls />
       ))}
       {TREND_SERIES.filter((s) => s.kind === 'line' && visible.has(s.id)).map((s) => (
         <Line key={s.id} yAxisId="right" dataKey={s.id} name={s.label} stroke={s.color}
@@ -981,7 +997,8 @@ const TrendChart: React.FC<{
       ))}
     </ComposedChart>
   </ResponsiveContainer>
-);
+  );
+};
 
 // Series-visibility toggle chips for the trend chart.
 const SeriesToggles: React.FC<{
@@ -1377,6 +1394,10 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
   );
   const totals = useMemo(() => totalsFromBreakdown(headlineRows), [headlineRows]);
   const daily = useMemo(() => dailySeries(headlineRows), [headlineRows]);
+  // The Day trend is a fixed 7-day view regardless of the selected range
+  // (operator 2026-07-02): tapping Day always shows the trailing 7 days. Longer
+  // ranges no longer bleed the trend out; KPIs/ISP table still honor the range.
+  const dailyTrend = useMemo(() => daily.slice(-7), [daily]);
 
   // Per-ISP deliverability rows (group_by=isp_group,event_type), grouped into
   // one MetricRow per isp_group, sorted by derived Attempted desc, with a TOTAL.
@@ -1548,8 +1569,8 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               </div>
               <SeriesToggles visible={visible} onToggle={toggleSeries} />
               {trendGrain === 'day' ? (
-                daily.length === 0 ? <EmptyRow label="No daily datapoints." /> : (
-                  <TrendChart data={daily} visible={visible} height={300} />
+                dailyTrend.length === 0 ? <EmptyRow label="No daily datapoints." /> : (
+                  <TrendChart data={dailyTrend} visible={visible} height={300} />
                 )
               ) : rangeDays > 3 ? (
                 <EmptyRow label="3 day ranges only" />
