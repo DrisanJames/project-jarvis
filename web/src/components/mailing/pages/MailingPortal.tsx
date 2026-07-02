@@ -1079,7 +1079,7 @@ const EnhancedDashboard: React.FC = () => {
 
       {/* ── Row 4 · Audience Growth + Recent Campaigns ───────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(0, 1.4fr)', gap: 14, marginBottom: 18, alignItems: 'start' }}>
-        <Panel accent={growth && growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
+        <Panel accent={!growth ? undefined : growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
           <SectionHeader title="Audience Growth · 7d" icon={faSeedling} />
           {growth ? (
             <>

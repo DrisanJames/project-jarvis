@@ -1836,6 +1836,12 @@ var criticalSendPathDDL = []struct {
 	{"idx_send_ledger_claimed", `CREATE INDEX IF NOT EXISTS idx_send_ledger_claimed ON mailing_send_ledger (status, claimed_at) WHERE status='claimed'`},
 	{"idx_send_ledger_redrive", `CREATE INDEX IF NOT EXISTS idx_send_ledger_redrive ON mailing_send_ledger (status, claimed_at) WHERE status IN ('claimed','failed','requeued')`},
 	// ---- end Kafka send-queue ledger ----
+	// NOT send-path, but here for the SAME ordering guarantee: cpmDealSelect
+	// references d.end_date UNCONDITIONALLY, so the column must exist before the
+	// binary serves the CPM planner (in runStartupMigrations it applied in a
+	// background goroutine AFTER serving began → deploy-window 500s). Tiny,
+	// idempotent, NULL-tolerant read (sql.NullTime).
+	{"add_cpm_deals_end_date", `ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS end_date DATE`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
@@ -2128,12 +2134,10 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"idx_cpm_manual_conversions_org_deal_time", `CREATE INDEX IF NOT EXISTS idx_cpm_manual_conversions_org_deal_time ON mailing_cpm_manual_conversions (organization_id, deal_id, converted_at)`},
 		{"uniq_cpm_manual_conversions_dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cpm_manual_conversions_dedupe ON mailing_cpm_manual_conversions (deal_id, conversion_id) WHERE conversion_id <> ''`},
-		// Optional deal DEADLINE (operator 2026-07-02): the "finish sooner" lever.
-		// When set, cpm_planner_handlers.go derives required_daily_to_deadline
-		// (remaining planned volume ÷ days left to end_date) so an earlier date
-		// raises the daily pace the deal needs. NULL = no deadline (falls back to
-		// the avg-size-derived days_to_finish). Tiny, idempotent, NULL-tolerant.
-		{"add_cpm_deals_end_date", `ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS end_date DATE`},
+		// NOTE: mailing_cpm_deals.end_date (the deal DEADLINE / "finish sooner"
+		// lever) is applied SYNCHRONOUSLY in criticalSendPathDDL — cpmDealSelect
+		// reads it unconditionally, so it must land before the binary serves
+		// (moved out of this async slice 2026-07-02 to close a deploy-window 500).
 		// Creative registry — browse/preview surface for the send-day creative
 		// archive (ReviewForge phase 2). Synced from operator tooling via
 		// /api/admin/creatives-sync; read by the portal Creative Studio tab.

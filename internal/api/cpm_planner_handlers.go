@@ -149,9 +149,10 @@ type cpmDealProgress struct {
 	ActualDaily        float64 `json:"actual_daily"`
 	OnPace             bool    `json:"on_pace"`
 	// Deadline pacing (operator 2026-07-02): populated only when the deal has an
-	// end_date. DaysToDeadline = calendar days from today to end_date (>=0, incl.
-	// today); RequiredDailyToDeadline = remaining planned volume ÷ those days —
-	// the "finish sooner" pace. Both nil when no end_date is set (JSON null), so
+	// end_date. DaysToDeadline = Denver calendar days remaining, INCLUSIVE of
+	// today and the deadline day (>=1; a today/past deadline = 1);
+	// RequiredDailyToDeadline = remaining planned volume ÷ those days — the
+	// "finish sooner" pace. Both nil when no end_date is set (JSON null), so
 	// the UI shows the deadline row only for deals that have one.
 	DaysToDeadline          *int64   `json:"days_to_deadline"`
 	RequiredDailyToDeadline *float64 `json:"required_daily_to_deadline"`
@@ -259,27 +260,31 @@ func cpmActualEcpa(budget float64, conversions int64) float64 {
 
 // cpmDeadlinePace is the "finish sooner" lever (operator 2026-07-02): given a
 // deal's end_date, how many recipients per day must go out to deliver the
-// remaining planned volume by the deadline. days is the calendar days from
-// today to end_date (clamped >=0 for display); the required-daily divisor
-// floors at 1 day so a today/past deadline yields "all remaining today" rather
-// than a divide-by-zero. An earlier end_date → fewer days → higher required/day.
+// remaining planned volume by the deadline. days is INCLUSIVE of today in the
+// operator's America/Denver calendar (a deadline of "today" = 1 day left, not
+// 0), matching the current-month pacing math. An earlier end_date → fewer days
+// → higher required/day; a today/past deadline → 1 day (all remaining today).
 func cpmDeadlinePace(planned, delivered int64, endDate time.Time) (days int64, requiredDaily float64) {
-	// Date-granularity difference in UTC (end_date is a DATE = UTC midnight).
-	today := time.Now().UTC().Truncate(24 * time.Hour)
-	end := endDate.UTC().Truncate(24 * time.Hour)
-	days = int64(end.Sub(today).Hours() / 24)
-	if days < 0 {
-		days = 0
+	// Denver-day granularity — the operator's send-day calendar (CLAUDE.md §6);
+	// UTC would flip "days left" a day early every Denver evening.
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		loc = time.UTC
+	}
+	today := time.Now().In(loc)
+	todayD := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, loc)
+	end := endDate.In(loc)
+	endD := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, loc)
+	// +1 makes it inclusive of both today and the deadline day.
+	days = int64(endD.Sub(todayD).Hours()/24) + 1
+	if days < 1 {
+		days = 1 // today or past → everything remaining is due today
 	}
 	remaining := planned - delivered
 	if remaining < 0 {
 		remaining = 0
 	}
-	divisor := days
-	if divisor < 1 {
-		divisor = 1
-	}
-	requiredDaily = math.Ceil(float64(remaining) / float64(divisor))
+	requiredDaily = math.Ceil(float64(remaining) / float64(days))
 	return days, requiredDaily
 }
 

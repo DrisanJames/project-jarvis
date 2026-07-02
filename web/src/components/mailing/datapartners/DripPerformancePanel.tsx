@@ -684,10 +684,13 @@ const TouchBar: React.FC<{ t1: number; t2: number; t3: number; t4: number }> = (
   );
 };
 
+// overflowWrap:'break-word' (not 'anywhere') on the container lets the label
+// wrap between words but never mid-token; the value gets nowrap so a long
+// number like 1,234,567 can't break mid-digit on a narrow column.
 const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string; sub?: string }> = ({ label, value, accent, title, sub }) => (
-  <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center', minWidth: 0, overflowWrap: 'anywhere' }}>
+  <div title={title} style={{ background: 'rgba(0,0,0,0.2)', padding: 6, borderRadius: 4, textAlign: 'center', minWidth: 0, overflowWrap: 'break-word' }}>
     <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe' }}>{value.toLocaleString()}</div>
+    <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? '#dbeafe', whiteSpace: 'nowrap' }}>{value.toLocaleString()}</div>
     {sub && <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)', marginTop: 1 }}>{sub}</div>}
   </div>
 );

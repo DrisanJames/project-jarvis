@@ -76,9 +76,15 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 
-	// The lane registry is tiny (one row per live offer). Correlated
-	// subqueries against the (enrollment_offer_id, status) partial index are
-	// cheap at this cardinality and keep the shape one-row-per-lane.
+	// ONE grouped scan of enrollments (not N correlated subqueries) LEFT JOINed
+	// to the lane registry, so every lane appears even with zero enrollments.
+	// completed_or_converted counts CONVERSIONS across BOTH terminal paths
+	// (verified against prod 2026-07-02): status='converted' (the dominant
+	// bulk/legacy path, ~2.2k) UNION status='exited' with exit_reason like
+	// 'converted%' (the everflow-postback path + manual variants, converted_at
+	// populated). The old `status IN ('completed','converted')` missed the
+	// postback path entirely and 'completed' never occurs. This is a LIFETIME
+	// conversion count, labeled as such in the UI.
 	query := `
 		SELECT
 			jm.everflow_offer_id,
@@ -89,14 +95,21 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 			jm.enabled,
 			COALESCE(jm.payout_type, 'UNKNOWN') AS payout_type,
 			COALESCE(jm.click_journey_id, '') AS click_journey_id,
-			COALESCE((SELECT COUNT(*) FROM mailing_journey_enrollments e
-				WHERE e.enrollment_offer_id = jm.everflow_offer_id
-				  AND e.status = 'active'), 0) AS active_enrolled,
-			COALESCE((SELECT COUNT(*) FROM mailing_journey_enrollments e
-				WHERE e.enrollment_offer_id = jm.everflow_offer_id
-				  AND e.status IN ('completed', 'converted')), 0) AS completed_or_converted
+			COALESCE(e.active_enrolled, 0) AS active_enrolled,
+			COALESCE(e.converted, 0) AS completed_or_converted
 		FROM mailing_offer_journey_map jm
-		ORDER BY active_enrolled DESC, jm.everflow_offer_id ASC`
+		LEFT JOIN (
+			SELECT enrollment_offer_id,
+				COUNT(*) FILTER (WHERE status = 'active') AS active_enrolled,
+				COUNT(*) FILTER (
+					WHERE status = 'converted'
+					   OR (status = 'exited' AND exit_reason ILIKE 'converted%')
+				) AS converted
+			FROM mailing_journey_enrollments
+			WHERE enrollment_offer_id <> ''
+			GROUP BY enrollment_offer_id
+		) e ON e.enrollment_offer_id = jm.everflow_offer_id
+		ORDER BY COALESCE(e.active_enrolled, 0) DESC, jm.everflow_offer_id ASC`
 
 	rows, err := s.mailingDB.QueryContext(ctx, query)
 	if err != nil {

@@ -1020,9 +1020,15 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  min-height: 104px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(99, 102, 241, 0.08);
+}
+
+/* Scoped to the dashboard so it can't leak onto the shared .metric-card used
+   by other screens (Campaign Center's MetricCard). Keeps the 6 KPI rows even
+   when the Open/Click cards carry the extra human-subtext line. */
+.enhanced-dashboard .metric-card {
+  min-height: 104px;
 }
 
 .metric-icon {
