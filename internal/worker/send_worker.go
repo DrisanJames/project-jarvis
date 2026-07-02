@@ -1702,6 +1702,17 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 				htmlContent += unsubBlock
 			}
 		}
+	} else if trackBase != "" && sesInfo.ViaSES && os.Getenv("DISABLE_SES_OPEN_PIXEL") != "true" {
+		// SES relay sends historically skipped ALL tracking injection ("SES is
+		// the sole tracker") — but SES-native open tracking captures <1% of
+		// opens, so partner-drip / gmail / yahoo-family engagement never reached
+		// PG or the engaged-tier segments (found 2026-07-02: 0.4% drip open rate
+		// vs 41% board; the tier starved). Inject the OPEN pixel only — t.em is
+		// proven over SES (drip's baked click links track fine) — and leave
+		// click rewrites off so SES link handling is untouched.
+		htmlContent = InjectOpenPixel(htmlContent,
+			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
+			trackBase, p.orgID, p.trackingSecret)
 	}
 	headers["X-Job"] = item.CampaignID.String()
 
@@ -2515,6 +2526,40 @@ func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseUR
 
 func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
 	return InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, p.orgID, p.trackingSecret)
+}
+
+// InjectOpenPixel adds ONLY the open-tracking pixel (top + bottom placement,
+// same construction as InjectTrackingPixelAndLinks) with NO link rewriting.
+// Used on the SES relay path where click rewrites must stay off (SES may
+// wrap links itself; double-wrapping risks broken redirects) but our open
+// pixel is required: SES-native open tracking captures <1% of opens
+// (measured 2026-07-02 — ~1.3k/day PG-visible SES opens on ~230k/day SES
+// sends vs ~41% pixel-tracked on PMTA lanes), which starved the engaged-tier
+// segments of ALL SES-routed engagement (partner-drip, gmail, yahoo-family).
+// Deliberately self-contained rather than refactoring the proven hot-path
+// function. Kill switch: DISABLE_SES_OPEN_PIXEL=true.
+func InjectOpenPixel(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
+	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
+	encoded := base64.URLEncoding.EncodeToString([]byte(data))
+	sig := TrackSign(encoded, secret)
+	pixelHTML := fmt.Sprintf(
+		`<div style="display:none;font-size:1px;color:transparent;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;" aria-hidden="true"><img src="%s/track/open/%s/%s" width="1" height="1" border="0" alt="" /></div>`,
+		baseURL, encoded, sig,
+	)
+	htmlLower := strings.ToLower(html)
+	if bodyIdx := strings.Index(htmlLower, "<body"); bodyIdx >= 0 {
+		if closeIdx := strings.Index(html[bodyIdx:], ">"); closeIdx >= 0 {
+			insertAt := bodyIdx + closeIdx + 1
+			html = html[:insertAt] + pixelHTML + html[insertAt:]
+			htmlLower = strings.ToLower(html)
+		}
+	}
+	if idx := strings.LastIndex(htmlLower, "</body>"); idx >= 0 {
+		html = html[:idx] + pixelHTML + html[idx:]
+	} else {
+		html += pixelHTML
+	}
+	return html
 }
 
 // GenerateUnsubscribeURL builds a signed global one-click unsubscribe URL.
