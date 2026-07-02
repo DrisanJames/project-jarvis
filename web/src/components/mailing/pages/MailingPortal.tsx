@@ -434,6 +434,9 @@ const denverToday = (): string =>
 interface AudienceGrowth {
   acquired7d: number;
   churned7d: number;
+  // Activated pool: subscribers mailed ≤4 times who opened or clicked. A
+  // state/pool count (all-time), not a 7-day flow like acquired/churned.
+  activated: number;
 }
 
 // --- In-transit campaigns (GET /campaigns?status=sending) ----------------
@@ -525,7 +528,7 @@ const EnhancedDashboard: React.FC = () => {
       const data = await res.json();
       if (signal?.aborted) return;
       if (data && typeof data.acquired_7d === 'number') {
-        setGrowth({ acquired7d: data.acquired_7d || 0, churned7d: data.churned_7d || 0 });
+        setGrowth({ acquired7d: data.acquired_7d || 0, churned7d: data.churned_7d || 0, activated: data.activated || 0 });
       } else {
         throw new Error('unexpected payload');
       }
@@ -1141,6 +1144,7 @@ const EnhancedDashboard: React.FC = () => {
               <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
                 <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="Subscribers acquired in the last 7 Denver days (COALESCE(subscribed_at, created_at))" />
                 <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Subscribers who unsubscribed or reached a terminal status (bounced/complained/blacklisted/unsubscribed) in the last 7 Denver days" />
+                <Stat label="Activated" value={growth.activated.toLocaleString()} color={colors.indigo300} title="Early-funnel pool: subscribers we have mailed ≤4 times who have opened or clicked (current state, all-time — not a 7-day flow)" />
                 <Stat
                   label="Net"
                   value={`${growth.acquired7d - growth.churned7d >= 0 ? '+' : ''}${(growth.acquired7d - growth.churned7d).toLocaleString()}`}
@@ -1149,7 +1153,7 @@ const EnhancedDashboard: React.FC = () => {
                 />
               </div>
               <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
-                Acquired vs churned across the last 7 America/Denver days (PG mailing_subscribers — membership truth, not the delivery lake).
+                Acquired vs churned across the last 7 America/Denver days (PG mailing_subscribers — membership truth, not the delivery lake). Activated = early-funnel pool (mailed ≤4×, opened or clicked), a current-state count.
               </div>
             </>
           ) : growthErr ? (

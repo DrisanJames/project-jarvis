@@ -47,7 +47,15 @@ import (
 //     in this DB — it returns 0; the real "left" signal is a terminal status
 //     whose row was last changed in-window), served by a partial index over the
 //     small terminal-status subset (~21k rows).
-const VersionDashboardAudienceGrowth = "1.1"
+// 1.2 (2026-07-02): add the "Activated" pool (operator request) — early-funnel
+//     subscribers we have mailed ≤4 times who have opened or clicked
+//     (total_emails_received BETWEEN 1 AND 4 AND (total_opens>0 OR total_clicks>0)).
+//     This is a STATE/pool count (all-time state, like "available pool"), NOT a
+//     7-day flow like acquired/churned. Served by the partial index
+//     idx_subscribers_activated over the ~19k matching subset; degrades to a
+//     ~2.3s parallel seq scan before the concurrent index lands (well within the
+//     8s budget).
+const VersionDashboardAudienceGrowth = "1.2"
 
 // HandleDashboardAudienceGrowth serves GET /api/mailing/dashboard/audience-growth.
 func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +78,9 @@ func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Re
 	nowD := time.Now().In(loc)
 	floor := time.Date(nowD.Year(), nowD.Month(), nowD.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -6)
 
+	// acquired/churned are 7-day FLOWS (bound by $2). activated is a STATE/pool
+	// count (all-time) — early-funnel subscribers mailed ≤4 times who opened or
+	// clicked; no window predicate, served by idx_subscribers_activated.
 	const query = `
 		SELECT
 			(SELECT COUNT(*) FROM mailing_subscribers
@@ -77,10 +88,14 @@ func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Re
 			(SELECT COUNT(*) FROM mailing_subscribers
 			  WHERE organization_id = $1
 			    AND status IN ('bounced','complained','blacklisted','unsubscribed')
-			    AND updated_at >= $2) AS churned`
+			    AND updated_at >= $2) AS churned,
+			(SELECT COUNT(*) FROM mailing_subscribers
+			  WHERE organization_id = $1
+			    AND total_emails_received BETWEEN 1 AND 4
+			    AND (total_opens > 0 OR total_clicks > 0)) AS activated`
 
-	var acquired, churned int64
-	if err := s.mailingDB.QueryRowContext(ctx, query, orgID, floor).Scan(&acquired, &churned); err != nil {
+	var acquired, churned, activated int64
+	if err := s.mailingDB.QueryRowContext(ctx, query, orgID, floor).Scan(&acquired, &churned, &activated); err != nil {
 		respondError(w, http.StatusInternalServerError, "database query failed")
 		return
 	}
@@ -88,6 +103,7 @@ func (s *Server) HandleDashboardAudienceGrowth(w http.ResponseWriter, r *http.Re
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"acquired_7d":  acquired,
 		"churned_7d":   churned,
+		"activated":    activated,
 		"net":          acquired - churned,
 		"window_days":  7,
 		"api_version":  VersionDashboardAudienceGrowth,

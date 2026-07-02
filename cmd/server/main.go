@@ -1916,6 +1916,10 @@ var concurrentIndexSpecs = []struct {
 	// the small set of unsubscribed rows).
 	{"idx_subscribers_org_created", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_org_created ON mailing_subscribers (organization_id, created_at)`},
 	{"idx_subscribers_churn_updated", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_churn_updated ON mailing_subscribers (organization_id, updated_at) WHERE status IN ('bounced','complained','blacklisted','unsubscribed')`},
+	// Dashboard Audience Growth "Activated" pool (2026-07-02): early-funnel
+	// subscribers mailed ≤4 times who have opened or clicked. Partial index over
+	// just that ~19k subset so the count is an index scan, not a 13M seq scan.
+	{"idx_subscribers_activated", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_activated ON mailing_subscribers (organization_id) WHERE total_emails_received BETWEEN 1 AND 4 AND (total_opens > 0 OR total_clicks > 0)`},
 
 	// ── Repairs for the five INVALID leftovers from interrupted ad-hoc
 	// CONCURRENTLY builds (prod inventory 2026-06-10, AAR action item 5;
