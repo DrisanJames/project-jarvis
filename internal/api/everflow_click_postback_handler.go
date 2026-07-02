@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 
@@ -289,6 +290,26 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// sanitizePostbackMacro drops unreplaced Everflow macro literals: an account
+// that doesn't support a macro sends the literal "{session_ip}" through —
+// treat it as absent rather than storing garbage.
+func sanitizePostbackMacro(v string) string {
+	if strings.HasPrefix(v, "{") || strings.HasSuffix(v, "}") {
+		return ""
+	}
+	return v
+}
+
+// sanitizePostbackIP additionally requires a parseable IP so the ::inet cast
+// in recordClickEngagement can never fail the insert.
+func sanitizePostbackIP(v string) string {
+	v = sanitizePostbackMacro(v)
+	if v == "" || net.ParseIP(v) == nil {
+		return ""
+	}
+	return v
+}
+
 // recordClickEngagement writes the postback click into mailing_tracking_events
 // so segments / engaged_at / rings see money-CTA clicks (direct affiliate links
 // bypass t.em tracking entirely). Two dedup layers keep one physical click =
@@ -381,8 +402,8 @@ func parseClickPostback(r *http.Request) clickPostbackInput {
 		EverflowOfferID: q.Get("offer_id"),
 		TransactionID:   q.Get("transaction_id"),
 		ClickURL:        q.Get("click_url"),
-		ClickIP:         firstNonEmpty(q.Get("ip"), q.Get("session_ip")),
-		ClickUA:         firstNonEmpty(q.Get("ua"), q.Get("user_agent")),
+		ClickIP:         sanitizePostbackIP(firstNonEmpty(q.Get("ip"), q.Get("session_ip"))),
+		ClickUA:         sanitizePostbackMacro(firstNonEmpty(q.Get("ua"), q.Get("user_agent"))),
 	}
 
 	if in.SubscriberIDStr == "" {
