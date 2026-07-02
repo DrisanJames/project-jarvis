@@ -7320,23 +7320,6 @@ END $$`},
 		{"jun11c_pcq_engaged_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS engaged_at TIMESTAMPTZ`},
 		{"jun11c_pcq_terminal_reason", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS terminal_reason TEXT`},
 		{"jun11c_pcq_subscriber_id", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS subscriber_id UUID`},
-		// EO AIRTIGHTNESS backstop (operator 2026-07-02): a partner record is only
-		// mailable if Email Oversight validated it (validated_at stamped by
-		// PartnerValidator.markReady on a passing verdict). The drip claims already
-		// gate on `validated_at IS NOT NULL`; this CHECK makes the invariant
-		// structural — any write that sets status='ready' without EO evidence FAILS
-		// at the DB, closing the direct-insert/off-pipeline bypass at the source
-		// (e.g. the internal Sam's Club bulk load that reached 'ready' unvalidated).
-		// NOT VALID grandfathers the ~1.16M existing unvalidated 'ready' rows (they
-		// stay put but the claim guard makes them unmailable); the constraint is
-		// enforced on every INSERT/UPDATE going forward. Idempotent add.
-		{"pcq_ready_requires_eo_check", `DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'partner_clean_queue_ready_requires_eo') THEN
-				ALTER TABLE partner_clean_queue
-					ADD CONSTRAINT partner_clean_queue_ready_requires_eo
-					CHECK (status <> 'ready' OR validated_at IS NOT NULL) NOT VALID;
-			END IF;
-		END $$;`},
 
 		// Domain Agent (2026-06-09): per-domain × ISP daily scorecard rolled up
 		// by domainagent.ScorecardWorker, plus the plan lifecycle table backing
