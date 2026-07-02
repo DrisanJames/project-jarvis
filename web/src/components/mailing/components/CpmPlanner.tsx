@@ -904,6 +904,19 @@ export const CpmPlanner: React.FC = () => {
       // not just the deal table — otherwise the Pacing board + Planner grid show
       // stale volume until a manual Refresh (the static-volume bug, 2026-07-02).
       await Promise.all([loadAll(), loadPacing(), loadMonths()]);
+      // Also refresh EVERY dependent surface for the currently-expanded deal —
+      // loadAll/loadPacing/loadMonths don't touch the open detail panel, which
+      // reads budget-derived numbers. setInsights({})/setOfferPerf({}) above
+      // cleared its cached insights → renderInsights early-returns to
+      // "No insights available" until refetched (B5); campData holds the
+      // server-derived planned volume-to-goal, stale until reloaded (B6).
+      if (expandedId) {
+        const hadCamps = !!campData[expandedId];
+        await Promise.all([
+          expandDeal(expandedId, false, false), // refetch insights + offer-performance (cache was cleared)
+          hadCamps ? loadCampaigns(expandedId) : Promise.resolve(), // reload volume-to-goal for the new budget
+        ]);
+      }
       // Tiny affordance so the operator sees the numbers were recomputed.
       setRecalcFlash(true);
       window.setTimeout(() => setRecalcFlash(false), 2500);
