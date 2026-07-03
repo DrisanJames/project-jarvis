@@ -91,12 +91,12 @@ INSERT INTO mailing_campaign_queue (
 	id, campaign_id, subscriber_id, subject, html_content, plain_content,
 	status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 	recipient_isp, selection_rank, audience_source_type, audience_source_id,
-	idempotency_key, content_snapshot_id
+	idempotency_key, content_snapshot_id, creative_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $13,
 	'queued', $16, $6, NOW(), $7, $8,
 	$9, $10, $11, $12,
-	$14, $15
+	$14, $15, $17
 )
 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`
 
@@ -149,6 +149,7 @@ func QueueInsertArgs(cmd SendCommand) []any {
 		cmd.IdempotencyKey,                   // $14 idempotency_key
 		nullUUID(cmd.ContentSnapshotID),      // $15 content_snapshot_id
 		priority,                             // $16 priority
+		nullUUID(cmd.CreativeID),             // $17 creative_id (A/B variant; Nil -> NULL)
 	}
 }
 

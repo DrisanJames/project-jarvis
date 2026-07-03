@@ -75,6 +75,10 @@ type SendCommand struct {
 	// like the live send worker. uuid.Nil means "no snapshot" (legacy inline
 	// path) — the shadow sinks don't care either way.
 	ContentSnapshotID uuid.UUID `json:"content_snapshot_id,omitempty"`
+	// CreativeID carries the wave-path A/B variant id (mailing_ab_variants.id)
+	// chosen at enqueue (ab_split.go). uuid.Nil = no A/B test on the campaign.
+	// Additive field: pre-A/B messages unmarshal to Nil -> SQL NULL.
+	CreativeID uuid.UUID `json:"creative_id,omitempty"`
 
 	// Subject is the small, ready-to-send subject line (cheap to carry inline;
 	// the body is the only thing worth deferring to the snapshot).

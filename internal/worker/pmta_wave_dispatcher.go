@@ -565,7 +565,7 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 			cmd := buildSendCommand(
 				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
 				recipientSubject, recipientHTML, p.plainContent, rec.recipientISP, rec.audienceSourceType, sourceIDString(sourceID),
-				rec.selectionRank, p.scheduledAt, uuid.Nil,
+				rec.selectionRank, p.scheduledAt, uuid.Nil, uuid.Nil,
 			)
 			if perr := produceQueueCommand(ctx, cmd); perr != nil {
 				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)
@@ -659,10 +659,6 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 	// recipient gets a deterministic variant snapshot + creative_id stamp; without,
 	// every code path below is byte-identical to before.
 	abVariants := loadWaveABVariants(ctx, db, p.campaignID, p.waveID, p.plainContent, p.isLocked)
-	if len(abVariants) > 0 && p.routeToKafka {
-		log.Printf("[ab-split] campaign=%s has %d variants but wave %s routes to Kafka — split UNSUPPORTED on the routed path, sending base content", p.campaignID, len(abVariants), p.waveID)
-		abVariants = nil
-	}
 
 	var rows *sql.Rows
 	if p.useCapAware {
@@ -796,10 +792,15 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		// rows are written later, via Kafka. When NOT routed (default), every
 		// recipient goes to the direct-INSERT arrays unchanged.
 		if p.routeToKafka {
+			rowSnap, rowCreative := snapshotID, uuid.Nil
+			if len(abVariants) > 0 {
+				v := abVariants[pickWaveABVariant(rec.subscriberID, abVariants)]
+				rowSnap, rowCreative = v.SnapshotID, v.CreativeID
+			}
 			cmd := buildSendCommand(
 				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
 				recipientSubject, "", "", rec.recipientISP, rec.audienceSourceType, nullStringToSource(normSource),
-				rec.selectionRank, p.scheduledAt, snapshotID,
+				rec.selectionRank, p.scheduledAt, rowSnap, rowCreative,
 			)
 			if perr := produceQueueCommand(ctx, cmd); perr != nil {
 				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)

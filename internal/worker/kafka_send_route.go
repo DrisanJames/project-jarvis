@@ -160,6 +160,7 @@ func buildSendCommand(
 	selectionRank int,
 	scheduledAt time.Time,
 	contentSnapshotID uuid.UUID,
+	creativeID uuid.UUID,
 ) sendqueue.SendCommand {
 	return sendqueue.SendCommand{
 		IdempotencyKey:     idempotencyKey,
@@ -178,6 +179,7 @@ func buildSendCommand(
 		AudienceSourceType: audienceSourceType,
 		AudienceSourceID:   audienceSourceID,
 		ContentSnapshotID:  contentSnapshotID,
+		CreativeID:         creativeID,
 		ScheduledAtUnix:    scheduledAt.Unix(),
 		Priority:           5,
 	}
