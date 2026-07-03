@@ -654,6 +654,16 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		return 0, 0, 0, 0, fmt.Errorf("content snapshot: %w", err)
 	}
 
+	// Wave-path A/B split (ab_split.go): nil unless the campaign has >=2 usable
+	// mailing_ab_variants and DISABLE_WAVE_AB_SPLIT is unset. With variants, each
+	// recipient gets a deterministic variant snapshot + creative_id stamp; without,
+	// every code path below is byte-identical to before.
+	abVariants := loadWaveABVariants(ctx, db, p.campaignID, p.waveID, p.plainContent, p.isLocked)
+	if len(abVariants) > 0 && p.routeToKafka {
+		log.Printf("[ab-split] campaign=%s has %d variants but wave %s routes to Kafka — split UNSUPPORTED on the routed path, sending base content", p.campaignID, len(abVariants), p.waveID)
+		abVariants = nil
+	}
+
 	var rows *sql.Rows
 	if p.useCapAware {
 		claimLimit := p.remaining * 2
@@ -717,6 +727,7 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		sourceIDs                                                                     []sql.NullString
 		skippedPlanIDs, capSkippedPlanIDs                                             []string
 		waveSlotSkipped                                                               int
+		abSnapIDs, abCreativeIDs                                                      []string // parallel to queueIDs when abVariants active
 	)
 	for _, rec := range candidates {
 		if queuedCount >= p.remaining {
@@ -805,6 +816,11 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		ranks = append(ranks, int64(rec.selectionRank))
 		sourceTypes = append(sourceTypes, rec.audienceSourceType)
 		idemKeys = append(idemKeys, idempotencyKey.String())
+		if len(abVariants) > 0 {
+			v := abVariants[pickWaveABVariant(rec.subscriberID, abVariants)]
+			abSnapIDs = append(abSnapIDs, v.SnapshotID.String())
+			abCreativeIDs = append(abCreativeIDs, v.CreativeID.String())
+		}
 	}
 
 	if len(skippedPlanIDs) > 0 {
@@ -821,7 +837,35 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 			return 0, 0, 0, 0, err
 		}
 	}
-	if len(queueIDs) > 0 {
+	if len(queueIDs) > 0 && len(abVariants) > 0 {
+		// A/B branch: per-row content_snapshot_id + creative_id (= ab_variant id)
+		// carried in two extra parallel arrays. Everything else identical to the
+		// single-snapshot statement below.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO mailing_campaign_queue (
+				id, campaign_id, subscriber_id, subject, html_content, plain_content,
+				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
+				recipient_isp, selection_rank, audience_source_type, audience_source_id,
+				idempotency_key, content_snapshot_id, creative_id
+			)
+			SELECT t.id, $1, t.subscriber_id, t.subject, NULL, NULL,
+			       'queued', 5, $2, NOW(), $3, $4,
+			       t.recipient_isp, t.selection_rank, t.audience_source_type, t.audience_source_id,
+			       t.idempotency_key, t.snapshot_id, t.creative_id
+			FROM unnest(
+				$5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::int[],
+				$10::text[], $11::uuid[], $12::uuid[], $13::uuid[], $14::uuid[]
+			) AS t(id, subscriber_id, subject, recipient_isp, selection_rank,
+			       audience_source_type, audience_source_id, idempotency_key, snapshot_id, creative_id)
+			ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		`, p.campaignID, p.scheduledAt, p.ispPlanID, p.waveUUID,
+			pq.Array(queueIDs), pq.Array(subscriberIDs), pq.Array(subjects), pq.Array(isps), pq.Array(ranks),
+			pq.Array(sourceTypes), pq.Array(sourceIDs), pq.Array(idemKeys),
+			pq.Array(abSnapIDs), pq.Array(abCreativeIDs),
+		); err != nil {
+			return 0, 0, 0, 0, err
+		}
+	} else if len(queueIDs) > 0 {
 		// html_content/plain_content stay NULL: the body lives once in the
 		// snapshot; the send worker dereferences content_snapshot_id and
 		// applies the deterministic per-recipient mutation.
