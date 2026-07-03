@@ -862,13 +862,6 @@ const EnhancedDashboard: React.FC = () => {
               ) : null}
             </div>
           </div>
-          <div className="metric-card">
-            <span className="metric-icon"><FontAwesomeIcon icon={faChartPie} /></span>
-            <div className="metric-content">
-              <span className="metric-value">${(dashboard?.performance?.total_revenue ?? dashboard?.performance?.revenue ?? 0).toFixed ? (dashboard?.performance?.total_revenue ?? dashboard?.performance?.revenue ?? 0).toFixed(2) : '0.00'}</span>
-              <span className="metric-label">Revenue</span>
-            </div>
-          </div>
           {/*
             Per .cursor/rules/bounce-metrics.mdc:
               Never display a single combined "Bounced" metric. Always break

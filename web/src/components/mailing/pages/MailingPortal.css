@@ -1004,14 +1004,16 @@
   color: #e5e7eb;
 }
 
-/* KPI tiles span the FULL row as one even strip (operator 2026-07-02: the
-   fixed 3-col grid left them "out of place"). auto-fit + minmax fills the row
-   with as many equal tiles as fit (7 tiles ≈ one row on a desktop cockpit) and
-   reflows on narrow widths. min-height keeps rows even when the Open/Click
-   cards carry an extra "machine incl. · human N" subtext line. */
+/* KPI tiles: fixed 3-across so the 6 tiles land as two even rows of three
+   (operator 2026-07-03: auto-fit crammed all tiles into one row and distorted
+   the values/labels at narrow tile widths). Three columns gives each tile
+   enough room for "270,133" + "Open Rate* (117,374 opens)" + the "machine
+   incl. · human N" subtext without squishing. min-height keeps rows even when
+   the Open/Click cards carry that extra subtext line. Narrows to 2-col then
+   1-col via the responsive rules below. */
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
