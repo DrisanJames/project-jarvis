@@ -464,6 +464,35 @@ func BuildSegmentWhereClause(listID interface{}, conditions []SegmentConditionIn
 
 	for _, c := range filtered {
 		// Exclude subscribers whose email appears in lists matching a name pattern
+		// exclude_never_clickers (operator 2026-07-03, audience de-bloat): drop
+		// members who received >= N sends with ZERO recorded clicks — UNLESS they
+		// ever converted (the never-converted guard: a converter DID engage, their
+		// conversion click just may not be logged — the known click-recording gap).
+		// Value = the send threshold (e.g. "15"). Counters are the GLOBAL
+		// mailing_subscribers totals by design: dead weight is global behavior.
+		// Composite NOT(...) because segment conditions AND together and this rule
+		// needs the OR-complement. Checks both conversion sources (auto-matched
+		// offer suppressions + Everflow manual imports via sub1).
+		if c.Field == "exclude_never_clickers" {
+			clause := fmt.Sprintf(`NOT (
+				COALESCE(total_emails_received, 0) >= $%d
+				AND COALESCE(total_clicks, 0) = 0
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_offer_suppressions os_conv
+					WHERE os_conv.subscriber_id = mailing_subscribers.id
+					  AND os_conv.reason = 'converted'
+				)
+				AND NOT EXISTS (
+					SELECT 1 FROM mailing_cpm_manual_conversions mc_conv
+					WHERE mc_conv.sub1 = mailing_subscribers.id::text
+				)
+			)`, argNum)
+			whereClauses = append(whereClauses, clause)
+			args = append(args, c.Value)
+			argNum++
+			continue
+		}
+
 		if c.Field == "exclude_list_pattern" {
 			clause := fmt.Sprintf(`NOT EXISTS (
 				SELECT 1 FROM mailing_subscribers s_excl
