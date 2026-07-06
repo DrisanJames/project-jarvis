@@ -639,20 +639,23 @@ func isDomainScopableField(field, operator string) bool {
 	return false
 }
 
-// humanClickFilter returns the SQL fragment (leading " AND ...") that restricts a
-// clicked-event subquery to HUMAN clicks by reading the materialized
-// click_verdict (populated at write by the ignite_set_click_verdict trigger and
-// backfilled for history). Scanners/datacenter/apple-mpp are excluded so dynamic
-// clicker segments stop counting machine traffic. NULL (not-yet-classified) is
-// treated as human so the audience is never silently cut before the backfill
-// lands. Empty string for any non-click event type (open/bounce/etc.), where
-// click_verdict is always NULL and the filter is meaningless. alias is the
+// nonScannerClickFilter returns the SQL fragment (leading " AND ...") that
+// restricts a clicked-event subquery to non-SCANNER clicks by reading the
+// materialized click_verdict (populated at write by the ignite_set_click_verdict
+// trigger and backfilled for history). Scope is Microsoft/datacenter SCANNERS
+// only: the excluded classes are 'datacenter','machine-bare','farm','unknown'.
+// apple-mpp is DELIBERATELY KEPT (Apple MPP = real people; not a scanner) along
+// with human/human-relay/proxy-view — narrowing this to ignite_verdict_is_human()
+// would drop the entire Apple audience, which is out of scope. NULL
+// (not-yet-classified) is kept so the audience is never silently cut before the
+// backfill lands. Empty string for any non-click event type (open/bounce/etc.),
+// where click_verdict is always NULL and the filter is meaningless. alias is the
 // mailing_tracking_events alias in the surrounding subquery (always "e" here).
-func humanClickFilter(eventType, alias string) string {
+func nonScannerClickFilter(eventType, alias string) string {
 	if eventType != "clicked" {
 		return ""
 	}
-	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR ignite_verdict_is_human(%s.click_verdict))", alias, alias)
+	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR %s.click_verdict NOT IN ('datacenter','machine-bare','farm','unknown'))", alias, alias)
 }
 
 // buildDomainScopedFieldClause converts last_open_at/last_click_at subscriber
@@ -663,7 +666,7 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 	if c.Field == "last_click_at" {
 		eventType = "clicked"
 	}
-	hc := humanClickFilter(eventType, "e")
+	hc := nonScannerClickFilter(eventType, "e")
 
 	switch c.Operator {
 	case "in_last_days", "within_last":
@@ -693,11 +696,11 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 // domainFilter, when non-empty, adds AND e.sending_domain = $N to scope by sending domain.
 func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter string) (string, []interface{}, int) {
 	eventType := trackingEventTypeMap[c.Field]
-	// For clicked events, count only HUMAN clicks: read the materialized
-	// click_verdict so scanners/datacenter/apple-mpp stop inflating dynamic
-	// clicker segments. NULL (not-yet-backfilled) is treated as human so the
-	// audience is never silently cut before the backfill lands.
-	hc := humanClickFilter(eventType, "e")
+	// For clicked events, exclude SCANNER clicks only (datacenter/machine-bare/
+	// farm/unknown) via the materialized click_verdict, so Microsoft scanners stop
+	// inflating dynamic clicker segments. apple-mpp (real Apple users) is KEPT.
+	// NULL (not-yet-backfilled) is kept so the audience is never cut before backfill.
+	hc := nonScannerClickFilter(eventType, "e")
 	var args []interface{}
 
 	domainClause := ""
@@ -772,8 +775,8 @@ func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilte
 	}
 
 	// These subqueries are click-only by construction, so always apply the
-	// human-click verdict filter (scanners/datacenter/apple-mpp excluded).
-	hc := humanClickFilter("clicked", "e")
+	// non-scanner filter (datacenter/machine-bare/farm/unknown excluded; apple-mpp kept).
+	hc := nonScannerClickFilter("clicked", "e")
 
 	switch c.Operator {
 	case "contains", "equals":
