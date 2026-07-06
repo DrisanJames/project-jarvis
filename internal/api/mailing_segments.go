@@ -639,6 +639,22 @@ func isDomainScopableField(field, operator string) bool {
 	return false
 }
 
+// humanClickFilter returns the SQL fragment (leading " AND ...") that restricts a
+// clicked-event subquery to HUMAN clicks by reading the materialized
+// click_verdict (populated at write by the ignite_set_click_verdict trigger and
+// backfilled for history). Scanners/datacenter/apple-mpp are excluded so dynamic
+// clicker segments stop counting machine traffic. NULL (not-yet-classified) is
+// treated as human so the audience is never silently cut before the backfill
+// lands. Empty string for any non-click event type (open/bounce/etc.), where
+// click_verdict is always NULL and the filter is meaningless. alias is the
+// mailing_tracking_events alias in the surrounding subquery (always "e" here).
+func humanClickFilter(eventType, alias string) string {
+	if eventType != "clicked" {
+		return ""
+	}
+	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR ignite_verdict_is_human(%s.click_verdict))", alias, alias)
+}
+
 // buildDomainScopedFieldClause converts last_open_at/last_click_at subscriber
 // fields into EXISTS subqueries against mailing_tracking_events filtered by
 // sending_domain, so engagement is scoped to a specific sending domain.
@@ -647,6 +663,7 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 	if c.Field == "last_click_at" {
 		eventType = "clicked"
 	}
+	hc := humanClickFilter(eventType, "e")
 
 	switch c.Operator {
 	case "in_last_days", "within_last":
@@ -655,8 +672,8 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
 			  AND e.event_at >= NOW() - INTERVAL '%s days'
-			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)
-		)`, argNum, c.Value, argNum+1, argNum+1)
+			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)%s
+		)`, argNum, c.Value, argNum+1, argNum+1, hc)
 		return clause, []interface{}{eventType, domain}, argNum + 2
 	case "more_than_days_ago":
 		clause := fmt.Sprintf(`NOT EXISTS (
@@ -664,8 +681,8 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
 			  AND e.event_at >= NOW() - INTERVAL '%s days'
-			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)
-		)`, argNum, c.Value, argNum+1, argNum+1)
+			  AND (e.sending_domain = $%d OR e.sending_domain LIKE '%%.' || $%d)%s
+		)`, argNum, c.Value, argNum+1, argNum+1, hc)
 		return clause, []interface{}{eventType, domain}, argNum + 2
 	}
 	return "", nil, argNum
@@ -676,6 +693,11 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 // domainFilter, when non-empty, adds AND e.sending_domain = $N to scope by sending domain.
 func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter string) (string, []interface{}, int) {
 	eventType := trackingEventTypeMap[c.Field]
+	// For clicked events, count only HUMAN clicks: read the materialized
+	// click_verdict so scanners/datacenter/apple-mpp stop inflating dynamic
+	// clicker segments. NULL (not-yet-backfilled) is treated as human so the
+	// audience is never silently cut before the backfill lands.
+	hc := humanClickFilter(eventType, "e")
 	var args []interface{}
 
 	domainClause := ""
@@ -693,8 +715,8 @@ func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter str
 		clause := fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
-			  AND e.event_type = $%d%s
-		)`, argNum, domainClause)
+			  AND e.event_type = $%d%s%s
+		)`, argNum, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	case "not_equals", "is_not":
@@ -703,8 +725,8 @@ func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter str
 		clause := fmt.Sprintf(`NOT EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
-			  AND e.event_type = $%d%s
-		)`, argNum, domainClause)
+			  AND e.event_type = $%d%s%s
+		)`, argNum, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	case "in_last_days", "within_last":
@@ -714,8 +736,8 @@ func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter str
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
-			  AND e.event_at >= NOW() - INTERVAL '%s days'%s
-		)`, argNum, c.Value, domainClause)
+			  AND e.event_at >= NOW() - INTERVAL '%s days'%s%s
+		)`, argNum, c.Value, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	case "not_in_last_days", "more_than_days_ago":
@@ -725,8 +747,8 @@ func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter str
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = $%d
-			  AND e.event_at >= NOW() - INTERVAL '%s days'%s
-		)`, argNum, c.Value, domainClause)
+			  AND e.event_at >= NOW() - INTERVAL '%s days'%s%s
+		)`, argNum, c.Value, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	default:
@@ -749,14 +771,18 @@ func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilte
 		args = append(args, domainFilter)
 	}
 
+	// These subqueries are click-only by construction, so always apply the
+	// human-click verdict filter (scanners/datacenter/apple-mpp excluded).
+	hc := humanClickFilter("clicked", "e")
+
 	switch c.Operator {
 	case "contains", "equals":
 		clause := fmt.Sprintf(`EXISTS (
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = 'clicked'
-			  AND e.link_url ILIKE $%d%s
-		)`, argNum, domainClause)
+			  AND e.link_url ILIKE $%d%s%s
+		)`, argNum, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	case "not_contains":
@@ -764,8 +790,8 @@ func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilte
 			SELECT 1 FROM mailing_tracking_events e
 			WHERE e.subscriber_id = mailing_subscribers.id
 			  AND e.event_type = 'clicked'
-			  AND e.link_url ILIKE $%d%s
-		)`, argNum, domainClause)
+			  AND e.link_url ILIKE $%d%s%s
+		)`, argNum, domainClause, hc)
 		return clause, args, argNum + len(args)
 
 	default:

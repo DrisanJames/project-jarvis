@@ -437,12 +437,20 @@ func main() {
 			ensureSendPathSchema(mailingDB)
 			go func() {
 				runAdminMigrations()
+				// Drift guard: compare the LIVE verdict-function bodies against
+				// the committed source BEFORE runStartupMigrations CREATE OR
+				// REPLACEs them, so a boot never silently reverts a hot-patch.
+				checkVerdictFunctionDrift(mailingDB)
 				runStartupMigrations(mailingDB)
 				seedProcessDefaultOrgID(mailingDB)
 				// Long-running CONCURRENTLY builds live outside the
 				// 5s-per-statement migration runner: they wait for a
 				// calm-IO window and never block writes.
 				ensureConcurrentIndexes(mailingDB)
+				// Materialize click_verdict for historical clicked rows in
+				// calm-IO-gated windows (never the 5s slice). Idempotent,
+				// resumable, kill: DISABLE_CLICK_VERDICT_BACKFILL=1.
+				backfillClickVerdict(ctx, mailingDB)
 			}()
 		}
 
@@ -5853,6 +5861,27 @@ END $$`},
 		{"add_idx_mte_machine_click", `CREATE INDEX IF NOT EXISTS idx_tracking_events_machine_click
 			ON mailing_tracking_events (event_at, is_machine_click)
 			WHERE event_type = 'clicked'`},
+
+		// === Table-driven Microsoft/Azure datacenter click classifier (2026-07-06) ===
+		// See cmd/server/datacenter_classifier.go for the full rationale and the
+		// canonical DDL. Ordering is load-bearing: the containment table exists
+		// before the helper that scans it, the helper before the verdict fn that
+		// calls it, the verdict fn before the trigger fn that calls it, and the
+		// click_verdict column before the trigger that writes it. All idempotent;
+		// CREATE OR REPLACE FUNCTION + the seed + the guarded trigger DO-block are
+		// not recognized by the skip-probe and so re-apply every boot (cheap), which
+		// is exactly how a boot re-asserts the committed function body over any
+		// drift (checkVerdictFunctionDrift logs a WARNING first — see boot goroutine).
+		{"create_ignite_datacenter_ranges", igniteDatacenterRangesDDL},
+		{"idx_ignite_datacenter_ranges_gist", igniteDatacenterRangesGistDDL},
+		{"seed_ignite_datacenter_ranges", igniteDatacenterSeedDDL},
+		{"create_ignite_ip_is_datacenter_fn", igniteIPIsDatacenterDDL},
+		{"create_ignite_event_verdict_fn", igniteEventVerdictDDL},
+		{"create_ignite_verdict_is_human_fn", igniteVerdictIsHumanDDL},
+		{"add_click_verdict_col", clickVerdictColumnDDL},
+		{"add_idx_mte_click_verdict", clickVerdictIndexDDL},
+		{"create_ignite_set_click_verdict_fn", igniteSetClickVerdictFnDDL},
+		{"create_trg_set_click_verdict", igniteSetClickVerdictTriggerDDL},
 
 		// === Wave processor health view (per-domain engagement engine, 2026-05-09) ===
 		//
