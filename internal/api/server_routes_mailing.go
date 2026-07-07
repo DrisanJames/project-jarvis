@@ -1173,6 +1173,10 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/dashboard/click-funnels", s.HandleDashboardClickFunnels)
 			r.Get("/dashboard/audience-growth", s.HandleDashboardAudienceGrowth)
 
+			// Send-Day Schedule (day-clock) — read-only lane timeline for a
+			// send day (schedule_day.go). Backs the portal "Schedule" tab.
+			r.Get("/schedule/day", s.HandleScheduleDay)
+
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
 			if s.OfferSuppMgr != nil {
