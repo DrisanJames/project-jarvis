@@ -500,11 +500,16 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 			}
 			return m
 		}
-		// Operator 2026-06-27: "expand across all brands" — yahoo/apple/att/aol now
+		// Operator 2026-06-27: "expand across all brands" — yahoo/att/aol now
 		// ship from ALL 16 brands (removed from this map = unrestricted routing). Only
 		// gmail stays mature-4-restricted, and it is held at per-wave cap 0 regardless.
+		// Operator 2026-07-07 (term_life_apple/Liberty lane): apple excludes the two
+		// Apple-banned brands lpl/wfy (HM08 — Apple hard-rejects those sending
+		// domains regardless of offer). Applied on welcome AND follow-up passes.
+		appleBrands := "db,ht,mh,qf,bwp,ci,cp,fc,hws,mrd,rb,rru,tot,yih"
 		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{
 			"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
+			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", appleBrands),
 		}
 	}
 	if cfg.PerISPDrainDays == nil {
@@ -3324,11 +3329,12 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
-	// Gmail brand-ban on follow-ups (operator 2026-06-14). The follow-up brand
-	// rotation is independent of a record's original mailed_brand, so without
-	// this a gmail touch could ship under a brand banned from gmail. Gate gmail
-	// to the warmed mature-4 (db/ht/mh/qf) just like the welcome path does.
-	perISPCaps = po.applyFollowupGmailRouting(brand, perISPCaps)
+	// ISP brand-ban on follow-ups (operator 2026-06-14 gmail; 2026-07-07 apple).
+	// The follow-up brand rotation is independent of a record's original
+	// mailed_brand, so without this a touch could ship under a brand banned
+	// from that ISP (gmail -> mature-4; apple -> lpl/wfy HM08 ban). Run the
+	// same full brand routing as the welcome path.
+	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
 	// Apple-banned verticals (operator 2026-06-16): same Fidelity term-life → Apple ban as the
 	// welcome path — follow-up touches must not ship term-life to Apple either.
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
