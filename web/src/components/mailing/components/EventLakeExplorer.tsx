@@ -66,7 +66,7 @@ import {
   faSpinner, faSyncAlt, faExclamationTriangle, faDatabase,
   faCircle, faSearch, faMoon, faInfoCircle, faTable, faLayerGroup,
   faChartLine, faChevronDown, faChevronRight,
-  faCheckCircle, faTimesCircle, faBullseye, faHistory, faImages,
+  faCheckCircle, faTimesCircle, faBullseye, faHistory, faCrosshairs,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
@@ -86,8 +86,14 @@ import {
   COMMON_ISP_GROUPS,
 } from '../shared/filters';
 import type { Transport, LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
+import OfferAlignmentTab from '../offeralignment/OfferAlignmentTab';
 
-const PAGE_VERSION = '2.2';
+// 2.3 (2026-07-07): the Creatives tab is replaced by Offer Alignment
+// (components/mailing/offeralignment/OfferAlignmentTab) — the offer × ISP
+// decision matrix + offer profile + SMTP-evidence drill-down; tab id
+// 'creatives' → 'alignment'. Like its predecessor it is NOT gated on the lake
+// read layer and owns its own controls (rendered outside the FilterBar block).
+const PAGE_VERSION = '2.3';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES (match backend JSON keys exactly)
@@ -273,7 +279,7 @@ interface RecentCampaign {
   at: string; // ISO timestamp of last lookup
 }
 
-type TabId = 'overview' | 'dimensions' | 'campaign' | 'raw' | 'creatives';
+type TabId = 'overview' | 'dimensions' | 'campaign' | 'raw' | 'alignment';
 
 type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
@@ -2816,525 +2822,6 @@ const RawEventsTab: React.FC<{
   );
 };
 
-// ─── Tab 5: Creatives ───────────────────────────────────────────────────────
-//
-// PG-backed (NOT the Athena lake) creative-performance reporting. For a chosen
-// offer it lists every creative × subject × sending-domain combo with money-link
-// clicks & conversions, so creative×domain combos are directly comparable.
-//
-// Backend (both READ ONLY, called via apiFetch):
-//   GET /api/mailing/analytics/creatives/offers?start_date=&end_date=
-//       → { offers: CreativeOfferOpt[] }   (sorted by money_clicks desc)
-//   GET /api/mailing/analytics/creatives?offer=&start_date=&end_date=&view=creative|subject
-//       → CreativesReport
-// Dates are sent as start_date / end_date (YYYY-MM-DD, America/Denver).
-
-interface CreativeOfferOpt {
-  slug: string;
-  offer_name: string | null;
-  everflow_offer_id: number;
-  money_clicks: number;
-}
-
-interface CreativeRow {
-  creative_key: string;
-  creative_label: string;
-  subject: string;
-  sending_domain: string;
-  from_name: string;
-  delivered: number;
-  clicks: number;
-  clickers: number;
-  click_rate: number;   // fraction (0–1) — clicks/delivered, approximate
-  conversions: number;
-  conv_rate: number;    // fraction (0–1) — conversions/clickers (efficiency)
-  revenue: number;
-  sample_campaign_id: string; // a campaign carrying this creative, for the HTML preview
-  has_html: boolean;          // false ⇒ drip reminder (no stored html to preview)
-}
-
-interface CreativesReport {
-  view: 'creative' | 'subject';
-  offer: string;
-  from: string;
-  to: string;
-  delivered_source: string;
-  truncated: boolean;
-  unattributed_conversions: number;
-  rows: CreativeRow[];
-}
-
-interface CreativesMeta {
-  unattributed_conversions: number;
-  truncated: boolean;
-  delivered_source: string;
-}
-
-type CreativeView = 'creative' | 'subject';
-
-// Sortable numeric columns (left text col sorts on label/subject separately).
-// Clickers (unique people) leads over raw Clicks; Conv/clicker is the honest
-// efficiency metric. Delivered is marked approximate (campaign-counter rollup);
-// the old Click-rate column was dropped — it divided by that approximate
-// Delivered and misled.
-const CREATIVE_NUM_COLS: Array<{ id: keyof CreativeRow; label: string }> = [
-  { id: 'delivered', label: 'Delivered*' },
-  { id: 'clicks', label: 'Clicks' },
-  { id: 'clickers', label: 'Clickers' },
-  { id: 'conversions', label: 'Conversions' },
-  { id: 'conv_rate', label: 'Conv/clicker' },
-  { id: 'revenue', label: 'Revenue' },
-];
-
-const fmtMoney = (n: number): string =>
-  (n ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-async function fetchCreativeOffers(
-  from: string,
-  to: string,
-  signal?: AbortSignal
-): Promise<CreativeOfferOpt[]> {
-  const qs = new URLSearchParams({ start_date: from, end_date: to });
-  const res = await apiFetch(`/api/mailing/analytics/creatives/offers?${qs.toString()}`, { signal });
-  if (!res.ok) await throwHttpError(res);
-  const json: { offers?: CreativeOfferOpt[] } = await res.json();
-  return Array.isArray(json.offers) ? json.offers : [];
-}
-
-async function fetchCreativesReport(
-  offer: string,
-  view: CreativeView,
-  from: string,
-  to: string,
-  signal?: AbortSignal
-): Promise<CreativesReport> {
-  const qs = new URLSearchParams({ offer, start_date: from, end_date: to, view });
-  const res = await apiFetch(`/api/mailing/analytics/creatives?${qs.toString()}`, { signal });
-  if (!res.ok) await throwHttpError(res);
-  const json: CreativesReport = await res.json();
-  return { ...json, rows: Array.isArray(json.rows) ? json.rows : [] };
-}
-
-interface CreativePreviewData {
-  campaign_id: string;
-  subject: string;
-  from_name: string;
-  html: string;
-  has_html: boolean;
-}
-
-async function fetchCreativePreview(campaignId: string, signal?: AbortSignal): Promise<CreativePreviewData> {
-  const qs = new URLSearchParams({ campaign_id: campaignId });
-  const res = await apiFetch(`/api/mailing/analytics/creatives/preview?${qs.toString()}`, { signal });
-  if (!res.ok) await throwHttpError(res);
-  return (await res.json()) as CreativePreviewData;
-}
-
-const CreativesTab: React.FC = () => {
-  const { addToast } = useToast();
-
-  const [offers, setOffers] = useState<CreativeOfferOpt[]>([]);
-  const [offer, setOffer] = useState('');
-  const [view, setView] = useState<CreativeView>('creative');
-  const [from, setFrom] = useState(daysAgoDenver(13)); // 14-day window inclusive
-  const [to, setTo] = useState(denverToday());
-  const [rows, setRows] = useState<CreativeRow[]>([]);
-  const [meta, setMeta] = useState<CreativesMeta | null>(null);
-  const [sort, setSort] = useState<SortState>({ col: 'clickers', dir: 'desc' });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  // Creative HTML preview modal ("see the creative").
-  const [preview, setPreview] = useState<{
-    open: boolean; loading: boolean; subject: string; from_name: string; html: string; note: string; error: string;
-  } | null>(null);
-  const previewAbortRef = useRef<AbortController | null>(null);
-
-  const openPreview = useCallback((row: CreativeRow) => {
-    previewAbortRef.current?.abort();
-    const subject = row.subject || '(no subject)';
-    const fromName = row.from_name || '';
-    if (!row.has_html || !row.sample_campaign_id) {
-      // Two distinct cases: a drip reminder (has a sample campaign but NULL html —
-      // it reuses the clicked creative at send time), or a row with no in-range
-      // campaign to point at (e.g. a conversion-only row from the full outer join).
-      const note = !row.sample_campaign_id
-        ? 'No in-range campaign to preview for this row (e.g. a conversion attributed from outside the selected window).'
-        : 'This is a drip reminder — it reuses the clicked creative at send time, so there is no stored HTML to preview.';
-      setPreview({ open: true, loading: false, subject, from_name: fromName, html: '', note, error: '' });
-      return;
-    }
-    const ctl = new AbortController();
-    previewAbortRef.current = ctl;
-    setPreview({ open: true, loading: true, subject, from_name: fromName, html: '', note: '', error: '' });
-    fetchCreativePreview(row.sample_campaign_id, ctl.signal)
-      .then((p) => {
-        if (ctl.signal.aborted) return;
-        setPreview({ open: true, loading: false, subject: p.subject || subject, from_name: p.from_name || fromName,
-          html: p.html || '', note: p.has_html ? '' : 'No stored HTML for this campaign.', error: '' });
-      })
-      .catch((e) => {
-        if (isAbortError(e)) return;
-        setPreview({ open: true, loading: false, subject, from_name: fromName, html: '', note: '',
-          error: e instanceof Error ? e.message : String(e) });
-      });
-  }, []);
-
-  const offersAbortRef = useRef<AbortController | null>(null);
-  const reportAbortRef = useRef<AbortController | null>(null);
-  // Track the selected offer without re-triggering the offers fetch when it changes.
-  const offerRef = useRef(offer);
-  offerRef.current = offer;
-
-  // ── Load the offers list (on mount + whenever the window changes) ──
-  const loadOffers = useCallback(async () => {
-    offersAbortRef.current?.abort();
-    const ctl = new AbortController();
-    offersAbortRef.current = ctl;
-    try {
-      const list = await fetchCreativeOffers(from, to, ctl.signal);
-      if (ctl.signal.aborted) return;
-      setOffers(list);
-      // Auto-select the highest-volume offer when none is selected (or the
-      // current selection vanished from the new window's list).
-      const cur = offerRef.current;
-      if (list.length > 0 && (!cur || !list.some((o) => o.slug === cur))) {
-        setOffer(list[0].slug);
-      } else if (list.length === 0) {
-        setOffer('');
-      }
-    } catch (e) {
-      if (isAbortError(e)) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      addToast({ type: 'error', title: 'Creative offers list failed', message: msg });
-    }
-  }, [from, to, addToast]);
-
-  useEffect(() => {
-    loadOffers();
-    return () => offersAbortRef.current?.abort();
-  }, [loadOffers]);
-
-  // ── Load the creatives report (offer/view/from/to) ──
-  const loadReport = useCallback(async () => {
-    if (!offer) {
-      setRows([]);
-      setMeta(null);
-      setError('');
-      return;
-    }
-    reportAbortRef.current?.abort();
-    const ctl = new AbortController();
-    reportAbortRef.current = ctl;
-    setLoading(true);
-    setError('');
-    try {
-      const rep = await fetchCreativesReport(offer, view, from, to, ctl.signal);
-      if (ctl.signal.aborted) return;
-      setRows(rep.rows);
-      setMeta({
-        unattributed_conversions: rep.unattributed_conversions ?? 0,
-        truncated: !!rep.truncated,
-        delivered_source: rep.delivered_source || '',
-      });
-    } catch (e) {
-      if (isAbortError(e)) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      // Clear stale rows so the error shell isn't shown over an old offer's data.
-      setRows([]);
-      setMeta(null);
-      setError(msg);
-      addToast({ type: 'error', title: 'Creative report failed', message: msg });
-    } finally {
-      if (reportAbortRef.current === ctl) setLoading(false);
-    }
-  }, [offer, view, from, to, addToast]);
-
-  useEffect(() => {
-    loadReport();
-    return () => reportAbortRef.current?.abort();
-  }, [loadReport]);
-
-  const onSort = (col: string) => setSort((s) =>
-    s.col === col ? { col, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
-
-  // Client-side sort. The left text column sorts by label (creative view) or
-  // subject (subject view); numeric columns sort by their raw value.
-  const sortedRows = useMemo(() => {
-    const copy = [...rows];
-    const dir = sort.dir === 'desc' ? -1 : 1;
-    copy.sort((a, b) => {
-      let av: number | string;
-      let bv: number | string;
-      if (sort.col === '__label') {
-        av = view === 'creative' ? a.creative_label : a.subject;
-        bv = view === 'creative' ? b.creative_label : b.subject;
-      } else if (sort.col === '__domain') {
-        av = a.sending_domain;
-        bv = b.sending_domain;
-      } else {
-        av = (a[sort.col as keyof CreativeRow] as number) ?? 0;
-        bv = (b[sort.col as keyof CreativeRow] as number) ?? 0;
-      }
-      if (typeof av === 'string' && typeof bv === 'string') {
-        return av.localeCompare(bv) * dir;
-      }
-      return ((av as number) - (bv as number)) * dir;
-    });
-    return copy;
-  }, [rows, sort, view]);
-
-  const totals = useMemo(() => rows.reduce(
-    (acc, r) => {
-      acc.delivered += r.delivered;
-      acc.clicks += r.clicks;
-      acc.clickers += r.clickers;
-      acc.conversions += r.conversions;
-      acc.revenue += r.revenue;
-      return acc;
-    },
-    { delivered: 0, clicks: 0, clickers: 0, conversions: 0, revenue: 0 }
-  ), [rows]);
-
-  const sortIndicator = (col: string) => (sort.col === col ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : '');
-  const today = denverToday();
-
-  return (
-    <div style={styles.panel}>
-      <div style={styles.panelHeader}>
-        <div>
-          <h2 style={styles.panelTitle}>
-            <FontAwesomeIcon icon={faImages} style={{ marginRight: 8, color: COLORS.accentAlt }} />
-            Creative Performance
-          </h2>
-          <p style={styles.panelSubtitle}>
-            Clicks = money-link clicks (source_id=email); <b>Clickers</b> = unique people (the trustworthy
-            denominator — raw clicks include repeat-clicks &amp; unflagged bots). Conversions use last-click
-            attribution (~58% tie to a money click; the rest shown as Unattributed). <b>Conv/clicker</b> =
-            conversions ÷ clickers. Delivered* is approximate (campaign counters, under-counts SES). Click any
-            creative to preview its HTML. Days are America/Denver.
-          </p>
-        </div>
-        <button style={styles.refreshBtn} onClick={() => { loadOffers(); loadReport(); }} disabled={loading}>
-          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh
-        </button>
-      </div>
-
-      {/* ── Controls ── */}
-      <div style={styles.eventFilterBar}>
-        <label style={styles.fieldLabel}>Offer
-          <select
-            value={offer}
-            onChange={(e) => setOffer(e.target.value)}
-            style={{ ...styles.input, width: 320 }}
-          >
-            {offers.length === 0 && <option value="">(no offers in range)</option>}
-            {offers.map((o) => (
-              <option key={o.slug} value={o.slug}>
-                {(o.offer_name ?? `(unmapped) ${o.slug}`) + ` (${fmt(o.money_clicks)})`}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label style={styles.fieldLabel}>View
-          <div style={styles.segmented}>
-            {(['creative', 'subject'] as CreativeView[]).map((v, i) => {
-              const active = view === v;
-              return (
-                <button
-                  key={v}
-                  style={{
-                    ...styles.segmentedBtn,
-                    borderRight: i === 0 ? `1px solid ${COLORS.border}` : 'none',
-                    color: active ? COLORS.accent : COLORS.textSecondary,
-                    background: active ? COLORS.accent + '14' : 'transparent',
-                    fontWeight: active ? 700 : 500,
-                  }}
-                  onClick={() => setView(v)}
-                >
-                  {v === 'creative' ? 'Creative' : 'Subject'}
-                </button>
-              );
-            })}
-          </div>
-        </label>
-
-        <label style={styles.fieldLabel}>From
-          <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} style={styles.input} />
-        </label>
-        <label style={styles.fieldLabel}>To
-          <input type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} style={styles.input} />
-        </label>
-        <button style={styles.primaryBtn} onClick={() => loadReport()} disabled={loading || !offer}>
-          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} /> Refresh report
-        </button>
-      </div>
-
-      {/* ── Unattributed badge + truncation ── */}
-      {meta && meta.unattributed_conversions > 0 && (
-        <div style={{
-          padding: '8px 12px', marginBottom: 12, borderRadius: 8,
-          background: COLORS.accent + '12', border: `1px solid ${COLORS.accent}33`,
-          color: COLORS.textSecondary, fontSize: 12,
-          display: 'inline-flex', alignItems: 'center', gap: 8,
-        }}>
-          <FontAwesomeIcon icon={faInfoCircle} style={{ color: COLORS.accent }} />
-          {fmt(meta.unattributed_conversions)} conversion{meta.unattributed_conversions === 1 ? '' : 's'} could not be tied to a money click — not shown below.
-        </div>
-      )}
-      <TruncationBanner truncated={!!meta?.truncated} limit={5000} />
-
-      {/* ── Body ── */}
-      {error ? (
-        <div style={styles.errorShell}>
-          <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
-          Creative report failed: {error}
-          <button style={styles.inlineRetry} onClick={() => loadReport()}>Retry</button>
-        </div>
-      ) : loading ? (
-        <LoadingRow label="Loading creative performance…" />
-      ) : !offer ? (
-        <EmptyRow label="No offers had money-link clicks in this range." />
-      ) : sortedRows.length === 0 ? (
-        <EmptyRow label="No creatives for this offer in the selected range." />
-      ) : (
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={{ ...styles.th, textAlign: 'left', cursor: 'pointer' }} onClick={() => onSort('__label')}>
-                  {view === 'creative' ? 'Creative' : 'Subject'}{sortIndicator('__label')}
-                </th>
-                <th style={{ ...styles.th, textAlign: 'left', cursor: 'pointer' }} onClick={() => onSort('__domain')}>
-                  Sending domain{sortIndicator('__domain')}
-                </th>
-                {CREATIVE_NUM_COLS.map((c) => (
-                  <th key={c.id} style={{ ...styles.th, textAlign: 'right', cursor: 'pointer' }} onClick={() => onSort(c.id)}>
-                    {c.label}{sortIndicator(c.id)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRows.map((r, idx) => {
-                // For the creative view, draw a subtle top rule whenever the
-                // creative_key changes so the operator scans one creative across
-                // its sending domains. (Only meaningful when not sorted away from
-                // the natural grouping, but harmless otherwise.)
-                const prev = idx > 0 ? sortedRows[idx - 1] : null;
-                const groupBreak = view === 'creative' && prev !== null && prev.creative_key !== r.creative_key;
-                const rowStyle: React.CSSProperties = {
-                  ...styles.tr,
-                  ...(groupBreak ? { borderTop: `2px solid ${COLORS.borderStrong}` } : {}),
-                };
-                const leftLabel = view === 'creative' ? r.creative_label : r.subject;
-                return (
-                  <tr key={`${r.creative_key}|${r.sending_domain}|${idx}`} style={rowStyle}>
-                    <td style={{
-                      ...styles.td, maxWidth: 380,
-                      borderLeft: view === 'creative' ? `2px solid ${COLORS.accentAlt}33` : undefined,
-                    }} title={leftLabel}>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{leftLabel || '—'}</span>
-                        {r.from_name ? (
-                          <span style={{ fontSize: 11, color: COLORS.textMuted }}>from: {r.from_name}</span>
-                        ) : null}
-                        <button
-                          onClick={() => openPreview(r)}
-                          style={{
-                            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                            color: r.has_html ? COLORS.accent : COLORS.textMuted, fontSize: 11,
-                            textAlign: 'left', width: 'fit-content',
-                          }}
-                        >
-                          <FontAwesomeIcon icon={faImages} style={{ marginRight: 4 }} />
-                          {r.has_html ? 'View creative' : 'Drip — no stored html'}
-                        </button>
-                      </div>
-                    </td>
-                    <td style={{ ...styles.td, whiteSpace: 'nowrap', color: COLORS.textSecondary }} title={r.sending_domain}>
-                      {r.sending_domain || '—'}
-                    </td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }} title="approximate (campaign counters)">{fmt(r.delivered)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: CLICK_VIOLET }}>{fmt(r.clicks)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmt(r.clickers)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.good, fontWeight: r.conversions > 0 ? 700 : 400 }}>{fmt(r.conversions)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textSecondary }}>{fmtPct(r.conv_rate * 100)}</td>
-                    <td style={{ ...styles.td, textAlign: 'right' }}>{fmtMoney(r.revenue)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr style={{ ...styles.tr, borderTop: `2px solid ${COLORS.borderStrong}` }}>
-                <td style={{ ...styles.td, fontWeight: 700, color: COLORS.textPrimary }}>Total</td>
-                <td style={{ ...styles.td, color: COLORS.textMuted }}>{sortedRows.length} row{sortedRows.length === 1 ? '' : 's'}</td>
-                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>{fmt(totals.delivered)}</td>
-                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: CLICK_VIOLET }}>{fmt(totals.clicks)}</td>
-                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmt(totals.clickers)}</td>
-                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700, color: COLORS.good }}>{fmt(totals.conversions)}</td>
-                <td style={{ ...styles.td, textAlign: 'right', color: COLORS.textMuted }}>
-                  {fmtPct(totals.clickers > 0 ? (totals.conversions / totals.clickers) * 100 : null)}
-                </td>
-                <td style={{ ...styles.td, textAlign: 'right', fontWeight: 700 }}>{fmtMoney(totals.revenue)}</td>
-              </tr>
-            </tfoot>
-          </table>
-          <div style={styles.tableFooterNote}>
-            *Delivered is approximate — summed from campaign counters (under-counts SES relay; a campaign carrying
-            multiple offers counts once per offer). Clicks = raw money-link clicks; Clickers = unique people;
-            Conv/clicker = conversions ÷ clickers (last-click attributed). Click each creative to preview its HTML.
-            {meta?.delivered_source ? ` Source: ${meta.delivered_source}.` : ''}
-          </div>
-        </div>
-      )}
-
-      {/* ── Creative HTML preview modal ("see the creative") ── */}
-      {preview?.open && (
-        <div
-          onClick={() => setPreview(null)}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
-          }}
-        >
-          <div onClick={(e) => e.stopPropagation()} style={{
-            background: COLORS.bgDeep, border: `1px solid ${COLORS.borderStrong}`, borderRadius: 10,
-            width: 'min(760px, 95vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
-          }}>
-            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${COLORS.borderStrong}`, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: COLORS.textPrimary, fontSize: 14 }}>{preview.subject || '(no subject)'}</div>
-                {preview.from_name ? <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2 }}>from: {preview.from_name}</div> : null}
-              </div>
-              <button onClick={() => setPreview(null)} style={{ background: 'none', border: 'none', color: COLORS.textSecondary, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>×</button>
-            </div>
-            <div style={{ flex: 1, overflow: 'auto', background: '#fff', minHeight: 200 }}>
-              {preview.loading ? (
-                <div style={{ padding: 40, textAlign: 'center', color: '#666' }}>
-                  <FontAwesomeIcon icon={faSpinner} spin /> Loading creative…
-                </div>
-              ) : preview.error ? (
-                <div style={{ padding: 24, color: HARD_RED }}>Preview failed: {preview.error}</div>
-              ) : preview.note ? (
-                <div style={{ padding: 24, color: '#444', fontSize: 13 }}>{preview.note}</div>
-              ) : (
-                <iframe
-                  title="creative-preview"
-                  sandbox=""
-                  srcDoc={preview.html}
-                  style={{ width: '100%', height: '72vh', border: 'none', background: '#fff' }}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3344,7 +2831,7 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof faChartLine }> = [
   { id: 'dimensions', label: 'Dimensions', icon: faLayerGroup },
   { id: 'campaign', label: 'Campaign Lookup', icon: faBullseye },
   { id: 'raw', label: 'Raw Events', icon: faTable },
-  { id: 'creatives', label: 'Creatives', icon: faImages },
+  { id: 'alignment', label: 'Offer Alignment', icon: faCrosshairs },
 ];
 
 export const EventLakeExplorer: React.FC = () => {
@@ -3464,9 +2951,9 @@ export const EventLakeExplorer: React.FC = () => {
       )}
 
       {/* ─── DARK empty state ──────────────────────────────────── */}
-      {/* Even when the Athena read layer is off the Creatives tab still works
-          (it is PG-backed, not lake-backed), so the dark card now reads as a
-          notice scoped to the lake tabs rather than the whole screen. */}
+      {/* Even when the Athena read layer is off the Offer Alignment tab still
+          works (PG + snapshot-backed, not lake-gated), so the dark card reads
+          as a notice scoped to the lake tabs rather than the whole screen. */}
       {status && !readEnabled && (
         <div style={styles.darkCard}>
           <FontAwesomeIcon icon={faMoon} style={{ fontSize: 28, color: COLORS.accentAlt }} />
@@ -3475,8 +2962,8 @@ export const EventLakeExplorer: React.FC = () => {
             <div style={styles.darkBody}>
               The analytics database read layer is not configured. Enable the analytics results location on the
               server to turn on breakdown &amp; event queries. Until then the lake tabs show the write-side
-              counters above; their query controls stay disabled. The Creatives tab is database-backed and works
-              regardless.
+              counters above; their query controls stay disabled. The Offer Alignment tab is database-backed and
+              works regardless (its delivery cells may show the no-lake badge).
             </div>
             <div style={styles.darkHint}>
               <FontAwesomeIcon icon={faInfoCircle} style={{ color: COLORS.textMuted, marginRight: 6 }} />
@@ -3487,8 +2974,8 @@ export const EventLakeExplorer: React.FC = () => {
       )}
 
       {/* ─── Tab nav (always rendered once status loads) ───────── */}
-      {/* The nav strip is NOT gated on readEnabled so the PG-backed Creatives
-          tab stays reachable when the lake read layer is dark. */}
+      {/* The nav strip is NOT gated on readEnabled so the PG-backed Offer
+          Alignment tab stays reachable when the lake read layer is dark. */}
       {status && (
         <div style={styles.tabNav}>
           {TABS.map((t) => {
@@ -3542,10 +3029,10 @@ export const EventLakeExplorer: React.FC = () => {
         </>
       )}
 
-      {/* ─── Creatives tab — PG-backed, NOT gated on readEnabled ── */}
-      {status && visited.has('creatives') && (
-        <div style={{ display: activeTab === 'creatives' ? 'block' : 'none' }}>
-          <CreativesTab />
+      {/* ─── Offer Alignment tab — PG/snapshot-backed, NOT gated on readEnabled ── */}
+      {status && visited.has('alignment') && (
+        <div style={{ display: activeTab === 'alignment' ? 'block' : 'none' }}>
+          <OfferAlignmentTab />
         </div>
       )}
 

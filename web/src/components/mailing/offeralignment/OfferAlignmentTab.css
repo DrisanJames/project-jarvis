@@ -1,0 +1,78 @@
+/* OfferAlignmentTab.css — container chrome for the Offer Alignment tab
+   (dark portal theme: slate-blue panels, indigo accents). */
+
+.oa-tab-root {
+  background: #0f1629;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: #e5e7eb;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.oa-tab-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.oa-tab-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #e5e7eb;
+  display: flex;
+  align-items: center;
+}
+
+.oa-tab-title-icon {
+  margin-right: 8px;
+  color: #a5b4fc;
+}
+
+.oa-tab-subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  max-width: 860px;
+  line-height: 1.5;
+}
+
+.oa-tab-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.oa-tab-crumb {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #818cf8;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(129, 140, 248, 0.35);
+  text-underline-offset: 3px;
+}
+
+.oa-tab-crumb:hover {
+  color: #a5b4fc;
+}
+
+.oa-tab-crumb-sep {
+  color: #64748b;
+}
+
+.oa-tab-crumb-here {
+  color: #94a3b8;
+  font-weight: 600;
+}

@@ -1,0 +1,178 @@
+/* EvidencePanel.css — Offer Alignment Level 2 (dark portal theme). */
+
+.oa-ev-root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.oa-ev-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.oa-ev-back {
+  background: #0f1629;
+  color: #94a3b8;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.oa-ev-back:hover {
+  color: #e5e7eb;
+}
+
+.oa-ev-titleblock {
+  flex: 1;
+  min-width: 240px;
+}
+
+.oa-ev-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e5e7eb;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.oa-ev-sub {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 3px;
+}
+
+.oa-ev-refresh {
+  background: rgba(99, 102, 241, 0.13);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  color: #c7d2fe;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-ev-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.oa-ev-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+  padding: 48px 0;
+  color: #94a3b8;
+  font-size: 13px;
+  background: #0f1629;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 10px;
+}
+
+.oa-ev-tablewrap {
+  background: #0f1629;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 10px;
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+
+.oa-ev-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.oa-ev-th {
+  padding: 7px 10px;
+  color: #64748b;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.oa-ev-th--left {
+  text-align: left;
+}
+
+.oa-ev-tr {
+  border-bottom: 1px solid rgba(99, 102, 241, 0.08);
+}
+
+.oa-ev-tr:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.oa-ev-td {
+  padding: 8px 10px;
+  color: #e5e7eb;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  vertical-align: top;
+}
+
+.oa-ev-td--left {
+  text-align: left;
+}
+
+.oa-ev-mono {
+  font-family: monospace;
+  font-size: 11px;
+  color: #a5b4fc;
+  white-space: nowrap;
+}
+
+.oa-ev-meaning {
+  max-width: 280px;
+  line-height: 1.45;
+  color: #e5e7eb;
+}
+
+.oa-ev-when {
+  white-space: nowrap;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.oa-ev-diag {
+  font-family: monospace;
+  font-size: 10.5px;
+  color: #94a3b8;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-ev-footnote {
+  padding: 10px 4px 0;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+  max-width: 860px;
+}
+
+.oa-ev-timing {
+  font-size: 11px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}

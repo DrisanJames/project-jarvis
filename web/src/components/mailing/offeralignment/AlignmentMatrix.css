@@ -1,0 +1,376 @@
+/* AlignmentMatrix.css — Offer Alignment Level 0 (dark portal theme).
+   Palette: indigo accents over slate-blue panels; text stays in ink tokens
+   (#e5e7eb / #94a3b8 / #64748b) — the color ramp lives on cell backgrounds. */
+
+.oa-mx-root {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Controls ── */
+
+.oa-mx-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.oa-mx-seg {
+  display: inline-flex;
+  background: #0a0e1c;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.oa-mx-seg-btn {
+  border: none;
+  border-right: 1px solid rgba(99, 102, 241, 0.15);
+  background: transparent;
+  color: #94a3b8;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.oa-mx-seg-btn:last-child {
+  border-right: none;
+}
+
+.oa-mx-seg-btn.is-active {
+  color: #818cf8;
+  background: rgba(129, 140, 248, 0.08);
+  font-weight: 700;
+}
+
+.oa-mx-metricnote {
+  font-size: 11px;
+  color: #64748b;
+  max-width: 420px;
+  line-height: 1.4;
+}
+
+.oa-mx-refresh {
+  margin-left: auto;
+  background: #0f1629;
+  color: #e5e7eb;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.oa-mx-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Designed loading / building / disabled states ── */
+
+.oa-mx-statecard {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 24px;
+  background: #0f1629;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.oa-mx-statecard-icon {
+  font-size: 24px;
+  color: #a5b4fc;
+  margin-top: 2px;
+}
+
+.oa-mx-statecard-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e5e7eb;
+  margin-bottom: 6px;
+}
+
+.oa-mx-statecard-body {
+  font-size: 13px;
+  color: #94a3b8;
+  line-height: 1.6;
+  max-width: 640px;
+}
+
+.oa-mx-retry {
+  margin-top: 12px;
+  background: rgba(99, 102, 241, 0.13);
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  color: #c7d2fe;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Layout: matrix + right rail ── */
+
+.oa-mx-layout {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.oa-mx-tablewrap {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.oa-mx-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 2px; /* the 2px surface gap between cell fills */
+}
+
+.oa-mx-th {
+  padding: 6px 8px;
+  color: #64748b;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.oa-mx-th--offer {
+  text-align: left;
+  min-width: 170px;
+}
+
+.oa-mx-offercell {
+  padding: 4px 10px 4px 2px;
+  vertical-align: middle;
+  max-width: 240px;
+}
+
+.oa-mx-offerlink {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-mx-offerlink:hover {
+  color: #a5b4fc;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.oa-mx-offersub {
+  font-size: 10px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.oa-mx-cellwrap {
+  padding: 0;
+  min-width: 86px;
+}
+
+.oa-mx-cell {
+  border-radius: 6px;
+  padding: 6px 8px 5px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: border-color 120ms ease;
+  outline: none;
+}
+
+.oa-mx-cell:hover,
+.oa-mx-cell:focus-visible {
+  border-color: rgba(165, 180, 252, 0.7);
+}
+
+.oa-mx-cell--empty {
+  color: #475569;
+  text-align: center;
+  cursor: default;
+  padding: 10px 8px;
+  font-size: 11px;
+  background: rgba(100, 116, 139, 0.04);
+}
+
+.oa-mx-cell--empty:hover {
+  border-color: transparent;
+}
+
+.oa-mx-cell-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.oa-mx-cell-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e5e7eb;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.oa-mx-cell--low .oa-mx-cell-value {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.oa-mx-volbar {
+  margin-top: 5px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.12);
+  overflow: hidden;
+}
+
+.oa-mx-volbar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #818cf8;
+  opacity: 0.85;
+}
+
+.oa-mx-cell--low .oa-mx-volbar-fill {
+  background: #64748b;
+}
+
+.oa-mx-footnote {
+  padding: 10px 4px 0;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+  max-width: 900px;
+}
+
+/* ── Right rail: leaderboard ── */
+
+.oa-mx-rail {
+  width: 270px;
+  flex-shrink: 0;
+  background: #0f1629;
+  border: 1px solid rgba(99, 102, 241, 0.15);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 640px;
+  overflow-y: auto;
+}
+
+.oa-mx-rail-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.oa-mx-leader {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.oa-mx-leader:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.oa-mx-leader-rank {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  min-width: 16px;
+  padding-top: 1px;
+}
+
+.oa-mx-leader-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oa-mx-leader-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-mx-leader-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+.oa-mx-leader-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+/* ── Timing note ── */
+
+.oa-mx-timing {
+  font-size: 11px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1100px) {
+  .oa-mx-layout {
+    flex-direction: column;
+  }
+  .oa-mx-rail {
+    width: 100%;
+    max-height: none;
+  }
+}
