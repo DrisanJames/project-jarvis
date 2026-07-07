@@ -374,18 +374,23 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 }
 
 // dealCampaignSetSubquery returns the parenthesized "(SELECT … UNION … UNION …)"
-// subquery that yields the campaign_id set attributed to a deal via the three
+// subquery that yields the campaign_id set attributed to a deal via the four
 // attribution paths: offer_id auto-match, explicit mailing_cpm_deal_campaigns
-// earmarks (operator 2026-06-13), and campaign_name_pattern ILIKE for
-// offer_id=NULL broadcasts/board sends (operator 2026-06-27). It is the single
-// source of truth for deal attribution — loadProgress, loadDailySeries, and the
-// monthly aggregate all use it so they can never diverge.
+// earmarks (operator 2026-06-13), campaign_name_pattern ILIKE for
+// offer_id=NULL broadcasts/board sends (operator 2026-06-27), and the stamped
+// offer_key matched through the deal's everflow id → slug-map slug/offer-name
+// set (Offer Alignment, operator 2026-07-07 — catches name-inferred/
+// html-inferred/click-inferred campaigns whose offer_id could not resolve).
+// It is the single source of truth for deal attribution — loadProgress,
+// loadDailySeries, and the monthly aggregate all use it so they can never
+// diverge.
 //
 // Callers MUST bind placeholders as:
 //
 //	$1 = organization_id, $2 = membership floor (created_at >= $2),
 //	$3 = effective offer_id (text; '' when unmapped),
-//	$4 = deal id, $5 = campaign_name_pattern ('' = off).
+//	$4 = deal id, $5 = campaign_name_pattern ('' = off),
+//	$6 = deal everflow_offer_id ('' = off).
 func dealCampaignSetSubquery() string {
 	return `(
 		SELECT id FROM mailing_campaigns
@@ -398,6 +403,20 @@ func dealCampaignSetSubquery() string {
 		SELECT id FROM mailing_campaigns
 		WHERE organization_id = $1 AND NULLIF($5,'') IS NOT NULL
 		  AND name ILIKE $5 AND created_at >= $2
+		UNION
+		-- Stamped offer_key branch: campaign_attribution.go stamps lowercased
+		-- keys (slug-map cratoolpro_slug, board-name token = slug-map
+		-- offer_name, or landing_page_slug); the deal's everflow id resolves
+		-- the same dictionary. Inert when the deal has no everflow id.
+		SELECT id FROM mailing_campaigns
+		WHERE organization_id = $1 AND NULLIF($6,'') IS NOT NULL
+		  AND created_at >= $2
+		  AND offer_key IN (
+			SELECT lower(cratoolpro_slug) FROM mailing_offer_slug_map WHERE everflow_offer_id = $6
+			UNION
+			SELECT lower(offer_name) FROM mailing_offer_slug_map
+			WHERE everflow_offer_id = $6 AND COALESCE(offer_name,'') <> ''
+		  )
 	)`
 }
 
@@ -433,7 +452,7 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 			WHERE organization_id = $1
 			  AND event_at >= $2
 			  AND campaign_id IN ` + dealCampaignSetSubquery()
-		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern).Scan(
+		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern, d.EverflowOfferID).Scan(
 			&p.Sent, &p.Delivered, &p.Opened, &p.Clicked, &p.HardBounces, &p.SoftBounces); err != nil {
 			log.Printf("[CpmPlanner] progress events for deal %s: %v", d.ID, err)
 		}
@@ -1326,7 +1345,7 @@ func (h *CpmPlannerHandlers) loadDailySeries(orgID string, d *cpmDeal) []cpmDail
 			FROM mailing_tracking_events
 			WHERE organization_id = $1 AND event_type = 'sent' AND event_at >= $2
 			  AND campaign_id IN `+dealCampaignSetSubquery()+`
-			GROUP BY 1`, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern)
+			GROUP BY 1`, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern, d.EverflowOfferID)
 		if err != nil {
 			log.Printf("[CpmPlanner] daily series for deal %s: %v", d.ID, err)
 		} else {
@@ -1594,9 +1613,12 @@ func (h *CpmPlannerHandlers) HandleListDealCampaigns(w http.ResponseWriter, r *h
 	}
 
 	// Volume-to-goal: planned_volume is the deal's CPM volume target. Use the
-	// deal's full delivered (offer-match ∪ associated, from progress) so the
-	// remaining figure matches the headline, and project days at actual daily.
-	remaining := d.PlannedVolume - d.Progress.Sent
+	// deal's full DELIVERED (attributed set, from progress) — CPM volume is
+	// billed on delivered (operator 2026-06-18), and this keeps the panel in
+	// agreement with the headline progress bar and the delivered-based
+	// actual_daily rate. (Was Progress.Sent — mislabeled as delivered_total
+	// and overstating progress-to-goal; fixed 2026-07-07.)
+	remaining := d.PlannedVolume - d.Progress.Delivered
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -1608,8 +1630,8 @@ func (h *CpmPlannerHandlers) HandleListDealCampaigns(w http.ResponseWriter, r *h
 		"campaigns": out,
 		"volume_to_goal": map[string]interface{}{
 			"planned_volume":       d.PlannedVolume,
-			"delivered_total":      d.Progress.Sent, // offer-match ∪ associated
-			"delivered_associated": assocDelivered,  // associated campaigns only
+			"delivered_total":      d.Progress.Delivered, // attributed set (offer ∪ earmarks ∪ pattern ∪ offer_key)
+			"delivered_associated": assocDelivered,       // associated campaigns only
 			"remaining":            remaining,
 			"actual_daily":         d.Progress.ActualDaily,
 			"days_to_goal":         daysToGoal,
@@ -1828,9 +1850,9 @@ func (h *CpmPlannerHandlers) loadDealsLite(orgID string) ([]cpmDeal, map[string]
 }
 
 // dealCampaignMapCTE is the unified deal→campaign attribution map (offer match
-// ∪ earmarks ∪ name-pattern) for ALL of an org's deals at once — the whole-org
-// analogue of dealCampaignSetSubquery() (same three paths). $1 = org id; queries
-// appending to it may use $2+ freely.
+// ∪ earmarks ∪ name-pattern ∪ stamped offer_key) for ALL of an org's deals at
+// once — the whole-org analogue of dealCampaignSetSubquery() (same four
+// paths). $1 = org id; queries appending to it may use $2+ freely.
 const dealCampaignMapCTE = `
 	WITH dm AS (
 		SELECT d.id AS deal_id, c.id AS campaign_id
@@ -1849,6 +1871,18 @@ const dealCampaignMapCTE = `
 			AND COALESCE(d.campaign_name_pattern,'') <> '' AND c.name ILIKE d.campaign_name_pattern
 			AND c.created_at >= d.start_date
 		WHERE d.organization_id = $1
+		UNION
+		-- Stamped offer_key branch (mirrors dealCampaignSetSubquery): the
+		-- deal's everflow id → slug-map slug/offer-name set → campaigns
+		-- stamped by campaign_attribution.go (deploy stamp or backfill).
+		SELECT d.id, c.id
+		FROM mailing_cpm_deals d
+		JOIN mailing_offer_slug_map sm ON sm.everflow_offer_id = d.everflow_offer_id
+		JOIN mailing_campaigns c ON c.organization_id = d.organization_id
+			AND c.created_at >= d.start_date
+			AND (c.offer_key = lower(sm.cratoolpro_slug)
+			     OR (COALESCE(sm.offer_name,'') <> '' AND c.offer_key = lower(sm.offer_name)))
+		WHERE d.organization_id = $1 AND COALESCE(d.everflow_offer_id,'') <> ''
 	)`
 
 // cpmDealMonthActuals holds a deal's per-Denver-month actuals (keyed "YYYY-MM").
@@ -2194,6 +2228,98 @@ func (h *CpmPlannerHandlers) HandleDeleteMonthlyTarget(w http.ResponseWriter, r 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"deal_id": dealID, "month": month.Format("2006-01"), "status": "deleted",
 	})
+}
+
+// ─── Attribution gap ─────────────────────────────────────────────────────────
+
+type cpmAttributionGapCampaign struct {
+	Name              string `json:"name"`
+	OfferKey          string `json:"offer_key"`
+	AttributionSource string `json:"attribution_source"`
+	Delivered         int64  `json:"delivered"`
+	HasOffer          bool   `json:"has_offer"`
+}
+
+type cpmAttributionGap struct {
+	Days        int    `json:"days"`
+	WindowStart string `json:"window_start"`
+	// Delivered volume in the window, bucketed by attribution outcome:
+	DealDelivered         int64 `json:"deal_delivered"`          // captured by ≥1 deal's attribution map
+	OfferNoDealDelivered  int64 `json:"offer_no_deal_delivered"` // offer-identified campaign, but no deal claims it
+	UnidentifiedDelivered int64 `json:"unidentified_delivered"`  // no offer identity at all
+	DealCampaigns         int   `json:"deal_campaigns"`
+	OfferNoDealCampaigns  int   `json:"offer_no_deal_campaigns"`
+	UnidentifiedCampaigns int   `json:"unidentified_campaigns"`
+	// Largest unattributed (either non-deal bucket) campaigns, delivered desc.
+	TopUnattributed []cpmAttributionGapCampaign `json:"top_unattributed"`
+}
+
+// HandleAttributionGap GET /cpm-planner/attribution-gap?days=N
+//
+// The acceptance surface for offer→volume attribution (operator 2026-07-07:
+// "offer volume isn't correct — one-off broadcasts aren't captured"): every
+// delivered event in the window lands in exactly one bucket — captured by a
+// deal, offer-identified but claimed by no deal, or carrying no offer identity
+// at all. Under-attribution stops being silent low deal volume and becomes a
+// number the operator can drive to zero (stamp/backfill/slug-map fixes).
+// One windowed delivered scan (same weight class as the pacing MTD scan) —
+// served on demand, never on a poll timer.
+func (h *CpmPlannerHandlers) HandleAttributionGap(w http.ResponseWriter, r *http.Request) {
+	orgID := getOrgID(r)
+	days := 30
+	if n, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && n >= 1 && n <= 90 {
+		days = n
+	}
+	start := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+
+	rows, err := h.db.Query(dealCampaignMapCTE+`
+		, vol AS (
+			SELECT te.campaign_id, COUNT(*) AS delivered
+			FROM mailing_tracking_events te
+			WHERE te.organization_id = $1
+			  AND te.event_type = 'delivered'
+			  AND te.event_at >= $2::date
+			GROUP BY 1
+		)
+		SELECT COALESCE(c.name, '(deleted)'),
+		       COALESCE(c.offer_key, ''),
+		       COALESCE(c.attribution_source, ''),
+		       (c.offer_key IS NOT NULL OR c.offer_id IS NOT NULL) AS has_offer,
+		       EXISTS (SELECT 1 FROM dm WHERE dm.campaign_id = v.campaign_id) AS in_deal,
+		       v.delivered
+		FROM vol v
+		LEFT JOIN mailing_campaigns c ON c.id = v.campaign_id
+		ORDER BY v.delivered DESC`, orgID, start)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("attribution gap: %v", err))
+		return
+	}
+	defer rows.Close()
+
+	gap := cpmAttributionGap{Days: days, WindowStart: start, TopUnattributed: []cpmAttributionGapCampaign{}}
+	const topN = 15
+	for rows.Next() {
+		var c cpmAttributionGapCampaign
+		var inDeal bool
+		if err := rows.Scan(&c.Name, &c.OfferKey, &c.AttributionSource, &c.HasOffer, &inDeal, &c.Delivered); err != nil {
+			continue
+		}
+		switch {
+		case inDeal:
+			gap.DealDelivered += c.Delivered
+			gap.DealCampaigns++
+		case c.HasOffer:
+			gap.OfferNoDealDelivered += c.Delivered
+			gap.OfferNoDealCampaigns++
+		default:
+			gap.UnidentifiedDelivered += c.Delivered
+			gap.UnidentifiedCampaigns++
+		}
+		if !inDeal && len(gap.TopUnattributed) < topN {
+			gap.TopUnattributed = append(gap.TopUnattributed, c)
+		}
+	}
+	respondJSON(w, http.StatusOK, gap)
 }
 
 // ─── Current-month pacing ────────────────────────────────────────────────────

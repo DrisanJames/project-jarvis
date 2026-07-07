@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -59,6 +60,38 @@ func parseOfferTokenFromCampaignName(name string) (string, bool) {
 	return strings.ToLower(token), true
 }
 
+// moneyLinkSlugPattern matches an Everflow money link and captures the offer
+// slug — the 2nd path segment, the same rule moneySlugExpr
+// (handlers_analytics_creatives.go) applies to clicked link_urls. The
+// source_id=email marker restricts it to money links (unsubscribe/asset/bare
+// scanner URLs never carry it), and it matches both raw click URLs and hrefs
+// inside compiled HTML (the URL token ends at a quote/whitespace/angle
+// bracket). POSIX-ERE/RE2 common subset ONLY: the backfill passes this exact
+// string to Postgres regexp_matches()/substring() as a bind argument, so Go
+// stamping and SQL backfill can never diverge.
+const moneyLinkSlugPattern = `https?://[^/"'\s<>]+/[A-Za-z0-9]+/([A-Za-z0-9]+)/[^"'\s<>]*source_id=email`
+
+var moneyLinkSlugRe = regexp.MustCompile(moneyLinkSlugPattern)
+
+// extractMoneySlugsFromHTML returns the DISTINCT money-link offer slugs in a
+// compiled creative, lowercased and sorted. One distinct slug = an unambiguous
+// single-offer creative; multiple = a multi-offer newsletter (don't guess).
+func extractMoneySlugsFromHTML(html string) []string {
+	if !strings.Contains(html, "source_id=email") {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, m := range moneyLinkSlugRe.FindAllStringSubmatch(html, -1) {
+		seen[strings.ToLower(m[1])] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // attributionQuerier is the narrow DB seam stampCampaignAttribution runs
 // through (*sql.DB satisfies it; sqlmock in tests).
 type attributionQuerier interface {
@@ -81,7 +114,12 @@ type attributionQuerier interface {
 //     when mapped, resolves offer_id via mailing_offers.everflow_offer_id
 //     (offer_id may stay NULL — the token is still the operational key),
 //     attribution_source='name_inferred'.
-//  3. neither — offer columns stay NULL (historical semantics).
+//  3. html_inferred — the compiled creative carries exactly ONE distinct
+//     money-link slug (source_id=email marker): the money link is ground
+//     truth of what the campaign mailed, independent of naming convention or
+//     payload — it is what catches one-off broadcasts (operator 2026-07-07).
+//     Multi-offer creatives (2+ distinct slugs) are logged and NOT guessed.
+//  4. none of the above — offer columns stay NULL (historical semantics).
 //
 // Creative/subject identities are md5-keyed UPSERTs into the dim tables;
 // re-deploys hit ON CONFLICT and are idempotent.
@@ -153,28 +191,17 @@ func stampCampaignAttribution(ctx context.Context, db attributionQuerier, orgID,
 		// map + mailing_offers agree.
 		offerKey = token
 		attributionSource = "name_inferred"
-		var everflowID string
-		err := db.QueryRowContext(ctx, `
-			SELECT COALESCE(everflow_offer_id, '') FROM mailing_offer_slug_map
-			WHERE upper(cratoolpro_slug) = upper($1) OR upper(offer_name) = upper($1)
-			LIMIT 1
-		`, token).Scan(&everflowID)
-		if err != nil && err != sql.ErrNoRows {
-			log.Printf("[attribution] campaign %s: slug-map lookup token=%q failed (continuing): %v", campaignID, token, err)
-		}
-		if err == nil && everflowID != "" {
-			var resolved string
-			err := db.QueryRowContext(ctx, `
-				SELECT id::text FROM mailing_offers
-				WHERE organization_id = $1 AND everflow_offer_id = $2
-				LIMIT 1
-			`, orgID, everflowID).Scan(&resolved)
-			if err == nil {
-				offerID = resolved
-			} else if err != sql.ErrNoRows {
-				log.Printf("[attribution] campaign %s: mailing_offers lookup ef=%s failed (continuing): %v", campaignID, everflowID, err)
-			}
-		}
+		offerID = resolveOfferIDViaSlugMap(ctx, db, orgID, campaignID, token)
+	} else if slugs := extractMoneySlugsFromHTML(html); len(slugs) == 1 {
+		// (3) html-inferred path — the compiled creative's money link is what
+		// the campaign actually mailed. Only unambiguous (exactly one distinct
+		// slug); the slug is the operational key even when the map doesn't
+		// know it, same semantics as the name path.
+		offerKey = slugs[0]
+		attributionSource = "html_inferred"
+		offerID = resolveOfferIDViaSlugMap(ctx, db, orgID, campaignID, slugs[0])
+	} else if len(slugs) > 1 {
+		log.Printf("[attribution] campaign %s: %d distinct money slugs in creative (%s…) — multi-offer, not stamping an offer", campaignID, len(slugs), strings.Join(slugs[:2], ","))
 	}
 
 	var creativeID interface{}
@@ -219,6 +246,41 @@ func stampCampaignAttribution(ctx context.Context, db attributionQuerier, orgID,
 		return // nothing resolved — leave the row's NULL/historical semantics alone
 	}
 
+	stampAttributionUpdate(ctx, db, campaignID, offerID, offerKey, creativeID, subjectLineID, attributionSource)
+}
+
+// resolveOfferIDViaSlugMap resolves an offer token/slug to a mailing_offers id
+// through the slug map (token matches cratoolpro_slug or offer_name), returning
+// nil when unmapped — shared by the name-inferred and html-inferred paths.
+func resolveOfferIDViaSlugMap(ctx context.Context, db attributionQuerier, orgID, campaignID, token string) interface{} {
+	var everflowID string
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(everflow_offer_id, '') FROM mailing_offer_slug_map
+		WHERE upper(cratoolpro_slug) = upper($1) OR upper(offer_name) = upper($1)
+		LIMIT 1
+	`, token).Scan(&everflowID)
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("[attribution] campaign %s: slug-map lookup token=%q failed (continuing): %v", campaignID, token, err)
+	}
+	if err == nil && everflowID != "" {
+		var resolved string
+		err := db.QueryRowContext(ctx, `
+			SELECT id::text FROM mailing_offers
+			WHERE organization_id = $1 AND everflow_offer_id = $2
+			LIMIT 1
+		`, orgID, everflowID).Scan(&resolved)
+		if err == nil {
+			return resolved
+		} else if err != sql.ErrNoRows {
+			log.Printf("[attribution] campaign %s: mailing_offers lookup ef=%s failed (continuing): %v", campaignID, everflowID, err)
+		}
+	}
+	return nil
+}
+
+// stampAttributionUpdate is the single COALESCE-guarded UPDATE that lands the
+// stamp (split out of stampCampaignAttribution for readability only).
+func stampAttributionUpdate(ctx context.Context, db attributionQuerier, campaignID string, offerID, offerKey, creativeID, subjectLineID, attributionSource interface{}) {
 	// Single UPDATE, COALESCE-guarded so a re-run (re-deploy, draft re-promote)
 	// never clobbers an earlier stamp with NULLs.
 	if _, err := db.ExecContext(ctx, `

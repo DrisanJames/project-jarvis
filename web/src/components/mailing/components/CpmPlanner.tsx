@@ -166,6 +166,28 @@ interface OfferLite {
   payout: number;
 }
 
+// ── Attribution gap (mirror cpmAttributionGap / HandleAttributionGap) ────────
+// Every delivered event in the window lands in exactly one bucket, so
+// under-attribution is a visible number instead of silently-low deal volume.
+interface AttributionGapCampaign {
+  name: string;
+  offer_key: string;
+  attribution_source: string;
+  delivered: number;
+  has_offer: boolean;
+}
+interface AttributionGap {
+  days: number;
+  window_start: string;
+  deal_delivered: number;
+  offer_no_deal_delivered: number;
+  unidentified_delivered: number;
+  deal_campaigns: number;
+  offer_no_deal_campaigns: number;
+  unidentified_campaigns: number;
+  top_unattributed: AttributionGapCampaign[];
+}
+
 // ── Offer performance (deal detail embed) — mirrors OfferStatsResponse from
 // offer_center_handlers.go, served by /cpm-planner/deals/{id}/offer-performance.
 // Same shared backend aggregation the Offers tab Performance view uses.
@@ -499,6 +521,13 @@ export const CpmPlanner: React.FC = () => {
   const [pacingLoading, setPacingLoading] = useState(false);
   const [pacingError, setPacingError] = useState<string | null>(null);
 
+  // Attribution coverage — windowed delivered scan server-side, so on demand
+  // only (mount / explicit refresh), never on the 5-min timer (QA C4).
+  const [attrGap, setAttrGap] = useState<AttributionGap | null>(null);
+  const [attrGapLoading, setAttrGapLoading] = useState(false);
+  const [attrGapError, setAttrGapError] = useState<string | null>(null);
+  const [attrGapOpen, setAttrGapOpen] = useState(false);
+
   // Month-to-date creative/subject performance per expanded deal.
   const [creatives, setCreatives] = useState<Record<string, CreativesState>>({});
 
@@ -587,6 +616,22 @@ export const CpmPlanner: React.FC = () => {
   }, []);
 
   useEffect(() => { loadPacing(); }, [loadPacing]);
+
+  const loadAttrGap = useCallback(async () => {
+    setAttrGapLoading(true);
+    try {
+      const res = await apiFetch(`${API}/attribution-gap?days=30`);
+      if (!res.ok) throw new Error(`attribution-gap: HTTP ${res.status}`);
+      setAttrGap(await res.json());
+      setAttrGapError(null);
+    } catch (e) {
+      setAttrGapError(e instanceof Error ? e.message : 'failed to load attribution coverage');
+    } finally {
+      setAttrGapLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadAttrGap(); }, [loadAttrGap]);
 
   // Refresh months after the deal modal closes (a deal may have been created from
   // "Add deal to month") so freshly-created deals appear in the planning grid.
@@ -1205,6 +1250,81 @@ export const CpmPlanner: React.FC = () => {
         }}>
           CAPACITY RISK: {capacity.risk}
         </span>
+      </div>
+    );
+  };
+
+  // 0.5 · Attribution coverage — is deal volume complete? Every delivered
+  // event in the last 30d is bucketed: captured by a deal / offer-identified
+  // but no deal claims it / no offer identity. The two non-deal buckets are
+  // the volume the operator felt was missing (2026-07-07); the backfill +
+  // deploy-time stamp drive them toward zero.
+  const renderAttributionCoverage = () => {
+    const g = attrGap;
+    const total = g ? g.deal_delivered + g.offer_no_deal_delivered + g.unidentified_delivered : 0;
+    const coverage = g && total > 0 ? (g.deal_delivered / total) * 100 : null;
+    const covColor = coverage == null ? C.muted : coverage >= 90 ? C.green : coverage >= 70 ? C.amber : C.red;
+    return (
+      <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 18px', marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Deal-attribution coverage (30d delivered)
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: covColor }}>
+                {coverage != null ? `${coverage.toFixed(1)}%` : '—'}
+              </div>
+            </div>
+            {g && (
+              <>
+                <Stat label="In a deal" value={fmtInt(g.deal_delivered)} color={C.green} />
+                <Stat label={`Offer-identified, no deal (${g.offer_no_deal_campaigns} camps)`} value={fmtInt(g.offer_no_deal_delivered)} color={g.offer_no_deal_delivered > 0 ? C.amber : C.muted} />
+                <Stat label={`No offer identity (${g.unidentified_campaigns} camps)`} value={fmtInt(g.unidentified_delivered)} color={g.unidentified_delivered > 0 ? C.red : C.muted} />
+              </>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {g && g.top_unattributed.length > 0 && (
+              <button onClick={() => setAttrGapOpen(o => !o)}
+                style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 12, cursor: 'pointer' }}>
+                <FontAwesomeIcon icon={attrGapOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, marginRight: 6 }} />
+                Top unattributed
+              </button>
+            )}
+            <button onClick={loadAttrGap} disabled={attrGapLoading}
+              style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 12, cursor: 'pointer' }}>
+              {attrGapLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
+            </button>
+          </div>
+        </div>
+        {attrGapError && <div style={{ color: C.red, fontSize: 12, marginTop: 8 }}>{attrGapError}</div>}
+        {attrGapOpen && g && g.top_unattributed.length > 0 && (
+          <div style={{ marginTop: 10, overflowX: 'auto', border: `1px solid ${C.border}`, borderRadius: 8, background: 'rgba(10,20,45,0.4)' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th style={thStyle}>Campaign (not counted by any deal)</th>
+                <th style={thStyle}>Delivered (30d)</th>
+                <th style={thStyle}>Offer Key</th>
+                <th style={thStyle}>Attribution</th>
+              </tr></thead>
+              <tbody>
+                {g.top_unattributed.map((c, i) => (
+                  <tr key={`${c.name}:${i}`}>
+                    <td style={{ ...tdStyle, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis' }} title={c.name}>{c.name}</td>
+                    <td style={tdStyle}>{fmtInt(c.delivered)}</td>
+                    <td style={tdStyle}>{c.offer_key || <span style={{ color: C.muted }}>—</span>}</td>
+                    <td style={tdStyle}>
+                      <span style={{ fontSize: 11, color: c.has_offer ? C.amber : C.red }}>
+                        {c.attribution_source || 'none'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     );
   };
@@ -2554,6 +2674,9 @@ export const CpmPlanner: React.FC = () => {
         </div>
       </div>
       {renderCapacityStrip()}
+
+      {/* 0.5 · Attribution coverage — is deal volume complete? */}
+      {renderAttributionCoverage()}
 
       {/* 1 · Current-month pacing — the month in motion (editable) */}
       {renderPacing()}

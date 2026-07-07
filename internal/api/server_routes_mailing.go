@@ -109,6 +109,19 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			creativesSyncSvc.HandleSync(w, req)
 		})
 
+		// Admin: retroactive campaign→offer attribution backfill (Offer
+		// Alignment PART B). Dry-run by default; dry_run=0 stamps. Same
+		// X-Admin-Key gate as the other admin endpoints.
+		attributionBackfill := HandleAttributionBackfill(db)
+		s.router.Post("/api/admin/attribution-backfill", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			attributionBackfill(w, req)
+		})
+
 		// Admin: bulk-tag canonical CSV loader. Mirrors the local
 		// Python loader (scripts/import/load_eo_harvest_keepers.py and
 		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
@@ -1310,6 +1323,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				cp.Delete("/deals/{id}/campaigns/{campaignID}", cpmPlanner.HandleRemoveDealCampaign)
 				cp.Get("/deals/{id}/campaign-candidates", cpmPlanner.HandleDealCampaignCandidates)
 				cp.Get("/capacity", cpmPlanner.HandleCapacity)
+				cp.Get("/attribution-gap", cpmPlanner.HandleAttributionGap)
 				cp.Get("/offers-lite", cpmPlanner.HandleOffersLite)
 				// Monthly historics & planning (operator 2026-06-30): per calendar
 				// month portfolio + per-deal TARGET vs LIVE actuals; set monthly targets.
