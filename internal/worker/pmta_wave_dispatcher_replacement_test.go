@@ -144,8 +144,10 @@ func TestEnqueuePMTAWave_CapAwareClaim_ReplacesCappedWithReserve(t *testing.T) {
 		WithArgs("b@gmail.com").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 
-	// 9b. Under-cap → INSERT queue + UPDATE plan_rec to 'queued'
-	mock.ExpectExec(`INSERT INTO mailing_campaign_queue`).
+	// 9b. Under-cap → INSERT queue + UPDATE plan_rec to 'queued'. The legacy
+	// per-row INSERT must carry the attribution-inheritance columns sourced
+	// from the campaign row's deploy-time stamp.
+	mock.ExpectExec(`(?s)INSERT INTO mailing_campaign_queue.*offer_id, creative_id, subject_line_id`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE mailing_campaign_plan_recipients\s+SET status = 'queued'`).
 		WithArgs(planRecB, waveID.String()).

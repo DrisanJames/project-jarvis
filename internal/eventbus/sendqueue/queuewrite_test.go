@@ -23,10 +23,23 @@ func TestQueueInsertSQL_CarriesConflictGuardAndColumns(t *testing.T) {
 	}
 	for _, col := range []string{"campaign_id", "subscriber_id", "subject", "html_content", "plain_content",
 		"isp_plan_id", "wave_id", "recipient_isp", "selection_rank", "audience_source_type",
-		"audience_source_id", "idempotency_key", "content_snapshot_id"} {
+		"audience_source_id", "idempotency_key", "content_snapshot_id", "creative_id",
+		"offer_id", "subject_line_id"} {
 		if !regexp.MustCompile(col).MatchString(queueInsertSQL) {
 			t.Fatalf("queueInsertSQL missing column %q", col)
 		}
+	}
+	// Attribution parity with the dispatcher: offer_id/subject_line_id inherit
+	// from the campaign stamp; creative_id is COALESCE(command variant id,
+	// campaign stamp) — the A/B branch's t.creative_id wins when present.
+	if !regexp.MustCompile(`COALESCE\(\$17::uuid, \(SELECT c\.creative_id FROM mailing_campaigns c WHERE c\.id = \$2\)\)`).MatchString(queueInsertSQL) {
+		t.Fatal("queueInsertSQL must COALESCE the A/B variant creative_id over the campaign-level stamp")
+	}
+	if !regexp.MustCompile(`\(SELECT c\.offer_id FROM mailing_campaigns c WHERE c\.id = \$2\)`).MatchString(queueInsertSQL) {
+		t.Fatal("queueInsertSQL must inherit offer_id from the campaign attribution stamp")
+	}
+	if !regexp.MustCompile(`\(SELECT c\.subject_line_id FROM mailing_campaigns c WHERE c\.id = \$2\)`).MatchString(queueInsertSQL) {
+		t.Fatal("queueInsertSQL must inherit subject_line_id from the campaign attribution stamp")
 	}
 }
 

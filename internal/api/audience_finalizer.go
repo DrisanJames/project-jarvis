@@ -200,6 +200,22 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	bumpSegmentUsage(bumpCtx, s.db, collectSegmentIDsForUsage(input), campaignID)
 	bumpCancel()
 
+	// Attribution stamp (offer/creative/subject identity) — BEFORE the wave TX,
+	// never inside it. The campaign row exists from reservation, and waves only
+	// become dispatchable after the Phase 2 commit, so stamping here guarantees
+	// the enqueue INSERTs' scalar subqueries see the stamp (no race against the
+	// wave scheduler for immediate/past-due waves). Log-and-continue internally:
+	// stamping can never fail the deploy. Kill switch: DISABLE_ATTRIBUTION_STAMPING=1.
+	stampSubject, stampHTML, stampFromName := "", "", ""
+	if len(input.Variants) > 0 {
+		stampSubject = input.Variants[0].Subject
+		stampHTML = input.Variants[0].HTMLContent
+		stampFromName = input.Variants[0].FromName
+	}
+	stampCtx, stampCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	stampCampaignAttribution(stampCtx, s.db, orgID, campaignID, input, input.Name, stampSubject, stampHTML, stampFromName)
+	stampCancel()
+
 	// ── Phase 2: Wave Creation (own 20-min context) ──
 	waveStart := time.Now()
 	waveCtx, waveCancel := context.WithTimeout(context.Background(), 20*time.Minute)

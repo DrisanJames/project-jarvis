@@ -82,7 +82,9 @@ func TestEnqueueWaveSetBased_PartitionsAndBatches(t *testing.T) {
 
 	mock.ExpectExec(`SET status = 'skipped' WHERE id = ANY`).
 		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(`INSERT INTO mailing_campaign_queue`).
+	// The default (non-A/B) branch must carry the attribution-inheritance
+	// columns sourced from the campaign row's deploy-time stamp.
+	mock.ExpectExec(`(?s)INSERT INTO mailing_campaign_queue.*offer_id, creative_id, subject_line_id`).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`SET status = 'queued', queued_at = NOW\(\)`).
 		WillReturnResult(sqlmock.NewResult(0, 2))
@@ -127,7 +129,9 @@ func TestEnqueueWaveSetBased_EarlyExitAtRemaining(t *testing.T) {
 			AddRow(uuid.New().String(), uuid.New().String(), "c@gmail.com", "gmail", 3, "segment", nil, "selected", "active", false))
 
 	// No skip statement expected: untouched candidates stay 'selected'.
-	mock.ExpectExec(`INSERT INTO mailing_campaign_queue`).
+	// The default (non-A/B) branch must carry the attribution-inheritance
+	// columns sourced from the campaign row's deploy-time stamp.
+	mock.ExpectExec(`(?s)INSERT INTO mailing_campaign_queue.*offer_id, creative_id, subject_line_id`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`SET status = 'queued', queued_at = NOW\(\)`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -176,7 +180,9 @@ func TestEnqueueWaveSetBased_CountsReserveUse(t *testing.T) {
 
 	mock.ExpectExec(`SET status = 'skipped' WHERE id = ANY`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`INSERT INTO mailing_campaign_queue`).
+	// The default (non-A/B) branch must carry the attribution-inheritance
+	// columns sourced from the campaign row's deploy-time stamp.
+	mock.ExpectExec(`(?s)INSERT INTO mailing_campaign_queue.*offer_id, creative_id, subject_line_id`).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`SET status = 'queued', queued_at = NOW\(\)`).
 		WillReturnResult(sqlmock.NewResult(0, 2))

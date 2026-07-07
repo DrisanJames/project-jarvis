@@ -572,16 +572,21 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 				return 0, 0, 0, 0, fmt.Errorf("kafka-route: produce failed for wave %s key %s: %w", p.waveID, idempotencyKey, perr)
 			}
 		} else {
+			// offer_id/creative_id/subject_line_id inherit from the campaign's
+			// deploy-time attribution stamp; NULL for unstamped campaigns.
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO mailing_campaign_queue (
 					id, campaign_id, subscriber_id, subject, html_content, plain_content,
 					status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 					recipient_isp, selection_rank, audience_source_type, audience_source_id,
-					idempotency_key
+					idempotency_key, offer_id, creative_id, subject_line_id
 				) VALUES (
 					$1, $2, $3, $4, $5, $13,
 					'queued', 5, $6, NOW(), $7, $8,
-					$9, $10, $11, $12, $14
+					$9, $10, $11, $12, $14,
+					(SELECT c.offer_id FROM mailing_campaigns c WHERE c.id = $2),
+					(SELECT c.creative_id FROM mailing_campaigns c WHERE c.id = $2),
+					(SELECT c.subject_line_id FROM mailing_campaigns c WHERE c.id = $2)
 				)
 				ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			`, queueID, p.campaignID, rec.subscriberID, recipientSubject, recipientHTML,
@@ -841,18 +846,22 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 	if len(queueIDs) > 0 && len(abVariants) > 0 {
 		// A/B branch: per-row content_snapshot_id + creative_id (= ab_variant id)
 		// carried in two extra parallel arrays. Everything else identical to the
-		// single-snapshot statement below.
+		// single-snapshot statement below. creative_id deliberately stays the
+		// ab_variant id (more precise than the campaign-level stamp); only
+		// offer_id + subject_line_id inherit from the campaign attribution.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_campaign_queue (
 				id, campaign_id, subscriber_id, subject, html_content, plain_content,
 				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 				recipient_isp, selection_rank, audience_source_type, audience_source_id,
-				idempotency_key, content_snapshot_id, creative_id
+				idempotency_key, content_snapshot_id, creative_id, offer_id, subject_line_id
 			)
 			SELECT t.id, $1, t.subscriber_id, t.subject, NULL, NULL,
 			       'queued', 5, $2, NOW(), $3, $4,
 			       t.recipient_isp, t.selection_rank, t.audience_source_type, t.audience_source_id,
-			       t.idempotency_key, t.snapshot_id, t.creative_id
+			       t.idempotency_key, t.snapshot_id, t.creative_id,
+			       (SELECT c.offer_id FROM mailing_campaigns c WHERE c.id = $1),
+			       (SELECT c.subject_line_id FROM mailing_campaigns c WHERE c.id = $1)
 			FROM unnest(
 				$5::uuid[], $6::uuid[], $7::text[], $8::text[], $9::int[],
 				$10::text[], $11::uuid[], $12::uuid[], $13::uuid[], $14::uuid[]
@@ -870,17 +879,24 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 		// html_content/plain_content stay NULL: the body lives once in the
 		// snapshot; the send worker dereferences content_snapshot_id and
 		// applies the deterministic per-recipient mutation.
+		// offer_id/creative_id/subject_line_id inherit from the campaign's
+		// deploy-time attribution stamp (stampCampaignAttribution); NULL for
+		// unstamped campaigns — the read-end `q.offer_id IS NOT NULL` guard
+		// keeps that a no-op.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_campaign_queue (
 				id, campaign_id, subscriber_id, subject, html_content, plain_content,
 				status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 				recipient_isp, selection_rank, audience_source_type, audience_source_id,
-				idempotency_key, content_snapshot_id
+				idempotency_key, content_snapshot_id, offer_id, creative_id, subject_line_id
 			)
 			SELECT t.id, $1, t.subscriber_id, t.subject, NULL, NULL,
 			       'queued', 5, $2, NOW(), $3, $4,
 			       t.recipient_isp, t.selection_rank, t.audience_source_type, t.audience_source_id,
-			       t.idempotency_key, $5
+			       t.idempotency_key, $5,
+			       (SELECT c.offer_id FROM mailing_campaigns c WHERE c.id = $1),
+			       (SELECT c.creative_id FROM mailing_campaigns c WHERE c.id = $1),
+			       (SELECT c.subject_line_id FROM mailing_campaigns c WHERE c.id = $1)
 			FROM unnest(
 				$6::uuid[], $7::uuid[], $8::text[], $9::text[], $10::int[],
 				$11::text[], $12::uuid[], $13::uuid[]

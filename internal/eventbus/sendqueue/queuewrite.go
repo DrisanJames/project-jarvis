@@ -86,17 +86,27 @@ const TopicQueueWrites = TopicSendCommands
 // html_content/plain_content are passed as NULL for the set-based path (body in
 // the snapshot) and as the inline strings for the legacy path — exactly mirroring
 // the two direct INSERTs. content_snapshot_id is NULL for the legacy path.
+//
+// Attribution parity with the dispatcher's direct INSERTs:
+// offer_id/subject_line_id always inherit from the campaign row's deploy-time
+// attribution stamp (scalar subqueries on $2, exactly like the direct
+// statements). creative_id is COALESCE($17, campaign stamp): an A/B wave
+// carries the ab_variant id in the command ($17 wins — mirrors the A/B branch
+// keeping t.creative_id); every other wave sends uuid.Nil → NULL → the
+// campaign-level stamp (mirrors the default + per-row branches).
 const queueInsertSQL = `
 INSERT INTO mailing_campaign_queue (
 	id, campaign_id, subscriber_id, subject, html_content, plain_content,
 	status, priority, scheduled_at, created_at, isp_plan_id, wave_id,
 	recipient_isp, selection_rank, audience_source_type, audience_source_id,
-	idempotency_key, content_snapshot_id, creative_id
+	idempotency_key, content_snapshot_id, creative_id, offer_id, subject_line_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $13,
 	'queued', $16, $6, NOW(), $7, $8,
 	$9, $10, $11, $12,
-	$14, $15, $17
+	$14, $15, COALESCE($17::uuid, (SELECT c.creative_id FROM mailing_campaigns c WHERE c.id = $2)),
+	(SELECT c.offer_id FROM mailing_campaigns c WHERE c.id = $2),
+	(SELECT c.subject_line_id FROM mailing_campaigns c WHERE c.id = $2)
 )
 ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`
 

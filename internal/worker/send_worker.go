@@ -1940,9 +1940,11 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		metaJSON, _ := json.Marshal(map[string]string{"vmta": vmta})
 		meta = string(metaJSON)
 	}
+	// offer_id/creative_id/subject_line_id carry the campaign's deploy-time
+	// attribution stamp onto the sent event; NULL for unstamped campaigns.
 	if _, trackErr := p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata)
-		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb, camp.offer_id, camp.creative_id, camp.subject_line_id
 		FROM mailing_campaigns camp WHERE camp.id = $1
 	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)

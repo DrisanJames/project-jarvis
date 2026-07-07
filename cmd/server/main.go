@@ -1850,6 +1850,33 @@ var criticalSendPathDDL = []struct {
 	// background goroutine AFTER serving began → deploy-window 500s). Tiny,
 	// idempotent, NULL-tolerant read (sql.NullTime).
 	{"add_cpm_deals_end_date", `ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS end_date DATE`},
+	// ---- Attribution stamping (Offer Alignment PART A, 2026-07-07) ----
+	// The wave dispatcher's queue-enqueue INSERTs and the send worker's
+	// sent-event INSERT reference mailing_campaigns.{offer_id,creative_id,
+	// subject_line_id} via scalar subqueries UNCONDITIONALLY (not behind any
+	// kill switch), so these columns must exist before any worker starts.
+	// offer_key/attribution_source ride along: the deploy-time stamp
+	// (stampCampaignAttribution) writes them as soon as the API serves.
+	// The dim tables the stamp UPSERTs into live in runStartupMigrations —
+	// the stamp is log-and-continue, so the background slice is safe there.
+	{"add_campaigns_offer_key", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS offer_key TEXT`},
+	{"add_campaigns_creative_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS creative_id UUID`},
+	{"add_campaigns_subject_line_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
+	{"add_campaigns_attribution_source", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS attribution_source TEXT`},
+	// The columns below PRE-EXIST in prod (added long ago via
+	// runStartupMigrations, main.go add_campaigns_offer_id / add_queue_* /
+	// add_tracking_* entries) but are ALSO referenced unconditionally by the
+	// same enqueue/sent-event SQL. Duplicating them here is a no-op on prod
+	// (skip-probe sees them) and closes the fresh-DB/DR boot race where a
+	// worker could enqueue before the background migration goroutine lands
+	// them. Keep both copies — the background entries backfill older paths.
+	{"add_campaigns_offer_id_critical", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS offer_id UUID`},
+	{"add_queue_offer_id_critical", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS offer_id UUID`},
+	{"add_queue_creative_id_critical", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS creative_id UUID`},
+	{"add_queue_subject_line_id_critical", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
+	{"add_tracking_offer_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS offer_id UUID`},
+	{"add_tracking_creative_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS creative_id UUID`},
+	{"add_tracking_subject_line_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
@@ -3857,6 +3884,40 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_tracking_events_from_name_id", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS from_name_id UUID`},
 
 		{"add_campaigns_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS offer_id UUID`},
+
+		// Attribution-stamping dim tables (Offer Alignment PART A, 2026-07-07).
+		// The companion mailing_campaigns columns (offer_key/creative_id/
+		// subject_line_id/attribution_source) live in criticalSendPathDDL —
+		// enqueue + sent-event SQL references them before workers start. These
+		// dims are only written by the deploy-time stampCampaignAttribution,
+		// which is log-and-continue, so the background slice is safe for them.
+		// Deliberately NOT reusing mailing_offer_subject_lines/_creatives:
+		// their offer_id is a NOT NULL FK, which breaks when the offer is
+		// unresolvable, and they are the offer-center authoring pool with a
+		// different lifecycle.
+		{"create_creative_identities", `CREATE TABLE IF NOT EXISTS mailing_creative_identities (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			content_md5 TEXT NOT NULL,
+			offer_key TEXT,
+			subject TEXT,
+			from_name TEXT,
+			first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+			last_used_at TIMESTAMPTZ DEFAULT NOW(),
+			campaign_count INT DEFAULT 1,
+			sample_campaign_id UUID
+		)`},
+		{"uq_creative_identities_org_md5", `CREATE UNIQUE INDEX IF NOT EXISTS uq_creative_identities_org_md5 ON mailing_creative_identities(organization_id, content_md5)`},
+		{"create_subject_identities", `CREATE TABLE IF NOT EXISTS mailing_subject_identities (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			subject_md5 TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			first_seen_at TIMESTAMPTZ DEFAULT NOW(),
+			last_used_at TIMESTAMPTZ DEFAULT NOW(),
+			campaign_count INT DEFAULT 1
+		)`},
+		{"uq_subject_identities_org_md5", `CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_identities_org_md5 ON mailing_subject_identities(organization_id, subject_md5)`},
 
 		// =====================================================================
 		// Phase 6: Two-PMTA Multi-Server Infrastructure

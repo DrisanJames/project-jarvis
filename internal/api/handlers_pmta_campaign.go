@@ -1116,6 +1116,20 @@ func (s *PMTACampaignService) finalizeDeploy(campaignID, orgID string, input eng
 	}
 	input.CampaignID = campaignID
 
+	// Attribution stamp — BEFORE the wave TX, same ordering as finalizeAudience
+	// (stamp must be visible before any wave becomes dispatchable). Kept in
+	// lockstep so any caller of this legacy synchronous finalizer stamps
+	// identically. Log-and-continue; kill switch: DISABLE_ATTRIBUTION_STAMPING=1.
+	stampSubject, stampHTML, stampFromName := "", "", ""
+	if len(input.Variants) > 0 {
+		stampSubject = input.Variants[0].Subject
+		stampHTML = input.Variants[0].HTMLContent
+		stampFromName = input.Variants[0].FromName
+	}
+	stampCtx, stampCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	stampCampaignAttribution(stampCtx, s.db, orgID, campaignID, input, input.Name, stampSubject, stampHTML, stampFromName)
+	stampCancel()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		log.Printf("[Deploy/BG] begin tx failed for %s: %v", campaignID, err)
