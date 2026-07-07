@@ -555,42 +555,93 @@ type alignmentEngagement struct {
 	PGSent      int64
 }
 
-// fetchAlignmentEngagement runs ONE grouped PG pass over
-// mailing_tracking_events for the campaign set: sent-event denominator plus
-// verdict-human money clicks/clickers, bucketed by the clean ISP of
-// recipient_domain. NULL recipient_domain folds into 'other'.
+// alignmentEngagementChunk bounds the campaign-id set per SENT-count query.
+// One statement over a large set scans too many partition rows and hits the
+// prod 30s statement_timeout (first live refresh, 2026-07-07); chunk counts
+// sum exactly. Clicked rows are ~3 orders of magnitude fewer, so the click
+// query runs once over the full set (keeps COUNT(DISTINCT clickers) exact).
+const alignmentEngagementChunk = 150
+
+// fetchAlignmentEngagement aggregates mailing_tracking_events for the
+// campaign set: sent-event denominator (chunked) plus verdict-human money
+// clicks/clickers (single narrow pass over clicked rows using the STORED
+// click_verdict column — write-side materialized + partial-indexed; the
+// verdict function only computes for pre-backfill NULL rows), bucketed by the
+// clean ISP of recipient_domain. NULL recipient_domain folds into 'other'.
 func fetchAlignmentEngagement(ctx context.Context, db *sql.DB, orgID interface{}, ids []string, from, to time.Time) (map[string]*alignmentEngagement, error) {
+	out := map[string]*alignmentEngagement{}
 	if len(ids) == 0 {
-		return map[string]*alignmentEngagement{}, nil
+		return out, nil
 	}
-	q := `
-		SELECT ` + alignmentISPCase("COALESCE(t.recipient_domain,'')") + ` AS isp,
-		       COUNT(*) FILTER (WHERE t.event_type = 'sent') AS pg_sent,
-		       COUNT(*) FILTER (WHERE t.event_type = 'clicked'
-		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))) AS human_clicks,
-		       COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked'
-		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))) AS clickers
+	get := func(isp string) *alignmentEngagement {
+		e := out[isp]
+		if e == nil {
+			e = &alignmentEngagement{}
+			out[isp] = e
+		}
+		return e
+	}
+
+	sentQ := `
+		SELECT ` + alignmentISPCase("COALESCE(t.recipient_domain,'')") + ` AS isp, COUNT(*)
 		FROM mailing_tracking_events t
 		WHERE t.organization_id = $1
 		  AND t.campaign_id = ANY($2::uuid[])
+		  AND t.event_type = 'sent'
 		  AND t.event_at >= $3 AND t.event_at <= $4
 		GROUP BY 1
 	`
-	rows, err := db.QueryContext(ctx, q, orgID, pq.Array(ids), from, to)
-	if err != nil {
-		return nil, fmt.Errorf("alignment engagement: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]*alignmentEngagement{}
-	for rows.Next() {
-		var isp string
-		var e alignmentEngagement
-		if err := rows.Scan(&isp, &e.PGSent, &e.HumanClicks, &e.Clickers); err != nil {
+	for start := 0; start < len(ids); start += alignmentEngagementChunk {
+		end := start + alignmentEngagementChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		rows, err := db.QueryContext(ctx, sentQ, orgID, pq.Array(ids[start:end]), from, to)
+		if err != nil {
+			return nil, fmt.Errorf("alignment engagement (sent chunk %d): %w", start/alignmentEngagementChunk, err)
+		}
+		for rows.Next() {
+			var isp string
+			var n int64
+			if err := rows.Scan(&isp, &n); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			get(isp).PGSent += n
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		out[isp] = &e
+	}
+
+	clickQ := `
+		SELECT ` + alignmentISPCase("COALESCE(t.recipient_domain,'')") + ` AS isp,
+		       COUNT(*) AS human_clicks,
+		       COUNT(DISTINCT t.subscriber_id) AS clickers
+		FROM mailing_tracking_events t
+		WHERE t.organization_id = $1
+		  AND t.campaign_id = ANY($2::uuid[])
+		  AND t.event_type = 'clicked'
+		  AND t.event_at >= $3 AND t.event_at <= $4
+		  AND t.link_url ILIKE '%source_id=email%'
+		  AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))
+		GROUP BY 1
+	`
+	rows, err := db.QueryContext(ctx, clickQ, orgID, pq.Array(ids), from, to)
+	if err != nil {
+		return nil, fmt.Errorf("alignment engagement (clicks): %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var isp string
+		var clicks, clickers int64
+		if err := rows.Scan(&isp, &clicks, &clickers); err != nil {
+			return nil, err
+		}
+		e := get(isp)
+		e.HumanClicks = clicks
+		e.Clickers = clickers
 	}
 	return out, rows.Err()
 }
@@ -1253,10 +1304,10 @@ func (s *Server) fetchAlignmentDataSources(
 		       COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND t.bounce_type = 'hard') AS hard,
 		       COUNT(*) FILTER (WHERE t.event_type = 'clicked'
 		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))) AS clicks,
+		         AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))) AS clicks,
 		       COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked'
 		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))) AS clickers
+		         AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))) AS clickers
 		FROM mailing_tracking_events t
 		JOIN mailing_subscribers sub ON sub.id = t.subscriber_id AND sub.organization_id = $1
 		WHERE t.organization_id = $1
