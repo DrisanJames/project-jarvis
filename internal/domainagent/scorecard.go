@@ -112,36 +112,45 @@ func RollupDay(ctx context.Context, db *sql.DB, orgID string, day time.Time) err
 	sendRows.Close()
 
 	// (b) engagement + negative events from the tracking table.
+	//
+	// human/machine split is derived from the canonical verdict fn
+	// (ignite_event_verdict on user_agent+ip_address), NOT the is_machine_open /
+	// is_machine_click columns — those are INERT (nullable DEFAULT false, never
+	// stamped at ingest → every open/click read as "human", inflating human_opens
+	// ~10x since ~90% of opens are Apple-MPP/scanner). The verdict fn is IMMUTABLE
+	// PARALLEL SAFE and this rollup is bounded to one day, so computing it inline
+	// is cheap. Machine = NOT is_human(verdict). See the human-verdict system /
+	// deliverability skill §7d.
 	evtRows, err := tx.QueryContext(ctx, `
 		SELECT sending_domain, COALESCE(recipient_domain, ''), event_type,
-		       COALESCE(is_machine_open, FALSE), COALESCE(is_machine_click, FALSE),
+		       NOT ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address)) AS is_machine,
 		       COALESCE(bounce_type, ''), COUNT(*)
 		FROM mailing_tracking_events
 		WHERE organization_id = $1 AND event_at >= $2 AND event_at < $3
 		  AND sending_domain <> ''
-		GROUP BY 1, 2, 3, 4, 5, 6
+		GROUP BY 1, 2, 3, 4, 5
 	`, orgID, dayStart, dayEnd)
 	if err != nil {
 		return fmt.Errorf("scorecard events query: %w", err)
 	}
 	for evtRows.Next() {
 		var sendingDomain, recipientDomain, eventType, bounceType string
-		var machineOpen, machineClick bool
+		var isMachine bool
 		var n int
-		if err := evtRows.Scan(&sendingDomain, &recipientDomain, &eventType, &machineOpen, &machineClick, &bounceType, &n); err != nil {
+		if err := evtRows.Scan(&sendingDomain, &recipientDomain, &eventType, &isMachine, &bounceType, &n); err != nil {
 			evtRows.Close()
 			return fmt.Errorf("scorecard events scan: %w", err)
 		}
 		c := cell(sendingDomain, recipientDomain)
 		switch eventType {
 		case "opened":
-			if machineOpen {
+			if isMachine {
 				c.machineOpens += n
 			} else {
 				c.humanOpens += n
 			}
 		case "clicked":
-			if machineClick {
+			if isMachine {
 				c.machineClicks += n
 			} else {
 				c.humanClicks += n
