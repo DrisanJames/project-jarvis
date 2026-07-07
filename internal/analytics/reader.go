@@ -99,8 +99,18 @@ type BreakdownFilter struct {
 	GroupBy  []string          // 1..3 dims from breakdownDims
 	Eq       map[string]string // optional equality predicates, column -> value
 	SourceIn []string          // optional; values must be in srcAllow {pmta,ses}; emits source IN (...)
-	Limit    int               // clamped to [1,5000], default 1000 if <=0
+	// CampaignIDs scopes the breakdown to a campaign set: emits
+	// campaign_id IN ('<uuid>', ...). Every value must be a UUID (uuidRe) —
+	// copying the validated-IN-list precedent from reader_audience.go
+	// (buildAudienceMemberEventsSQL). Capped at maxBreakdownCampaignIDs.
+	CampaignIDs []string
+	Limit       int // clamped to [1,5000], default 1000 if <=0
 }
+
+// maxBreakdownCampaignIDs bounds the campaign IN-list so a pathological caller
+// can't build an unbounded query (Athena query strings have a 256KB ceiling;
+// 2000 quoted UUIDs is ~78KB — comfortable headroom).
+const maxBreakdownCampaignIDs = 2000
 
 // breakdownDims is the closed set of columns Breakdown may GROUP BY or filter
 // on, each paired with the validation pattern its Eq values must satisfy.
@@ -126,7 +136,20 @@ var breakdownDims = map[string]*regexp.Regexp{
 	"local_dt":         dtRe,        // America/Denver calendar day (computed)
 	"local_hour":       localHourRe, // America/Denver calendar hour bucket "YYYY-MM-DD HH:00" (computed)
 	"is_machine_click": boolRe,      // boolean column — rendered unquoted in SQL
+	// v2.3 (2026-07-07, Offer Alignment): diagnostic-family classification.
+	// dsn_family is COMPUTED from dsn_diag (see dsnFamilyExpr); values are
+	// bracket codes (HM08) or dotted DSN codes (4.7.650) — dottedRe.
+	// dsn_diag is the raw free-text diagnostic — groupable so evidence views
+	// can surface a sample diagnostic per family; Eq values are restricted by
+	// dsnDiagRe (no quotes/backslashes/newlines) before sqlStr interpolation.
+	"dsn_family": dottedRe,
+	"dsn_diag":   dsnDiagRe,
 }
+
+// dsnDiagRe admits free-text diagnostic strings as Eq values (spaces, brackets,
+// punctuation) while excluding quotes, backslashes and newlines — safe for
+// sqlStr interpolation (which additionally doubles any quote, defense in depth).
+var dsnDiagRe = regexp.MustCompile(`^[^'\\\n\r]{1,300}$`)
 
 var boolRe = regexp.MustCompile(`^(true|false)$`)
 
@@ -234,6 +257,37 @@ const eventTypeExpr = "CASE WHEN event_type IN ('hard_bounce','soft_bounce','rep
 	" ELSE 'soft_bounce' END)" +
 	" ELSE event_type END"
 
+// dsnFamilyExpr is the COMPUTED diagnostic-family classification for bounce /
+// deferral evidence (Offer Alignment, 2026-07-07). It buckets the raw dsn_diag
+// free text into the operator-recognisable families:
+//   - Apple/ISP bracket codes embedded in the diagnostic: [HM08] [HCM2] [CS01]
+//     [CS02] [PH01] (Apple local-policy / per-IP reputation / content blocks).
+//   - Microsoft: 4.7.650 (velocity throttle), S3140 (network block),
+//     S3150 (throttle/mitigation).
+//   - Gmail rate/auth deferrals: 4.7.0, 4.7.28.
+//   - List quality: 5.1.1 (invalid mailbox), 5.2.2 (mailbox full).
+//
+// Rows with no matching pattern fall back to COALESCE(NULLIF(dsn_code,''),'other')
+// so a classified DSN code still buckets sensibly. NULL dsn_diag makes every
+// LIKE/regexp predicate non-true in Presto, so NULL rows reach the ELSE arm.
+// Order matters only within the substring checks: 4.7.650 is tested before
+// 4.7.0 / 4.7.28 (none is a substring of another, but the specific-first order
+// keeps intent obvious).
+const dsnFamilyExpr = "CASE" +
+	" WHEN regexp_like(dsn_diag, '\\[HM08\\]') THEN 'HM08'" +
+	" WHEN regexp_like(dsn_diag, '\\[HCM2\\]') THEN 'HCM2'" +
+	" WHEN regexp_like(dsn_diag, '\\[CS01\\]') THEN 'CS01'" +
+	" WHEN regexp_like(dsn_diag, '\\[CS02\\]') THEN 'CS02'" +
+	" WHEN regexp_like(dsn_diag, '\\[PH01\\]') THEN 'PH01'" +
+	" WHEN dsn_diag LIKE '%4.7.650%' THEN '4.7.650'" +
+	" WHEN dsn_diag LIKE '%4.7.28%' THEN '4.7.28'" +
+	" WHEN dsn_diag LIKE '%4.7.0%' THEN '4.7.0'" +
+	" WHEN dsn_diag LIKE '%S3140%' THEN 'S3140'" +
+	" WHEN dsn_diag LIKE '%S3150%' THEN 'S3150'" +
+	" WHEN dsn_diag LIKE '%5.1.1%' THEN '5.1.1'" +
+	" WHEN dsn_diag LIKE '%5.2.2%' THEN '5.2.2'" +
+	" ELSE COALESCE(NULLIF(dsn_code,''),'other') END"
+
 // dimSelect / dimGroup render a dimension for the SELECT and GROUP BY lists.
 // Plain columns pass through; local_dt is computed (aliased in SELECT, raw
 // expression in GROUP BY — Athena does not allow grouping by the alias when
@@ -250,6 +304,8 @@ func dimSelect(d string) string {
 		return brandExpr + " AS brand"
 	case "event_type":
 		return eventTypeExpr + " AS event_type"
+	case "dsn_family":
+		return dsnFamilyExpr + " AS dsn_family"
 	}
 	return d
 }
@@ -266,6 +322,8 @@ func dimGroup(d string) string {
 		return brandExpr
 	case "event_type":
 		return eventTypeExpr
+	case "dsn_family":
+		return dsnFamilyExpr
 	}
 	return d
 }
@@ -611,6 +669,19 @@ func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
 			return nil, fmt.Errorf("invalid source_in value %q", s)
 		}
 	}
+
+	// CampaignIDs: every id must be a UUID before it can reach SQL (mirrors
+	// buildAudienceMemberEventsSQL in reader_audience.go — but those ids are
+	// lake data and silently dropped; these are caller input, so a malformed
+	// id is an explicit error). The list is capped defensively.
+	if len(f.CampaignIDs) > maxBreakdownCampaignIDs {
+		return nil, fmt.Errorf("campaign_ids allows at most %d ids, got %d", maxBreakdownCampaignIDs, len(f.CampaignIDs))
+	}
+	for _, id := range f.CampaignIDs {
+		if !uuidRe.MatchString(id) {
+			return nil, fmt.Errorf("invalid campaign_ids value %q: must be a UUID", id)
+		}
+	}
 	return dims, nil
 }
 
@@ -700,6 +771,25 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		b.WriteString(")")
 	}
 
+	// CampaignIDs (Offer Alignment campaign-set scoping): every id was
+	// uuidRe-validated above; dedupe preserving order, render each through
+	// sqlStr. Placed after SourceIn / before the Eq loop so existing Eq
+	// ordering (and the tests that assert it) are unchanged.
+	if len(f.CampaignIDs) > 0 {
+		seenID := make(map[string]bool, len(f.CampaignIDs))
+		quotedIDs := make([]string, 0, len(f.CampaignIDs))
+		for _, id := range f.CampaignIDs {
+			if seenID[id] {
+				continue
+			}
+			seenID[id] = true
+			quotedIDs = append(quotedIDs, sqlStr(id))
+		}
+		b.WriteString(" AND campaign_id IN (")
+		b.WriteString(strings.Join(quotedIDs, ", "))
+		b.WriteString(")")
+	}
+
 	// Equality predicates: validated above, rendered as quoted literals in
 	// sorted column order (map iteration is random; tests assert exact SQL).
 	// is_machine_click is a boolean column (unquoted); local_dt is the
@@ -733,6 +823,10 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 			b.WriteString(sqlStr(f.Eq[col]))
 		case "brand":
 			b.WriteString(brandExpr)
+			b.WriteString(" = ")
+			b.WriteString(sqlStr(f.Eq[col]))
+		case "dsn_family":
+			b.WriteString(dsnFamilyExpr)
 			b.WriteString(" = ")
 			b.WriteString(sqlStr(f.Eq[col]))
 		default:

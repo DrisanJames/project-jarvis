@@ -46,6 +46,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// audienceCadenceRefreshInterval). Read SCHEDULING_INTEGRITY_PLAYBOOK
 		// §15 for context. Cancellation tied to process lifetime.
 		advSvc.StartAudienceCadenceWorker(context.Background())
+		// Start the offer-alignment snapshot refresher (read-only background
+		// worker that materialises mailing_offer_alignment_snapshot every
+		// offerAlignmentRefreshInterval; no-ops while the lake reader is
+		// disabled). See offer_alignment_snapshot.go. Cancellation tied to
+		// process lifetime, same as the audience-cadence worker above.
+		s.StartOfferAlignmentWorker(context.Background())
 
 		// Injection Analytics — public (no auth required)
 		injectionAnalytics := NewInjectionAnalyticsHandler(db)
@@ -679,6 +685,19 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Get("/analytics/creatives/offers", s.HandleAnalyticsCreativeOffers)
 			r.Get("/analytics/creatives", s.HandleAnalyticsCreatives)
 			r.Get("/analytics/creatives/preview", s.HandleAnalyticsCreativePreview)
+
+			// Offer Alignment (READ ONLY) — the decision surface offer × ISP
+			// × data-source × creative × subject. matrix reads the snapshot
+			// table (worker above); offer/evidence are live (2 Athena calls +
+			// campaign-set-scoped PG). Delivery = lake pmta+ses truth;
+			// engagement = PG verdict-human money clicks; badges/actions from
+			// classifyAlignmentCell (single threshold source). See
+			// handlers_offer_alignment.go + METRIC_CONTRACT.md "Offer
+			// Alignment".
+			r.Get("/offer-alignment/matrix", s.HandleOfferAlignmentMatrix)
+			r.Get("/offer-alignment/offer", s.HandleOfferAlignmentOffer)
+			r.Get("/offer-alignment/evidence", s.HandleOfferAlignmentEvidence)
+			r.Post("/offer-alignment/refresh", s.HandleOfferAlignmentRefresh)
 
 			// AUDIENCE LAKE read layer — Athena queries over the
 			// ignite_analytics.audience table (daily full-replace snapshot

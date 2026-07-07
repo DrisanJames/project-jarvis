@@ -111,7 +111,79 @@ SQL against the lake/PG for a fixed window and reconcile against the Reporting s
 must say why (unit difference, scope difference) in the UI itself (tooltip/subtext), not in a
 commit message.
 
+## 9. Offer Alignment (2026-07-07)
+
+Surfaces: `GET /api/mailing/offer-alignment/{matrix,offer,evidence}` + the
+`mailing_offer_alignment_snapshot` worker (`internal/api/offer_alignment_snapshot.go`,
+`handlers_offer_alignment.go`). Every number below is scoped to an **offer campaign-ID set**.
+
+**Offer identity & attribution.** The offer key is the stamped
+`mailing_campaigns.offer_key` (deploy-time stamping, `attribution_source`
+'payload' | 'name_inferred'). Historical campaigns (offer_key NULL) are **inferred**: campaign-name
+" - <offer>" suffix match (against the key and the slug-map offer_name) ∪ slug-anchored money
+clicks. Every response carries `attribution: {stamped_campaigns, inferred_campaigns}`;
+`attribution_coverage` on matrix rows is **campaign-count based** (stamped / (stamped+inferred)) —
+NOT delivery-weighted (a delivery-weighted split would need a per-campaign lake group-by that
+blows the row cap).
+
+**Delivery cells (lake).** `source IN ('pmta','ses')`, `COUNT(DISTINCT event_uid)`, scoped by
+`campaign_id IN (<set>)` (reader `BreakdownFilter.CampaignIDs`, per-UUID validated, capped at
+2000 ids — sets over the cap are truncated to the most-recent ids and the response discloses it in
+`notes`). Buckets from the read-time `eventTypeExpr` reclassification: delivered / hard / soft /
+reputation_block; `deferred` counts `delivery_delay` events (per-RETRY events, NOT unique deferred
+messages — used only as a throttle-pressure ratio, never presented as messages).
+`attempted` is DERIVED = delivered + hard + soft + reputation_block. `block_rate` =
+reputation_block / attempted. **Footnote metric:** ~20% of PMTA lake rows carry a blank
+campaign_id — campaign-set-scoped delivery therefore UNDERCOUNTS by up to that share
+(`unattributed_delivery`); this is a floor, not a truth-drift.
+
+**Engagement cells (PG).** `mailing_tracking_events`, human =
+`ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))`; clicks restricted to
+money links (`link_url ILIKE '%source_id=email%'`); `clickers` = COUNT(DISTINCT subscriber_id).
+`clicker_rate` denominator = the **PG sent-event count** for the same campaign set + window.
+**Scope rule: engagement rates are PG-scoped and delivery rates are lake-scoped — the two stores
+are never divided into each other** (§2 "never divide metrics with different scopes"). ISP via the
+canonical clean classifier over `recipient_domain` (mirrors `ISP_CASE_PG` /
+`analytics.ispExpr` buckets exactly).
+
+**Creatives panel.** creative identity = md5(html_content); `delivered` per creative × ISP is the
+**PG sent-event count** (the lake cannot key delivery by creative; per §1 PG tracking is the
+per-campaign delivery proxy) — its `clicker_rate` is therefore a same-store PG fraction. Rows
+whose campaign group carries no stamped offer_key are flagged `inferred`.
+
+**Conversions.** conv UNION = `mailing_offer_suppressions` reason='converted' (postback truth,
+revenue 0) ∪ `mailing_cpm_manual_conversions` (revenue carried), offer-scoped via the slug map's
+everflow ids (unmapped offers report 0 conversions rather than mis-tally other offers').
+Conversion × ISP uses the converting subscriber's email domain; conversion × data_source uses
+`mailing_subscribers.data_source`. Creative attribution = LATERAL most-recent in-window money-link
+click (90-day lookback). `rpm` = revenue / lake delivered × 1000; `epc` = revenue / human_clicks;
+zero denominators emit 0, never NaN/null.
+
+**Data-source panel.** `mailing_subscribers.data_source` via subscriber join; NULL/'' renders as
+"(unattributed)". `invalid_rate` = hard / (delivered + hard), **PG scope** (hard = PG
+`event_type='bounced' AND bounce_type='hard'`).
+
+**Badges (delivery-health channel, never blended with performance).** Single source =
+`classifyAlignmentCell`: `< 500` attempted ⇒ LOW_VOLUME (`sample_ok=false`); BLOCKING =
+block_rate ≥ 10% OR HM08+HCM2+S3140 dsn_family count ≥ 100; THROTTLED = deferred/attempted ≥ 20%
+AND block_rate < 10% (capacity language, never reputation); LIST_QUALITY = hard/attempted ≥ 3%
+dominated (≥50%) by the 5.1.1 family; else HEALTHY. `dsn_family` is a computed lake dimension
+(`dsnFamilyExpr`, reader.go). Hard and soft are never combined; reputation_block is its own class.
+
+**Windows.** Matrix windows are 7 and 30 trailing **America/Denver** days, refreshed every 30m
+into `mailing_offer_alignment_snapshot` (staleness disclosed in the response). BOTH windows use
+events-in-window semantics over the SAME 30-day-active campaign set — delivery (lake, sliced by
+`local_dt`), engagement and conversions (PG, sliced by event time) all share one campaign scope
+per cell, so a cell's rates never mix scopes. Consequence: an older campaign's in-window events
+(e.g. deferral retries) count in the 7d cells, and the matrix 7d numbers may differ slightly from
+a live offer-profile query whose campaign set is resolved from the 7-day window itself. A
+per-(org,window) `__meta__` sentinel row marks each successful refresh: a built-but-empty window
+serves an empty matrix (designed empty state), never a perpetual "building" status.
+
 ## Amendment log
 
 - 2026-07-01: initial contract, consolidated from the Reporting-screen fix set (commits f76582f,
   dd4cb0f, ca0b3c0, cc303d5) and the audience-knowledge MCP catalog rules.
+- 2026-07-07: §9 Offer Alignment — offer-keyed delivery/engagement/conversion cells, stamped vs
+  inferred attribution disclosure, PG-vs-lake scope rule, badge thresholds, blank-campaign_id
+  lake-loss footnote.

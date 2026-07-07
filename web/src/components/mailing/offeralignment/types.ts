@@ -48,7 +48,7 @@ export interface MatrixRow {
   badge_reason: string;
   action: string;
   sample_ok: boolean;
-  attribution_coverage: number; // fraction of delivery tied to stamped campaigns
+  attribution_coverage: number; // fraction of the offer's CAMPAIGNS that are stamped (count-based, not delivery-weighted)
 }
 
 export interface MatrixResponse {

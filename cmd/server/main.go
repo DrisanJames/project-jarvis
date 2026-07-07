@@ -3919,6 +3919,38 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"uq_subject_identities_org_md5", `CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_identities_org_md5 ON mailing_subject_identities(organization_id, subject_md5)`},
 
+		// Offer Alignment matrix snapshot (PART B, 2026-07-07). READ-path
+		// materialisation refreshed by RefreshOfferAlignmentSnapshot
+		// (internal/api/offer_alignment_snapshot.go) — deliberately in the
+		// background slice, NOT criticalSendPathDDL: no send-path code
+		// references it, and the worker's first refresh only starts 90s after
+		// boot. Raw counters only; every rate derives at read time.
+		{"create_offer_alignment_snapshot", `CREATE TABLE IF NOT EXISTS mailing_offer_alignment_snapshot (
+			organization_id UUID NOT NULL,
+			window_days INT NOT NULL,
+			offer_key TEXT NOT NULL,
+			offer_name TEXT NOT NULL DEFAULT '',
+			isp TEXT NOT NULL,
+			delivered BIGINT NOT NULL DEFAULT 0,
+			hard BIGINT NOT NULL DEFAULT 0,
+			soft BIGINT NOT NULL DEFAULT 0,
+			reputation_block BIGINT NOT NULL DEFAULT 0,
+			deferred BIGINT NOT NULL DEFAULT 0,
+			human_clicks BIGINT NOT NULL DEFAULT 0,
+			clickers BIGINT NOT NULL DEFAULT 0,
+			pg_sent BIGINT NOT NULL DEFAULT 0,
+			conversions BIGINT NOT NULL DEFAULT 0,
+			revenue NUMERIC NOT NULL DEFAULT 0,
+			stamped_campaigns INT NOT NULL DEFAULT 0,
+			inferred_campaigns INT NOT NULL DEFAULT 0,
+			badge TEXT NOT NULL DEFAULT '',
+			badge_reason TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL DEFAULT '',
+			sample_ok BOOLEAN NOT NULL DEFAULT FALSE,
+			refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (organization_id, window_days, offer_key, isp)
+		)`},
+
 		// =====================================================================
 		// Phase 6: Two-PMTA Multi-Server Infrastructure
 		// =====================================================================

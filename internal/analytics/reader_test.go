@@ -457,3 +457,136 @@ func TestBreakdownDisabled(t *testing.T) {
 		t.Fatalf("expected disabled sentinel, got %v", err)
 	}
 }
+
+// ── Offer Alignment reader extensions (2026-07-07) ──────────────────────────
+
+func TestBuildBreakdownSQLDSNFamily(t *testing.T) {
+	// dsn_family is a COMPUTED dim: the CASE expression must render in SELECT,
+	// GROUP BY, and Eq positions (never the bare column name, which doesn't
+	// exist in the lake table).
+	got, err := buildBreakdownSQL(BreakdownFilter{
+		From: "2026-06-01", To: "2026-06-08",
+		GroupBy: []string{"dsn_family", "dsn_code"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT " + dsnFamilyExpr + " AS dsn_family, dsn_code, COUNT(DISTINCT event_uid) c FROM email_events" +
+		" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+		" GROUP BY " + dsnFamilyExpr + ", dsn_code ORDER BY c DESC LIMIT 1000"
+	if got != want {
+		t.Errorf("dsn_family group-by:\n got  %s\n want %s", got, want)
+	}
+
+	// Eq filter renders the computed expression too; dotted values (4.7.650)
+	// and bracket codes (HM08) both pass dottedRe.
+	for _, val := range []string{"HM08", "4.7.650", "S3140"} {
+		f := BreakdownFilter{
+			From: "2026-06-01", To: "2026-06-08",
+			GroupBy: []string{"dsn_code"},
+			Eq:      map[string]string{"dsn_family": val},
+		}
+		got, err := buildBreakdownSQL(f)
+		if err != nil {
+			t.Fatalf("dsn_family=%s: unexpected error %v", val, err)
+		}
+		wantFrag := " AND " + dsnFamilyExpr + " = '" + val + "'"
+		if !strings.Contains(got, wantFrag) {
+			t.Errorf("dsn_family=%s: SQL missing %q in %s", val, wantFrag, got)
+		}
+	}
+
+	// Injection-shaped Eq values reject.
+	f := BreakdownFilter{
+		From: "2026-06-01", To: "2026-06-08",
+		GroupBy: []string{"dsn_code"},
+		Eq:      map[string]string{"dsn_family": "HM08' OR '1'='1"},
+	}
+	if _, err := buildBreakdownSQL(f); err == nil {
+		t.Errorf("quoted dsn_family Eq value should be rejected")
+	}
+}
+
+func TestBuildBreakdownSQLDSNDiagDim(t *testing.T) {
+	// dsn_diag is groupable (evidence sample-diagnostic) and its Eq values must
+	// exclude quotes/backslashes/newlines.
+	got, err := buildBreakdownSQL(BreakdownFilter{
+		From: "2026-06-01", To: "2026-06-08",
+		GroupBy: []string{"dsn_family", "dsn_diag"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, ", dsn_diag,") || !strings.Contains(got, "GROUP BY "+dsnFamilyExpr+", dsn_diag") {
+		t.Errorf("dsn_diag should render as a plain column, got %s", got)
+	}
+	for _, bad := range []string{"x' OR 1=1", `back\slash`, "line\nbreak"} {
+		f := BreakdownFilter{
+			From: "2026-06-01", To: "2026-06-08",
+			GroupBy: []string{"dsn_code"},
+			Eq:      map[string]string{"dsn_diag": bad},
+		}
+		if _, err := buildBreakdownSQL(f); err == nil {
+			t.Errorf("dsn_diag Eq %q should be rejected", bad)
+		}
+	}
+	// Ordinary diagnostic text (spaces, brackets, dots) is accepted.
+	f := BreakdownFilter{
+		From: "2026-06-01", To: "2026-06-08",
+		GroupBy: []string{"dsn_code"},
+		Eq:      map[string]string{"dsn_diag": "smtp;550 5.1.1 [HM08] user unknown"},
+	}
+	if _, err := buildBreakdownSQL(f); err != nil {
+		t.Errorf("plain diagnostic text should be accepted, got %v", err)
+	}
+}
+
+func TestBuildBreakdownSQLCampaignIDs(t *testing.T) {
+	idA := "550e8400-e29b-41d4-a716-446655440000"
+	idB := "660e8400-e29b-41d4-a716-446655440111"
+
+	// IN-list renders after SourceIn and before Eq predicates; duplicates
+	// render once (order preserved).
+	f := BreakdownFilter{
+		From: "2026-06-01", To: "2026-06-08",
+		GroupBy:     []string{"isp", "event_type"},
+		SourceIn:    []string{"pmta", "ses"},
+		CampaignIDs: []string{idA, idB, idA},
+		Eq:          map[string]string{"isp_group": "gmail"},
+	}
+	got, err := buildBreakdownSQL(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "SELECT " + ispExpr + " AS isp, " + eventTypeExpr + " AS event_type, COUNT(DISTINCT event_uid) c FROM email_events" +
+		" WHERE dt BETWEEN '2026-06-01' AND '2026-06-08'" +
+		" AND source IN ('pmta', 'ses')" +
+		" AND campaign_id IN ('" + idA + "', '" + idB + "')" +
+		" AND isp_group = 'gmail'" +
+		" GROUP BY " + ispExpr + ", " + eventTypeExpr + " ORDER BY c DESC LIMIT 1000"
+	if got != want {
+		t.Errorf("campaign-ids SQL:\n got  %s\n want %s", got, want)
+	}
+
+	// Every id is uuidRe-validated: a malformed / injection-shaped id errors.
+	for _, bad := range []string{"not-a-uuid", "550e8400-e29b-41d4-a716-44665544000Z", "1' OR '1'='1"} {
+		f := BreakdownFilter{
+			From: "2026-06-01", To: "2026-06-08",
+			GroupBy:     []string{"event_type"},
+			CampaignIDs: []string{idA, bad},
+		}
+		if _, err := buildBreakdownSQL(f); err == nil {
+			t.Errorf("campaign id %q should be rejected", bad)
+		}
+	}
+
+	// The list is capped at maxBreakdownCampaignIDs.
+	big := make([]string, maxBreakdownCampaignIDs+1)
+	for i := range big {
+		big[i] = idA
+	}
+	f = BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, CampaignIDs: big}
+	if _, err := buildBreakdownSQL(f); err == nil {
+		t.Errorf("over-cap campaign_ids should be rejected")
+	}
+}
