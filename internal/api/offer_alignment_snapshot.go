@@ -432,20 +432,27 @@ func (s *Server) offerAlignmentOffers(ctx context.Context, orgID string, from, t
 		return nil, err
 	}
 
-	// (b) clicked money-slugs mapped through the slug map (historical inlet).
+	// (b) historical inlet: board-convention name-suffix tokens from
+	// UNSTAMPED campaigns. This deliberately reads mailing_campaigns (small,
+	// ~200k rows/30d) instead of scanning 30 days of mailing_tracking_events
+	// for money-click slugs — the click-scan version hit the prod 30s
+	// statement_timeout on first live refresh (2026-07-07 boot log) and wrote
+	// 0 rows. Same extraction rule as parseOfferTokenFromCampaignName: last
+	// " - " token, only on wave-convention names.
 	rows, err = s.mailingDB.QueryContext(ctx, `
-		WITH clicked AS (
-			SELECT substring(t.link_url FROM 'https?://[^/]+/[A-Za-z0-9]+/([A-Za-z0-9]+)/') AS slug
-			FROM mailing_tracking_events t
-			WHERE t.organization_id = $1
-			  AND t.event_at >= $2 AND t.event_at <= $3
-			  AND t.event_type = 'clicked'
-			  AND t.link_url ILIKE '%source_id=email%'
+		WITH named AS (
+			SELECT lower(substring(name FROM ' - ([A-Za-z0-9_-]+)$')) AS slug
+			FROM mailing_campaigns
+			WHERE organization_id = $1
+			  AND COALESCE(offer_key,'') = ''
+			  AND scheduled_at >= $2 AND scheduled_at <= $3
+			  AND name ~ '\mW[0-9]+-'
+			  AND substring(name FROM ' - ([A-Za-z0-9_-]+)$') !~ '^W[0-9]+-'
 		)
-		SELECT lower(c.slug), COALESCE(min(m.offer_name), ''), COUNT(*)
-		FROM clicked c
-		LEFT JOIN mailing_offer_slug_map m ON upper(m.cratoolpro_slug) = upper(c.slug)
-		WHERE c.slug IS NOT NULL
+		SELECT n.slug, COALESCE(min(m.offer_name), ''), COUNT(*)
+		FROM named n
+		LEFT JOIN mailing_offer_slug_map m ON upper(m.cratoolpro_slug) = upper(n.slug)
+		WHERE n.slug IS NOT NULL AND n.slug <> ''
 		GROUP BY 1
 	`, orgID, from, to)
 	if err != nil {
