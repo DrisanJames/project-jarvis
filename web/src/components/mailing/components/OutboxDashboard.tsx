@@ -38,8 +38,14 @@ import { apiFetch } from '../shared/apiFetch';
 // client-side to the last 8h, newest first, max 50 rows.
 // v2.1: per-ISP rows expand into a per-VMTA pipes sub-table
 // (/api/mailing/outbox/isp-pipes, fetched on expand only).
+// v2.2: schedule split into Broadcast Sends + Data Partner Drips (same panel,
+// partner-drip names parsed into offer · brand · touch · route), new Click
+// Funnels section (the waveless click-drip path: enrollments + per-offer 24h
+// scorecard), workers moved into their own card grid, and the freed panel is
+// now the 24h Performance scoreboard (volume, open/click % raw+human,
+// complaints, conversions). Backend counterpart: engine-status API v1.2.
 
-const PAGE_VERSION = '2.1';
+const PAGE_VERSION = '2.2';
 const POLL_INTERVAL_MS = 10_000;
 const DEAD_LETTER_POLL_EVERY_N_TICKS = 3; // every ~30s
 const DEAD_LETTER_WINDOW_HOURS = 8;
@@ -148,12 +154,54 @@ interface WorkerSection {
   workers: WorkerBeat[];
 }
 
+interface ClickFunnelOffer {
+  everflow_offer_id: string;
+  offer_name: string;
+  active_enrollments: number;
+  due_now: number;
+  sent_24h: number;
+  opens_24h: number;
+  clicks_24h: number;
+  converted_24h: number;
+}
+
+interface ClickFunnelSection {
+  ok: boolean;
+  error?: string;
+  active_enrollments: number;
+  due_now: number;
+  sent_24h: number;
+  opens_24h: number;
+  clicks_24h: number;
+  converted_24h: number;
+  offers: ClickFunnelOffer[];
+}
+
+interface PerformanceSection {
+  ok: boolean;
+  error?: string;
+  window_hours: number;
+  sent_24h: number;
+  delivered_24h: number;
+  opens_raw_24h: number;
+  clicks_raw_24h: number;
+  human_ok: boolean;
+  opens_human_24h: number;
+  clicks_human_24h: number;
+  complaints_24h: number;
+  conversions_24h: number;
+}
+
 interface EngineStatusResponse {
   generated_at: string;
   api_version: string;
   cache_age_seconds: number;
   queue: QueueSection;
   waves: WaveSection;
+  waves_broadcast: WaveSection;
+  waves_partner_drip: WaveSection;
+  click_funnels: ClickFunnelSection;
+  performance: PerformanceSection;
   throughput: ThroughputSection;
   storm: StormSection;
   workers: WorkerSection;
@@ -414,6 +462,150 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
     </table>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Partner-drip name display
+// ---------------------------------------------------------------------------
+// The orchestrator names drip campaigns
+//   "[partner-drip] <vertical> <brand> <ts> <sha> [ses:<profile>] [tN]"
+// (partner_drip_orchestrator.go). Raw, that reads like a log line — parse it
+// into "Vertical · BRAND" with touch/route pills; the raw name stays in the
+// tooltip. Unparseable names fall back to the raw string.
+
+interface DripNameParts {
+  label: string;
+  touch: string | null;
+  route: string | null;
+}
+
+const parsePartnerDripName = (name: string): DripNameParts | null => {
+  if (!name.toLowerCase().startsWith('[partner-drip]')) return null;
+  let touch: string | null = null;
+  let route: string | null = null;
+  for (const m of name.matchAll(/\[([^\]]+)\]/g)) {
+    const tag = m[1].toLowerCase();
+    if (tag.startsWith('ses')) route = 'SES';
+    else if (tag.startsWith('pmta')) route = 'PMTA';
+    else if (tag.startsWith('kumo')) route = 'Kumo';
+    else if (/^t\d+$/.test(tag)) touch = tag.slice(1);
+  }
+  const core = name.replace(/\[[^\]]+\]/g, ' ').replace(/\s+/g, ' ').trim();
+  const tokens = core.split(' ');
+  const vertical = (tokens[0] || '').replace(/_/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase());
+  const brand = (tokens[1] || '').toUpperCase();
+  const label = [vertical, brand].filter(Boolean).join(' · ');
+  if (!label) return null;
+  return { label, touch, route };
+};
+
+const tagPillStyle: React.CSSProperties = {
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  color: '#a5b4fc',
+  background: 'rgba(99,102,241,0.14)',
+  border: '1px solid rgba(99,102,241,0.35)',
+  borderRadius: 999,
+  padding: '1px 7px',
+  flexShrink: 0,
+};
+
+const DripCampaignLabel: React.FC<{ name: string; campaignId: string }> = ({ name, campaignId }) => {
+  const parts = parsePartnerDripName(name);
+  if (!parts) return <>{name || campaignId.slice(0, 8)}</>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%' }}>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{parts.label}</span>
+      {parts.touch && <span style={tagPillStyle}>T{parts.touch}</span>}
+      {parts.route && <span style={tagPillStyle}>{parts.route}</span>}
+    </span>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Schedule panel — one send family's wave board (used for Broadcast Sends and
+// Data Partner Drips; identical display, different context/data).
+// ---------------------------------------------------------------------------
+
+const SchedulePanel: React.FC<{
+  title: string;
+  data?: WaveSection;
+  renderCampaign?: (u: UpcomingWave) => React.ReactNode;
+  emptyLabel: string;
+}> = ({ title, data, renderCampaign, emptyLabel }) => (
+  <div style={panelStyle}>
+    <h2 style={panelTitleStyle}>
+      <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
+      {title}
+    </h2>
+    {!data || !data.ok ? (
+      <div style={{ marginTop: 10 }}>
+        <SectionError label={title} error={data?.error} />
+      </div>
+    ) : (
+      <>
+        <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
+          <Stat label="Due now" value={fmt(data.planned_due)} color={data.planned_due > 0 ? '#f59e0b' : '#e5e7eb'} />
+          <Stat label="Scheduled" value={fmt(data.planned_future)} color="#c7d2fe" />
+          <Stat label="Preparing" value={fmt(data.enqueuing)} color="#93c5fd" />
+          <Stat label="Sending" value={fmt(data.sending)} color="#86efac" />
+          <Stat
+            label="Batches done 24h"
+            value={`${fmt(data.completed_24h)} (${fmt(data.completed_recipients_24h)} recipients)`}
+            title="Count of completed send batches, not messages — recipients = planned recipients across those completed batches"
+          />
+          <Stat
+            label="Failed 24h"
+            value={fmt(data.failed_24h)}
+            color={data.failed_24h > 0 ? '#ef4444' : '#e5e7eb'}
+          />
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+            Next 5 send batches
+          </div>
+          {data.upcoming.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>{emptyLabel}</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Campaign</th>
+                  <th style={numTh}>Batch</th>
+                  <th style={thStyle}>Scheduled</th>
+                  <th style={numTh}>Recipients</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.upcoming.map((u) => {
+                  const due = new Date(u.scheduled_at).getTime() <= Date.now();
+                  return (
+                    <tr key={u.wave_id}>
+                      <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.campaign_name}>
+                        {renderCampaign ? renderCampaign(u) : (u.campaign_name || u.campaign_id.slice(0, 8))}
+                      </td>
+                      <td style={numTd}>#{u.wave_number}</td>
+                      <td style={{ ...tdStyle, color: due ? '#f59e0b' : '#e5e7eb' }}>
+                        {new Date(u.scheduled_at).toLocaleString([], {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                        {due ? ' · due' : ''}
+                      </td>
+                      <td style={numTd}>{fmt(u.planned_recipients)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    )}
+  </div>
+);
 
 // ---------------------------------------------------------------------------
 // Component
@@ -761,83 +953,108 @@ export const OutboxDashboard: React.FC = () => {
               )}
             </div>
 
-            {/* Wave manager */}
-            <div style={panelStyle}>
-              <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
-                Send Schedule
-              </h2>
-              {!data.waves.ok ? (
-                <div style={{ marginTop: 10 }}>
-                  <SectionError label="Waves" error={data.waves.error} />
+            {/* Send schedule, split by family. Older API payloads (pre-1.2)
+                lack the split sections — fall back to the combined waves so a
+                deploy skew never blanks the board. */}
+            <SchedulePanel
+              title="Broadcast Sends"
+              data={data.waves_broadcast ?? data.waves}
+              emptyLabel="No scheduled broadcast batches."
+            />
+            <SchedulePanel
+              title="Data Partner Drips"
+              data={data.waves_partner_drip}
+              renderCampaign={(u) => <DripCampaignLabel name={u.campaign_name} campaignId={u.campaign_id} />}
+              emptyLabel="No scheduled drip batches."
+            />
+          </section>
+
+          {/* ---- Click funnels (waveless click-drip reminder path) ---- */}
+          <section style={{ ...panelStyle, marginBottom: 14 }}>
+            <h2 style={panelTitleStyle}>
+              <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
+              Click Funnels
+              <span style={{ fontSize: 10, fontWeight: 500, color: '#64748b', letterSpacing: 0.4, textTransform: 'none' }}>
+                reminder touches dispatch directly per enrollment — no batch schedule
+              </span>
+            </h2>
+            {!data.click_funnels || !data.click_funnels.ok ? (
+              <div style={{ marginTop: 10 }}>
+                <SectionError label="Click funnels" error={data.click_funnels?.error} />
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
+                  <Stat label="Active enrollments" value={fmt(data.click_funnels.active_enrollments)} color="#c7d2fe" />
+                  <Stat
+                    label="Touches due now"
+                    value={fmt(data.click_funnels.due_now)}
+                    color={data.click_funnels.due_now > 0 ? '#f59e0b' : '#e5e7eb'}
+                  />
+                  <Stat label="Touches sent 24h" value={fmt(data.click_funnels.sent_24h)} />
+                  <Stat
+                    label="Opens 24h"
+                    value={fmt(data.click_funnels.opens_24h)}
+                    color="#22d3ee"
+                    title="Raw open events on click-drip reminders (machine/MPP traffic included)"
+                  />
+                  <Stat
+                    label="Clicks 24h"
+                    value={fmt(data.click_funnels.clicks_24h)}
+                    color="#a78bfa"
+                    title="Raw click events on click-drip reminders (machine traffic included)"
+                  />
+                  <Stat
+                    label="Conversions 24h"
+                    value={fmt(data.click_funnels.converted_24h)}
+                    color={data.click_funnels.converted_24h > 0 ? '#86efac' : '#e5e7eb'}
+                    title="Enrollments exited as converted (Everflow postback) in the last 24h"
+                  />
                 </div>
-              ) : (
-                <>
-                  <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
-                    <Stat
-                      label="Due now"
-                      value={fmt(data.waves.planned_due)}
-                      color={data.waves.planned_due > 0 ? '#f59e0b' : '#e5e7eb'}
-                    />
-                    <Stat label="Scheduled" value={fmt(data.waves.planned_future)} color="#c7d2fe" />
-                    <Stat label="Preparing" value={fmt(data.waves.enqueuing)} color="#93c5fd" />
-                    <Stat label="Sending" value={fmt(data.waves.sending)} color="#86efac" />
-                    <Stat
-                      label="Batches done 24h"
-                      value={`${fmt(data.waves.completed_24h)} (${fmt(data.waves.completed_recipients_24h)} recipients)`}
-                      title="Count of completed send batches, not messages — recipients = planned recipients across those completed batches"
-                    />
-                    <Stat
-                      label="Failed 24h"
-                      value={fmt(data.waves.failed_24h)}
-                      color={data.waves.failed_24h > 0 ? '#ef4444' : '#e5e7eb'}
-                    />
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                    Per offer funnel
                   </div>
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
-                      Next 5 send batches
-                    </div>
-                    {data.waves.upcoming.length === 0 ? (
-                      <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No scheduled send batches.</div>
-                    ) : (
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr>
-                            <th style={thStyle}>Campaign</th>
-                            <th style={numTh}>Batch</th>
-                            <th style={thStyle}>Scheduled</th>
-                            <th style={numTh}>Recipients</th>
+                  {data.click_funnels.offers.length === 0 ? (
+                    <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No click-funnel activity yet.</div>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr>
+                          <th style={thStyle}>Offer</th>
+                          <th style={numTh}>Active</th>
+                          <th style={numTh}>Due now</th>
+                          <th style={numTh}>Sent 24h</th>
+                          <th style={numTh}>Opens 24h</th>
+                          <th style={numTh}>Clicks 24h</th>
+                          <th style={numTh}>Conv 24h</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.click_funnels.offers.map((o) => (
+                          <tr key={o.everflow_offer_id || o.offer_name}>
+                            <td
+                              style={{ ...tdStyle, fontWeight: 600, color: '#dbeafe', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                              title={`Everflow offer ${o.everflow_offer_id || '—'}`}
+                            >
+                              {o.offer_name || (o.everflow_offer_id ? `Offer ${o.everflow_offer_id}` : 'Unmapped')}
+                            </td>
+                            <td style={numTd}>{fmt(o.active_enrollments)}</td>
+                            <td style={{ ...numTd, color: o.due_now > 0 ? '#f59e0b' : '#e5e7eb' }}>{fmt(o.due_now)}</td>
+                            <td style={numTd}>{fmt(o.sent_24h)}</td>
+                            <td style={{ ...numTd, color: '#22d3ee' }}>{fmt(o.opens_24h)}</td>
+                            <td style={{ ...numTd, color: '#a78bfa' }}>{fmt(o.clicks_24h)}</td>
+                            <td style={{ ...numTd, color: o.converted_24h > 0 ? '#86efac' : '#e5e7eb', fontWeight: 600 }}>
+                              {fmt(o.converted_24h)}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {data.waves.upcoming.map((u) => {
-                            const due = new Date(u.scheduled_at).getTime() <= Date.now();
-                            return (
-                              <tr key={u.wave_id}>
-                                <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={u.campaign_name}>
-                                  {u.campaign_name || u.campaign_id.slice(0, 8)}
-                                </td>
-                                <td style={numTd}>#{u.wave_number}</td>
-                                <td style={{ ...tdStyle, color: due ? '#f59e0b' : '#e5e7eb' }}>
-                                  {new Date(u.scheduled_at).toLocaleString([], {
-                                    month: 'short',
-                                    day: 'numeric',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })}
-                                  {due ? ' · due' : ''}
-                                </td>
-                                <td style={numTd}>{fmt(u.planned_recipients)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </>
+            )}
           </section>
 
           {/* ---- Throughput chart ---- */}
@@ -989,51 +1206,151 @@ export const OutboxDashboard: React.FC = () => {
               )}
             </div>
 
-            {/* Workers */}
+            {/* 24h performance scoreboard (replaced the worker list, which
+                now has its own card grid below). */}
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
                 <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
-                Sending Server Status
+                Performance — last 24h
               </h2>
-              {!data.workers.ok ? (
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
-                  Server status not available in this environment.
+              {!data.performance || !data.performance.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="Performance" error={data.performance?.error} />
                 </div>
-              ) : data.workers.workers.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>No heartbeats recorded yet.</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                  {data.workers.workers.map((wkr) => {
-                    const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : '#22c55e';
-                    return (
-                      <div
-                        key={wkr.name}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 10,
-                          padding: '7px 10px',
-                          borderRadius: 6,
-                          background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'rgba(99,102,241,0.06)',
-                          border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'rgba(99,102,241,0.15)'}`,
-                        }}
-                        title={wkr.last_error || undefined}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#e5e7eb', minWidth: 0 }}>
-                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wkr.name}</span>
-                        </span>
-                        <span style={{ fontSize: 11, color: wkr.stalled ? '#fca5a5' : '#94a3b8', flexShrink: 0 }}>
-                          {wkr.stalled ? 'NOT RESPONDING · ' : ''}
-                          {fmtDuration(wkr.seconds_since_beat)} ago
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 12 }}>
+                    <Stat
+                      label="Sent 24h"
+                      value={fmt(data.performance.sent_24h)}
+                      color="#c7d2fe"
+                      title="Per-recipient sent events across all send paths (broadcast, drips, click funnels)"
+                    />
+                    <Stat
+                      label="Delivered 24h"
+                      value={fmt(data.performance.delivered_24h)}
+                      color="#86efac"
+                      title="Delivered events recorded in tracking (campaign-attributed)"
+                    />
+                    <div>
+                      <Stat
+                        label="Open % (raw)"
+                        value={
+                          data.performance.delivered_24h > 0
+                            ? fmtPct(data.performance.opens_raw_24h / data.performance.delivered_24h)
+                            : '—'
+                        }
+                        color="#22d3ee"
+                        title={`${fmt(data.performance.opens_raw_24h)} raw opens ÷ ${fmt(data.performance.delivered_24h)} delivered — machine/MPP traffic included`}
+                      />
+                      {data.performance.human_ok && (
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                          human {fmt(data.performance.opens_human_24h)}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <Stat
+                        label="Click % (raw)"
+                        value={
+                          data.performance.delivered_24h > 0
+                            ? fmtPct(data.performance.clicks_raw_24h / data.performance.delivered_24h)
+                            : '—'
+                        }
+                        color="#a78bfa"
+                        title={`${fmt(data.performance.clicks_raw_24h)} raw clicks ÷ ${fmt(data.performance.delivered_24h)} delivered — machine traffic included`}
+                      />
+                      {data.performance.human_ok && (
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                          human {fmt(data.performance.clicks_human_24h)}
+                        </div>
+                      )}
+                    </div>
+                    <Stat
+                      label="Complaints 24h"
+                      value={fmt(data.performance.complaints_24h)}
+                      color={data.performance.complaints_24h > 0 ? '#fb7185' : '#e5e7eb'}
+                      title="Spam-complaint events recorded in tracking over the last 24h"
+                    />
+                    <Stat
+                      label="Conversions 24h"
+                      value={fmt(data.performance.conversions_24h)}
+                      color={data.performance.conversions_24h > 0 ? '#86efac' : '#e5e7eb'}
+                      title="Everflow conversion postbacks received in the last 24h"
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>
+                    Rates divide by delivered. Raw opens/clicks include machine and Apple-MPP traffic;
+                    "human" is the verdict-filtered count. Refreshes every ~5 minutes.
+                  </div>
+                </>
               )}
             </div>
+          </section>
+
+          {/* ---- Background workers — one card per worker ---- */}
+          <section style={{ ...panelStyle, marginBottom: 14 }}>
+            <h2 style={panelTitleStyle}>
+              <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
+              Background Workers
+            </h2>
+            {!data.workers.ok ? (
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
+                Worker status not available in this environment.
+              </div>
+            ) : data.workers.workers.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>No heartbeats recorded yet.</div>
+            ) : (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                  gap: 10,
+                  marginTop: 12,
+                }}
+              >
+                {data.workers.workers.map((wkr) => {
+                  const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : '#22c55e';
+                  return (
+                    <div
+                      key={wkr.name}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 8,
+                        background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'rgba(99,102,241,0.06)',
+                        border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'rgba(99,102,241,0.15)'}`,
+                      }}
+                      title={wkr.last_error || undefined}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#e5e7eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {wkr.name}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 18,
+                          fontWeight: 700,
+                          fontVariantNumeric: 'tabular-nums',
+                          color: wkr.stalled ? '#fca5a5' : '#e5e7eb',
+                          marginTop: 6,
+                        }}
+                      >
+                        {fmtDuration(wkr.seconds_since_beat)} ago
+                      </div>
+                      <div style={{ fontSize: 10, color: wkr.stalled ? '#fca5a5' : '#64748b', marginTop: 3 }}>
+                        {wkr.stalled
+                          ? 'NOT RESPONDING'
+                          : wkr.expected_interval_seconds > 0
+                            ? `expected every ${fmtDuration(wkr.expected_interval_seconds)}`
+                            : 'healthy'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           {/* ---- Dead-letter (preserved from v1) ---- */}
