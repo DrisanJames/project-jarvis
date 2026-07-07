@@ -5732,6 +5732,15 @@ END $$`},
 		// pure PMTA-direct facts and relayed_to_ses stays the labeled handoff.
 		{"add_acct_summary_ses_delivered", `ALTER TABLE pmta_acct_daily_summary ADD COLUMN IF NOT EXISTS ses_delivered INT NOT NULL DEFAULT 0`},
 
+		// reputation_blocked: provider blocks of valid recipients, split out of
+		// hard bounces (bounce taxonomy, METRIC_CONTRACT §3). This entry
+		// originally shipped ONLY in runAdminMigrations — which no-ops in prod
+		// (DB_ADMIN_URL unset, CLAUDE.md §4) — so the AcctSummary writer
+		// errored on every upsert (verified live 2026-07-07). The table is
+		// created by THIS function, so the app user owns it and the ALTER
+		// belongs here; the admin-side copy stays harmless (IF NOT EXISTS).
+		{"add_acct_summary_reputation_blocked", `ALTER TABLE pmta_acct_daily_summary ADD COLUMN IF NOT EXISTS reputation_blocked INT NOT NULL DEFAULT 0`},
+
 		// Audience funnel: one aggregate row per campaign capturing targeted vs
 		// suppressed-by-reason at finalize time (Phase 0 analytics rebuild).
 		// Hot-DB-safe aggregate form of the recipient_targeted/recipient_suppressed
