@@ -48,6 +48,10 @@ func (c *CampaignCopilot) executeCopilotTool(ctx context.Context, orgID, name, a
 		result = c.toolGetSendingDomains(ctx, orgID)
 	case "estimate_audience":
 		result = c.toolEstimateAudience(ctx, orgID, args)
+	case "get_cpm_budgets":
+		result = c.toolGetCpmBudgets(ctx, orgID, args)
+	case "get_offer_winners":
+		result = c.toolGetOfferWinners(ctx, orgID, args)
 	case "clone_campaign":
 		result, action = c.toolCloneCampaign(ctx, orgID, args)
 	case "deploy_campaign":

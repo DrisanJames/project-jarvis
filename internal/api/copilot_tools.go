@@ -146,6 +146,33 @@ func getCopilotTools() []copilotToolDef {
 		{
 			Type: "function",
 			Function: copilotToolFuncDef{
+				Name:        "get_cpm_budgets",
+				Description: "List active CPM deals with budget, delivered volume, spend-to-date, pace vs goal, and the GAP still to fill (volume remaining + budget remaining + conversions gap). Use to answer 'which budgets still need volume' when planning a send. Reuses the CPM planner's own pacing/eCPA math. Delivered comes from a background cache; on a fresh boot it returns plan-level numbers flagged 'cache_warming' — re-run in a few minutes for delivered/pace.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"include_all_statuses": prop("boolean", "Include paused/completed deals too. Default false (active deals only)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
+				Name:        "get_offer_winners",
+				Description: "Get the APPROVED creatives/subjects (the approved-copy pool) for an offer. NOTE: this currently returns copy in positional/approval order with ranking_available=false — real human-click winner ranking (Everflow) is NOT yet ingested into prod, so the tool never fabricates a performance ranking. Use it to see what copy is approved for an offer; do not present the order as best-performing.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"offer"},
+					"properties": map[string]interface{}{
+						"offer": prop("string", "Offer key / slug (e.g. sams-club, liberty-mutual, metal-roofing)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
 				Name:        "estimate_audience",
 				Description: "Estimate total audience size for a given set of inclusion lists and ISPs. Returns per-ISP counts.",
 				Parameters: map[string]interface{}{
