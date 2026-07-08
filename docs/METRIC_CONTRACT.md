@@ -152,12 +152,30 @@ per-campaign delivery proxy) — its `clicker_rate` is therefore a same-store PG
 whose campaign group carries no stamped offer_key are flagged `inferred`.
 
 **Conversions.** conv UNION = `mailing_offer_suppressions` reason='converted' (postback truth,
-revenue 0) ∪ `mailing_cpm_manual_conversions` (revenue carried), offer-scoped via the slug map's
-everflow ids (unmapped offers report 0 conversions rather than mis-tally other offers').
-Conversion × ISP uses the converting subscriber's email domain; conversion × data_source uses
-`mailing_subscribers.data_source`. Creative attribution = LATERAL most-recent in-window money-link
-click (90-day lookback). `rpm` = revenue / lake delivered × 1000; `epc` = revenue / human_clicks;
-zero denominators emit 0, never NaN/null.
+revenue 0) ∪ `mailing_cpm_manual_conversions` (revenue column exists but — verified against prod
+2026-07-07 — every row ever written is $0; `mailing_revenue_attributions` is empty), offer-scoped
+via the slug map's everflow ids (unmapped offers report 0 conversions rather than mis-tally other
+offers'). Conversion × ISP uses the converting subscriber's email domain; conversion × data_source
+uses `mailing_subscribers.data_source`. Creative attribution = LATERAL most-recent in-window
+money-link click (90-day lookback).
+
+**Revenue is ESTIMATED, not ledger truth.** Because no in-platform ledger carries per-conversion
+dollars, Offer Alignment prices conversions at `resolveOfferConversionPrice` = the offer's CPM-deal
+`ecpa_goal` (the same economics the CPM calculator derives: eCPA = budget/conversions), else
+`mailing_offers.payout`, else $0 (no price ⇒ revenue stays 0 rather than inventing a number). Any
+real ledger dollars, if they ever appear, win over the estimate. The offer profile discloses the
+per-conversion price in `notes`. Real per-conversion revenue truth is the Everflow export
+(off-platform); importing it (e.g. into `mailing_revenue_attributions`) supersedes this estimate.
+`rpm` = revenue / lake delivered × 1000; `epc` = revenue / human_clicks; zero denominators emit 0,
+never NaN/null.
+
+**Large-set query discipline (drip-scale offers).** A drip offer's campaign set reaches tens of
+thousands of ids (ps8241: 23,722 / 7d). Event scans chunk at 8,000 ids/statement (roundtrip-
+dominated below that; every statement stays under the prod 30s statement_timeout). Creative
+grouping computes `md5(html_content)` ONCE per campaign (`camp_dim` MATERIALIZED CTE), never per
+event row. Consequence disclosed: clicker counts in the creatives panel and data-source panel are
+per-campaign/per-chunk DISTINCT summed — a subscriber clicking the same creative across campaigns
+(or chunks) counts once per campaign, not once globally.
 
 **Data-source panel.** `mailing_subscribers.data_source` via subscriber join; NULL/'' renders as
 "(unattributed)". `invalid_rate` = hard / (delivered + hard), **PG scope** (hard = PG

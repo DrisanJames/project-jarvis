@@ -41,6 +41,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -556,11 +557,15 @@ type alignmentEngagement struct {
 }
 
 // alignmentEngagementChunk bounds the campaign-id set per SENT-count query.
-// One statement over a large set scans too many partition rows and hits the
-// prod 30s statement_timeout (first live refresh, 2026-07-07); chunk counts
-// sum exactly. Clicked rows are ~3 orders of magnitude fewer, so the click
-// query runs once over the full set (keeps COUNT(DISTINCT clickers) exact).
-const alignmentEngagementChunk = 150
+// Sized from live measurement (2026-07-07 prod diagnosis): the ANY(ids) index
+// path is fast — a FULL 23,722-id/2.99M-row sent scan runs 7.8s, while
+// per-chunk cost is ROUNDTRIP-dominated (~80ms of real work per statement).
+// 150-id chunks turned drip-scale offers into 159 statements ≈ 60s of
+// roundtrips; 8,000-id chunks keep every statement well under the prod 30s
+// statement_timeout in ~3 roundtrips. Chunk counts sum exactly. Clicked rows
+// are ~3 orders of magnitude fewer, so the click query runs once over the
+// full set (keeps COUNT(DISTINCT clickers) exact).
+const alignmentEngagementChunk = 8000
 
 // fetchAlignmentEngagement aggregates mailing_tracking_events for the
 // campaign set: sent-event denominator (chunked) plus verdict-human money
@@ -702,6 +707,60 @@ func fetchAlignmentConversionsByISP(ctx context.Context, db *sql.DB, orgID inter
 		out[isp] = &c
 	}
 	return out, rows.Err()
+}
+
+// resolveOfferConversionPrice returns the per-conversion dollar value used to
+// ESTIMATE revenue when the conversion ledgers carry no dollars — which, as
+// verified against prod 2026-07-07, is every conversion ever recorded:
+// mailing_offer_suppressions has NO revenue column, every
+// mailing_cpm_manual_conversions.revenue row is 0, and
+// mailing_revenue_attributions is empty. Price = the offer's CPM-deal eCPA
+// goal (the same economics the CPM calculator derives: eCPA = budget /
+// conversions), else the offer's payout, else 0 — a zero price keeps revenue
+// at 0 rather than inventing a number. Estimated revenue is disclosed in
+// METRIC_CONTRACT §9.
+func resolveOfferConversionPrice(ctx context.Context, db *sql.DB, orgID interface{}, efids []string) float64 {
+	if len(efids) == 0 {
+		return 0
+	}
+	var price float64
+	err := db.QueryRowContext(ctx, `
+		SELECT COALESCE(
+			(SELECT MAX(d.ecpa_goal) FROM mailing_cpm_deals d
+			  WHERE d.organization_id = $1
+			    AND COALESCE(d.ecpa_goal, 0) > 0
+			    AND (d.everflow_offer_id = ANY($2)
+			         OR d.offer_id IN (SELECT id FROM mailing_offers
+			                            WHERE organization_id = $1 AND everflow_offer_id = ANY($2)))),
+			(SELECT MAX(o.payout) FROM mailing_offers o
+			  WHERE o.organization_id = $1 AND o.everflow_offer_id = ANY($2)
+			    AND COALESCE(o.payout, 0) > 0),
+			0)::float8
+	`, orgID, pq.Array(efids)).Scan(&price)
+	if err != nil {
+		log.Printf("[offer-alignment] conversion price lookup failed (revenue stays ledger-valued): %v", err)
+		return 0
+	}
+	return price
+}
+
+// applyEstimatedConversionRevenue prices zero-dollar conversion buckets at
+// the offer's per-conversion price. Only fires when the ledger contributed
+// NO dollars at all (any real ledger revenue wins over the estimate).
+func applyEstimatedConversionRevenue(conv map[string]*alignmentConversions, price float64) {
+	if price <= 0 {
+		return
+	}
+	var total float64
+	for _, c := range conv {
+		total += c.Revenue
+	}
+	if total != 0 {
+		return
+	}
+	for _, c := range conv {
+		c.Revenue = price * float64(c.Conversions)
+	}
 }
 
 // ─── HTTP: matrix ────────────────────────────────────────────────────────────
@@ -995,6 +1054,13 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The conversion ledgers carry no dollars (see resolveOfferConversionPrice)
+	// — price zero-revenue buckets at the offer's deal-eCPA/payout estimate.
+	convPrice := resolveOfferConversionPrice(ctx, s.mailingDB, orgID, efids)
+	applyEstimatedConversionRevenue(convByISP, convPrice)
+	if convPrice > 0 {
+		notes = append(notes, fmt.Sprintf("revenue estimated at $%.2f/conversion (deal eCPA goal / offer payout) — conversion ledgers carry no dollars", convPrice))
+	}
 
 	// ── per-ISP rows (union of every source's ISPs) ──────────────────────
 	ispSet := map[string]bool{}
@@ -1088,6 +1154,11 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for i := range creatives {
+		if creatives[i].Revenue == 0 && creatives[i].Conversions > 0 && convPrice > 0 {
+			creatives[i].Revenue = convPrice * float64(creatives[i].Conversions)
+		}
+	}
 
 	// ── data-source panel ────────────────────────────────────────────────
 	dataSources, err := s.fetchAlignmentDataSources(ctx, orgID, set.IDs, efids, from, to)
@@ -1158,12 +1229,11 @@ func (s *Server) fetchAlignmentCreatives(
 			SELECT cv.revenue, att.creative_key, att.subject, att.isp
 			FROM conv cv
 			LEFT JOIN LATERAL (
-				SELECT COALESCE(md5(c.html_content), 'no-html') AS creative_key,
-				       c.subject,
+				SELECT d.creative_key,
+				       d.subject,
 				       ` + ispClick + ` AS isp
 				FROM mailing_tracking_events t
-				JOIN mailing_campaigns c
-				  ON c.id = t.campaign_id AND c.organization_id = $1
+				JOIN camp_dim d ON d.id = t.campaign_id
 				WHERE t.organization_id = $1
 				  AND t.subscriber_id = cv.subscriber_id
 				  AND t.campaign_id = ANY($4::uuid[])
@@ -1195,45 +1265,72 @@ func (s *Server) fetchAlignmentCreatives(
 		convRevExpr = "COALESCE(cv.revenue, 0)::float8"
 	}
 
+	// Aggregation pushdown (2026-07-07 prod diagnosis, ps8241 = 23,722
+	// campaigns / 2.99M sent events per 7d): events are counted per
+	// (campaign_id, isp) FIRST, and creative identity comes from camp_dim —
+	// ONE md5(html_content) per campaign (MATERIALIZED so the planner can't
+	// inline it back to per-event; drip campaigns have NULL html → free).
+	// The per-event-row md5 variant of sent_grp measured ~12s alone and blew
+	// the prod 30s statement_timeout.
+	// Trade-off: clickers = per-campaign DISTINCT summed across a creative's
+	// campaigns, so a subscriber clicking the same creative in two campaigns
+	// counts twice (within-campaign repeat clicks still dedup — the dominant
+	// case). Exact cross-campaign dedup would reintroduce the per-event join.
 	q := `
-		WITH money_clicks AS (
-			SELECT t.campaign_id, t.subscriber_id, ` + ispClick + ` AS isp
+		WITH camp_dim AS MATERIALIZED (
+			SELECT c.id,
+			       COALESCE(md5(c.html_content), 'no-html') AS creative_key,
+			       c.subject,
+			       c.from_name,
+			       c.html_content IS NOT NULL AS has_html,
+			       COALESCE(c.offer_key,'') <> '' AS stamped
+			FROM mailing_campaigns c
+			WHERE c.organization_id = $1 AND c.id = ANY($4::uuid[])
+		),
+		clicks_by_campaign AS (
+			SELECT t.campaign_id, ` + ispClick + ` AS isp,
+			       COUNT(*) AS clicks,
+			       COUNT(DISTINCT t.subscriber_id) AS clickers
 			FROM mailing_tracking_events t
 			WHERE t.organization_id = $1
 			  AND t.campaign_id = ANY($4::uuid[])
 			  AND t.event_at >= $2 AND t.event_at <= $3
 			  AND t.event_type = 'clicked'
 			  AND t.link_url ILIKE '%source_id=email%'
+			GROUP BY 1, 2
 		),
 		clicks_grp AS (
-			SELECT COALESCE(md5(c.html_content), 'no-html') AS creative_key,
-			       c.subject,
-			       mc.isp,
-			       COUNT(*)                            AS clicks,
-			       COUNT(DISTINCT mc.subscriber_id)    AS clickers,
-			       min(c.id::text)                     AS sample_campaign_id,
-			       min(c.from_name)                    AS from_name,
-			       bool_or(c.html_content IS NOT NULL) AS has_html,
-			       bool_or(COALESCE(c.offer_key,'') <> '') AS any_stamped
-			FROM money_clicks mc
-			JOIN mailing_campaigns c
-			  ON c.id = mc.campaign_id AND c.organization_id = $1
-			GROUP BY 1, c.subject, mc.isp
+			SELECT d.creative_key,
+			       d.subject,
+			       cb.isp,
+			       SUM(cb.clicks)::bigint   AS clicks,
+			       SUM(cb.clickers)::bigint AS clickers,
+			       min(d.id::text)          AS sample_campaign_id,
+			       min(d.from_name)         AS from_name,
+			       bool_or(d.has_html)      AS has_html,
+			       bool_or(d.stamped)       AS any_stamped
+			FROM clicks_by_campaign cb
+			JOIN camp_dim d ON d.id = cb.campaign_id
+			GROUP BY 1, d.subject, cb.isp
 		),
-		sent_grp AS (
-			SELECT COALESCE(md5(c.html_content), 'no-html') AS creative_key,
-			       c.subject,
-			       ` + ispClick + ` AS isp,
-			       COUNT(*) AS delivered,
-			       bool_or(COALESCE(c.offer_key,'') <> '') AS any_stamped
+		sent_by_campaign AS (
+			SELECT t.campaign_id, ` + ispClick + ` AS isp, COUNT(*) AS delivered
 			FROM mailing_tracking_events t
-			JOIN mailing_campaigns c
-			  ON c.id = t.campaign_id AND c.organization_id = $1
 			WHERE t.organization_id = $1
 			  AND t.campaign_id = ANY($4::uuid[])
 			  AND t.event_at >= $2 AND t.event_at <= $3
 			  AND t.event_type = 'sent'
-			GROUP BY 1, c.subject, 3
+			GROUP BY 1, 2
+		),
+		sent_grp AS (
+			SELECT d.creative_key,
+			       d.subject,
+			       sb.isp,
+			       SUM(sb.delivered)::bigint AS delivered,
+			       bool_or(d.stamped)        AS any_stamped
+			FROM sent_by_campaign sb
+			JOIN camp_dim d ON d.id = sb.campaign_id
+			GROUP BY 1, d.subject, sb.isp
 		)` + convCTE + `
 		SELECT ` + convKeyExpr + ` AS creative_key,
 		       ` + convSubjExpr + ` AS subject,
@@ -1315,27 +1412,46 @@ func (s *Server) fetchAlignmentDataSources(
 		  AND t.event_at >= $3 AND t.event_at <= $4
 		GROUP BY 1
 	`
-	rows, err := s.mailingDB.QueryContext(ctx, q, orgID, pq.Array(ids), from, to)
-	if err != nil {
-		return nil, fmt.Errorf("alignment data sources: %w", err)
-	}
+	// Chunked like fetchAlignmentEngagement — drip-scale offers hand this an
+	// id set in the tens of thousands; one statement over the full set risks
+	// the prod 30s statement_timeout. Counts sum exactly across chunks;
+	// clickers (per-chunk DISTINCT summed) can double-count a subscriber
+	// clicking in campaigns that landed in different chunks — second-order.
 	byKey := map[string]*offerAlignmentDataSourceRow{}
-	for rows.Next() {
-		var key string
-		row := offerAlignmentDataSourceRow{}
-		if err := rows.Scan(&key, &row.Delivered, &row.Hard, &row.Clicks, &row.Clickers); err != nil {
-			rows.Close()
+	for start := 0; start < len(ids); start += alignmentEngagementChunk {
+		end := start + alignmentEngagementChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		rows, err := s.mailingDB.QueryContext(ctx, q, orgID, pq.Array(ids[start:end]), from, to)
+		if err != nil {
+			return nil, fmt.Errorf("alignment data sources (chunk %d): %w", start/alignmentEngagementChunk, err)
+		}
+		for rows.Next() {
+			var key string
+			var delivered, hard, clicks, clickers int64
+			if err := rows.Scan(&key, &delivered, &hard, &clicks, &clickers); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			row := byKey[key]
+			if row == nil {
+				row = &offerAlignmentDataSourceRow{}
+				if key != "" {
+					ds := key
+					row.DataSource = &ds
+				}
+				byKey[key] = row
+			}
+			row.Delivered += delivered
+			row.Hard += hard
+			row.Clicks += clicks
+			row.Clickers += clickers
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		if key != "" {
-			ds := key
-			row.DataSource = &ds
-		}
-		byKey[key] = &row
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	// Conversions per data_source (offer-scoped conv UNION → subscriber join).

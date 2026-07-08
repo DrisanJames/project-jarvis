@@ -203,6 +203,9 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				log.Printf("[offer-alignment-refresh] slug resolve %s (non-fatal): %v", off.key, err)
 				continue
 			}
+			// Ledgers carry no dollars — matrix revenue is estimated at the
+			// offer's deal-eCPA/payout price (METRIC_CONTRACT §9).
+			convPrice := resolveOfferConversionPrice(ctx, s.mailingDB, org, efids)
 			if offerName == "" {
 				offerName = off.name
 			}
@@ -257,6 +260,7 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 					log.Printf("[offer-alignment-refresh] conversions %s/%dd (non-fatal): %v", off.key, win.days, err)
 					conv = map[string]*alignmentConversions{}
 				}
+				applyEstimatedConversionRevenue(conv, convPrice)
 
 				ispSet := map[string]bool{}
 				for k := range delivery {

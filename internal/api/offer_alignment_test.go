@@ -398,3 +398,38 @@ func TestHandleOfferAlignmentOfferEmptySet(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+// TestApplyEstimatedConversionRevenue pins the estimator rules: fires only
+// when the ledger contributed zero dollars AND a price exists; any real
+// ledger revenue wins over the estimate.
+func TestApplyEstimatedConversionRevenue(t *testing.T) {
+	mk := func(pairs ...int64) map[string]*alignmentConversions {
+		out := map[string]*alignmentConversions{}
+		isps := []string{"apple", "gmail", "microsoft"}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			out[isps[i/2]] = &alignmentConversions{Conversions: pairs[i], Revenue: float64(pairs[i+1])}
+		}
+		return out
+	}
+
+	// zero ledger dollars + $40 price → conversions × price per bucket.
+	conv := mk(7, 0, 3, 0)
+	applyEstimatedConversionRevenue(conv, 40)
+	if conv["apple"].Revenue != 280 || conv["gmail"].Revenue != 120 {
+		t.Fatalf("estimate not applied: %+v %+v", conv["apple"], conv["gmail"])
+	}
+
+	// any real ledger revenue anywhere → estimator must NOT touch anything.
+	conv = mk(7, 0, 3, 55)
+	applyEstimatedConversionRevenue(conv, 40)
+	if conv["apple"].Revenue != 0 || conv["gmail"].Revenue != 55 {
+		t.Fatalf("ledger revenue must win: %+v %+v", conv["apple"], conv["gmail"])
+	}
+
+	// no price → untouched zeros.
+	conv = mk(7, 0)
+	applyEstimatedConversionRevenue(conv, 0)
+	if conv["apple"].Revenue != 0 {
+		t.Fatalf("zero price must not invent revenue: %+v", conv["apple"])
+	}
+}
