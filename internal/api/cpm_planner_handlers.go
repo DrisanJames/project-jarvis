@@ -55,6 +55,10 @@ type CpmPlannerHandlers struct {
 	evByOrg   map[string]map[string]*cpmDealEventCounts
 	evWarmed  map[string]time.Time
 	evRunning map[string]bool
+	// gapByOrg caches the default-window attribution-gap rollup (the 30d
+	// org-wide delivered scan blew the request-path statement_timeout →
+	// HTTP 500, 2026-07-08). Recomputed by the same refresher cycle.
+	gapByOrg map[string]*cpmAttributionGap
 }
 
 const cpmEventCacheRefresh = 4 * time.Minute
@@ -65,6 +69,7 @@ func NewCpmPlannerHandlers(db *sql.DB) *CpmPlannerHandlers {
 		evByOrg:   map[string]map[string]*cpmDealEventCounts{},
 		evWarmed:  map[string]time.Time{},
 		evRunning: map[string]bool{},
+		gapByOrg:  map[string]*cpmAttributionGap{},
 	}
 	h.ensureTables()
 	go h.eventCacheLoop()
@@ -131,6 +136,15 @@ func (h *CpmPlannerHandlers) refreshOrgEventCounts(orgID string) {
 	h.evWarmed[orgID] = time.Now()
 	h.evMu.Unlock()
 	log.Printf("[CpmPlanner] event cache refreshed for org %s: %d deals in %s", orgID, len(deals), time.Since(started).Round(time.Millisecond))
+
+	// Attribution-gap rollup rides the same cycle (default window only).
+	if gap, err := h.computeAttributionGap(orgID, cpmAttributionGapDefaultDays); err != nil {
+		log.Printf("[CpmPlanner] attribution-gap refresh for org %s: %v", orgID, err)
+	} else {
+		h.evMu.Lock()
+		h.gapByOrg[orgID] = gap
+		h.evMu.Unlock()
+	}
 }
 
 // cachedEventCounts returns the org's cached per-deal event aggregates, or
@@ -482,10 +496,13 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 	// live-computed per request, so operator edits are never stale. Before
 	// the first warm (fresh boot) the pass runs synchronously once.
 	// Single-deal mode keeps the live per-deal query.
+	// Single-deal mode (insights/detail) reads the same cache when warm —
+	// its live per-deal query also dies on the prod statement_timeout
+	// post-backfill (2026-07-08). Cold cache falls through to the live query.
 	var bulk map[string]*cpmDealEventCounts
-	if dealID == "" && len(deals) > 0 {
+	if len(deals) > 0 {
 		bulk = h.cachedEventCounts(orgID)
-		if bulk == nil {
+		if bulk == nil && dealID == "" {
 			bulk = h.loadAllDealEventCounts(orgID, deals)
 			if bulk != nil {
 				h.evMu.Lock()
@@ -2464,6 +2481,8 @@ type cpmAttributionGap struct {
 	TopUnattributed []cpmAttributionGapCampaign `json:"top_unattributed"`
 }
 
+const cpmAttributionGapDefaultDays = 30
+
 // HandleAttributionGap GET /cpm-planner/attribution-gap?days=N
 //
 // The acceptance surface for offer→volume attribution (operator 2026-07-07:
@@ -2472,17 +2491,53 @@ type cpmAttributionGap struct {
 // deal, offer-identified but claimed by no deal, or carrying no offer identity
 // at all. Under-attribution stops being silent low deal volume and becomes a
 // number the operator can drive to zero (stamp/backfill/slug-map fixes).
-// One windowed delivered scan (same weight class as the pacing MTD scan) —
-// served on demand, never on a poll timer.
+// The default window serves from the refresher's cached rollup (the live
+// org-wide delivered scan blew the request-path statement_timeout → 500,
+// 2026-07-08); a non-default days= runs live under the long-tx override.
 func (h *CpmPlannerHandlers) HandleAttributionGap(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
-	days := 30
+	days := cpmAttributionGapDefaultDays
 	if n, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && n >= 1 && n <= 90 {
 		days = n
 	}
+	if days == cpmAttributionGapDefaultDays {
+		h.evMu.Lock()
+		cached := h.gapByOrg[orgID]
+		h.evMu.Unlock()
+		if cached != nil {
+			respondJSON(w, http.StatusOK, cached)
+			return
+		}
+		// Cold cache (fresh boot, refresher not done yet): compute once,
+		// synchronously, and prime the cache.
+	}
+	gap, err := h.computeAttributionGap(orgID, days)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("attribution gap: %v", err))
+		return
+	}
+	if days == cpmAttributionGapDefaultDays {
+		h.evMu.Lock()
+		h.gapByOrg[orgID] = gap
+		h.evMu.Unlock()
+	}
+	respondJSON(w, http.StatusOK, gap)
+}
+
+// computeAttributionGap runs the windowed delivered scan inside a
+// long-statement transaction (same posture as loadAllDealEventCounts).
+func (h *CpmPlannerHandlers) computeAttributionGap(orgID string, days int) (*cpmAttributionGap, error) {
 	start := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
 
-	rows, err := h.db.Query(dealCampaignMapCTE+`
+	tx, err := h.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only
+	if _, err := tx.Exec(`SET LOCAL statement_timeout = '600s'`); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(dealCampaignMapCTE+`
 		, vol AS (
 			SELECT te.campaign_id, COUNT(*) AS delivered
 			FROM mailing_tracking_events te
@@ -2501,8 +2556,7 @@ func (h *CpmPlannerHandlers) HandleAttributionGap(w http.ResponseWriter, r *http
 		LEFT JOIN mailing_campaigns c ON c.id = v.campaign_id
 		ORDER BY v.delivered DESC`, orgID, start)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("attribution gap: %v", err))
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -2529,7 +2583,7 @@ func (h *CpmPlannerHandlers) HandleAttributionGap(w http.ResponseWriter, r *http
 			gap.TopUnattributed = append(gap.TopUnattributed, c)
 		}
 	}
-	respondJSON(w, http.StatusOK, gap)
+	return &gap, rows.Err()
 }
 
 // ─── Current-month pacing ────────────────────────────────────────────────────
