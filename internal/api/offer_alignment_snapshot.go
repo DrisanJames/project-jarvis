@@ -56,6 +56,9 @@ const (
 	// rows, filtered out of every read. Distinguishes "legitimately empty
 	// window" (200 + empty rows) from "never built" (202 building).
 	offerAlignmentMetaKey = "__meta__"
+	// offerAlignmentRefreshLockID — PG advisory-lock key for cross-task
+	// single-flight on the snapshot refresh (arbitrary, unique in this repo).
+	offerAlignmentRefreshLockID int64 = 728104407
 )
 
 // offerAlignmentRefreshMu serialises snapshot rebuilds (ticker, manual
@@ -158,6 +161,35 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 		log.Printf("[offer-alignment-refresh] lake read disabled — skipping (matrix serves disabled)")
 		return nil
 	}
+
+	// Cross-TASK single-flight: the mutex above only serializes within one
+	// process, but every ECS task runs this worker — on 2026-07-08 two tasks
+	// refreshed concurrently, doubling Athena spend and PG contention (the
+	// contention pushed otherwise-fast statements over the 30s
+	// statement_timeout). PG advisory lock on a DEDICATED conn (pooled
+	// lock/unlock can land on different sessions and leak the lock —
+	// suppression_list.go's known trap). Not acquired ⇒ another task is
+	// already refreshing; skip, the snapshot lands either way.
+	lockConn, err := s.mailingDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("advisory lock conn: %w", err)
+	}
+	defer lockConn.Close()
+	var lockAcquired bool
+	if err := lockConn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", offerAlignmentRefreshLockID).Scan(&lockAcquired); err != nil {
+		return fmt.Errorf("advisory lock: %w", err)
+	}
+	if !lockAcquired {
+		log.Printf("[offer-alignment-refresh] another task holds the refresh lock — skipping")
+		return nil
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if _, err := lockConn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", offerAlignmentRefreshLockID); err != nil {
+			log.Printf("[offer-alignment-refresh] WARNING: advisory unlock failed (released at conn close): %v", err)
+		}
+	}()
 
 	now := time.Now().In(mstLoc)
 	toDt := now.Format("2006-01-02")

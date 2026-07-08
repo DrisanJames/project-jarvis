@@ -1989,6 +1989,17 @@ var concurrentIndexSpecs = []struct {
 	// migration slice) because the build scans the full queue heap. Idempotent
 	// (IF NOT EXISTS); additive — no existing query depends on it.
 	{"idx_pcq_governed_daily_count", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_governed_daily_count ON partner_clean_queue (mailed_brand, vertical, isp_family, mailed_at) WHERE mailed_at IS NOT NULL`},
+
+	// Offer Alignment stamped-set lookups (resolveOfferCampaignSet /
+	// offerAlignmentOffers, handlers_offer_alignment.go): per-offer
+	// `WHERE organization_id=$1 AND offer_key=$2 AND scheduled_at BETWEEN …`
+	// plus the enumeration GROUP BY offer_key. offer_key landed 2026-07-07
+	// with NO index, so every lookup seq-scans the campaigns heap — observed
+	// `stamped campaign set … statement timeout` in the 2026-07-08 snapshot
+	// refresh under concurrent-worker load. Partial: only stamped rows.
+	// Lives here (not the 5s slice) because the build scans the full
+	// campaigns heap. Additive, idempotent.
+	{"idx_campaigns_org_offer_key", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_offer_key ON mailing_campaigns (organization_id, offer_key, scheduled_at) WHERE offer_key IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
