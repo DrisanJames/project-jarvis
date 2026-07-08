@@ -128,7 +128,41 @@ func alignmentISPCase(domainExpr string) string {
 // can share the exact same slug-map resolution semantics: raw slug,
 // everflow id, or offer-name fragment → (slugs, everflow ids, offer name).
 // Uncatalogued bare slugs self-resolve with no everflow scoping.
-func resolveOfferSlugsForKey(ctx context.Context, db *sql.DB, offer string) (slugs []string, efids []string, offerName string, err error) {
+// alignmentDB is the DB seam for the alignment queries — satisfied by both
+// *sql.DB (pool) and *sql.Conn (dedicated session with an elevated
+// statement_timeout for the heavy scans).
+type alignmentDB interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// alignmentSessionConn returns a dedicated connection whose
+// statement_timeout is raised above the pool default (30s in prod — which
+// cold/under-send-load drip-scale scans exceed even chunked; observed on
+// ps8241 2026-07-08). Callers MUST invoke release (RESET ALL + Close, the
+// finalizeAudience idiom) so the elevated timeout never leaks back into the
+// pool. On any failure it returns (nil, no-op, err) and callers fall back to
+// the pool.
+func alignmentSessionConn(ctx context.Context, db *sql.DB, timeoutMs int) (*sql.Conn, func(), error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET statement_timeout = '%d'", timeoutMs)); err != nil {
+		conn.Close()
+		return nil, func() {}, err
+	}
+	release := func() {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn.ExecContext(resetCtx, "RESET ALL")
+		cancel()
+		conn.Close()
+	}
+	return conn, release, nil
+}
+
+func resolveOfferSlugsForKey(ctx context.Context, db alignmentDB, offer string) (slugs []string, efids []string, offerName string, err error) {
 	const q = `
 		SELECT cratoolpro_slug, COALESCE(offer_name, ''), COALESCE(everflow_offer_id, '')
 		FROM mailing_offer_slug_map
@@ -196,7 +230,7 @@ func alignmentLikeEscape(s string) string {
 // sendingDomain ("" = no filter) is a diagnostic-only filter matched against
 // the campaign from_email host.
 func resolveOfferCampaignSet(
-	ctx context.Context, db *sql.DB, orgID interface{},
+	ctx context.Context, db alignmentDB, orgID interface{},
 	offerKey, offerName string, patterns []string,
 	from, to time.Time, sendingDomain string,
 ) (offerCampaignSet, error) {
@@ -573,7 +607,7 @@ const alignmentEngagementChunk = 8000
 // click_verdict column — write-side materialized + partial-indexed; the
 // verdict function only computes for pre-backfill NULL rows), bucketed by the
 // clean ISP of recipient_domain. NULL recipient_domain folds into 'other'.
-func fetchAlignmentEngagement(ctx context.Context, db *sql.DB, orgID interface{}, ids []string, from, to time.Time) (map[string]*alignmentEngagement, error) {
+func fetchAlignmentEngagement(ctx context.Context, db alignmentDB, orgID interface{}, ids []string, from, to time.Time) (map[string]*alignmentEngagement, error) {
 	out := map[string]*alignmentEngagement{}
 	if len(ids) == 0 {
 		return out, nil
@@ -665,7 +699,7 @@ type alignmentConversions struct {
 // (sub1 = subscriber UUID, revenue carried). Offers without everflow ids
 // cannot be honestly scoped — returns empty (0 conversions), matching the
 // creatives handler's convention.
-func fetchAlignmentConversionsByISP(ctx context.Context, db *sql.DB, orgID interface{}, efids []string, from, to time.Time) (map[string]*alignmentConversions, error) {
+func fetchAlignmentConversionsByISP(ctx context.Context, db alignmentDB, orgID interface{}, efids []string, from, to time.Time) (map[string]*alignmentConversions, error) {
 	if len(efids) == 0 {
 		return map[string]*alignmentConversions{}, nil
 	}
@@ -719,7 +753,7 @@ func fetchAlignmentConversionsByISP(ctx context.Context, db *sql.DB, orgID inter
 // conversions), else the offer's payout, else 0 — a zero price keeps revenue
 // at 0 rather than inventing a number. Estimated revenue is disclosed in
 // METRIC_CONTRACT §9.
-func resolveOfferConversionPrice(ctx context.Context, db *sql.DB, orgID interface{}, efids []string) float64 {
+func resolveOfferConversionPrice(ctx context.Context, db alignmentDB, orgID interface{}, efids []string) float64 {
 	if len(efids) == 0 {
 		return 0
 	}
@@ -989,7 +1023,18 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), offerAlignmentQueryTimeout)
 	defer cancel()
 
-	slugs, efids, offerName, err := resolveOfferSlugsForKey(ctx, s.mailingDB, offer)
+	// Heavy scans run on a dedicated session with a 60s statement_timeout
+	// (pool default 30s dies cold/under load on drip-scale sets). Falls back
+	// to the pool if the conn can't be prepared.
+	var adb alignmentDB = s.mailingDB
+	if conn, release, connErr := alignmentSessionConn(ctx, s.mailingDB, 60000); connErr == nil {
+		adb = conn
+		defer release()
+	} else {
+		log.Printf("[offer-alignment] session conn unavailable, using pool: %v", connErr)
+	}
+
+	slugs, efids, offerName, err := resolveOfferSlugsForKey(ctx, adb, offer)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1002,7 +1047,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		offerName = offer
 	}
 
-	set, err := resolveOfferCampaignSet(ctx, s.mailingDB, orgID, offer, offerName, patterns, from, to, sendingDomain)
+	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, from, to, sendingDomain)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1044,19 +1089,19 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	}
 
 	// ── engagement + conversions (PG) ────────────────────────────────────
-	engByISP, err := fetchAlignmentEngagement(ctx, s.mailingDB, orgID, set.IDs, from, to)
+	engByISP, err := fetchAlignmentEngagement(ctx, adb, orgID, set.IDs, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	convByISP, err := fetchAlignmentConversionsByISP(ctx, s.mailingDB, orgID, efids, from, to)
+	convByISP, err := fetchAlignmentConversionsByISP(ctx, adb, orgID, efids, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// The conversion ledgers carry no dollars (see resolveOfferConversionPrice)
 	// — price zero-revenue buckets at the offer's deal-eCPA/payout estimate.
-	convPrice := resolveOfferConversionPrice(ctx, s.mailingDB, orgID, efids)
+	convPrice := resolveOfferConversionPrice(ctx, adb, orgID, efids)
 	applyEstimatedConversionRevenue(convByISP, convPrice)
 	if convPrice > 0 {
 		notes = append(notes, fmt.Sprintf("revenue estimated at $%.2f/conversion (deal eCPA goal / offer payout) — conversion ledgers carry no dollars", convPrice))
@@ -1149,7 +1194,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	}
 
 	// ── creative × subject × ISP panel ───────────────────────────────────
-	creatives, err := s.fetchAlignmentCreatives(ctx, orgID, set.IDs, patterns, efids, from, to)
+	creatives, err := s.fetchAlignmentCreatives(ctx, adb, orgID, set.IDs, patterns, efids, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1161,7 +1206,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	}
 
 	// ── data-source panel ────────────────────────────────────────────────
-	dataSources, err := s.fetchAlignmentDataSources(ctx, orgID, set.IDs, efids, from, to)
+	dataSources, err := s.fetchAlignmentDataSources(ctx, adb, orgID, set.IDs, efids, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1185,7 +1230,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 // LATERAL most-recent in-window money-link click. inferred=true when NO
 // campaign in the group carries a stamped offer_key.
 func (s *Server) fetchAlignmentCreatives(
-	ctx context.Context, orgID interface{}, ids, patterns, efids []string, from, to time.Time,
+	ctx context.Context, db alignmentDB, orgID interface{}, ids, patterns, efids []string, from, to time.Time,
 ) ([]offerAlignmentCreativeRow, error) {
 	out := []offerAlignmentCreativeRow{}
 	if len(ids) == 0 {
@@ -1351,7 +1396,7 @@ func (s *Server) fetchAlignmentCreatives(
 		ORDER BY clicks DESC, delivered DESC
 		LIMIT $5
 	`
-	rows, err := s.mailingDB.QueryContext(ctx, q, args...)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("alignment creatives: %w", err)
 	}
@@ -1388,7 +1433,7 @@ func (s *Server) fetchAlignmentCreatives(
 // (the UI renders "(unattributed)"). invalid_rate = hard/(delivered+hard),
 // PG scope.
 func (s *Server) fetchAlignmentDataSources(
-	ctx context.Context, orgID interface{}, ids, efids []string, from, to time.Time,
+	ctx context.Context, db alignmentDB, orgID interface{}, ids, efids []string, from, to time.Time,
 ) ([]offerAlignmentDataSourceRow, error) {
 	out := []offerAlignmentDataSourceRow{}
 	if len(ids) == 0 {
@@ -1423,7 +1468,7 @@ func (s *Server) fetchAlignmentDataSources(
 		if end > len(ids) {
 			end = len(ids)
 		}
-		rows, err := s.mailingDB.QueryContext(ctx, q, orgID, pq.Array(ids[start:end]), from, to)
+		rows, err := db.QueryContext(ctx, q, orgID, pq.Array(ids[start:end]), from, to)
 		if err != nil {
 			return nil, fmt.Errorf("alignment data sources (chunk %d): %w", start/alignmentEngagementChunk, err)
 		}
@@ -1478,7 +1523,7 @@ func (s *Server) fetchAlignmentDataSources(
 			JOIN mailing_subscribers sub ON sub.id = cv.subscriber_id AND sub.organization_id = $1
 			GROUP BY 1
 		`
-		crows, err := s.mailingDB.QueryContext(ctx, cq, orgID, from, to, pq.Array(efids))
+		crows, err := db.QueryContext(ctx, cq, orgID, from, to, pq.Array(efids))
 		if err != nil {
 			return nil, fmt.Errorf("alignment data-source conversions: %w", err)
 		}
@@ -1565,7 +1610,12 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), offerAlignmentQueryTimeout)
 	defer cancel()
 
-	slugs, _, offerName, err := resolveOfferSlugsForKey(ctx, s.mailingDB, offer)
+	var adb alignmentDB = s.mailingDB
+	if conn, release, connErr := alignmentSessionConn(ctx, s.mailingDB, 60000); connErr == nil {
+		adb = conn
+		defer release()
+	}
+	slugs, _, offerName, err := resolveOfferSlugsForKey(ctx, adb, offer)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1574,7 +1624,7 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 	for i, sl := range slugs {
 		patterns[i] = "%/" + sl + "/%"
 	}
-	set, err := resolveOfferCampaignSet(ctx, s.mailingDB, orgID, offer, offerName, patterns, from, to, "")
+	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, from, to, "")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

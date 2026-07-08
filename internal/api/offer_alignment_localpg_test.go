@@ -79,7 +79,7 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 
 	s := &Server{mailingDB: db}
 	// Scoped variant (conv CTE + LATERAL) and unscoped variant both compile+run.
-	creatives, err := s.fetchAlignmentCreatives(ctx, org, set.IDs, patterns, efids, from, to)
+	creatives, err := s.fetchAlignmentCreatives(ctx, db, org, set.IDs, patterns, efids, from, to)
 	if err != nil {
 		t.Fatalf("fetchAlignmentCreatives(scoped): %v", err)
 	}
@@ -98,11 +98,11 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 	if !foundStamped {
 		t.Fatalf("stamped campaign's creative should not be flagged inferred: %+v", creatives)
 	}
-	if _, err := s.fetchAlignmentCreatives(ctx, org, set.IDs, nil, nil, from, to); err != nil {
+	if _, err := s.fetchAlignmentCreatives(ctx, db, org, set.IDs, nil, nil, from, to); err != nil {
 		t.Fatalf("fetchAlignmentCreatives(unscoped): %v", err)
 	}
 
-	dataSources, err := s.fetchAlignmentDataSources(ctx, org, set.IDs, efids, from, to)
+	dataSources, err := s.fetchAlignmentDataSources(ctx, db, org, set.IDs, efids, from, to)
 	if err != nil {
 		t.Fatalf("fetchAlignmentDataSources: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 	if err != nil || len(orgs) != 1 {
 		t.Fatalf("offerAlignmentOrgs: %v %v", orgs, err)
 	}
-	offers, err := s.offerAlignmentOffers(ctx, org, from, to)
+	offers, err := s.offerAlignmentOffers(ctx, db, org, from, to)
 	if err != nil {
 		t.Fatalf("offerAlignmentOffers: %v", err)
 	}

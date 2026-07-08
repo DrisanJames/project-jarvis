@@ -186,10 +186,18 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		lockConn.ExecContext(unlockCtx, "RESET ALL")
 		if _, err := lockConn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", offerAlignmentRefreshLockID); err != nil {
 			log.Printf("[offer-alignment-refresh] WARNING: advisory unlock failed (released at conn close): %v", err)
 		}
 	}()
+	// Heavy read-only scans run on this same dedicated session with an
+	// elevated statement_timeout (pool default 30s dies cold/under send load
+	// on drip-scale sets — ps8241 sent chunk, 2026-07-08). RESET ALL before
+	// unlock returns the session clean.
+	if _, err := lockConn.ExecContext(ctx, "SET statement_timeout = '120000'"); err != nil {
+		log.Printf("[offer-alignment-refresh] SET statement_timeout failed (pool default applies): %v", err)
+	}
 
 	now := time.Now().In(mstLoc)
 	toDt := now.Format("2006-01-02")
@@ -218,7 +226,7 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 	okOrgs := make([]string, 0, len(orgs))
 	start := time.Now()
 	for _, org := range orgs {
-		offers, err := s.offerAlignmentOffers(ctx, org, from30Ts, toTs)
+		offers, err := s.offerAlignmentOffers(ctx, lockConn, org, from30Ts, toTs)
 		if err != nil {
 			log.Printf("[offer-alignment-refresh] offer enumeration (org %s, non-fatal): %v", org, err)
 			continue
@@ -230,14 +238,14 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				return ctx.Err()
 			default:
 			}
-			slugs, efids, offerName, err := resolveOfferSlugsForKey(ctx, s.mailingDB, off.key)
+			slugs, efids, offerName, err := resolveOfferSlugsForKey(ctx, lockConn, off.key)
 			if err != nil {
 				log.Printf("[offer-alignment-refresh] slug resolve %s (non-fatal): %v", off.key, err)
 				continue
 			}
 			// Ledgers carry no dollars — matrix revenue is estimated at the
 			// offer's deal-eCPA/payout price (METRIC_CONTRACT §9).
-			convPrice := resolveOfferConversionPrice(ctx, s.mailingDB, org, efids)
+			convPrice := resolveOfferConversionPrice(ctx, lockConn, org, efids)
 			if offerName == "" {
 				offerName = off.name
 			}
@@ -249,7 +257,7 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				patterns[i] = "%/" + sl + "/%"
 			}
 
-			set30, err := resolveOfferCampaignSet(ctx, s.mailingDB, org, off.key, offerName, patterns, from30Ts, toTs, "")
+			set30, err := resolveOfferCampaignSet(ctx, lockConn, org, off.key, offerName, patterns, from30Ts, toTs, "")
 			if err != nil {
 				log.Printf("[offer-alignment-refresh] campaign set %s (non-fatal): %v", off.key, err)
 				continue
@@ -282,12 +290,12 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 			} {
 				delivery := aggregateAlignmentDelivery(dRows, win.minLocalDt)
 				dsn := aggregateAlignmentDSN(dsnRows, win.minLocalDt)
-				eng, err := fetchAlignmentEngagement(ctx, s.mailingDB, org, set30.IDs, win.fromTs, toTs)
+				eng, err := fetchAlignmentEngagement(ctx, lockConn, org, set30.IDs, win.fromTs, toTs)
 				if err != nil {
 					log.Printf("[offer-alignment-refresh] engagement %s/%dd (non-fatal): %v", off.key, win.days, err)
 					eng = map[string]*alignmentEngagement{}
 				}
-				conv, err := fetchAlignmentConversionsByISP(ctx, s.mailingDB, org, efids, win.fromTs, toTs)
+				conv, err := fetchAlignmentConversionsByISP(ctx, lockConn, org, efids, win.fromTs, toTs)
 				if err != nil {
 					log.Printf("[offer-alignment-refresh] conversions %s/%dd (non-fatal): %v", off.key, win.days, err)
 					conv = map[string]*alignmentConversions{}
@@ -434,7 +442,7 @@ type alignmentOfferRef struct {
 // actually clicked (the inferred/historical inlet, same derivation as
 // HandleAnalyticsCreativeOffers). Ranked by activity, capped at
 // offerAlignmentMaxOffers.
-func (s *Server) offerAlignmentOffers(ctx context.Context, orgID string, from, to time.Time) ([]alignmentOfferRef, error) {
+func (s *Server) offerAlignmentOffers(ctx context.Context, db alignmentDB, orgID string, from, to time.Time) ([]alignmentOfferRef, error) {
 	type agg struct {
 		name   string
 		weight int64
@@ -443,7 +451,7 @@ func (s *Server) offerAlignmentOffers(ctx context.Context, orgID string, from, t
 
 	// (a) stamped offer keys, weighted by campaign count.
 	// $1 org, $2 from, $3 to.
-	rows, err := s.mailingDB.QueryContext(ctx, `
+	rows, err := db.QueryContext(ctx, `
 		SELECT lower(offer_key), COUNT(*)
 		FROM mailing_campaigns
 		WHERE organization_id = $1
@@ -475,7 +483,7 @@ func (s *Server) offerAlignmentOffers(ctx context.Context, orgID string, from, t
 	// statement_timeout on first live refresh (2026-07-07 boot log) and wrote
 	// 0 rows. Same extraction rule as parseOfferTokenFromCampaignName: last
 	// " - " token, only on wave-convention names.
-	rows, err = s.mailingDB.QueryContext(ctx, `
+	rows, err = db.QueryContext(ctx, `
 		WITH named AS (
 			SELECT lower(substring(name FROM ' - ([A-Za-z0-9_-]+)$')) AS slug
 			FROM mailing_campaigns
