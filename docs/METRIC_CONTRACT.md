@@ -127,11 +127,14 @@ NOT delivery-weighted (a delivery-weighted split would need a per-campaign lake 
 blows the row cap).
 
 **Delivery cells (lake).** `source IN ('pmta','ses')`, `COUNT(DISTINCT event_uid)`, scoped by
-`campaign_id IN (<set>)` (reader `BreakdownFilter.CampaignIDs`, per-UUID validated, capped at
-2000 ids — sets over the cap are truncated to the most-recent ids and the response discloses it in
-`notes`). Buckets from the read-time `eventTypeExpr` reclassification: delivered / hard / soft /
-reputation_block; `deferred` counts `delivery_delay` events (per-RETRY events, NOT unique deferred
-messages — used only as a throttle-pressure ratio, never presented as messages).
+`campaign_id IN (<set>)` (reader `BreakdownFilter.CampaignIDs`, per-UUID validated, 2000 ids per
+Athena call). Drip-scale sets are fetched in FULL via chunked calls — chunks are disjoint campaign
+sets so per-chunk DISTINCT counts sum exactly (the earlier truncate-to-2000 behaviour read ~10% of
+a 20k-campaign offer and reported 100k delivered on 2M+ mailed; removed 2026-07-08). Buckets from
+the read-time `eventTypeExpr` reclassification: delivered / hard / soft / reputation_block;
+`deferred` = **unique deferring mailboxes** (`DedupDelayByEmail`: delivery_delay counted by
+DISTINCT recipient email — the raw events are per-RETRY, measured 2.6× inflated on 2026-07-08:
+276,053 events = 106,411 mailboxes).
 `attempted` is DERIVED = delivered + hard + soft + reputation_block. `block_rate` =
 reputation_block / attempted. **Footnote metric:** ~20% of PMTA lake rows carry a blank
 campaign_id — campaign-set-scoped delivery therefore UNDERCOUNTS by up to that share

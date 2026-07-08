@@ -69,6 +69,7 @@ export interface OfferAttribution {
 export interface OfferHeader {
   status_line?: string;
   attribution?: OfferAttribution;
+  pg_sent?: number;   // PG sent-event denominator for clicker_rate (engagement is PG-scoped)
   delivered?: number;
   hard?: number;
   soft?: number;
@@ -85,6 +86,7 @@ export interface OfferHeader {
 
 export interface OfferIspRow {
   isp: string;
+  pg_sent?: number;   // PG sent-event denominator for clicker_rate
   delivered: number;
   hard: number;
   soft: number;
@@ -205,9 +207,14 @@ export const fmtMoney = (n: number | null | undefined): string =>
     ? '—'
     : n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** Fraction (0–1) → percent string. */
-export const fmtRate = (frac: number | null | undefined, digits = 1): string =>
-  frac == null || !Number.isFinite(frac) ? '—' : `${(frac * 100).toFixed(digits)}%`;
+/** Fraction (0–1) → percent string. Sub-0.1% rates get extra precision so
+ * drip-scale clicker rates (~0.006%) never render as a meaningless "0.0%". */
+export const fmtRate = (frac: number | null | undefined, digits = 1): string => {
+  if (frac == null || !Number.isFinite(frac)) return '—';
+  const pct = frac * 100;
+  const d = pct > 0 && pct < 0.1 ? 3 : digits;
+  return `${pct.toFixed(d)}%`;
+};
 
 /** "4.2% of 128,401 delivered" — the mandated denominator-disclosing form. */
 export const rateWithDenom = (

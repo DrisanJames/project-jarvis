@@ -44,9 +44,11 @@ const (
 	// offerAlignmentStalenessThreshold — matrix reads older than this kick an
 	// async refresh while still serving the current rows.
 	offerAlignmentStalenessThreshold = 60 * time.Minute
-	// offerAlignmentRefreshTimeout bounds one full rebuild (Athena serial
-	// latency dominates; ~25 offers × 2 calls × ~5s ≈ 4-5 min + PG headroom).
-	offerAlignmentRefreshTimeout = 15 * time.Minute
+	// offerAlignmentRefreshTimeout bounds one full rebuild. Athena serial
+	// latency dominates, and drip-scale offers chunk the lake fetch (20k ids =
+	// 10 chunks × 2 calls), so a full fleet pass can exceed the old 15m
+	// (baseline measured 14m04s before chunking).
+	offerAlignmentRefreshTimeout = 30 * time.Minute
 	// offerAlignmentMaxOffers caps the per-org offer enumeration so a
 	// pathological slug fan-out can't run the Athena bill unbounded. Offers
 	// are ranked by stamped-campaign count, then click volume.
@@ -273,7 +275,7 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 			// scope — a 7d set would give the 7d cell delivery from campaigns
 			// its engagement query never saw (late deferral retries) and the
 			// rates would mix scopes. Disclosed in METRIC_CONTRACT §9.
-			ids, _ := lakeCampaignIDs(set30)
+			ids := set30.IDs
 			dRows, dsnRows, err := fetchAlignmentLakeRows(ctx, ids, from30Dt, toDt)
 			if err != nil {
 				log.Printf("[offer-alignment-refresh] lake %s (non-fatal): %v", off.key, err)

@@ -105,6 +105,14 @@ type BreakdownFilter struct {
 	// (buildAudienceMemberEventsSQL). Capped at maxBreakdownCampaignIDs.
 	CampaignIDs []string
 	Limit       int // clamped to [1,5000], default 1000 if <=0
+	// DedupDelayByEmail counts delivery_delay events by DISTINCT recipient
+	// email instead of event_uid. Delay notifications are PER RETRY — measured
+	// 2026-07-08: 276,053 delivery_delay events = 106,411 unique mailboxes in
+	// one day (2.6x inflation) — so event_uid-counted "deferred" overstates
+	// how much mail is actually held up and falsely trips throttle badges.
+	// Other event types keep event_uid semantics; the two count domains are
+	// prefix-tagged so they can never collide inside one DISTINCT.
+	DedupDelayByEmail bool
 }
 
 // maxBreakdownCampaignIDs bounds the campaign IN-list so a pathological caller
@@ -729,10 +737,16 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		groups[i] = dimGroup(d)
 	}
 
+	countExpr := "COUNT(DISTINCT event_uid)"
+	if f.DedupDelayByEmail {
+		countExpr = "COUNT(DISTINCT IF(event_type = 'delivery_delay', 'e:' || email, 'u:' || event_uid))"
+	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	b.WriteString(strings.Join(selects, ", "))
-	b.WriteString(", COUNT(DISTINCT event_uid) c FROM ")
+	b.WriteString(", ")
+	b.WriteString(countExpr)
+	b.WriteString(" c FROM ")
 	b.WriteString(lakeTable)
 	b.WriteString(" WHERE dt BETWEEN ")
 	b.WriteString(sqlStr(dtFrom))

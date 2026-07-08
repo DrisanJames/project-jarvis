@@ -185,15 +185,17 @@ export const OfferProfile: React.FC<{
     const sum = (f: (r: OfferIspRow) => number) => ispRows.reduce((a, r) => a + (Number.isFinite(f(r)) ? f(r) : 0), 0);
     const h = data?.header ?? {};
     const delivered = h.delivered ?? sum((r) => r.delivered);
+    const pgSent = h.pg_sent ?? sum((r) => r.pg_sent ?? 0);
     const humanClicks = h.human_clicks ?? sum((r) => r.human_clicks);
     const clickers = h.clickers ?? sum((r) => r.clickers);
     const conversions = h.conversions ?? sum((r) => r.conversions);
     const revenue = h.revenue ?? sum((r) => r.revenue);
     return {
       delivered,
+      pgSent,
       humanClicks,
       clickers,
-      clickerRate: h.clicker_rate ?? safeDiv(clickers, delivered),
+      clickerRate: h.clicker_rate ?? safeDiv(clickers, pgSent > 0 ? pgSent : delivered),
       conversions,
       revenue,
       rpm: h.rpm ?? (delivered > 0 ? (revenue / delivered) * 1000 : null),
@@ -207,9 +209,11 @@ export const OfferProfile: React.FC<{
   const ispTotals = useMemo(() => {
     const sum = (f: (r: OfferIspRow) => number) => ispRows.reduce((a, r) => a + (Number.isFinite(f(r)) ? f(r) : 0), 0);
     const delivered = sum((r) => r.delivered);
+    const pgSent = sum((r) => r.pg_sent ?? 0);
     const revenue = sum((r) => r.revenue);
     return {
       delivered,
+      pgSent,
       blocked: sum((r) => r.reputation_block),
       deferred: sum((r) => r.deferred),
       hard: sum((r) => r.hard),
@@ -265,8 +269,8 @@ export const OfferProfile: React.FC<{
           <Stat
             label="Clicker rate"
             value={fmtRate(kpis.clickerRate)}
-            sub={`of ${fmtNum(kpis.delivered)} delivered`}
-            title={rateWithDenom(kpis.clickerRate, kpis.delivered)}
+            sub={`of ${fmtNum(kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered)} sent (PG-scoped)`}
+            title={rateWithDenom(kpis.clickerRate, kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered, 'sent (PG)')}
           />
           <Stat label="Conversions" value={fmtNum(kpis.conversions)} color="#22c55e" sub="last-click attributed" />
           <Stat label="Revenue" value={fmtMoney(kpis.revenue)} />
@@ -324,7 +328,7 @@ export const OfferProfile: React.FC<{
                         <td className="oa-op-td" style={{ color: HARD_RED }}>{fmtNum(r.hard)}</td>
                         <td className="oa-op-td" style={{ color: SOFT_AMBER }}>{fmtNum(r.soft)}</td>
                         <td className="oa-op-td">{fmtNum(r.clickers)}</td>
-                        <td className="oa-op-td" title={rateWithDenom(r.clicker_rate, r.delivered)}>
+                        <td className="oa-op-td" title={rateWithDenom(r.clicker_rate, r.pg_sent ?? r.delivered, 'sent (PG)')}>
                           {fmtRate(r.clicker_rate)}
                           <span className="oa-op-denom"> of {fmtNum(r.delivered)}</span>
                         </td>
@@ -351,8 +355,8 @@ export const OfferProfile: React.FC<{
                     <td className="oa-op-td" style={{ color: HARD_RED }}>{fmtNum(ispTotals.hard)}</td>
                     <td className="oa-op-td" style={{ color: SOFT_AMBER }}>{fmtNum(ispTotals.soft)}</td>
                     <td className="oa-op-td">{fmtNum(ispTotals.clickers)}</td>
-                    <td className="oa-op-td" title={rateWithDenom(safeDiv(ispTotals.clickers, ispTotals.delivered), ispTotals.delivered)}>
-                      {fmtRate(safeDiv(ispTotals.clickers, ispTotals.delivered))}
+                    <td className="oa-op-td" title={rateWithDenom(safeDiv(ispTotals.clickers, ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered), ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered, 'sent (PG)')}>
+                      {fmtRate(safeDiv(ispTotals.clickers, ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered))}
                     </td>
                     <td className="oa-op-td">{fmtNum(ispTotals.conversions)}</td>
                     <td className="oa-op-td">{ispTotals.rpm == null ? '—' : fmtMoney(ispTotals.rpm)}</td>

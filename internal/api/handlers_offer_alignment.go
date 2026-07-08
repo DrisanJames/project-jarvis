@@ -348,16 +348,15 @@ func resolveOfferCampaignSet(
 	return set, nil
 }
 
-// lakeCampaignIDs truncates the campaign set to the lake reader's IN-list cap
-// (most-recent stamped ids sort first by construction). Returns the ids and
-// whether truncation happened (disclosed in the response note).
-func lakeCampaignIDs(set offerCampaignSet) ([]string, bool) {
-	const maxIDs = 2000 // analytics.maxBreakdownCampaignIDs
-	if len(set.IDs) <= maxIDs {
-		return set.IDs, false
-	}
-	return set.IDs[:maxIDs], true
-}
+// alignmentLakeChunk bounds the campaign IN-list per Athena call (the reader
+// caps at 2000; Athena's statement ceiling is the constraint). Drip-scale
+// offers (ps8241: 20k+ campaigns) are fetched in FULL via chunked calls —
+// the previous truncate-to-2000 approach read ~10% of the offer and reported
+// 100k delivered on 2M+ mailed (operator, 2026-07-08). Athena cost is per
+// bytes scanned; chunked calls re-scan the same partitions, but the events
+// table slice is small (~0.6MB scanned per query measured), so the added
+// spend is cents. Chunks are disjoint campaign sets → per-chunk DISTINCT
+// counts sum exactly.
 
 // ─── lake delivery + dsn aggregation ─────────────────────────────────────────
 
@@ -379,26 +378,40 @@ func (d *alignmentDelivery) attempted() int64 {
 // delivery (local_dt × isp × event_type) and dsn families (local_dt × isp ×
 // dsn_family). local_dt rides along so a 30-day fetch can be sliced into the
 // 7-day window without a second Athena round trip.
+const alignmentLakeChunk = 2000
+
 func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt string) (delivery, dsn []analytics.BreakdownRow, err error) {
-	delivery, err = analytics.Breakdown(ctx, analytics.BreakdownFilter{
-		From: fromDt, To: toDt,
-		GroupBy:     []string{"local_dt", "isp", "event_type"},
-		SourceIn:    []string{"pmta", "ses"},
-		CampaignIDs: ids,
-		Limit:       5000,
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	dsn, err = analytics.Breakdown(ctx, analytics.BreakdownFilter{
-		From: fromDt, To: toDt,
-		GroupBy:     []string{"local_dt", "isp", "dsn_family"},
-		SourceIn:    []string{"pmta", "ses"},
-		CampaignIDs: ids,
-		Limit:       5000,
-	})
-	if err != nil {
-		return nil, nil, err
+	for start := 0; start < len(ids); start += alignmentLakeChunk {
+		end := start + alignmentLakeChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		d, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+			From: fromDt, To: toDt,
+			GroupBy:     []string{"local_dt", "isp", "event_type"},
+			SourceIn:    []string{"pmta", "ses"},
+			CampaignIDs: chunk,
+			Limit:       5000,
+			// Deferral truth = unique held-up mailboxes, not per-retry events
+			// (2.6x inflated) — the THROTTLED badge threshold depends on it.
+			DedupDelayByEmail: true,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		delivery = append(delivery, d...)
+		f, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+			From: fromDt, To: toDt,
+			GroupBy:     []string{"local_dt", "isp", "dsn_family"},
+			SourceIn:    []string{"pmta", "ses"},
+			CampaignIDs: chunk,
+			Limit:       5000,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		dsn = append(dsn, f...)
 	}
 	return delivery, dsn, nil
 }
@@ -913,6 +926,7 @@ type offerAlignmentHeader struct {
 	RepBlock    int64                     `json:"reputation_block"`
 	HumanClicks int64                     `json:"human_clicks"`
 	Clickers    int64                     `json:"clickers"`
+	PGSent      int64                     `json:"pg_sent"`
 	ClickerRate float64                   `json:"clicker_rate"`
 	Conversions int64                     `json:"conversions"`
 	Revenue     float64                   `json:"revenue"`
@@ -935,6 +949,7 @@ type offerAlignmentISPRow struct {
 	BlockRate   float64 `json:"block_rate"`
 	HumanClicks int64   `json:"human_clicks"`
 	Clickers    int64   `json:"clickers"`
+	PGSent      int64   `json:"pg_sent"`
 	ClickerRate float64 `json:"clicker_rate"`
 	Conversions int64   `json:"conversions"`
 	Revenue     float64 `json:"revenue"`
@@ -1073,10 +1088,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	dsnByISP := map[string]map[string]int64{}
 	lakeOK := analytics.ReaderEnabled()
 	if lakeOK {
-		ids, truncated := lakeCampaignIDs(set)
-		if truncated {
-			notes = append(notes, fmt.Sprintf("campaign set truncated to %d most-recent ids for lake delivery scoping (%d total)", len(ids), len(set.IDs)))
-		}
+		ids := set.IDs
 		dRows, dsnRows, lerr := fetchAlignmentLakeRows(ctx, ids, fromDt, toDt)
 		if lerr != nil {
 			respondError(w, http.StatusInternalServerError, "lake delivery query: "+lerr.Error())
@@ -1151,7 +1163,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 			ISP: isp, Delivered: d.Delivered, Hard: d.Hard, Soft: d.Soft,
 			RepBlock: d.ReputationBlock, Deferred: d.Deferred,
 			BlockRate:   alignmentDiv(float64(d.ReputationBlock), float64(d.attempted())),
-			HumanClicks: e.HumanClicks, Clickers: e.Clickers,
+			HumanClicks: e.HumanClicks, Clickers: e.Clickers, PGSent: e.PGSent,
 			ClickerRate: alignmentDiv(float64(e.Clickers), float64(e.PGSent)),
 			Conversions: cv.Conversions, Revenue: cv.Revenue,
 			RPM:   alignmentDiv(cv.Revenue*1000, float64(d.Delivered)),
@@ -1166,6 +1178,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		hdr.RepBlock += d.ReputationBlock
 		hdr.HumanClicks += e.HumanClicks
 		hdr.Clickers += e.Clickers
+		hdr.PGSent += e.PGSent
 		hdr.Conversions += cv.Conversions
 		hdr.Revenue += cv.Revenue
 	}
@@ -1633,7 +1646,7 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 		respondJSON(w, http.StatusOK, map[string]any{"rows": []offerAlignmentEvidenceRow{}})
 		return
 	}
-	ids, _ := lakeCampaignIDs(set)
+	ids := set.IDs
 
 	// Breakdown 1 — counts + first/last seen per (family, code):
 	// event_type × dsn_family × dsn_code × local_dt (failure types kept Go-side).
