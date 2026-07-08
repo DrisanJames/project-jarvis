@@ -127,6 +127,11 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_monthly_targets_org_month
 			ON mailing_cpm_deal_monthly_targets(organization_id, month)`,
+		// Supports the stamped-offer_key attribution branch (dealCampaignSetSubquery
+		// branch 4 / dealCampaignMapCTE) — 146k campaigns carry offer_key after the
+		// 2026-07-07 backfill. Partial: NULL rows (no offer identity) excluded.
+		`CREATE INDEX IF NOT EXISTS idx_campaigns_org_offer_key
+			ON mailing_campaigns(organization_id, offer_key) WHERE offer_key IS NOT NULL`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
@@ -362,15 +367,90 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 	}
 	defer rows.Close()
 	deals := []cpmDeal{}
+	payouts := []float64{}
 	for rows.Next() {
 		d, payout, err := scanCpmDeal(rows)
 		if err != nil {
 			return nil, err
 		}
-		d.Progress = h.loadProgress(orgID, &d, payout)
 		deals = append(deals, d)
+		payouts = append(payouts, payout)
 	}
-	return deals, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// LIST mode runs ONE org-wide events pass for all deals (the per-deal
+	// events aggregate ran serially per deal and, once the attribution
+	// backfill widened each deal's campaign set, the full list took ~2m45s
+	// on prod — 2026-07-07). Single-deal mode keeps the per-deal query.
+	var bulk map[string]*cpmDealEventCounts
+	if dealID == "" && len(deals) > 1 {
+		bulk = h.loadAllDealEventCounts(orgID, deals)
+	}
+	for i := range deals {
+		var pre *cpmDealEventCounts
+		if bulk != nil {
+			pre = bulk[deals[i].ID] // nil for deals with zero events — loadProgress treats as zeros
+			if pre == nil {
+				pre = &cpmDealEventCounts{}
+			}
+		}
+		deals[i].Progress = h.loadProgress(orgID, &deals[i], payouts[i], pre)
+	}
+	return deals, nil
+}
+
+// cpmDealEventCounts is one deal's tracking-event aggregate (the expensive
+// slice of loadProgress, bulk-computable for the whole org in one pass).
+type cpmDealEventCounts struct {
+	sent, delivered, opened, clicked, hard, soft int64
+}
+
+// loadAllDealEventCounts computes every deal's event aggregate in ONE
+// events scan joined to the unified deal→campaign map (dealCampaignMapCTE),
+// mirroring the loadAllDealMonthlyActuals shape. The global min start_date
+// bounds partitions; each deal's own start_date floors its rows exactly like
+// the per-deal query. Best-effort: on error returns nil and the caller falls
+// back to per-deal queries.
+func (h *CpmPlannerHandlers) loadAllDealEventCounts(orgID string, deals []cpmDeal) map[string]*cpmDealEventCounts {
+	minStart := time.Time{}
+	for i := range deals {
+		if minStart.IsZero() || deals[i].startDate.Before(minStart) {
+			minStart = deals[i].startDate
+		}
+	}
+	if minStart.IsZero() {
+		return nil
+	}
+	rows, err := h.db.Query(dealCampaignMapCTE+`
+		SELECT dm.deal_id::text,
+			COUNT(*) FILTER (WHERE te.event_type = 'sent'),
+			COUNT(*) FILTER (WHERE te.event_type = 'delivered'),
+			COUNT(*) FILTER (WHERE te.event_type = 'opened'),
+			COUNT(*) FILTER (WHERE te.event_type = 'clicked'),
+			COUNT(*) FILTER (WHERE te.event_type = 'bounced' AND `+HardBounceSQL("te")+`),
+			COUNT(*) FILTER (WHERE te.event_type = 'bounced' AND NOT (`+HardBounceSQL("te")+`))
+		FROM mailing_tracking_events te
+		JOIN dm ON dm.campaign_id = te.campaign_id
+		JOIN mailing_cpm_deals d ON d.id = dm.deal_id
+		WHERE te.organization_id = $1
+		  AND te.event_at >= $2
+		  AND te.event_at >= d.start_date
+		GROUP BY 1`, orgID, minStart)
+	if err != nil {
+		log.Printf("[CpmPlanner] bulk event counts: %v (falling back to per-deal)", err)
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]*cpmDealEventCounts{}
+	for rows.Next() {
+		var id string
+		c := &cpmDealEventCounts{}
+		if err := rows.Scan(&id, &c.sent, &c.delivered, &c.opened, &c.clicked, &c.hard, &c.soft); err == nil {
+			out[id] = c
+		}
+	}
+	return out
 }
 
 // dealCampaignSetSubquery returns the parenthesized "(SELECT … UNION … UNION …)"
@@ -422,14 +502,19 @@ func dealCampaignSetSubquery() string {
 
 // loadProgress maps live platform delivery + conversion ground truth onto a
 // deal. Best-effort: a failed sub-query logs and leaves zeros rather than
-// failing the whole list.
-func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float64) cpmDealProgress {
+// failing the whole list. preEvents, when non-nil, carries the deal's event
+// aggregate from the bulk org-wide pass (loadAllDealEventCounts) and the
+// per-deal events query is skipped — list mode; nil = single-deal mode.
+func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float64, preEvents *cpmDealEventCounts) cpmDealProgress {
 	p := cpmDealProgress{Payout: payout}
 
 	// Delivery campaign set = offer_id auto-match (when mapped) ∪ explicitly
 	// associated campaigns (operator 2026-06-13). Associated campaigns count
 	// regardless of offer_id, so an operator can attribute any send to the deal.
-	{
+	if preEvents != nil {
+		p.Sent, p.Delivered, p.Opened, p.Clicked = preEvents.sent, preEvents.delivered, preEvents.opened, preEvents.clicked
+		p.HardBounces, p.SoftBounces = preEvents.hard, preEvents.soft
+	} else {
 		// opened/clicked are deliberately RAW (machine/MPP included) — NOT the
 		// human-verdict counts the Offer Center stats use (METRIC_CONTRACT.md
 		// §6: raw is the operational signal, labeled as such). CPM deals bill
