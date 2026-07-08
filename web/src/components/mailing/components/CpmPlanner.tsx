@@ -1251,6 +1251,26 @@ export const CpmPlanner: React.FC = () => {
           <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>Utilization</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: riskColor(capacity.risk) }}>{util.toFixed(1)}%</div>
         </div>
+        {(() => {
+          // Current-month committed CPM budget — the SUM of the pacing table's
+          // per-deal Target Budget column (monthly target where set, else the
+          // active deal's own budget: HandleCurrentMonthPacing's fallback), so
+          // this tile can never disagree with the pacing section below.
+          if (!pacing) return null;
+          const total = pacing.deals.reduce((acc, p) => acc + (p.target_budget || 0), 0);
+          const [yy, mm] = pacing.month.split('-').map(Number);
+          const monthLabel = Number.isFinite(yy) && Number.isFinite(mm)
+            ? new Date(yy, mm - 1, 1).toLocaleString([], { month: 'short' })
+            : pacing.month;
+          return (
+            <div title="Sum of this month's per-deal budget targets (monthly target where set, else the deal budget) — same rows as the Current-Month Pacing table">
+              <div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                CPM budget ({monthLabel})
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.heading }}>{fmtMoney(total)}</div>
+            </div>
+          );
+        })()}
         <span style={{
           marginLeft: 'auto', padding: '4px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700,
           color: riskColor(capacity.risk), border: `1px solid ${riskColor(capacity.risk)}`,
