@@ -47,6 +47,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -80,7 +81,7 @@ const (
 
 // offerAlignmentQueryTimeout bounds the live profile/evidence handlers
 // (2 Athena calls + several PG aggregations over a bounded campaign set).
-const offerAlignmentQueryTimeout = 90 * time.Second
+const offerAlignmentQueryTimeout = 180 * time.Second
 
 // alignmentISPBucketRe pre-validates the evidence endpoint's isp param so a
 // malformed value 400s here instead of 500ing inside the lake validator
@@ -380,38 +381,75 @@ func (d *alignmentDelivery) attempted() int64 {
 // 7-day window without a second Athena round trip.
 const alignmentLakeChunk = 2000
 
+// alignmentLakeConcurrency bounds parallel Athena calls per fetch. Serial
+// chunking put drip-scale profiles (10 chunks x 2 calls x ~5s) past the
+// handler budget; Athena executes concurrent queries happily. 4 keeps a
+// single fetch from monopolizing the workgroup while refresh + profile runs
+// overlap.
+const alignmentLakeConcurrency = 4
+
 func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt string) (delivery, dsn []analytics.BreakdownRow, err error) {
+	type job struct{ dsnPass bool; chunk []string }
+	jobs := []job{}
 	for start := 0; start < len(ids); start += alignmentLakeChunk {
 		end := start + alignmentLakeChunk
 		if end > len(ids) {
 			end = len(ids)
 		}
-		chunk := ids[start:end]
-		d, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
-			From: fromDt, To: toDt,
-			GroupBy:     []string{"local_dt", "isp", "event_type"},
-			SourceIn:    []string{"pmta", "ses"},
-			CampaignIDs: chunk,
-			Limit:       5000,
-			// Deferral truth = unique held-up mailboxes, not per-retry events
-			// (2.6x inflated) — the THROTTLED badge threshold depends on it.
-			DedupDelayByEmail: true,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		delivery = append(delivery, d...)
-		f, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
-			From: fromDt, To: toDt,
-			GroupBy:     []string{"local_dt", "isp", "dsn_family"},
-			SourceIn:    []string{"pmta", "ses"},
-			CampaignIDs: chunk,
-			Limit:       5000,
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		dsn = append(dsn, f...)
+		jobs = append(jobs, job{false, ids[start:end]}, job{true, ids[start:end]})
+	}
+
+	var (
+		mu       sync.Mutex
+		firstErr error
+	)
+	sem := make(chan struct{}, alignmentLakeConcurrency)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			mu.Lock()
+			done := firstErr != nil || ctx.Err() != nil
+			mu.Unlock()
+			if done {
+				return
+			}
+			filter := analytics.BreakdownFilter{
+				From: fromDt, To: toDt,
+				SourceIn:    []string{"pmta", "ses"},
+				CampaignIDs: j.chunk,
+				Limit:       5000,
+			}
+			if j.dsnPass {
+				filter.GroupBy = []string{"local_dt", "isp", "dsn_family"}
+			} else {
+				filter.GroupBy = []string{"local_dt", "isp", "event_type"}
+				// Deferral truth = unique held-up mailboxes, not per-retry
+				// events (2.6x inflated) — the THROTTLED threshold depends on it.
+				filter.DedupDelayByEmail = true
+			}
+			rows, qerr := analytics.Breakdown(ctx, filter)
+			mu.Lock()
+			defer mu.Unlock()
+			if qerr != nil {
+				if firstErr == nil {
+					firstErr = qerr
+				}
+				return
+			}
+			if j.dsnPass {
+				dsn = append(dsn, rows...)
+			} else {
+				delivery = append(delivery, rows...)
+			}
+		}(j)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, nil, firstErr
 	}
 	return delivery, dsn, nil
 }

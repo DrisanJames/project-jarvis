@@ -249,7 +249,14 @@ const brandExpr = "COALESCE(NULLIF(brand, ''), " + brandCodeExpr + ")"
 // Only bounce rows are touched; every other event_type passes through unchanged.
 // Applied in the projection (SELECT/GROUP BY); event_type Eq filters still match
 // the stored value, but no breakdown caller filters event_type on bounce rows.
-const eventTypeExpr = "CASE WHEN event_type IN ('hard_bounce','soft_bounce','reputation_block','administrative') THEN " +
+// v2.4 (2026-07-08): 'bounced' added to the reclassified set — SES-sourced
+// bounces arrive as raw event_type='bounced' + bounce_cat (the catalog's
+// "two spellings" footgun); without it every SES bounce passed through as an
+// unclassified 'bounced' bucket and campaign-scoped hard/soft read ZERO for
+// SES-routed offers (ps8241, 2026-07-08: 3,751 invisible bounces per 2k
+// campaigns). bounce_cat 'hard' maps via the existing list; plain 'soft'
+// falls to the ELSE.
+const eventTypeExpr = "CASE WHEN event_type IN ('bounced','hard_bounce','soft_bounce','reputation_block','administrative') THEN " +
 	"(CASE" +
 	// Administrative queue flush (operator `pmta flush`): PMTA stamps every flushed
 	// message with diagnostic 'x-pmta;deleted by administrator' (bounce_cat='other',
