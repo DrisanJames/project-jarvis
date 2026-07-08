@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -40,12 +41,107 @@ import (
 
 type CpmPlannerHandlers struct {
 	db *sql.DB
+
+	// eventCountCache holds each deal's lifetime tracking-event aggregate —
+	// the ONLY slow slice of deal progress (post-backfill it scans tens of
+	// millions of rows; measured >3m for the org, 2026-07-07). A background
+	// goroutine refreshes it every cpmEventCacheRefresh (matching the UI's
+	// 5-min poll); everything mutation-sensitive (conversions, manual sums,
+	// budgets, pacing math) stays live-computed per request so operator
+	// edits are never served stale. In-memory only: rebuilt after restart
+	// by the prewarm goroutine; a request arriving before the first warm
+	// completes falls back to a synchronous compute (once per boot).
+	evMu      sync.Mutex
+	evByOrg   map[string]map[string]*cpmDealEventCounts
+	evWarmed  map[string]time.Time
+	evRunning map[string]bool
 }
 
+const cpmEventCacheRefresh = 4 * time.Minute
+
 func NewCpmPlannerHandlers(db *sql.DB) *CpmPlannerHandlers {
-	h := &CpmPlannerHandlers{db: db}
+	h := &CpmPlannerHandlers{
+		db:        db,
+		evByOrg:   map[string]map[string]*cpmDealEventCounts{},
+		evWarmed:  map[string]time.Time{},
+		evRunning: map[string]bool{},
+	}
 	h.ensureTables()
+	go h.eventCacheLoop()
 	return h
+}
+
+// eventCacheLoop prewarms the event-count cache for every org with deals at
+// boot, then keeps each warm on a fixed cadence. Process-lifetime goroutine
+// (same posture as the other portal snapshot workers); double-fire safe —
+// refreshOrgEventCounts no-ops when a refresh for the org is already running.
+func (h *CpmPlannerHandlers) eventCacheLoop() {
+	for {
+		rows, err := h.db.Query(`SELECT DISTINCT organization_id::text FROM mailing_cpm_deals`)
+		if err != nil {
+			log.Printf("[CpmPlanner] event-cache org scan: %v", err)
+		} else {
+			orgs := []string{}
+			for rows.Next() {
+				var o string
+				if err := rows.Scan(&o); err == nil {
+					orgs = append(orgs, o)
+				}
+			}
+			rows.Close()
+			for _, o := range orgs {
+				h.refreshOrgEventCounts(o)
+			}
+		}
+		time.Sleep(cpmEventCacheRefresh)
+	}
+}
+
+// refreshOrgEventCounts recomputes one org's per-deal event aggregates (one
+// org-wide events pass) and swaps them into the cache. Serialized per org.
+func (h *CpmPlannerHandlers) refreshOrgEventCounts(orgID string) {
+	h.evMu.Lock()
+	if h.evRunning[orgID] {
+		h.evMu.Unlock()
+		return
+	}
+	h.evRunning[orgID] = true
+	h.evMu.Unlock()
+	defer func() {
+		h.evMu.Lock()
+		h.evRunning[orgID] = false
+		h.evMu.Unlock()
+	}()
+
+	deals, _, err := h.loadDealsLite(orgID)
+	if err != nil {
+		log.Printf("[CpmPlanner] event-cache deals for org %s: %v", orgID, err)
+		return
+	}
+	if len(deals) == 0 {
+		return
+	}
+	started := time.Now()
+	counts := h.loadAllDealEventCounts(orgID, deals)
+	if counts == nil {
+		return // logged inside; keep the previous cache
+	}
+	h.evMu.Lock()
+	h.evByOrg[orgID] = counts
+	h.evWarmed[orgID] = time.Now()
+	h.evMu.Unlock()
+	log.Printf("[CpmPlanner] event cache refreshed for org %s: %d deals in %s", orgID, len(deals), time.Since(started).Round(time.Millisecond))
+}
+
+// cachedEventCounts returns the org's cached per-deal event aggregates, or
+// nil when the cache has never been warmed (caller decides the fallback).
+func (h *CpmPlannerHandlers) cachedEventCounts(orgID string) map[string]*cpmDealEventCounts {
+	h.evMu.Lock()
+	defer h.evMu.Unlock()
+	if _, ok := h.evWarmed[orgID]; !ok {
+		return nil
+	}
+	return h.evByOrg[orgID]
 }
 
 func (h *CpmPlannerHandlers) ensureTables() {
@@ -145,8 +241,8 @@ func (h *CpmPlannerHandlers) ensureTables() {
 type cpmDealProgress struct {
 	Sent        int64 `json:"sent"`
 	Delivered   int64 `json:"delivered"`
-	Opened      int64 `json:"opened"`  // RAW (machine/MPP incl.) — see loadProgress; METRIC_CONTRACT §6
-	Clicked     int64 `json:"clicked"` // RAW (machine/MPP incl.) — see loadProgress; METRIC_CONTRACT §6
+	Opened      int64 `json:"opened"`  // ALWAYS 0 since 2026-07-07 (unrendered; dropped from the scan — see loadProgress)
+	Clicked     int64 `json:"clicked"` // ALWAYS 0 since 2026-07-07 (unrendered; dropped from the scan — see loadProgress)
 	HardBounces int64 `json:"hard_bounces"`
 	SoftBounces int64 `json:"soft_bounces"`
 	// Conversions is the TOTAL (tracked + manual) — the field name predates
@@ -379,18 +475,32 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// LIST mode runs ONE org-wide events pass for all deals (the per-deal
-	// events aggregate ran serially per deal and, once the attribution
-	// backfill widened each deal's campaign set, the full list took ~2m45s
-	// on prod — 2026-07-07). Single-deal mode keeps the per-deal query.
+	// LIST mode serves event aggregates from the background cache (the
+	// per-deal events aggregate ran serially per deal and, once the
+	// attribution backfill widened each deal's campaign set, the full list
+	// took ~2m45s on prod — 2026-07-07). Conversions/manual/math below are
+	// live-computed per request, so operator edits are never stale. Before
+	// the first warm (fresh boot) the pass runs synchronously once.
+	// Single-deal mode keeps the live per-deal query.
 	var bulk map[string]*cpmDealEventCounts
-	if dealID == "" && len(deals) > 1 {
-		bulk = h.loadAllDealEventCounts(orgID, deals)
+	if dealID == "" && len(deals) > 0 {
+		bulk = h.cachedEventCounts(orgID)
+		if bulk == nil {
+			bulk = h.loadAllDealEventCounts(orgID, deals)
+			if bulk != nil {
+				h.evMu.Lock()
+				h.evByOrg[orgID] = bulk
+				h.evWarmed[orgID] = time.Now()
+				h.evMu.Unlock()
+			}
+		}
 	}
 	for i := range deals {
 		var pre *cpmDealEventCounts
 		if bulk != nil {
-			pre = bulk[deals[i].ID] // nil for deals with zero events — loadProgress treats as zeros
+			// A deal absent from the cache (zero events, or created after the
+			// last refresh) renders zeros until the next cache cycle.
+			pre = bulk[deals[i].ID]
 			if pre == nil {
 				pre = &cpmDealEventCounts{}
 			}
@@ -403,7 +513,7 @@ func (h *CpmPlannerHandlers) loadDeals(orgID, dealID string) ([]cpmDeal, error) 
 // cpmDealEventCounts is one deal's tracking-event aggregate (the expensive
 // slice of loadProgress, bulk-computable for the whole org in one pass).
 type cpmDealEventCounts struct {
-	sent, delivered, opened, clicked, hard, soft int64
+	sent, delivered, hard, soft int64
 }
 
 // loadAllDealEventCounts computes every deal's event aggregate in ONE
@@ -422,18 +532,21 @@ func (h *CpmPlannerHandlers) loadAllDealEventCounts(orgID string, deals []cpmDea
 	if minStart.IsZero() {
 		return nil
 	}
+	// opened/clicked are deliberately NOT aggregated: they were never
+	// rendered anywhere (dead payload, 2026-07-07 review) and opens are the
+	// single largest event class (~90% machine) — excluding them cuts the
+	// scan materially. The JSON fields remain, as zeros.
 	rows, err := h.db.Query(dealCampaignMapCTE+`
 		SELECT dm.deal_id::text,
 			COUNT(*) FILTER (WHERE te.event_type = 'sent'),
 			COUNT(*) FILTER (WHERE te.event_type = 'delivered'),
-			COUNT(*) FILTER (WHERE te.event_type = 'opened'),
-			COUNT(*) FILTER (WHERE te.event_type = 'clicked'),
 			COUNT(*) FILTER (WHERE te.event_type = 'bounced' AND `+HardBounceSQL("te")+`),
 			COUNT(*) FILTER (WHERE te.event_type = 'bounced' AND NOT (`+HardBounceSQL("te")+`))
 		FROM mailing_tracking_events te
 		JOIN dm ON dm.campaign_id = te.campaign_id
 		JOIN mailing_cpm_deals d ON d.id = dm.deal_id
 		WHERE te.organization_id = $1
+		  AND te.event_type IN ('sent','delivered','bounced')
 		  AND te.event_at >= $2
 		  AND te.event_at >= d.start_date
 		GROUP BY 1`, orgID, minStart)
@@ -446,7 +559,7 @@ func (h *CpmPlannerHandlers) loadAllDealEventCounts(orgID string, deals []cpmDea
 	for rows.Next() {
 		var id string
 		c := &cpmDealEventCounts{}
-		if err := rows.Scan(&id, &c.sent, &c.delivered, &c.opened, &c.clicked, &c.hard, &c.soft); err == nil {
+		if err := rows.Scan(&id, &c.sent, &c.delivered, &c.hard, &c.soft); err == nil {
 			out[id] = c
 		}
 	}
@@ -512,33 +625,28 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	// associated campaigns (operator 2026-06-13). Associated campaigns count
 	// regardless of offer_id, so an operator can attribute any send to the deal.
 	if preEvents != nil {
-		p.Sent, p.Delivered, p.Opened, p.Clicked = preEvents.sent, preEvents.delivered, preEvents.opened, preEvents.clicked
+		p.Sent, p.Delivered = preEvents.sent, preEvents.delivered
 		p.HardBounces, p.SoftBounces = preEvents.hard, preEvents.soft
 	} else {
-		// opened/clicked are deliberately RAW (machine/MPP included) — NOT the
-		// human-verdict counts the Offer Center stats use (METRIC_CONTRACT.md
-		// §6: raw is the operational signal, labeled as such). CPM deals bill
-		// on DELIVERED; opens/clicks here are informational pacing context, and
-		// the progress struct surfaces a single opened/clicked pair, so we do
-		// not shrink a billing-adjacent surface by silently switching it to
-		// human-only. If a human companion is ever needed, add opened_human /
-		// clicked_human via ignite_verdict_is_human(ignite_event_verdict(
-		// user_agent, ip_address)) alongside — never replace the raw pair.
+		// opened/clicked are no longer aggregated (2026-07-07): they were
+		// never rendered on any surface, and opens are the largest event
+		// class (~90% machine) — dropping them cuts the scan materially.
+		// The JSON fields remain as zeros; if opens/clicks are ever wanted
+		// here, add them as verdict-labeled companions per METRIC_CONTRACT §6.
 		// The raw event_at >= $2 bound below is the partition-pruning predicate.
 		evQ := `
 			SELECT
 				COUNT(*) FILTER (WHERE event_type = 'sent'),
 				COUNT(*) FILTER (WHERE event_type = 'delivered'),
-				COUNT(*) FILTER (WHERE event_type = 'opened'),
-				COUNT(*) FILTER (WHERE event_type = 'clicked'),
 				COUNT(*) FILTER (WHERE event_type = 'bounced' AND ` + HardBounceSQL("") + `),
 				COUNT(*) FILTER (WHERE event_type = 'bounced' AND NOT (` + HardBounceSQL("") + `))
 			FROM mailing_tracking_events
 			WHERE organization_id = $1
+			  AND event_type IN ('sent','delivered','bounced')
 			  AND event_at >= $2
 			  AND campaign_id IN ` + dealCampaignSetSubquery()
 		if err := h.db.QueryRow(evQ, orgID, d.startDate, d.OfferID, d.ID, d.CampaignNamePattern, d.EverflowOfferID).Scan(
-			&p.Sent, &p.Delivered, &p.Opened, &p.Clicked, &p.HardBounces, &p.SoftBounces); err != nil {
+			&p.Sent, &p.Delivered, &p.HardBounces, &p.SoftBounces); err != nil {
 			log.Printf("[CpmPlanner] progress events for deal %s: %v", d.ID, err)
 		}
 	}
