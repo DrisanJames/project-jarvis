@@ -1813,6 +1813,15 @@ var criticalSendPathDDL = []struct {
 	// Per-vertical partner-drip follow-up ladders (operator 2026-06-11):
 	// NULL vertical = the shared/global fallback chain.
 	{"add_followup_creatives_vertical", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS vertical TEXT`},
+	// Per-touch offer override (operator 2026-07-08): a nullable offer_id on each
+	// follow-up touch row lets one vertical mail a DIFFERENT offer per touch. When
+	// set, the orchestrator stamps THIS offer as the deploy payload's OfferID so
+	// the per-touch offer's DNM/offer-suppression is scrubbed (a compliance
+	// requirement — each touch must scrub its own offer, not the dataset's). The
+	// orchestrator reads offer_id in resolveFollowupCreative UNCONDITIONALLY, so
+	// the column must exist before the drip worker's first tick → criticalSendPathDDL.
+	// NULL = fall back to the dataset's offer_id exactly as before (no change).
+	{"add_followup_creatives_offer_id", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS offer_id UUID`},
 	// The original PK (brand, touch_number) blocks per-vertical rows; replace
 	// with a vertical-aware unique index ('' = the NULL/global chain).
 	{"drop_followup_creatives_pk", `ALTER TABLE partner_drip_followup_creatives DROP CONSTRAINT IF EXISTS partner_drip_followup_creatives_pkey`},
@@ -6726,12 +6735,20 @@ END $$`},
 			subject_line TEXT NOT NULL,
 			preheader TEXT NOT NULL DEFAULT '',
 			from_name TEXT NOT NULL,
+			offer_id UUID,
 			active BOOLEAN NOT NULL DEFAULT true,
 			effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_by TEXT,
 			PRIMARY KEY (vertical, brand)
 		)`},
+		// Per-touch offer override (operator 2026-07-08): a nullable offer_id on
+		// the touch-1 creative row lets a single vertical run a ladder of DIFFERENT
+		// offers per touch. When set, the orchestrator uses THIS offer for the
+		// creative fallback AND stamps it as the deploy payload's OfferID so the
+		// per-touch offer's DNM/offer-suppression is scrubbed (compliance). NULL =
+		// fall back to the dataset's offer_id exactly as before (no behavior change).
+		{"dp_add_creatives_offer_id", `ALTER TABLE partner_drip_creatives ADD COLUMN IF NOT EXISTS offer_id UUID`},
 		{"dp_create_partner_drip_copy_lines", `CREATE TABLE IF NOT EXISTS partner_drip_copy_lines (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			vertical TEXT NOT NULL,

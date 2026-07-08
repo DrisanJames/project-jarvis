@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -250,7 +251,15 @@ const followupTouchGapHours = 24
 // MaxTouchCount is the terminal touch number. After this many touches a
 // recipient is permanently retired from the drip rotation regardless of
 // engagement state.
-const MaxTouchCount = 4
+//
+// 2026-07-08: raised 4→5 to support a per-touch-offer ladder (one vertical
+// mailing up to 5 different offers, one per touch). Verticals that configure
+// FEWER than MaxTouchCount touches are NOT broken by the higher ceiling: when a
+// record advances to a touch that has no configured creative row for the
+// vertical (no brand-specific row AND no vertical=NULL global row), the
+// follow-up pass retires it as terminal instead of looping (see processFollowup
+// + followupTouchConfigured).
+const MaxTouchCount = 5
 
 // dataPartnerMasterListID is seeded by startup migration dp_seed_master_list.
 const dataPartnerMasterListID = "00000000-0000-0000-0000-0000d4ada4a7"
@@ -1365,6 +1374,13 @@ type creativeRec struct {
 	preheader string
 	fromName  string
 	htmlBody  string
+	// offerID is the PER-TOUCH offer bound to this creative row (nullable
+	// partner_drip_creatives.offer_id / partner_drip_followup_creatives.offer_id).
+	// When non-empty it OVERRIDES the dataset's offerID for BOTH the deploy
+	// payload's OfferID (so this touch scrubs THIS offer's DNM/offer-suppression)
+	// and for offer/money attribution. Empty ("") = fall back to the dataset's
+	// offerID exactly as before (no behavior change for existing single-offer drips).
+	offerID string
 }
 
 // resolveCreativeForVertical returns the creative the orchestrator will use
@@ -1393,13 +1409,31 @@ func (po *PartnerDripOrchestrator) resolveCreativeForVertical(ctx context.Contex
 
 func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical, brand string) (creativeRec, error) {
 	var c creativeRec
+	var offerID sql.NullString
 	err := po.db.QueryRowContext(ctx, `
-		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name
+		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id
 		FROM partner_drip_creatives
 		WHERE vertical = $1 AND brand = $2 AND active = true
-	`, vertical, brand).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName)
+	`, vertical, brand).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID)
 	if err != nil {
 		return c, fmt.Errorf("creative lookup (%s/%s): %w", vertical, brand, err)
+	}
+	if offerID.Valid {
+		c.offerID = strings.TrimSpace(offerID.String)
+	}
+	// Per-touch offer WITHOUT a bespoke creative file: pull the creative content
+	// from the offer-center tables for THIS touch's offer (mailing_offer_creatives
+	// / subjects / from-names), but preserve c.offerID so the deploy stamps the
+	// per-touch offer's suppression scrub + attribution. When the row DOES carry a
+	// filename its copy takes precedence (disk-read path below) and we only inherit
+	// offer_id for the scrub. Empty offer_id keeps the exact legacy behavior.
+	if c.offerID != "" && strings.TrimSpace(c.filename) == "" {
+		oc, err := po.resolveOfferCreative(ctx, c.offerID, brand)
+		if err != nil {
+			return c, err
+		}
+		oc.offerID = c.offerID
+		return oc, nil
 	}
 	if subj, pre, fn, ok := po.rotateCopyLines(ctx, vertical, brand); ok {
 		if subj != "" {
@@ -2734,13 +2768,24 @@ func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand str
 	htmlSHA := sha256.Sum256([]byte(creative.htmlBody))
 	name := fmt.Sprintf("[partner-drip] %s %s %s %s", v.vertical, brand, time.Now().UTC().Format("20060102T1504"), hex.EncodeToString(htmlSHA[:4]))
 
+	// Per-touch offer wins: when this touch's creative row carries its own
+	// offer_id, that offer drives the deploy's OfferID (offer-suppression Bloom +
+	// DNM scrub + content_locked inheritance + offer/money attribution) so each
+	// touch scrubs ITS OWN offer, not the dataset's. Empty creative.offerID falls
+	// back to the dataset's offerID exactly as before (single-offer drips unchanged).
+	offerID := v.offerID
+	if creative.offerID != "" {
+		offerID = creative.offerID
+	}
+
 	return engine.PMTACampaignInput{
 		Name: name,
-		// OfferID is set ONLY for direct-offer datasets. The deploy
-		// pipeline uses it to apply the offer's suppression Bloom and to
-		// inherit content_locked from the offer when explicit nil; we
-		// pass content_locked=true explicitly for safety regardless.
-		OfferID:       v.offerID,
+		// OfferID drives the offer-suppression Bloom + DNM scrub and content_locked
+		// inheritance. It is the PER-TOUCH offer (creative.offerID) when the touch's
+		// creative row binds one, else the dataset's offer (v.offerID) — set only for
+		// direct-offer datasets, empty for the legacy drip pool. content_locked is
+		// passed true explicitly for safety regardless.
+		OfferID:       offerID,
 		TargetISPs:    targetISPs,
 		SendingDomain: domain,
 		Variants: []engine.ContentVariant{{
@@ -3383,6 +3428,28 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	}
 
 	creative, err := po.resolveFollowupCreative(ctx, v.vertical, brand, touchNum)
+	if errors.Is(err, sql.ErrNoRows) {
+		// No creative row for this (vertical, brand, touch). Two cases:
+		//   1. The touch is unconfigured for the WHOLE vertical (no brand-specific
+		//      row AND no vertical=NULL global) — the record has run past the end of
+		//      this vertical's configured ladder (e.g. a 4-touch vertical under the
+		//      new 5-touch ceiling). Retire it as terminal so it never loops.
+		//   2. Some OTHER brand configures this touch but the shared follow-up brand
+		//      rotation landed on a brand that doesn't — release the claim so a later
+		//      wave under a configured brand serves it.
+		if configured, cErr := po.followupTouchConfigured(ctx, v.vertical, touchNum); cErr == nil && !configured {
+			if rErr := po.retireRecordsTerminal(ctx, claimed, "ladder_complete"); rErr != nil {
+				log.Printf("[PartnerDripOrchestrator] followup retire-terminal failed (vertical=%s touch=%d): %v", v.vertical, touchNum, rErr)
+				_ = po.releaseClaim(ctx, claimed)
+			} else {
+				log.Printf("[PartnerDripOrchestrator] followup vertical=%s touch=%d unconfigured — retired %d records as terminal (ladder_complete)", v.vertical, touchNum, len(claimed))
+			}
+			return nil
+		}
+		_ = po.releaseClaim(ctx, claimed)
+		log.Printf("[PartnerDripOrchestrator] followup vertical=%s brand=%s touch=%d has no creative for this brand — released for a configured brand", v.vertical, brand, touchNum)
+		return nil
+	}
 	if err != nil {
 		_ = po.releaseClaim(ctx, claimed)
 		return fmt.Errorf("resolve_followup_creative: %w", err)
@@ -3562,16 +3629,35 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 // records get retried on the next tick.
 func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, vertical, brand string, touchNumber int) (creativeRec, error) {
 	var c creativeRec
+	var offerID sql.NullString
 	err := po.db.QueryRowContext(ctx, `
-		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name
+		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id
 		FROM partner_drip_followup_creatives
 		WHERE brand = $1 AND touch_number = $2 AND active = true
 		  AND (vertical = $3 OR vertical IS NULL)
 		ORDER BY (vertical = $3) DESC NULLS LAST
 		LIMIT 1
-	`, brand, touchNumber, vertical).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName)
+	`, brand, touchNumber, vertical).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID)
 	if err != nil {
+		// sql.ErrNoRows is preserved via %w so processFollowup can distinguish an
+		// unconfigured touch (ladder shorter than MaxTouchCount → retire terminal)
+		// from a genuine lookup/read failure.
 		return c, fmt.Errorf("followup_creative lookup (%s/%s/t%d): %w", vertical, brand, touchNumber, err)
+	}
+	if offerID.Valid {
+		c.offerID = strings.TrimSpace(offerID.String)
+	}
+	// Per-touch offer WITHOUT a bespoke creative file → pull the creative content
+	// from the offer-center tables for THIS touch's offer, preserving c.offerID for
+	// the deploy's per-touch suppression scrub + attribution. A configured filename
+	// takes precedence (disk read below). Empty offer_id keeps legacy behavior.
+	if c.offerID != "" && strings.TrimSpace(c.filename) == "" {
+		oc, err := po.resolveOfferCreative(ctx, c.offerID, brand)
+		if err != nil {
+			return c, err
+		}
+		oc.offerID = c.offerID
+		return oc, nil
 	}
 	body, err := os.ReadFile(filepath.Join(po.cfg.CreativesDir, c.filename))
 	if err != nil {
@@ -3579,6 +3665,47 @@ func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, 
 	}
 	c.htmlBody = string(body)
 	return c, nil
+}
+
+// followupTouchConfigured reports whether ANY active follow-up creative row is
+// configured for (vertical, touchNumber) — either a vertical-specific row or the
+// shared vertical=NULL global fallback, for any brand. Used to decide whether a
+// record that has advanced past the vertical's configured ladder should be
+// retired as terminal (touch entirely unconfigured) versus merely re-queued for a
+// brand that does configure it. Brand-agnostic on purpose: the follow-up brand
+// rotation is independent of a record's origin, so "no row for THIS brand" alone
+// must not retire records another brand could still serve.
+func (po *PartnerDripOrchestrator) followupTouchConfigured(ctx context.Context, vertical string, touchNumber int) (bool, error) {
+	var exists bool
+	err := po.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM partner_drip_followup_creatives
+			WHERE touch_number = $1 AND active = true
+			  AND (vertical = $2 OR vertical IS NULL)
+		)
+	`, touchNumber, vertical).Scan(&exists)
+	return exists, err
+}
+
+// retireRecordsTerminal permanently retires claimed records: it flips them back
+// to status='mailed' (so mailed-count analytics stay intact), clears
+// next_touch_at, and stamps terminal_reason (first-writer-wins). Retired rows are
+// excluded from every future follow-up claim (which filters terminal_reason IS
+// NULL), so this is the graceful terminal state for records that have exhausted a
+// vertical's configured touch ladder.
+func (po *PartnerDripOrchestrator) retireRecordsTerminal(ctx context.Context, recs []claimedRecord, reason string) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	ids := claimedRecordIDs(recs)
+	_, err := po.db.ExecContext(ctx, `
+		UPDATE partner_clean_queue
+		SET status = 'mailed',
+		    next_touch_at = NULL,
+		    terminal_reason = COALESCE(terminal_reason, $2)
+		WHERE id = ANY($1::uuid[])
+	`, "{"+strings.Join(ids, ",")+"}", reason)
+	return err
 }
 
 func (po *PartnerDripOrchestrator) updateDripState(ctx context.Context, vertical string, nextIdx int, brand, campaignID string, waveSize int) error {
