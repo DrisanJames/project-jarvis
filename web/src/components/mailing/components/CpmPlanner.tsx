@@ -660,6 +660,14 @@ export const CpmPlanner: React.FC = () => {
     return { ...row, portfolio: pf };
   };
 
+  // On-pace threshold + display bands (operator 2026-07-08): projection ≥90%
+  // of target = ON PACE; 75–90% shows the percentage in amber; <75% in red.
+  // ON_PACE_PCT mirrors the server's cpmOnPaceThreshold — keep in sync.
+  const ON_PACE_PCT = 0.90;
+  const WARN_PCT = 0.75;
+  const paceBandColor = (pct: number): string =>
+    pct >= ON_PACE_PCT ? C.green : pct >= WARN_PCT ? C.amber : C.red;
+
   // Client mirror of the server's cpmPacingMath — lets a pacing-row save
   // reflect instantly instead of waiting on the /pacing re-fetch.
   const clientPacingMath = (target: number, mtd: number, rate3d: number, day: number, dim: number) => {
@@ -668,7 +676,7 @@ export const CpmPlanner: React.FC = () => {
     const after = Math.max(0, dim - day);
     const projected = mtd + Math.round(rate3d * after);
     const pct = target > 0 ? projected / target : 0;
-    return { required, projected, pct, onPace: target > 0 && projected >= target };
+    return { required, projected, pct, onPace: target > 0 && pct >= ON_PACE_PCT };
   };
 
   // Optimistically patch one pacing row after a current-month target
@@ -1411,7 +1419,7 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ minWidth: 130 }}>
               {p.target_volume > 0 && (
                 <div style={{ height: 7, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
-                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: p.on_pace ? C.green : C.amber }} />
+                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: paceBandColor(p.projected_pct) }} />
                 </div>
               )}
               <span style={{ color: C.heading }}>{fmtInt(p.mtd_delivered)}</span>
@@ -1421,14 +1429,16 @@ export const CpmPlanner: React.FC = () => {
           <td style={tdStyle}>{p.required_daily > 0 ? fmtInt(p.required_daily) : '—'}</td>
           <td style={tdStyle}>{fmtInt(p.rate_3d)}/day</td>
           <td style={tdStyle}>
-            <span style={{ color: p.target_volume > 0 ? (p.on_pace ? C.green : C.amber) : C.muted, fontWeight: 600 }}>
+            <span style={{ color: p.target_volume > 0 ? paceBandColor(p.projected_pct) : C.muted, fontWeight: 600 }}>
               {fmtInt(p.projected)}
             </span>
             {p.target_volume > 0 && (
-              <span style={{
-                marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
-                color: p.on_pace ? C.green : C.amber, border: `1px solid ${p.on_pace ? C.green : C.amber}`,
-              }}>
+              <span
+                title="Projected ÷ month target · ≥90% = ON PACE · 75–90% amber · <75% red"
+                style={{
+                  marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+                  color: paceBandColor(p.projected_pct), border: `1px solid ${paceBandColor(p.projected_pct)}`,
+                }}>
                 {p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
               </span>
             )}
@@ -1501,7 +1511,9 @@ export const CpmPlanner: React.FC = () => {
               <Stat
                 label="Projected month-end"
                 value={fmtInt(pacing.portfolio.projected)}
-                color={pacing.portfolio.target_volume > 0 && pacing.portfolio.projected >= pacing.portfolio.target_volume ? C.green : C.amber}
+                color={pacing.portfolio.target_volume > 0
+                  ? paceBandColor(pacing.portfolio.projected / pacing.portfolio.target_volume)
+                  : C.muted}
               />
               <Stat label="MTD conversions" value={fmtInt(pacing.portfolio.mtd_conversions)} />
             </div>

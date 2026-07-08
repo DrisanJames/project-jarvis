@@ -34,10 +34,18 @@ func TestCpmPacingMath(t *testing.T) {
 		},
 		{
 			// Last day of month: no days after today — projection is just MTD;
-			// required spreads over exactly 1 day (today).
+			// required spreads over exactly 1 day (today). Also the exact
+			// on-pace boundary: 90k/100k = 90% ≥ cpmOnPaceThreshold → on pace
+			// (operator 2026-07-08 rule).
 			name: "last day", target: 100_000, mtd: 90_000, rate3d: 50_000,
 			dayOfMonth: 30, daysInMonth: 30,
-			wantRequired: 10_000, wantProjected: 90_000, wantOnPace: false,
+			wantRequired: 10_000, wantProjected: 90_000, wantOnPace: true,
+		},
+		{
+			// Just under the 90% threshold: 89% projected → not on pace.
+			name: "just under threshold", target: 100_000, mtd: 89_000, rate3d: 0,
+			dayOfMonth: 30, daysInMonth: 30,
+			wantRequired: 11_000, wantProjected: 89_000, wantOnPace: false,
 		},
 		{
 			// First day: everything remaining over the full month.

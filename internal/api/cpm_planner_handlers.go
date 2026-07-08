@@ -2354,6 +2354,13 @@ type cpmPacingDeal struct {
 	OnPace            bool    `json:"on_pace"`
 }
 
+// cpmOnPaceThreshold: a month-end projection at or above this share of the
+// target counts as ON PACE (operator 2026-07-08: "projected within 90% is on
+// pace; 75% to 90% should display the percentages"). The 75% line is a
+// DISPLAY band (amber vs red) owned by the UI; the on_pace flag encodes only
+// the 90% rule.
+const cpmOnPaceThreshold = 0.90
+
 // cpmPacingMath derives the pacing numbers for one deal-month. dayOfMonth is
 // today's Denver day (1-based); requiredDaily spreads the remaining volume over
 // the days left INCLUDING today (today's sending can still count toward it);
@@ -2374,7 +2381,7 @@ func cpmPacingMath(target, mtd int64, rate3d float64, dayOfMonth, daysInMonth in
 	projected = mtd + int64(math.Round(rate3d*float64(daysAfterToday)))
 	if target > 0 {
 		projectedPct = float64(projected) / float64(target)
-		onPace = projected >= target
+		onPace = projectedPct >= cpmOnPaceThreshold
 	}
 	return
 }
