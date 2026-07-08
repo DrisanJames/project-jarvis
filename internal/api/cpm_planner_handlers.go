@@ -532,11 +532,26 @@ func (h *CpmPlannerHandlers) loadAllDealEventCounts(orgID string, deals []cpmDea
 	if minStart.IsZero() {
 		return nil
 	}
+	// This aggregate legitimately exceeds the server's statement_timeout
+	// (post-backfill campaign sets; both bulk and per-deal shapes were
+	// killed on prod, 2026-07-08) — it runs ONLY here: in the background
+	// refresher and the once-per-boot synchronous fallback. SET LOCAL
+	// scopes the override to this transaction alone.
+	tx, err := h.db.Begin()
+	if err != nil {
+		log.Printf("[CpmPlanner] bulk event counts begin: %v", err)
+		return nil
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	if _, err := tx.Exec(`SET LOCAL statement_timeout = '600s'`); err != nil {
+		log.Printf("[CpmPlanner] bulk event counts timeout override: %v", err)
+		return nil
+	}
 	// opened/clicked are deliberately NOT aggregated: they were never
 	// rendered anywhere (dead payload, 2026-07-07 review) and opens are the
 	// single largest event class (~90% machine) — excluding them cuts the
 	// scan materially. The JSON fields remain, as zeros.
-	rows, err := h.db.Query(dealCampaignMapCTE+`
+	rows, err := tx.Query(dealCampaignMapCTE+`
 		SELECT dm.deal_id::text,
 			COUNT(*) FILTER (WHERE te.event_type = 'sent'),
 			COUNT(*) FILTER (WHERE te.event_type = 'delivered'),
@@ -682,7 +697,9 @@ func (h *CpmPlannerHandlers) loadProgress(orgID string, d *cpmDeal, payout float
 	if err := h.db.QueryRow(`
 		SELECT COALESCE(SUM(count), 0),
 		       COALESCE(SUM(revenue), 0),
-		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE count * $3 END), 0)
+		       -- $3::numeric: bare $3 gets inferred as INTEGER from count*$3,
+		       -- which rejects decimal bases ("9.34" — Tahiti, 2026-07-08).
+		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE count * $3::numeric END), 0)
 		FROM mailing_cpm_manual_conversions
 		WHERE organization_id = $1 AND deal_id = $2`,
 		orgID, d.ID, basis).Scan(&p.ConversionsManual, &p.ManualRevenue, &manualRevEffective); err != nil {
