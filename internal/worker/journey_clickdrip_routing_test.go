@@ -145,6 +145,82 @@ func TestReplaceMoneyMergeTags(t *testing.T) {
 	}
 }
 
+func TestBrandRootFromEmail(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"deals@em.discountblog.com", "discountblog.com"},
+		{"a@em.myrepairdiy.com", "myrepairdiy.com"}, // em.-strip must not eat a leading 'm'
+		{"x@discountblog.com", "discountblog.com"},  // no em. prefix
+		{"not-an-email", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := brandRootFromEmail(tc.in); got != tc.want {
+			t.Fatalf("brandRootFromEmail(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestRenderSystemURLTokens_SafetyNet locks the send-time half of the
+// {{ system.* }} fix: any literal system URL token still in the creative
+// (the executor's Liquid render is skipped when the subscriber row fails to
+// load) must be replaced with a real signed URL BEFORE the HTML reaches the
+// PMTA API sender's quoted-printable encoder — QP soft line-breaks split a
+// token mid-name ('{{ system.preferences_ur=') and PMTA's template parse of
+// 'content' then 422s the whole touch. Also locks the CAN-SPAM fallback: a
+// body with no unsubscribe link gets one injected, and a body that already
+// has one is not double-injected.
+func TestRenderSystemURLTokens_SafetyNet(t *testing.T) {
+	s := NewJourneyClickDripSender(nil, nil, "https://t.em.discountblog.com", "test-secret")
+	const (
+		orgID     = "00000000-0000-0000-0000-000000000001"
+		campID    = "55f62e3e-dccc-5181-812c-c5459661d5ef"
+		subID     = "abc-123"
+		brandRoot = "discountblog.com"
+		trackBase = "https://t.em.discountblog.com"
+	)
+
+	t.Run("all token variants replaced with signed URLs", func(t *testing.T) {
+		html := `<body><p><a href="{{ system.brand_unsubscribe_url }}">brand</a>` +
+			` <a href="{{system.brand_unsubscribe_url}}">brand2</a>` +
+			` <a href="{{ system.unsubscribe_url }}">unsubscribe globally here</a>` +
+			` <a href="{{system.unsubscribe_url}}">global2</a>` +
+			` or <a href="{{ system.preferences_url }}">preferences</a>` +
+			` <a href="{{system.preferences_url}}">prefs2</a></p></body>`
+		out := s.renderSystemURLTokens(html, orgID, campID, subID, brandRoot, trackBase)
+
+		if strings.Contains(out, "{{") {
+			t.Fatalf("raw template token survived (would 422 at PMTA after QP encoding): %s", out)
+		}
+		if !strings.Contains(out, trackBase+"/track/unsubscribe/") {
+			t.Fatalf("unsubscribe URL missing — the reminder must ship a working unsub link: %s", out)
+		}
+		if !strings.Contains(out, trackBase+"/preferences?sid="+subID) {
+			t.Fatalf("preferences URL missing: %s", out)
+		}
+		// Parity check: the global unsub token must render to the exact URL
+		// the broadcast send worker's safety net would produce.
+		want := GenerateUnsubscribeURL(orgID, campID, subID, trackBase, "test-secret")
+		if !strings.Contains(out, want) {
+			t.Fatalf("global unsub URL diverges from broadcast generator:\nwant substr %s\nin %s", want, out)
+		}
+		// No unsub links were missing, so the fallback block must NOT appear:
+		// exactly the 4 replaced tokens (2 brand + 2 global), no 5th injected.
+		if strings.Count(out, "/track/unsubscribe/") != 4 {
+			t.Fatalf("expected exactly the 4 replaced unsub links (no fallback injection), got: %s", out)
+		}
+	})
+
+	t.Run("body without unsub link gets CAN-SPAM fallback injected", func(t *testing.T) {
+		out := s.renderSystemURLTokens(`<body><p>deal reminder</p></body>`, orgID, campID, subID, brandRoot, trackBase)
+		if !strings.Contains(out, "/track/unsubscribe/") {
+			t.Fatalf("fallback unsubscribe block not injected: %s", out)
+		}
+		if !strings.Contains(out, "</div></body>") {
+			t.Fatalf("fallback block should be injected before </body>: %s", out)
+		}
+	})
+}
+
 func TestApplyISPBrandRouting(t *testing.T) {
 	po := &PartnerDripOrchestrator{cfg: PartnerDripOrchestratorConfig{
 		NewRecordISPBrandAllow: map[string]map[string]bool{

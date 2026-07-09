@@ -577,6 +577,15 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 				"node_type": node.Type,
 			}
 
+			// Click-drip: BuildContext above ran with campaign=nil, so the
+			// system.* URLs (unsubscribe/preferences/…) were never populated
+			// and the lax Liquid render below would silently strip
+			// {{ system.unsubscribe_url }} et al. from the creative footer —
+			// shipping a reminder with no working unsubscribe link. Populate
+			// them broadcast-style before rendering (parity with
+			// SendWorkerPool.buildRenderContext).
+			je.mergeClickDripSystemURLs(ctx, renderCtx, enrollment, sub.ID.String(), sendingProfileID, fromEmail)
+
 			// Personalize content
 			cacheKey := fmt.Sprintf("journey:%s:node:%s", enrollment.JourneyID, node.ID)
 
@@ -671,16 +680,45 @@ func isClickDripEnrollment(e Enrollment) bool {
 	return false
 }
 
+// mergeClickDripSystemURLs merges the broadcast-parity {{ system.* }} URL
+// values into a click-drip enrollment's render context so the Liquid render
+// resolves the creative's unsubscribe/preferences footer links to REAL signed
+// URLs (the same generators the campaign send worker uses) instead of
+// stripping them to empty strings. No-op for non-click-drip enrollments and
+// when no clickDripSender is wired, so legacy journeys are untouched.
+func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderCtx mailing.RenderContext, enrollment Enrollment, subscriberID, profileID, fromEmail string) {
+	if je.clickDripSender == nil || !isClickDripEnrollment(enrollment) {
+		return
+	}
+	sysCtx, ok := renderCtx["system"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	everflowOfferID, _ := enrollment.Metadata["everflow_offer_id"].(string)
+	for k, v := range je.clickDripSender.SystemURLs(ctx, everflowOfferID, subscriberID, profileID, fromEmail) {
+		sysCtx[k] = v
+	}
+}
+
 // loadSubscriberByEmail loads subscriber data for personalization
 func (je *JourneyExecutor) loadSubscriberByEmail(ctx context.Context, email string) *mailing.Subscriber {
 	sub := &mailing.Subscriber{}
 
+	// NULL-safe scan: mailing.Subscriber's FirstName/LastName/Status/Source/
+	// IPAddress/Timezone are plain (non-pointer) strings, but every one of
+	// those columns is nullable in mailing_subscribers — a NULL first_name
+	// crashed every click-drip personalization load with `sql: Scan error on
+	// column index 5 ... converting NULL to string is unsupported` (prod
+	// 2026-07). COALESCE exactly those columns to ''; pointer / sql-Scanner
+	// fields (last_open_at, custom_fields, …) already handle NULL themselves.
 	err := je.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, list_id, email, email_hash, first_name, last_name,
-			   status, source, ip_address, custom_fields, engagement_score,
+		SELECT id, organization_id, list_id, email, email_hash,
+			   COALESCE(first_name, ''), COALESCE(last_name, ''),
+			   COALESCE(status, ''), COALESCE(source, ''), COALESCE(ip_address::text, ''),
+			   custom_fields, engagement_score,
 			   total_emails_received, total_opens, total_clicks,
 			   last_open_at, last_click_at, last_email_at,
-			   optimal_send_hour_utc, timezone,
+			   optimal_send_hour_utc, COALESCE(timezone, ''),
 			   subscribed_at, unsubscribed_at, created_at, updated_at
 		FROM mailing_subscribers
 		WHERE LOWER(email) = LOWER($1)

@@ -39,9 +39,12 @@ import (
 	"database/sql"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
 // TestReadReminderSeqIndex is a pure-function table test for the
@@ -386,4 +389,172 @@ func TestEmailNode_OfferReminderDisabled_DoesNotOverrideSubject(t *testing.T) {
 	require.False(t, hasPreheader, "preheader should not be set on disabled reminder row")
 
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestLoadSubscriberByEmail_NullSafeTextColumns locks the NULL-safety of the
+// personalization loader. Every text column that scans into a plain
+// (non-pointer) string on mailing.Subscriber — first_name, last_name, status,
+// source, ip_address, timezone — is nullable in mailing_subscribers, and a
+// NULL first_name crashed EVERY click-drip personalization load in prod
+// (`sql: Scan error on column index 5 ... converting NULL to string is
+// unsupported`), which skipped the Liquid render and let raw {{ system.* }}
+// tokens reach PMTA (the ERROR 2 chain). The regex pins the COALESCE shape of
+// the SELECT so a future edit can't silently reintroduce the crash.
+func TestLoadSubscriberByEmail_NullSafeTextColumns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	je := NewJourneyExecutor(db)
+
+	pattern := `(?s)` +
+		regexp.QuoteMeta(`COALESCE(first_name, ''), COALESCE(last_name, '')`) + `.*` +
+		regexp.QuoteMeta(`COALESCE(status, ''), COALESCE(source, ''), COALESCE(ip_address::text, '')`) + `.*` +
+		regexp.QuoteMeta(`COALESCE(timezone, '')`) + `.*` +
+		regexp.QuoteMeta(`FROM mailing_subscribers`)
+
+	now := time.Now()
+	cols := []string{
+		"id", "organization_id", "list_id", "email", "email_hash",
+		"first_name", "last_name", "status", "source", "ip_address",
+		"custom_fields", "engagement_score",
+		"total_emails_received", "total_opens", "total_clicks",
+		"last_open_at", "last_click_at", "last_email_at",
+		"optimal_send_hour_utc", "timezone",
+		"subscribed_at", "unsubscribed_at", "created_at", "updated_at",
+	}
+	mock.ExpectQuery(pattern).
+		WithArgs("nulls@example.com").
+		WillReturnRows(sqlmock.NewRows(cols).AddRow(
+			"11111111-1111-1111-1111-111111111111",
+			"22222222-2222-2222-2222-222222222222",
+			"33333333-3333-3333-3333-333333333333",
+			"nulls@example.com", "deadbeef",
+			// What the COALESCEd columns yield for a NULL row: ''
+			"", "", "", "", "",
+			[]byte(`{}`), 50.0,
+			0, 0, 0,
+			nil, nil, nil, // last_open_at / last_click_at / last_email_at (pointers)
+			nil, "", // optimal_send_hour_utc (pointer), COALESCE(timezone)
+			now, nil, now, now,
+		))
+
+	sub := je.loadSubscriberByEmail(context.Background(), "nulls@example.com")
+	require.NotNil(t, sub, "a subscriber row with NULL text columns must load, not crash the scan")
+	require.Equal(t, "nulls@example.com", sub.Email)
+	require.Equal(t, "", sub.FirstName)
+	require.Equal(t, "", sub.LastName)
+	require.Nil(t, sub.LastOpenAt)
+	require.Nil(t, sub.OptimalSendHourUTC)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestClickDripSystemURLs_BroadcastParity proves JourneyClickDripSender.
+// SystemURLs builds the exact same signed URLs the campaign send worker's
+// buildRenderContext produces (GenerateUnsubscribeURL /
+// GenerateBrandUnsubscribeURL / "%s/preferences?sid=%s"), keyed on the
+// deterministic per-offer shadow-campaign id and the profile's tracking
+// domain. This is the render-context half of the ERROR 2 fix.
+func TestClickDripSystemURLs_BroadcastParity(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const (
+		secret    = "test-secret"
+		profileID = "44444444-4444-4444-4444-444444444444"
+		subID     = "55555555-5555-5555-5555-555555555555"
+		orgID     = "00000000-0000-0000-0000-000000000001"
+		offerID   = "9539"
+		fromEmail = "deals@em.discountblog.com"
+		trackBase = "https://t.em.discountblog.com"
+	)
+	s := NewJourneyClickDripSender(db, nil, "https://t.global.example", secret)
+
+	// resolveTrackingURL: profile row carries a tracking domain.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_sending_profiles WHERE id=$1`)).
+		WithArgs(profileID).
+		WillReturnRows(sqlmock.NewRows([]string{"tracking_domain", "sending_domain"}).
+			AddRow("t.em.discountblog.com", "em.discountblog.com"))
+
+	// resolveOrgID: subscriber's organization.
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT organization_id::text FROM mailing_subscribers WHERE id=$1`)).
+		WithArgs(subID).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
+
+	urls := s.SystemURLs(context.Background(), offerID, subID, profileID, fromEmail)
+	require.NotNil(t, urls)
+
+	campaignID := shadowCampaignID(offerID)
+	require.Equal(t,
+		GenerateUnsubscribeURL(orgID, campaignID, subID, trackBase, secret),
+		urls["unsubscribe_url"], "must match the broadcast generator exactly")
+	require.Equal(t,
+		GenerateBrandUnsubscribeURL(orgID, campaignID, subID, "discountblog.com", trackBase, secret),
+		urls["brand_unsubscribe_url"], "brand root must derive from the em.<apex> sending address")
+	require.Equal(t, trackBase+"/preferences?sid="+subID, urls["preferences_url"])
+	require.Equal(t, trackBase+"/view?cid="+campaignID+"&sid="+subID, urls["view_in_browser_url"])
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens is the ERROR 2
+// regression test at the executor seam: with the system URLs merged into the
+// render context, the Liquid render must resolve every {{ system.* }} footer
+// token to a real URL — leaving NO raw '{{' for the quoted-printable encoder
+// to split mid-token (QP soft line-breaks turned
+// '{{ system.preferences_url }}' into '{{ system.preferences_ur=' and PMTA's
+// template parse of 'content' 422'd every touch).
+func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const (
+		profileID = "44444444-4444-4444-4444-444444444444"
+		subID     = "55555555-5555-5555-5555-555555555555"
+	)
+
+	je := NewJourneyExecutor(db)
+	je.SetClickDripSender(NewJourneyClickDripSender(db, nil, "https://t.global.example", "test-secret"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_sending_profiles WHERE id=$1`)).
+		WithArgs(profileID).
+		WillReturnRows(sqlmock.NewRows([]string{"tracking_domain", "sending_domain"}).
+			AddRow("t.em.discountblog.com", "em.discountblog.com"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT organization_id::text FROM mailing_subscribers WHERE id=$1`)).
+		WithArgs(subID).
+		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).
+			AddRow("00000000-0000-0000-0000-000000000001"))
+
+	enrollment := Enrollment{
+		ID:              "e1",
+		JourneyID:       "click-drip-4touch-72h",
+		SubscriberEmail: "user@example.com",
+		Metadata: map[string]interface{}{
+			"enrolled_via":       "click_postback",
+			"sending_profile_id": profileID,
+			"everflow_offer_id":  "9539",
+		},
+	}
+	renderCtx := mailing.RenderContext{"system": map[string]interface{}{}}
+	je.mergeClickDripSystemURLs(context.Background(), renderCtx, enrollment, subID, profileID, "deals@em.discountblog.com")
+
+	// The exact footer shape from the failing prod creative.
+	footer := `<p style="text-decoration:underline;"><a href="{{ system.brand_unsubscribe_url }}">unsubscribe from this brand</a>, ` +
+		`<a href="{{ system.unsubscribe_url }}">unsubscribe globally here</a> or ` +
+		`<a href="{{ system.preferences_url }}">manage your preferences</a></p>`
+	out, err := mailing.NewTemplateService().Render("", footer, renderCtx)
+	require.NoError(t, err)
+	require.NotContains(t, out, "{{", "no raw template token may survive to the QP encoder")
+	require.Contains(t, out, "/track/unsubscribe/", "unsubscribe links must be REAL signed URLs, not stripped")
+	require.Contains(t, out, "/preferences?sid="+subID)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	// Non-click-drip enrollments must be untouched (no DB calls, no keys).
+	plainCtx := mailing.RenderContext{"system": map[string]interface{}{}}
+	je.mergeClickDripSystemURLs(context.Background(), plainCtx, Enrollment{Metadata: map[string]interface{}{}}, subID, profileID, "x@y.com")
+	require.Empty(t, plainCtx["system"].(map[string]interface{}))
 }

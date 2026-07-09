@@ -135,6 +135,18 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 	trackBase := s.resolveTrackingURL(ctx, p.ProfileID)
 	if trackBase != "" {
 		html = InjectTrackingPixelAndLinks(html, campaignID, p.SubscriberID, emailID, trackBase, orgID, s.trackingSecret)
+
+		// Safety net (send_worker.go parity): when the executor's Liquid
+		// render was skipped (subscriber row failed to load), the creative
+		// still carries literal {{ system.* }} tokens. Those MUST NOT reach
+		// PMTA: the bridge parses the injected 'content' as a template AFTER
+		// our quoted-printable encoding, and QP's '=' escaping / soft
+		// line-breaks split a token mid-name ("{{ system.preferences_ur=")
+		// → HTTP 422 "unexpected `=`, expected end of variable block", which
+		// killed every such touch. Replace them with real signed URLs here so
+		// no raw '{{ system.* }}' ever reaches the QP encoder and the
+		// reminder always ships a working unsubscribe link (CAN-SPAM).
+		html = s.renderSystemURLTokens(html, orgID, campaignID, p.SubscriberID, brandRootFromEmail(p.FromEmail), trackBase)
 	}
 
 	msg := &EmailMessage{
@@ -181,13 +193,82 @@ func replaceMoneyMergeTags(html, subscriberID, fromEmail string) string {
 		html = strings.ReplaceAll(html, tag, subscriberID)
 	}
 	html = strings.ReplaceAll(html, "%7B%7Bsubscriber.id%7D%7D", subscriberID)
+	if brand := brandRootFromEmail(fromEmail); brand != "" {
+		for _, tag := range []string{"{{brand.domain}}", "{{ brand.domain }}"} {
+			html = strings.ReplaceAll(html, tag, brand)
+		}
+		html = strings.ReplaceAll(html, "%7B%7Bbrand.domain%7D%7D", brand)
+	}
+	return html
+}
+
+// brandRootFromEmail derives the brand apex from a sending address
+// (…@em.<apex> → <apex>), matching send_worker's rc["brand"]["domain"] /
+// item.BrandRoot semantics. Returns "" when no domain can be derived.
+func brandRootFromEmail(fromEmail string) string {
 	if i := strings.LastIndex(fromEmail, "@"); i >= 0 {
-		brand := strings.TrimPrefix(fromEmail[i+1:], "em.")
-		if brand != "" {
-			for _, tag := range []string{"{{brand.domain}}", "{{ brand.domain }}"} {
-				html = strings.ReplaceAll(html, tag, brand)
-			}
-			html = strings.ReplaceAll(html, "%7B%7Bbrand.domain%7D%7D", brand)
+		return strings.TrimPrefix(fromEmail[i+1:], "em.")
+	}
+	return ""
+}
+
+// SystemURLs returns the broadcast-parity {{ system.* }} URL values for one
+// click-drip touch, built with the SAME generators the campaign send worker
+// uses in buildRenderContext (send_worker.go: GenerateUnsubscribeURL /
+// GenerateBrandUnsubscribeURL / "%s/preferences?sid=%s"). The executor merges
+// these into the Liquid render context so the creative's footer links render
+// to real signed URLs — BuildContext is called there with campaign=nil, so it
+// cannot populate them itself. The campaign id is the deterministic per-offer
+// shadow-campaign id, i.e. the same id the subsequent Send() logs against, so
+// unsubscribe tokens resolve to the row the message is attributed to.
+// Returns nil when no tracking base is configured (no sensible URL to build).
+func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID, subscriberID, profileID, fromEmail string) map[string]interface{} {
+	trackBase := s.resolveTrackingURL(ctx, profileID)
+	if trackBase == "" || subscriberID == "" {
+		return nil
+	}
+	campaignID := shadowCampaignID(everflowOfferID)
+	orgID := s.resolveOrgID(ctx, subscriberID)
+	return map[string]interface{}{
+		"unsubscribe_url":       GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret),
+		"brand_unsubscribe_url": GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRootFromEmail(fromEmail), trackBase, s.trackingSecret),
+		"preferences_url":       fmt.Sprintf("%s/preferences?sid=%s", trackBase, subscriberID),
+		"view_in_browser_url":   fmt.Sprintf("%s/view?cid=%s&sid=%s", trackBase, campaignID, subscriberID),
+	}
+}
+
+// renderSystemURLTokens replaces any literal {{ system.* }} URL tokens still
+// present in the creative with real signed URLs — the same post-render safety
+// net the campaign send worker applies after tracking injection
+// (send_worker.go processQueueItem), covering the case where the executor's
+// Liquid render was skipped. It also injects a minimal unsubscribe block when
+// the body carries none (CAN-SPAM), mirroring send_worker's fallback, so a
+// click-drip reminder can never ship without a working unsubscribe link.
+func (s *JourneyClickDripSender) renderSystemURLTokens(html, orgID, campaignID, subscriberID, brandRoot, trackBase string) string {
+	unsubURL := GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret)
+	brandUnsubURL := GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRoot, trackBase, s.trackingSecret)
+	prefsURL := fmt.Sprintf("%s/preferences?sid=%s", trackBase, subscriberID)
+	for tag, url := range map[string]string{
+		"{{ system.unsubscribe_url }}":       unsubURL,
+		"{{system.unsubscribe_url}}":         unsubURL,
+		"{{ system.brand_unsubscribe_url }}": brandUnsubURL,
+		"{{system.brand_unsubscribe_url}}":   brandUnsubURL,
+		"{{ system.preferences_url }}":       prefsURL,
+		"{{system.preferences_url}}":         prefsURL,
+	} {
+		html = strings.ReplaceAll(html, tag, url)
+	}
+
+	// CAN-SPAM: if no unsub link exists in the body, inject one before </body>
+	// (identical block to send_worker.go's fallback).
+	if !strings.Contains(strings.ToLower(html), "/track/unsubscribe/") {
+		unsubBlock := fmt.Sprintf(
+			`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
+				`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsubURL)
+		if idx := strings.LastIndex(strings.ToLower(html), "</body>"); idx >= 0 {
+			html = html[:idx] + unsubBlock + html[idx:]
+		} else {
+			html += unsubBlock
 		}
 	}
 	return html
