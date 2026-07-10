@@ -316,6 +316,11 @@ interface PacingDeal {
   projected: number;
   projected_pct: number;
   on_pace: boolean;
+  // OVER band — target met/exceeded on MTD ACTUALS (on_pace is projection-based
+  // and unbounded above, so 113% and 95% both read "ON PACE" without these).
+  over: boolean;
+  over_volume: number;
+  over_budget_usd: number;
 }
 interface PacingResp {
   month: string; // YYYY-MM
@@ -662,21 +667,27 @@ export const CpmPlanner: React.FC = () => {
 
   // On-pace threshold + display bands (operator 2026-07-08): projection ≥90%
   // of target = ON PACE; 75–90% shows the percentage in amber; <75% in red.
+  // OVER band (operator 2026-07-10): target met/exceeded on MTD ACTUALS renders
+  // indigo — green must keep meaning "keep sending, you'll make it", never
+  // "done — every further send is unbilled".
   // ON_PACE_PCT mirrors the server's cpmOnPaceThreshold — keep in sync.
   const ON_PACE_PCT = 0.90;
   const WARN_PCT = 0.75;
-  const paceBandColor = (pct: number): string =>
-    pct >= ON_PACE_PCT ? C.green : pct >= WARN_PCT ? C.amber : C.red;
+  const paceBandColor = (pct: number, over = false): string =>
+    over ? C.indigo : pct >= ON_PACE_PCT ? C.green : pct >= WARN_PCT ? C.amber : C.red;
 
-  // Client mirror of the server's cpmPacingMath — lets a pacing-row save
-  // reflect instantly instead of waiting on the /pacing re-fetch.
-  const clientPacingMath = (target: number, mtd: number, rate3d: number, day: number, dim: number) => {
+  // Client mirror of the server's cpmPacingMath + cpmPacingOver — lets a
+  // pacing-row save reflect instantly instead of waiting on the /pacing re-fetch.
+  const clientPacingMath = (target: number, mtd: number, rate3d: number, day: number, dim: number, ecpm: number) => {
     const daysIncl = Math.max(1, dim - day + 1);
     const required = target > mtd ? (target - mtd) / daysIncl : 0;
     const after = Math.max(0, dim - day);
     const projected = mtd + Math.round(rate3d * after);
     const pct = target > 0 ? projected / target : 0;
-    return { required, projected, pct, onPace: target > 0 && pct >= ON_PACE_PCT };
+    const over = target > 0 && mtd >= target;
+    const overVolume = over ? mtd - target : 0;
+    const overUSD = over && ecpm > 0 ? (overVolume / 1000) * ecpm : 0;
+    return { required, projected, pct, onPace: target > 0 && pct >= ON_PACE_PCT, over, overVolume, overUSD };
   };
 
   // Optimistically patch one pacing row after a current-month target
@@ -720,8 +731,11 @@ export const CpmPlanner: React.FC = () => {
             target_volume: planned, target_source: planned > 0 ? 'deal' : 'none',
           };
         }
-        const m = clientPacingMath(np.target_volume, np.mtd_delivered, np.rate_3d, prev.day_of_month, prev.days_in_month);
-        return { ...np, required_daily: m.required, projected: m.projected, projected_pct: m.pct, on_pace: m.onPace };
+        const m = clientPacingMath(np.target_volume, np.mtd_delivered, np.rate_3d, prev.day_of_month, prev.days_in_month, np.ecpm);
+        return {
+          ...np, required_daily: m.required, projected: m.projected, projected_pct: m.pct, on_pace: m.onPace,
+          over: m.over, over_volume: m.overVolume, over_budget_usd: m.overUSD,
+        };
       }).filter(p => p.deal_id !== dealId || p.target_volume > 0 || p.mtd_delivered > 0 || p.mtd_conversions > 0);
       const portfolio = nextDeals.reduce((acc, p) => ({
         target_volume: acc.target_volume + p.target_volume,
@@ -1439,27 +1453,35 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ minWidth: 130 }}>
               {p.target_volume > 0 && (
                 <div style={{ height: 7, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
-                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: paceBandColor(p.projected_pct) }} />
+                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: paceBandColor(p.projected_pct, p.over) }} />
                 </div>
               )}
               <span style={{ color: C.heading }}>{fmtInt(p.mtd_delivered)}</span>
-              {p.target_volume > 0 && <span style={{ fontSize: 11, color: C.muted }}> ({pct.toFixed(0)}%)</span>}
+              {p.target_volume > 0 && (
+                <span style={{ fontSize: 11, color: p.over ? C.indigo : C.muted }}>
+                  {' '}({((p.mtd_delivered / p.target_volume) * 100).toFixed(0)}%)
+                </span>
+              )}
             </div>
           </td>
           <td style={tdStyle}>{p.required_daily > 0 ? fmtInt(p.required_daily) : '—'}</td>
           <td style={tdStyle}>{fmtInt(p.rate_3d)}/day</td>
           <td style={tdStyle}>
-            <span style={{ color: p.target_volume > 0 ? paceBandColor(p.projected_pct) : C.muted, fontWeight: 600 }}>
+            <span style={{ color: p.target_volume > 0 ? paceBandColor(p.projected_pct, p.over) : C.muted, fontWeight: 600 }}>
               {fmtInt(p.projected)}
             </span>
             {p.target_volume > 0 && (
               <span
-                title="Projected ÷ month target · ≥90% = ON PACE · 75–90% amber · <75% red"
+                title={p.over
+                  ? `Month target met on MTD actuals — ${fmtInt(p.over_volume)} delivered past target ≈ ${fmtMoney(p.over_budget_usd)} beyond the committed budget (unbilled) at ${fmtMoney(p.ecpm)} eCPM.`
+                  : 'Projected ÷ month target · ≥90% = ON PACE · 75–90% amber · <75% red · target met = OVER (indigo)'}
                 style={{
                   marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
-                  color: paceBandColor(p.projected_pct), border: `1px solid ${paceBandColor(p.projected_pct)}`,
+                  color: paceBandColor(p.projected_pct, p.over), border: `1px solid ${paceBandColor(p.projected_pct, p.over)}`,
                 }}>
-                {p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
+                {p.over
+                  ? (p.over_volume > 0 ? `OVER +${fmtMoney(p.over_budget_usd)}` : 'MET')
+                  : p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
               </span>
             )}
           </td>

@@ -2616,6 +2616,15 @@ type cpmPacingDeal struct {
 	Projected         int64   `json:"projected"`
 	ProjectedPct      float64 `json:"projected_pct"`
 	OnPace            bool    `json:"on_pace"`
+	// OVER band (operator 2026-07-10): on_pace has no upper bound, so a deal
+	// that already delivered PAST its month target still read green "ON PACE" —
+	// indistinguishable from "keep sending". These flag target-met on MTD
+	// ACTUALS (not projection) and size the overage so the operator can pull
+	// the offer from the board. Delivery past target is beyond the committed
+	// budget (unbilled).
+	Over          bool    `json:"over"`            // mtd_delivered ≥ target_volume (target > 0)
+	OverVolume    int64   `json:"over_volume"`     // delivered past the month target
+	OverBudgetUSD float64 `json:"over_budget_usd"` // over_volume ÷ 1000 × effective eCPM
 }
 
 // cpmOnPaceThreshold: a month-end projection at or above this share of the
@@ -2648,6 +2657,23 @@ func cpmPacingMath(target, mtd int64, rate3d float64, dayOfMonth, daysInMonth in
 		onPace = projectedPct >= cpmOnPaceThreshold
 	}
 	return
+}
+
+// cpmPacingOver: the month target is met/exceeded on MTD ACTUALS — a fact, not
+// a forecast (onPace is projection-based and has no upper bound, so 113% and
+// 95% both read "on pace"). overVolume is the delivery past target; overUSD
+// prices it at the effective eCPM — CPM dollars sent beyond the committed
+// budget, which the advertiser is not billed for. Zero-target deals are never
+// "over" (nothing to exceed).
+func cpmPacingOver(target, mtd int64, ecpm float64) (over bool, overVolume int64, overUSD float64) {
+	if target <= 0 || mtd < target {
+		return false, 0, 0
+	}
+	overVolume = mtd - target
+	if ecpm > 0 {
+		overUSD = float64(overVolume) / 1000.0 * ecpm
+	}
+	return true, overVolume, overUSD
 }
 
 // HandleCurrentMonthPacing GET /cpm-planner/pacing
@@ -2845,6 +2871,7 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 		}
 
 		requiredDaily, projected, projectedPct, onPace := cpmPacingMath(targetVolume, mtd, rate3d[d.ID], dayOfMonth, daysInMonth)
+		over, overVolume, overUSD := cpmPacingOver(targetVolume, mtd, ecpm)
 		out = append(out, cpmPacingDeal{
 			DealID: d.ID, Name: d.Name, OfferName: d.OfferName, EverflowOfferID: d.EverflowOfferID,
 			Status: d.Status, TargetVolume: targetVolume, TargetBudget: targetBudget, TargetSource: source,
@@ -2853,6 +2880,7 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 			ConversionsNeeded: convNeeded, ActualEcpm: actualEcpm, ActualEcpa: cpmActualEcpa(targetBudget, conv),
 			Rate3d: rate3d[d.ID], RequiredDaily: requiredDaily,
 			Projected: projected, ProjectedPct: projectedPct, OnPace: onPace,
+			Over: over, OverVolume: overVolume, OverBudgetUSD: overUSD,
 		})
 		pf.TargetVolume += targetVolume
 		pf.MtdDelivered += mtd

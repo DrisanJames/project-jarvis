@@ -84,3 +84,54 @@ func TestCpmPacingMath(t *testing.T) {
 		})
 	}
 }
+
+func TestCpmPacingOver(t *testing.T) {
+	tests := []struct {
+		name        string
+		target, mtd int64
+		ecpm        float64
+		wantOver    bool
+		wantVolume  int64
+		wantUSD     float64
+	}{
+		{
+			// The Metal Roofing case (operator 2026-07-10): 1.878M delivered vs
+			// a 1.667M target at $1.50 — read green "ON PACE" with no overage.
+			name: "over target with overage", target: 1_666_667, mtd: 1_877_980, ecpm: 1.5,
+			wantOver: true, wantVolume: 211_313, wantUSD: 316.9695,
+		},
+		{
+			// Exactly at target: over (done — stop sending), zero overage.
+			name: "exactly at target", target: 500_000, mtd: 500_000, ecpm: 1.0,
+			wantOver: true, wantVolume: 0, wantUSD: 0,
+		},
+		{
+			name: "under target", target: 1_000_000, mtd: 999_999, ecpm: 2.0,
+			wantOver: false, wantVolume: 0, wantUSD: 0,
+		},
+		{
+			// Over with no eCPM: the volume overage still reports; dollars can't.
+			name: "over with zero ecpm", target: 100_000, mtd: 150_000, ecpm: 0,
+			wantOver: true, wantVolume: 50_000, wantUSD: 0,
+		},
+		{
+			// No target — nothing to exceed, regardless of delivery.
+			name: "zero target never over", target: 0, mtd: 250_000, ecpm: 1.5,
+			wantOver: false, wantVolume: 0, wantUSD: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			over, volume, usd := cpmPacingOver(tc.target, tc.mtd, tc.ecpm)
+			if over != tc.wantOver {
+				t.Errorf("over = %v, want %v", over, tc.wantOver)
+			}
+			if volume != tc.wantVolume {
+				t.Errorf("overVolume = %v, want %v", volume, tc.wantVolume)
+			}
+			if diff := usd - tc.wantUSD; diff > 1e-9 || diff < -1e-9 {
+				t.Errorf("overUSD = %v, want %v", usd, tc.wantUSD)
+			}
+		})
+	}
+}
