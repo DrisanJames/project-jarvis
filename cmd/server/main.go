@@ -872,6 +872,17 @@ func main() {
 			journeyClickTrackingEnroller.Start(ctx)
 			log.Println("Journey Click-Tracking Enroller started (enrolls internal money-URL clicks every 30s)")
 
+			// JourneyLaneGovernor (2026-07-10) rolls up 30d per-offer lane
+			// stats (enrollments/active/conversions/touches) into
+			// mailing_offer_journey_map.lane_stats hourly and recommends
+			// routing changes (dead CPA/CPL lane → redirect into the proven
+			// target offer). Advise-only by default; only
+			// CLICKDRIP_DYNAMIC_ROUTING=enforce lets it drive routing_state,
+			// which the click-tracking enroller and event enroller honor.
+			journeyLaneGovernor := worker.NewJourneyLaneGovernor(mailingDB)
+			journeyLaneGovernor.Start(ctx)
+			log.Println("Journey Lane Governor started (hourly click-funnel lane stats + routing recommendations)")
+
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
 			journeyExecutor.SetClickDripSender(journeyClickDripSender)
@@ -7469,6 +7480,26 @@ END $$`},
 		{"jun11b_click_drip_subjects_421060_3", `INSERT INTO mailing_offer_reminder_subjects (everflow_offer_id, sequence_index, subject, preheader, enabled, notes)
 			VALUES ('421060', 3, 'Final reminder: your roofing quotes', 'Closing this out — last touch before we move on.', TRUE, '+72h reminder; operator-editable')
 			ON CONFLICT (everflow_offer_id, sequence_index) DO NOTHING`},
+
+		// ────────────────────────────────────────────────────────────────────
+		// Dynamic click funnel — lane governor columns (2026-07-10, Unit D).
+		// JourneyLaneGovernor (internal/worker/journey_lane_governor.go) writes
+		// hourly 30d lane stats + a routing recommendation per offer lane;
+		// with CLICKDRIP_DYNAMIC_ROUTING=enforce it also drives routing_state
+		// (active | paused_auto | redirect), which the click-tracking scanner
+		// and the event enroller honor. mailing_offer_journey_map is ~20 rows,
+		// so these ADD COLUMNs are trivially inside the 5s budget.
+		// ────────────────────────────────────────────────────────────────────
+		{"jul10_lane_governor_routing_state", `ALTER TABLE mailing_offer_journey_map
+			ADD COLUMN IF NOT EXISTS routing_state TEXT NOT NULL DEFAULT 'active'`},
+		{"jul10_lane_governor_redirect_offer", `ALTER TABLE mailing_offer_journey_map
+			ADD COLUMN IF NOT EXISTS redirect_offer_id TEXT NOT NULL DEFAULT ''`},
+		{"jul10_lane_governor_recommendation", `ALTER TABLE mailing_offer_journey_map
+			ADD COLUMN IF NOT EXISTS routing_recommendation TEXT NOT NULL DEFAULT ''`},
+		{"jul10_lane_governor_lane_stats", `ALTER TABLE mailing_offer_journey_map
+			ADD COLUMN IF NOT EXISTS lane_stats JSONB`},
+		{"jul10_lane_governor_lane_stats_updated_at", `ALTER TABLE mailing_offer_journey_map
+			ADD COLUMN IF NOT EXISTS lane_stats_updated_at TIMESTAMPTZ`},
 
 		// Partner-drip multi-touch state columns (2026-06-11). The orchestrator's
 		// follow-up path and the idx_pcq_followup_isp concurrent index already

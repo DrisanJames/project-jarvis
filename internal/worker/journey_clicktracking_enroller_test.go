@@ -1,6 +1,9 @@
 package worker
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // dictionary mirrors the production seed (slug → everflow offer id).
 func testSlugDict() map[string]string {
@@ -259,5 +262,60 @@ func TestConsumerSignalRedirect(t *testing.T) {
 				t.Fatalf("got (offer=%q, redirect=%v), want (offer=%q, redirect=%v)", offer, redirect, tc.wantOffer, tc.wantRedirect)
 			}
 		})
+	}
+}
+
+// TestClickTrackingScanQuery_VerdictGate asserts the pre-enrollment verdict
+// gate (Unit A2, 2026-07-10) is present in the tick scan SQL by default and
+// omitted when CLICKDRIP_PREVERDICT_DISABLED is truthy. The
+// .scratch/journey_machine_click_gate.py cron applies the same predicate
+// retroactively as the backstop.
+func TestClickTrackingScanQuery_VerdictGate(t *testing.T) {
+	const pred = "ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))"
+
+	q := clickTrackingScanQuery(false)
+	if !strings.Contains(q, pred) {
+		t.Fatalf("default scan query must carry the human-verdict predicate; got:\n%s", q)
+	}
+
+	t.Setenv("CLICKDRIP_PREVERDICT_DISABLED", "true")
+	q = clickTrackingScanQuery(false)
+	if strings.Contains(q, "ignite_verdict_is_human") {
+		t.Fatalf("CLICKDRIP_PREVERDICT_DISABLED=true must omit the verdict predicate; got:\n%s", q)
+	}
+
+	// The money-URL ILIKE list and cursor bounds survive both variants.
+	for _, frag := range []string{
+		"cratoolpro.com/BJB4Q5BF/",
+		"eos57ytf.com/K4C5ZLC/",
+		"xnonu.com/TQ5MX18J/",
+		"muqes.com/TQ5MX18J/",
+		"k8k0hfdt.com/3QJ6DW/",
+		"t.event_at > $1 AND t.event_at <= $2",
+		"LIMIT $3",
+	} {
+		if !strings.Contains(q, frag) {
+			t.Fatalf("scan query lost fragment %q; got:\n%s", frag, q)
+		}
+	}
+}
+
+// TestPatternForTargetOffer covers the lane-governor redirect pattern
+// resolution: the pattern comes from the consumer-signal rows targeting the
+// redirect offer; no matching signal (or empty target) means no pattern and
+// the caller skips.
+func TestPatternForTargetOffer(t *testing.T) {
+	signals := map[string]consumerSignal{
+		"K5C8PQQ": {targetOffer: "420", namePattern: "%sam%"},
+		"BXPFT55": {targetOffer: "420", namePattern: "%sam%"},
+	}
+	if got := patternForTargetOffer(signals, "420"); got != "%sam%" {
+		t.Fatalf("pattern for 420 = %q, want %%sam%%", got)
+	}
+	if got := patternForTargetOffer(signals, "9999"); got != "" {
+		t.Fatalf("pattern for unmapped target = %q, want empty", got)
+	}
+	if got := patternForTargetOffer(signals, ""); got != "" {
+		t.Fatalf("pattern for empty target = %q, want empty", got)
 	}
 }

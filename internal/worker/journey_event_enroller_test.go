@@ -20,8 +20,11 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -119,8 +122,9 @@ func TestJourneyEventEnroller_Tick_NoPendingRows_NoOp(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(5)
 	w.tick(context.Background())
 
-	processed, enrolled, skipped, errs := w.Stats()
+	processed, enrolled, rearmed, skipped, errs := w.Stats()
 	require.Zero(t, processed, "no rows means no processing")
+	require.Zero(t, rearmed)
 	require.Zero(t, enrolled)
 	require.Zero(t, skipped)
 	require.Zero(t, errs)
@@ -149,9 +153,10 @@ func TestJourneyEventEnroller_Tick_InvalidSubscriberID_MarksSkipped(t *testing.T
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	processed, enrolled, skipped, errs := w.Stats()
+	processed, enrolled, rearmed, skipped, errs := w.Stats()
 	require.Equal(t, int64(1), processed)
 	require.Zero(t, enrolled)
+	require.Zero(t, rearmed)
 	require.Equal(t, int64(1), skipped)
 	require.Zero(t, errs)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -183,7 +188,7 @@ func TestJourneyEventEnroller_Tick_OfferNoLongerMapped_MarksSkipped(t *testing.T
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	processed, enrolled, skipped, _ := w.Stats()
+	processed, enrolled, _, skipped, _ := w.Stats()
 	require.Equal(t, int64(1), processed)
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
@@ -206,8 +211,8 @@ func TestJourneyEventEnroller_Tick_OfferDisabled_MarksSkipped(t *testing.T) {
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-OFF").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-001", "CPM", false))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", false, "active"))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
 		WithArgs("trig-disabled", "offer_journey_disabled_at_processing").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -216,7 +221,7 @@ func TestJourneyEventEnroller_Tick_OfferDisabled_MarksSkipped(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	_, enrolled, skipped, _ := w.Stats()
+	_, enrolled, _, skipped, _ := w.Stats()
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -239,8 +244,8 @@ func TestJourneyEventEnroller_Tick_CPCOffer_MarksSkipped(t *testing.T) {
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-CPC").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-cpc", "CPC", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-cpc", "CPC", true, "active"))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
 		WithArgs("trig-cpc", "cpc_offer_at_processing").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -249,7 +254,7 @@ func TestJourneyEventEnroller_Tick_CPCOffer_MarksSkipped(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	_, enrolled, skipped, _ := w.Stats()
+	_, enrolled, _, skipped, _ := w.Stats()
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -274,8 +279,8 @@ func TestJourneyEventEnroller_Tick_AlreadyConverted_MarksSkipped(t *testing.T) {
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-CONV").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-001", "CPM", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", true, "active"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offers`)).
 		WithArgs("EV-CONV").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(offerID.String()))
@@ -290,7 +295,7 @@ func TestJourneyEventEnroller_Tick_AlreadyConverted_MarksSkipped(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	_, enrolled, skipped, _ := w.Stats()
+	_, enrolled, _, skipped, _ := w.Stats()
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -313,8 +318,8 @@ func TestJourneyEventEnroller_Tick_JourneyInactive_MarksSkipped(t *testing.T) {
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-NOJ").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-001", "CPM", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", true, "active"))
 	// mailing_offers returns no rows so offerUUID stays nil and the
 	// suppression-count query is skipped entirely (matches the worker's
 	// `if offerUUID != uuid.Nil` guard).
@@ -332,7 +337,7 @@ func TestJourneyEventEnroller_Tick_JourneyInactive_MarksSkipped(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	_, enrolled, skipped, _ := w.Stats()
+	_, enrolled, _, skipped, _ := w.Stats()
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -355,8 +360,8 @@ func TestJourneyEventEnroller_Tick_NoExecutableNode_MarksSkipped(t *testing.T) {
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-001").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-001", "CPM", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", true, "active"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offers`)).
 		WithArgs("EV-001").
 		WillReturnError(sql.ErrNoRows)
@@ -372,7 +377,7 @@ func TestJourneyEventEnroller_Tick_NoExecutableNode_MarksSkipped(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	_, enrolled, skipped, _ := w.Stats()
+	_, enrolled, _, skipped, _ := w.Stats()
 	require.Zero(t, enrolled)
 	require.Equal(t, int64(1), skipped)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -397,8 +402,8 @@ func TestJourneyEventEnroller_Tick_HappyPath_EnrollsAndMarksProcessed(t *testing
 				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-001").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-001", "CPM", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", true, "active"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offers`)).
 		WithArgs("EV-001").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(offerID.String()))
@@ -409,6 +414,11 @@ func TestJourneyEventEnroller_Tick_HappyPath_EnrollsAndMarksProcessed(t *testing
 		WithArgs("jrn-001").
 		WillReturnRows(sqlmock.NewRows([]string{"nodes"}).
 			AddRow(`[{"id":"trig","type":"trigger"},{"id":"delay1h","type":"delay"}]`))
+	// No prior pass for this (journey, email) — the FOR UPDATE lookup
+	// returns no rows, so the worker takes the fresh-INSERT path.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnError(sql.ErrNoRows)
 	// enrollment id is generated via uuid.NewString — AnyArg().
 	// metadata blob's key order is map-iteration-dependent — AnyArg().
 	// The remaining args are deterministic and worth asserting on.
@@ -423,9 +433,10 @@ func TestJourneyEventEnroller_Tick_HappyPath_EnrollsAndMarksProcessed(t *testing
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	processed, enrolled, skipped, errs := w.Stats()
+	processed, enrolled, rearmed, skipped, errs := w.Stats()
 	require.Equal(t, int64(1), processed)
 	require.Equal(t, int64(1), enrolled)
+	require.Zero(t, rearmed)
 	require.Zero(t, skipped)
 	require.Zero(t, errs)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -456,8 +467,8 @@ func TestJourneyEventEnroller_Tick_BatchOfThree_MixedOutcomes(t *testing.T) {
 	// Row 1: happy path — full enrollment.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-OK").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-happy", "CPM", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-happy", "CPM", true, "active"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offers`)).
 		WithArgs("EV-OK").
 		WillReturnError(sql.ErrNoRows)
@@ -465,6 +476,9 @@ func TestJourneyEventEnroller_Tick_BatchOfThree_MixedOutcomes(t *testing.T) {
 		WithArgs("jrn-happy").
 		WillReturnRows(sqlmock.NewRows([]string{"nodes"}).
 			AddRow(`[{"id":"trig","type":"trigger"},{"id":"email1","type":"email"}]`))
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-happy", "happy@example.com").
+		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_journey_enrollments`)).
 		WithArgs(sqlmock.AnyArg(), "jrn-happy", "happy@example.com", "email1", sqlmock.AnyArg(), "EV-OK").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -475,8 +489,8 @@ func TestJourneyEventEnroller_Tick_BatchOfThree_MixedOutcomes(t *testing.T) {
 	// Row 2: CPC offer — skipped after the map lookup.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
 		WithArgs("EV-CPC").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled"}).
-			AddRow("jrn-cpc", "CPC", true))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-cpc", "CPC", true, "active"))
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
 		WithArgs("trig-cpc", "cpc_offer_at_processing").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -491,10 +505,300 @@ func TestJourneyEventEnroller_Tick_BatchOfThree_MixedOutcomes(t *testing.T) {
 	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
 	w.tick(context.Background())
 
-	processed, enrolled, skipped, errs := w.Stats()
+	processed, enrolled, rearmed, skipped, errs := w.Stats()
 	require.Equal(t, int64(3), processed, "all 3 rows were dispatched into processOne")
 	require.Equal(t, int64(1), enrolled, "only the happy row enrolled")
+	require.Zero(t, rearmed)
 	require.Equal(t, int64(2), skipped, "cpc and invalid-uuid both skipped")
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// ── Re-enrollment (re-arm) coverage — Unit A, 2026-07-10 ────────────────────
+
+// rearmPriorRowCols are the 9 columns the prior-pass FOR UPDATE lookup
+// returns.
+func rearmPriorRowCols() []string {
+	return []string{
+		"id", "status", "enrolled_at", "exited_at", "completed_at", "converted_at",
+		"enrollment_offer_id", "exit_reason", "metadata",
+	}
+}
+
+// argJSONContains matches a string/[]byte driver arg containing every
+// substring — used to assert the re-arm metadata carries prior_passes
+// without depending on Go map key ordering.
+type argJSONContains struct{ substrings []string }
+
+func (m argJSONContains) Match(v driver.Value) bool {
+	var s string
+	switch tv := v.(type) {
+	case string:
+		s = tv
+	case []byte:
+		s = string(tv)
+	default:
+		return false
+	}
+	for _, sub := range m.substrings {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
+// expectHappyPipelineThroughGraph registers the shared expectations from the
+// pending-row drain through the journey-graph load for a single well-formed
+// CPM trigger, ending right before the prior-pass FOR UPDATE lookup.
+func expectHappyPipelineThroughGraph(mock sqlmock.Sqlmock, triggerID, offerEV string, subID uuid.UUID, email string) {
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_event_triggers`)).
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows(pendingRowCols()).
+			AddRow(triggerID, offerEV, subID.String(), email,
+				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
+		WithArgs(offerEV).
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPM", true, "active"))
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offers`)).
+		WithArgs(offerEV).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journeys`)).
+		WithArgs("jrn-001").
+		WillReturnRows(sqlmock.NewRows([]string{"nodes"}).
+			AddRow(`[{"id":"trig","type":"trigger"},{"id":"delay1h","type":"delay"}]`))
+}
+
+// TestJourneyEventEnroller_Tick_ActivePriorPass_MarksSkipped: one ACTIVE
+// funnel pass per person is a hard safety (no env override). A repeat click
+// while a pass is live must skip with active_pass_exists, never reset the
+// in-flight drip.
+func TestJourneyEventEnroller_Tick_ActivePriorPass_MarksSkipped(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-active", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "active", time.Now().Add(-2*time.Hour), nil, nil, nil, "EV-001", "", nil))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
+		WithArgs("trig-active", "active_pass_exists").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Zero(t, rearmed)
+	require.Equal(t, int64(1), skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_ExitedWithinCooldown_MarksSkipped: a prior
+// pass exited 2 days ago is inside the default 30-day cooldown — the click
+// must not re-arm yet.
+func TestJourneyEventEnroller_Tick_ExitedWithinCooldown_MarksSkipped(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-cool", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "exited", time.Now().Add(-10*24*time.Hour),
+				time.Now().Add(-2*24*time.Hour), nil, nil, "EV-001", "completed_journey", nil))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
+		WithArgs("trig-cool", "reenroll_cooldown").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Zero(t, rearmed)
+	require.Equal(t, int64(1), skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_ExitedPastCooldown_Rearms: a pass that
+// exited 45 days ago is past the 30-day cooldown — the row is re-armed
+// in place (UNIQUE(journey_id, subscriber_email) is load-bearing; never a
+// second row) with enrolled_via='click_postback_rearm' and a prior_passes
+// audit entry in the fresh metadata.
+func TestJourneyEventEnroller_Tick_ExitedPastCooldown_Rearms(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-rearm", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "exited", time.Now().Add(-60*24*time.Hour),
+				time.Now().Add(-45*24*time.Hour), nil, nil, "EV-OLD", "no_engagement",
+				`{"source":"click_postback","prior_passes":[{"offer":"EV-ANCIENT"}]}`))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`enrolled_via='click_postback_rearm'`)).
+		WithArgs("enr-1", "delay1h", "EV-001",
+			argJSONContains{substrings: []string{
+				`"prior_passes"`, `"EV-ANCIENT"`, `"EV-OLD"`, `"no_engagement"`, `"click_postback_rearm"`,
+			}}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+		WithArgs("trig-rearm").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled, "re-arm must not count as a fresh enrollment")
+	require.Equal(t, int64(1), rearmed)
+	require.Zero(t, skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_ConvertedSameOffer_MarksSkipped: a prior
+// pass that CONVERTED (exit_reason='converted' — conversions exit, they do
+// not set status='converted') must never be re-armed for the SAME offer,
+// regardless of cooldown age. This is the guard that holds even when the
+// offer has no mailing_offers row (the offer-scoped suppression check
+// no-ops there — reviewer finding F1, 2026-07-10).
+func TestJourneyEventEnroller_Tick_ConvertedSameOffer_MarksSkipped(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-conv", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "exited", time.Now().Add(-60*24*time.Hour),
+				time.Now().Add(-45*24*time.Hour), nil, time.Now().Add(-45*24*time.Hour),
+				"EV-001", "converted", nil))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
+		WithArgs("trig-conv", "converted_prior_pass_same_offer").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Zero(t, rearmed, "converted same-offer must never re-arm")
+	require.Equal(t, int64(1), skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_ConvertedCrossOffer_RearmsAndClearsConvertedAt:
+// a conversion on offer A does NOT block a re-arm into offer B (cross-sell),
+// but the re-arm UPDATE must CLEAR converted_at (after archiving it into
+// prior_passes) so the lane governor never counts A's conversion as B's
+// (reviewer finding A, 2026-07-10). The 45d-old conversion is past the 30d
+// cooldown (converted_at participates in the cooldown GREATEST).
+func TestJourneyEventEnroller_Tick_ConvertedCrossOffer_RearmsAndClearsConvertedAt(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-xsell", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "exited", time.Now().Add(-60*24*time.Hour),
+				time.Now().Add(-45*24*time.Hour), nil, time.Now().Add(-45*24*time.Hour),
+				"EV-OLD", "converted", nil))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`converted_at=NULL`)).
+		WithArgs("enr-1", "delay1h", "EV-001",
+			argJSONContains{substrings: []string{
+				`"prior_passes"`, `"EV-OLD"`, `"converted"`, `"converted_at"`,
+			}}).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+		WithArgs("trig-xsell").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Equal(t, int64(1), rearmed, "cross-offer conversion must not block re-arm")
+	require.Zero(t, skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_ReenrollDisabled_MarksSkipped: the
+// CLICKDRIP_REENROLL_DISABLED kill switch restores the legacy one-pass
+// behavior — a prior exited pass blocks re-enrollment regardless of age.
+func TestJourneyEventEnroller_Tick_ReenrollDisabled_MarksSkipped(t *testing.T) {
+	t.Setenv("CLICKDRIP_REENROLL_DISABLED", "true")
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	expectHappyPipelineThroughGraph(mock, "trig-killed", "EV-001", subID, "user@example.com")
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_enrollments`)+`.*`+regexp.QuoteMeta(`FOR UPDATE`)).
+		WithArgs("jrn-001", "user@example.com").
+		WillReturnRows(sqlmock.NewRows(rearmPriorRowCols()).
+			AddRow("enr-1", "exited", time.Now().Add(-60*24*time.Hour),
+				time.Now().Add(-45*24*time.Hour), nil, nil, "EV-OLD", "no_engagement", nil))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
+		WithArgs("trig-killed", "reenroll_disabled_prior_pass").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Zero(t, rearmed)
+	require.Equal(t, int64(1), skipped)
+	require.Zero(t, errs)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnroller_Tick_LanePausedAuto_MarksSkipped: pending
+// triggers for a lane the governor paused must not enroll (the scanner
+// already stopped queueing NEW clicks for the lane; this is the
+// processing-time backstop, mirroring the 'enabled' re-check).
+func TestJourneyEventEnroller_Tick_LanePausedAuto_MarksSkipped(t *testing.T) {
+	db, mock := newEventEnrollerMockDB(t)
+	subID := uuid.New()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journey_event_triggers`)).
+		WithArgs(10).
+		WillReturnRows(sqlmock.NewRows(pendingRowCols()).
+			AddRow("trig-paused", "EV-PAUSED", subID.String(), "user@example.com",
+				"DB", "cmp-1", "clk-1", nil, "em.example.com", "https://example.com"))
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map`)).
+		WithArgs("EV-PAUSED").
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "payout_type", "enabled", "routing_state"}).
+			AddRow("jrn-001", "CPA", true, "paused_auto"))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='skipped'`)).
+		WithArgs("trig-paused", "lane_paused_auto_at_processing").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w := NewJourneyEventEnroller(db).WithBatchLimit(10)
+	w.tick(context.Background())
+
+	_, enrolled, rearmed, skipped, errs := w.Stats()
+	require.Zero(t, enrolled)
+	require.Zero(t, rearmed)
+	require.Equal(t, int64(1), skipped)
 	require.Zero(t, errs)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

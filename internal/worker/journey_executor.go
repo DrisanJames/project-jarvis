@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -668,7 +669,10 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 // click-postback pipeline. We key off enrolled_via (set by the enroller) and
 // fall back to the presence of a sending_profile_id in metadata.
 func isClickDripEnrollment(e Enrollment) bool {
-	if v, ok := e.Metadata["enrolled_via"].(string); ok && v == "click_postback" {
+	// Prefix match covers "click_postback" AND "click_postback_rearm" (the
+	// re-enrollment path, 2026-07-10) — a re-armed row must not depend
+	// solely on the metadata["source"] fallback to reach the sender.
+	if v, ok := e.Metadata["enrolled_via"].(string); ok && strings.HasPrefix(v, "click_postback") {
 		return true
 	}
 	if v, ok := e.Metadata["source"].(string); ok && v == "click_postback" {

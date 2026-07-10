@@ -39,6 +39,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,8 +69,14 @@ type JourneyEventEnroller struct {
 	stopChan   chan struct{}
 	stopOnce   sync.Once
 
+	// routingColsOK is re-probed at the top of every tick (single goroutine):
+	// false = the jul10_lane_governor_* columns are absent (pre-migration
+	// window) and processOne must use the legacy offer-map query shape.
+	routingColsOK bool
+
 	totalProcessed int64
 	totalEnrolled  int64
+	totalRearmed   int64
 	totalSkipped   int64
 	totalErrors    int64
 }
@@ -127,10 +135,13 @@ func (w *JourneyEventEnroller) Stop() {
 	w.stopOnce.Do(func() { close(w.stopChan) })
 }
 
-// Stats returns lifetime counters for observability.
-func (w *JourneyEventEnroller) Stats() (processed, enrolled, skipped, errors int64) {
+// Stats returns lifetime counters for observability. rearmed counts prior
+// exited/completed enrollments re-armed for a fresh funnel pass (Unit A,
+// 2026-07-10) — disjoint from enrolled (fresh INSERTs).
+func (w *JourneyEventEnroller) Stats() (processed, enrolled, rearmed, skipped, errors int64) {
 	return atomic.LoadInt64(&w.totalProcessed),
 		atomic.LoadInt64(&w.totalEnrolled),
+		atomic.LoadInt64(&w.totalRearmed),
 		atomic.LoadInt64(&w.totalSkipped),
 		atomic.LoadInt64(&w.totalErrors)
 }
@@ -139,6 +150,23 @@ func (w *JourneyEventEnroller) Stats() (processed, enrolled, skipped, errors int
 func (w *JourneyEventEnroller) tick(ctx context.Context) {
 	tickCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+
+	// Probe for the lane-governor columns BEFORE opening the batch tx. If the
+	// jul10_lane_governor_* startup migrations haven't landed (5s-budget skip
+	// on a contended boot), referencing routing_state inside the batch tx
+	// would abort the tx and poison every remaining trigger in the tick — a
+	// silent full enrollment stall. Probing outside the tx keeps the batch on
+	// the legacy query shape until the columns exist. (Mirrors the scanner's
+	// loadLaneRouting tolerance.)
+	w.routingColsOK = true
+	if _, err := w.db.ExecContext(tickCtx,
+		`SELECT routing_state FROM mailing_offer_journey_map LIMIT 1`); err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			w.routingColsOK = false
+		}
+		// Any other probe error: leave routingColsOK=true; a real outage will
+		// surface on the batch queries themselves.
+	}
 
 	// Use a transaction so FOR UPDATE SKIP LOCKED holds row locks
 	// until we commit. Each tick processes at most batchLimit rows.
@@ -211,6 +239,8 @@ func (w *JourneyEventEnroller) tick(ctx context.Context) {
 		switch outcome.kind {
 		case enrollmentEnrolled:
 			atomic.AddInt64(&w.totalEnrolled, 1)
+		case enrollmentRearmed:
+			atomic.AddInt64(&w.totalRearmed, 1)
 		case enrollmentSkipped:
 			atomic.AddInt64(&w.totalSkipped, 1)
 		case enrollmentErrored:
@@ -234,6 +264,7 @@ type enrollmentOutcomeKind int
 
 const (
 	enrollmentEnrolled enrollmentOutcomeKind = iota + 1
+	enrollmentRearmed
 	enrollmentSkipped
 	enrollmentErrored
 )
@@ -263,12 +294,22 @@ func (w *JourneyEventEnroller) processOne(
 
 	// Re-validate the offer-journey map. Operator may have flipped 'enabled'
 	// or changed the journey since the postback was queued.
-	var journeyID, payoutType string
+	var journeyID, payoutType, routingState string
 	var enabled bool
-	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(click_journey_id,''), COALESCE(payout_type,'UNKNOWN'), COALESCE(enabled,false)
-		FROM mailing_offer_journey_map WHERE everflow_offer_id=$1
-	`, everflowOfferID).Scan(&journeyID, &payoutType, &enabled)
+	if w.routingColsOK {
+		err = tx.QueryRowContext(ctx, `
+			SELECT COALESCE(click_journey_id,''), COALESCE(payout_type,'UNKNOWN'), COALESCE(enabled,false), COALESCE(routing_state,'active')
+			FROM mailing_offer_journey_map WHERE everflow_offer_id=$1
+		`, everflowOfferID).Scan(&journeyID, &payoutType, &enabled, &routingState)
+	} else {
+		// Pre-migration schema (see the tick() probe): legacy column set,
+		// routing_state behaves as 'active'.
+		routingState = "active"
+		err = tx.QueryRowContext(ctx, `
+			SELECT COALESCE(click_journey_id,''), COALESCE(payout_type,'UNKNOWN'), COALESCE(enabled,false)
+			FROM mailing_offer_journey_map WHERE everflow_offer_id=$1
+		`, everflowOfferID).Scan(&journeyID, &payoutType, &enabled)
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			w.markSkipped(ctx, tx, triggerID, "offer_unmapped_at_processing")
@@ -280,6 +321,19 @@ func (w *JourneyEventEnroller) processOne(
 	if !enabled {
 		w.markSkipped(ctx, tx, triggerID, "offer_journey_disabled_at_processing")
 		return enrollmentOutcome{kind: enrollmentSkipped, reason: "disabled"}
+	}
+	// Re-check the lane governor's routing_state exactly like 'enabled': the
+	// governor may have paused or redirected this lane after the trigger was
+	// queued. The click-tracking scanner already re-routes NEW clicks; a
+	// pending trigger for the old offer must not enroll into a lane the
+	// governor killed.
+	switch routingState {
+	case "paused_auto":
+		w.markSkipped(ctx, tx, triggerID, "lane_paused_auto_at_processing")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "lane_paused_auto"}
+	case "redirect":
+		w.markSkipped(ctx, tx, triggerID, "lane_redirected_at_processing")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "lane_redirected"}
 	}
 	if journeyID == "" {
 		w.markSkipped(ctx, tx, triggerID, "no_click_journey_at_processing")
@@ -408,31 +462,194 @@ func (w *JourneyEventEnroller) processOne(
 	if originalFromEmail != "" {
 		metadata["original_from_email"] = originalFromEmail
 	}
+	// Re-enrollment (re-arm) flow (Unit A, 2026-07-10). Instead of a blind
+	// INSERT..ON CONFLICT DO NOTHING (which silently no-oped every repeat
+	// clicker forever — one funnel pass per lifetime), lock the prior pass
+	// row (if any) and decide:
+	//   - no prior row      → fresh INSERT (ON CONFLICT kept as a race guard)
+	//   - status='active'   → skip: one active funnel pass per person (hard
+	//                         safety, no env override)
+	//   - exited/completed  → re-arm for a fresh pass when past the cooldown
+	//                         (CLICKDRIP_REENROLL_COOLDOWN_DAYS, default 30)
+	//                         unless CLICKDRIP_REENROLL_DISABLED restores the
+	//                         legacy one-pass behavior.
+	// Conversion safety is enforced BELOW on the prior row itself
+	// (exit_reason='converted' / converted_at) — the offer-scoped suppression
+	// check above no-ops for offers without a mailing_offers row, which is
+	// most click-drip offers. FOR UPDATE rides the existing per-tick tx,
+	// serializing against concurrent enrollers and the executor's
+	// exit/complete writes.
+	var (
+		priorID, priorStatus, priorOffer, priorExitReason string
+		priorEnrolledAt                                   time.Time
+		priorExitedAt, priorCompletedAt, priorConvertedAt sql.NullTime
+		priorMetaRaw                                      sql.NullString
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, status, enrolled_at, exited_at, completed_at, converted_at,
+		       COALESCE(enrollment_offer_id,''), COALESCE(exit_reason,''), metadata
+		FROM mailing_journey_enrollments
+		WHERE journey_id=$1 AND subscriber_email=$2
+		FOR UPDATE
+	`, journeyID, subscriberEmail).Scan(
+		&priorID, &priorStatus, &priorEnrolledAt, &priorExitedAt, &priorCompletedAt, &priorConvertedAt,
+		&priorOffer, &priorExitReason, &priorMetaRaw,
+	)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("JourneyEventEnroller[%s]: prior enrollment lookup: %v", triggerID, err)
+		return enrollmentOutcome{kind: enrollmentErrored, reason: "prior_lookup_failed"}
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
+		// No prior pass — fresh enrollment, exactly the legacy INSERT.
+		metaBytes, _ := json.Marshal(metadata)
+		enrollmentID := fmt.Sprintf("enroll-clk-%s", uuid.NewString()[:8])
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO mailing_journey_enrollments (
+				id, journey_id, subscriber_email, current_node_id,
+				status, enrolled_at, next_execute_at, metadata,
+				enrolled_via, enrollment_offer_id
+			) VALUES (
+				$1, $2, $3, $4,
+				'active', NOW(), NOW(), $5::jsonb,
+				'click_postback', $6
+			)
+			ON CONFLICT (journey_id, subscriber_email) DO NOTHING
+		`, enrollmentID, journeyID, subscriberEmail, firstNodeID, string(metaBytes), everflowOfferID)
+		if err != nil {
+			log.Printf("JourneyEventEnroller[%s]: insert enrollment: %v", triggerID, err)
+			return enrollmentOutcome{kind: enrollmentErrored, reason: "insert_failed"}
+		}
+
+		if err := w.markProcessed(ctx, tx, triggerID); err != nil {
+			log.Printf("JourneyEventEnroller[%s]: mark processed: %v", triggerID, err)
+			return enrollmentOutcome{kind: enrollmentErrored, reason: "mark_processed_failed"}
+		}
+		return enrollmentOutcome{kind: enrollmentEnrolled}
+	}
+
+	// Prior pass exists.
+	if priorStatus == "active" {
+		w.markSkipped(ctx, tx, triggerID, "active_pass_exists")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "active_pass_exists"}
+	}
+	if clickdripReenrollDisabled() {
+		w.markSkipped(ctx, tx, triggerID, "reenroll_disabled_prior_pass")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "reenroll_disabled"}
+	}
+
+	// Conversion guard, independent of the offer-scoped suppression table
+	// above (which no-ops for offers without a mailing_offers row — true for
+	// most click-drip offers). Conversions exit the row with
+	// exit_reason='converted' + converted_at (everflow_postback_handler
+	// exitClickDripEnrollmentsOnConversion), NOT status='converted'. A
+	// converted customer must never be re-mailed the SAME offer's funnel; a
+	// click on a DIFFERENT offer may re-arm (cross-sell), with the conversion
+	// counting as recent activity for the cooldown and archived+cleared below
+	// so the governor never attributes it to the new offer.
+	priorWasConverted := priorConvertedAt.Valid || priorExitReason == "converted"
+	if priorWasConverted && priorOffer == everflowOfferID {
+		w.markSkipped(ctx, tx, triggerID, "converted_prior_pass_same_offer")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "converted_same_offer"}
+	}
+
+	// Cooldown: eligible when GREATEST(exited_at, completed_at, converted_at,
+	// enrolled_at) is older than the cooldown window.
+	lastActivity := priorEnrolledAt
+	if priorExitedAt.Valid && priorExitedAt.Time.After(lastActivity) {
+		lastActivity = priorExitedAt.Time
+	}
+	if priorCompletedAt.Valid && priorCompletedAt.Time.After(lastActivity) {
+		lastActivity = priorCompletedAt.Time
+	}
+	if priorConvertedAt.Valid && priorConvertedAt.Time.After(lastActivity) {
+		lastActivity = priorConvertedAt.Time
+	}
+	cooldown := time.Duration(clickdripReenrollCooldownDays()) * 24 * time.Hour
+	if time.Since(lastActivity) < cooldown {
+		w.markSkipped(ctx, tx, triggerID, "reenroll_cooldown")
+		return enrollmentOutcome{kind: enrollmentSkipped, reason: "reenroll_cooldown"}
+	}
+
+	// RE-ARM: reset the existing row (the UNIQUE(journey_id, subscriber_email)
+	// constraint is load-bearing for 4 other enrollment paths — never insert a
+	// second row). converted_at is deliberately left as-is (historical fact).
+	// metadata is the freshly built map plus a prior_passes audit trail; any
+	// prior_passes already accumulated on the old metadata carry forward
+	// (malformed/empty old metadata tolerated — we just start a new array).
+	metadata["enrolled_via"] = "click_postback_rearm"
+	var priorPasses []interface{}
+	if priorMetaRaw.Valid && priorMetaRaw.String != "" {
+		var oldMeta map[string]interface{}
+		if json.Unmarshal([]byte(priorMetaRaw.String), &oldMeta) == nil {
+			if pp, ok := oldMeta["prior_passes"].([]interface{}); ok {
+				priorPasses = pp
+			}
+		}
+	}
+	priorSummary := map[string]interface{}{
+		"offer":       priorOffer,
+		"enrolled_at": priorEnrolledAt.UTC().Format(time.RFC3339),
+	}
+	if priorExitedAt.Valid {
+		priorSummary["exited_at"] = priorExitedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if priorExitReason != "" {
+		priorSummary["exit_reason"] = priorExitReason
+	}
+	if priorConvertedAt.Valid {
+		priorSummary["converted_at"] = priorConvertedAt.Time.UTC().Format(time.RFC3339)
+	}
+	metadata["prior_passes"] = append(priorPasses, priorSummary)
 	metaBytes, _ := json.Marshal(metadata)
 
-	enrollmentID := fmt.Sprintf("enroll-clk-%s", uuid.NewString()[:8])
+	// converted_at is CLEARED (after archiving above): it belongs to the
+	// prior pass's offer, and leaving it would make the lane governor count a
+	// foreign-offer conversion as the re-armed offer's conversion (suppressing
+	// dead-lane detection). The durable conversion record lives in the
+	// postback/suppression layer, not this row.
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO mailing_journey_enrollments (
-			id, journey_id, subscriber_email, current_node_id,
-			status, enrolled_at, next_execute_at, metadata,
-			enrolled_via, enrollment_offer_id
-		) VALUES (
-			$1, $2, $3, $4,
-			'active', NOW(), NOW(), $5::jsonb,
-			'click_postback', $6
-		)
-		ON CONFLICT (journey_id, subscriber_email) DO NOTHING
-	`, enrollmentID, journeyID, subscriberEmail, firstNodeID, string(metaBytes), everflowOfferID)
+		UPDATE mailing_journey_enrollments
+		SET status='active', enrolled_at=NOW(), next_execute_at=NOW(),
+		    current_node_id=$2, enrollment_offer_id=$3,
+		    enrolled_via='click_postback_rearm',
+		    exited_at=NULL, exit_reason=NULL, completed_at=NULL,
+		    converted_at=NULL,
+		    metadata=$4::jsonb
+		WHERE id=$1
+	`, priorID, firstNodeID, everflowOfferID, string(metaBytes))
 	if err != nil {
-		log.Printf("JourneyEventEnroller[%s]: insert enrollment: %v", triggerID, err)
-		return enrollmentOutcome{kind: enrollmentErrored, reason: "insert_failed"}
+		log.Printf("JourneyEventEnroller[%s]: re-arm enrollment %s: %v", triggerID, priorID, err)
+		return enrollmentOutcome{kind: enrollmentErrored, reason: "rearm_failed"}
 	}
 
 	if err := w.markProcessed(ctx, tx, triggerID); err != nil {
 		log.Printf("JourneyEventEnroller[%s]: mark processed: %v", triggerID, err)
 		return enrollmentOutcome{kind: enrollmentErrored, reason: "mark_processed_failed"}
 	}
-	return enrollmentOutcome{kind: enrollmentEnrolled}
+	return enrollmentOutcome{kind: enrollmentRearmed}
+}
+
+// clickdripReenrollDisabled is the re-arm kill switch. Truthy
+// CLICKDRIP_REENROLL_DISABLED restores the legacy one-pass-per-lifetime
+// behavior (prior exited/completed passes block re-enrollment forever).
+func clickdripReenrollDisabled() bool {
+	return envTruthy(os.Getenv("CLICKDRIP_REENROLL_DISABLED"))
+}
+
+// clickdripReenrollCooldownDays is the minimum quiet period after a prior
+// pass (exit/complete/enroll, whichever is latest) before a new click may
+// re-arm the funnel. Unset, empty, non-numeric, or negative → default 30.
+func clickdripReenrollCooldownDays() int {
+	v := strings.TrimSpace(os.Getenv("CLICKDRIP_REENROLL_COOLDOWN_DAYS"))
+	if v == "" {
+		return 30
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 30
+	}
+	return n
 }
 
 // resolveProfileByBrandRoot finds an active PMTA sending profile whose

@@ -43,7 +43,9 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -115,11 +117,28 @@ type consumerSignal struct {
 	namePattern string // ILIKE pattern to find that brand's target-offer campaign
 }
 
+// laneRouting is one offer lane's governor-controlled routing directive,
+// loaded from mailing_offer_journey_map (routing_state / redirect_offer_id —
+// written by JourneyLaneGovernor, 2026-07-10). 'paused_auto' drops new clicks
+// for the lane; 'redirect' funnels them into redirectOffer's drip exactly
+// like a consumer-signal redirect (target offer's creative, never the clicked
+// one).
+type laneRouting struct {
+	state         string // active | paused_auto | redirect
+	redirectOffer string // target everflow_offer_id when state='redirect'
+}
+
 // JourneyClickTrackingEnroller is the worker handle.
 type JourneyClickTrackingEnroller struct {
 	db         *sql.DB
 	interval   time.Duration
 	batchLimit int
+
+	// verdictFnMissing latches true when the scan discovers the ignite_*
+	// verdict SQL functions are absent (fresh DB / skipped migration); the
+	// scan then runs without the pre-enrollment verdict gate for the life of
+	// the process (cron backstop still applies). Single tick goroutine.
+	verdictFnMissing bool
 	stopChan   chan struct{}
 	stopOnce   sync.Once
 
@@ -245,6 +264,17 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		brandCampaignByPattern[sig.namePattern] = w.loadBrandCampaignMap(tickCtx, sig.namePattern)
 	}
 
+	// Load the lane governor's routing directives (paused_auto / redirect)
+	// once per tick alongside the slug map. Non-fatal on error: an empty map
+	// means every lane routes as 'active' — the enroller's processing-time
+	// routing_state re-check is the backstop.
+	laneRoutingByOffer, err := w.loadLaneRouting(tickCtx)
+	if err != nil {
+		atomic.AddInt64(&w.totalErrors, 1)
+		log.Printf("JourneyClickTrackingEnroller: load lane routing: %v", err)
+		laneRoutingByOffer = nil
+	}
+
 	tx, err := w.db.BeginTx(tickCtx, nil)
 	if err != nil {
 		atomic.AddInt64(&w.totalErrors, 1)
@@ -281,27 +311,21 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		return
 	}
 
-	rows, err := tx.QueryContext(tickCtx, `
-		SELECT t.subscriber_id::text, t.event_at, t.link_url,
-		       COALESCE(t.sending_domain,''), COALESCE(t.campaign_id::text,'')
-		FROM mailing_tracking_events t
-		WHERE t.event_type='clicked'
-		  AND t.event_at > $1 AND t.event_at <= $2
-		  AND (
-		        t.link_url ILIKE '%cratoolpro.com/BJB4Q5BF/%'
-		     OR t.link_url ILIKE '%eos57ytf.com/K4C5ZLC/%'
-		     OR t.link_url ILIKE '%xnonu.com/TQ5MX18J/%'
-		     OR t.link_url ILIKE '%muqes.com/TQ5MX18J/%'
-		     OR t.link_url ILIKE '%k8k0hfdt.com/3QJ6DW/%'
-		      )
-		  AND NOT EXISTS (
-		        SELECT 1 FROM mailing_campaigns c
-		        WHERE c.id = t.campaign_id AND c.campaign_type = 'click_drip'
-		      )
-		ORDER BY t.event_at ASC
-		LIMIT $3
-	`, cursor, upper, w.batchLimit)
+	rows, err := tx.QueryContext(tickCtx, clickTrackingScanQuery(w.verdictFnMissing), cursor, upper, w.batchLimit)
 	if err != nil {
+		// Fresh-DB / skipped-migration window: the default-on verdict
+		// predicate depends on the ignite_* SQL functions (created by the
+		// same startup-migration slice). If they are absent, fall back to the
+		// unfiltered scan for the life of the process — the machine-click
+		// gate cron remains the verdict backstop — instead of stalling the
+		// whole click→trigger stage. The error aborted this tx; next tick
+		// runs the fallback query.
+		if !w.verdictFnMissing && strings.Contains(err.Error(), "ignite_event_verdict") &&
+			strings.Contains(err.Error(), "does not exist") {
+			w.verdictFnMissing = true
+			log.Printf("JourneyClickTrackingEnroller: ignite_event_verdict missing — disabling pre-enrollment verdict gate for this process (cron backstop still applies)")
+			return
+		}
 		atomic.AddInt64(&w.totalErrors, 1)
 		log.Printf("JourneyClickTrackingEnroller: scan clicks: %v", err)
 		return
@@ -362,7 +386,46 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 			campaignArg = targetCampaign
 			source = "consumer_signal_redirect"
 		} else if o, ok := resolveOfferFromLink(c.linkURL, slugToOffer); ok {
-			offerID = o
+			// Honor the lane governor's routing directive for the resolved
+			// offer (Unit D4, 2026-07-10).
+			switch lr := laneRoutingByOffer[o]; lr.state {
+			case "paused_auto":
+				// Governor paused the lane — drop the click.
+				atomic.AddInt64(&w.totalSkipped, 1)
+				continue
+			case "redirect":
+				// Treat EXACTLY like a consumer-signal redirect: the reminder
+				// must pitch the TARGET offer's creative, resolved per brand
+				// via the same name-pattern machinery. The pattern comes from
+				// the consumer-signal rows targeting the redirect offer (the
+				// same pattern source loadConsumerSignals uses); no pattern or
+				// no recent brand campaign → skip rather than misalign the
+				// creative/money-link.
+				pattern := patternForTargetOffer(consumerSignals, lr.redirectOffer)
+				targetCampaign := ""
+				if pattern != "" {
+					brandRoot := brand.Root(c.sendingDomain)
+					if m := brandCampaignByPattern[pattern]; m != nil {
+						targetCampaign = m[brandRoot]
+					}
+				}
+				if lr.redirectOffer == "" || targetCampaign == "" {
+					// Loud skip: a governor redirect that cannot resolve a
+					// creative-safe target must not eat clicks silently
+					// (empty pattern = redirect target is not among the
+					// consumer-signal target offers; empty campaign = this
+					// brand has no recent target-offer creative).
+					log.Printf("JourneyClickTrackingEnroller: redirect skip offer=%s target=%q pattern=%q brand=%s campaignResolved=%t",
+						o, lr.redirectOffer, pattern, brand.Root(c.sendingDomain), targetCampaign != "")
+					atomic.AddInt64(&w.totalSkipped, 1)
+					continue
+				}
+				offerID = lr.redirectOffer
+				campaignArg = targetCampaign
+				source = "lane_governor_redirect"
+			default:
+				offerID = o
+			}
 		} else {
 			atomic.AddInt64(&w.totalSkipped, 1)
 			continue
@@ -441,6 +504,95 @@ func (w *JourneyClickTrackingEnroller) tick(ctx context.Context) {
 		log.Printf("JourneyClickTrackingEnroller: slice (%s, %s] scanned=%d queued=%d (cursor→%s)",
 			cursor.Format(time.RFC3339), upper.Format(time.RFC3339), len(cands), queued, newCursor.Format(time.RFC3339))
 	}
+}
+
+// clickTrackingPreVerdictDisabled gates the pre-enrollment human-verdict
+// predicate in the tick scan query. Truthy CLICKDRIP_PREVERDICT_DISABLED
+// omits the predicate (legacy behavior: machine clicks enter the queue and
+// only the downstream hygiene crons weed them).
+func clickTrackingPreVerdictDisabled() bool {
+	return envTruthy(os.Getenv("CLICKDRIP_PREVERDICT_DISABLED"))
+}
+
+// clickTrackingScanQuery builds the per-tick money-click scan SQL
+// ($1=cursor, $2=upper, $3=limit). By default it includes the pre-enrollment
+// verdict gate — ignite_verdict_is_human(ignite_event_verdict(...)) over the
+// event's user_agent/ip_address — so machine/scanner clicks never enter the
+// trigger queue at all (Unit A2, 2026-07-10). Both DB functions exist in
+// prod; the .scratch/journey_machine_click_gate.py cron applies EXACTLY this
+// predicate retroactively and stays running as the backstop for anything
+// enqueued while CLICKDRIP_PREVERDICT_DISABLED is set.
+func clickTrackingScanQuery(verdictFnMissing bool) string {
+	verdictPred := ""
+	if !clickTrackingPreVerdictDisabled() && !verdictFnMissing {
+		verdictPred = "AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))\n\t\t  "
+	}
+	return fmt.Sprintf(`
+		SELECT t.subscriber_id::text, t.event_at, t.link_url,
+		       COALESCE(t.sending_domain,''), COALESCE(t.campaign_id::text,'')
+		FROM mailing_tracking_events t
+		WHERE t.event_type='clicked'
+		  AND t.event_at > $1 AND t.event_at <= $2
+		  %sAND (
+		        t.link_url ILIKE '%%cratoolpro.com/BJB4Q5BF/%%'
+		     OR t.link_url ILIKE '%%eos57ytf.com/K4C5ZLC/%%'
+		     OR t.link_url ILIKE '%%xnonu.com/TQ5MX18J/%%'
+		     OR t.link_url ILIKE '%%muqes.com/TQ5MX18J/%%'
+		     OR t.link_url ILIKE '%%k8k0hfdt.com/3QJ6DW/%%'
+		      )
+		  AND NOT EXISTS (
+		        SELECT 1 FROM mailing_campaigns c
+		        WHERE c.id = t.campaign_id AND c.campaign_type = 'click_drip'
+		      )
+		ORDER BY t.event_at ASC
+		LIMIT $3
+	`, verdictPred)
+}
+
+// loadLaneRouting returns the governor's per-offer routing directives from
+// mailing_offer_journey_map. Rows default to state='active' via COALESCE, so
+// a pre-governor DB (columns just added by startup migration) behaves exactly
+// like today. Missing-column errors are tolerated the same way
+// loadConsumerSignals tolerates a missing table (fresh DB before migrations).
+func (w *JourneyClickTrackingEnroller) loadLaneRouting(ctx context.Context) (map[string]laneRouting, error) {
+	out := make(map[string]laneRouting)
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT everflow_offer_id, COALESCE(routing_state,'active'), COALESCE(redirect_offer_id,'')
+		FROM mailing_offer_journey_map
+	`)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return out, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var offer, state, redirect string
+		if err := rows.Scan(&offer, &state, &redirect); err != nil {
+			return nil, err
+		}
+		out[offer] = laneRouting{state: state, redirectOffer: redirect}
+	}
+	return out, rows.Err()
+}
+
+// patternForTargetOffer resolves the campaign name pattern for a lane-governor
+// redirect target. Redirect targets reuse the consumer-signal pattern source
+// (mailing_consumer_signal_slugs.target_campaign_name_ilike): the first
+// enabled signal row whose target offer matches supplies the pattern. Returns
+// "" when the target has no pattern — the caller skips rather than pitch a
+// misaligned creative.
+func patternForTargetOffer(signals map[string]consumerSignal, targetOffer string) string {
+	if targetOffer == "" {
+		return ""
+	}
+	for _, sig := range signals {
+		if sig.targetOffer == targetOffer && sig.namePattern != "" {
+			return sig.namePattern
+		}
+	}
+	return ""
 }
 
 // loadSlugMap returns enabled slug → everflow_offer_id mappings.
