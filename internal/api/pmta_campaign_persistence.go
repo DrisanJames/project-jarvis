@@ -907,23 +907,16 @@ func resolvePMTACampaignIdentity(ctx context.Context, tx *sql.Tx, orgID, request
 		return existingID, true, nil
 	}
 
-	var query string
-	var args []any
-	if hasExecMode {
-		query = `SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND status = 'draft' AND execution_mode = $2 ORDER BY updated_at DESC, created_at DESC LIMIT 1`
-		args = []any{orgID, pmtaExecutionModeWave}
-	} else {
-		query = `SELECT id FROM mailing_campaigns WHERE organization_id = $1 AND status = 'draft' ORDER BY updated_at DESC, created_at DESC LIMIT 1`
-		args = []any{orgID}
-	}
-
-	var existingID uuid.UUID
-	if err := tx.QueryRowContext(ctx, query, args...).Scan(&existingID); err == nil {
-		return existingID, true, nil
-	} else if err != sql.ErrNoRows {
-		return uuid.Nil, false, fmt.Errorf("lookup latest draft campaign: %w", err)
-	}
-
+	// No campaign_id on the payload → ALWAYS mint a fresh campaign. This used to
+	// fall back to reusing the org's most-recently-updated draft row (renaming it
+	// in place), which let every id-less deploy cannibalize one Draft Board draft:
+	// the partner-drip orchestrator and the cockpit deploy scripts all deploy
+	// without a campaign_id, so a staged send-day board attrited one draft per
+	// deploy (2026-07-11: 251 staged jul12 drafts eaten down to 75 within the
+	// hour, each reborn as a '[partner-drip] …' campaign; same mechanism behind
+	// the jul11 "47 dropped drafts"). Every caller that wants draft promotion
+	// passes the draft's id explicitly (Draft Board approve re-attaches it; the
+	// wizard sends it after a draft save) — reuse is only ever correct by id.
 	return uuid.New(), false, nil
 }
 

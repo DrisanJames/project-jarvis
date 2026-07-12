@@ -54,10 +54,9 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 		Timezone:    "UTC",
 	}
 
-	// Reservation phase: resolve identity (no draft) -> INSERT finalizing_audience -> COMMIT
+	// Reservation phase: id-less deploy mints a fresh UUID (NO draft-reuse
+	// lookup — 2026-07-11 draft-eater fix) -> INSERT finalizing_audience -> COMMIT
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
-		WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -248,9 +247,9 @@ func TestHandleSaveDraftCampaign_CreatesDraft(t *testing.T) {
 		},
 	}
 
+	// Id-less save mints a fresh UUID (no draft-reuse lookup — 2026-07-11
+	// draft-eater fix); subsequent saves upsert by the returned id.
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id\\s+FROM mailing_campaigns").
-		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery("SELECT id, from_email, from_name, reply_email").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "from_name", "reply_email"}))
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
