@@ -500,9 +500,12 @@ const CampaignDetailsModal: React.FC<{
   // fetch failed or hasn't resolved; `summaryError` carries the failure reason.
   summaryDetail: CampaignSummaryDetail | null;
   summaryError: string | null;
+  // Failure from the last campaign action (send/pause/resume/cancel/duplicate)
+  // — rendered inline next to the action buttons; mutations never fail silently.
+  actionError: string | null;
   onClose: () => void;
   onAction: (id: string, action: string) => void;
-}> = ({ campaign, stats, variants, loading, summaryDetail, summaryError, onClose, onAction }) => {
+}> = ({ campaign, stats, variants, loading, summaryDetail, summaryError, actionError, onClose, onAction }) => {
   const [activeVariantIdx, setActiveVariantIdx] = useState(0);
   const [variantPreviewOpen, setVariantPreviewOpen] = useState(false);
 
@@ -1152,6 +1155,20 @@ const CampaignDetailsModal: React.FC<{
                 <div className={`edit-lock-info ${getEditLockInfo(campaign).isLocked ? 'locked' : ''}`}>
                   <FontAwesomeIcon icon={getEditLockInfo(campaign).isLocked ? faExclamationTriangle : faInfoCircle} />
                   <span>{getEditLockInfo(campaign).message}</span>
+                </div>
+              )}
+
+              {/* Inline notice if the last action failed — never silent. */}
+              {actionError && (
+                <div
+                  className="details-section"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    color: '#ef4444', fontSize: 13,
+                  }}
+                >
+                  <FontAwesomeIcon icon={faExclamationTriangle} />
+                  <span>{actionError}</span>
                 </div>
               )}
 
@@ -2607,6 +2624,9 @@ export const CampaignPortal: React.FC<{
   const [modalOpen, setModalOpen] = useState(false);
   const [summaryDetail, setSummaryDetail] = useState<CampaignSummaryDetail | null>(null);
   const [summaryDetailError, setSummaryDetailError] = useState<string | null>(null);
+  // Last campaign-action failure (send/pause/resume/cancel/duplicate) — shown
+  // inline in the modal's actions area so mutations never fail silently.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [filter, setFilter] = useState<ListStatusFilter>('all');
@@ -2723,16 +2743,36 @@ export const CampaignPortal: React.FC<{
         setModalOpen(false);
         setView('edit');
         return;
-      } else if (action === 'duplicate') {
-        await orgFetch(`${API_BASE}/campaigns/${id}/duplicate`, organization?.id, { method: 'POST' });
+      }
+      // Live-send guard: one click on "Send Now" starts a REAL send. Explicit
+      // confirm before the POST — same idiom as Draft Board approve
+      // (DraftBoardView handleApprove's window.confirm).
+      if (action === 'send') {
+        const name = (selectedCampaign?.id === id ? selectedCampaign.name
+          : campaigns.find(c => c.id === id)?.name) || 'this campaign';
+        if (!window.confirm(`Send "${name}" now? This starts a LIVE send immediately.`)) return;
+      }
+      setActionError(null);
+      let res: Response | null = null;
+      if (action === 'duplicate') {
+        res = await orgFetch(`${API_BASE}/campaigns/${id}/duplicate`, organization?.id, { method: 'POST' });
       } else if (action === 'pause') {
-        await orgFetch(`${API_BASE}/campaigns/${id}/pause`, organization?.id, { method: 'POST' });
+        res = await orgFetch(`${API_BASE}/campaigns/${id}/pause`, organization?.id, { method: 'POST' });
       } else if (action === 'resume') {
-        await orgFetch(`${API_BASE}/campaigns/${id}/resume`, organization?.id, { method: 'POST' });
+        res = await orgFetch(`${API_BASE}/campaigns/${id}/resume`, organization?.id, { method: 'POST' });
       } else if (action === 'cancel') {
-        await orgFetch(`${API_BASE}/campaigns/${id}/cancel`, organization?.id, { method: 'POST' });
+        res = await orgFetch(`${API_BASE}/campaigns/${id}/cancel`, organization?.id, { method: 'POST' });
       } else if (action === 'send') {
-        await orgFetch(`${API_BASE}/campaigns/${id}/send`, organization?.id, { method: 'POST' });
+        res = await orgFetch(`${API_BASE}/campaigns/${id}/send`, organization?.id, { method: 'POST' });
+      }
+      // Mutations never fail silently — surface non-2xx inline in the modal.
+      if (res && !res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.error) detail += ` — ${data.error}`;
+        } catch { /* non-JSON error body */ }
+        throw new Error(detail);
       }
       // Refresh data
       fetchDashboardStats();
@@ -2742,8 +2782,9 @@ export const CampaignPortal: React.FC<{
       }
     } catch (err) {
       console.error(`Failed to ${action} campaign:`, err);
+      setActionError(`Failed to ${action} campaign: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
-  }, [fetchDashboardStats, fetchCampaignSummary, fetchCampaignDetails, selectedCampaign, organization]);
+  }, [fetchDashboardStats, fetchCampaignSummary, fetchCampaignDetails, selectedCampaign, campaigns, organization]);
 
   // Initial load
   useEffect(() => {
@@ -2767,6 +2808,7 @@ export const CampaignPortal: React.FC<{
   // Open the legacy full-record modal (from the inline expand's "Full record").
   // The list stays mounted underneath so expanded rows are preserved.
   const openCampaignModal = (id: string) => {
+    setActionError(null);
     fetchCampaignDetails(id);
     setModalOpen(true);
   };
@@ -2857,6 +2899,7 @@ export const CampaignPortal: React.FC<{
           loading={detailsLoading}
           summaryDetail={summaryDetail}
           summaryError={summaryDetailError}
+          actionError={actionError}
           onClose={() => setModalOpen(false)}
           onAction={handleAction}
         />
