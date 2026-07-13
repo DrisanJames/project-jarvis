@@ -21,6 +21,17 @@ interface DashboardStats {
   };
   by_source: { source: string; count: number }[];
   recent_additions: number;
+  // REQ-003: hub-vs-DB reconcile verdict from GET /suppressions/global.
+  // diverged=true means the in-memory enforcement set is missing entries
+  // beyond tolerance (or the reconcile itself is failing) — the numbers on
+  // this screen may exceed what the send path is actually enforcing.
+  reconcile?: {
+    last_checked_at: string;
+    memory_count: number;
+    db_count: number;
+    diverged: boolean;
+    last_error?: string;
+  };
 }
 
 interface SuppressionEntry {
@@ -341,6 +352,19 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       )}
       {activeView === 'overview' && stats && (
         <>
+          {/* REQ-003: hub-vs-DB divergence — the enforcement set in memory is
+              missing entries beyond tolerance (or reconcile is erroring), so
+              the counts below may overstate what sends are actually checked
+              against. Amber, not red: the hub auto-reloads on divergence. */}
+          {stats.reconcile?.diverged && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(245,158,11,0.45)', background: 'rgba(245,158,11,0.08)', color: '#f59e0b', fontSize: 13 }}>
+              <span style={{ fontWeight: 700 }}>⚠ ENFORCEMENT SET DEGRADED</span>
+              <span>
+                in-memory {stats.reconcile.memory_count.toLocaleString()} vs DB {Number(stats.reconcile.db_count).toLocaleString()}
+                {stats.reconcile.last_error ? ` — ${stats.reconcile.last_error}` : ' — auto-reload triggered'}
+              </span>
+            </div>
+          )}
           {/* Top Stats */}
           <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={statCard}>

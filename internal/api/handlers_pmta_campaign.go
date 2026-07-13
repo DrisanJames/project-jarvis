@@ -890,8 +890,21 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	input := req.PMTACampaignInput
 	orgID := getOrgID(r)
 
+	// Kill switch (wave-1 manager review): restores pre-enforcement deploy
+	// behavior without a redeploy — the one-line rollback for a live send-day
+	// wedged on gate evaluation itself (same idiom as
+	// DISABLE_SEND_OWNERSHIP_RECHECK / DISABLE_FAILED_ROW_RECOVERY).
+	gateEnforcementDisabled := os.Getenv("DISABLE_SEND_DAY_GATE_ENFORCEMENT") == "true"
+
 	report := s.evaluateDeployGates(r.Context(), orgID, input)
-	if failed := report.failed(); len(failed) > 0 {
+	if failed := report.failed(); len(failed) > 0 && gateEnforcementDisabled {
+		names := make([]string, len(failed))
+		for i, v := range failed {
+			names[i] = v.Gate
+		}
+		log.Printf("[SendDayGates] enforcement DISABLED by kill switch — proceeding past red gates [%s] for campaign %q org=%s", strings.Join(names, ","), input.Name, orgID)
+	}
+	if failed := report.failed(); len(failed) > 0 && !gateEnforcementDisabled {
 		names := make([]string, len(failed))
 		for i, v := range failed {
 			names[i] = v.Gate

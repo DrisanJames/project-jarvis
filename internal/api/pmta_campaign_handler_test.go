@@ -917,3 +917,56 @@ func TestHandleDeployCampaign_GatesAllGreenRealEvaluator(t *testing.T) {
 		t.Fatalf("sql expectations: %v", err)
 	}
 }
+
+// TestHandleDeployCampaign_GateEnforcementKillSwitch proves the one-line
+// rollback works: with DISABLE_SEND_DAY_GATE_ENFORCEMENT=true, red gates do
+// NOT block (no 412, no override required) and the deploy proceeds through
+// the normal reservation sequence — with the bypass logged for the audit
+// trail. Wave-1 manager review CHANGES item (REQ-007a).
+func TestHandleDeployCampaign_GateEnforcementKillSwitch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates
+
+	t.Setenv("DISABLE_SEND_DAY_GATE_ENFORCEMENT", "true")
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	// Normal reservation sequence — NO audit-override row (no override was
+	// supplied; the kill switch is a config bypass, not an operator override).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectExec("INSERT INTO mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
+
+	body, _ := json.Marshal(gateTestInput("Kill Switch Deploy"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (kill switch must bypass the 412); body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), "enforcement DISABLED by kill switch") {
+		t.Fatalf("expected kill-switch bypass to be logged, got: %s", logBuf.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
