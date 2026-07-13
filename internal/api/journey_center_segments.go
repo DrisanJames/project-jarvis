@@ -14,14 +14,16 @@ import (
 // GET /api/journey-center/segments
 func (jc *JourneyCenter) HandleJourneySegments(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	// Org-scoped (REQ-046): previously listed every org's segments.
+	orgID := getOrgIDFromRequest(r)
 
 	rows, err := jc.db.QueryContext(ctx, `
-		SELECT 
+		SELECT
 			id, name, description, subscriber_count, last_calculated_at
 		FROM mailing_segments
-		WHERE status = 'active'
+		WHERE status = 'active' AND organization_id = $1
 		ORDER BY name ASC
-	`)
+	`, orgID)
 	if err != nil {
 		// Try alternative table
 		rows, err = jc.db.QueryContext(ctx, `

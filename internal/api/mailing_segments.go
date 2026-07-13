@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -1175,6 +1176,19 @@ func (s *AdvancedMailingService) HandlePreviewSegment(w http.ResponseWriter, r *
 }
 
 func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter, r *http.Request) {
+	// REQ-046: this endpoint iterates EVERY org's active dynamic segments (no
+	// org filter) and rewrites subscriber_count platform-wide, so it is gated
+	// behind the closed-by-default X-Admin-Key pattern used by the
+	// /api/admin/* endpoints (server_routes_mailing.go) instead of org
+	// context. REQ-051 criterion 5 owns this endpoint's final disposition
+	// (delete vs. keep as an admin maintenance tool) — coordinate there
+	// before widening or removing this gate.
+	adminKey := os.Getenv("ADMIN_API_KEY")
+	if adminKey == "" || r.Header.Get("X-Admin-Key") != adminKey {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	ctx := r.Context()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, list_id, name, COALESCE(conditions::text, '[]')
@@ -1246,9 +1260,58 @@ func (s *AdvancedMailingService) HandleRefreshAllSegments(w http.ResponseWriter,
 func (s *AdvancedMailingService) HandleDeleteSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	segmentID := chi.URLParam(r, "segmentId")
-	
-	s.db.ExecContext(ctx, `DELETE FROM mailing_segments WHERE id = $1`, segmentID)
-	
+
+	orgID, err := GetOrgIDFromRequest(r)
+	if err != nil {
+		http.Error(w, `{"error":"organization context required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Refuse to delete a segment still referenced by a live campaign
+	// (REQ-046 DoD-2): the planner and wave enqueue resolve inclusion/
+	// exclusion segments from pmta_config at finalize time, so deleting one
+	// out from under a draft/scheduled campaign silently empties its
+	// audience. pmta_config embeds the full campaign_input (inclusion_segments,
+	// exclusion_segments, send_priority), so a text match on the UUID covers
+	// every reference shape; a false positive merely refuses a delete.
+	var referencedBy int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM mailing_campaigns
+		WHERE organization_id = $1
+		  AND status IN ('draft','scheduled','preparing','finalizing_audience','sending','paused')
+		  AND COALESCE(pmta_config::text,'') LIKE '%' || $2 || '%'
+	`, orgID, segmentID).Scan(&referencedBy); err != nil {
+		log.Printf("[DeleteSegment] campaign-reference check failed for %s: %v", segmentID, err)
+		http.Error(w, `{"error":"failed to check campaign references"}`, http.StatusInternalServerError)
+		return
+	}
+	if referencedBy > 0 {
+		http.Error(w, fmt.Sprintf(`{"error":"segment is referenced by %d active campaign(s) — cancel them before deleting"}`, referencedBy), http.StatusConflict)
+		return
+	}
+
+	// Org-scoped delete (previously id-only with the Exec error discarded —
+	// any authenticated session could delete any org's segment). A foreign-org
+	// or unknown id 404s, indistinguishable from a nonexistent one.
+	res, err := s.db.ExecContext(ctx, `DELETE FROM mailing_segments WHERE id = $1 AND organization_id = $2`, segmentID, orgID)
+	if err != nil {
+		log.Printf("[DeleteSegment] delete failed for %s: %v", segmentID, err)
+		http.Error(w, `{"error":"failed to delete segment"}`, http.StatusInternalServerError)
+		return
+	}
+	if n, raErr := res.RowsAffected(); raErr == nil && n == 0 {
+		http.Error(w, `{"error":"segment not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Clean the materialized member rows (no FK cascade — archived segments
+	// were found still holding mailing_segment_members rows, S0 2026-07-13).
+	// Best-effort: the segment row is already gone; log loudly on failure.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM mailing_segment_members WHERE segment_id = $1`, segmentID); err != nil {
+		log.Printf("[DeleteSegment] member-row cleanup failed for %s (orphaned mailing_segment_members rows): %v", segmentID, err)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"deleted": segmentID})
 }

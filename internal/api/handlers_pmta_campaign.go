@@ -1053,6 +1053,82 @@ type deployInputError struct{ msg string }
 
 func (e *deployInputError) Error() string { return e.msg }
 
+// validateSegmentOwnership verifies that every segment referenced by a deploy
+// payload — inclusion_segments, exclusion_segments, and send_priority items of
+// type "segment" — belongs to the deploying org (REQ-046). It runs as part of
+// the normalize step, before any campaign row is reserved: downstream the
+// planner reads mailing_segment_members / mailing_segments by segment_id
+// alone (pmta_campaign_planner.go), so without this gate a foreign-org UUID
+// silently pulls (or suppresses against) another org's audience. Foreign and
+// unknown IDs both fail as "segment not found" (HTTP 400 via
+// deployInputError) — existence is not leaked across orgs.
+func validateSegmentOwnership(ctx context.Context, db *sql.DB, orgID string, input engine.PMTACampaignInput) error {
+	ids := make([]string, 0, len(input.InclusionSegments)+len(input.ExclusionSegments))
+	seen := make(map[string]bool)
+	collect := func(raw string) error {
+		id := strings.TrimSpace(raw)
+		if id == "" || seen[id] {
+			return nil
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			return &deployInputError{"invalid segment id: " + id}
+		}
+		seen[id] = true
+		ids = append(ids, id)
+		return nil
+	}
+	for _, raw := range input.InclusionSegments {
+		if err := collect(raw); err != nil {
+			return err
+		}
+	}
+	for _, raw := range input.ExclusionSegments {
+		if err := collect(raw); err != nil {
+			return err
+		}
+	}
+	for _, item := range input.SendPriority {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "segment") {
+			if err := collect(item.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id::text FROM mailing_segments WHERE id = ANY($1::uuid[]) AND organization_id = $2`,
+		pq.Array(ids), orgID)
+	if err != nil {
+		return fmt.Errorf("segment ownership check: %w", err)
+	}
+	defer rows.Close()
+	owned := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("segment ownership check: %w", err)
+		}
+		owned[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("segment ownership check: %w", err)
+	}
+
+	var missing []string
+	for _, id := range ids {
+		if !owned[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return &deployInputError{"segment not found: " + strings.Join(missing, ", ")}
+	}
+	return nil
+}
+
 // DeployFromInput runs the synchronous deploy path — validation, preflight,
 // normalization, campaign reservation — for an already-decoded payload. It is
 // shared by HandleDeployCampaign and in-process callers (Domain Agent plan
@@ -1101,6 +1177,13 @@ func (s *PMTACampaignService) deployFromInput(ctx context.Context, orgID string,
 	normalized, err := normalizePMTACampaignInput(input)
 	if err != nil {
 		return "", "", false, &deployInputError{err.Error()}
+	}
+
+	// Segment-ownership gate (REQ-046): part of normalization — every
+	// referenced segment must belong to the deploying org before a campaign
+	// row is reserved. Foreign IDs map to HTTP 400 via deployInputError.
+	if err := validateSegmentOwnership(ctx, s.db, orgID, input); err != nil {
+		return "", "", false, err
 	}
 
 	// Reserve campaign row as 'preparing' so the dashboard shows it immediately.

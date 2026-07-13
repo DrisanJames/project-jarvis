@@ -90,6 +90,7 @@ import {
 import { Panel, Stat, SectionError, EmptyState, Pill, LivePill, PortalKeyframes } from '../shared/ui';
 import { usePolling, PollingState } from '../shared/usePolling';
 import { apiFetch } from '../shared/apiFetch';
+import { getCurrentOrgId } from '../../../contexts/AuthContext';
 import { denverToday, daysAgoDenver } from '../shared/filters';
 
 // PAGE_VERSION 3.3 (2026-07-02) — "segment management" pass (operator directive).
@@ -1898,10 +1899,15 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
             {/* drawer footer */}
             <div style={{ display: 'flex', gap: 10, padding: '14px 20px', borderTop: '1px solid rgba(0,200,255,0.1)', flexWrap: 'wrap' }}>
+              {/* Bare <a> navigation can't carry the X-Organization-ID header,
+                  and the server now enforces segment ownership (REQ-046) — so
+                  the org rides the ?org_id= query param, which
+                  GetOrgIDFromRequest accepts as its header fallback
+                  (org_context.go). Same org source as apiFetch. */}
               <a
                 className="btn btn-secondary"
                 style={{ textDecoration: 'none' }}
-                href={`/api/mailing/v2/segments/${drawerRow.id}/members.csv`}
+                href={`/api/mailing/v2/segments/${drawerRow.id}/members.csv${(() => { const o = getCurrentOrgId(); return o ? `?org_id=${encodeURIComponent(o)}` : ''; })()}`}
                 download
                 title="Export all audience members as CSV"
               >

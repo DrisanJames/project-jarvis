@@ -999,7 +999,21 @@ func (api *SegmentationAPI) segmentIsLakeBuilt(ctx context.Context, segmentID uu
 // ExecuteSegment calculates a segment
 func (api *SegmentationAPI) ExecuteSegment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
+
+	// Ownership gate (REQ-046): resolve through the org-scoped store read —
+	// same pattern as GetSegment — so a foreign-org UUID 404s (never leaks
+	// existence) before the engine touches any subscriber data.
+	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if segment == nil {
+		http.Error(w, "segment not found", http.StatusNotFound)
+		return
+	}
 
 	// Lake-built segments cannot be "executed" live — same hazard as the
 	// RecalculateSegment guard (empty WHERE → entire active base). FAIL
@@ -1031,7 +1045,20 @@ func (api *SegmentationAPI) ExecuteSegment(w http.ResponseWriter, r *http.Reques
 // GetSegmentSubscribers returns subscribers in a segment
 func (api *SegmentationAPI) GetSegmentSubscribers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
 	segmentID, _ := uuid.Parse(chi.URLParam(r, "segmentID"))
+
+	// Ownership gate (REQ-046): org-scoped store read, same pattern as
+	// GetSegment. Foreign-org UUIDs 404 before any member rows are read.
+	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if segment == nil {
+		http.Error(w, "segment not found", http.StatusNotFound)
+		return
+	}
 
 	// Check for pagination params
 	limitStr := r.URL.Query().Get("limit")
@@ -1159,18 +1186,22 @@ func (api *SegmentationAPI) ExportSegmentMembersCSV(w http.ResponseWriter, r *ht
 		format = "csv"
 	}
 
-	// Resolve segment name for the response filename.
-	var segName string
-	if err := api.db.QueryRowContext(ctx,
-		`SELECT name FROM mailing_segments WHERE id = $1`, segmentID,
-	).Scan(&segName); err != nil {
-		if err == sql.ErrNoRows {
-			http.Error(w, "segment not found", http.StatusNotFound)
-			return
-		}
+	// Ownership gate (REQ-046): resolve the segment through the org-scoped
+	// store read — same pattern as GetSegment. This handler previously
+	// resolved by UUID alone and streamed ANY org's member emails (S0
+	// lead-verified). A foreign-org UUID now 404s, indistinguishable from a
+	// nonexistent one. The store row also supplies the response filename.
+	orgID := segmentGetOrgIDFromRequest(r)
+	segment, err := api.engine.Store().GetSegment(ctx, orgID, segmentID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if segment == nil {
+		http.Error(w, "segment not found", http.StatusNotFound)
+		return
+	}
+	segName := segment.Name
 
 	// 10-minute read budget for the stream. Single indexed query on
 	// (segment_id, email); the index makes COUNT and SELECT both cheap.
@@ -1309,14 +1340,37 @@ func (api *SegmentationAPI) ExportSegmentsUnionCSV(w http.ResponseWriter, r *htt
 
 	// Validate every id parses as UUID before sending to the DB so we
 	// fail fast with a clear error rather than a SQL syntax error.
+	// Deduplicated so the ownership count check below compares like with like.
 	idArr := make([]string, 0, len(body.SegmentIDs))
+	seenIDs := make(map[string]bool, len(body.SegmentIDs))
 	for _, raw := range body.SegmentIDs {
 		u, err := uuid.Parse(strings.TrimSpace(raw))
 		if err != nil {
 			http.Error(w, "invalid segment id: "+raw, http.StatusBadRequest)
 			return
 		}
+		if seenIDs[u.String()] {
+			continue
+		}
+		seenIDs[u.String()] = true
 		idArr = append(idArr, u.String())
+	}
+
+	// Ownership gate (REQ-046): every requested segment must belong to the
+	// caller's org. Foreign or unknown IDs 404 as "not found" so the union
+	// export can never mix another org's member emails into the file.
+	orgID := segmentGetOrgIDFromRequest(r)
+	var ownedCount int
+	if err := api.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT id) FROM mailing_segments WHERE id = ANY($1::uuid[]) AND organization_id = $2`,
+		pq.Array(idArr), orgID,
+	).Scan(&ownedCount); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ownedCount != len(idArr) {
+		http.Error(w, "segment not found", http.StatusNotFound)
+		return
 	}
 
 	streamCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
@@ -1622,6 +1676,7 @@ func (api *SegmentationAPI) CreateSnapshot(w http.ResponseWriter, r *http.Reques
 // GetSnapshot returns a snapshot
 func (api *SegmentationAPI) GetSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
 	snapshotID, _ := uuid.Parse(chi.URLParam(r, "snapshotID"))
 
 	snapshot, err := api.engine.Store().GetSnapshot(ctx, snapshotID)
@@ -1629,7 +1684,9 @@ func (api *SegmentationAPI) GetSnapshot(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if snapshot == nil {
+	// Ownership gate (REQ-046): snapshot rows carry organization_id directly.
+	// A foreign-org snapshot 404s exactly like a nonexistent one.
+	if snapshot == nil || snapshot.OrganizationID != orgID {
 		http.Error(w, "snapshot not found", http.StatusNotFound)
 		return
 	}
@@ -1640,7 +1697,20 @@ func (api *SegmentationAPI) GetSnapshot(w http.ResponseWriter, r *http.Request) 
 // GetSnapshotSubscribers returns subscribers from a snapshot
 func (api *SegmentationAPI) GetSnapshotSubscribers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	orgID := segmentGetOrgIDFromRequest(r)
 	snapshotID, _ := uuid.Parse(chi.URLParam(r, "snapshotID"))
+
+	// Ownership gate (REQ-046): resolve the snapshot row first so a
+	// foreign-org snapshot 404s before its subscriber IDs are loaded.
+	snapshot, err := api.engine.Store().GetSnapshot(ctx, snapshotID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if snapshot == nil || snapshot.OrganizationID != orgID {
+		http.Error(w, "snapshot not found", http.StatusNotFound)
+		return
+	}
 
 	ids, err := api.engine.GetSnapshotSubscribers(ctx, snapshotID)
 	if err != nil {
