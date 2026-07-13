@@ -6,7 +6,7 @@
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="color-scheme" content="light" />
   <meta name="supported-color-schemes" content="light" />
-  <title>Debt-consolidation math, finally simple — When it pays. When it doesn’t. Plus: the lender we keep recommending for 660-720 FICO and the one we don’t.</title>
+  <title>The True Cost of a Personal Loan: A Worked Example, Beginning to End</title>
   <!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -140,15 +140,18 @@
       td, p, div, span, li { -webkit-text-size-adjust: 100% !important; }
     }
     /* === REVIEW-FORGE-MOBILE-FIRST:END === */
-  </style>
+  
+    @media only screen and (max-width: 480px) {
+      td.nl-row { padding-left: 16px !important; padding-right: 16px !important; }
+      td.nl-thumb { display: none !important; width: 0 !important; }
+    }
+</style>
 </head>
 <body>
   <div class="wrapper">
 
     <!-- Preheader -->
-    <div style="display: none; max-height: 0; overflow: hidden; font-size: 1px; line-height: 1px; color: #efece4;">
-      When it pays. When it doesn’t. Plus: the lender we keep recommending for 660-720 FICO and the one we don’t.
-    </div>
+    <div style="display: none; max-height: 0; overflow: hidden; font-size: 1px; line-height: 1px; color: #7a6d48;">Also inside: SoFi 2026 Update · Effective vs Nominal APR.</div>
 
     <div class="container">
 
@@ -165,7 +168,7 @@
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
           <tr>
             <td style="vertical-align: top; padding-right: 16px;" width="64">
-              <a href="https://learnpersonalloans.com" style="text-decoration: none; display: inline-block;">
+              <a href="https://www.learnpersonalloans.com" style="text-decoration: none; display: inline-block;">
                 <table cellpadding="0" cellspacing="0" border="0" role="presentation" style="background: #3730a3; border-radius: 4px;">
                   <tr>
                     <td width="56" height="56" align="center" valign="middle" style="vertical-align: middle; text-align: center; width: 56px; height: 56px; padding: 0;">
@@ -177,7 +180,7 @@
               </a>
             </td>
             <td style="vertical-align: middle;">
-              <a href="https://learnpersonalloans.com" style="text-decoration: none;">
+              <a href="https://www.learnpersonalloans.com" style="text-decoration: none;">
                 <span class="display" style="font-family: 'Spectral', Georgia, serif; font-size: 26px; font-weight: 700; letter-spacing: -0.5px; display: block; line-height: 1.05; color: #0f1230;">
                   <span style="color:#3730a3;">Learn</span> <span style="color:#0f766e;">Personal Loans</span>
                 </span>
@@ -185,7 +188,7 @@
               </a>
             </td>
             <td style="text-align: right; vertical-align: top; padding-top: 6px;">
-              <a href="{{ system.unsubscribe_url }}" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #6b7280; text-decoration: underline; font-weight: 500; letter-spacing: 0.5px;">drop course</a>
+              <a href="{{ system.unsubscribe_url }}" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #6b7280; text-decoration: underline; font-weight: 500; letter-spacing: 0.5px;">Unsubscribe</a>
             </td>
           </tr>
         </table>
@@ -196,10 +199,10 @@
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="border-top: 1px solid #d6d3d1; border-bottom: 1px solid #d6d3d1;">
           <tr>
             <td style="padding: 10px 0;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 500; color: #3730a3; letter-spacing: 2px; text-transform: uppercase;">&sect; Lecture for Saturday, May 9, 2026</span>
+              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 500; color: #3730a3; letter-spacing: 2px; text-transform: uppercase;">&sect; Lecture for Monday, July 13, 2026</span>
             </td>
             <td style="padding: 10px 0; text-align: right;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 500; color: #6b7280; letter-spacing: 1.5px;">VOL.08 / WK.19</span>
+              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 500; color: #6b7280; letter-spacing: 1.5px;">/ WK.19</span>
             </td>
           </tr>
         </table>
@@ -251,7 +254,18 @@
           We led with Simple Interest vs Precomputed Interest: The 1% of Loans That Still Use the Latter this week because the question we kept getting was simple: am I really paying what I think I&rsquo;m paying? Spoiler: usually not. Then we wrote The True Cost of a Personal Loan: A Worked Example, Beginning to End because the answer to <em>that</em> question surprised us too. Both work through the math start to finish.
         </p>
       </div>
-      <!-- END:INTRO -->
+      
+        <div style="padding: 6px 32px 24px; text-align:center;">
+          <a href="https://www.learnpersonalloans.com/reviews/true-cost-of-a-personal-loan-2026"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="536" alt="The True Cost of a Personal Loan: A Worked Example, Beginnin" style="display:block; width:100%; max-width:536px; height:auto; margin:0 auto 14px;"></a>
+          <p style="font-family:'Inter',sans-serif; font-size:10px; font-weight:700; color:#3730a3; text-transform:uppercase; letter-spacing:2.5px; margin:0 0 8px;">Today's Lesson</p>
+          <a href="https://www.learnpersonalloans.com/reviews/true-cost-of-a-personal-loan-2026" style="text-decoration:none;">
+            <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:26px; color:#0f1230; margin:0 0 8px; line-height:1.25;">The True Cost of a Personal Loan: A Worked Example, Beginning to End</p>
+          </a>
+          <p style="font-family:'Inter',sans-serif; font-size:15px; color:#0f1230; margin:0 0 8px; line-height:1.6;">We took a real $25,000 personal-loan offer from SoFi, walked through every line item, every dollar paid, and every assumption. The 'true cost' of borrowing isn't just the interest — it…</p>
+          <p style="font-family:'Inter',sans-serif; font-size:11px; color:#6b7280; margin:0 0 10px;">May 5, 2026</p>
+          <a href="https://www.learnpersonalloans.com/reviews/true-cost-of-a-personal-loan-2026" style="font-family:'Inter',sans-serif; font-size:12px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+        </div>
+<!-- END:INTRO -->
 
       <!-- Section divider -->
       <div style="padding: 28px 32px 0; background: #fbfaf6;" class="cp">
@@ -266,208 +280,9 @@
         </table>
       </div>
 
-      <!-- BEGIN:PRIMARY_REVIEW -->
-      <div style="background: #fbfaf6;">
-        <div style="padding: 24px 32px 0;" class="cp">
-        
-        </div>
+      
 
-        <div style="padding: 22px 32px 8px;" class="cp">
-          <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 10px;">// Today&rsquo;s Lender &mdash; Financial Services Review</span>
-
-          <h2 class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 26px; font-weight: 700; color: #0f1230; margin: 0 0 14px; line-height: 1.22; letter-spacing: -0.3px;">
-            Top 5 Best Financial Services Options <span style="background-image: linear-gradient(180deg, transparent 60%, #fbbf24 60%, #fbbf24 92%, transparent 92%); padding: 0 3px;">in 2026</span>
-          </h2>
-
-          <p style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 15px; font-style: italic; color: #2a2d52; line-height: 1.65; margin: 0 0 22px; padding: 0 0 0 18px; border-left: 3px solid #0f766e;">
-            &ldquo;Personal Loans is our #1 pick for financial services in 2026. Trusted Financial Services.&rdquo;
-          </p>
-
-          <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #0f766e; letter-spacing: 2.2px; text-transform: uppercase; display: block; margin-bottom: 8px;">// APR scale &mdash; where this lender sits</span>
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 6px;">
-            <tr>
-              <td width="13%" height="14" style="background: #e5e7eb; line-height: 14px; font-size: 0;">&nbsp;</td>
-              <td width="44%" height="14" style="background: #0f766e; line-height: 14px; font-size: 0;">&nbsp;</td>
-              <td width="44%" height="14" style="background: #fbbf24; line-height: 14px; font-size: 0;">&nbsp;</td>
-              <td width="0%" height="14" style="background: #e5e7eb; line-height: 14px; font-size: 0;">&nbsp;</td>
-            </tr>
-          </table>
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin: 0 0 22px;">
-            <tr>
-              <td style="text-align: left;">
-                <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #6b7280;">5%</span>
-              </td>
-              <td style="text-align: center;">
-                <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; font-weight: 700; color: #0f1230;">8.99% &ndash; 35.99% APR</span>
-              </td>
-              <td style="text-align: right;">
-                <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #7c2d12;">36% cap</span>
-              </td>
-            </tr>
-          </table>
-
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #fef3c7; border: 1px solid #fbbf24; border-left: 4px solid #7c2d12; margin: 0 0 22px;">
-            <tr>
-              <td style="padding: 18px 22px;">
-                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                  <tr>
-                    <td>
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #7c2d12; letter-spacing: 2.4px; text-transform: uppercase;">// Run the numbers &darr;</span>
-                    </td>
-                    <td style="text-align: right;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #92400e; letter-spacing: 1.5px;">QUICK MATH &middot; 48mo</span>
-                    </td>
-                  </tr>
-                </table>
-                <hr style="border: none; border-top: 1px dashed #d97706; margin: 10px 0 12px;" />
-                <p style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 15px; font-style: italic; color: #451a03; margin: 0 0 12px; line-height: 1.55;">
-                  Borrow <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-style: normal; font-weight: 700;">$12,000.00</span> at <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-style: normal; font-weight: 700;">16.49%</span> APR over <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-style: normal; font-weight: 700;">48 months</span>:
-                </p>
-                <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
-                  <tr>
-                    <td style="padding: 4px 0;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; color: #451a03;">monthly payment</span>
-                    </td>
-                    <td style="padding: 4px 0; text-align: right;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #0f1230;">$343.10</span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 4px 0;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; color: #451a03;">total interest</span>
-                    </td>
-                    <td style="padding: 4px 0; text-align: right;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #7c2d12;">$4,468.91</span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding: 4px 0; border-top: 1px solid #d97706;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; color: #451a03; font-weight: 500;">total paid</span>
-                    </td>
-                    <td style="padding: 4px 0; text-align: right; border-top: 1px solid #d97706;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 14px; font-weight: 700; color: #0f1230;">$16,468.91</span>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-
-          <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #f0fdfa; border: 1px solid #0f766e; border-radius: 2px; margin: 0 0 22px;">
-            <tr>
-              <td style="padding: 16px 20px 6px;">
-                <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #0f766e; letter-spacing: 2.4px; text-transform: uppercase;">// The Bottom Line</span>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding: 0 20px 16px;">
-                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                  <tr>
-                    <td width="50%" style="padding: 8px 0; vertical-align: top;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #134e4a; letter-spacing: 1.5px; text-transform: uppercase; display: block; margin-bottom: 2px;">RATING</span>
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 16px; font-weight: 700; color: #0f1230;">4.8 <span style="font-size: 11px; color: #6b7280;">/ 5.0</span></span>
-                    </td>
-                    <td width="50%" style="padding: 8px 0; vertical-align: top;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #134e4a; letter-spacing: 1.5px; text-transform: uppercase; display: block; margin-bottom: 2px;">APR RANGE</span>
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #0f1230;">8.99%&ndash;35.99%</span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td width="50%" style="padding: 8px 0; vertical-align: top;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #134e4a; letter-spacing: 1.5px; text-transform: uppercase; display: block; margin-bottom: 2px;">FEES</span>
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #0f766e;">1.85–8.99% origination</span>
-                    </td>
-                    <td width="50%" style="padding: 8px 0; vertical-align: top;">
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 500; color: #134e4a; letter-spacing: 1.5px; text-transform: uppercase; display: block; margin-bottom: 2px;">ELIGIBILITY</span>
-                      <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 13px; font-weight: 700; color: #0f1230;">600+ FICO</span>
-                    </td>
-                  </tr>
-                </table>
-                <hr style="border: none; border-top: 1px solid #99f6e4; margin: 8px 0 10px;" />
-                <p style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-style: italic; font-size: 14px; color: #134e4a; line-height: 1.55; margin: 0;">
-                  Verdict: Personal Loans is our #1 pick for financial services in 2026. Trusted Financial Services.
-                </p>
-              </td>
-            </tr>
-          </table>
-
-          <p style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; color: #4b5563; line-height: 1.65; margin: 0 0 18px;">
-            Expert-reviewed and ranked for 2026. Personal Loans leads the pack.
-          </p>
-
-      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="rf-offer-card" style="width: 100%; border-collapse: separate; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; border-radius: 4px; overflow: hidden; box-shadow: 0 8px 22px rgba(55, 48, 163, 0.10); margin: 0 0 18px">
-            <tbody>
-              <tr>
-                <td class="rf-offer-card-row-cell" style="background: #ffffff; padding: 0">
-                  
-                </td>
-              </tr>
-              <tr>
-                <td style="padding: 0; line-height: 0; font-size: 0;">
-                  <div style="border-top: 1px dashed #d6d3d1; height: 0; line-height: 0; font-size: 0;">&nbsp;</div>
-                </td>
-              </tr>
-              <tr>
-                <td class="rf-offer-card-cta-cell" style="background: #fbfaf6; padding: 22px 24px 20px">
-        <p style="margin: 0 0 12px; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 700; color: #3730a3; text-transform: uppercase; letter-spacing: 2px; line-height: 1.4; text-align: center;">
-          // Today's lender &amp;middot; Free quote &amp;middot; 30 seconds
-        </p>
-        <table cellpadding="0" cellspacing="0" role="presentation" align="center" class="rf-cta-btn-table" width="100%" style="width: 100%; margin: 0 auto;">
-          <tr>
-            <td align="center" class="rf-cta-btn-td" style="background: #3730a3; border-radius: 4px; mso-padding-alt: 20px 40px 20px 40px; box-shadow: 0 6px 18px rgba(55, 48, 163, 0.32);">
-              
-            </td>
-          </tr>
-        </table>
-        <p style="margin: 14px 0 0; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 500; color: #6b7280; line-height: 1.5; text-align: center;">
-          // Soft pull, won't affect your credit score
-        </p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="rf-re-eng-card" style="background: #fbfaf6; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; border-radius: 4px; margin: 4px 0 0">
-        <tbody>
-          <tr>
-            <td style="padding: 18px 20px; vertical-align: middle;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td class="rf-re-eng-text" style="vertical-align: middle; padding-right: 18px;">
-                    <div style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; font-weight: 800; color: #3730a3; text-transform: uppercase; letter-spacing: 1.6px; margin-bottom: 4px; line-height: 1.2;">// Ready to start?</div>
-                    <div style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 16px; font-weight: 700; color: #0f1230; line-height: 1.35;">Back to today&rsquo;s lender &mdash; <strong class="display" style="font-family:'Spectral', Georgia, 'Times New Roman', serif;color:#0f1230;">Personal Loans</strong></div>
-                  </td>
-                  <td class="rf-re-eng-btn" align="right" style="vertical-align: middle; white-space: nowrap;">
-                    <table cellpadding="0" cellspacing="0" role="presentation" class="rf-re-eng-btn-table" style="margin: 0;">
-                      <tr>
-                        <td align="center" bgcolor="#3730a3" class="rf-re-eng-btn-td" style="background: #3730a3; border-radius: 6px; mso-padding-alt: 14px 22px 14px 22px; box-shadow: 0 4px 12px rgba(55, 48, 163, 0.32);">
-                          
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-        </div>
-      </div>
-      <!-- END:PRIMARY_REVIEW -->
-
-      <!-- Section divider -->
-      <div style="padding: 28px 32px 0; background: #fbfaf6;" class="cp">
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-          <tr>
-            <td style="border-top: 1px solid #d6d3d1; line-height: 1px; font-size: 0;">&nbsp;</td>
-            <td width="100" style="text-align: center; padding: 0 8px;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2px; text-transform: uppercase;">&sect; Syllabus</span>
-            </td>
-            <td style="border-top: 1px solid #d6d3d1; line-height: 1px; font-size: 0;">&nbsp;</td>
-          </tr>
-        </table>
-      </div>
+      
 
       <!-- ============================================= -->
       <!-- THIS WEEK&rsquo;S LESSONS &mdash; course list -->
@@ -479,193 +294,96 @@
               <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase;">// This Week&rsquo;s Syllabus</span>
             </td>
             <td style="text-align: right;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #9ca3af; letter-spacing: 0.5px;">3 lessons &middot; ~18 min</span>
+              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #697282; letter-spacing: 0.5px;">3 lessons &middot; ~18 min</span>
             </td>
           </tr>
         </table>
 
         <!-- BEGIN:BLOG_ARTICLES -->
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; margin-bottom: 12px;">
-          <tr>
-            <td style="padding: 18px 22px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 8px;">Lesson 01 &middot; Core concept</span>
-                    <a href="https://learnpersonalloans.com/reviews/simple-vs-precomputed-interest-2026" style="text-decoration: none;">
-                      <strong class="display" style="display: block; font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 19px; font-weight: 700; color: #0f1230; line-height: 1.3; margin-bottom: 6px; letter-spacing: -0.2px;">Simple Interest vs Precomputed Interest: The 1% of Loans That Still Use the Latter</strong>
-                    </a>
-                    <span style="display: block; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #4b5563; line-height: 1.55; margin-bottom: 10px;">All major personal loan lenders use simple interest. A small slice of specialty lenders still use precomputed (or 'add-on') interest, where the total interest is calculated up front and locked in. The difference matters most if you ever pay off early.</span>
-                    <a href="https://learnpersonalloans.com/reviews/simple-vs-precomputed-interest-2026" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #0f766e; letter-spacing: 1.5px; text-decoration: none;">~8 min &middot; read &rarr;</a>
-                  </td>
-                  <td valign="top" width="44" style="padding-left: 16px; text-align: right;">
-                    <span class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #fbbf24; line-height: 1;">§</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; margin-bottom: 12px;">
-          <tr>
-            <td style="padding: 18px 22px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 8px;">Lesson 02 &middot; Decision frame</span>
-                    <a href="https://learnpersonalloans.com/reviews/true-cost-of-a-personal-loan-2026" style="text-decoration: none;">
-                      <strong class="display" style="display: block; font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 19px; font-weight: 700; color: #0f1230; line-height: 1.3; margin-bottom: 6px; letter-spacing: -0.2px;">The True Cost of a Personal Loan: A Worked Example, Beginning to End</strong>
-                    </a>
-                    <span style="display: block; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #4b5563; line-height: 1.55; margin-bottom: 10px;">We took a real $25,000 personal-loan offer from SoFi, walked through every line item, every dollar paid, and every assumption. The 'true cost' of borrowing isn't just the interest — it includes opportunity cost, time, and the rate you'd otherwise have paid.</span>
-                    <a href="https://learnpersonalloans.com/reviews/true-cost-of-a-personal-loan-2026" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #0f766e; letter-spacing: 1.5px; text-decoration: none;">~7 min &middot; read &rarr;</a>
-                  </td>
-                  <td valign="top" width="44" style="padding-left: 16px; text-align: right;">
-                    <span class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #fbbf24; line-height: 1;">∑</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; margin-bottom: 12px;">
-          <tr>
-            <td style="padding: 18px 22px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 8px;">Lesson 03 &middot; Field guide</span>
-                    <a href="https://learnpersonalloans.com/reviews/lendingclub-personal-loan-2025" style="text-decoration: none;">
-                      <strong class="display" style="display: block; font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 19px; font-weight: 700; color: #0f1230; line-height: 1.3; margin-bottom: 6px; letter-spacing: -0.2px;">LendingClub Personal Loan: The Marketplace Pivot, Reviewed</strong>
-                    </a>
-                    <span style="display: block; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #4b5563; line-height: 1.55; margin-bottom: 10px;">LendingClub spent a decade as a peer-to-peer marketplace and is now a regulated bank. The product is fine. The fee structure is competitive but not market-leading. We'd take Discover, SoFi, or even Best Egg first in most scenarios.</span>
-                    <a href="https://learnpersonalloans.com/reviews/lendingclub-personal-loan-2025" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #0f766e; letter-spacing: 1.5px; text-decoration: none;">~6 min &middot; read &rarr;</a>
-                  </td>
-                  <td valign="top" width="44" style="padding-left: 16px; text-align: right;">
-                    <span class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #fbbf24; line-height: 1;">∞</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; margin-bottom: 12px;">
-          <tr>
-            <td style="padding: 18px 22px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 8px;">Lesson 04 &middot; Worked example</span>
-                    <a href="https://learnpersonalloans.com/reviews/effective-vs-nominal-apr-2026" style="text-decoration: none;">
-                      <strong class="display" style="display: block; font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 19px; font-weight: 700; color: #0f1230; line-height: 1.3; margin-bottom: 6px; letter-spacing: -0.2px;">Effective vs Nominal APR: The Number Your Lender Doesn't Show</strong>
-                    </a>
-                    <span style="display: block; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #4b5563; line-height: 1.55; margin-bottom: 10px;">Nominal APR is what's printed on your loan agreement. Effective APR is what you actually pay, accounting for compounding and fees. The Truth in Lending Act requires lenders to compute APR a specific way — and that computation systematically understates short-term loan costs. Here's why.</span>
-                    <a href="https://learnpersonalloans.com/reviews/effective-vs-nominal-apr-2026" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #0f766e; letter-spacing: 1.5px; text-decoration: none;">~6 min &middot; read &rarr;</a>
-                  </td>
-                  <td valign="top" width="44" style="padding-left: 16px; text-align: right;">
-                    <span class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #fbbf24; line-height: 1;">Δ</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border: 1px solid #d6d3d1; border-left: 4px solid #3730a3; margin-bottom: 12px;">
-          <tr>
-            <td style="padding: 18px 22px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 8px;">Lesson 05 &middot; Case study</span>
-                    <a href="https://learnpersonalloans.com/reviews/joint-personal-loans-2025" style="text-decoration: none;">
-                      <strong class="display" style="display: block; font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 19px; font-weight: 700; color: #0f1230; line-height: 1.3; margin-bottom: 6px; letter-spacing: -0.2px;">Joint Personal Loans: When Two Names on the Loan Helps Both Sides</strong>
-                    </a>
-                    <span style="display: block; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; color: #4b5563; line-height: 1.55; margin-bottom: 10px;">A joint personal loan has both applicants legally and financially responsible for repayment. Most lenders don't offer them. The few that do — LightStream, LendingClub, Achieve, Prosper — fill a real niche for couples and family members borrowing together. Here's the structure and the trade-offs.</span>
-                    <a href="https://learnpersonalloans.com/reviews/joint-personal-loans-2025" class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 500; color: #0f766e; letter-spacing: 1.5px; text-decoration: none;">~6 min &middot; read &rarr;</a>
-                  </td>
-                  <td valign="top" width="44" style="padding-left: 16px; text-align: right;">
-                    <span class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #fbbf24; line-height: 1;">Σ</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; border-bottom:1px solid #e5e7eb;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-2026-rate-update" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">SoFi 2026 Update: APR Floor Drops, Origination Stays at Zero</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">SoFi cut its prime-borrower APR floor from 8.99% to 8.49% in March 2026. The no-fee structure stays. Funding speed is unchanged. We re-tested the soft-pull quote and verified the new…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">May 2, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-2026-rate-update" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-2026-rate-update"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="SoFi 2026 Update: APR Floor Drops, Origination Sta" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; border-bottom:1px solid #e5e7eb;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/effective-vs-nominal-apr-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">Effective vs Nominal APR: The Number Your Lender Doesn&#x27;t Show</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">Nominal APR is what's printed on your loan agreement. Effective APR is what you actually pay, accounting for compounding and fees. The Truth in Lending Act requires lenders to compute…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Apr 22, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/effective-vs-nominal-apr-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/effective-vs-nominal-apr-2026"><img src="https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="Effective vs Nominal APR: The Number Your Lender D" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; border-bottom:1px solid #e5e7eb;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/personal-loan-business-launch-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">Personal Loan to Launch a Business: When SBA Won&#x27;t Move Fast Enough</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">Personal loans for business launch are a common workaround when SBA approvals are slow and friends-and-family rounds are unavailable. The math can work — but the structural and tax…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Apr 15, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/personal-loan-business-launch-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/personal-loan-business-launch-2026"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="Personal Loan to Launch a Business: When SBA Won&#" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; ">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-vs-lightstream-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">SoFi vs LightStream 2026: A Head-to-Head, Run on Real Numbers</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">Two no-fee, prime-tier personal-loan lenders. Both excellent. Picking between them isn't about features — it's about which one will actually quote you the better rate, on your specific…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Apr 10, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-vs-lightstream-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/sofi-vs-lightstream-2026"><img src="https://images.unsplash.com/photo-1521737711867-e3b97375f902?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="SoFi vs LightStream 2026: A Head-to-Head, Run on R" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
         </table>
       <!-- END:BLOG_ARTICLES -->
       </div>
 
-      <!-- Section divider -->
-      <div style="padding: 28px 32px 0; background: #fbfaf6;" class="cp">
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-          <tr>
-            <td style="border-top: 1px solid #d6d3d1; line-height: 1px; font-size: 0;">&nbsp;</td>
-            <td width="120" style="text-align: center; padding: 0 8px;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 9px; font-weight: 700; color: #3730a3; letter-spacing: 2px; text-transform: uppercase;">&sect; Lab partner</span>
-            </td>
-            <td style="border-top: 1px solid #d6d3d1; line-height: 1px; font-size: 0;">&nbsp;</td>
-          </tr>
-        </table>
-      </div>
+      
 
-      <!-- BEGIN:SECONDARY_REVIEW -->
-      <div style="padding: 22px 32px 8px; background: #fbfaf6;" class="cp">
-        <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; font-weight: 700; color: #0f766e; letter-spacing: 2.4px; text-transform: uppercase; display: block; margin-bottom: 10px;">// Also on the reading list &middot; Bath Remodeling</span>
-
-        <h2 class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 22px; font-weight: 700; color: #0f1230; margin: 0 0 12px; line-height: 1.25; letter-spacing: -0.3px;">
-          Top 5 Best Bath Remodeling Options <span style="background-image: linear-gradient(180deg, transparent 60%, #fbbf24 60%, #fbbf24 92%, transparent 92%); padding: 0 3px;">in 2026</span>
-        </h2>
-
-        <p style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 15px; font-style: italic; color: #2a2d52; line-height: 1.65; margin: 0 0 18px; padding: 0 0 0 18px; border-left: 3px solid #0f766e;">
-          &ldquo;Jacuzzi Bath Remodel is our #1 pick for bath remodeling in 2026. Transform your bath in as little as one day. Waiving all installation costs (limited time).&rdquo;
-        </p>
-
-      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="rf-offer-card" style="width: 100%; border-collapse: separate; border: 1px solid #d6d3d1; border-left: 4px solid #0f766e; border-radius: 4px; overflow: hidden; box-shadow: 0 6px 18px rgba(15, 118, 110, 0.10); margin: 0 0 18px">
-            <tbody>
-              <tr>
-                <td class="rf-offer-card-row-cell" style="background: #ffffff; padding: 0">
-                  
-                    <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                      <tr>
-                        <td style="width: 84px; padding: 16px; vertical-align: middle;">
-                          <img src="https://img.projectjarvis.io/images/review-forge/2026/05/jacuzzi_logo_1777929574598.png" alt="Jacuzzi Bath Remodel" width="60" style="width: 60px; height: 60px; display: block; border-radius: 4px; border: 0;" />
-                        </td>
-                        <td style="padding: 16px 16px 16px 0; vertical-align: middle;">
-                          <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 9px; font-weight: 700; color: #0f766e; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 4px;">Reviewed &middot; 4.8/5</span>
-                          <strong class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 17px; font-weight: 700; color: #0f1230; display: block; margin-bottom: 4px; letter-spacing: -0.2px;">Jacuzzi Bath Remodel &mdash; Bath Remodeling</strong>
-                          <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; color: #4b5563; line-height: 1.5;">7.49%–25.99% APR · $5k–$100k · 660+ FICO</span>
-                        </td>
-                      </tr>
-                    </table>
-                  
-                </td>
-              </tr>
-              <tr>
-                <td style="padding: 0; line-height: 0; font-size: 0;">
-                  <div style="border-top: 1px dashed #d6d3d1; height: 0; line-height: 0; font-size: 0;">&nbsp;</div>
-                </td>
-              </tr>
-              <tr>
-                <td class="rf-offer-card-cta-cell" style="background: #fbfaf6; padding: 22px 24px 20px">
-        <p style="margin: 0 0 12px; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 700; color: #0f766e; text-transform: uppercase; letter-spacing: 2px; line-height: 1.4; text-align: center;">
-          // Also reviewed &amp;middot; Free quote &amp;middot; 30 seconds
-        </p>
-        <table cellpadding="0" cellspacing="0" role="presentation" align="center" class="rf-cta-btn-table" width="100%" style="width: 100%; margin: 0 auto;">
-          <tr>
-            <td align="center" class="rf-cta-btn-td" style="background: #0f766e; border-radius: 4px; mso-padding-alt: 18px 36px 18px 36px; box-shadow: 0 6px 18px rgba(15, 118, 110, 0.30);">
-              
-                Get a Free Quote &rarr;
-              
-            </td>
-          </tr>
-        </table>
-        <p style="margin: 14px 0 0; font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 12px; font-weight: 500; color: #6b7280; line-height: 1.5; text-align: center;">
-          // Soft pull, won't affect your credit score
-        </p>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-      </div>
-      <!-- END:SECONDARY_REVIEW -->
+      
 
       <!-- Section divider -->
       <div style="padding: 28px 32px 0; background: #fbfaf6;" class="cp">
@@ -690,70 +408,70 @@
               <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 700; color: #3730a3; letter-spacing: 2.4px; text-transform: uppercase;">// Office Hours &mdash; Further Reading</span>
             </td>
             <td style="text-align: right;">
-              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #9ca3af; letter-spacing: 0.5px;">from the archive</span>
+              <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #697282; letter-spacing: 0.5px;">from the archive</span>
             </td>
           </tr>
         </table>
 
         <!-- BEGIN:MORE_ARTICLES -->
-        <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background: #ffffff; border-top: 1px solid #d6d3d1;">
-          <tr>
-            <td style="padding: 14px 4px; border-bottom: 1px solid #e5e7eb;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top" width="50" style="padding: 2px 12px 0 14px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; font-weight: 700; color: #3730a3;">[04]</span>
-                  </td>
-                  <td valign="top">
-                    <a href="https://learnpersonalloans.com/reviews/sofi-vs-lightstream-2026" style="text-decoration: none;">
-                      <strong class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #0f1230; line-height: 1.4; letter-spacing: -0.1px; display: block;">SoFi vs LightStream 2026: A Head-to-Head, Run on Real Numbers</strong>
-                    </a>
-                  </td>
-                  <td valign="top" width="56" style="text-align: right; padding: 2px 14px 0 8px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; color: #6b7280;">~4 min</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 14px 4px; border-bottom: 1px solid #e5e7eb;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top" width="50" style="padding: 2px 12px 0 14px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; font-weight: 700; color: #3730a3;">[05]</span>
-                  </td>
-                  <td valign="top">
-                    <a href="https://learnpersonalloans.com/reviews/best-loans-thin-file-2026" style="text-decoration: none;">
-                      <strong class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #0f1230; line-height: 1.4; letter-spacing: -0.1px; display: block;">Best Personal Loans for Thin Credit Files: When You're New to Credit</strong>
-                    </a>
-                  </td>
-                  <td valign="top" width="56" style="text-align: right; padding: 2px 14px 0 8px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; color: #6b7280;">~6 min</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 14px 4px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td valign="top" width="50" style="padding: 2px 12px 0 14px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 11px; font-weight: 700; color: #3730a3;">[06]</span>
-                  </td>
-                  <td valign="top">
-                    <a href="https://learnpersonalloans.com/reviews/cash-out-refi-vs-personal-loan-2026" style="text-decoration: none;">
-                      <strong class="display" style="font-family: 'Spectral', Georgia, 'Times New Roman', serif; font-size: 14px; font-weight: 700; color: #0f1230; line-height: 1.4; letter-spacing: -0.1px; display: block;">Cash-Out Refinance vs Personal Loan: When to Touch the Mortgage</strong>
-                    </a>
-                  </td>
-                  <td valign="top" width="56" style="text-align: right; padding: 2px 14px 0 8px;">
-                    <span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, 'Courier New', monospace; font-size: 10px; color: #6b7280;">~4 min</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; border-bottom:1px solid #e5e7eb;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/secured-personal-loans-pros-cons-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">Secured Personal Loans: An Updated 2026 Look at Pros, Cons, and Math</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">A 2026 update on secured personal loans: which lenders offer them, what's changed in pricing, and when the rate improvement is worth the asset risk. The market has tightened on secured…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Apr 2, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/secured-personal-loans-pros-cons-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/secured-personal-loans-pros-cons-2026"><img src="https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="Secured Personal Loans: An Updated 2026 Look at Pr" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; border-bottom:1px solid #e5e7eb;">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/cash-out-refi-vs-personal-loan-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">Cash-Out Refinance vs Personal Loan: When to Touch the Mortgage</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">A cash-out refinance pulls home equity into liquid cash by replacing your existing mortgage with a larger one. Rates can be lower than personal loans, but closing costs are real, the…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Mar 26, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/cash-out-refi-vs-personal-loan-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/cash-out-refi-vs-personal-loan-2026"><img src="https://images.unsplash.com/photo-1497366216548-37526070297c?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="Cash-Out Refinance vs Personal Loan: When to Touch" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="nl-row" style="padding:15px 32px; ">
+                <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td style="vertical-align:top; padding-right:12px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/best-loans-after-bankruptcy-2026" style="text-decoration:none;">
+                        <p style="font-family:'Plus Jakarta Sans',Georgia,serif; font-size:17px; color:#0f1230; margin:0 0 5px; line-height:1.3;">Best Personal Loans After Bankruptcy: Realistic Options at 24+ Months Out</p>
+                      </a>
+                      <p style="font-family:'Inter',sans-serif; font-size:13px; color:#0f1230; margin:0 0 6px; line-height:1.55;">A bankruptcy stays on your credit report for 7-10 years, but its impact on your loan options drops dramatically after the 24-month mark. We tested the lenders willing to underwrite…</p>
+                      <p style="font-family:'Inter',sans-serif; font-size:10px; color:#6b7280; margin:0 0 6px;">Mar 12, 2026</p>
+                      <a href="https://www.learnpersonalloans.com/reviews/best-loans-after-bankruptcy-2026" style="font-family:'Inter',sans-serif; font-size:11px; font-weight:700; color:#3730a3; letter-spacing:1px; text-decoration:none;">READ THE FULL BLOG &rarr;</a>
+                    </td>
+                    <td class="nl-thumb" style="vertical-align:top; width:104px;">
+                      <a href="https://www.learnpersonalloans.com/reviews/best-loans-after-bankruptcy-2026"><img src="https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1600&amp;auto=format&amp;fit=crop&amp;q=70" width="104" alt="Best Personal Loans After Bankruptcy: Realistic Op" style="display:block; width:104px; height:78px; object-fit:cover;"></a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
         </table>
       <!-- END:MORE_ARTICLES -->
       </div>
@@ -772,11 +490,9 @@
               <table cellpadding="0" cellspacing="0" role="presentation">
                 <tr>
                   <td style="padding-right: 8px; background-color: #3730a3; border-radius: 2px;">
-                    <a href="{{ system.unsubscribe_url }}" class="mono" style="display: inline-block; padding: 9px 18px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; color: #ffffff; text-decoration: none; text-transform: uppercase; letter-spacing: 1.4px;">drop course</a>
+                    <a href="{{ system.unsubscribe_url }}" class="mono" style="display: inline-block; padding: 9px 18px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; color: #ffffff; text-decoration: none; text-transform: uppercase; letter-spacing: 1.4px;">Unsubscribe</a>
                   </td>
-                  <td style="border: 1px solid #3730a3; border-radius: 2px;">
-                    <a href="{{ system.preferences_url }}" class="mono" style="display: inline-block; padding: 8px 18px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; color: #3730a3; text-decoration: none; text-transform: uppercase; letter-spacing: 1.4px;">change schedule</a>
-                  </td>
+                  
                 </tr>
               </table>
             </td>
@@ -798,7 +514,7 @@
             <tr>
               <td class="footer-col" width="50%" valign="top" style="padding-right: 14px;">
                 <span class="display" style="font-family: 'Spectral', Georgia, serif; font-size: 13px; font-weight: 700; color: #ffffff; display: block; margin-bottom: 8px;">Personal Loans</span>
-                <a href="https://learnpersonalloans.com/category/consolidation" style="text-decoration: none; display: block; padding: 4px 0;">
+                <a href="https://www.learnpersonalloans.com/category/consolidation" style="text-decoration: none; display: block; padding: 4px 0;">
                   <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
                     <tr>
                       <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">debt consolidation</span></td>
@@ -806,7 +522,7 @@
                     </tr>
                   </table>
                 </a>
-                <a href="https://learnpersonalloans.com/category/home-improvement" style="text-decoration: none; display: block; padding: 4px 0;">
+                <a href="https://www.learnpersonalloans.com/category/home-improvement" style="text-decoration: none; display: block; padding: 4px 0;">
                   <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
                     <tr>
                       <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">home improvement</span></td>
@@ -814,7 +530,7 @@
                     </tr>
                   </table>
                 </a>
-                <a href="https://learnpersonalloans.com/category/medical" style="text-decoration: none; display: block; padding: 4px 0;">
+                <a href="https://www.learnpersonalloans.com/category/medical" style="text-decoration: none; display: block; padding: 4px 0;">
                   <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
                     <tr>
                       <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">medical</span></td>
@@ -825,31 +541,7 @@
               </td>
               <td class="footer-col" width="50%" valign="top" style="padding-left: 14px;">
                 <span class="display" style="font-family: 'Spectral', Georgia, serif; font-size: 13px; font-weight: 700; color: #ffffff; display: block; margin-bottom: 8px;">Foundations</span>
-                
-                  <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
-                    <tr>
-                      <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">apr &amp; rates 101</span></td>
-                      <td style="text-align: right;"><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8;">[31]</span></td>
-                    </tr>
-                  </table>
-                
-                
-                  <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
-                    <tr>
-                      <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">calculators</span></td>
-                      <td style="text-align: right;"><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8;">[09]</span></td>
-                    </tr>
-                  </table>
-                
-                
-                  <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
-                    <tr>
-                      <td><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #c7d2fe;">building credit</span></td>
-                      <td style="text-align: right;"><span class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8;">[22]</span></td>
-                    </tr>
-                  </table>
-                
-              </td>
+                </td>
             </tr>
           </table>
 
@@ -874,21 +566,18 @@
           </table>
 
           <p style="font-family: 'Inter', sans-serif; font-size: 11px; color: #a5b4fc; margin: 0 0 14px; line-height: 1.6;">
-            APR ranges, fees, and eligibility shown are taken from lender disclosures and are subject to change. Worked examples assume a representative borrower and standard amortization. Always confirm terms with the lender before applying. This is education, not financial advice.
           </p>
 
-          <p class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8; margin: 0 0 6px; line-height: 1.5; letter-spacing: 0.3px;">&copy; {{ system.current_year }} Learn Personal Loans &mdash; All rights reserved. We may earn a commission from lender partners.</p>
+          <p class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8; margin: 0 0 6px; line-height: 1.5; letter-spacing: 0.3px;"></p>
           <p class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #818cf8; margin: 0 0 10px; letter-spacing: 0.3px;">784 S. Clearwater Loop, Ste. R, Post Falls, ID 83854</p>
 
           <p class="mono" style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #a5b4fc; margin: 0; letter-spacing: 0.5px;">
-            <a href="https://learnpersonalloans.com/privacy" style="color: #fbbf24; text-decoration: none;">privacy</a>
-            <span style="color: #4338ca; margin: 0 6px;">/</span>
-            <a href="https://learnpersonalloans.com/terms" style="color: #fbbf24; text-decoration: none;">terms</a>
-            <span style="color: #4338ca; margin: 0 6px;">/</span>
+            <a href="https://www.learnpersonalloans.com/privacy" style="color: #fbbf24; text-decoration: none;">privacy</a>
+            <span style="color: #8a83de; margin: 0 6px;">/</span>
+            <a href="https://www.learnpersonalloans.com/terms" style="color: #fbbf24; text-decoration: none;">terms</a>
+            <span style="color: #8a83de; margin: 0 6px;">/</span>
             <a href="{{ system.unsubscribe_url }}" style="color: #fbbf24; text-decoration: none;">unsubscribe</a>
-            <span style="color: #4338ca; margin: 0 6px;">/</span>
-            delete my data
-          </p>
+            </p>
         </div>
       </div>
 
