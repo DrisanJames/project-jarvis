@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -417,10 +418,12 @@ func TestWindowForSlot(t *testing.T) {
 
 func TestHandleSendDayHostHealth_AllPass(t *testing.T) {
 	svc, mock := newPromotedSvc(t)
+	// Attested moments ago — within the current MDT send-day, so it stays "pass".
+	fresh := time.Now()
 	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
 		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
-			AddRow("server_a", "pass", "2026-05-12T00:00:00Z", "ok").
-			AddRow("server_b", "pass", "2026-05-12T00:00:00Z", "ok"))
+			AddRow("server_a", "pass", fresh, "ok").
+			AddRow("server_b", "pass", fresh, "ok"))
 
 	req := httptest.NewRequest("GET", "/x", nil)
 	rec := httptest.NewRecorder()
@@ -437,12 +440,64 @@ func TestHandleSendDayHostHealth_AllPass(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestHandleSendDayHostHealth_OneFailingFails(t *testing.T) {
+func TestHandleSendDayHostHealth_StaleAttestationDegrades(t *testing.T) {
 	svc, mock := newPromotedSvc(t)
+	// Attested two days ago — before the current MDT send-day regardless of
+	// the test machine's timezone. The persisted "pass" must degrade to
+	// "stale" and the gate must NOT be ok (yesterday's checkbox is not
+	// today's host-health check).
+	old := time.Now().Add(-48 * time.Hour)
 	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
 		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
-			AddRow("server_a", "pass", "2026-05-12T00:00:00Z", "").
-			AddRow("server_b", "fail", "2026-05-12T00:00:00Z", "coredump"))
+			AddRow("server_a", "pass", old, "ok").
+			AddRow("server_b", "pass", old, "ok"))
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	rec := httptest.NewRecorder()
+	svc.HandleSendDayHostHealth(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.False(t, resp["ok"].(bool))
+	servers := resp["servers"].(map[string]interface{})
+	sa := servers["server_a"].(map[string]interface{})
+	sb := servers["server_b"].(map[string]interface{})
+	assert.Equal(t, "stale", sa["state"])
+	assert.Equal(t, "stale", sb["state"])
+	assert.Contains(t, sa["message"], "re-attest")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleSendDayHostHealth_PassWithoutTimestampIsStale(t *testing.T) {
+	svc, mock := newPromotedSvc(t)
+	// A "pass" with no last_checked_at cannot prove freshness → stale.
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", nil, "ok").
+			AddRow("server_b", "pass", time.Now(), "ok"))
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	rec := httptest.NewRecorder()
+	svc.HandleSendDayHostHealth(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.False(t, resp["ok"].(bool))
+	servers := resp["servers"].(map[string]interface{})
+	assert.Equal(t, "stale", servers["server_a"].(map[string]interface{})["state"])
+	assert.Equal(t, "pass", servers["server_b"].(map[string]interface{})["state"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleSendDayHostHealth_OneFailingFails(t *testing.T) {
+	svc, mock := newPromotedSvc(t)
+	fresh := time.Now()
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", fresh, "").
+			AddRow("server_b", "fail", fresh, "coredump"))
 
 	req := httptest.NewRequest("GET", "/x", nil)
 	rec := httptest.NewRecorder()
@@ -470,6 +525,14 @@ func TestHandleSendDayHostHealth_EmptyTableDefaultsToUnknownAndFails(t *testing.
 	servers := resp["servers"].(map[string]interface{})
 	assert.Equal(t, "unknown", servers["server_a"].(map[string]interface{})["state"])
 	assert.Equal(t, "unknown", servers["server_b"].(map[string]interface{})["state"])
+}
+
+func TestStartOfMDTSendDay_BoundaryIsDenverMidnight(t *testing.T) {
+	// 2026-07-13 03:00 UTC = 2026-07-12 21:00 MDT (UTC-6 in July) — still the
+	// Jul 12 send-day. Its day-start is Jul 12 00:00 MDT = Jul 12 06:00 UTC.
+	in := time.Date(2026, 7, 13, 3, 0, 0, 0, time.UTC)
+	got := startOfMDTSendDay(in)
+	assert.Equal(t, time.Date(2026, 7, 12, 6, 0, 0, 0, time.UTC).Unix(), got.Unix())
 }
 
 func TestHandleSendDayHostHealthAttest_HappyPath(t *testing.T) {

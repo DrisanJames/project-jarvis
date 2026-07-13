@@ -20,7 +20,6 @@ import { colors } from '../shared/theme';
 import { GateStrip } from './send-day-planner/GateStrip';
 import { BrandWaveGrid } from './BrandWaveGrid';
 import {
-  BRANDS,
   GATE_C_REQUIRED_COMMIT,
   HEALTH_ENDPOINT,
   PAGE_VERSION,
@@ -28,7 +27,7 @@ import {
   SEND_DAY_HOST_HEALTH_ENDPOINT,
   SEND_DAY_PREFLIGHT_BATCH_ENDPOINT,
   SEND_DAY_VOLUME_RECONCILIATION_ENDPOINT,
-  SENDING_DOMAIN,
+  SENDING_DOMAINS_ENDPOINT,
   WAVE_SCHEDULER_HEALTH_ENDPOINT,
 } from './send-day-planner/constants';
 import type { GateState } from './send-day-planner/types';
@@ -61,7 +60,18 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
     setGatesLoading(true);
     try {
       const headers = { 'X-Organization-ID': orgId };
-      const domains = BRANDS.map(b => SENDING_DOMAIN[b]);
+      // Gate D domain list — LIVE from the sending-domains endpoint, never
+      // the stale 4-brand constants (which under-preflighted the 16-brand
+      // fleet). Fail-closed: if the fetch fails, the preflight POST carries
+      // an empty list and the gate reds instead of silently passing 4/4.
+      const domainsRes = await fetch(SENDING_DOMAINS_ENDPOINT, { headers })
+        .then(r => r.json())
+        .catch(() => null);
+      const domains: string[] = Array.isArray(domainsRes?.domains)
+        ? domainsRes.domains
+            .map((d: { domain?: string }) => d?.domain ?? '')
+            .filter((d: string) => d !== '')
+        : [];
       const [hostRes, healthRes, ramprRes, prefRes, sysRes] = await Promise.allSettled([
         fetch(SEND_DAY_HOST_HEALTH_ENDPOINT, { headers }).then(r => r.json()),
         fetch(WAVE_SCHEDULER_HEALTH_ENDPOINT, { headers }).then(r => r.json()),
@@ -84,8 +94,12 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
           expired: healthRes.value.summary?.expired ?? 0,
           due_now: healthRes.value.summary?.due_now ?? 0,
         } : null,
+        // Gate C — the server's build-time flag is the truth source
+        // (health_handler.go deliveryBuildFlags): a sha string can't prove
+        // ancestry, but build_contains[a92af78] only exists in builds whose
+        // tree contains the dead-letter classifier fix. Absent/false = red.
         gateC: sysRes.status === 'fulfilled' ? {
-          passes: typeof sysRes.value?.build?.git_sha === 'string',
+          passes: sysRes.value?.build_contains?.[GATE_C_REQUIRED_COMMIT] === true,
           git_sha: sysRes.value?.build?.git_sha ?? '',
           required_commit: GATE_C_REQUIRED_COMMIT,
         } : null,

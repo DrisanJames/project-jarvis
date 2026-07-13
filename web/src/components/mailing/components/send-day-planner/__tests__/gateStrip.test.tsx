@@ -55,6 +55,29 @@ describe('GateStrip', () => {
     expect(btn).toHaveTextContent(/Refreshing/);
   });
 
+  it('Gate A stale attestation renders amber (needs attestation), never pass', () => {
+    const state = fullPass();
+    // Server degraded yesterday's pass → stale (send_day_handlers.go); the
+    // chip must NOT be green and must NOT be a scary red fail either.
+    state.gateA = {
+      passes: false,
+      servers: { server_a: { state: 'stale' }, server_b: { state: 'stale' } },
+    };
+    render(<GateStrip state={state} onToggleAuditReviewed={() => {}} onRefresh={() => {}} loading={false} />);
+    expect(screen.getAllByText(/^needs attestation$/).length).toBe(1);
+    expect(screen.getAllByText(/^pass$/).length).toBe(5);
+    expect(screen.queryByText(/^fail$/)).toBeNull();
+    expect(screen.getByText(/attestation stale/)).toBeInTheDocument();
+  });
+
+  it('Gate C shows missing required commit when the build flag is absent', () => {
+    const state = fullPass();
+    state.gateC = { passes: false, git_sha: 'deadbeef000', required_commit: 'a92af78' };
+    render(<GateStrip state={state} onToggleAuditReviewed={() => {}} onRefresh={() => {}} loading={false} />);
+    expect(screen.getByText(/missing a92af78/)).toBeInTheDocument();
+    expect(screen.getAllByText(/^fail$/).length).toBe(1);
+  });
+
   it('Gate E click invokes onToggleAuditReviewed', () => {
     const onToggle = vi.fn();
     render(<GateStrip state={fullPass()} onToggleAuditReviewed={onToggle} onRefresh={() => {}} loading={false} />);

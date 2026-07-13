@@ -19,6 +19,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,7 +35,7 @@ const (
 	VersionSendDayBannedCreatives      = "1.0"
 	VersionSendDayPreflightBatch       = "1.0"
 	VersionSendDayCreativeResolve      = "1.0"
-	VersionSendDayHostHealth           = "1.0"
+	VersionSendDayHostHealth           = "1.1"
 )
 
 // ─── Phase 1b — Volume reconciliation (Gate F) ───────────────────────────────
@@ -362,7 +363,11 @@ func (s *PMTACampaignService) HandleSendDayPreflightBatch(w http.ResponseWriter,
 //     guidance: string   // SSH command to run if checkbox needs refresh
 //   }
 //
-// State values: "pass" | "stale" | "fail" | "unknown".
+// State values: "pass" | "stale" | "fail" | "unknown". Gate A is a DAILY
+// check (pmtad uptime, coredumps, acct-forward sha) — an attestation from a
+// prior MDT send-day proves nothing about today, so a persisted "pass" whose
+// last_checked_at predates the current MDT send-day is degraded to "stale"
+// at read time. The canvas renders stale as amber and re-prompts the operator.
 func (s *AdvancedMailingService) HandleSendDayHostHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -379,10 +384,11 @@ func (s *AdvancedMailingService) HandleSendDayHostHealth(w http.ResponseWriter, 
 	// Best-effort read from mailing_send_day_gate_attestations. Absent
 	// table or empty row = "unknown" (the canvas will then prompt the
 	// operator to check off Gate A explicitly).
+	dayStart := startOfMDTSendDay(time.Now())
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT server_key,
 		       COALESCE(state, 'unknown'),
-		       COALESCE(last_checked_at::text, ''),
+		       last_checked_at,
 		       COALESCE(message, '')
 		FROM mailing_send_day_gate_attestations
 		WHERE gate = 'A'
@@ -390,14 +396,26 @@ func (s *AdvancedMailingService) HandleSendDayHostHealth(w http.ResponseWriter, 
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var key, state, ts, msg string
+			var key, state, msg string
+			var ts sql.NullTime
 			if scanErr := rows.Scan(&key, &state, &ts, &msg); scanErr != nil {
 				continue
 			}
-			if key == "server_a" || key == "server_b" {
-				servers[key] = serverState{
-					State: state, LastCheckedAt: ts, Message: msg,
-				}
+			if key != "server_a" && key != "server_b" {
+				continue
+			}
+			lastChecked := ""
+			if ts.Valid {
+				lastChecked = ts.Time.UTC().Format(time.RFC3339)
+			}
+			// Freshness degrade: a "pass" only holds for the send-day it was
+			// attested on. Missing timestamp = unprovable freshness = stale.
+			if state == "pass" && (!ts.Valid || ts.Time.Before(dayStart)) {
+				state = "stale"
+				msg = "attestation predates the current MDT send-day — re-verify both servers over SSH and re-attest"
+			}
+			servers[key] = serverState{
+				State: state, LastCheckedAt: lastChecked, Message: msg,
 			}
 		}
 	}
@@ -494,6 +512,19 @@ func (s *AdvancedMailingService) HandleSendDayHostHealthAttest(w http.ResponseWr
 		"server_key":  body.ServerKey,
 		"state":       body.State,
 	})
+}
+
+// startOfMDTSendDay returns midnight of the supplied instant's calendar day
+// in America/Denver — the canonical send-day boundary (see file header).
+// Falls back to UTC if the tz database is unavailable (containers ship
+// tzdata; belt-and-braces only).
+func startOfMDTSendDay(now time.Time) time.Time {
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		loc = time.UTC
+	}
+	n := now.In(loc)
+	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
 }
 
 // orderedKeys is a small helper so the JSON output of map-keyed structures

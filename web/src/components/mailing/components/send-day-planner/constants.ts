@@ -7,7 +7,7 @@
 
 import type { Brand, ISP, Slot } from './types';
 
-export const PAGE_VERSION = '2.0';
+export const PAGE_VERSION = '2.1';
 
 export const BRANDS: Brand[] = ['DB', 'QF', 'HT', 'MH'];
 
@@ -135,6 +135,11 @@ export const SEND_DAY_HOST_HEALTH_ENDPOINT = '/api/mailing/send-day/host-health'
 export const SEND_DAY_HOST_HEALTH_ATTEST_ENDPOINT = '/api/mailing/send-day/host-health/attest';
 export const WAVE_SCHEDULER_HEALTH_ENDPOINT = '/api/mailing/analytics/wave-scheduler-health';
 export const HEALTH_ENDPOINT = '/health';
+
+// Gate D domain source — the live fleet, NOT the 4-brand board above.
+// (BRANDS/SENDING_DOMAIN mirror the May-12 board and predate the 16-brand
+// fleet; Gate D must preflight every active sending domain.)
+export const SENDING_DOMAINS_ENDPOINT = '/api/mailing/pmta-campaign/sending-domains';
 
 // Required commit SHA prefix for Gate C — the IsPMTATransient classifier
 // fix. Code in production must contain this commit or later.

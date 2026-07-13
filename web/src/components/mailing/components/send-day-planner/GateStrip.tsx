@@ -121,14 +121,25 @@ export const GateStrip: React.FC<GateStripProps> = ({ state, onToggleAuditReview
         .map(([k]) => k.replace('server_', 'server '));
       return `failure reported on ${failed.join(', ') || 'a sending server'} — do not send until resolved`;
     }
-    // attention / un-attested
+    // attention — distinguish a STALE pass (attested on a prior MDT send-day;
+    // the server degrades it at read time) from a never-attested gate.
+    const stale = Object.entries(state.gateA.servers)
+      .filter(([, v]) => (v?.state ?? '').toLowerCase() === 'stale')
+      .map(([k]) => k.replace('server_', 'server '));
+    if (stale.length > 0) {
+      return `attestation stale (${stale.join(', ')}) — re-verify over SSH and re-attest below`;
+    }
     return 'awaiting operator confirmation — attest sending servers A + B below';
   })();
 
   const dB = state.gateB
     ? `zombie waves=${state.gateB.zombies} · expired=${state.gateB.expired} · due now=${state.gateB.due_now}`
     : undefined;
-  const dC = state.gateC ? `build=${state.gateC.git_sha?.slice(0, 7) || '??'}` : undefined;
+  const dC = state.gateC
+    ? state.gateC.passes
+      ? `build=${state.gateC.git_sha?.slice(0, 7) || '??'} · contains ${state.gateC.required_commit}`
+      : `build=${state.gateC.git_sha?.slice(0, 7) || '??'} · missing ${state.gateC.required_commit} (dead-letter classifier)`
+    : undefined;
   const dD = state.gateD
     ? `${Object.values(state.gateD.results).filter(r => r.ok).length}/${Object.keys(state.gateD.results).length} domains pass`
     : undefined;

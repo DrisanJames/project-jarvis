@@ -9,8 +9,30 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/redis/go-redis/v9"
 )
+
+// gateCRequiredCommit is the commit Send-Day Gate C ("Delivery Build Check")
+// exists to verify: a92af78, the IsPMTATransient dead-letter classifier fix
+// (send-day-process.mdc §2 Gate C). Must match GATE_C_REQUIRED_COMMIT in
+// web/src/components/mailing/components/send-day-planner/constants.ts.
+const gateCRequiredCommit = "a92af78"
+
+// Compile-time proof the dead-letter classifier is present in this build.
+// If IsPMTATransient were ever reverted or removed, this file would fail to
+// compile instead of deliveryBuildFlags silently continuing to report true.
+var _ = worker.IsPMTATransient
+
+// deliveryBuildFlags is the build-time truth source for Send-Day Gate C.
+// A client-side sha-string comparison cannot prove commit ancestry; this map
+// can: it ships in the same source tree as the classifier fix, so its
+// PRESENCE in the /health response proves the running binary was built from
+// a tree containing a92af78. A rollback to a pre-a92af78 image simply lacks
+// the field, and the planner's Gate C chip goes red (absent/false = fail).
+var deliveryBuildFlags = map[string]bool{
+	gateCRequiredCommit: true,
+}
 
 // HealthStatus represents the overall health of the system.
 type HealthStatus struct {
@@ -67,6 +89,8 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime":    formatUptime(time.Since(hc.startTime)),
 		"build":     buildinfo.Current(),
 		"event_bus": CurrentEventBusStatus(),
+		// Send-Day Gate C reads this — see deliveryBuildFlags.
+		"build_contains": deliveryBuildFlags,
 	})
 }
 
