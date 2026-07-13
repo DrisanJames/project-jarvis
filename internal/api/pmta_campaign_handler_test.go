@@ -5,8 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +22,20 @@ func passingPreflight(_ context.Context, _ *sql.DB, _, _, _ string) preflightRes
 	return preflightResult{OK: true}
 }
 
+// allGreenGates stubs the REQ-007 server-side gate evaluation so tests that
+// pin deploy mechanics (reservation, idempotency, preflight threading) don't
+// have to mock the gate-source queries. Gate-enforcement behavior itself is
+// pinned by the TestHandleDeployCampaign_*Gate* tests below.
+func allGreenGates(_ context.Context, _ sendDayGateEvalInput) sendDayGateReport {
+	return sendDayGateReport{Verdicts: []sendDayGateVerdict{
+		{Gate: "A", Name: "PMTA host health attestation", State: "pass"},
+		{Gate: "B", Name: "Wave-dispatcher cleanup", State: "pass"},
+		{Gate: "C", Name: "Delivery build check", State: "pass"},
+		{Gate: "D", Name: "Sending-profile preflight", State: "pass"},
+		{Gate: "F", Name: "Volume reconciliation", State: "pass"},
+	}}
+}
+
 func newTestPMTAService(db *sql.DB, orgID string) *PMTACampaignService {
 	svc := &PMTACampaignService{
 		db:                   db,
@@ -26,6 +43,7 @@ func newTestPMTAService(db *sql.DB, orgID string) *PMTACampaignService {
 		suppMatcher:          NewSuppressionMatcher(),
 		colCache:             &campaignColumnCache{cols: map[string]bool{"pmta_config": true, "execution_mode": true}},
 		preflightFn:          passingPreflight,
+		gateEvalFn:           allGreenGates,
 		skipBackgroundDeploy: true,
 	}
 	return svc
@@ -133,6 +151,7 @@ func TestHandleDeployCampaign_ThreadsSendingProfileIDToPreflight(t *testing.T) {
 			captured = true
 			return preflightResult{OK: false, Errors: []preflightError{{Check: "test", Message: "halt after capture"}}}
 		},
+		gateEvalFn:           allGreenGates,
 		skipBackgroundDeploy: true,
 	}
 
@@ -193,6 +212,7 @@ func TestHandleDeployCampaign_NoOverrideThreadsEmpty(t *testing.T) {
 			captured = true
 			return preflightResult{OK: false, Errors: []preflightError{{Check: "test", Message: "halt after capture"}}}
 		},
+		gateEvalFn:           allGreenGates,
 		skipBackgroundDeploy: true,
 	}
 
@@ -616,6 +636,283 @@ func TestHandleDeployCampaign_RejectsNonEditableCampaign(t *testing.T) {
 		t.Fatalf("expected error message in response, got %#v", payload)
 	}
 
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+// ─── Server-side send-day gate enforcement (REQ-007) ─────────────────────────
+
+// gateTestInput builds the minimal valid deploy payload the gate tests share.
+// No ISPQuotas/ISPPlans → audience-bound (uncapped) per the standing doctrine.
+func gateTestInput(name string) engine.PMTACampaignInput {
+	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
+	return engine.PMTACampaignInput{
+		Name:          name,
+		TargetISPs:    []engine.ISP{engine.ISPGmail},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+}
+
+// redGates stubs a gate evaluation where Gate B and Gate F are red.
+func redGates(_ context.Context, _ sendDayGateEvalInput) sendDayGateReport {
+	return sendDayGateReport{Verdicts: []sendDayGateVerdict{
+		{Gate: "A", Name: "PMTA host health attestation", State: "pass"},
+		{Gate: "B", Name: "Wave-dispatcher cleanup", State: "fail", Detail: "zombies=500 expired=12 (threshold <50 each) — run the pre-deploy janitor"},
+		{Gate: "C", Name: "Delivery build check", State: "pass"},
+		{Gate: "D", Name: "Sending-profile preflight", State: "pass"},
+		{Gate: "F", Name: "Volume reconciliation", State: "fail", Detail: "planned 85826 vs yesterday 639440 (13%) — below the 60% collapse floor"},
+	}}
+}
+
+// TestHandleDeployCampaign_RedGateBlocksWithoutOverride pins the REQ-007
+// negative path: a red gate blocks the id-less deploy with 412 +
+// {error, failed_gates, override_hint} and NO campaign row is touched
+// (sqlmock expects zero SQL — any statement would fail the test).
+func TestHandleDeployCampaign_RedGateBlocksWithoutOverride(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates
+
+	body, _ := json.Marshal(gateTestInput("Gate Blocked Deploy"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	errMsg, _ := payload["error"].(string)
+	if !strings.Contains(errMsg, "B") || !strings.Contains(errMsg, "F") {
+		t.Fatalf("expected error naming gates B and F, got %q", errMsg)
+	}
+	failed, ok := payload["failed_gates"].([]any)
+	if !ok || len(failed) != 2 {
+		t.Fatalf("expected 2 failed_gates, got %#v", payload["failed_gates"])
+	}
+	if hint, _ := payload["override_hint"].(string); !strings.Contains(hint, "gate_override") {
+		t.Fatalf("expected actionable override_hint, got %#v", payload["override_hint"])
+	}
+
+	// No status change: zero SQL statements were expected or executed.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("deploy must not touch the DB when blocked by gates: %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_PromotePathRedGateBlocks mirrors the negative path
+// for the Draft Board promote flow (payload carries campaign_id): promotion to
+// scheduled is gated exactly like the id-less deploy; the draft row stays a
+// draft (zero SQL).
+func TestHandleDeployCampaign_PromotePathRedGateBlocks(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates
+
+	input := gateTestInput("Gate Blocked Promotion")
+	input.CampaignID = uuid.New().String()
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412; body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if _, ok := payload["failed_gates"].([]any); !ok {
+		t.Fatalf("expected failed_gates in promote-path response, got %#v", payload)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("promotion must not touch the DB when blocked by gates: %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_OverrideRequiresReason: a gate_override with an
+// empty/whitespace reason does NOT clear red gates.
+func TestHandleDeployCampaign_OverrideRequiresReason(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates
+
+	body, _ := json.Marshal(struct {
+		engine.PMTACampaignInput
+		GateOverride map[string]string `json:"gate_override"`
+	}{gateTestInput("Empty Reason Override"), map[string]string{"reason": "   "}})
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412 (empty reason must not override); body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_OverrideProceedsAndAudits pins the escape hatch:
+// red gates + gate_override{reason} → the deploy proceeds (202) AND the
+// override is audit-logged — both the [GateOverride] log line and the
+// best-effort row in mailing_send_day_gate_attestations.
+func TestHandleDeployCampaign_OverrideProceedsAndAudits(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	// 1. Audit row upsert (gate='OVERRIDE', keyed by campaign name).
+	mock.ExpectExec("INSERT INTO mailing_send_day_gate_attestations").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// 2. Normal reservation sequence — behavior past the gate is unchanged.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectExec("INSERT INTO mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
+
+	body, _ := json.Marshal(struct {
+		engine.PMTACampaignInput
+		GateOverride map[string]string `json:"gate_override"`
+	}{gateTestInput("Overridden Deploy"), map[string]string{"reason": "deliberate small re-mail board — operator approved"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected status=finalizing_audience, got %#v", payload["status"])
+	}
+
+	logged := logBuf.String()
+	if !strings.Contains(logged, "[GateOverride]") ||
+		!strings.Contains(logged, "gates=[B,F]") ||
+		!strings.Contains(logged, "deliberate small re-mail board") {
+		t.Fatalf("expected [GateOverride] audit line with gates + reason, got: %s", logged)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations (audit row + reservation): %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_GatesAllGreenRealEvaluator drives the REAL
+// evaluateSendDayGates (gateEvalFn nil) with healthy gate sources and proves
+// green gates are invisible: identical 202 behavior, no override needed.
+// Query order pinned by sqlmock: Gate A attestations → Gate B wave counts →
+// (Gate F skipped: uncapped payload) → reservation sequence.
+func TestHandleDeployCampaign_GatesAllGreenRealEvaluator(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = nil // real evaluator
+
+	fresh := time.Now()
+	// Gate A — both servers attested pass within the current MDT send-day.
+	mock.ExpectQuery("mailing_send_day_gate_attestations").
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", fresh, "ok").
+			AddRow("server_b", "pass", fresh, "ok"))
+	// Gate B — janitor counts under threshold.
+	mock.ExpectQuery("FROM mailing_campaign_waves").
+		WillReturnRows(sqlmock.NewRows([]string{"zombies", "expired", "due_now", "planned", "enqueued", "running"}).
+			AddRow(3, 1, 0, 12, 2, 1))
+	// Gate C in-process; Gate D via preflightFn (pass); Gate F exempt (uncapped).
+	// Reservation sequence — unchanged behavior.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectExec("INSERT INTO mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
+
+	body, _ := json.Marshal(gateTestInput("Green Gates Deploy"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (green gates must be invisible); body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if payload["already_existed"] != false {
+		t.Fatalf("expected already_existed=false, got %#v", payload["already_existed"])
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
 	}

@@ -94,12 +94,12 @@ func (s *AdvancedMailingService) HandleSendDayVolumeReconciliation(w http.Respon
 	todayDate := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, mdt)
 	yesterdayDate := todayDate.AddDate(0, 0, -1)
 
-	todayPlanned, err := s.sumPlannedRecipientsForMDTDate(ctx, todayDate)
+	todayPlanned, err := sumPlannedRecipientsForMDTDate(ctx, s.db, todayDate)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("today planned query: %v", err), http.StatusInternalServerError)
 		return
 	}
-	yesterdayPlanned, err := s.sumPlannedRecipientsForMDTDate(ctx, yesterdayDate)
+	yesterdayPlanned, err := sumPlannedRecipientsForMDTDate(ctx, s.db, yesterdayDate)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("yesterday planned query: %v", err), http.StatusInternalServerError)
 		return
@@ -162,12 +162,15 @@ func (s *AdvancedMailingService) HandleSendDayVolumeReconciliation(w http.Respon
 // NOTE: the committed branch deliberately keeps the literal SUM(total_recipients)
 // aggregate — it is the contract the backend tests assert on, and remains the
 // floor of the planned volume.
-func (s *AdvancedMailingService) sumPlannedRecipientsForMDTDate(ctx context.Context, day time.Time) (int, error) {
+// Free function (not a service method) so the deploy path's server-side gate
+// evaluation (evaluateSendDayGates, REQ-007) can reuse the exact same Gate-F
+// volume source from PMTACampaignService.
+func sumPlannedRecipientsForMDTDate(ctx context.Context, db *sql.DB, day time.Time) (int, error) {
 	mdt, _ := time.LoadLocation("America/Denver")
 	d := day.In(mdt)
 	dayStr := d.Format("2006-01-02")
 	var total int
-	row := s.db.QueryRowContext(ctx, `
+	row := db.QueryRowContext(ctx, `
 		SELECT GREATEST(
 			COALESCE((
 				SELECT SUM(total_recipients)
@@ -371,54 +374,7 @@ func (s *PMTACampaignService) HandleSendDayPreflightBatch(w http.ResponseWriter,
 func (s *AdvancedMailingService) HandleSendDayHostHealth(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	type serverState struct {
-		State         string `json:"state"`
-		LastCheckedAt string `json:"last_checked_at,omitempty"`
-		Message       string `json:"message,omitempty"`
-	}
-	servers := map[string]serverState{
-		"server_a": {State: "unknown"},
-		"server_b": {State: "unknown"},
-	}
-
-	// Best-effort read from mailing_send_day_gate_attestations. Absent
-	// table or empty row = "unknown" (the canvas will then prompt the
-	// operator to check off Gate A explicitly).
-	dayStart := startOfMDTSendDay(time.Now())
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT server_key,
-		       COALESCE(state, 'unknown'),
-		       last_checked_at,
-		       COALESCE(message, '')
-		FROM mailing_send_day_gate_attestations
-		WHERE gate = 'A'
-	`)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var key, state, msg string
-			var ts sql.NullTime
-			if scanErr := rows.Scan(&key, &state, &ts, &msg); scanErr != nil {
-				continue
-			}
-			if key != "server_a" && key != "server_b" {
-				continue
-			}
-			lastChecked := ""
-			if ts.Valid {
-				lastChecked = ts.Time.UTC().Format(time.RFC3339)
-			}
-			// Freshness degrade: a "pass" only holds for the send-day it was
-			// attested on. Missing timestamp = unprovable freshness = stale.
-			if state == "pass" && (!ts.Valid || ts.Time.Before(dayStart)) {
-				state = "stale"
-				msg = "attestation predates the current MDT send-day — re-verify both servers over SSH and re-attest"
-			}
-			servers[key] = serverState{
-				State: state, LastCheckedAt: lastChecked, Message: msg,
-			}
-		}
-	}
+	servers, _ := readGateAServerStates(ctx, s.db, time.Now())
 
 	allOK := true
 	for _, st := range servers {
@@ -512,6 +468,250 @@ func (s *AdvancedMailingService) HandleSendDayHostHealthAttest(w http.ResponseWr
 		"server_key":  body.ServerKey,
 		"state":       body.State,
 	})
+}
+
+// gateAServerState is one Gate-A server's attested state as returned by
+// readGateAServerStates (shared by the host-health endpoint and the deploy
+// path's server-side gate evaluation).
+type gateAServerState struct {
+	State         string `json:"state"`
+	LastCheckedAt string `json:"last_checked_at,omitempty"`
+	Message       string `json:"message,omitempty"`
+}
+
+// readGateAServerStates loads the Gate-A attestations for both PMTA servers
+// and applies the freshness degrade (REQ-012): a persisted "pass" whose
+// last_checked_at predates the supplied instant's MDT send-day is returned as
+// "stale". Absent table / empty rows leave the slots "unknown"; the query
+// error (if any) is returned so callers can distinguish "unattested" from
+// "unreadable".
+func readGateAServerStates(ctx context.Context, db *sql.DB, now time.Time) (map[string]gateAServerState, error) {
+	servers := map[string]gateAServerState{
+		"server_a": {State: "unknown"},
+		"server_b": {State: "unknown"},
+	}
+
+	dayStart := startOfMDTSendDay(now)
+	rows, err := db.QueryContext(ctx, `
+		SELECT server_key,
+		       COALESCE(state, 'unknown'),
+		       last_checked_at,
+		       COALESCE(message, '')
+		FROM mailing_send_day_gate_attestations
+		WHERE gate = 'A'
+	`)
+	if err != nil {
+		return servers, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, state, msg string
+		var ts sql.NullTime
+		if scanErr := rows.Scan(&key, &state, &ts, &msg); scanErr != nil {
+			continue
+		}
+		if key != "server_a" && key != "server_b" {
+			continue
+		}
+		lastChecked := ""
+		if ts.Valid {
+			lastChecked = ts.Time.UTC().Format(time.RFC3339)
+		}
+		// Freshness degrade: a "pass" only holds for the send-day it was
+		// attested on. Missing timestamp = unprovable freshness = stale.
+		if state == "pass" && (!ts.Valid || ts.Time.Before(dayStart)) {
+			state = "stale"
+			msg = "attestation predates the current MDT send-day — re-verify both servers over SSH and re-attest"
+		}
+		servers[key] = gateAServerState{
+			State: state, LastCheckedAt: lastChecked, Message: msg,
+		}
+	}
+	return servers, nil
+}
+
+// ─── Server-side gate enforcement (REQ-007) ──────────────────────────────────
+//
+// The six pre-deploy gates were display-only: the Draft Board approve action
+// and every programmatic POST /pmta-campaign/deploy skipped them entirely
+// (findings 2026-07-13-A §2 — the 2026-06-29 volume-collapse class).
+// evaluateSendDayGates is the ONE server-side evaluation both the id-less
+// deploy and the draft-promotion path run before reserving a campaign.
+//
+// Verdict semantics are fail-closed: "pass" is the only state that clears a
+// gate; "fail" AND "unknown" (source unreadable) both block, and the caller
+// must require an explicit, audit-logged operator override to proceed
+// (silently passing on unknown was Gate F's original hole).
+//
+// Sources (all REAL after REQ-012 — never re-derived client-side):
+//   Gate A — mailing_send_day_gate_attestations w/ MDT staleness degrade
+//   Gate B — the wave-scheduler janitor counts (zombies + expired < 50 each)
+//   Gate C — deliveryBuildFlags (in-process; structurally true for this binary)
+//   Gate D — preflightDeployCheck for the payload's sending domain/profile
+//   Gate F — planned-volume collapse floor: today ≥ 60% of yesterday
+//            (sumPlannedRecipientsForMDTDate both sides — the same floor the
+//            JAOS orchestrator N1 enforces; the +20% ramp target stays
+//            advisory in HandleSendDayVolumeReconciliation). Audience-bound
+//            payloads (every quota volume == 0 — the standing uncapped
+//            engaged-tier doctrine) are exempt: their planned volume is the
+//            audience, not a cap, so the collapse floor does not apply.
+//   Gate E (audit JSON in .scratch/) is operator-side by construction and is
+//   written by the deploy tooling itself; it is not server-evaluable.
+
+type sendDayGateVerdict struct {
+	Gate   string `json:"gate"`
+	Name   string `json:"name"`
+	State  string `json:"state"` // "pass" | "fail" | "unknown"
+	Detail string `json:"detail,omitempty"`
+}
+
+type sendDayGateReport struct {
+	Verdicts []sendDayGateVerdict `json:"gates"`
+}
+
+// failed returns every gate that did NOT pass (fail and unknown both block).
+func (r sendDayGateReport) failed() []sendDayGateVerdict {
+	var out []sendDayGateVerdict
+	for _, v := range r.Verdicts {
+		if v.State != "pass" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// sendDayGateEvalInput carries the per-deploy context the gate evaluation
+// needs beyond the DB handle.
+type sendDayGateEvalInput struct {
+	OrgID string
+	// TargetDay anchors Gate F to the send-day being deployed (the payload's
+	// scheduled_at) so an evening approval of tomorrow's board reconciles
+	// TOMORROW's planned volume, not today's. Zero value = now (immediate
+	// sends).
+	TargetDay time.Time
+	// Uncapped marks an audience-bound payload (no finite ISP quota anywhere)
+	// — the standing uncapped engaged-tier doctrine. Exempts Gate F.
+	Uncapped bool
+	// Preflight runs Gate D for the payload's sending domain. nil = the gate
+	// reports "unknown" (which blocks).
+	Preflight func(ctx context.Context) preflightResult
+}
+
+// evaluateSendDayGates computes the server-side verdict for gates A, B, C, D
+// and F in that (deterministic) order. It never returns an error: an
+// unreadable source is an "unknown" verdict, which blocks.
+func evaluateSendDayGates(ctx context.Context, db *sql.DB, in sendDayGateEvalInput) sendDayGateReport {
+	var report sendDayGateReport
+
+	// Gate A — PMTA host health attestation (fresh for the current MDT day).
+	{
+		v := sendDayGateVerdict{Gate: "A", Name: "PMTA host health attestation"}
+		servers, err := readGateAServerStates(ctx, db, time.Now())
+		if err != nil {
+			v.State = "unknown"
+			v.Detail = fmt.Sprintf("attestation store unreadable: %v", err)
+		} else {
+			v.State = "pass"
+			var bad []string
+			for _, key := range []string{"server_a", "server_b"} {
+				if st := servers[key]; st.State != "pass" {
+					bad = append(bad, fmt.Sprintf("%s=%s", key, st.State))
+				}
+			}
+			if len(bad) > 0 {
+				v.State = "fail"
+				v.Detail = strings.Join(bad, ", ") + " — re-verify both servers over SSH and re-attest (Send Day tab, Gate A)"
+			}
+		}
+		report.Verdicts = append(report.Verdicts, v)
+	}
+
+	// Gate B — wave-dispatcher janitor counts (< 50 zombies AND < 50 expired).
+	{
+		v := sendDayGateVerdict{Gate: "B", Name: "Wave-dispatcher cleanup"}
+		counts, err := queryWaveSchedulerCounts(ctx, db)
+		switch {
+		case err != nil:
+			v.State = "unknown"
+			v.Detail = fmt.Sprintf("wave-health query failed: %v", err)
+		case counts.Zombies < 50 && counts.Expired < 50:
+			v.State = "pass"
+			v.Detail = fmt.Sprintf("zombies=%d expired=%d", counts.Zombies, counts.Expired)
+		default:
+			v.State = "fail"
+			v.Detail = fmt.Sprintf("zombies=%d expired=%d (threshold <50 each) — run the pre-deploy janitor", counts.Zombies, counts.Expired)
+		}
+		report.Verdicts = append(report.Verdicts, v)
+	}
+
+	// Gate C — dead-letter classifier build check (in-process, REQ-012).
+	{
+		v := sendDayGateVerdict{Gate: "C", Name: "Delivery build check"}
+		if deliveryBuildFlags[gateCRequiredCommit] {
+			v.State = "pass"
+			v.Detail = "build contains " + gateCRequiredCommit + " (IsPMTATransient classifier)"
+		} else {
+			v.State = "fail"
+			v.Detail = "running binary lacks the " + gateCRequiredCommit + " dead-letter classifier fix"
+		}
+		report.Verdicts = append(report.Verdicts, v)
+	}
+
+	// Gate D — sending-profile preflight for THIS deploy's domain.
+	{
+		v := sendDayGateVerdict{Gate: "D", Name: "Sending-profile preflight"}
+		if in.Preflight == nil {
+			v.State = "unknown"
+			v.Detail = "no preflight available for this payload"
+		} else if res := in.Preflight(ctx); res.OK {
+			v.State = "pass"
+		} else {
+			msgs := make([]string, len(res.Errors))
+			for i, e := range res.Errors {
+				msgs[i] = e.Check + ": " + e.Message
+			}
+			v.State = "fail"
+			v.Detail = strings.Join(msgs, "; ")
+		}
+		report.Verdicts = append(report.Verdicts, v)
+	}
+
+	// Gate F — planned-volume collapse floor (60% of yesterday, orchestrator
+	// N1 parity). Uncapped payloads are audience-bound → exempt by doctrine.
+	{
+		v := sendDayGateVerdict{Gate: "F", Name: "Volume reconciliation"}
+		if in.Uncapped {
+			v.State = "pass"
+			v.Detail = "audience-bound payload (all quotas volume=0) — uncapped engaged-tier doctrine; collapse floor not applicable"
+		} else {
+			mdt, _ := time.LoadLocation("America/Denver")
+			anchor := in.TargetDay
+			if anchor.IsZero() {
+				anchor = time.Now()
+			}
+			today := startOfMDTSendDay(anchor)
+			yesterday := today.In(mdt).AddDate(0, 0, -1)
+			todayPlanned, errT := sumPlannedRecipientsForMDTDate(ctx, db, today)
+			yesterdayPlanned, errY := sumPlannedRecipientsForMDTDate(ctx, db, yesterday)
+			switch {
+			case errT != nil || errY != nil:
+				v.State = "unknown"
+				v.Detail = fmt.Sprintf("planned-volume query failed (today: %v, yesterday: %v)", errT, errY)
+			case yesterdayPlanned == 0:
+				v.State = "unknown"
+				v.Detail = "no yesterday baseline — planned volume cannot be reconciled; stage the full board first or override with a reason"
+			case float64(todayPlanned) >= 0.6*float64(yesterdayPlanned):
+				v.State = "pass"
+				v.Detail = fmt.Sprintf("planned %d vs yesterday %d (%.0f%%)", todayPlanned, yesterdayPlanned, 100*float64(todayPlanned)/float64(yesterdayPlanned))
+			default:
+				v.State = "fail"
+				v.Detail = fmt.Sprintf("planned %d vs yesterday %d (%.0f%%) — below the 60%% collapse floor (2026-06-29 class); stage the full board as drafts first, or override with a reason", todayPlanned, yesterdayPlanned, 100*float64(todayPlanned)/float64(yesterdayPlanned))
+			}
+		}
+		report.Verdicts = append(report.Verdicts, v)
+	}
+
+	return report
 }
 
 // startOfMDTSendDay returns midnight of the supplied instant's calendar day

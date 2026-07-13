@@ -104,8 +104,13 @@ export const DraftBoardView: React.FC = () => {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, EditData | 'loading' | 'error'>>({});
   // Per-campaign action state for approve/disapprove (in-flight + inline error/success).
-  const [action, setAction] = useState<Record<string, { busy: boolean; error?: string; ok?: string }>>({});
+  // failedGates carries the server's REQ-007 gate verdicts when a deploy was
+  // blocked (HTTP 412 {failed_gates}) so the board can offer the override path.
+  const [action, setAction] = useState<Record<string, { busy: boolean; error?: string; ok?: string; failedGates?: string[] }>>({});
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Operator reason for overriding red send-day gates — required non-empty by
+  // the server, audit-logged. Shown only AFTER an approve was gate-blocked.
+  const [overrideReason, setOverrideReason] = useState('');
 
   const headers = useMemo(() => ({ 'X-Organization-ID': orgId }), [orgId]);
 
@@ -157,7 +162,7 @@ export const DraftBoardView: React.FC = () => {
   // APPROVE — fetch the draft's full config, then redeploy carrying its existing
   // campaign_id so the backend promotes the draft row in place (draft →
   // finalizing_audience → scheduled) rather than creating a duplicate.
-  const approveCampaign = useCallback(async (id: string): Promise<boolean> => {
+  const approveCampaign = useCallback(async (id: string, gateOverride?: string): Promise<boolean> => {
     setAction(prev => ({ ...prev, [id]: { busy: true } }));
     try {
       const er = await fetch(`/api/mailing/pmta-campaign/${id}/edit-data`, { headers });
@@ -170,6 +175,9 @@ export const DraftBoardView: React.FC = () => {
       // Re-attach the real id so the deploy path promotes THIS draft in place — without
       // it the server falls back to "the org's newest draft" and approves the WRONG one.
       (input as Record<string, unknown>).campaign_id = ej.campaign_id || id;
+      // Explicit operator override past red send-day gates — the server
+      // requires a non-empty reason and audit-logs every use (REQ-007).
+      if (gateOverride) (input as Record<string, unknown>).gate_override = { reason: gateOverride };
       const dr = await fetch('/api/mailing/pmta-campaign/deploy', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -177,8 +185,17 @@ export const DraftBoardView: React.FC = () => {
       });
       if (!dr.ok) {
         let msg = `deploy HTTP ${dr.status}`;
-        try { const dj = await dr.json(); if (dj?.error) msg = dj.error; } catch { /* keep status */ }
-        throw new Error(msg);
+        let failedGates: string[] | undefined;
+        try {
+          const dj = await dr.json();
+          if (dj?.error) msg = dj.error;
+          if (Array.isArray(dj?.failed_gates)) {
+            failedGates = (dj.failed_gates as Array<{ gate?: string }>)
+              .map(g => g?.gate ?? '').filter(Boolean);
+          }
+        } catch { /* keep status */ }
+        setAction(prev => ({ ...prev, [id]: { busy: false, error: msg, failedGates } }));
+        return false;
       }
       setAction(prev => ({ ...prev, [id]: { busy: false, ok: 'Approved' } }));
       return true;
@@ -270,6 +287,36 @@ export const DraftBoardView: React.FC = () => {
     [grouped],
   );
 
+  // Drafts whose last approve attempt was blocked server-side by red send-day
+  // gates (HTTP 412 + failed_gates, REQ-007), plus the union of gate letters.
+  // The override banner renders only when this is non-empty — i.e. only after
+  // a failed attempt, never pre-emptively.
+  const gateBlocked = useMemo(() => {
+    const ids = draftIds.filter(id => (action[id]?.failedGates?.length ?? 0) > 0);
+    const gates = new Set<string>();
+    ids.forEach(id => (action[id]?.failedGates ?? []).forEach(g => gates.add(g)));
+    return { ids, gates: Array.from(gates).sort() };
+  }, [draftIds, action]);
+
+  const handleOverrideApprove = useCallback(async () => {
+    const reason = overrideReason.trim();
+    if (!reason || gateBlocked.ids.length === 0) return;
+    if (!window.confirm(
+      `Override red send-day gate${gateBlocked.gates.length === 1 ? '' : 's'} (${gateBlocked.gates.join(', ')}) and approve ${gateBlocked.ids.length} draft${gateBlocked.ids.length === 1 ? '' : 's'}?\nThe override is audit-logged with your reason.`,
+    )) return;
+    setBulkBusy(true);
+    try {
+      // Sequential, like handleApproveAll — avoids hammering the deploy path.
+      for (const id of gateBlocked.ids) {
+        await approveCampaign(id, reason);
+      }
+      setOverrideReason('');
+      await load();
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [overrideReason, gateBlocked, approveCampaign, load]);
+
   const handleApproveAll = useCallback(async () => {
     if (draftIds.length === 0) return;
     const eligible = draftIds.filter(id => !isPastDue(id));
@@ -343,6 +390,30 @@ export const DraftBoardView: React.FC = () => {
       {error && (
         <div style={{ padding: 12, borderRadius: 8, background: 'rgba(233,69,96,0.08)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', fontSize: 13, marginBottom: 12 }}>
           {error}
+        </div>
+      )}
+
+      {/* Gate-blocked drafts (server 412 failed_gates) — override requires an
+          explicit, audit-logged reason. Appears only after a blocked attempt. */}
+      {gateBlocked.ids.length > 0 && (
+        <div style={{ padding: 12, borderRadius: 8, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.45)', fontSize: 13, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ color: '#f59e0b', fontWeight: 600 }}>
+            ⛔ {gateBlocked.ids.length} draft{gateBlocked.ids.length === 1 ? '' : 's'} blocked by red send-day gate{gateBlocked.gates.length === 1 ? '' : 's'}: {gateBlocked.gates.join(', ')}
+          </span>
+          <span style={{ color: 'rgba(220,235,250,0.75)' }}>Fix the gate(s) on the Send Day tab, or override with a reason (audit-logged):</span>
+          <input
+            value={overrideReason}
+            onChange={e => setOverrideReason(e.target.value)}
+            placeholder="Override reason (required)"
+            style={{ flex: 1, minWidth: 220, background: 'rgba(13,21,38,0.9)', color: 'rgba(220,235,250,0.95)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 6, padding: '6px 10px', fontSize: 13 }}
+          />
+          <button
+            onClick={() => void handleOverrideApprove()}
+            disabled={bulkBusy || !overrideReason.trim()}
+            style={{ background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.45)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, opacity: (bulkBusy || !overrideReason.trim()) ? 0.5 : 1, cursor: (bulkBusy || !overrideReason.trim()) ? 'default' : 'pointer' }}
+          >
+            {bulkBusy ? 'Approving…' : `Override gates & approve (${gateBlocked.ids.length})`}
+          </button>
         </div>
       )}
 
@@ -459,7 +530,7 @@ export const DraftBoardView: React.FC = () => {
       </div>
 
       <div style={{ marginTop: 18, fontSize: 10, color: 'rgba(180,210,240,0.35)' }}>
-        Draft Board v1.1 · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
+        Draft Board v1.2 · send-day gates enforced server-side on Approve (red gate → blocked; override requires an audit-logged reason) · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
       </div>
     </div>
   );

@@ -48,6 +48,11 @@ type PMTACampaignService struct {
 	// skipBackgroundDeploy skips the async goroutine in HandleDeployCampaign.
 	// Used in tests so sqlmock connections aren't accessed after test cleanup.
 	skipBackgroundDeploy bool
+
+	// gateEvalFn overrides evaluateSendDayGates for testing (the real
+	// evaluation reads live gate sources via SQL). Nil means use the real
+	// implementation. Same pattern as preflightFn.
+	gateEvalFn func(ctx context.Context, in sendDayGateEvalInput) sendDayGateReport
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
@@ -856,15 +861,57 @@ func (s *PMTACampaignService) HandleStageCampaign(w http.ResponseWriter, r *http
 	})
 }
 
+// deployGateOverride is the explicit operator escape hatch past red send-day
+// gates: {"gate_override": {"reason": "<non-empty why>"}} on the deploy body.
+// Every accepted override is audit-logged (log line + attestation-table row).
+type deployGateOverride struct {
+	Reason string `json:"reason"`
+}
+
 // HandleDeployCampaign creates a PMTA-routed campaign and queues it for sending.
+//
+// Server-side gate enforcement (REQ-007): before ANY campaign row is reserved
+// — on both the id-less deploy path and the Draft Board's promote path
+// (campaign_id set) — the six send-day gates are evaluated server-side
+// (evaluateSendDayGates, send_day_handlers.go). A red or unknown gate blocks
+// with 412 + {error, failed_gates, override_hint}; an explicit gate_override
+// with a non-empty reason proceeds and is audit-logged. Staging drafts
+// (POST /pmta-campaign/stage) is deliberately NOT gated — only promotion to a
+// live send is.
 func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *http.Request) {
-	var input engine.PMTACampaignInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	var req struct {
+		engine.PMTACampaignInput
+		GateOverride *deployGateOverride `json:"gate_override,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
+	input := req.PMTACampaignInput
+	orgID := getOrgID(r)
 
-	campaignID, status, alreadyExisted, err := s.deployFromInput(r.Context(), getOrgID(r), input)
+	report := s.evaluateDeployGates(r.Context(), orgID, input)
+	if failed := report.failed(); len(failed) > 0 {
+		names := make([]string, len(failed))
+		for i, v := range failed {
+			names[i] = v.Gate
+		}
+		reason := ""
+		if req.GateOverride != nil {
+			reason = strings.TrimSpace(req.GateOverride.Reason)
+		}
+		if reason == "" {
+			respondJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+				"error":         "send-day gates failed: " + strings.Join(names, ", "),
+				"failed_gates":  failed,
+				"override_hint": `re-POST the same payload with {"gate_override":{"reason":"<why this deploy must proceed>"}} — every override is audit-logged`,
+			})
+			return
+		}
+		s.auditGateOverride(r.Context(), orgID, input.Name, names, reason)
+	}
+
+	campaignID, status, alreadyExisted, err := s.deployFromInput(r.Context(), orgID, input)
 	if err != nil {
 		var inputErr *deployInputError
 		if errors.As(err, &inputErr) {
@@ -901,6 +948,73 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		"target_isps":     input.TargetISPs,
 		"variant_count":   len(input.Variants),
 	})
+}
+
+// evaluateDeployGates runs the server-side send-day gate evaluation for one
+// deploy payload. gateEvalFn (tests) wins; otherwise the real
+// evaluateSendDayGates reads the live gate sources. Gate D reuses runPreflight
+// so a pinned sending_profile_id is validated exactly as the deploy itself
+// will; Gate F's collapse floor is skipped for audience-bound (all-quotas-
+// zero) payloads per the standing uncapped engaged-tier doctrine.
+func (s *PMTACampaignService) evaluateDeployGates(ctx context.Context, orgID string, input engine.PMTACampaignInput) sendDayGateReport {
+	in := sendDayGateEvalInput{
+		OrgID:    orgID,
+		Uncapped: deployInputIsUncapped(input),
+		Preflight: func(pctx context.Context) preflightResult {
+			return s.runPreflight(pctx, orgID, input.SendingDomain, input.SendingProfileID)
+		},
+	}
+	if input.ScheduledAt != nil {
+		// Anchor Gate F to the send-day being deployed (evening approvals of
+		// tomorrow's board reconcile tomorrow's planned volume).
+		in.TargetDay = *input.ScheduledAt
+	}
+	if s.gateEvalFn != nil {
+		return s.gateEvalFn(ctx, in)
+	}
+	return evaluateSendDayGates(ctx, s.db, in)
+}
+
+// deployInputIsUncapped reports whether the payload carries NO finite volume
+// cap anywhere (isp_quotas and per-ISP plan quotas all zero/absent). volume=0
+// means UNLIMITED / audience-bound — the standing uncapped engaged-tier
+// doctrine — so Gate F's planned-vs-yesterday collapse floor does not apply.
+// A finite cap anywhere makes the deploy subject to it.
+func deployInputIsUncapped(input engine.PMTACampaignInput) bool {
+	for _, q := range input.ISPQuotas {
+		if q.Volume > 0 {
+			return false
+		}
+	}
+	for _, p := range input.ISPPlans {
+		if p.Quota > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// auditGateOverride records an operator gate override. The log line is the
+// primary audit record; a row is also upserted into the existing
+// mailing_send_day_gate_attestations table (gate='OVERRIDE', keyed by campaign
+// name) best-effort — no new table, and a persist failure never blocks the
+// already-authorized deploy.
+func (s *PMTACampaignService) auditGateOverride(ctx context.Context, orgID, campaignName string, gates []string, reason string) {
+	log.Printf("[GateOverride] org=%s campaign=%q gates=[%s] reason=%q",
+		orgID, campaignName, strings.Join(gates, ","), reason)
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO mailing_send_day_gate_attestations
+		    (gate, server_key, state, message, last_checked_at, updated_by, updated_at)
+		VALUES ('OVERRIDE', $1, 'override', $2, NOW(), $3, NOW())
+		ON CONFLICT (gate, server_key) DO UPDATE
+		   SET state = EXCLUDED.state,
+		       message = EXCLUDED.message,
+		       last_checked_at = EXCLUDED.last_checked_at,
+		       updated_by = EXCLUDED.updated_by,
+		       updated_at = NOW()
+	`, campaignName, fmt.Sprintf("gates=[%s] reason=%s", strings.Join(gates, ","), reason), orgID); err != nil {
+		log.Printf("[GateOverride] persist failed for campaign %q (log line above remains the audit record): %v", campaignName, err)
+	}
 }
 
 // deployInputError marks payload validation / preflight / normalization

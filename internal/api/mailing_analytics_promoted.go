@@ -667,11 +667,22 @@ func (s *AdvancedMailingService) HandleQueueStatusHistogram(w http.ResponseWrite
 //   3. due_now   — wave.status='planned' AND scheduled_at <= NOW() but
 //                  not yet picked up
 
-func (s *AdvancedMailingService) HandleWaveSchedulerHealth(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// waveSchedulerCounts holds the janitor's wave-table health counters. Zombies
+// and Expired are Send-Day Gate B's inputs (<50 each — CLAUDE.md §6 Gate B);
+// factored out so the deploy path's server-side gate evaluation
+// (evaluateSendDayGates, REQ-007) reads the exact same source as this endpoint.
+type waveSchedulerCounts struct {
+	Zombies  int
+	Expired  int
+	DueNow   int
+	Planned  int
+	Enqueued int
+	Running  int
+}
 
-	var zombies, expired, dueNow, planned, enqueued, running int
-	row := s.db.QueryRowContext(ctx, `
+func queryWaveSchedulerCounts(ctx context.Context, db *sql.DB) (waveSchedulerCounts, error) {
+	var c waveSchedulerCounts
+	row := db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*) FILTER (
 				WHERE w.status='planned'
@@ -694,10 +705,22 @@ func (s *AdvancedMailingService) HandleWaveSchedulerHealth(w http.ResponseWriter
 		FROM mailing_campaign_waves w
 		LEFT JOIN mailing_campaigns c ON c.id = w.campaign_id
 	`)
-	if err := row.Scan(&zombies, &expired, &dueNow, &planned, &enqueued, &running); err != nil {
+	if err := row.Scan(&c.Zombies, &c.Expired, &c.DueNow, &c.Planned, &c.Enqueued, &c.Running); err != nil {
+		return waveSchedulerCounts{}, err
+	}
+	return c, nil
+}
+
+func (s *AdvancedMailingService) HandleWaveSchedulerHealth(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	counts, err := queryWaveSchedulerCounts(ctx, s.db)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("wave-health query: %v", err), http.StatusInternalServerError)
 		return
 	}
+	zombies, expired, dueNow := counts.Zombies, counts.Expired, counts.DueNow
+	planned, enqueued, running := counts.Planned, counts.Enqueued, counts.Running
 
 	// Sample of the worst offenders so the operator can drill in
 	q := `

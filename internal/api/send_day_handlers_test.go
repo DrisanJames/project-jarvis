@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -594,4 +595,154 @@ func TestHandleSendDayHostHealthAttest_BadJSON(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Contains(t, resp["error"].(string), "could not parse JSON")
+}
+
+// ─── Server-side gate evaluation (REQ-007) ───────────────────────────────────
+
+func newGateEvalDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return db, mock
+}
+
+func TestEvaluateSendDayGates_AllGreenUncapped(t *testing.T) {
+	db, mock := newGateEvalDB(t)
+
+	fresh := time.Now()
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", fresh, "ok").
+			AddRow("server_b", "pass", fresh, "ok"))
+	mock.ExpectQuery(`mailing_campaign_waves`).
+		WillReturnRows(sqlmock.NewRows([]string{"zombies", "expired", "due_now", "planned", "enqueued", "running"}).
+			AddRow(0, 0, 0, 0, 0, 0))
+	// Uncapped payload → Gate F is audience-bound-exempt: NO volume queries.
+
+	report := evaluateSendDayGates(context.Background(), db, sendDayGateEvalInput{
+		OrgID:     "org-1",
+		Uncapped:  true,
+		Preflight: func(context.Context) preflightResult { return preflightResult{OK: true} },
+	})
+
+	require.Len(t, report.Verdicts, 5)
+	assert.Empty(t, report.failed(), "all gates should pass: %#v", report.Verdicts)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEvaluateSendDayGates_CappedCollapseFailsGateF pins the 2026-06-29
+// volume-collapse class: a finite-cap deploy on a day whose planned volume is
+// far below yesterday (85,826 vs 639,440 — the incident's real numbers) fails
+// Gate F at the 60% collapse floor.
+func TestEvaluateSendDayGates_CappedCollapseFailsGateF(t *testing.T) {
+	db, mock := newGateEvalDB(t)
+
+	fresh := time.Now()
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", fresh, "ok").
+			AddRow("server_b", "pass", fresh, "ok"))
+	mock.ExpectQuery(`mailing_campaign_waves`).
+		WillReturnRows(sqlmock.NewRows([]string{"zombies", "expired", "due_now", "planned", "enqueued", "running"}).
+			AddRow(0, 0, 0, 0, 0, 0))
+	// Gate F: today then yesterday (same SUM(total_recipients) shape, in order).
+	mock.ExpectQuery(`SUM\(total_recipients\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"total"}).AddRow(85826))
+	mock.ExpectQuery(`SUM\(total_recipients\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"total"}).AddRow(639440))
+
+	report := evaluateSendDayGates(context.Background(), db, sendDayGateEvalInput{
+		OrgID:     "org-1",
+		Uncapped:  false,
+		Preflight: func(context.Context) preflightResult { return preflightResult{OK: true} },
+	})
+
+	failed := report.failed()
+	require.Len(t, failed, 1, "only Gate F should fail: %#v", report.Verdicts)
+	assert.Equal(t, "F", failed[0].Gate)
+	assert.Equal(t, "fail", failed[0].State)
+	assert.Contains(t, failed[0].Detail, "collapse floor")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEvaluateSendDayGates_ZombieWavesFailGateB(t *testing.T) {
+	db, mock := newGateEvalDB(t)
+
+	fresh := time.Now()
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", fresh, "ok").
+			AddRow("server_b", "pass", fresh, "ok"))
+	mock.ExpectQuery(`mailing_campaign_waves`).
+		WillReturnRows(sqlmock.NewRows([]string{"zombies", "expired", "due_now", "planned", "enqueued", "running"}).
+			AddRow(500, 12, 0, 512, 0, 0))
+
+	report := evaluateSendDayGates(context.Background(), db, sendDayGateEvalInput{
+		OrgID:     "org-1",
+		Uncapped:  true,
+		Preflight: func(context.Context) preflightResult { return preflightResult{OK: true} },
+	})
+
+	failed := report.failed()
+	require.Len(t, failed, 1, "only Gate B should fail: %#v", report.Verdicts)
+	assert.Equal(t, "B", failed[0].Gate)
+	assert.Contains(t, failed[0].Detail, "janitor")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEvaluateSendDayGates_UnknownSourcesBlock pins the fail-closed rule: an
+// unreadable gate source is "unknown", and unknown BLOCKS — it never silently
+// passes (Gate F's original hole).
+func TestEvaluateSendDayGates_UnknownSourcesBlock(t *testing.T) {
+	db, mock := newGateEvalDB(t)
+
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnError(errors.New(`relation "mailing_send_day_gate_attestations" does not exist`))
+	mock.ExpectQuery(`mailing_campaign_waves`).
+		WillReturnError(errors.New("statement timeout"))
+
+	report := evaluateSendDayGates(context.Background(), db, sendDayGateEvalInput{
+		OrgID:    "org-1",
+		Uncapped: true,
+		// Preflight nil → Gate D has no input → unknown → blocks.
+	})
+
+	failed := report.failed()
+	require.Len(t, failed, 3, "A, B and D should block: %#v", report.Verdicts)
+	states := map[string]string{}
+	for _, v := range failed {
+		states[v.Gate] = v.State
+	}
+	assert.Equal(t, "unknown", states["A"])
+	assert.Equal(t, "unknown", states["B"])
+	assert.Equal(t, "unknown", states["D"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEvaluateSendDayGates_StaleAttestationFailsGateA: yesterday's Gate A
+// checkbox is not today's host-health check (REQ-012 staleness feeds REQ-007).
+func TestEvaluateSendDayGates_StaleAttestationFailsGateA(t *testing.T) {
+	db, mock := newGateEvalDB(t)
+
+	old := time.Now().Add(-48 * time.Hour)
+	mock.ExpectQuery(`mailing_send_day_gate_attestations`).
+		WillReturnRows(sqlmock.NewRows([]string{"server_key", "state", "last_checked_at", "message"}).
+			AddRow("server_a", "pass", old, "ok").
+			AddRow("server_b", "pass", time.Now(), "ok"))
+	mock.ExpectQuery(`mailing_campaign_waves`).
+		WillReturnRows(sqlmock.NewRows([]string{"zombies", "expired", "due_now", "planned", "enqueued", "running"}).
+			AddRow(0, 0, 0, 0, 0, 0))
+
+	report := evaluateSendDayGates(context.Background(), db, sendDayGateEvalInput{
+		OrgID:     "org-1",
+		Uncapped:  true,
+		Preflight: func(context.Context) preflightResult { return preflightResult{OK: true} },
+	})
+
+	failed := report.failed()
+	require.Len(t, failed, 1, "only Gate A should fail: %#v", report.Verdicts)
+	assert.Equal(t, "A", failed[0].Gate)
+	assert.Contains(t, failed[0].Detail, "server_a=stale")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
