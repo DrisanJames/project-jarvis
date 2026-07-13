@@ -864,7 +864,7 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		return
 	}
 
-	campaignID, status, err := s.DeployFromInput(r.Context(), getOrgID(r), input)
+	campaignID, status, alreadyExisted, err := s.deployFromInput(r.Context(), getOrgID(r), input)
 	if err != nil {
 		var inputErr *deployInputError
 		if errors.As(err, &inputErr) {
@@ -875,14 +875,31 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		return
 	}
 
+	if alreadyExisted {
+		// Idempotent convergence: a re-POST of a name that already has a
+		// live campaign returns that campaign (200, never a 4xx) so
+		// resilient re-deploy loops and dedupe scripts converge instead of
+		// erroring or double-deploying (2026-07-13 over-deploy incident).
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"campaign_id":     campaignID,
+			"name":            input.Name,
+			"status":          status,
+			"already_existed": true,
+			"target_isps":     input.TargetISPs,
+			"variant_count":   len(input.Variants),
+		})
+		return
+	}
+
 	// Respond immediately — campaign is accepted.
 	// The AudienceFinalizationWorker will pick it up and process it.
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"campaign_id":   campaignID,
-		"name":          input.Name,
-		"status":        status,
-		"target_isps":   input.TargetISPs,
-		"variant_count": len(input.Variants),
+		"campaign_id":     campaignID,
+		"name":            input.Name,
+		"status":          status,
+		"already_existed": false,
+		"target_isps":     input.TargetISPs,
+		"variant_count":   len(input.Variants),
 	})
 }
 
@@ -900,21 +917,30 @@ func (e *deployInputError) Error() string { return e.msg }
 // ("finalizing_audience"); the AudienceFinalizationWorker completes the
 // deploy asynchronously, exactly as with the HTTP endpoint's 202 semantics.
 func (s *PMTACampaignService) DeployFromInput(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, error) {
+	campaignID, status, _, err := s.deployFromInput(ctx, orgID, input)
+	return campaignID, status, err
+}
+
+// deployFromInput is DeployFromInput plus the by-name idempotency signal:
+// alreadyExisted=true means an id-less deploy matched a live (non-terminal)
+// campaign with the same (org, name) and NO new campaign was reserved — the
+// returned id/status are the existing row's (2026-07-13 over-deploy incident).
+func (s *PMTACampaignService) deployFromInput(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, bool, error) {
 	if input.Name == "" {
-		return "", "", &deployInputError{"campaign name is required"}
+		return "", "", false, &deployInputError{"campaign name is required"}
 	}
 
 	if len(input.Variants) == 0 {
-		return "", "", &deployInputError{"at least one content variant is required"}
+		return "", "", false, &deployInputError{"at least one content variant is required"}
 	}
 	for i, v := range input.Variants {
 		if strings.TrimSpace(v.HTMLContent) == "" {
-			return "", "", &deployInputError{fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName)}
+			return "", "", false, &deployInputError{fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName)}
 		}
 	}
 	if len(input.TargetISPs) == 0 {
 		if len(input.ISPPlans) == 0 {
-			return "", "", &deployInputError{"at least one target ISP is required"}
+			return "", "", false, &deployInputError{"at least one target ISP is required"}
 		}
 	}
 
@@ -926,35 +952,76 @@ func (s *PMTACampaignService) DeployFromInput(ctx context.Context, orgID string,
 		for i, e := range preflight.Errors {
 			msgs[i] = e.Check + ": " + e.Message
 		}
-		return "", "", &deployInputError{"preflight failed: " + strings.Join(msgs, "; ")}
+		return "", "", false, &deployInputError{"preflight failed: " + strings.Join(msgs, "; ")}
 	}
 
 	normalized, err := normalizePMTACampaignInput(input)
 	if err != nil {
-		return "", "", &deployInputError{err.Error()}
+		return "", "", false, &deployInputError{err.Error()}
 	}
 
 	// Reserve campaign row as 'preparing' so the dashboard shows it immediately.
-	campaignID, err := s.reserveCampaignForDeploy(ctx, orgID, input, normalized)
+	campaignID, existingStatus, alreadyExisted, err := s.reserveCampaignForDeploy(ctx, orgID, input, normalized)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
+	}
+	if alreadyExisted {
+		return campaignID, existingStatus, true, nil
 	}
 
-	return campaignID, "finalizing_audience", nil
+	return campaignID, "finalizing_audience", false, nil
 }
 
 // reserveCampaignForDeploy resolves campaign identity and marks it as
-// 'finalizing_audience' with the pmta_config blob persisted. Returns the campaign UUID.
-func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) (string, error) {
+// 'finalizing_audience' with the pmta_config blob persisted. Returns the
+// campaign UUID, plus (existingStatus, true) when the by-name idempotency
+// guard matched a live campaign instead of reserving a new one.
+func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgID string, input engine.PMTACampaignInput, normalized pmtaNormalizedCampaign) (string, string, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", fmt.Errorf("begin reservation tx: %w", err)
+		return "", "", false, fmt.Errorf("begin reservation tx: %w", err)
 	}
 	defer tx.Rollback()
 
+	// By-(org, name) idempotency guard (2026-07-13 over-deploy: resilient
+	// re-deploy loops re-POSTed pairs already in flight, multiplying stuck
+	// campaigns up to ×12). An id-less deploy whose name already has a live
+	// campaign converges on that campaign instead of minting a duplicate.
+	// Only terminal states (cancelled/failed/deleted) free a name for
+	// re-deploy; a finalizing_audience row with sending_profile_id still
+	// NULL is "pending", never "missing" — it matches by name like any
+	// other live row (the guard never consults sending_profile_id). The
+	// advisory xact lock (released at commit/rollback) serializes two
+	// concurrent same-name deploys so both cannot pass the SELECT before
+	// either INSERTs; orgID is one of the lock keys, so the same name under
+	// a DIFFERENT org neither blocks nor matches. Explicit-id deploys skip
+	// the guard: they are deliberate reuse/promotion (Draft Board approve,
+	// wizard re-deploy) resolved by resolvePMTACampaignIdentity below.
+	if strings.TrimSpace(input.CampaignID) == "" {
+		if _, err := tx.ExecContext(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`,
+			orgID, input.Name); err != nil {
+			return "", "", false, fmt.Errorf("acquire deploy name lock: %w", err)
+		}
+		var existingID, existingStatus string
+		err := tx.QueryRowContext(ctx, `
+			SELECT id::text, status
+			FROM mailing_campaigns
+			WHERE organization_id = $1 AND name = $2
+			  AND status NOT IN ('cancelled', 'failed', 'deleted')
+			ORDER BY created_at ASC
+			LIMIT 1`, orgID, input.Name).Scan(&existingID, &existingStatus)
+		if err == nil {
+			return existingID, existingStatus, true, nil
+		}
+		if err != sql.ErrNoRows {
+			return "", "", false, fmt.Errorf("deploy name idempotency check: %w", err)
+		}
+	}
+
 	campaignID, reusingDraft, err := resolvePMTACampaignIdentity(ctx, tx, orgID, input.CampaignID, s.colCache)
 	if err != nil {
-		return "", err
+		return "", "", false, err
 	}
 
 	// Resolve content_locked. Explicit payload wins; else inherit from the
@@ -1006,7 +1073,7 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 		args = append(args, orgID)
 		query := fmt.Sprintf(`UPDATE mailing_campaigns SET %s WHERE id = $1 AND organization_id = $%d`, setClauses, nextP)
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return "", fmt.Errorf("reserve draft campaign: %w", err)
+			return "", "", false, fmt.Errorf("reserve draft campaign: %w", err)
 		}
 	} else {
 		colList := []string{"id", "organization_id", "name", "status",
@@ -1055,21 +1122,21 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 		query := fmt.Sprintf(`INSERT INTO mailing_campaigns (%s) VALUES (%s)`,
 			strings.Join(colList, ", "), strings.Join(valList, ", "))
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return "", fmt.Errorf("insert preparing campaign: %w", err)
+			return "", "", false, fmt.Errorf("insert preparing campaign: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("commit reservation: %w", err)
+		return "", "", false, fmt.Errorf("commit reservation: %w", err)
 	}
 
 	// Confirm the reservation row is durably committed before returning the id —
 	// never return a 200 + campaign_id for a campaign that isn't actually
 	// persisted (2026-06-22 staging/deploy burst false-success).
 	if err := verifyCampaignPersisted(s.db, campaignID.String(), orgID); err != nil {
-		return "", fmt.Errorf("reserve campaign for deploy: %w", err)
+		return "", "", false, fmt.Errorf("reserve campaign for deploy: %w", err)
 	}
-	return campaignID.String(), nil
+	return campaignID.String(), "", false, nil
 }
 
 // finalizeDeploy runs the slow audience planning and campaign persistence in

@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -147,10 +146,13 @@ func TestHandleBlogCampaign_HappyPath(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 
-	// Reservation phase: resolve identity (no draft) -> INSERT finalizing_audience -> COMMIT
+	// Reservation phase: (org, name) advisory lock -> by-name idempotency
+	// check (no live same-name campaign) -> INSERT finalizing_audience -> COMMIT
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT id\s+FROM mailing_campaigns`).
-		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT id::text, status\s+FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
 	mock.ExpectExec(`INSERT INTO mailing_campaigns`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

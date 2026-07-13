@@ -605,6 +605,10 @@ type domainAgentDeployResult struct {
 	CampaignID string `json:"campaign_id,omitempty"`
 	Status     string `json:"status"`
 	Error      string `json:"error,omitempty"`
+	// AlreadyExisted marks a payload that converged on a live campaign with
+	// the same (org, name) instead of deploying a duplicate — the normal
+	// outcome for already-deployed payloads on a retried plan.
+	AlreadyExisted bool `json:"already_existed,omitempty"`
 }
 
 // HandleApprovePlan approves a compiled plan and deploys each payload
@@ -632,7 +636,13 @@ func (a *DomainAgentAPI) HandleApprovePlan(w http.ResponseWriter, r *http.Reques
 		respondPlanErr(w, err)
 		return
 	}
-	if plan.Status != "compiled" {
+	// 'compiled' is the normal approve path. 'approved' is the resume path:
+	// a crash/disconnect mid-deploy previously stranded the plan at
+	// status='approved' with partial deploy_results and no recovery
+	// (findings/2026-07-13-B §4). Re-POSTing approve re-runs the deploy
+	// loop; payloads that already deployed converge via the by-name guard
+	// in deployFromInput instead of double-deploying.
+	if plan.Status != "compiled" && plan.Status != "approved" {
 		respondJSON(w, http.StatusConflict, map[string]string{
 			"error": fmt.Sprintf("plan must be compiled to approve (status=%s)", plan.Status),
 		})
@@ -644,13 +654,32 @@ func (a *DomainAgentAPI) HandleApprovePlan(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := a.plans.Approve(ctx, orgID, planID, body.ApprovedBy); err != nil {
-		respondPlanErr(w, err)
-		return
+	if plan.Status == "compiled" {
+		if err := a.plans.Approve(ctx, orgID, planID, body.ApprovedBy); err != nil {
+			respondPlanErr(w, err)
+			return
+		}
 	}
+
+	// Deploy on a context detached from the request: a client disconnect or
+	// handler timeout must not cancel the loop mid-plan and strand it with
+	// campaigns half-deployed (findings/2026-07-13-B §4). The plan's own
+	// timeout bounds the loop instead.
+	deployCtx, cancelDeploy := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	defer cancelDeploy()
 
 	results := make([]domainAgentDeployResult, 0, len(payloads))
 	allOK := true
+	persistProgress := func(finalStatus string) {
+		resultsJSON, err := json.Marshal(results)
+		if err != nil {
+			log.Printf("[DomainAgent] plan %s: failed to marshal deploy results: %v", planID, err)
+			return
+		}
+		if err := a.plans.SetDeployResults(deployCtx, orgID, planID, resultsJSON, finalStatus); err != nil {
+			log.Printf("[DomainAgent] plan %s: failed to persist deploy results: %v", planID, err)
+		}
+	}
 	for i, raw := range payloads {
 		var input engine.PMTACampaignInput
 		if err := json.Unmarshal(raw, &input); err != nil {
@@ -660,27 +689,34 @@ func (a *DomainAgentAPI) HandleApprovePlan(w http.ResponseWriter, r *http.Reques
 				Error:  "invalid PMTACampaignInput JSON: " + err.Error(),
 			})
 			allOK = false
+			persistProgress("approved")
 			continue
 		}
-		campaignID, status, err := a.pmta.DeployFromInput(ctx, orgID, input)
+		campaignID, status, alreadyExisted, err := a.pmta.deployFromInput(deployCtx, orgID, input)
 		if err != nil {
 			log.Printf("[DomainAgent] plan %s payload %d (%s) deploy failed: %v", planID, i, input.Name, err)
 			results = append(results, domainAgentDeployResult{Name: input.Name, Status: "failed", Error: err.Error()})
 			allOK = false
+			persistProgress("approved")
 			continue
 		}
-		log.Printf("[DomainAgent] plan %s payload %d (%s) deployed → campaign %s (%s)", planID, i, input.Name, campaignID, status)
-		results = append(results, domainAgentDeployResult{Name: input.Name, CampaignID: campaignID, Status: status})
+		if alreadyExisted {
+			log.Printf("[DomainAgent] plan %s payload %d (%s) already deployed → campaign %s (%s)", planID, i, input.Name, campaignID, status)
+		} else {
+			log.Printf("[DomainAgent] plan %s payload %d (%s) deployed → campaign %s (%s)", planID, i, input.Name, campaignID, status)
+		}
+		results = append(results, domainAgentDeployResult{Name: input.Name, CampaignID: campaignID, Status: status, AlreadyExisted: alreadyExisted})
+		// Persist per-payload progress (status stays 'approved' while in
+		// flight) so an ECS bounce mid-loop leaves a reconcilable record of
+		// which payloads are live instead of 'approved' with empty results.
+		persistProgress("approved")
 	}
 
 	finalStatus := "deployed"
 	if !allOK {
 		finalStatus = "failed"
 	}
-	resultsJSON, _ := json.Marshal(results)
-	if err := a.plans.SetDeployResults(ctx, orgID, planID, resultsJSON, finalStatus); err != nil {
-		log.Printf("[DomainAgent] plan %s: failed to persist deploy results: %v", planID, err)
-	}
+	persistProgress(finalStatus)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"results": results,
 		"status":  finalStatus,

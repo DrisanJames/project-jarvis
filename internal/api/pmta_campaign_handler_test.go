@@ -54,9 +54,15 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 		Timezone:    "UTC",
 	}
 
-	// Reservation phase: id-less deploy mints a fresh UUID (NO draft-reuse
+	// Reservation phase: id-less deploy takes the (org, name) advisory lock,
+	// finds no live same-name campaign (by-name idempotency guard —
+	// 2026-07-13 over-deploy fix), mints a fresh UUID (NO draft-reuse
 	// lookup — 2026-07-11 draft-eater fix) -> INSERT finalizing_audience -> COMMIT
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
 	mock.ExpectExec("INSERT INTO mailing_campaigns").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -218,6 +224,146 @@ func TestHandleDeployCampaign_NoOverrideThreadsEmpty(t *testing.T) {
 	}
 	if capturedOverride != "" {
 		t.Fatalf("preflight received override %q, want empty string", capturedOverride)
+	}
+}
+
+// TestHandleDeployCampaign_RePostConvergesOnExistingName pins the by-(org,
+// name) idempotency guard (2026-07-13 over-deploy incident): an id-less
+// re-POST of a name that already has a live campaign returns the EXISTING
+// campaign — 200 + already_existed:true, existing id/status — and inserts no
+// second mailing_campaigns row. The matched row here is in
+// finalizing_audience (the state whose NULL sending_profile_id fooled the
+// jul13 (name, profile) reconciliation): the guard matches by name alone and
+// never consults sending_profile_id, so "pending" is never read as "missing".
+func TestHandleDeployCampaign_RePostConvergesOnExistingName(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
+	existingID := uuid.New().String()
+	input := engine.PMTACampaignInput{
+		Name:          "Repeated Deploy",
+		TargetISPs:    []engine.ISP{engine.ISPGmail},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	// Advisory lock -> by-name check finds the live campaign (only
+	// cancelled/failed/deleted free a name for re-deploy) -> early return,
+	// tx rolled back, NO INSERT (sqlmock is strict-ordered: an INSERT here
+	// would fail the test).
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT id::text, status\s+FROM mailing_campaigns\s+WHERE organization_id = \$1 AND name = \$2\s+AND status NOT IN \('cancelled', 'failed', 'deleted'\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow(existingID, "finalizing_audience"))
+	mock.ExpectRollback()
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if payload["already_existed"] != true {
+		t.Fatalf("expected already_existed=true, got %#v", payload["already_existed"])
+	}
+	if payload["campaign_id"] != existingID {
+		t.Fatalf("expected existing campaign_id %s, got %#v", existingID, payload["campaign_id"])
+	}
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected existing status=finalizing_audience, got %#v", payload["status"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations (a second INSERT would appear here): %v", err)
+	}
+}
+
+// TestHandleDeployCampaign_TerminalNameAllowsRedeploy verifies the guard's
+// escape hatch: when every same-name campaign is terminal (cancelled/failed/
+// deleted the SELECT filters them out), the deploy proceeds and reserves a
+// fresh campaign as before (202 + already_existed:false).
+func TestHandleDeployCampaign_TerminalNameAllowsRedeploy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
+	input := engine.PMTACampaignInput{
+		Name:          "Redeploy After Cancel",
+		TargetISPs:    []engine.ISP{engine.ISPGmail},
+		SendingDomain: "mail.example.com",
+		Variants: []engine.ContentVariant{{
+			VariantName: "A",
+			Subject:     "Subject",
+			HTMLContent: "<html></html>",
+		}},
+		SendMode:    "scheduled",
+		ScheduledAt: &scheduledAt,
+		Timezone:    "UTC",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Terminal rows are filtered by the SELECT itself → no live match.
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectExec("INSERT INTO mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
+
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if payload["already_existed"] != false {
+		t.Fatalf("expected already_existed=false, got %#v", payload["already_existed"])
+	}
+	if payload["status"] != "finalizing_audience" {
+		t.Fatalf("expected status=finalizing_audience, got %#v", payload["status"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

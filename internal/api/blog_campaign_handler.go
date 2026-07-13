@@ -189,19 +189,35 @@ func (s *PMTACampaignService) HandleBlogCampaign(w http.ResponseWriter, r *http.
 		return
 	}
 
-	campaignID, err := s.reserveCampaignForDeploy(ctx, orgID, campaignInput, normalized)
+	campaignID, existingStatus, alreadyExisted, err := s.reserveCampaignForDeploy(ctx, orgID, campaignInput, normalized)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if alreadyExisted {
+		// By-name idempotency guard: a re-POST of a name with a live
+		// campaign converges on it instead of minting a duplicate.
+		log.Printf("[blog-campaign] %q already deployed as campaign_id=%s (%s)", campaignInput.Name, campaignID, existingStatus)
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"campaign_id":     campaignID,
+			"name":            campaignInput.Name,
+			"status":          existingStatus,
+			"already_existed": true,
+			"target_isps":     campaignInput.TargetISPs,
+			"variant_count":   len(campaignInput.Variants),
+		})
 		return
 	}
 
 	log.Printf("[blog-campaign] queued %q campaign_id=%s for audience finalization", campaignInput.Name, campaignID)
 
 	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"campaign_id":   campaignID,
-		"name":          campaignInput.Name,
-		"status":        "finalizing_audience",
-		"target_isps":   campaignInput.TargetISPs,
-		"variant_count": len(campaignInput.Variants),
+		"campaign_id":     campaignID,
+		"name":            campaignInput.Name,
+		"status":          "finalizing_audience",
+		"already_existed": false,
+		"target_isps":     campaignInput.TargetISPs,
+		"variant_count":   len(campaignInput.Variants),
 	})
 }
