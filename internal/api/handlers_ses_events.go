@@ -28,6 +28,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
+	"github.com/ignite/sparkpost-monitor/internal/tracking"
 )
 
 // VersionSESEvents is bumped on every modification per the workspace versioning rule.
@@ -49,7 +50,20 @@ import (
 // total_opens/last_open_at + total_clicks/last_click_at + engagement_score,
 // (c) shadow-write subscriber_domain_state (UpsertSDSOpen/Click + RecomputeSDSScoreLocal),
 // and (d) upsert mailing_inbox_profiles. Machine/asset clicks are excluded from all of these.
-const VersionSESEvents = "2.3"
+// 2.4 — SES OPEN/CLICK ipAddress + userAgent are now parsed and persisted into
+// mailing_tracking_events (ip_address inet / user_agent, NULL when absent) and the
+// lake event's source_ip. CLICK machine-classification additionally runs the internal
+// tracking.ClassifyClickAsMachine UA/IP classifier (scanner UAs, bare-Mozilla + cloud
+// CIDRs) on top of the existing asset-URL check.
+// 2.5 — bounce REASONS are persisted instead of dropped: BOUNCE (and Reject/
+// DeliveryDelay) events now carry the SES status + diagnosticCode into
+// mailing_tracking_events.bounce_reason and the lake's dsn_code/dsn_diag
+// (previously only the suppression hub kept them — the 2026-07-12 ATT tranche
+// read "hard bounce, no reason" everywhere). SES pre-flight address-validation
+// suppressions are additionally labeled reason='ses_address_validation' in the
+// suppression hub — they never reach the remote MX and must not read as remote
+// hard bounces.
+const VersionSESEvents = "2.5"
 
 // SESEventsHandler receives SNS-wrapped SES event-publishing notifications
 // (Bounce, Complaint, Open, Click, Send, Delivery, Reject, DeliveryDelay) and:
@@ -154,10 +168,12 @@ type sesEventNotification struct {
 	Open struct {
 		Timestamp string `json:"timestamp"`
 		IPAddress string `json:"ipAddress"`
+		UserAgent string `json:"userAgent"`
 	} `json:"open"`
 	Click struct {
 		Timestamp string `json:"timestamp"`
 		IPAddress string `json:"ipAddress"`
+		UserAgent string `json:"userAgent"`
 		Link      string `json:"link"`
 	} `json:"click"`
 	DeliveryDelay struct {
@@ -268,15 +284,15 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 		h.handleComplaint(r, env, note, tagConfig, tagTenant)
 	case "Open":
 		h.persistSESEvent(r, "opened", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", "", note.Open.Timestamp)
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", note.Open.IPAddress, note.Open.UserAgent, note.Open.Timestamp)
 		log.Printf("[ses-events] OPEN config_set=%s tenant=%s ip=%s", tagConfig, tagTenant, note.Open.IPAddress)
 	case "Click":
 		h.persistSESEvent(r, "clicked", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", note.Click.Link, note.Click.Timestamp)
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", note.Click.Link, note.Click.IPAddress, note.Click.UserAgent, note.Click.Timestamp)
 		log.Printf("[ses-events] CLICK config_set=%s tenant=%s link=%s ip=%s", tagConfig, tagTenant, note.Click.Link, note.Click.IPAddress)
 	case "Send":
 		h.persistSESEvent(r, "sent", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", "", note.Mail.Timestamp)
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", "", "", note.Mail.Timestamp)
 		log.Printf("[ses-events] SEND config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Delivery":
 		rcpt := firstRecipient(note.Delivery.Recipients)
@@ -289,17 +305,17 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 		}
 		// SES DELIVERY is the authoritative delivery signal for SES-routed
 		// mail (accepted by the recipient mail system; NOT inbox placement).
-		h.persistSESEvent(r, "delivered", note, tagCampaign, tagSubscriber, tagSendID, rcpt, "", "", ts)
+		h.persistSESEvent(r, "delivered", note, tagCampaign, tagSubscriber, tagSendID, rcpt, "", "", "", "", "", "", ts)
 		log.Printf("[ses-events] DELIVERY config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Reject":
 		h.persistSESEvent(r, "rejected", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), note.Reject.Reason, "", note.Mail.Timestamp)
+			firstRecipient(note.Mail.CommonHeaders.To), note.Reject.Reason, "", note.Reject.Reason, "", "", "", note.Mail.Timestamp)
 		log.Printf("[ses-events] REJECT reason=%s config_set=%s tenant=%s msgid=%s",
 			note.Reject.Reason, tagConfig, tagTenant, env.MessageId)
 	case "DeliveryDelay":
 		// A delivery delay is a transient deferral, not a terminal state.
 		h.persistSESEvent(r, "deferred", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), note.DeliveryDelay.DelayType, "", note.Mail.Timestamp)
+			firstRecipient(note.Mail.CommonHeaders.To), note.DeliveryDelay.DelayType, "", note.DeliveryDelay.DelayType, "", "", "", note.Mail.Timestamp)
 		log.Printf("[ses-events] DELIVERY_DELAY type=%s expire=%s config_set=%s tenant=%s",
 			note.DeliveryDelay.DelayType, note.DeliveryDelay.ExpirationTime, tagConfig, tagTenant)
 	default:
@@ -354,7 +370,7 @@ func parseSESTime(s string) time.Time {
 // bounce_reason-adjacent metadata only via the dedupe key for now; a dedicated
 // column rides the event lake in Phase 1.
 func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, note sesEventNotification,
-	campaignID, subscriberID, recipientSendID, recipientEmail, bounceType, linkURL, tsRaw string) {
+	campaignID, subscriberID, recipientSendID, recipientEmail, bounceType, bounceStatus, bounceDiag, linkURL, ipAddress, userAgent, tsRaw string) {
 
 	if h.db == nil || campaignID == "" {
 		// Without a campaign tag we cannot attribute the event. Pre-tag
@@ -426,16 +442,21 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 	// SES click-tracking rewrites EVERY http(s) URL in the HTML body, so mail
 	// clients loading remote stylesheets, web fonts, and images trip CLICK
 	// events the moment the message renders. Flag those is_machine_click=true
-	// (mirroring the internal ClassifyClickAsMachine path) so they stay out of
-	// click_count and out of the `NOT is_machine_click` real-click queries.
-	machineClick := eventType == "clicked" && isMachineClickURL(linkURL)
+	// so they stay out of click_count and out of the `NOT is_machine_click`
+	// real-click queries. Additionally run the internal tracking pixel's
+	// UA/IP classifier (scanner UAs, bare-Mozilla + cloud/scanner CIDRs) now
+	// that SES gives us the click's userAgent/ipAddress. deltaSinceSend is 0
+	// here — we don't pay the DB round-trip for the send timestamp — so only
+	// rules 1 and 2 of ClassifyClickAsMachine can fire (documented trade-off
+	// at its definition).
+	machineClick := eventType == "clicked" && (isMachineClickURL(linkURL) || tracking.ClassifyClickAsMachine(userAgent, ipAddress, 0))
 
 	res, err := h.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain, is_machine_click)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain, is_machine_click, ip_address, user_agent, bounce_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, '')::inet, NULLIF($12, ''), NULLIF($13, ''))
 		ON CONFLICT (id, event_at) DO NOTHING
-	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick)
+	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick, ipAddress, userAgent, bounceDiag)
 	if err != nil {
 		log.Printf("[ses-events] persist %s campaign=%s error: %v", eventType, campaignID, err)
 		return
@@ -465,7 +486,10 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		RouteType:       "ses",
 		EventType:       analytics.CanonicalEventType(eventType),
 		BounceCat:       bounceType,
+		DSNCode:         bounceStatus,
+		DSNDiag:         bounceDiag,
 		LinkURL:         linkURL,
+		SourceIP:        ipAddress,
 		EventAt:         eventAt.UTC().Format(time.RFC3339),
 		Source:          "ses",
 	}
@@ -702,7 +726,7 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 	if note.Bounce.BounceType != "Permanent" {
 		for _, rec := range note.Bounce.BouncedRecipients {
 			h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
-				rec.EmailAddress, "soft", "", note.Mail.Timestamp)
+				rec.EmailAddress, "soft", rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
 			log.Printf("[ses-events] BOUNCE-soft type=%s subtype=%s addr=%s diag=%q config_set=%s tenant=%s",
 				note.Bounce.BounceType, note.Bounce.BounceSubType,
 				logger.RedactEmail(rec.EmailAddress), rec.DiagnosticCode, tagConfig, tagTenant)
@@ -715,6 +739,19 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 	case "Suppressed", "OnAccountSuppressionList", "OnSuppressionList":
 		reason = "ses_suppression_list"
 	}
+	// SES's pre-flight address-validation suppression arrives as a Permanent
+	// bounce whose subtype is NOT one of the suppression-list values; the diag
+	// text is the only reliable marker. Label it distinctly — these sends never
+	// reached the remote MX, so reading them as remote hard bounces overstates
+	// reputation damage (2026-07-12 ATT tranche: all 32 "hard bounces" were this).
+	if reason == "ses_hard_bounce" {
+		for _, rec := range note.Bounce.BouncedRecipients {
+			if strings.Contains(rec.DiagnosticCode, "due to email validation") {
+				reason = "ses_address_validation"
+				break
+			}
+		}
+	}
 
 	for _, rec := range note.Bounce.BouncedRecipients {
 		if rec.EmailAddress == "" {
@@ -723,7 +760,7 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 		// Persist the hard bounce as a tracking event (bounce_type "hard" so
 		// HardBounceSQL classifies it correctly) in addition to suppressing.
 		h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
-			rec.EmailAddress, "hard", "", note.Mail.Timestamp)
+			rec.EmailAddress, "hard", rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping bounce for %s", logger.RedactEmail(rec.EmailAddress))
 			continue
@@ -753,7 +790,7 @@ func (h *SESEventsHandler) handleComplaint(r *http.Request, env snsEnvelope, not
 			continue
 		}
 		h.persistSESEvent(r, "complained", note, campaignID, subscriberID, sendID,
-			rec.EmailAddress, "", "", note.Mail.Timestamp)
+			rec.EmailAddress, "", "", note.Complaint.ComplaintFeedbackType, "", "", "", note.Mail.Timestamp)
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping complaint for %s", logger.RedactEmail(rec.EmailAddress))
 			continue

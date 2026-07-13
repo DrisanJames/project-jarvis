@@ -315,6 +315,195 @@ func TestSESEvents_AssetClick_DoesNotIncrementClickCount(t *testing.T) {
 	}
 }
 
+func TestSESEvents_HumanClick_PersistsIPAndUserAgent(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// A residential IP + a fully-formed browser UA on a normal money link is
+	// a HUMAN click: the INSERT must carry the payload's ipAddress/userAgent
+	// ($11/$12), is_machine_click ($10) must be false, and the full click
+	// engagement cascade must run.
+	humanUA := "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+	humanIP := "203.0.113.7"
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			false, humanIP, humanUA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET click_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET unique_click_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_subscribers SET total_clicks").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
+			AddRow(0, 1, 1, nil, nil))
+	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-07-10T19:00:00Z", "ipAddress": humanIP, "userAgent": humanUA,
+			"link": "https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestSESEvents_ScannerClick_FlaggedMachine_NoEngagement(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Datacenter/scanner signal: a bare "Mozilla/5.0" UA from an Azure IP
+	// (20.0.0.0/8 is in tracking.CloudCIDRs) trips ClassifyClickAsMachine
+	// rule 2, even though the link itself is a normal money URL. The event
+	// row still persists with is_machine_click=true ($10) and the payload's
+	// ip/ua ($11/$12), but NO engagement side-effect query may run — only
+	// the INSERT is expected.
+	scannerUA := "Mozilla/5.0"
+	scannerIP := "20.190.10.5"
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			true, scannerIP, scannerUA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-07-10T19:00:00Z", "ipAddress": scannerIP, "userAgent": scannerUA,
+			"link": "https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations (INSERT only, no engagement cascade): %v", err)
+	}
+}
+
+func TestSESEvents_ScannerUAClick_FlaggedMachine(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Rule-1 scanner UA (SafeLinks) — machine regardless of IP.
+	scannerUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SafeLinks/1.0"
+	scannerIP := "98.42.10.11" // residential — the UA alone must flag it
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			true, scannerIP, scannerUA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-07-10T19:00:00Z", "ipAddress": scannerIP, "userAgent": scannerUA,
+			"link": "https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations (INSERT only, no engagement cascade): %v", err)
+	}
+}
+
+func TestSESEvents_Open_PersistsIPAndUserAgent(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Open events must also carry the payload's ipAddress/userAgent into the
+	// INSERT ($11/$12). is_machine_click stays false (open semantics are
+	// unchanged) and the open engagement cascade runs as before.
+	openUA := "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+	openIP := "198.51.100.23"
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			false, openIP, openUA, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET open_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET unique_open_count").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_subscribers SET total_opens").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
+			AddRow(1, 0, 1, nil, nil))
+	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Open",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"open": map[string]interface{}{"timestamp": "2026-07-10T19:00:00Z", "ipAddress": openIP, "userAgent": openUA},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
 func TestIsMachineClickURL(t *testing.T) {
 	cases := []struct {
 		url     string
@@ -453,5 +642,60 @@ func TestValidateCertHost(t *testing.T) {
 func TestSESEvents_DisableSigEnvVarRespected(t *testing.T) {
 	if v := os.Getenv("SES_WEBHOOK_DISABLE_SIG"); v != "" {
 		t.Skipf("env already set: %s", v)
+	}
+}
+
+// A Permanent bounce whose diagnosticCode carries SES's pre-flight
+// email-validation marker must (a) persist the diagnostic into
+// mailing_tracking_events.bounce_reason and (b) suppress under the distinct
+// 'ses_address_validation' reason with the diag retained — these sends never
+// reached the remote MX and must not read as remote hard bounces (v2.5).
+func TestSESEvents_ValidationSuppression_LabeledAndReasonPersisted(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	diag := "Amazon SES has suppressed sending to this address due to email validation. The address quality confidence level is below your configured threshold."
+
+	// Tracking event INSERT carries the diagnostic as bounce_reason ($13).
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), diag).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Suppression row: reason ($4) re-labeled, diag ($8) retained.
+	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
+		WithArgs(sqlmock.AnyArg(), "deadaddr@att.net", sqlmock.AnyArg(), "ses_address_validation", "ses_webhook",
+			sqlmock.AnyArg(), "5.1.1", diag, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Bounce",
+		"mail": map[string]interface{}{
+			"timestamp": "2026-07-12T22:09:26.000Z",
+			"tags": map[string][]string{
+				"campaign_id":       {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id":     {"22222222-2222-2222-2222-222222222222"},
+				"recipient_send_id": {"rs-att-1"},
+			},
+		},
+		"bounce": map[string]interface{}{
+			"bounceType":    "Permanent",
+			"bounceSubType": "General",
+			"bouncedRecipients": []map[string]interface{}{
+				{"emailAddress": "deadaddr@att.net", "status": "5.1.1", "diagnosticCode": diag},
+			},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
 	}
 }
