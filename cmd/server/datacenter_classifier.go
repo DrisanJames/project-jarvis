@@ -114,11 +114,32 @@ $dcfn$ SELECT EXISTS (SELECT 1 FROM ignite_datacenter_ranges r WHERE ip <<= r.ci
 
 // igniteEventVerdictBody is the canonical SQL body of ignite_event_verdict —
 // verbatim what Postgres stores as prosrc. checkVerdictFunctionDrift compares
-// the live prosrc against this. Reconciled from the live 2026-06-11 body: every
-// branch preserved EXACTLY (farm / apple-mpp / human-relay / google-egress /
-// proxy-view / machine-bare / human), the ONLY change being the datacenter
-// branch, which now delegates to the table-driven ignite_ip_is_datacenter(ip).
+// the live prosrc against this (the drift check references this constant, so
+// it moves in lockstep with any edit here by construction).
+//
+// VERSION 2 (REQ-045, 2026-07-13). Semantic changes vs the 2026-07-06 v1 body:
+//   1. proxy-view UA branch moved ABOVE the google-egress IP branch. Gmail's
+//      image proxy fetches originate FROM the Google egress blocks, so under
+//      v1 a GoogleImageProxy UA + 66.249.x IP — the definition of a view-time
+//      read — classified 'google-egress' (S1 measured 7d: 34 google-egress vs
+//      5 proxy-view for GIP-UA opens). datacenter stays ABOVE proxy-view: no
+//      Google ranges exist in ignite_datacenter_ranges (seed + Azure loader),
+//      so this preserves datacenter precedence without shadowing the fix.
+//   2. NEW class 'ses-tracked' for user_agent='SES-Tracked' — the sentinel
+//      .scratch/ses_lake_pg_ingest.py writes because the lake schema retains
+//      no UA. Under v1 these fell to ELSE 'unknown' and were discarded as
+//      machines everywhere (S1: 3,299 of 3,999 'unknown' 30d clicks). It is a
+//      distinct VESSEL class — deliberately NOT bare-human (tier model:
+//      probation/T1; today the events are single-brand RRU) and not machine.
+//      IP branches above still win: an SES-Tracked click detonating from a
+//      datacenter IP is a scanner.
+//   3. NEW class 'human-ua-only' for device UA + NULL ip_address (10.7% of 7d
+//      opens carry NULL IP — S1): every IP branch is unreachable, so v1's
+//      'human' there was UA trust alone. Lower-confidence, T1-eligible not
+//      T0; ignite_verdict_is_human('human-ua-only') = false by design.
+// Any further semantic change MUST bump igniteVerdictVersion below.
 const igniteEventVerdictBody = `
+  -- verdict-version: 2 (REQ-045; SELECT ignite_verdict_version())
   SELECT CASE
     -- owned yahoo seed/engagement network (operator-confirmed 2026-06-11)
     WHEN ip <<= inet '75.98.0.0/16' THEN 'farm'
@@ -134,17 +155,26 @@ const igniteEventVerdictBody = `
       OR ip <<= inet '2a02:26f7::/32' OR ip <<= inet '2a04:4e41::/32'
       OR ip <<= inet '2a09:bac2::/32' OR ip <<= inet '2a09:bac3::/32')
       THEN 'human-relay'
+    -- datacenter scanner detonations: table-driven, GiST-indexed containment
+    WHEN ignite_ip_is_datacenter(ip) THEN 'datacenter'
+    -- view-time webmail proxies (yahoo/gmail image proxy = real read).
+    -- ORDER IS LOAD-BEARING: must precede google-egress — the Gmail proxy
+    -- fetches FROM those Google blocks (v2 change #1).
+    WHEN ua ILIKE '%yahoo%' OR ua ILIKE '%GoogleImageProxy%' THEN 'proxy-view'
     -- Google-side automation (forwarders/scanners; uniform Chrome from Google blocks)
     WHEN ip <<= inet '66.249.0.0/16' OR ip <<= inet '74.125.0.0/16'
       OR ip <<= inet '72.14.0.0/16'  OR ip <<= inet '209.85.0.0/16'
       THEN 'google-egress'
-    -- datacenter scanner detonations: table-driven, GiST-indexed containment
-    WHEN ignite_ip_is_datacenter(ip) THEN 'datacenter'
-    -- view-time webmail proxies (yahoo/gmail image proxy = real read)
-    WHEN ua ILIKE '%yahoo%' OR ua ILIKE '%GoogleImageProxy%' THEN 'proxy-view'
+    -- SES-native ingest sentinel: UA not retained in the lake, so this is a
+    -- vessel class, neither bare-human nor machine (v2 change #2)
+    WHEN ua = 'SES-Tracked' THEN 'ses-tracked'
     -- other bare/headless automation
     WHEN ua = 'Mozilla/5.0' OR ua IS NULL OR ua = '' THEN 'machine-bare'
     WHEN ua ILIKE '%Go-http%' OR ua ILIKE '%python%' OR ua ILIKE '%curl%' THEN 'machine-bare'
+    -- device/desktop UA but NO captured IP: UA trust alone, lower confidence
+    -- than 'human' (v2 change #3)
+    WHEN ip IS NULL AND (ua ILIKE '%Windows NT%' OR ua ILIKE '%Macintosh%' OR ua ILIKE '%iPhone%'
+      OR ua ILIKE '%iPad%' OR ua ILIKE '%Android%') THEN 'human-ua-only'
     -- full device/desktop UA from non-flagged egress
     WHEN ua ILIKE '%Windows NT%' OR ua ILIKE '%Macintosh%' OR ua ILIKE '%iPhone%'
       OR ua ILIKE '%iPad%' OR ua ILIKE '%Android%' THEN 'human'
@@ -157,12 +187,41 @@ const igniteEventVerdictBody = `
 const igniteEventVerdictDDL = `CREATE OR REPLACE FUNCTION ignite_event_verdict(ua text, ip inet)
 	RETURNS text LANGUAGE sql STABLE PARALLEL SAFE AS $ivfn$` + igniteEventVerdictBody + `$ivfn$`
 
-// igniteVerdictIsHumanBody — canonical body (unchanged from live; pure, so it
-// stays IMMUTABLE).
-const igniteVerdictIsHumanBody = ` SELECT v IN ('human','human-relay','proxy-view') `
+// igniteVerdictIsHumanBody — canonical body (pure, stays IMMUTABLE).
+//
+// v2 (REQ-045):
+//   - COALESCE(..., false): under v1, `v IN (...)` returned NULL for a NULL
+//     verdict, and `NOT (NULL OR x)` silently drops rows from aggregate
+//     predicates — the lead hit this live during S7-gmail verification
+//     (findings/2026-07-13-S0). The function now NEVER returns NULL, so
+//     callers no longer need their own COALESCE wrappers (existing wrappers
+//     remain correct).
+//   - 'ses-tracked' is deliberately NOT in the human set: it is a vessel/
+//     probation class (tier model T1) — the event is real but carries no UA
+//     evidence. Consumers that want SES engagement read the class explicitly.
+//   - 'human-ua-only' is deliberately NOT in the human set: device UA with no
+//     captured IP is lower-confidence (T1-eligible, not T0). NOTE: under v1
+//     these rows classified 'human', so verdict-filtered "human" counts drop
+//     by the NULL-IP share (~10.7% of opens) at deploy — expected, honest.
+const igniteVerdictIsHumanBody = ` SELECT COALESCE(v IN ('human','human-relay','proxy-view'), false) `
 
 const igniteVerdictIsHumanDDL = `CREATE OR REPLACE FUNCTION ignite_verdict_is_human(v text)
 	RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $vhfn$` + igniteVerdictIsHumanBody + `$vhfn$`
+
+// igniteVerdictVersionStr — the verdict-semantics version, SELECT'able in prod
+// as ignite_verdict_version() so REQ-054's ledger/harvest can record which
+// version classified each derived number. Bump on ANY semantic change to
+// igniteEventVerdictBody or igniteVerdictIsHumanBody, in the same diff, and
+// keep the "-- verdict-version: N" marker inside igniteEventVerdictBody in
+// sync (a unit test pins both).
+// History: 1 = 2026-07-06 table-driven datacenter body (unversioned);
+//          2 = REQ-045 (branch order, ses-tracked, human-ua-only, NULL-safe is_human).
+const igniteVerdictVersionStr = "2"
+
+const igniteVerdictVersionBody = ` SELECT ` + igniteVerdictVersionStr + ` `
+
+const igniteVerdictVersionDDL = `CREATE OR REPLACE FUNCTION ignite_verdict_version()
+	RETURNS integer LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $vvfn$` + igniteVerdictVersionBody + `$vvfn$`
 
 // clickVerdictColumnDDL — instant, metadata-only add (nullable, no default
 // rewrite). Distinct from the inert is_machine_click BOOLEAN: TEXT carries the
@@ -247,6 +306,7 @@ func checkVerdictFunctionDrift(db *sql.DB) {
 	fns := []struct{ name, canonical string }{
 		{"ignite_event_verdict", igniteEventVerdictBody},
 		{"ignite_verdict_is_human", igniteVerdictIsHumanBody},
+		{"ignite_verdict_version", igniteVerdictVersionBody},
 	}
 	for _, f := range fns {
 		var live string

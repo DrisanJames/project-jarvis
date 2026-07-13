@@ -642,8 +642,20 @@ func isDomainScopableField(field, operator string) bool {
 // nonScannerClickFilter returns the SQL fragment (leading " AND ...") that
 // restricts a clicked-event subquery to non-SCANNER clicks by reading the
 // materialized click_verdict (populated at write by the ignite_set_click_verdict
-// trigger and backfilled for history). Scope is Microsoft/datacenter SCANNERS
-// only: the excluded classes are 'datacenter','machine-bare','farm','unknown'.
+// trigger and backfilled for history). The excluded classes are
+// 'datacenter','machine-bare','farm','unknown','google-egress' (v2, REQ-045):
+//   - google-egress ADDED: S7-gmail measured google-egress CLICKERS = 0 over
+//     14d — the google-egress mass is opens — so excluding it is near-zero
+//     impact on membership while closing the Google-automation-click door
+//     that ignite_verdict_is_human already treats as non-human.
+//   - 'ses-tracked' (verdict v2) is DELIBERATELY KEPT: vessel/probation class
+//     (tier model T1). Under verdict v1 these SES clicks fell to 'unknown'
+//     and were dropped here — the one brand whose SES-native engagement IS
+//     captured lost it. Forward writes now classify 'ses-tracked' and enter;
+//     rows materialized 'unknown' by v1 stay excluded until the targeted
+//     SES-Tracked backfill lands (proposed follow-on to REQ-045).
+//   - 'human-ua-only' (verdict v2) is KEPT: lower-confidence human (device UA,
+//     no captured IP) — under v1 these entered as 'human'; membership parity.
 // apple-mpp is DELIBERATELY KEPT (Apple MPP = real people; not a scanner) along
 // with human/human-relay/proxy-view — narrowing this to ignite_verdict_is_human()
 // would drop the entire Apple audience, which is out of scope. NULL
@@ -655,7 +667,7 @@ func nonScannerClickFilter(eventType, alias string) string {
 	if eventType != "clicked" {
 		return ""
 	}
-	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR %s.click_verdict NOT IN ('datacenter','machine-bare','farm','unknown'))", alias, alias)
+	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR %s.click_verdict NOT IN ('datacenter','machine-bare','farm','unknown','google-egress'))", alias, alias)
 }
 
 // buildDomainScopedFieldClause converts last_open_at/last_click_at subscriber
