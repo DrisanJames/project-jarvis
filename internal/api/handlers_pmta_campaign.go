@@ -896,6 +896,22 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	// DISABLE_SEND_OWNERSHIP_RECHECK / DISABLE_FAILED_ROW_RECOVERY).
 	gateEnforcementDisabled := os.Getenv("DISABLE_SEND_DAY_GATE_ENFORCEMENT") == "true"
 
+	// The six gates are a SEND-DAY BOARD discipline — PMTA host attestation,
+	// wave-janitor cleanliness, volume-vs-yesterday — all of which describe the
+	// operator's daily broadcast. Continuous internal automation (the partner
+	// drip orchestrator deploys a wave group every few minutes, in-process via
+	// WrapPMTACampaignDeploy) is NOT a send-day board: it has no volume ramp to
+	// reconcile and no daily attestation ritual. Gating it wedges the drip.
+	//
+	// Verified in prod 2026-07-13: enforcement shipped, and within 20 minutes
+	// 27 drip wave-group deploys failed with `412 send-day gates failed: A`
+	// (nobody had attested host health that day) — partner touches simply
+	// stopped. Internal callers therefore bypass the gates, audit-logged.
+	if internal := strings.TrimSpace(r.Header.Get("X-Internal-Caller")); internal != "" {
+		log.Printf("[SendDayGates] bypass: internal caller %q (campaign %q) — gates govern operator boards, not automation", internal, input.Name)
+		gateEnforcementDisabled = true
+	}
+
 	report := s.evaluateDeployGates(r.Context(), orgID, input)
 	if failed := report.failed(); len(failed) > 0 && gateEnforcementDisabled {
 		names := make([]string, len(failed))

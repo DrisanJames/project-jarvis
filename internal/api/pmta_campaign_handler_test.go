@@ -970,3 +970,60 @@ func TestHandleDeployCampaign_GateEnforcementKillSwitch(t *testing.T) {
 		t.Fatalf("unmet sqlmock expectations: %v", err)
 	}
 }
+
+// TestHandleDeployCampaign_InternalCallerBypassesGates is a production
+// regression guard. Gate enforcement shipped 2026-07-13 and immediately blocked
+// the partner-drip orchestrator, which deploys a wave group every few minutes
+// in-process (WrapPMTACampaignDeploy) through this same handler: 27 wave-group
+// deploys failed with `412 send-day gates failed: A` because no operator had
+// attested PMTA host health that day, and partner touches stopped.
+//
+// The six gates describe an OPERATOR SEND-DAY BOARD (host attestation, wave
+// janitor, volume vs yesterday). Continuous automation has none of those
+// semantics, so an X-Internal-Caller deploy must pass through red gates —
+// audit-logged, never silently.
+func TestHandleDeployCampaign_InternalCallerBypassesGates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	defer db.Close()
+
+	service := newTestPMTAService(db, defaultOrgID)
+	service.gateEvalFn = redGates // every gate red
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	// Normal reservation proceeds — no 412, no override row.
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id::text, status\\s+FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectExec("INSERT INTO mailing_campaigns").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("SELECT id::text FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("ok"))
+
+	body, _ := json.Marshal(gateTestInput("[partner-drip] jarvis_att cp ses"))
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/pmta-campaign/deploy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	req.Header.Set("X-Internal-Caller", "partner_drip_orchestrator")
+	rr := httptest.NewRecorder()
+
+	service.HandleDeployCampaign(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 — internal automation must not be gated; body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), "bypass: internal caller") {
+		t.Fatalf("expected an audit line for the internal bypass, got: %s", logBuf.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
