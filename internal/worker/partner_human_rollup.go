@@ -71,6 +71,11 @@ const (
 	// partnerHumanRollupBackfillDays is the REQ-038 coverage window: every
 	// pass ensures rollup rows exist for the trailing N days.
 	partnerHumanRollupBackfillDays = 90
+
+	// partnerHumanRollupChunkPause is the breath between heavy chunks so this
+	// analytics worker cannot monopolise the PRIMARY that the send path shares
+	// (2026-07-13 outage: back-to-back chunks starved the wave scheduler).
+	partnerHumanRollupChunkPause = 5 * time.Second
 	// partnerHumanRollupTrailingDays is always recomputed (late events /
 	// late verdict backfills), regardless of coverage.
 	partnerHumanRollupTrailingDays = 7
@@ -207,13 +212,31 @@ func (w *PartnerHumanRollupWorker) Start(ctx context.Context) {
 	log.Printf("[PartnerHumanRollup] started (backfill=%dd, trailing=%dd, chunk=%dd, daily 03:10 UTC)",
 		w.backfillDays, w.trailingDays, w.chunkDays)
 
-	// Settle delay so migrations (the rollup table itself) land first.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(3 * time.Minute):
+	// NO BOOT PASS during send hours. This worker shares the PRIMARY DB with
+	// the send path, and its chunks run with statement_timeout raised to 120s.
+	//
+	// Verified outage 2026-07-13: the boot pass fired 3 minutes after deploy
+	// (16:0x Denver, peak sending), ran ~7 concurrent 190s verdict queries, and
+	// starved PMTAWaveScheduler's "fetch due waves" query into its own
+	// statement timeout — waves stopped dispatching and SENDING STOPPED for
+	// ~7 minutes until the queries were cancelled. An analytics backfill must
+	// never contend with the send path.
+	//
+	// The pass now runs ONLY in the calm window (03:10 UTC = 21:10 Denver,
+	// after the day's sends), which is also where the 90d backfill chunks
+	// through. ROLLUP_BOOT_PASS=true forces a boot pass for a deliberate
+	// operator-supervised catch-up.
+	if os.Getenv("ROLLUP_BOOT_PASS") == "true" {
+		log.Printf("[PartnerHumanRollup] ROLLUP_BOOT_PASS=true — running a boot pass NOW (operator-forced; contends with the send path)")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Minute):
+		}
+		w.RunOnce(ctx)
+	} else {
+		log.Printf("[PartnerHumanRollup] no boot pass (send-path safety) — first pass at the 03:10 UTC calm window")
 	}
-	w.RunOnce(ctx)
 
 	for {
 		timer := time.NewTimer(w.timeUntilNextTick(time.Now().UTC()))
@@ -350,6 +373,18 @@ func (w *PartnerHumanRollupWorker) processDataset(ctx context.Context, datasetID
 			return chunks, err
 		}
 		chunks++
+
+		// Pace the chunks. Each one is a heavy verdict scan holding a 120s
+		// statement_timeout against the PRIMARY, which the send path shares.
+		// Back-to-back chunks across every dataset is what starved
+		// PMTAWaveScheduler on 2026-07-13 (sends stopped). A breath between
+		// chunks lets the send path's short queries through — this worker is
+		// never latency-sensitive (it fills yesterday's rollup once a night).
+		select {
+		case <-ctx.Done():
+			return chunks, ctx.Err()
+		case <-time.After(partnerHumanRollupChunkPause):
+		}
 	}
 
 	// Activation snapshot for yesterday (the freshest complete day).
