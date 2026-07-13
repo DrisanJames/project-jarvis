@@ -87,6 +87,10 @@ export const PartnerIngestPortal: React.FC = () => {
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Pause/resume failures live in their own state so the 30s dashboard poll
+  // (which resets `error`) can never wipe a failed-emergency-stop banner.
+  // A failed emergency stop must never look like success (REQ-004).
+  const [actionError, setActionError] = useState<string | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [inspectingBatchId, setInspectingBatchId] = useState<string | null>(null);
   const [distributionDataset, setDistributionDataset] = useState<{ id: string; name: string } | null>(null);
@@ -124,17 +128,39 @@ export const PartnerIngestPortal: React.FC = () => {
   const handlePauseDataset = async (id: string) => {
     if (!window.confirm('Pause this dataset? List processing will halt at the next safe point.')) return;
     const reason = window.prompt('Reason for pause:', 'operator emergency stop') ?? '';
-    await apiFetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    });
+    try {
+      const res = await apiFetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setActionError(`EMERGENCY STOP FAILED (HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}) — the dataset is NOT paused and its queued records are still sending. Retry or stop it server-side.`);
+        return;
+      }
+      setActionError(null);
+    } catch (err) {
+      setActionError(`EMERGENCY STOP FAILED (${String(err)}) — the dataset is NOT paused and its queued records are still sending. Retry or stop it server-side.`);
+      return;
+    }
     fetchAll();
   };
 
   const handleResumeDataset = async (id: string) => {
-    await apiFetch(`/api/mailing/data-partners/datasets/${id}/resume`, { method: 'POST', credentials: 'include' });
+    try {
+      const res = await apiFetch(`/api/mailing/data-partners/datasets/${id}/resume`, { method: 'POST', credentials: 'include' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setActionError(`Resume failed (HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}) — the dataset is still emergency-stopped.`);
+        return;
+      }
+      setActionError(null);
+    } catch (err) {
+      setActionError(`Resume failed (${String(err)}) — the dataset is still emergency-stopped.`);
+      return;
+    }
     fetchAll();
   };
 
@@ -170,6 +196,13 @@ export const PartnerIngestPortal: React.FC = () => {
       {error && (
         <div style={{ background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)', padding: 12, borderRadius: 6, marginBottom: 12 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> {error}
+        </div>
+      )}
+
+      {actionError && (
+        <div style={{ background: 'rgba(239,68,68,0.28)', border: '1px solid rgba(239,68,68,0.6)', padding: 12, borderRadius: 6, marginBottom: 12, fontWeight: 600 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} /> {actionError}{' '}
+          <button onClick={() => setActionError(null)} style={{ ...iconBtn, marginLeft: 8 }}>Dismiss</button>
         </div>
       )}
 

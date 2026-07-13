@@ -1763,6 +1763,21 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markFailed(ctx, item.ID, "message validation failed: blocking issues detected")
 	}
 
+	// Ownership re-check immediately before transport submission (REQ-005
+	// criterion 1; findings 2026-07-13-B §1). A claimed item can wait in the
+	// work channel + dispatch batches long past QueueRecovery's stale-age
+	// under a PMTA slowdown; if recovery requeued this row (and another
+	// worker possibly re-claimed and sent it), submitting here would deliver
+	// the same email twice. Abort WITHOUT touching the row — it belongs to
+	// the recovery / re-claimer lifecycle now; the deferred cap release
+	// fires (capSent stays false) so the subscriber's cross-brand slot is
+	// returned.
+	if !p.stillOwnsItem(ctx, item.ID) {
+		atomic.AddInt64(&p.totalSkipped, 1)
+		log.Printf("[SendWorkerPool] OWNERSHIP LOST pre-submit: item %s no longer owned by %s — skipping to prevent duplicate send", item.ID, p.workerID)
+		return nil
+	}
+
 	// Select sender based on ESP type
 	var sender ESPSender
 	switch item.ESPType {
@@ -1826,6 +1841,40 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	p.db.ExecContext(ctx, `UPDATE mailing_subscribers SET total_emails_received = COALESCE(total_emails_received, 0) + 1, updated_at = NOW() WHERE id = $1`, item.SubscriberID)
 
 	return nil
+}
+
+// stillOwnsItem re-verifies, immediately before transport submission, that
+// this worker still owns a queue row it dequeued from the work channel: the
+// row must still carry our worker_id AND still be in the status our claim
+// wrote ('sending' legacy / 'submitting' durable, claimISPForOne). If
+// QueueRecovery requeued it (worker_id NULL, status 'queued') or another
+// worker re-claimed it (different worker_id), we must not submit.
+//
+// Fails OPEN on query error: a DB blip must never halt sending — this check
+// is a best-effort duplicate guard, and markSent's status guard still
+// prevents a double state-flip (though not a double SMTP injection, which is
+// exactly what this check exists to stop).
+//
+// Kill switch: DISABLE_SEND_OWNERSHIP_RECHECK=true restores the pre-check
+// behavior without a redeploy.
+func (p *SendWorkerPool) stillOwnsItem(ctx context.Context, itemID uuid.UUID) bool {
+	if os.Getenv("DISABLE_SEND_OWNERSHIP_RECHECK") == "true" {
+		return true
+	}
+	expectedStatus := "sending"
+	if p.isDurable() {
+		expectedStatus = "submitting"
+	}
+	var workerID sql.NullString
+	var status string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT worker_id, status FROM mailing_campaign_queue WHERE id = $1
+	`, itemID).Scan(&workerID, &status)
+	if err != nil {
+		log.Printf("[SendWorkerPool] ownership re-check error for item %s (failing open): %v", itemID, err)
+		return true
+	}
+	return workerID.Valid && workerID.String == p.workerID && status == expectedStatus
 }
 
 // checkSuppression checks if an email is suppressed against the given suppression lists.
@@ -2110,10 +2159,25 @@ func (p *SendWorkerPool) deferStrictPool(ctx context.Context, item QueueItem, er
 			item.CampaignID, ClassifySubscriberISP(item.Email), attempts+1, retryAt.Format(time.RFC3339))
 	}
 
+	// Backoff via the same scheduled_at pushback the PMTA-transient branch of
+	// markFailed uses (REQ-005 criterion 4; findings 2026-07-13-B §10). The
+	// claim query already enforces `q.scheduled_at <= NOW()` (claimISPForOne),
+	// so the row becomes claim-eligible exactly when the backoff expires — no
+	// new claim predicate, no new index, zero claim-perf impact (the partial
+	// index idx_queue_campaign_status_scheduled on (campaign_id, status,
+	// scheduled_at) WHERE status='queued' keeps covering the claim verbatim).
+	// The previous implementation wrote retry_after, which NO claim/recovery
+	// predicate ever read, and left worker_id/locked_at intact — so the
+	// intended 30s→300s ladder was actually a flat ~5-minute locked_at
+	// shadow. worker_id/locked_at are now cleared so the computed backoff is
+	// the only gate.
 	_, err := p.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_queue
 		SET status = 'queued', error_message = $2, attempts = attempts + 1,
-		    last_attempt_at = NOW(), retry_after = $3
+		    last_attempt_at = NOW(),
+		    scheduled_at = GREATEST(scheduled_at, $3),
+		    worker_id = NULL,
+		    locked_at = NULL
 		WHERE id = $1
 	`, item.ID, errMsg, retryAt)
 	return err

@@ -1664,12 +1664,31 @@ type claimedRecord struct {
 	extra     []byte
 }
 
+// datasetNotEmergencyPausedSQL excludes queue rows whose dataset the operator
+// has emergency-stopped (REQ-004; findings 2026-07-13-E §1). Before this
+// predicate, the portal's Emergency Stop only halted the ingest slicer
+// (partner_slicer.go claimNextBatch) — every already-sliced 'ready'/'mailed'
+// row of a stopped dataset kept being claimed and MAILED on subsequent waves.
+//
+// Deliberately a correlated NOT EXISTS rather than a JOIN: partner_datasets
+// never appears in the claim CTEs' FROM clause, so the FOR UPDATE SKIP LOCKED
+// row locks stay scoped to partner_clean_queue only (a join would either lock
+// the dataset row — serializing claims against the emergency-stop UPDATE
+// itself — or require FOR UPDATE OF). Rows with a NULL/orphaned dataset_id
+// remain claimable (NOT EXISTS is vacuously true), matching prior behavior.
+const datasetNotEmergencyPausedSQL = `
+			  AND NOT EXISTS (
+			      SELECT 1 FROM partner_datasets d
+			      WHERE d.id = partner_clean_queue.dataset_id
+			        AND d.paused_emergency
+			  )`
+
 func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical string, waveSize int) ([]claimedRecord, error) {
 	rows, err := po.db.QueryContext(ctx, `
 		WITH picked AS (
 			SELECT id
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1
+			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+`
 			ORDER BY ingested_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
@@ -2052,7 +2071,7 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 			           ORDER BY ingested_at ASC
 			       ) AS rn
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1
+			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+`
 		),
 		caps(isp, cap) AS (
 			VALUES %s
@@ -2068,7 +2087,7 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 		picked AS (
 			SELECT id FROM partner_clean_queue
 			WHERE id IN (SELECT id FROM eligible)
-			  AND status = 'ready'
+			  AND status = 'ready'`+datasetNotEmergencyPausedSQL+`
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q
@@ -3569,7 +3588,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()
 			  AND engaged_at IS NULL
-			  AND terminal_reason IS NULL
+			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+`
 		),
 		caps(isp, cap) AS (
 			VALUES %s
@@ -3589,7 +3608,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()
 			  AND engaged_at IS NULL
-			  AND terminal_reason IS NULL
+			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+`
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q
