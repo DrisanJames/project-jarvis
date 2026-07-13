@@ -71,6 +71,19 @@ type SendWorkerPool struct {
 	datasetResolveReady     bool
 	datasetResolveNextProbe time.Time
 
+	// Column-presence latch for the partner_dataset_id STAMP COLUMNS on
+	// mailing_message_log / mailing_tracking_events. The send path must never
+	// depend on DDL that cannot land: ADD COLUMN needs ACCESS EXCLUSIVE, and
+	// under a live send (25 workers inserting continuously, tracking_events
+	// partitioned 7 ways) that lock is unobtainable — verified 2026-07-13,
+	// five bounded attempts all hit lock_timeout. The boot DDL loses the same
+	// race, logs CRITICAL, and starts anyway; unconditional column references
+	// would then fail EVERY send. So the write path probes for the columns and
+	// falls back to the pre-REQ-034 SQL until they exist. Latches true.
+	datasetColsMu        sync.Mutex
+	datasetColsReady     bool
+	datasetColsNextProbe time.Time
+
 	// Stats
 	totalSent       int64
 	totalFailed     int64
@@ -869,6 +882,38 @@ func (p *SendWorkerPool) hydrateSnapshots(ctx context.Context, items []QueueItem
 // their DDL lives in criticalSendPathDDL, not behind this switch.
 func messageDatasetStampDisabled() bool {
 	return os.Getenv("DISABLE_MESSAGE_DATASET_STAMP") == "true"
+}
+
+// datasetStampColumnsReady reports whether partner_dataset_id exists on BOTH
+// send-path write targets. Until it does, markSent uses the legacy INSERTs
+// (no stamp) so a missing column can never break sending — the deploy is
+// decoupled from a lock we may not win during an active send. The columns
+// land via criticalSendPathDDL on a boot that wins the lock, or by an
+// operator-applied ALTER in a calm window; this latch then flips within one
+// probe TTL with no redeploy. Fails CLOSED (no stamp) on probe error.
+func (p *SendWorkerPool) datasetStampColumnsReady(ctx context.Context) bool {
+	p.datasetColsMu.Lock()
+	defer p.datasetColsMu.Unlock()
+	if p.datasetColsReady {
+		return true
+	}
+	if time.Now().Before(p.datasetColsNextProbe) {
+		return false
+	}
+	p.datasetColsNextProbe = time.Now().Add(datasetResolveProbeTTL)
+	var n int
+	err := p.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM information_schema.columns
+		WHERE column_name = 'partner_dataset_id'
+		  AND table_name IN ('mailing_message_log', 'mailing_tracking_events')
+	`).Scan(&n)
+	if err != nil || n < 2 {
+		log.Printf("[SendWorkerPool] partner_dataset_id stamp DORMANT: columns present=%d/2 (err=%v) — sending with legacy INSERTs, re-probe in %s", n, err, datasetResolveProbeTTL)
+		return false
+	}
+	p.datasetColsReady = true
+	log.Printf("[SendWorkerPool] partner_dataset_id stamp ACTIVE (columns present on message_log + tracking_events)")
+	return true
 }
 
 // datasetResolveProbeTTL bounds how often a not-yet-ready pool re-checks for
@@ -2136,12 +2181,24 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		partnerDatasetID = item.PartnerDatasetID
 	}
 
+	// The stamp columns may not exist yet (see datasetStampColumnsReady) — a
+	// send must never fail because attribution DDL could not get its lock.
+	stampCols := p.datasetStampColumnsReady(ctx)
+
 	// Log message for webhook correlation
-	p.db.ExecContext(ctx, `
-		INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, partner_dataset_id, sent_at)
-		SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, $6::uuid, NOW()
-		FROM mailing_campaigns camp WHERE camp.id = $2
-	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType, partnerDatasetID)
+	if stampCols {
+		p.db.ExecContext(ctx, `
+			INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, partner_dataset_id, sent_at)
+			SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, $6::uuid, NOW()
+			FROM mailing_campaigns camp WHERE camp.id = $2
+		`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType, partnerDatasetID)
+	} else {
+		p.db.ExecContext(ctx, `
+			INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at)
+			SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, NOW()
+			FROM mailing_campaigns camp WHERE camp.id = $2
+		`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
+	}
 
 	// Extract sending and recipient domains
 	sendingDomain := ""
@@ -2161,11 +2218,19 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	// offer_id/creative_id/subject_line_id carry the campaign's deploy-time
 	// attribution stamp onto the sent event; NULL for unstamped campaigns.
 	// partner_dataset_id mirrors the message-log stamp (REQ-034 parity).
-	if _, trackErr := p.db.ExecContext(ctx, `
+	trackSQL := `
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id, partner_dataset_id)
 		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb, camp.offer_id, camp.creative_id, camp.subject_line_id, $6::uuid
-		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta, partnerDatasetID); trackErr != nil {
+		FROM mailing_campaigns camp WHERE camp.id = $1`
+	trackArgs := []interface{}{item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta, partnerDatasetID}
+	if !stampCols {
+		trackSQL = `
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb, camp.offer_id, camp.creative_id, camp.subject_line_id
+		FROM mailing_campaigns camp WHERE camp.id = $1`
+		trackArgs = trackArgs[:5]
+	}
+	if _, trackErr := p.db.ExecContext(ctx, trackSQL, trackArgs...); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
 	}
 

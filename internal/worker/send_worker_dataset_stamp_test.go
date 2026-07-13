@@ -241,6 +241,15 @@ func expectMarkSentTail(mock sqlmock.Sqlmock) {
 
 // TestMarkSent_StampsPartnerDatasetID: the resolved dataset id is written to
 // BOTH the message-log row and the 'sent' tracking event (stamp parity).
+
+// expectStampColumnsPresent satisfies the datasetStampColumnsReady probe with
+// both columns present, so markSent takes the STAMPED INSERT path. The probe
+// latches per-pool, so it is expected exactly once per fresh test pool.
+func expectStampColumnsPresent(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`information_schema.columns`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+}
+
 func TestMarkSent_StampsPartnerDatasetID(t *testing.T) {
 	pool, mock := newDatasetStampTestPool(t)
 	ds := uuid.MustParse("11111111-1111-1111-1111-111111111111")
@@ -252,6 +261,7 @@ func TestMarkSent_StampsPartnerDatasetID(t *testing.T) {
 
 	mock.ExpectExec(`UPDATE mailing_campaign_queue`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectStampColumnsPresent(mock)
 	mock.ExpectExec(`INSERT INTO mailing_message_log .+partner_dataset_id`).
 		WithArgs("msg-1", item.CampaignID, item.SubscriberID, item.Email, item.ESPType, ds).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -275,6 +285,7 @@ func TestMarkSent_NullStampForNonPartner(t *testing.T) {
 
 	mock.ExpectExec(`UPDATE mailing_campaign_queue`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectStampColumnsPresent(mock)
 	mock.ExpectExec(`INSERT INTO mailing_message_log .+partner_dataset_id`).
 		WithArgs("msg-2", item.CampaignID, item.SubscriberID, item.Email, item.ESPType, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -300,6 +311,7 @@ func TestMarkSent_KillSwitchWritesNull(t *testing.T) {
 
 	mock.ExpectExec(`UPDATE mailing_campaign_queue`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectStampColumnsPresent(mock)
 	mock.ExpectExec(`INSERT INTO mailing_message_log .+partner_dataset_id`).
 		WithArgs("msg-3", item.CampaignID, item.SubscriberID, item.Email, item.ESPType, nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -325,4 +337,43 @@ func TestClaimSQL_CarriesPartnerDatasetID(t *testing.T) {
 	assert.Empty(t, items)
 	assert.NoError(t, mock.ExpectationsWereMet(),
 		"claim SQL must select camp.partner_dataset_id")
+}
+
+// TestMarkSent_DegradesWhenStampColumnsMissing is the deploy-safety guard.
+// partner_dataset_id CANNOT be added to mailing_message_log /
+// mailing_tracking_events while a send is live: ADD COLUMN needs ACCESS
+// EXCLUSIVE and 25 workers insert continuously (verified 2026-07-13 — five
+// bounded ALTER attempts, all lock_timeout). The boot DDL loses the same race
+// and starts the server ANYWAY. If markSent referenced the columns
+// unconditionally, that boot would fail EVERY send.
+//
+// So: columns absent ⇒ markSent must still succeed, using the legacy
+// (unstamped) INSERTs. Attribution is deferred, never sending.
+func TestMarkSent_DegradesWhenStampColumnsMissing(t *testing.T) {
+	pool, mock := newDatasetStampTestPool(t)
+	ds := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	item := QueueItem{
+		ID: uuid.New(), CampaignID: uuid.New(), SubscriberID: uuid.New(),
+		Email: "user@gmail.com", FromEmail: "news@em.discountblog.com",
+		ESPType: "pmta", PartnerDatasetID: ds,
+	}
+
+	mock.ExpectExec(`UPDATE mailing_campaign_queue`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Probe finds only 1 of the 2 columns (mid-migration) → stamp dormant.
+	mock.ExpectQuery(`information_schema.columns`).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// Legacy INSERTs: the SQL must NOT mention partner_dataset_id at all, and
+	// must NOT carry the dataset arg — a column-less DB would reject either.
+	mock.ExpectExec(`INSERT INTO mailing_message_log \(id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at\)`).
+		WithArgs("msg-1", item.CampaignID, item.SubscriberID, item.Email, item.ESPType).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO mailing_tracking_events \(id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id\)`).
+		WithArgs(item.CampaignID, item.SubscriberID, "em.discountblog.com", "gmail.com", "{}").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectMarkSentTail(mock)
+
+	require.NoError(t, pool.markSent(context.Background(), item, "msg-1", ""),
+		"send must succeed even with the attribution columns absent")
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
