@@ -111,6 +111,31 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 	log.Printf("[EverflowClickPostback] sub1=%s sub2=%s sub3=%s offer_id=%s txn=%s",
 		in.SubscriberIDStr, in.Sub2Brand, in.CampaignIDStr, in.EverflowOfferID, in.TransactionID)
 
+	// Durable per-conversion revenue row (REQ-037) — same ledger the dedicated
+	// conversion postback writes, deduped on transaction_id. Placed BEFORE the
+	// subscriber/offer guards so a blank-sub1 conversion still persists its
+	// payout (we lose attribution, never the revenue fact). Best-effort; never
+	// blocks the 200.
+	//
+	// Reads txn/offer from the RAW QUERY first, deliberately NOT from the
+	// parsed struct: parseClickPostback implements a documented all-or-nothing
+	// body fallback (blank sub1 in the query ⇒ every field is taken from the
+	// JSON body, wiping query params — see the parser's test contract). That
+	// contract governs the click path and must not change; the revenue ledger
+	// simply reads what the request actually carried, falling back to the
+	// parsed values for the JSON-body case.
+	if isConversionEvent(r) {
+		q := r.URL.Query()
+		recordEverflowConversion(r.Context(), h.db, defaultOrgID,
+			firstNonEmpty(q.Get("transaction_id"), in.TransactionID),
+			firstNonEmpty(q.Get("offer_id"), in.EverflowOfferID),
+			in.subscriberID, in.campaignID,
+			firstNonEmpty(q.Get("sub1"), in.SubscriberIDStr),
+			firstNonEmpty(q.Get("sub2"), in.Sub2Brand),
+			firstNonEmpty(q.Get("sub3"), in.CampaignIDStr),
+			parsePostbackPayout(r))
+	}
+
 	// Validate subscriber id — required for everything downstream.
 	if in.subscriberID == uuid.Nil {
 		respondClick(w, "skipped", "no_subscriber_id", "")

@@ -128,6 +128,21 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			attributionBackfill(w, req)
 		})
 
+		// Admin: Everflow conversions-report pull → durable per-conversion
+		// revenue rows in mailing_everflow_conversions (REQ-037). Enriches
+		// postback-written rows with payout/status and backfills missed or
+		// blank-sub1 conversions. Same X-Admin-Key gate as the other admin
+		// endpoints. Params: days=N (default 7) or from/to (YYYY-MM-DD).
+		everflowConversionsSync := HandleEverflowConversionsSync(db)
+		s.router.Post("/api/admin/everflow-conversions-sync", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			everflowConversionsSync(w, req)
+		})
+
 		// Admin: bulk-tag canonical CSV loader. Mirrors the local
 		// Python loader (scripts/import/load_eo_harvest_keepers.py and
 		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
@@ -382,6 +397,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/", partnerAdmin.HandleListPartners)
 				dp.Post("/", partnerAdmin.HandleCreatePartner)
 				dp.Get("/datasets", partnerAdmin.HandleListDatasets)
+				dp.Get("/datasets/human-rollup", partnerAdmin.HandleGetDatasetHumanRollup)
 				dp.Post("/{id}/datasets", partnerAdmin.HandleCreateDataset)
 				dp.Get("/datasets/{id}/throughput", partnerAdmin.HandleGetDatasetThroughput)
 				dp.Get("/datasets/{id}/offer-performance", partnerAdmin.HandleGetDatasetOfferPerformance)

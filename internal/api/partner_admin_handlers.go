@@ -2645,3 +2645,99 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		},
 	})
 }
+
+// ============ GET /api/mailing/data-partners/datasets/human-rollup ============
+//
+// REQ-035 read side: per-dataset HUMAN engagement aggregates over the last
+// ?days=N (default 30, max 90) from partner_dataset_human_rollup — the table
+// PartnerHumanRollupWorker computes nightly, because the live verdict-filtered
+// query runs 40s+ (over the handler statement budget). Fast by construction:
+// the rollup PK (dataset_id, day) drives an index range scan per dataset.
+//
+// Semantics (mirror the worker's writes):
+//   - msgs_sent / human_openers / human_clickers: SUM over the window's daily
+//     rows. Openers/clickers are sums of DAILY distinct subscribers (a person
+//     active on 3 days counts 3), labeled in `notes`.
+//   - engaged_tier_members: the LATEST day's snapshot (pcq members currently
+//     in a 7D-openers/30D-clickers segment), not a windowed sum.
+func (h *PartnerAdminHandler) HandleGetDatasetHumanRollup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	days := 30
+	if v, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && v > 0 && v <= 90 {
+		days = v
+	}
+
+	type dsRollup struct {
+		DatasetID          string  `json:"dataset_id"`
+		DatasetName        string  `json:"dataset_name"`
+		PartnerName        string  `json:"partner_name"`
+		Vertical           string  `json:"vertical"`
+		MsgsSent           int64   `json:"msgs_sent"`
+		HumanOpeners       int64   `json:"human_openers"`
+		HumanClickers      int64   `json:"human_clickers"`
+		HumanClickRatePct  float64 `json:"human_click_rate_pct"` // human_clickers / msgs_sent
+		EngagedTierMembers int64   `json:"engaged_tier_members"`
+		LastComputedAt     *string `json:"last_computed_at"`
+	}
+
+	rows, err := h.db.QueryContext(ctx, `
+		SELECT d.id, d.name, p.name, COALESCE(d.vertical, ''),
+		       COALESCE(SUM(r.msgs_sent), 0),
+		       COALESCE(SUM(r.human_openers), 0),
+		       COALESCE(SUM(r.human_clickers), 0),
+		       COALESCE((
+		           SELECT r2.engaged_tier_members
+		           FROM partner_dataset_human_rollup r2
+		           WHERE r2.dataset_id = d.id
+		           ORDER BY r2.day DESC
+		           LIMIT 1
+		       ), 0) AS engaged_tier_members,
+		       MAX(r.computed_at)
+		FROM partner_datasets d
+		JOIN data_partners p ON p.id = d.partner_id
+		LEFT JOIN partner_dataset_human_rollup r
+		  ON r.dataset_id = d.id
+		 AND r.day >= CURRENT_DATE - $1::int
+		GROUP BY d.id, d.name, p.name, d.vertical
+		ORDER BY 7 DESC, 6 DESC, d.name
+	`, days)
+	if err != nil {
+		writeJSONError(w, "human_rollup_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	out := []dsRollup{}
+	for rows.Next() {
+		var d dsRollup
+		var computedAt sql.NullTime
+		if err := rows.Scan(&d.DatasetID, &d.DatasetName, &d.PartnerName, &d.Vertical,
+			&d.MsgsSent, &d.HumanOpeners, &d.HumanClickers, &d.EngagedTierMembers, &computedAt); err != nil {
+			writeJSONError(w, "human_rollup_scan_failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if d.MsgsSent > 0 {
+			d.HumanClickRatePct = float64(d.HumanClickers) / float64(d.MsgsSent) * 100
+		}
+		if computedAt.Valid {
+			s := computedAt.Time.UTC().Format(time.RFC3339)
+			d.LastComputedAt = &s
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSONError(w, "human_rollup_iter_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"days":     days,
+		"datasets": out,
+		"notes": map[string]interface{}{
+			"source":               "partner_dataset_human_rollup — nightly verdict-filtered rollup (PartnerHumanRollupWorker); NOT live events.",
+			"human":                "openers/clickers are verdict-HUMAN (ignite_verdict_is_human) daily distinct subscribers, summed over the window — a subscriber active on N days counts N.",
+			"scope":                "dataset's OWN subscribers × OWN [partner-drip] campaigns (anti-leak rule); sidecar/broadcast sends excluded.",
+			"engaged_tier_members": "latest snapshot of dataset members currently in any 7D-openers/30D-clickers segment (the activation metric), not a windowed sum.",
+		},
+	})
+}

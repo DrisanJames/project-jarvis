@@ -842,6 +842,20 @@ func main() {
 			go engagementMarker.Start(ctx)
 			log.Printf("Partner engagement marker started (clicks->engaged_at, 3m; kill: DISABLE_PARTNER_ENGAGEMENT_MARKER)")
 
+			// Partner HUMAN rollup (REQ-035/038) — nightly per-dataset
+			// verdict-filtered engagement rollup into
+			// partner_dataset_human_rollup (the live verdict query is 40s+,
+			// over the handler budget, so the Data Partners screen reads
+			// this table via GET /data-partners/datasets/human-rollup).
+			// Boot pass gap-fills the trailing 90 days (chunked, resumable),
+			// then daily at 03:10 UTC recomputes the trailing 7 days +
+			// yesterday's engaged-tier snapshot. Distlock via Redis when
+			// available (PG advisory fallback).
+			// Kill: DISABLE_PARTNER_HUMAN_ROLLUP=true.
+			partnerHumanRollup := worker.NewPartnerHumanRollupWorker(mailingDB, redisClient)
+			go partnerHumanRollup.Start(ctx)
+			log.Printf("Partner human rollup started (nightly 03:10 UTC, 90d backfill on boot; kill: DISABLE_PARTNER_HUMAN_ROLLUP)")
+
 			// Journey Segment Enroller — auto-enrolls subscribers from
 			// segment-triggered journeys (Welcome Series Phase 2). Uses the
 			// segmentation engine for saved segments, and the
@@ -1909,6 +1923,25 @@ var criticalSendPathDDL = []struct {
 	{"add_tracking_offer_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS offer_id UUID`},
 	{"add_tracking_creative_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS creative_id UUID`},
 	{"add_tracking_subject_line_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS subject_line_id UUID`},
+	// ---- Message-level partner-dataset attribution (REQ-034, 2026-07-13) ----
+	// markSent's message-log INSERT and 'sent'-event INSERT reference
+	// partner_dataset_id UNCONDITIONALLY — the DISABLE_MESSAGE_DATASET_STAMP
+	// kill switch nulls the stamped VALUE, not the column reference — so both
+	// columns must exist before any send worker starts (the 2026-06-10 rule).
+	// Nullable, no default → metadata-only ADD COLUMN on the ~13M-row message
+	// log (no rewrite). mailing_tracking_events is a partitioned parent: same
+	// brief parent+partition lock the offer_id stamp entries above already
+	// take through this path (8s lock_timeout, 3 retries).
+	{"add_message_log_partner_dataset_id", `ALTER TABLE mailing_message_log ADD COLUMN IF NOT EXISTS partner_dataset_id UUID`},
+	{"add_tracking_partner_dataset_id_critical", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS partner_dataset_id UUID`},
+	// The send workers' claim SELECT (claimISPForOne) reads
+	// camp.partner_dataset_id UNCONDITIONALLY to seed the campaign-level
+	// stamp. The column PRE-EXISTS in prod (dp_add_campaign_partner_dataset_id
+	// in runStartupMigrations, which runs in a background goroutine AFTER
+	// workers start) — duplicated here on the add_campaigns_offer_id_critical
+	// precedent to close the fresh-DB/DR boot race where a claim would error
+	// (and sending stall) until the background slice lands it. No-op on prod.
+	{"add_campaigns_partner_dataset_id_critical", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS partner_dataset_id UUID`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
@@ -2032,6 +2065,18 @@ var concurrentIndexSpecs = []struct {
 	// Lives here (not the 5s slice) because the build scans the full
 	// campaigns heap. Additive, idempotent.
 	{"idx_campaigns_org_offer_key", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_offer_key ON mailing_campaigns (organization_id, offer_key, scheduled_at) WHERE offer_key IS NOT NULL`},
+
+	// ---- Message-level partner-dataset attribution (REQ-034, 2026-07-13) ----
+	// (1) Per-dataset rollup reads over the stamped minority of the ~13M-row
+	// message log; partial so the unstamped majority costs nothing. (2) The
+	// send worker's per-claim-batch subscriber→dataset resolution
+	// (resolveDatasetStamps, internal/worker/send_worker.go) probes for
+	// idx_pcq_subscriber_id BY NAME (pg_index indisvalid) and stays dormant
+	// until it is valid, so the ANY(ids) lookup can never seq-scan the
+	// >1M-row partner_clean_queue — renaming that index breaks the probe.
+	// Both live here (not the 5s slice) because each build scans a large heap.
+	{"idx_message_log_partner_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_partner_dataset ON mailing_message_log (partner_dataset_id, sent_at DESC) WHERE partner_dataset_id IS NOT NULL`},
+	{"idx_pcq_subscriber_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_subscriber_id ON partner_clean_queue (subscriber_id) WHERE subscriber_id IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2184,6 +2229,27 @@ func runStartupMigrations(db *sql.DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
+		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
+		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
+		// (internal/worker/partner_human_rollup.go) because the live
+		// verdict-filtered query is 40s+ (over the 30s handler budget).
+		// human_openers/human_clickers are verdict-filtered daily uniques
+		// scoped to the dataset's OWN subscribers × OWN drip campaigns;
+		// engaged_tier_members is a point-in-time snapshot (pcq members ∩
+		// 7D-openers/30D-clickers segment members) stamped only on the most
+		// recent day. Read by GET /api/mailing/data-partners/datasets/
+		// human-rollup. New table, no deps, fast — placed near the top so it
+		// can't be dropped by the migration runner's boot time budget.
+		{"create_partner_dataset_human_rollup", `CREATE TABLE IF NOT EXISTS partner_dataset_human_rollup (
+			dataset_id           UUID NOT NULL,
+			day                  DATE NOT NULL,
+			msgs_sent            BIGINT NOT NULL DEFAULT 0,
+			human_openers        INTEGER NOT NULL DEFAULT 0,
+			human_clickers       INTEGER NOT NULL DEFAULT 0,
+			engaged_tier_members INTEGER NOT NULL DEFAULT 0,
+			computed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (dataset_id, day)
+		)`},
 		// Consciousness hourly assessments — one row per scope (platform +
 		// per-ISP family) per assessment interval, written by the engine's
 		// assessment loop (internal/engine/consciousness_assessment.go) and
@@ -2224,6 +2290,42 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"idx_cpm_manual_conversions_org_deal_time", `CREATE INDEX IF NOT EXISTS idx_cpm_manual_conversions_org_deal_time ON mailing_cpm_manual_conversions (organization_id, deal_id, converted_at)`},
 		{"uniq_cpm_manual_conversions_dedupe", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cpm_manual_conversions_dedupe ON mailing_cpm_manual_conversions (deal_id, conversion_id) WHERE conversion_id <> ''`},
+		// Durable per-conversion Everflow revenue ledger (REQ-037). Written by
+		// both conversion postback entry points (source='postback', payout from
+		// the &payout= macro, blank-sub1 rows KEPT) and by the admin
+		// conversions-report pull (source='export', authoritative payout/status;
+		// internal/api/everflow_conversions.go). sub1/2/3 stored raw — sub2
+		// semantics differ per link vintage (brand domain vs creative UUID).
+		// Per-dataset revenue = join subscriber_id → partner_clean_queue.
+		// New table, no deps, fast — placed near the top of this slice.
+		{"create_everflow_conversions", `CREATE TABLE IF NOT EXISTS mailing_everflow_conversions (
+			id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id   UUID NOT NULL,
+			conversion_id     TEXT NOT NULL DEFAULT '',
+			transaction_id    TEXT NOT NULL DEFAULT '',
+			everflow_offer_id TEXT NOT NULL DEFAULT '',
+			subscriber_id     UUID,
+			campaign_id       UUID,
+			sub1              TEXT NOT NULL DEFAULT '',
+			sub2              TEXT NOT NULL DEFAULT '',
+			sub3              TEXT NOT NULL DEFAULT '',
+			payout            NUMERIC(12,2) NOT NULL DEFAULT 0,
+			status            TEXT NOT NULL DEFAULT '',
+			event_name        TEXT NOT NULL DEFAULT '',
+			source            TEXT NOT NULL DEFAULT 'postback',
+			converted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Export dedupe: one row per Everflow conversion_id.
+		{"uniq_everflow_conversions_convid", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_everflow_conversions_convid ON mailing_everflow_conversions (conversion_id) WHERE conversion_id <> ''`},
+		// Postback dedupe: one postback-shaped row (no conversion_id yet) per
+		// transaction. Scoped to conversion_id='' so an export-enriched row
+		// leaves this index's domain and a same-transaction second event can
+		// insert under its own conversion_id without colliding.
+		{"uniq_everflow_conversions_txn", `CREATE UNIQUE INDEX IF NOT EXISTS uniq_everflow_conversions_txn ON mailing_everflow_conversions (transaction_id) WHERE transaction_id <> '' AND conversion_id = ''`},
+		{"idx_everflow_conversions_subscriber", `CREATE INDEX IF NOT EXISTS idx_everflow_conversions_subscriber ON mailing_everflow_conversions (subscriber_id, converted_at DESC) WHERE subscriber_id IS NOT NULL`},
+		{"idx_everflow_conversions_offer_time", `CREATE INDEX IF NOT EXISTS idx_everflow_conversions_offer_time ON mailing_everflow_conversions (everflow_offer_id, converted_at DESC)`},
 		// NOTE: mailing_cpm_deals.end_date (the deal DEADLINE / "finish sooner"
 		// lever) is applied SYNCHRONOUSLY in criticalSendPathDDL — cpmDealSelect
 		// reads it unconditionally, so it must land before the binary serves

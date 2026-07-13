@@ -61,6 +61,16 @@ type SendWorkerPool struct {
 	// inline (LRU + singleflight; see content_snapshot.go).
 	snapshotCache *SnapshotCache
 
+	// Partner-dataset stamp resolution state (REQ-034). The per-claim-batch
+	// subscriber→partner_clean_queue lookup stays DORMANT until the
+	// idx_pcq_subscriber_id concurrent index is verified valid — without it
+	// the ANY(ids) lookup would seq-scan the >1M-row partner_clean_queue on
+	// every batch. Probed lazily, at most once per datasetResolveProbeTTL,
+	// then latched true for the life of the pool. Guarded by datasetResolveMu.
+	datasetResolveMu        sync.Mutex
+	datasetResolveReady     bool
+	datasetResolveNextProbe time.Time
+
 	// Stats
 	totalSent       int64
 	totalFailed     int64
@@ -331,6 +341,13 @@ type QueueItem struct {
 	// WaveID seeds the deterministic per-recipient fingerprint mutation
 	// (computeMutationSeed) when rendering from a snapshot.
 	WaveID uuid.UUID
+
+	// PartnerDatasetID is the partner dataset this message is attributed to
+	// (REQ-034). Seeded from the campaign's deploy-time stamp in the claim
+	// SELECT, then refined per-message by resolveDatasetStamps (subscriber →
+	// partner_clean_queue membership). Nil = not partner-attributed; markSent
+	// writes NULL to mailing_message_log / the 'sent' tracking event.
+	PartnerDatasetID uuid.UUID
 }
 
 // NewSendWorkerPool creates a new worker pool
@@ -792,7 +809,8 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 			COALESCE(c.from_name_id, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.idempotency_key, '00000000-0000-0000-0000-000000000000'),
 			COALESCE(c.content_snapshot_id, '00000000-0000-0000-0000-000000000000'),
-			COALESCE(c.wave_id, '00000000-0000-0000-0000-000000000000')
+			COALESCE(c.wave_id, '00000000-0000-0000-0000-000000000000'),
+			COALESCE(camp.partner_dataset_id, '00000000-0000-0000-0000-000000000000')
 		FROM claimed c
 		JOIN mailing_subscribers s ON s.id = c.subscriber_id
 		JOIN mailing_campaigns camp ON camp.id = c.campaign_id
@@ -806,7 +824,7 @@ func (p *SendWorkerPool) claimISPForOne(ctx context.Context, campaignID, isp str
 	if err != nil {
 		return nil, err
 	}
-	return p.hydrateSnapshots(ctx, items), nil
+	return p.resolveDatasetStamps(ctx, p.hydrateSnapshots(ctx, items)), nil
 }
 
 // hydrateSnapshots resolves queue rows that reference a content snapshot
@@ -842,6 +860,149 @@ func (p *SendWorkerPool) hydrateSnapshots(ctx context.Context, items []QueueItem
 		out = append(out, item)
 	}
 	return out
+}
+
+// messageDatasetStampDisabled is the REQ-034 kill switch: set
+// DISABLE_MESSAGE_DATASET_STAMP=true to revert to no partner-dataset
+// stamping without a redeploy (send-path kill-switch rule). It nulls the
+// stamped VALUE only — the SQL still references the columns, which is why
+// their DDL lives in criticalSendPathDDL, not behind this switch.
+func messageDatasetStampDisabled() bool {
+	return os.Getenv("DISABLE_MESSAGE_DATASET_STAMP") == "true"
+}
+
+// datasetResolveProbeTTL bounds how often a not-yet-ready pool re-checks for
+// idx_pcq_subscriber_id (built by ensureConcurrentIndexes AFTER workers start,
+// in a calm IO window — possibly hours after the first boot of this binary).
+const datasetResolveProbeTTL = 5 * time.Minute
+
+// datasetResolveIndexReady reports whether the subscriber→dataset batch
+// lookup may run. It requires the partial index idx_pcq_subscriber_id
+// (cmd/server/main.go concurrentIndexSpecs) to exist and be valid; until
+// then resolution is skipped entirely so the send hot path can never be
+// held behind a partner_clean_queue seq scan. Result latches true.
+func (p *SendWorkerPool) datasetResolveIndexReady(ctx context.Context) bool {
+	p.datasetResolveMu.Lock()
+	defer p.datasetResolveMu.Unlock()
+	if p.datasetResolveReady {
+		return true
+	}
+	if time.Now().Before(p.datasetResolveNextProbe) {
+		return false
+	}
+	p.datasetResolveNextProbe = time.Now().Add(datasetResolveProbeTTL)
+	var valid bool
+	err := p.db.QueryRowContext(ctx, `
+		SELECT i.indisvalid
+		FROM pg_class c
+		JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = 'idx_pcq_subscriber_id'
+	`).Scan(&valid)
+	if err != nil || !valid {
+		log.Printf("[SendWorkerPool] dataset stamp resolution dormant: idx_pcq_subscriber_id not valid yet (err=%v valid=%v); campaign-level stamps still apply, re-probe in %s", err, valid, datasetResolveProbeTTL)
+		return false
+	}
+	p.datasetResolveReady = true
+	log.Printf("[SendWorkerPool] dataset stamp resolution ACTIVE (idx_pcq_subscriber_id valid)")
+	return true
+}
+
+// pcqMembership is one (dataset, first-ingest) membership row for a
+// subscriber in partner_clean_queue. A subscriber can be a member of
+// multiple datasets — the per-vertical uniqueness constraint
+// (uq_pcq_vertical_email_md5) means one row per vertical per email.
+type pcqMembership struct {
+	DatasetID  uuid.UUID
+	IngestedAt time.Time
+}
+
+// pickDatasetID applies the REQ-034 deterministic attribution rule for one
+// message, given the campaign's deploy-time stamp and the subscriber's
+// partner_clean_queue memberships:
+//
+//  1. Campaign stamped AND the subscriber is a member of that dataset →
+//     the campaign's dataset (the campaign context resolves cross-vertical
+//     multi-membership).
+//  2. Subscriber has memberships (campaign unstamped — sidecar/broadcast —
+//     OR stamped with a dataset the subscriber is provably NOT in, the
+//     vertical-keyed misattribution class of dataset 9502c7c4) → the
+//     EARLIEST-ingested membership, ties broken by smallest dataset id:
+//     first-touch acquisition attribution, fully deterministic.
+//  3. Campaign stamped, subscriber has NO memberships (pcq link-back never
+//     stamped subscriber_id) → the campaign's dataset.
+//  4. Neither → Nil (not a partner send; column stays NULL).
+func pickDatasetID(campaignDS uuid.UUID, memberships []pcqMembership) uuid.UUID {
+	if campaignDS != uuid.Nil {
+		for _, m := range memberships {
+			if m.DatasetID == campaignDS {
+				return campaignDS
+			}
+		}
+	}
+	if len(memberships) > 0 {
+		best := memberships[0]
+		for _, m := range memberships[1:] {
+			if m.IngestedAt.Before(best.IngestedAt) ||
+				(m.IngestedAt.Equal(best.IngestedAt) && m.DatasetID.String() < best.DatasetID.String()) {
+				best = m
+			}
+		}
+		return best.DatasetID
+	}
+	return campaignDS
+}
+
+// resolveDatasetStamps refines each claimed item's PartnerDatasetID from the
+// campaign-level stamp (already in the claim SELECT) to per-message truth via
+// ONE batched partner_clean_queue lookup per claim batch (≤100 subscriber
+// ids — never a per-message query; see pickDatasetID for the rule). Fails
+// open: on any error items pass through with the campaign-level stamp only.
+func (p *SendWorkerPool) resolveDatasetStamps(ctx context.Context, items []QueueItem) []QueueItem {
+	if len(items) == 0 || messageDatasetStampDisabled() {
+		return items
+	}
+	if !p.datasetResolveIndexReady(ctx) {
+		return items
+	}
+	seen := make(map[uuid.UUID]struct{}, len(items))
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if items[i].SubscriberID == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[items[i].SubscriberID]; !ok {
+			seen[items[i].SubscriberID] = struct{}{}
+			ids = append(ids, items[i].SubscriberID.String())
+		}
+	}
+	if len(ids) == 0 {
+		return items
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT subscriber_id, dataset_id, MIN(ingested_at)
+		FROM partner_clean_queue
+		WHERE subscriber_id = ANY($1)
+		GROUP BY subscriber_id, dataset_id
+	`, pq.Array(ids))
+	if err != nil {
+		log.Printf("[SendWorkerPool] dataset stamp resolve failed (campaign-level stamps only for this batch): %v", err)
+		return items
+	}
+	defer rows.Close()
+	memberships := make(map[uuid.UUID][]pcqMembership)
+	for rows.Next() {
+		var subID, dsID uuid.UUID
+		var ingested time.Time
+		if err := rows.Scan(&subID, &dsID, &ingested); err != nil {
+			log.Printf("[SendWorkerPool] dataset stamp resolve scan error: %v", err)
+			continue
+		}
+		memberships[subID] = append(memberships[subID], pcqMembership{DatasetID: dsID, IngestedAt: ingested})
+	}
+	for i := range items {
+		items[i].PartnerDatasetID = pickDatasetID(items[i].PartnerDatasetID, memberships[items[i].SubscriberID])
+	}
+	return items
 }
 
 // claimISPBatch claims items proportionally across ISPs for a single campaign.
@@ -1378,7 +1539,6 @@ func assignVMTAsToItems(items []QueueItem, ipAllocations map[string]map[string]i
 	}
 }
 
-
 func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 	var items []QueueItem
 	for rows.Next() {
@@ -1421,6 +1581,7 @@ func (p *SendWorkerPool) scanQueueRows(rows *sql.Rows) ([]QueueItem, error) {
 			&item.IdempotencyKey,
 			&item.ContentSnapshotID,
 			&item.WaveID,
+			&item.PartnerDatasetID,
 		)
 		if err != nil {
 			log.Printf("SendWorkerPool: scan error: %v", err)
@@ -1967,12 +2128,20 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		return err
 	}
 
+	// Partner-dataset attribution stamp (REQ-034): resolved at claim time
+	// (claim SELECT campaign stamp + resolveDatasetStamps subscriber
+	// refinement). NULL for non-partner sends and under the kill switch.
+	var partnerDatasetID interface{}
+	if item.PartnerDatasetID != uuid.Nil && !messageDatasetStampDisabled() {
+		partnerDatasetID = item.PartnerDatasetID
+	}
+
 	// Log message for webhook correlation
 	p.db.ExecContext(ctx, `
-		INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, sent_at)
-		SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, NOW()
+		INSERT INTO mailing_message_log (id, message_id, organization_id, campaign_id, subscriber_id, email, esp_type, partner_dataset_id, sent_at)
+		SELECT gen_random_uuid(), $1, camp.organization_id, $2, $3, $4, $5, $6::uuid, NOW()
 		FROM mailing_campaigns camp WHERE camp.id = $2
-	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType)
+	`, messageID, item.CampaignID, item.SubscriberID, item.Email, item.ESPType, partnerDatasetID)
 
 	// Extract sending and recipient domains
 	sendingDomain := ""
@@ -1991,11 +2160,12 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	}
 	// offer_id/creative_id/subject_line_id carry the campaign's deploy-time
 	// attribution stamp onto the sent event; NULL for unstamped campaigns.
+	// partner_dataset_id mirrors the message-log stamp (REQ-034 parity).
 	if _, trackErr := p.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id)
-		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb, camp.offer_id, camp.creative_id, camp.subject_line_id
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, sending_domain, recipient_domain, metadata, offer_id, creative_id, subject_line_id, partner_dataset_id)
+		SELECT gen_random_uuid(), camp.organization_id, $1, $2, 'sent', NOW(), $3, $4, $5::jsonb, camp.offer_id, camp.creative_id, camp.subject_line_id, $6::uuid
 		FROM mailing_campaigns camp WHERE camp.id = $1
-	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta); trackErr != nil {
+	`, item.CampaignID, item.SubscriberID, sendingDomain, recipientDomain, meta, partnerDatasetID); trackErr != nil {
 		log.Printf("[send_worker] tracking event INSERT failed for campaign=%s sub=%s: %v", item.CampaignID, item.SubscriberID, trackErr)
 	}
 

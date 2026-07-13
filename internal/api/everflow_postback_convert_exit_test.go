@@ -42,11 +42,20 @@ const (
 	ceEmail     = "buyer@example.com"
 )
 
+// expectDurableConversionInsert registers the REQ-037 durable revenue-row
+// INSERT that HandlePostback now fires FIRST, before any offer resolution or
+// sub1 gate (see recordEverflowConversion, everflow_conversions.go).
+func expectDurableConversionInsert(mock sqlmock.Sqlmock) {
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_everflow_conversions`)).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
 // TestConvertExit_ResolvedOffer_InDictionary_ExitsDrip is the full happy path:
 // offer resolves to an internal UUID AND is in the dictionary, so we both
 // suppress and exit the drip, matching enrollments by subscriber UUID + email.
 func TestConvertExit_ResolvedOffer_InDictionary_ExitsDrip(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
+	expectDurableConversionInsert(mock)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
 		WithArgs(ceOfferEF).
@@ -84,6 +93,7 @@ func TestConvertExit_ResolvedOffer_InDictionary_ExitsDrip(t *testing.T) {
 // new code keys the exit on the dictionary, so the drip still stops.
 func TestConvertExit_ClickDripOffer_NoMailingOffersRow_StillExits(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
+	expectDurableConversionInsert(mock)
 
 	// mailing_offers lookup → NO row (offerID stays nil).
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
@@ -120,6 +130,7 @@ func TestConvertExit_ClickDripOffer_NoMailingOffersRow_StillExits(t *testing.T) 
 // (matched by metadata.original_subscriber = subscriber UUID).
 func TestConvertExit_MatchesByUUID_WhenEmailMissing(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
+	expectDurableConversionInsert(mock)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
 		WithArgs(ceOfferEF).
@@ -155,6 +166,7 @@ func TestConvertExit_MatchesByUUID_WhenEmailMissing(t *testing.T) {
 // suppression still fires for the resolvable offer.
 func TestConvertExit_OfferNotInDictionary_Suppresses_NoExit(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
+	expectDurableConversionInsert(mock)
 
 	const otherOffer = "1234"
 
@@ -186,6 +198,7 @@ func TestConvertExit_OfferNotInDictionary_Suppresses_NoExit(t *testing.T) {
 // no enrollment rows.
 func TestConvertExit_NoOffer_NotInDictionary_Skips(t *testing.T) {
 	h, mock := newConvertExitMockDB(t)
+	expectDurableConversionInsert(mock)
 
 	const camID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 

@@ -57,12 +57,26 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 			TransactionID string  `json:"transaction_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
+		// Fill from the body WITHOUT clobbering query params: a blank-sub1
+		// GET postback still carries offer_id/payout/transaction_id in the
+		// query, and wiping them here is what used to reduce the durable
+		// blank-sub1 row to $0/no-txn (REQ-037).
 		sub1 = body.Sub1
-		sub2 = body.Sub2
-		sub3 = body.Sub3
-		efOfferID = body.OfferID
-		payoutStr = fmt.Sprintf("%.2f", body.Payout)
-		txnID = body.TransactionID
+		if body.Sub2 != "" {
+			sub2 = body.Sub2
+		}
+		if body.Sub3 != "" {
+			sub3 = body.Sub3
+		}
+		if body.OfferID != "" {
+			efOfferID = body.OfferID
+		}
+		if body.Payout != 0 {
+			payoutStr = fmt.Sprintf("%.2f", body.Payout)
+		}
+		if body.TransactionID != "" {
+			txnID = body.TransactionID
+		}
 	}
 
 	subscriberID, _ := uuid.Parse(sub1)
@@ -72,6 +86,15 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 
 	log.Printf("[EverflowPostback] sub1=%s sub2=%s sub3=%s offer_id=%s payout=%.2f txn=%s",
 		sub1, sub2, sub3, efOfferID, payout, txnID)
+
+	ctx := r.Context()
+	orgID := "00000000-0000-0000-0000-000000000001"
+
+	// Durable per-conversion revenue row (REQ-037) — BEFORE the sub1 gate so
+	// blank-sub1 conversions persist with their payout instead of vanishing
+	// (the Tahiti class). Best-effort; never blocks the 200 to Everflow.
+	recordEverflowConversion(ctx, h.db, orgID, txnID, efOfferID,
+		subscriberID, campaignID, sub1, sub2, sub3, payout)
 
 	// Associate the converter by their subscriber UUID (sub1). Without it we
 	// cannot match a converter to a suppression row or to an active click-drip
@@ -89,9 +112,6 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	// click-drip dictionary. Async + best-effort so the 200 to Everflow is never
 	// delayed or blocked by Slack.
 	notifyConversionAsync(h.notifier, h.db, subscriberID, efOfferID, payout, txnID)
-
-	ctx := r.Context()
-	orgID := "00000000-0000-0000-0000-000000000001"
 
 	// Resolve the internal offer UUID (campaign → mailing_offers). This stays
 	// NULL for most click-drip offers, which have no mailing_offers row — that
