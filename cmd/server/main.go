@@ -5900,6 +5900,12 @@ END $$`},
 			reason_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
 			computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
+		// REQ-043: structured planner warnings (e.g. "segment X contributed
+		// 0 members — never built") ride the campaign's funnel row so the
+		// Draft Board / QA sweeps see them. App-owned table, one row per
+		// campaign — the ALTER is a metadata-only ADD COLUMN with a
+		// non-volatile default (no rewrite), safely inside the 5s budget.
+		{"add_funnel_plan_warnings", `ALTER TABLE mailing_campaign_audience_funnel ADD COLUMN IF NOT EXISTS plan_warnings JSONB NOT NULL DEFAULT '[]'::jsonb`},
 		{"idx_acct_summary_campaign", `CREATE INDEX IF NOT EXISTS idx_acct_summary_campaign ON pmta_acct_daily_summary (campaign_id)`},
 		{"idx_acct_summary_date", `CREATE INDEX IF NOT EXISTS idx_acct_summary_date ON pmta_acct_daily_summary (summary_date)`},
 		{"uq_acct_summary_key", `CREATE UNIQUE INDEX IF NOT EXISTS uq_acct_summary_key ON pmta_acct_daily_summary (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)`},

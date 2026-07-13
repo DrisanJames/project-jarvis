@@ -171,6 +171,85 @@ type pmtaAudiencePlan struct {
 	// recently_mailed, sds_cold_suppressed, sds_recent_24h). Powers the
 	// per-campaign audience funnel (targeted vs suppressed by reason).
 	SuppressionReasons map[string]int
+	// PlanWarnings carries structured, per-source planning warnings
+	// (REQ-043: a 0-member inclusion/exclusion segment was previously a
+	// server-log-only skip). Persisted onto the campaign's plan record by
+	// persistAudienceFunnel (mailing_campaign_audience_funnel.plan_warnings)
+	// so the Draft Board and QA sweeps can see "segment X contributed 0".
+	PlanWarnings []pmtaPlanWarning
+}
+
+// pmtaPlanWarning is one structured planning warning. Deduplicated per plan
+// run on (Code, Scope, SegmentID) and persisted wholesale on every finalize
+// (the funnel row is an ON CONFLICT (campaign_id) DO UPDATE upsert), so a
+// scheduler re-fire / re-finalization replaces the set instead of
+// accumulating duplicates.
+type pmtaPlanWarning struct {
+	Code      string `json:"code"`       // e.g. planWarnSegmentZeroMembers
+	Scope     string `json:"scope"`      // "inclusion" | "exclusion"
+	SegmentID string `json:"segment_id"` // the mailing_segments id that contributed 0
+	Detail    string `json:"detail"`     // ledger-derived: never built / build failed / built empty / ...
+}
+
+// planWarnSegmentZeroMembers: a named segment contributed 0 recipients
+// (inclusion) or 0 exclusion emails (exclusion) at plan time.
+const planWarnSegmentZeroMembers = "segment_zero_members"
+
+// segmentBuildFailClosedDisabled is the REQ-043 kill switch. Set
+// DISABLE_SEGMENT_BUILD_FAIL_CLOSED=true to revert a 0-member EXCLUSION
+// segment with no verified successful build to the legacy warn-and-skip
+// behavior (structured plan warnings are still recorded — only the
+// fail-closed enforcement is neutralized). Tier-risky enforcement changes on
+// the send path always carry an env kill switch (REQ-007 lesson).
+func segmentBuildFailClosedDisabled() bool {
+	return os.Getenv("DISABLE_SEGMENT_BUILD_FAIL_CLOSED") == "true"
+}
+
+// segmentBuildLedgerState classifies a segment that read 0 rows from
+// mailing_segment_members using mailing_segment_build_ledger (written by
+// every member-writing build path — see segment_ledger.go).
+//
+// builtEmpty=true means "built and genuinely empty": the ledger has a
+// successful build (last_built_at IS NOT NULL), its most recent status is
+// 'ok' (a stale 'running' row is coerced to 'failed', matching
+// coerceLedgerStatus), and the last good build recorded 0 members.
+// Everything else — no ledger row, never-successful build, failed/blocked
+// last build, a ledger count that disagrees with the 0 readable members
+// (membership wiped after a good build), or a ledger read error — returns
+// builtEmpty=false with a detail string saying why.
+//
+// NOTE: segment_ledger.go declares the ledger "observability, not control
+// flow" for BUILDERS (a build must never fail on a ledger write). REQ-043
+// deliberately promotes ledger READS to control flow on the exclusion path:
+// it is the only signal that distinguishes "never built" (fail-closed —
+// an unbuilt exclusion silently widens the audience) from "built empty"
+// (legitimately excludes nobody).
+func segmentBuildLedgerState(ctx context.Context, db dbQuerier, segmentID string) (builtEmpty bool, detail string) {
+	var builtAt, updatedAt sql.NullTime
+	var status sql.NullString
+	var count sql.NullInt64
+	err := db.QueryRowContext(ctx, `
+		SELECT last_built_at, last_build_status, updated_at, subscriber_count
+		FROM mailing_segment_build_ledger
+		WHERE segment_id = $1::uuid
+	`, segmentID).Scan(&builtAt, &status, &updatedAt, &count)
+	if err == sql.ErrNoRows {
+		return false, "never built (no build-ledger row)"
+	}
+	if err != nil {
+		return false, fmt.Sprintf("build-ledger read error: %v", err)
+	}
+	if !builtAt.Valid {
+		return false, fmt.Sprintf("never successfully built (last attempt status=%s)", strings.TrimSpace(status.String))
+	}
+	effective := coerceLedgerStatus(status.String, updatedAt.Time, time.Now())
+	if effective != "ok" {
+		return false, fmt.Sprintf("last build status=%s (last good build %s)", effective, builtAt.Time.UTC().Format(time.RFC3339))
+	}
+	if count.Valid && count.Int64 > 0 {
+		return false, fmt.Sprintf("build ledger reports %d members from the last good build but 0 are readable (membership wiped after build?)", count.Int64)
+	}
+	return true, fmt.Sprintf("built and genuinely empty (last good build %s)", builtAt.Time.UTC().Format(time.RFC3339))
 }
 
 // reservePoolMultiplier returns the over-select factor applied to each
@@ -600,9 +679,27 @@ func planPMTAAudience(
 	}
 	log.Printf("[PlanAudience] exclusion lists loaded (%d lists) in %v", len(exclusionIDs), time.Since(planStart))
 
-	exclusionSegEmails, err := loadExclusionSegmentEmails(ctx, db, input.ExclusionSegments)
+	// Structured plan warnings (REQ-043). Deduplicated on
+	// (code, scope, segment_id) so a segment reachable through BOTH
+	// send_priority and inclusion_segments (streamSegment fires twice)
+	// records its zero-members warning once.
+	var planWarnings []pmtaPlanWarning
+	planWarnSeen := make(map[string]bool)
+	addPlanWarning := func(w pmtaPlanWarning) {
+		key := w.Code + "|" + w.Scope + "|" + w.SegmentID
+		if planWarnSeen[key] {
+			return
+		}
+		planWarnSeen[key] = true
+		planWarnings = append(planWarnings, w)
+	}
+
+	exclusionSegEmails, exclusionSegWarnings, err := loadExclusionSegmentEmails(ctx, db, input.ExclusionSegments)
 	if err != nil {
 		return pmtaAudiencePlan{}, err
+	}
+	for _, w := range exclusionSegWarnings {
+		addPlanWarning(w)
 	}
 
 	// Per-domain engagement engine — SA-2 (per-domain frequency cap +
@@ -954,17 +1051,10 @@ func planPMTAAudience(
 		if allQuotasMet() {
 			return nil
 		}
-		var matCount int
-		if err := db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
-		).Scan(&matCount); err != nil {
-			log.Printf("[PlanAudience] segment %s count query error: %v, skipping", segmentID, err)
-			return nil
-		}
-		if matCount == 0 {
-			log.Printf("[PlanAudience] WARNING: segment %s has 0 materialized members — skipping (segment may not have been hydrated)", segmentID)
-			return nil
-		}
+		// ONE members read (REQ-043 DoD-3): emptiness is derived from the
+		// row loop instead of a separate COUNT(*), so a rebuild or cleanup
+		// committing between two statements can no longer make the planner
+		// pass a >0 count gate and then read 0 rows (or vice versa).
 		rows, err := db.QueryContext(ctx,
 			`SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
 		if err != nil {
@@ -972,14 +1062,36 @@ func planPMTAAudience(
 			return nil
 		}
 		defer rows.Close()
+		matCount := 0
+		quotasCut := false
 		for rows.Next() {
+			matCount++
 			var subID, email string
 			if rows.Scan(&subID, &email) == nil {
 				qualifyEmail(subID, email, "segment", segmentID)
 			}
 			if allQuotasMet() {
+				quotasCut = true
 				break
 			}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			log.Printf("[PlanAudience] segment %s materialized read error after %d rows: %v, skipping", segmentID, matCount, rowsErr)
+			return nil
+		}
+		if matCount == 0 && !quotasCut {
+			// REQ-043 DoD-2: a 0-member inclusion segment is a structured,
+			// operator-visible warning on the campaign's plan record —
+			// never only a server log line. The ledger detail distinguishes
+			// "never built / build failed" from "built and genuinely empty".
+			_, detail := segmentBuildLedgerState(ctx, db, segmentID)
+			addPlanWarning(pmtaPlanWarning{
+				Code:      planWarnSegmentZeroMembers,
+				Scope:     "inclusion",
+				SegmentID: segmentID,
+				Detail:    detail,
+			})
+			log.Printf("[PlanAudience] WARNING: segment %s contributed 0 materialized members — %s", segmentID, detail)
 		}
 		return nil
 	}
@@ -1563,47 +1675,65 @@ func planPMTAAudience(
 		SelectedTotal:      selectedTotal,
 		ReserveTotal:       reserveTotal,
 		SuppressionReasons: suppressionReasons,
+		PlanWarnings:       planWarnings,
 	}, nil
 }
 
-func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []string) (map[string]bool, error) {
+func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []string) (map[string]bool, []pmtaPlanWarning, error) {
 	emails := make(map[string]bool)
+	var warnings []pmtaPlanWarning
 	for _, segmentID := range segmentIDs {
 		segStart := time.Now()
 
 		// FAIL CLOSED (REQ-002): a load error on a named exclusion segment
-		// fails the plan — never a silent skip. An EMPTY segment (0
-		// materialized members) is still fine: it excludes nobody.
-		var matCount int
-		if err := db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
-		).Scan(&matCount); err != nil {
-			return nil, fmt.Errorf("count exclusion segment %s: %w (fail-closed: campaign must not plan without its exclusions)", segmentID, err)
-		}
-		if matCount == 0 {
-			log.Printf("[loadExclusionSegmentEmails] WARNING: segment %s has 0 materialized members — skipping", segmentID)
-			continue
-		}
+		// fails the plan — never a silent skip. ONE members read (REQ-043
+		// DoD-3 sibling): emptiness is derived from the row loop, not a
+		// separate COUNT(*) racing the read.
 		rows, err := db.QueryContext(ctx,
 			`SELECT email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
 		if err != nil {
-			return nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: campaign must not plan without its exclusions)", segmentID, err)
+			return nil, nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: campaign must not plan without its exclusions)", segmentID, err)
 		}
+		matCount := 0
 		for rows.Next() {
 			var email string
 			if rows.Scan(&email) == nil {
 				emails[strings.ToLower(strings.TrimSpace(email))] = true
+				matCount++
 			}
 		}
 		rowsErr := rows.Err()
 		rows.Close()
 		if rowsErr != nil {
-			return nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: partial exclusion load)", segmentID, rowsErr)
+			return nil, nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: partial exclusion load)", segmentID, rowsErr)
+		}
+		if matCount == 0 {
+			// REQ-043 DoD-1: "never built / failed build" is NOT the same
+			// as "built and genuinely empty". An unbuilt exclusion silently
+			// WIDENS the audience (the suppression-gap analog of the jun29
+			// collapse class), so it FAILS the plan — matching the REQ-002
+			// exclusion-list fail-closed idiom above — unless the
+			// DISABLE_SEGMENT_BUILD_FAIL_CLOSED kill switch is on.
+			// A verified empty build legitimately excludes nobody and only
+			// records a structured warning on the campaign's plan record.
+			builtEmpty, detail := segmentBuildLedgerState(ctx, db, segmentID)
+			if !builtEmpty && !segmentBuildFailClosedDisabled() {
+				return nil, nil, fmt.Errorf("exclusion segment %s has 0 materialized members and no verified build — %s (fail-closed: an unbuilt exclusion would silently widen the audience; rebuild the segment or set DISABLE_SEGMENT_BUILD_FAIL_CLOSED=true to override)", segmentID, detail)
+			}
+			warnings = append(warnings, pmtaPlanWarning{
+				Code:      planWarnSegmentZeroMembers,
+				Scope:     "exclusion",
+				SegmentID: segmentID,
+				Detail:    detail,
+			})
+			log.Printf("[loadExclusionSegmentEmails] WARNING: exclusion segment %s excludes nobody — %s (fail_closed_disabled=%t)",
+				segmentID, detail, segmentBuildFailClosedDisabled())
+			continue
 		}
 		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails from materialized cache in %v",
 			safePrefix(segmentID, 12), matCount, time.Since(segStart))
 	}
-	return emails, nil
+	return emails, warnings, nil
 }
 
 func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCount int) []pmtaWaveSpec {

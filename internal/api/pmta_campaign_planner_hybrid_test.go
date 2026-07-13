@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -31,13 +32,16 @@ import (
 //      which is already exercised by pmta_campaign_planner_test.go and
 //      handlers_pmta_campaign.go integration paths).
 
-// segmentCountRegex / segmentMembersRegex capture the two queries streamSegment
-// issues against mailing_segment_members. Kept as constants so the tests
-// double as regression guards: if anyone changes the materialized-members
-// read shape, these tests fail loudly.
+// segmentMembersQuery captures the SINGLE query streamSegment issues against
+// mailing_segment_members (REQ-043 DoD-3: the separate COUNT(*) was collapsed
+// into the row loop so emptiness is derived from one snapshot). Kept as a
+// constant so the tests double as regression guards: if anyone changes the
+// materialized-members read shape — or reintroduces a second statement —
+// these tests fail loudly. segmentLedgerQuery is the ledger consult that
+// fires ONLY when a segment reads 0 rows (REQ-043 DoD-2).
 const (
-	segmentCountQuery   = `SELECT COUNT\(\*\) FROM mailing_segment_members WHERE segment_id = \$1`
 	segmentMembersQuery = `SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = \$1`
+	segmentLedgerQuery  = `SELECT last_built_at, last_build_status, updated_at, subscriber_count\s+FROM mailing_segment_build_ledger`
 )
 
 // TestPlanPMTAAudience_Hybrid_PreludeFillsAllQuotas_SkipsSDS verifies the
@@ -64,11 +68,8 @@ func TestPlanPMTAAudience_Hybrid_PreludeFillsAllQuotas_SkipsSDS(t *testing.T) {
 		WithArgs(campaignID).
 		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
 
-	// Prelude: count says 3 materialized members, then stream returns
-	// one per configured ISP, exactly filling the quotas.
-	mock.ExpectQuery(segmentCountQuery).
-		WithArgs(segmentID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(3))
+	// Prelude: the single members read returns one row per configured ISP,
+	// exactly filling the quotas.
 	mock.ExpectQuery(segmentMembersQuery).
 		WithArgs(segmentID).
 		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).
@@ -142,9 +143,6 @@ func TestPlanPMTAAudience_Hybrid_PreludeUndersupplies_SDSFillsRemaining(t *testi
 
 	// Prelude: segment has 2 members (gmail), quota is 5. After the
 	// prelude we still need 3 gmail subscribers.
-	mock.ExpectQuery(segmentCountQuery).
-		WithArgs(segmentID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 	mock.ExpectQuery(segmentMembersQuery).
 		WithArgs(segmentID).
 		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).
@@ -225,11 +223,15 @@ func TestPlanPMTAAudience_Hybrid_EmptySegmentFallsThroughToSDS(t *testing.T) {
 		WithArgs(campaignID).
 		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
 
-	// Prelude: count returns 0. streamSegment logs the warning and
-	// returns nil WITHOUT issuing the members read.
-	mock.ExpectQuery(segmentCountQuery).
+	// Prelude: the single members read returns 0 rows. streamSegment then
+	// consults the build ledger (REQ-043) to classify the emptiness, records
+	// a structured plan warning, and falls through to SDS.
+	mock.ExpectQuery(segmentMembersQuery).
 		WithArgs(segmentID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}))
+	mock.ExpectQuery(segmentLedgerQuery).
+		WithArgs(segmentID).
+		WillReturnError(sql.ErrNoRows) // never built — no ledger row
 
 	// SDS primary pass then runs normally and supplies everyone.
 	mock.ExpectQuery(`FROM mailing_subscribers sub\s+JOIN mailing_subscriber_domain_state sds`).
@@ -257,6 +259,18 @@ func TestPlanPMTAAudience_Hybrid_EmptySegmentFallsThroughToSDS(t *testing.T) {
 	}
 	if got := result.CountsByISP["gmail"]; got != 2 {
 		t.Errorf("gmail count = %d, want 2 (SDS-only since segment was empty)", got)
+	}
+	// REQ-043 DoD-2: the empty inclusion segment is a STRUCTURED warning on
+	// the plan, never only a log line.
+	if len(result.PlanWarnings) != 1 {
+		t.Fatalf("PlanWarnings = %+v, want exactly 1 zero-members warning", result.PlanWarnings)
+	}
+	w := result.PlanWarnings[0]
+	if w.Code != planWarnSegmentZeroMembers || w.Scope != "inclusion" || w.SegmentID != segmentID {
+		t.Errorf("warning = %+v, want code=%s scope=inclusion segment_id=%s", w, planWarnSegmentZeroMembers, segmentID)
+	}
+	if !strings.Contains(w.Detail, "never built") {
+		t.Errorf("warning detail must classify the no-ledger-row case as never built, got %q", w.Detail)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sql expectations: %v", err)
@@ -295,18 +309,12 @@ func TestPlanPMTAAudience_Hybrid_InclusionSegmentAfterSendPriority(t *testing.T)
 		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
 
 	// send_priority segment FIRST — 1 gmail row.
-	mock.ExpectQuery(segmentCountQuery).
-		WithArgs(prioritySeg).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(segmentMembersQuery).
 		WithArgs(prioritySeg).
 		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).
 			AddRow("66666666-0000-0000-0000-000000000001", "pri@gmail.com"))
 
 	// inclusion_segment SECOND — 1 more gmail row, which fills quota=2.
-	mock.ExpectQuery(segmentCountQuery).
-		WithArgs(inclusionSeg).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery(segmentMembersQuery).
 		WithArgs(inclusionSeg).
 		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).

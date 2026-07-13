@@ -744,6 +744,15 @@ func persistAudienceFunnel(ctx context.Context, db *sql.DB, campaignID, orgID st
 		suppressedTotal += n
 	}
 	reasonsJSON := mustJSON(audience.SuppressionReasons)
+	// plan_warnings (REQ-043): structured per-segment warnings. A nil slice
+	// must serialize as '[]' (not 'null') so JSONB readers can iterate
+	// unconditionally. The upsert REPLACES the set on every finalize —
+	// a re-fired finalization can never duplicate warnings.
+	warns := audience.PlanWarnings
+	if warns == nil {
+		warns = []pmtaPlanWarning{}
+	}
+	warningsJSON := mustJSON(warns)
 
 	var orgParam interface{}
 	if strings.TrimSpace(orgID) != "" {
@@ -752,17 +761,18 @@ func persistAudienceFunnel(ctx context.Context, db *sql.DB, campaignID, orgID st
 
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO mailing_campaign_audience_funnel
-			(campaign_id, organization_id, total_seen, targeted, reserve, suppressed_total, reason_breakdown, computed_at)
-		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, NOW())
+			(campaign_id, organization_id, total_seen, targeted, reserve, suppressed_total, reason_breakdown, plan_warnings, computed_at)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NOW())
 		ON CONFLICT (campaign_id) DO UPDATE SET
 			total_seen = EXCLUDED.total_seen,
 			targeted = EXCLUDED.targeted,
 			reserve = EXCLUDED.reserve,
 			suppressed_total = EXCLUDED.suppressed_total,
 			reason_breakdown = EXCLUDED.reason_breakdown,
+			plan_warnings = EXCLUDED.plan_warnings,
 			computed_at = NOW()
 	`, campaignID, orgParam, audience.TotalSeen, audience.SelectedTotal,
-		audience.ReserveTotal, suppressedTotal, string(reasonsJSON))
+		audience.ReserveTotal, suppressedTotal, string(reasonsJSON), string(warningsJSON))
 	if err != nil {
 		log.Printf("[audience-funnel] persist campaign=%s error: %v", campaignID, err)
 	}
@@ -776,23 +786,29 @@ type campaignAudienceFunnel struct {
 	Reserve         int            `json:"reserve"`
 	SuppressedTotal int            `json:"suppressed_total"`
 	ReasonBreakdown map[string]int `json:"reason_breakdown"`
-	ComputedAt      string         `json:"computed_at"`
+	// PlanWarnings surfaces the planner's structured warnings (REQ-043),
+	// e.g. "segment X contributed 0 (never built)" — the Draft Board / QA
+	// sweep signal for silent per-lane collapse.
+	PlanWarnings []pmtaPlanWarning `json:"plan_warnings"`
+	ComputedAt   string            `json:"computed_at"`
 }
 
 // loadAudienceFunnel returns the funnel for a campaign, or nil if none recorded.
 func (s *AdvancedMailingService) loadAudienceFunnel(ctx context.Context, id string) *campaignAudienceFunnel {
 	var f campaignAudienceFunnel
-	var reasonsRaw []byte
+	var reasonsRaw, warningsRaw []byte
 	var computed sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT total_seen, targeted, reserve, suppressed_total, COALESCE(reason_breakdown,'{}'::jsonb), computed_at
+		SELECT total_seen, targeted, reserve, suppressed_total, COALESCE(reason_breakdown,'{}'::jsonb), COALESCE(plan_warnings,'[]'::jsonb), computed_at
 		FROM mailing_campaign_audience_funnel WHERE campaign_id = $1::uuid
-	`, id).Scan(&f.TotalSeen, &f.Targeted, &f.Reserve, &f.SuppressedTotal, &reasonsRaw, &computed)
+	`, id).Scan(&f.TotalSeen, &f.Targeted, &f.Reserve, &f.SuppressedTotal, &reasonsRaw, &warningsRaw, &computed)
 	if err != nil {
 		return nil
 	}
 	f.ReasonBreakdown = map[string]int{}
 	_ = json.Unmarshal(reasonsRaw, &f.ReasonBreakdown)
+	f.PlanWarnings = []pmtaPlanWarning{}
+	_ = json.Unmarshal(warningsRaw, &f.PlanWarnings)
 	if computed.Valid {
 		f.ComputedAt = computed.Time.UTC().Format(time.RFC3339)
 	}

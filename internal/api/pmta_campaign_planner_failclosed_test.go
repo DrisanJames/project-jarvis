@@ -58,16 +58,24 @@ func TestExclusionFailClosed_ListLoadError(t *testing.T) {
 	}
 }
 
-func TestExclusionFailClosed_SegmentCountError(t *testing.T) {
+// REQ-043 note: loadExclusionSegmentEmails now issues a SINGLE members read
+// (emptiness derived from the row loop — no separate COUNT(*) racing it), so
+// the count-error test became a partial-read-error test: a mid-stream row
+// error (rows.Err() after Next returns false) must also fail the plan.
+func TestExclusionFailClosed_SegmentPartialReadError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New(): %v", err)
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM mailing_segment_members WHERE segment_id = \$1`).
+	rows := sqlmock.NewRows([]string{"email"}).
+		AddRow("first@gmail.com").
+		AddRow("second@gmail.com").
+		RowError(1, errors.New("statement timeout mid-stream"))
+	mock.ExpectQuery(`SELECT email FROM mailing_segment_members WHERE segment_id = \$1`).
 		WithArgs(fcSegmentID).
-		WillReturnError(errors.New("statement timeout"))
+		WillReturnRows(rows)
 
 	input := engine.PMTACampaignInput{
 		InclusionLists:    []string{fcListID},
@@ -76,7 +84,7 @@ func TestExclusionFailClosed_SegmentCountError(t *testing.T) {
 
 	_, planErr := planPMTAAudience(context.Background(), db, fcOrgID, input, pmtaNormalizedCampaign{}, NewSuppressionMatcher(), nil)
 	if planErr == nil {
-		t.Fatal("planPMTAAudience must FAIL when a named exclusion segment count errors — got nil error (fail-open)")
+		t.Fatal("planPMTAAudience must FAIL when a named exclusion segment read errors mid-stream — got nil error (fail-open: partial exclusion load)")
 	}
 	if !strings.Contains(planErr.Error(), fcSegmentID) {
 		t.Errorf("plan error must name the failing segment, got: %v", planErr)
@@ -93,9 +101,6 @@ func TestExclusionFailClosed_SegmentReadError(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM mailing_segment_members WHERE segment_id = \$1`).
-		WithArgs(fcSegmentID).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
 	mock.ExpectQuery(`SELECT email FROM mailing_segment_members WHERE segment_id = \$1`).
 		WithArgs(fcSegmentID).
 		WillReturnError(errors.New("read failed"))
