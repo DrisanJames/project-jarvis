@@ -28,6 +28,10 @@ func (s *SuppressionService) HandleGetGlobalSuppression(w http.ResponseWriter, r
 			result["stats"] = stats
 		}
 		result["total_entries"] = s.globalHub.Count()
+		// REQ-003: hub-vs-DB reconcile verdict. `reconcile.diverged` means
+		// the in-memory enforcement set was missing entries beyond
+		// tolerance at the last check — the dashboard chip must degrade.
+		result["reconcile"] = s.globalHub.ReconcileStatus()
 	} else {
 		var totalCount int
 		s.db.QueryRow(`SELECT COUNT(*) FROM mailing_suppression_entries WHERE is_global = TRUE`).Scan(&totalCount)

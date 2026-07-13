@@ -574,9 +574,13 @@ func planPMTAAudience(
 		return pmtaAudiencePlan{}, fmt.Errorf("resolve exclusion lists: %w", resolveErr)
 	}
 	for _, slID := range exclusionIDs {
+		// FAIL CLOSED (REQ-002): a campaign that names an exclusion list must
+		// never plan without it. A load error fails the plan (the finalizer
+		// marks the campaign 'failed' with this reason); an EMPTY list is
+		// fine — zero hashes simply exclude nobody.
 		slRows, slErr := db.QueryContext(ctx, "SELECT md5_hash FROM mailing_suppression_entries WHERE list_id = $1", slID)
 		if slErr != nil {
-			continue
+			return pmtaAudiencePlan{}, fmt.Errorf("load exclusion suppression list %s: %w (fail-closed: campaign must not plan without its exclusions)", slID, slErr)
 		}
 		var hashes []string
 		for slRows.Next() {
@@ -585,7 +589,11 @@ func planPMTAAudience(
 				hashes = append(hashes, h)
 			}
 		}
+		rowsErr := slRows.Err()
 		slRows.Close()
+		if rowsErr != nil {
+			return pmtaAudiencePlan{}, fmt.Errorf("read exclusion suppression list %s: %w (fail-closed: partial exclusion load)", slID, rowsErr)
+		}
 		if len(hashes) > 0 {
 			suppMatcher.LoadList(slID, hashes)
 		}
@@ -656,7 +664,10 @@ func planPMTAAudience(
 			}
 			rmRows.Close()
 		} else {
-			log.Printf("[PlanAudience] WARNING: failed to load recently-mailed emails: %v — remail gap NOT enforced", rmErr)
+			// FAIL CLOSED (REQ-002): the operator explicitly asked for a
+			// remail gap (MinRemailHours > 0). Planning without it would
+			// silently re-mail recently-touched addresses.
+			return pmtaAudiencePlan{}, fmt.Errorf("load recently-mailed set for min_remail_hours=%d: %w (fail-closed: remail gap cannot be enforced)", input.MinRemailHours, rmErr)
 		}
 		log.Printf("[PlanAudience] loaded %d recently-mailed emails (last %dh, domains=%v) in %v",
 			len(recentlyMailed), input.MinRemailHours, sendingDomains, time.Since(planStart))
@@ -1560,12 +1571,14 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 	for _, segmentID := range segmentIDs {
 		segStart := time.Now()
 
+		// FAIL CLOSED (REQ-002): a load error on a named exclusion segment
+		// fails the plan — never a silent skip. An EMPTY segment (0
+		// materialized members) is still fine: it excludes nobody.
 		var matCount int
 		if err := db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM mailing_segment_members WHERE segment_id = $1`, segmentID,
 		).Scan(&matCount); err != nil {
-			log.Printf("[loadExclusionSegmentEmails] segment %s count error: %v, skipping", segmentID, err)
-			continue
+			return nil, fmt.Errorf("count exclusion segment %s: %w (fail-closed: campaign must not plan without its exclusions)", segmentID, err)
 		}
 		if matCount == 0 {
 			log.Printf("[loadExclusionSegmentEmails] WARNING: segment %s has 0 materialized members — skipping", segmentID)
@@ -1574,8 +1587,7 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 		rows, err := db.QueryContext(ctx,
 			`SELECT email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
 		if err != nil {
-			log.Printf("[loadExclusionSegmentEmails] segment %s read error: %v, skipping", segmentID, err)
-			continue
+			return nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: campaign must not plan without its exclusions)", segmentID, err)
 		}
 		for rows.Next() {
 			var email string
@@ -1583,7 +1595,11 @@ func loadExclusionSegmentEmails(ctx context.Context, db dbQuerier, segmentIDs []
 				emails[strings.ToLower(strings.TrimSpace(email))] = true
 			}
 		}
+		rowsErr := rows.Err()
 		rows.Close()
+		if rowsErr != nil {
+			return nil, fmt.Errorf("read exclusion segment %s: %w (fail-closed: partial exclusion load)", segmentID, rowsErr)
+		}
 		log.Printf("[loadExclusionSegmentEmails] segment %s: %d emails from materialized cache in %v",
 			safePrefix(segmentID, 12), matCount, time.Since(segStart))
 	}

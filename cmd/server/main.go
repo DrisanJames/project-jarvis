@@ -539,6 +539,18 @@ func main() {
 				} else {
 					sqsClient := sqs.NewFromConfig(awsCfg)
 					trackingConsumer = tracking.NewConsumer(sqsClient, sqsQueueURL, mailingDB)
+					// Wire the suppression hub's BRAND-SCOPED path BEFORE Start so
+					// SQS-path unsubscribes reach mailing_domain_suppressions —
+					// the email-level set the send path enforces per brand
+					// (REQ-001; legacy mailing_suppressions is not read by the
+					// PMTA send path). Brands are separate senders: unsubs are
+					// scoped to the originating brand, never written globally.
+					if suppressor, ok := server.GlobalHub.(tracking.BrandSuppressor); ok {
+						trackingConsumer.SetBrandSuppressor(suppressor)
+						log.Printf("Brand-scoped suppression hub wired to SQS tracking consumer")
+					} else {
+						log.Printf("ERROR: suppression hub NOT wired to SQS tracking consumer — SQS unsubscribes will not reach the enforced set")
+					}
 					trackingConsumer.Start(ctx)
 					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
 				}

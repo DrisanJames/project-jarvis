@@ -16,13 +16,28 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
+// BrandSuppressor writes a BRAND-SCOPED suppression into the store the send
+// path enforces for brand scoping (mailing_domain_suppressions + the hub's
+// in-memory brandSet, checked by IsSuppressedForBrand at plan and send time).
+// Satisfied by *engine.GlobalSuppressionHub.
+//
+// Doctrine (operator 2026-07-13, CLAUDE.md §12 amendment set): brands are
+// SEPARATE senders. An unsubscribe from one brand suppresses the email for
+// THAT brand only — it must never write mailing_global_suppressions, which
+// would suppress across all 16 brands.
+type BrandSuppressor interface {
+	SuppressScoped(ctx context.Context, email, brandRoot, reason, source, isp, sourceIP, campaign string) error
+}
+
 type Consumer struct {
-	sqsClient *sqs.Client
-	queueURL  string
-	db        *sql.DB
-	done      chan struct{}
+	sqsClient       *sqs.Client
+	queueURL        string
+	db              *sql.DB
+	brandSuppressor BrandSuppressor
+	done            chan struct{}
 }
 
 func NewConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *Consumer {
@@ -32,6 +47,16 @@ func NewConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *Consumer {
 		db:        db,
 		done:      make(chan struct{}),
 	}
+}
+
+// SetBrandSuppressor wires the suppression hub's brand-scoped write path so
+// unsubscribes processed off SQS reach the email-level enforcement set the
+// send path checks (IsSuppressedForBrand) — not only the legacy
+// mailing_suppressions table. Without this, a t.em-routed unsubscribe flips
+// ONE subscriber row and sibling rows for the same email IN THE SAME BRAND
+// stay mailable (CAN-SPAM exposure).
+func (c *Consumer) SetBrandSuppressor(s BrandSuppressor) {
+	c.brandSuppressor = s
 }
 
 // pollWorkers controls how many concurrent SQS receive loops run per task.
@@ -370,6 +395,46 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 	var email string
 	c.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
+	// Brand-scoped suppression FIRST, before any other write. The hub's
+	// brand axis (mailing_domain_suppressions, checked by
+	// IsSuppressedForBrand at pmta_campaign_planner.go qualifyEmail and
+	// send_worker.go claim time) is the only email-level guard the send
+	// path enforces — the row-keyed writes below cover ONE subscriber row,
+	// and the legacy mailing_suppressions write is not read by that path.
+	//
+	// Scope doctrine (operator 2026-07-13): the unsubscribe is honored for
+	// the ORIGINATING brand only — sibling brands keep mailing this email.
+	// NEVER write mailing_global_suppressions here. SuppressScoped is
+	// idempotent (ON CONFLICT (organization_id, email_hash, brand_root))
+	// and carries the hub's own org id, so a malformed evt.OrgID cannot
+	// misroute the row. Ordering it first means a failure returns before
+	// any side effects, so the SQS redelivery retry re-runs cleanly.
+	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
+	if email != "" {
+		brandRoot := brand.Root(sdsDomain)
+		switch {
+		case c.brandSuppressor == nil:
+			// Should never happen in production — main.go wires the hub
+			// right after constructing the consumer. Loud so a wiring
+			// regression is visible; the legacy writes below still run.
+			log.Printf("ERROR: PROCESS UNSUB brand suppression hub NOT wired — unsubscribe NOT enforced on send path: campaign=%s subscriber=%s md5=%s",
+				campaignID, subscriberID, hashEmail(strings.ToLower(strings.TrimSpace(email))))
+		case brandRoot == "":
+			// Campaign lookup failed or campaign has no from_email — the
+			// brand cannot be resolved, so the email-level suppression
+			// cannot be scoped. Retrying would not fix this, so log loudly
+			// and fall through to the single-row legacy writes.
+			log.Printf("ERROR: PROCESS UNSUB brand root unresolved (campaign=%s) — unsubscribe enforced on subscriber row only, NOT at email level: subscriber=%s md5=%s",
+				campaignID, subscriberID, hashEmail(strings.ToLower(strings.TrimSpace(email))))
+		default:
+			if err := c.brandSuppressor.SuppressScoped(ctx, email, brandRoot, "user_unsubscribe", "sqs_tracking", "", evt.IPAddress, evt.CampaignID); err != nil {
+				log.Printf("ERROR: PROCESS UNSUB brand suppression write failed (message will be retried): campaign=%s subscriber=%s brand=%s md5=%s err=%v",
+					campaignID, subscriberID, brandRoot, hashEmail(strings.ToLower(strings.TrimSpace(email))), err)
+				return err // do NOT delete the SQS message — redelivery retries the suppression
+			}
+		}
+	}
+
 	c.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent)
 		VALUES ($1, $2, $3, $4, 'unsubscribed', $5, $6, $7)
@@ -386,7 +451,7 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 	// SDS state-machine: an unsubscribe is a hard suppression signal for this
 	// sending domain. UpsertSDSUnsub sets state='suppressed' so the audience
 	// finalizer's SDS exclusion clause prunes them on the next campaign.
-	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
+	// (sdsDomain resolved above, before the brand-scoped suppression write.)
 	mailing.UpsertSDSUnsub(ctx, c.db, subscriberID, sdsDomain)
 
 	log.Printf("PROCESSED UNSUB: campaign=%s subscriber=%s email=%s", campaignID, subscriberID, email)

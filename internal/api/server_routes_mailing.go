@@ -1395,11 +1395,31 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			globalHub := engine.NewGlobalSuppressionHub(db, engineOrgID, suppressionDir)
 			loadCtx, loadCancel := context.WithTimeout(context.Background(), 20*time.Second)
 			if err := globalHub.LoadFromDB(loadCtx); err != nil {
-				log.Printf("[global-suppression] LoadFromDB error (will rely on real-time feed): %v", err)
+				// REQ-003: never accept an empty historical suppression set
+				// silently. Boot itself does NOT block (a hard block here
+				// would take the whole API down during an RDS blip and the
+				// hub's real-time feed keeps new suppressions flowing) —
+				// instead a bounded background retry re-attempts the load,
+				// and the periodic reconcile below is the standing safety
+				// net + divergence alarm. Design decision recorded in the
+				// REQ-003 build report.
+				log.Printf("[global-suppression] ERROR: boot LoadFromDB failed: %v — retrying in background (bounded)", err)
+				go func() {
+					retryCtx, retryCancel := context.WithTimeout(context.Background(), 15*time.Minute)
+					defer retryCancel()
+					if rerr := globalHub.LoadFromDBWithRetry(retryCtx, 5, 30*time.Second, 2*time.Minute); rerr != nil {
+						log.Printf("[global-suppression] ERROR: boot retry exhausted (%v) — periodic reconcile will keep re-attempting the load", rerr)
+					}
+				}()
 			}
 			loadCancel()
 			globalHub.SetExecutor(executor, "/etc/pmta/suppressions")
 			globalHub.StartFileSync(context.Background())
+			// Periodic hub-vs-DB reconcile: detects (and repairs) an
+			// in-memory set that diverged from mailing_global_suppressions,
+			// independent of bulk-import completion. Divergence logs at
+			// error level and degrades the dashboard via ReconcileStatus.
+			globalHub.StartReconcile(context.Background(), 15*time.Minute)
 
 			// FBL webhook — public (receives ARF reports from ISPs)
 			fblHandler := NewFBLHandler(db, globalHub)

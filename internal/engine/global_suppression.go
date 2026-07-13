@@ -47,6 +47,12 @@ type GlobalSuppressionHub struct {
 	globalFilePath string
 	remoteDir      string // Path on the PMTA server where suppression files live
 
+	// reconcile state — last hub-vs-DB count comparison (see ReconcileNow).
+	// Guarded by its own mutex so status reads never contend with the send
+	// hot path's read lock on mu.
+	recMu     sync.RWMutex
+	reconcile HubReconcileStatus
+
 	executor *Executor // Optional: if set, SCP files to PMTA after rebuild
 
 	subMu       sync.RWMutex
@@ -186,6 +192,158 @@ func (h *GlobalSuppressionHub) LoadFromDB(ctx context.Context) error {
 
 	log.Printf("[global-suppression] loaded %d global + %d brand entries from DB", globalCount, brandCount)
 	return globalRows.Err()
+}
+
+// LoadFromDBWithRetry runs LoadFromDB up to `attempts` times with a fixed
+// backoff between failures (REQ-003). Boot code calls this in a background
+// goroutine after a failed synchronous boot load, so a slow/contended RDS
+// can no longer leave the fleet sending with an EMPTY historical suppression
+// set until the next deploy. Bounded: it honors ctx cancellation and never
+// retries past `attempts`. Each attempt gets its own timeout so one hung
+// read cannot consume the whole retry budget.
+func (h *GlobalSuppressionHub) LoadFromDBWithRetry(ctx context.Context, attempts int, backoff, perAttemptTimeout time.Duration) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for i := 1; i <= attempts; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, perAttemptTimeout)
+		err := h.LoadFromDB(attemptCtx)
+		cancel()
+		if err == nil {
+			log.Printf("[global-suppression] LoadFromDB retry succeeded on attempt %d/%d (%d entries)", i, attempts, h.Count())
+			return nil
+		}
+		lastErr = err
+		log.Printf("[global-suppression] ERROR: LoadFromDB attempt %d/%d failed: %v", i, attempts, err)
+		if i < attempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-h.stopCh:
+				return lastErr
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return lastErr
+}
+
+// HubReconcileStatus is the last hub-memory-vs-DB comparison. Diverged=true
+// means the in-memory enforcement set was missing entries beyond tolerance
+// at the last check (the reconciler reloads immediately, but the flag stays
+// on until a clean pass so dashboards can degrade their chip).
+type HubReconcileStatus struct {
+	LastCheckedAt time.Time `json:"last_checked_at"`
+	MemoryCount   int       `json:"memory_count"`
+	DBCount       int64     `json:"db_count"`
+	Diverged      bool      `json:"diverged"`
+	LastError     string    `json:"last_error,omitempty"`
+}
+
+// reconcileTolerance returns the max acceptable (dbCount - memCount) gap:
+// 1% of the DB count, floored at 1000 absolute so small tables don't flap
+// on in-flight writes.
+func reconcileTolerance(dbCount int64) int64 {
+	tol := dbCount / 100
+	if tol < 1000 {
+		tol = 1000
+	}
+	return tol
+}
+
+// ReconcileNow compares the in-memory Count() against the DB row count and,
+// when memory is missing entries beyond tolerance, logs at error level and
+// reloads from the DB (REQ-003 divergence alarm). This is the periodic
+// safety net that exists INDEPENDENT of bulk-import completion — before it,
+// suppression_import.go:595 was the only post-boot reload path. Memory
+// exceeding the DB (direct DB deletes) is logged but not reloaded:
+// LoadFromDB is additive, and over-suppression fails safe.
+func (h *GlobalSuppressionHub) ReconcileNow(ctx context.Context) HubReconcileStatus {
+	status := HubReconcileStatus{LastCheckedAt: time.Now()}
+
+	var dbCount int64
+	err := h.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mailing_global_suppressions WHERE organization_id = $1`,
+		h.orgID).Scan(&dbCount)
+	if err != nil {
+		status.MemoryCount = h.Count()
+		status.LastError = err.Error()
+		// Keep the previous Diverged verdict — an unreachable DB is not
+		// proof of convergence.
+		h.recMu.RLock()
+		status.Diverged = h.reconcile.Diverged
+		h.recMu.RUnlock()
+		log.Printf("[global-suppression] ERROR: reconcile count query failed: %v", err)
+		h.setReconcileStatus(status)
+		return status
+	}
+
+	memCount := h.Count()
+	status.MemoryCount = memCount
+	status.DBCount = dbCount
+
+	gap := dbCount - int64(memCount)
+	if gap > reconcileTolerance(dbCount) {
+		status.Diverged = true
+		log.Printf("[global-suppression] ERROR: hub memory diverged from DB (memory=%d db=%d gap=%d > tolerance=%d) — reloading",
+			memCount, dbCount, gap, reconcileTolerance(dbCount))
+		if lerr := h.LoadFromDB(ctx); lerr != nil {
+			status.LastError = lerr.Error()
+			log.Printf("[global-suppression] ERROR: reconcile reload failed: %v", lerr)
+		} else {
+			status.MemoryCount = h.Count()
+		}
+	} else if int64(memCount)-dbCount > reconcileTolerance(dbCount) {
+		status.Diverged = true
+		log.Printf("[global-suppression] ERROR: hub memory EXCEEDS DB (memory=%d db=%d) — stale in-memory entries fail safe (over-suppression); investigate direct DB deletes",
+			memCount, dbCount)
+	}
+
+	h.setReconcileStatus(status)
+	return status
+}
+
+func (h *GlobalSuppressionHub) setReconcileStatus(s HubReconcileStatus) {
+	h.recMu.Lock()
+	h.reconcile = s
+	h.recMu.Unlock()
+}
+
+// ReconcileStatus returns the last reconcile verdict (zero value before the
+// first tick). Dashboards surface Diverged as a degraded chip.
+func (h *GlobalSuppressionHub) ReconcileStatus() HubReconcileStatus {
+	h.recMu.RLock()
+	defer h.recMu.RUnlock()
+	return h.reconcile
+}
+
+// StartReconcile runs ReconcileNow on a fixed interval until ctx or Stop().
+// Mirrors the StartFileSync goroutine shape (single bounded goroutine,
+// ticker stopped on exit, honors both ctx.Done and stopCh).
+func (h *GlobalSuppressionHub) StartReconcile(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-h.stopCh:
+				return
+			case <-ticker.C:
+				tickCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				h.ReconcileNow(tickCtx)
+				cancel()
+			}
+		}
+	}()
 }
 
 // IsSuppressed checks if an email is on the global suppression list (O(1) in-memory).

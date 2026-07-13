@@ -11,7 +11,26 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
+
+// normalizeSuppressionEntry lowercases/trims an (email, md5) pair and derives
+// the md5 from the email when absent. The planner's exclusion loader selects
+// md5_hash only — an md5-NULL row is NEVER enforced (and, with md5 NULL,
+// ON CONFLICT (list_id, md5_hash) never fires, so duplicates accumulate).
+// Matches HandleAddSuppressionListEntry (suppression_list_handlers.go), which
+// has always derived the hash. Returns ok=false when both inputs are empty.
+func normalizeSuppressionEntry(email, md5Hash string) (string, string, bool) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	md5Hash = strings.ToLower(strings.TrimSpace(md5Hash))
+	if md5Hash == "" && email != "" {
+		md5Hash = engine.MD5Hash(email)
+	}
+	if md5Hash == "" {
+		return email, md5Hash, false
+	}
+	return email, md5Hash, true
+}
 
 // HandleGetSuppressions returns all suppressions with pagination
 func (s *SuppressionService) HandleGetSuppressions(w http.ResponseWriter, r *http.Request) {
@@ -66,11 +85,17 @@ func (s *SuppressionService) HandleAddSuppression(w http.ResponseWriter, r *http
 		return
 	}
 
+	email, md5Hash, ok := normalizeSuppressionEntry(input.Email, input.MD5Hash)
+	if !ok {
+		http.Error(w, `{"error":"email or md5_hash required"}`, http.StatusBadRequest)
+		return
+	}
+
 	id := fmt.Sprintf("sup-%d", time.Now().UnixNano())
 	_, err := s.db.Exec(`
 		INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, id, nullString(input.ListID), nullString(input.Email), nullString(input.MD5Hash), input.Reason, input.Source)
+	`, id, nullString(input.ListID), nullString(email), nullString(md5Hash), input.Reason, input.Source)
 
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
@@ -99,12 +124,16 @@ func (s *SuppressionService) HandleBulkAddSuppressions(w http.ResponseWriter, r 
 
 	added := 0
 	for _, entry := range input.Entries {
+		email, md5Hash, ok := normalizeSuppressionEntry(entry.Email, entry.MD5Hash)
+		if !ok {
+			continue // neither email nor md5 — nothing enforceable to store
+		}
 		id := fmt.Sprintf("sup-%d", time.Now().UnixNano())
 		_, err := s.db.Exec(`
 			INSERT INTO mailing_suppression_entries (id, list_id, email, md5_hash, reason, source)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (list_id, md5_hash) DO NOTHING
-		`, id, nullString(input.ListID), nullString(entry.Email), nullString(entry.MD5Hash), entry.Reason, input.Source)
+		`, id, nullString(input.ListID), nullString(email), nullString(md5Hash), entry.Reason, input.Source)
 		if err == nil {
 			added++
 		}
@@ -432,10 +461,13 @@ func (s *SuppressionService) HandleImportSuppressions(w http.ResponseWriter, r *
 		}
 		totalLines++
 
-		// Determine if it's email or MD5
+		// Determine if it's email or MD5. Email lines also get their md5
+		// derived — md5-NULL rows are never enforced by the planner's
+		// exclusion loader (see normalizeSuppressionEntry).
 		var email, md5Hash string
 		if strings.Contains(line, "@") {
 			email = strings.ToLower(line)
+			md5Hash = engine.MD5Hash(email)
 		} else if len(line) == 32 {
 			md5Hash = strings.ToLower(line)
 		} else {
