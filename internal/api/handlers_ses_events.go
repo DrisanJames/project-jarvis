@@ -63,7 +63,13 @@ import (
 // suppressions are additionally labeled reason='ses_address_validation' in the
 // suppression hub — they never reach the remote MX and must not read as remote
 // hard bounces.
-const VersionSESEvents = "2.5"
+// 2.6 — SES pre-flight validation blocks get their own bounce CLASS (operator
+// 2026-07-12: "should not count towards our overall hard bounce rate... ensure
+// it remains classified"): persisted bounce_type/bounce_cat = 'validation'
+// (not 'hard'), campaign hard/soft counters untouched, lake reads re-class them
+// to 'preflight_validation' (reader.go eventTypeExpr) — counted in NEITHER hard
+// nor soft, queryable for the EmailOversight-vs-AWS-validation comparison.
+const VersionSESEvents = "2.6"
 
 // SESEventsHandler receives SNS-wrapped SES event-publishing notifications
 // (Bounce, Complaint, Open, Click, Send, Delivery, Reject, DeliveryDelay) and:
@@ -551,9 +557,14 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 			log.Printf("[ses-events] ses_delivered rollup upsert campaign=%s isp=%s error: %v", campaignID, ispGroup, derr)
 		}
 	case "bounced":
-		if bounceType == "hard" {
+		switch bounceType {
+		case "hard":
 			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
-		} else {
+		case "validation":
+			// SES pre-flight validation block: the message never attempted the
+			// remote MX. Counted in NEITHER hard nor soft (mirrors the metric
+			// contract's reputation_block/administrative treatment).
+		default:
 			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 		}
 	case "complained":
@@ -757,10 +768,17 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 		if rec.EmailAddress == "" {
 			continue
 		}
-		// Persist the hard bounce as a tracking event (bounce_type "hard" so
-		// HardBounceSQL classifies it correctly) in addition to suppressing.
+		// Persist the bounce as a tracking event. SES pre-flight validation
+		// blocks get bounce_type='validation' (their own class — the send never
+		// reached the remote MX, so it must not count in the hard-bounce rate);
+		// genuine remote Permanent rejections stay 'hard' so HardBounceSQL
+		// classifies them correctly.
+		btype := "hard"
+		if strings.Contains(rec.DiagnosticCode, "due to email validation") {
+			btype = "validation"
+		}
 		h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
-			rec.EmailAddress, "hard", rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
+			rec.EmailAddress, btype, rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping bounce for %s", logger.RedactEmail(rec.EmailAddress))
 			continue

@@ -54,6 +54,12 @@ Lake reads re-derive bounce classes from `bounce_cat` + `dsn_diag` (`eventTypeEx
   bad-connection` — sender-side blocks of VALID recipients. Counted in NEITHER hard nor soft.
 - **administrative** = operator `pmta flush` (`dsn_diag LIKE '%deleted by administrator%'`) —
   cancellations, not bounces; excluded from everything including attempted.
+- **preflight_validation** = `bounce_cat = 'validation'` (SES address-validation blocked the send
+  BEFORE it reached the remote MX; PG mirror: `mailing_tracking_events.bounce_type='validation'`,
+  suppression reason `ses_address_validation`). Counted in NEITHER hard nor soft — no remote
+  rejection occurred. Kept as its own class so validator quality is comparable
+  (EmailOversight false-passes = these + genuine hards on EO-verified sends). Added 2026-07-12
+  (v2.6) after the ATT W1-T1 tranche's 32 "hard bounces" turned out to be 100% this class.
 - **Hard and soft are NEVER summed** into one "bounces" number. Hard renders `#ef4444`, soft
   `#f59e0b`, always (CLAUDE.md §6).
 - `delivery_delay` rows are per-RETRY events (many per message) — never present them as unique

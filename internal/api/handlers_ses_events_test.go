@@ -655,14 +655,16 @@ func TestSESEvents_ValidationSuppression_LabeledAndReasonPersisted(t *testing.T)
 
 	diag := "Amazon SES has suppressed sending to this address due to email validation. The address quality confidence level is below your configured threshold."
 
-	// Tracking event INSERT carries the diagnostic as bounce_reason ($13).
+	// Tracking event INSERT: bounce_type ($6) is the distinct 'validation'
+	// class (NOT 'hard' — v2.6: pre-flight blocks never count in the hard rate)
+	// and the diagnostic lands in bounce_reason ($13). NO campaign counter
+	// UPDATE is expected between this insert and the suppression insert —
+	// sqlmock's ordered expectations fail the test if one fires.
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"validation", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), diag).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
-		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Suppression row: reason ($4) re-labeled, diag ($8) retained.
 	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
 		WithArgs(sqlmock.AnyArg(), "deadaddr@att.net", sqlmock.AnyArg(), "ses_address_validation", "ses_webhook",

@@ -269,6 +269,11 @@ const eventTypeExpr = "CASE WHEN event_type IN ('bounced','hard_bounce','soft_bo
 	" WHEN lower(dsn_diag) LIKE '%deleted by administrator%' THEN 'administrative'" +
 	" WHEN bounce_cat IN ('hard','bad-mailbox','bad-domain','inactive-mailbox') THEN 'hard_bounce'" +
 	" WHEN bounce_cat IN ('spam-related','policy-related','routing-errors','no-answer-from-host','bad-connection') THEN 'reputation_block'" +
+	// SES pre-flight address-validation blocks (bounce_cat='validation', v2.6):
+	// the send never reached the remote MX. Own bucket, counted in NEITHER hard
+	// nor soft — kept distinct so EmailOversight-vs-AWS-validation quality is
+	// queryable. MUST precede the soft_bounce catch-all.
+	" WHEN bounce_cat = 'validation' THEN 'preflight_validation'" +
 	" ELSE 'soft_bounce' END)" +
 	" ELSE event_type END"
 
