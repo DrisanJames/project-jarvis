@@ -195,6 +195,30 @@ func keepOnlyISPCaps(caps map[string]int, allowed ...string) map[string]int {
 	return out
 }
 
+// applyYahooNewsletterFollowupCaps enforces the yahoo-newsletter-only drip lane
+// (operator 2026-07-14) on a follow-up wave's per-ISP caps. Two mirror-image
+// branches guarantee yahoo offers and yahoo newsletters can never both fire:
+//
+//   - yahooNewsletter=true  → confine the claim to yahoo ONLY (the caller serves
+//     the brand newsletter to those records).
+//   - offer pass, flag on   → remove yahoo from the offer claim entirely.
+//   - flag off               → return caps unchanged (exact legacy behavior; the
+//     yahoo-newsletter pass is never invoked in this state either).
+//
+// The flag defaulting false makes this a no-op kill switch: the offer path is
+// byte-identical to before when PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY is unset.
+func applyYahooNewsletterFollowupCaps(caps map[string]int, flagOn, yahooNewsletter bool) map[string]int {
+	if yahooNewsletter {
+		return keepOnlyISPCaps(caps, "yahoo")
+	}
+	if !flagOn {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	out["yahoo"] = 0
+	return out
+}
+
 var brandSendingDomain = map[string]string{
 	// Mature 4
 	"db": "em.discountblog.com",
@@ -328,6 +352,16 @@ type PartnerDripOrchestratorConfig struct {
 	// Do not rely on MaxFollowupClaimPerVertical=0 alone — NewPartnerDripOrchestrator
 	// treats unset zero as "default to MaxWaveSize".
 	FollowupDisabled bool
+	// YahooNewsletterOnlyDrip makes the yahoo-family a NEWSLETTER-ONLY drip lane
+	// (operator 2026-07-14: "for our Yahoo drips we must mail newsletter only").
+	// When true: (1) every OFFER follow-up claim excludes yahoo (perISPCaps["yahoo"]=0
+	// in processFollowup, mirroring the live apple ban immediately below it), and
+	// (2) a dedicated yahoo-confined follow-up pass serves the brand NEWSLETTER
+	// (resolveCreative — the same creative touch-0/welcome ships) at touches 2..N,
+	// so yahoo records keep climbing the ladder without ever receiving an offer.
+	// Env: PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY=1. Default false = exact legacy
+	// behavior (yahoo receives offer follow-ups). This is the one-move kill switch.
+	YahooNewsletterOnlyDrip bool
 	// ClaimedJanitorMaxAge releases partner_clean_queue rows stuck in
 	// 'claimed' after a crash between claim and promote/deploy. Only
 	// rows with no subscriber_id and no mailed_campaign_id are touched.
@@ -2960,6 +2994,13 @@ func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
 			if err := po.processFollowup(ctx, v, brand); err != nil {
 				log.Printf("[PartnerDripOrchestrator] followup vertical=%s brand=%s: %v", v.vertical, brand, err)
 			}
+			// Yahoo newsletter-only (operator 2026-07-14): the offer pass above
+			// excluded yahoo; serve yahoo its brand newsletter for this touch here.
+			if po.cfg.YahooNewsletterOnlyDrip {
+				if err := po.processFollowupYahooNewsletter(ctx, v, brand); err != nil {
+					log.Printf("[PartnerDripOrchestrator] followup-yahoo-nl vertical=%s brand=%s: %v", v.vertical, brand, err)
+				}
+			}
 			// Advance the round-robin index AFTER every brand attempt,
 			// regardless of success. This guarantees we don't get stuck
 			// on a single brand if its claim fails.
@@ -3381,6 +3422,23 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 // DeployFn. On success markMailed advances touch_count and stamps the
 // next_touch_at clock.
 func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v verticalState, brand string) error {
+	return po.processFollowupImpl(ctx, v, brand, false)
+}
+
+// processFollowupYahooNewsletter is the yahoo-confined companion to
+// processFollowup: it claims ONLY yahoo-family follow-up records for the
+// (vertical, brand) and serves them the brand NEWSLETTER instead of the offer
+// creative, so the yahoo drip lane is newsletter-only at every touch while still
+// advancing the ladder (operator 2026-07-14). Gated by cfg.YahooNewsletterOnlyDrip
+// at the call site (tickFollowups); a no-op via that gate when the flag is off.
+func (po *PartnerDripOrchestrator) processFollowupYahooNewsletter(ctx context.Context, v verticalState, brand string) error {
+	return po.processFollowupImpl(ctx, v, brand, true)
+}
+
+// processFollowupImpl ships one follow-up wave for one (vertical, brand). In the
+// default (offer) mode it serves the per-touch offer creative. In yahooNewsletter
+// mode it confines the claim to the yahoo family and serves the brand newsletter.
+func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v verticalState, brand string, yahooNewsletter bool) error {
 	if MaxTouchCount-1 < 1 {
 		return nil
 	}
@@ -3404,6 +3462,7 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
 	}
+	perISPCaps = applyYahooNewsletterFollowupCaps(perISPCaps, po.cfg.YahooNewsletterOnlyDrip, yahooNewsletter)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
@@ -3444,6 +3503,35 @@ func (po *PartnerDripOrchestrator) processFollowup(ctx context.Context, v vertic
 	if touchNum < 2 || touchNum > MaxTouchCount {
 		_ = po.releaseClaim(ctx, claimed)
 		return fmt.Errorf("invalid touch_number %d for vertical=%s", touchNum, v.vertical)
+	}
+
+	// Yahoo newsletter-only pass: serve the brand NEWSLETTER (the same creative the
+	// welcome/touch-0 path ships via resolveCreative) instead of the per-touch offer.
+	// resolveCreative is configured for every (vertical, brand) — a lookup miss is a
+	// data gap, not ladder-complete, so we release (never retire) and let a later
+	// wave under a configured brand serve it.
+	if yahooNewsletter {
+		creative, err := po.resolveCreative(ctx, v.vertical, brand)
+		if err != nil {
+			_ = po.releaseClaim(ctx, claimed)
+			if errors.Is(err, sql.ErrNoRows) {
+				log.Printf("[PartnerDripOrchestrator] followup-yahoo-nl vertical=%s brand=%s touch=%d has no newsletter for this brand — released", v.vertical, brand, touchNum)
+				return nil
+			}
+			return fmt.Errorf("resolve_yahoo_newsletter_creative: %w", err)
+		}
+		subscriberIDs, err := po.promoteToSubscribers(ctx, v, claimed)
+		if err != nil {
+			_ = po.releaseClaim(ctx, claimed)
+			return fmt.Errorf("promote_followup_subscribers: %w", err)
+		}
+		_, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
+		if deployedCount == 0 {
+			return fmt.Errorf("all yahoo-nl followup wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
+		}
+		log.Printf("[PartnerDripOrchestrator] followup-yahoo-nl wave complete: vertical=%s brand=%s touch=%d deployed=%d creative=%s",
+			v.vertical, brand, touchNum, deployedCount, creative.filename)
+		return nil
 	}
 
 	creative, err := po.resolveFollowupCreative(ctx, v.vertical, brand, touchNum)

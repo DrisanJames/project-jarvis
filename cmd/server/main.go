@@ -339,6 +339,7 @@ func main() {
 				if creativesDir == "" {
 					creativesDir = "docs/emails"
 				}
+				yahooNewsletterOnly := os.Getenv("PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY") == "1"
 				orch := worker.NewPartnerDripOrchestrator(db, worker.PartnerDripOrchestratorConfig{
 					OrganizationID:              "00000000-0000-0000-0000-000000000001",
 					DeployFn:                    worker.WrapPMTACampaignDeploy(pmta.HandleDeployCampaign),
@@ -348,10 +349,11 @@ func main() {
 					ThrottledISPRateThreshold:   throttleThreshold,
 					ThrottleDeferralDisabled:    throttleDeferralDisabled,
 					CreativesDir:                creativesDir,
+					YahooNewsletterOnlyDrip:     yahooNewsletterOnly,
 				})
 				orch.Start()
-				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_deferral_disabled=%v throttle_threshold=%.0f creatives_dir=%s)",
-					followupDisabled, followupMax, throttleDeferralDisabled, throttleThreshold, creativesDir)
+				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_deferral_disabled=%v throttle_threshold=%.0f creatives_dir=%s yahoo_newsletter_only=%v)",
+					followupDisabled, followupMax, throttleDeferralDisabled, throttleThreshold, creativesDir, yahooNewsletterOnly)
 				return orch
 			})
 		}
