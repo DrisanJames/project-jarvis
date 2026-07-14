@@ -1759,13 +1759,22 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	trackBase := p.resolveTrackingURL(ctx, item.ProfileID)
 
 	// ── SES tenant-aware routing lookup ──
-	// When the profile has via_ses=true, SES is the sole tracker (open +
-	// click events flow through SES's r.<region>.awstrack.me redirect
-	// chain into the configuration set's event destination). We must NOT
-	// also inject our /track/click rewrites or /track/open pixel because:
-	//   1. Double-rewriting the body breaks DKIM signatures
-	//   2. The internal click endpoint can't issue HTTPS for s.em.<brand>
-	//   3. Engagement counting would double-count
+	// When the profile has via_ses=true the message relays through SES.
+	// This branch originally skipped ALL tracking injection ("SES is the
+	// sole tracker"), on three assumptions that did not survive contact
+	// with production:
+	//   1. "Double-rewriting breaks DKIM" — our injection happens BEFORE
+	//      submission/signing, so it never invalidates a signature; the
+	//      DKIM concern only applies to SES rewriting an already-signed
+	//      body, which SES avoids by DECLINING to rewrite DKIM-signed mail.
+	//   2. "t.em can't serve HTTPS for the brand hosts" — disproven: the
+	//      jul02 open pixel and partner-drip's baked t.em click links both
+	//      track fine over SES on the same trackBase.
+	//   3. "Double-counting" — SES click capture turned out to be OFF for
+	//      the 15/16 PMTA-DKIM-signed brands (see the tracking branch
+	//      below), so there was mostly nothing to double-count.
+	// Opens were restored 2026-07-02 (InjectOpenPixel); clicks restored
+	// 2026-07-13 (RewriteClickLinks) — see applySESTracking.
 	// The Dedicated path (via_ses=false) is unchanged.
 	sesInfo := p.resolveProfileSES(ctx, item.ProfileID)
 
@@ -1908,15 +1917,24 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 				htmlContent += unsubBlock
 			}
 		}
-	} else if trackBase != "" && sesInfo.ViaSES && os.Getenv("DISABLE_SES_OPEN_PIXEL") != "true" {
+	} else if trackBase != "" && sesInfo.ViaSES {
 		// SES relay sends historically skipped ALL tracking injection ("SES is
-		// the sole tracker") — but SES-native open tracking captures <1% of
-		// opens, so partner-drip / gmail / yahoo-family engagement never reached
-		// PG or the engaged-tier segments (found 2026-07-02: 0.4% drip open rate
-		// vs 41% board; the tier starved). Inject the OPEN pixel only — t.em is
-		// proven over SES (drip's baked click links track fine) — and leave
-		// click rewrites off so SES link handling is untouched.
-		htmlContent = InjectOpenPixel(htmlContent,
+		// the sole tracker") — wrong twice over:
+		//   - OPENS (fixed 2026-07-02): SES-native open tracking captures <1%
+		//     of opens, so partner-drip / gmail / yahoo-family engagement never
+		//     reached PG or the engaged-tier segments (0.4% drip open rate vs
+		//     41% board; the tier starved). InjectOpenPixel restored them.
+		//   - CLICKS (fixed 2026-07-13): SES silently DECLINES to click-wrap
+		//     PMTA-DKIM-signed mail — 15 of 16 brands — so money links went
+		//     out unwrapped and clicks were invisible everywhere (PG, lake,
+		//     engaged tiers). RewriteClickLinks restores t.em click-wrapping
+		//     with the exact same skip rules as the Dedicated path. For the
+		//     one brand SES does wrap (RRU), the t.em link additionally gets
+		//     SES-wrapped — a functional double redirect (t.em resolves to the
+		//     full money URL, SES wraps THAT) — accepted for uniform semantics
+		//     over a per-brand branch; RRU keeps SES-native capture too.
+		// Kill switches: DISABLE_SES_OPEN_PIXEL=true, DISABLE_SES_CLICK_WRAP=true.
+		htmlContent = applySESTracking(htmlContent,
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
 			trackBase, p.orgID, p.trackingSecret)
 	}
@@ -2807,7 +2825,27 @@ func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseUR
 		html += pixelHTML
 	}
 
-	html = linkRe.ReplaceAllStringFunc(html, func(match string) string {
+	return RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret)
+}
+
+// RewriteClickLinks rewrites href links to signed /track/click redirect URLs
+// with NO pixel injection — the links-only half of
+// InjectTrackingPixelAndLinks, factored out (2026-07-13) so the SES relay
+// path can restore click tracking without double-injecting the open pixel.
+// Skip rules are inherited verbatim from the original loop:
+//   - linkRe only matches absolute href="http(s)://..." values, so mailto:,
+//     tel:, in-page anchors (#...) and relative links never match at all;
+//   - URLs containing "/track/" (unsubscribe/open/already-wrapped click
+//     links, including the pixel just injected) are left untouched;
+//   - the "mailto:" substring check is kept as a defensive second layer.
+//
+// The token embeds the FULL original URL (org|campaign|subscriber|email|url),
+// so query params — including Everflow sub1/sub2 attribution tags — survive
+// the redirect byte-for-byte (internal/tracking/handler.go HandleClick reads
+// parts[4] and 307-redirects to it).
+func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
+	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
+	return linkRe.ReplaceAllStringFunc(html, func(match string) string {
 		parts := linkRe.FindStringSubmatch(match)
 		if len(parts) < 2 {
 			return match
@@ -2821,8 +2859,6 @@ func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseUR
 		linkSig := TrackSign(linkEncoded, secret)
 		return fmt.Sprintf(`href="%s/track/click/%s/%s"`, baseURL, linkEncoded, linkSig)
 	})
-
-	return html
 }
 
 func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL string) string {
@@ -2859,6 +2895,31 @@ func InjectOpenPixel(html, campaignID, subscriberID, emailID, baseURL, orgID, se
 		html = html[:idx] + pixelHTML + html[idx:]
 	} else {
 		html += pixelHTML
+	}
+	return html
+}
+
+// applySESTracking is the tracking-injection step for the SES relay path
+// (via_ses=true): open pixel (restored 2026-07-02) + t.em click-wrapping
+// (restored 2026-07-13 — SES declines to click-wrap PMTA-DKIM-signed mail,
+// which is 15 of 16 brands, so relying on SES left money-link clicks
+// invisible). Each half has its own kill switch so either can be reverted
+// to the historical skip independently:
+//   - DISABLE_SES_OPEN_PIXEL=true  → no open pixel (pre-jul02 behavior)
+//   - DISABLE_SES_CLICK_WRAP=true  → no click-wrapping (pre-jul13 behavior)
+//
+// Order matters only cosmetically: the pixel is injected first, matching
+// InjectTrackingPixelAndLinks; RewriteClickLinks cannot touch it (the pixel
+// is an <img>, not an href, and carries /track/ anyway). Both flags set
+// returns html unchanged. Called per message at claim/send time — nothing
+// upstream caches wrapped output (snapshots store the pre-injection base
+// creative), so an env flip applies uniformly from the next process start.
+func applySESTracking(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
+	if os.Getenv("DISABLE_SES_OPEN_PIXEL") != "true" {
+		html = InjectOpenPixel(html, campaignID, subscriberID, emailID, baseURL, orgID, secret)
+	}
+	if os.Getenv("DISABLE_SES_CLICK_WRAP") != "true" {
+		html = RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret)
 	}
 	return html
 }
