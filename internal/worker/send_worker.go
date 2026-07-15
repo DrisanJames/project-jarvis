@@ -1867,29 +1867,44 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
 			trackBase,
 		)
-		unsubURL = p.generateUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), trackBase)
-		// Brand-scoped URL for the TOP unsubscribe link and the HTTPS leg of
-		// List-Unsubscribe. Falls back to the global URL shape when BrandRoot
-		// is empty (unknown sending domain) so there is no broken-link risk.
-		brandUnsubURL := p.generateBrandUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), item.BrandRoot, trackBase)
+	} else if trackBase != "" && sesInfo.ViaSES {
+		// SES relay sends historically skipped ALL tracking injection ("SES is
+		// the sole tracker") — wrong twice over:
+		//   - OPENS (fixed 2026-07-02): SES-native open tracking captures <1%
+		//     of opens, so partner-drip / gmail / yahoo-family engagement never
+		//     reached PG or the engaged-tier segments (0.4% drip open rate vs
+		//     41% board; the tier starved). InjectOpenPixel restored them.
+		//   - CLICKS (fixed 2026-07-13): SES silently DECLINES to click-wrap
+		//     PMTA-DKIM-signed mail — 15 of 16 brands — so money links went
+		//     out unwrapped and clicks were invisible everywhere (PG, lake,
+		//     engaged tiers). RewriteClickLinks restores t.em click-wrapping
+		//     with the exact same skip rules as the Dedicated path. For the
+		//     one brand SES does wrap (RRU), the t.em link additionally gets
+		//     SES-wrapped — a functional double redirect (t.em resolves to the
+		//     full money URL, SES wraps THAT) — accepted for uniform semantics
+		//     over a per-brand branch; RRU keeps SES-native capture too.
+		// Kill switches: DISABLE_SES_OPEN_PIXEL=true, DISABLE_SES_CLICK_WRAP=true.
+		htmlContent = applySESTracking(htmlContent,
+			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
+			trackBase, p.orgID, p.trackingSecret)
+	}
 
-		// RFC 8058: both mailto: and https: for maximum ISP compatibility.
-		// mailto: must be domain-aligned with the From address for ISP trust.
-		// The HTTPS leg uses the brand-scoped URL so ISP one-click POSTs hit
-		// the brand suppression path. The mailto leg stays 3-part global —
-		// there is no inbound handler for unsub+<token>@<domain> in this repo
-		// (the mailto is ceremonial for ISP trust scoring); extending its
-		// payload shape would propagate the pre-existing unsigned-mailto bug
-		// at a wider scope for zero functional gain.
-		fromDomain := item.FromEmail
-		if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
-			fromDomain = item.FromEmail[atIdx+1:]
-		}
-		unsubData := fmt.Sprintf("%s|%s|%s", p.orgID, item.CampaignID.String(), item.SubscriberID.String())
-		unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-		mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
-		headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, brandUnsubURL)
-		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+	// ── List-Unsubscribe + in-body token resolution — SHARED across BOTH
+	// transports. RFC 8058 one-click List-Unsubscribe is a Gmail/Yahoo
+	// bulk-sender REQUIREMENT (Feb-2024 mandate). It previously lived only
+	// inside the Dedicated/PMTA branch above, so every SES-relayed send (gmail,
+	// apple, and the entire yahoo-family NL ramp — all SES) shipped WITHOUT it,
+	// damaging placement on exactly the lanes being ramped. The header
+	// construction and the {{ system.*_url }} safety-net replacements are
+	// transport-agnostic, so they run here after either tracking branch. Kill
+	// switch DISABLE_LIST_UNSUB_HEADERS=true restores the pre-fix behavior (no
+	// header on EITHER path) without a redeploy; token resolution still runs so
+	// no send ships a literal, unresolved unsubscribe token.
+	if trackBase != "" {
+		var brandUnsubURL string
+		unsubURL, brandUnsubURL = p.buildUnsubscribeHeaders(
+			item.CampaignID.String(), item.SubscriberID.String(),
+			item.BrandRoot, item.FromEmail, trackBase, headers)
 
 		// Safety net: replace any unresolved system tokens in both HTML and text
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.unsubscribe_url }}", unsubURL)
@@ -1917,26 +1932,6 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 				htmlContent += unsubBlock
 			}
 		}
-	} else if trackBase != "" && sesInfo.ViaSES {
-		// SES relay sends historically skipped ALL tracking injection ("SES is
-		// the sole tracker") — wrong twice over:
-		//   - OPENS (fixed 2026-07-02): SES-native open tracking captures <1%
-		//     of opens, so partner-drip / gmail / yahoo-family engagement never
-		//     reached PG or the engaged-tier segments (0.4% drip open rate vs
-		//     41% board; the tier starved). InjectOpenPixel restored them.
-		//   - CLICKS (fixed 2026-07-13): SES silently DECLINES to click-wrap
-		//     PMTA-DKIM-signed mail — 15 of 16 brands — so money links went
-		//     out unwrapped and clicks were invisible everywhere (PG, lake,
-		//     engaged tiers). RewriteClickLinks restores t.em click-wrapping
-		//     with the exact same skip rules as the Dedicated path. For the
-		//     one brand SES does wrap (RRU), the t.em link additionally gets
-		//     SES-wrapped — a functional double redirect (t.em resolves to the
-		//     full money URL, SES wraps THAT) — accepted for uniform semantics
-		//     over a per-brand branch; RRU keeps SES-native capture too.
-		// Kill switches: DISABLE_SES_OPEN_PIXEL=true, DISABLE_SES_CLICK_WRAP=true.
-		htmlContent = applySESTracking(htmlContent,
-			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
-			trackBase, p.orgID, p.trackingSecret)
 	}
 	headers["X-Job"] = item.CampaignID.String()
 
@@ -2956,6 +2951,53 @@ func (p *SendWorkerPool) generateUnsubscribeURL(campaignID, subscriberID, baseUR
 
 func (p *SendWorkerPool) generateBrandUnsubscribeURL(campaignID, subscriberID, brandRoot, baseURL string) string {
 	return GenerateBrandUnsubscribeURL(p.orgID, campaignID, subscriberID, brandRoot, baseURL, p.trackingSecret)
+}
+
+// buildUnsubscribeHeaders computes the signed global + brand-scoped unsubscribe
+// URLs for a send and — unless disabled — writes the RFC 8058 one-click
+// List-Unsubscribe / List-Unsubscribe-Post headers into the provided map.
+//
+// It is transport-agnostic ON PURPOSE: BOTH the Dedicated/PMTA path and the SES
+// relay path call it, so every send carries the Gmail/Yahoo-mandated one-click
+// header. (Regression fixed 2026-07-14: the header construction used to live
+// only in the !ViaSES branch of processItem, so every SES-relayed send — gmail,
+// apple, the yahoo-family NL ramp — shipped without List-Unsubscribe.)
+//
+// The returned URLs are used by the caller to resolve in-body {{ system.*_url }}
+// tokens, so they are ALWAYS computed — even when the header kill switch is set
+// — so a send never ships a literal, unresolved unsubscribe token.
+//
+// Kill switch: DISABLE_LIST_UNSUB_HEADERS=true skips only the header writes
+// (restores the pre-fix behavior) while still returning resolved URLs.
+func (p *SendWorkerPool) buildUnsubscribeHeaders(campaignID, subscriberID, brandRoot, fromEmail, trackBase string, headers map[string]string) (unsubURL, brandUnsubURL string) {
+	unsubURL = p.generateUnsubscribeURL(campaignID, subscriberID, trackBase)
+	// Brand-scoped URL for the TOP unsubscribe link and the HTTPS leg of
+	// List-Unsubscribe. Falls back to the global URL shape when brandRoot is
+	// empty (unknown sending domain) so there is no broken-link risk.
+	brandUnsubURL = p.generateBrandUnsubscribeURL(campaignID, subscriberID, brandRoot, trackBase)
+
+	if os.Getenv("DISABLE_LIST_UNSUB_HEADERS") == "true" {
+		return unsubURL, brandUnsubURL
+	}
+
+	// RFC 8058: both mailto: and https: for maximum ISP compatibility.
+	// mailto: must be domain-aligned with the From address for ISP trust.
+	// The HTTPS leg uses the brand-scoped URL so ISP one-click POSTs hit the
+	// brand suppression path. The mailto leg stays 3-part global — there is no
+	// inbound handler for unsub+<token>@<domain> in this repo (the mailto is
+	// ceremonial for ISP trust scoring); extending its payload shape would
+	// propagate the pre-existing unsigned-mailto bug at a wider scope for zero
+	// functional gain.
+	fromDomain := fromEmail
+	if atIdx := strings.LastIndex(fromEmail, "@"); atIdx >= 0 {
+		fromDomain = fromEmail[atIdx+1:]
+	}
+	unsubData := fmt.Sprintf("%s|%s|%s", p.orgID, campaignID, subscriberID)
+	unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
+	mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
+	headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, brandUnsubURL)
+	headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+	return unsubURL, brandUnsubURL
 }
 
 // buildRenderContext constructs a full Liquid render context from a queue item,
