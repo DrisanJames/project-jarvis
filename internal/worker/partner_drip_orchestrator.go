@@ -1841,6 +1841,95 @@ func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context
 	return out
 }
 
+// followupDailyCapsDisabled is the one-move kill switch for the follow-up daily
+// ISP cap enforcement (applyFollowupDailyISPBudget). Set
+// PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED=1 (or true/on/yes) to restore the
+// pre-2026-07-15 behavior where follow-up touches bypassed NewRecordDailyISPCaps
+// entirely. Default false = enforce.
+func followupDailyCapsDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// applyFollowupDailyISPBudget clamps a FOLLOW-UP wave's per-ISP caps by the same
+// NewRecordDailyISPCaps (PARTNER_DRIP_DAILY_ISP_CAPS) daily ceiling the welcome
+// path enforces via applyNewRecordDailyBudget. Bug fix 2026-07-15: without this,
+// follow-up touches (t2..t5) escaped the daily cap completely — a gmail=0 cap
+// blocked enrollment/touch-1 but every already-enrolled gmail recipient kept
+// receiving follow-up drip mail (934 gmail follow-up deliveries observed under
+// gmail=0). Semantics:
+//
+//   - ISP NOT in NewRecordDailyISPCaps  -> untouched (non-capped behavior exact).
+//   - daily cap <= 0 (e.g. gmail=0)     -> per-wave cap forced to 0, so
+//     claimFollowupRecordsByISPCaps drops the ISP from its VALUES list and NO
+//     touch of any number ships to it. This is the core suppression the operator
+//     relies on (broadcast owns gmail; the drip drains non-gmail).
+//   - daily cap > 0                     -> clamp per-wave cap to the remaining
+//     daily budget = cap - already-mailed-today (first touches via mailed_at +
+//     follow-up touches via last-touch-today), counted per (brand, ISP) in the
+//     America/Denver day, mirroring applyNewRecordDailyBudget's per-brand basis.
+//
+// Best-effort: on a count error the static per-wave cap stands (consistent with
+// applyNewRecordDailyBudget). Kill switch: followupDailyCapsDisabled().
+//
+// Note on the positive-cap count: a terminal follow-up (touch_count reached
+// MaxTouchCount, next_touch_at NULL) shipped today is not counted, so a positive
+// cap can under-count by the terminal touch — this only ever makes the cap
+// slightly more generous, never over-suppresses. The cap==0 path (the reported
+// bug and the standing gmail rule) is exact and DB-free.
+func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Context, brand string, caps map[string]int) map[string]int {
+	if len(po.cfg.NewRecordDailyISPCaps) == 0 || followupDailyCapsDisabled() {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	for isp, daily := range po.cfg.NewRecordDailyISPCaps {
+		isp = strings.ToLower(strings.TrimSpace(isp))
+		// Brand-allow gate mirrors the welcome path: a gated ISP (e.g. gmail)
+		// ships from allow-listed brands only.
+		if allow, gated := po.cfg.NewRecordISPBrandAllow[isp]; gated && !allow[lb] {
+			out[isp] = 0
+			continue
+		}
+		// Hard suppression: a daily cap of 0 zeroes the per-wave cap so the ISP
+		// is dropped from the follow-up claim entirely (no DB round-trip).
+		if daily <= 0 {
+			out[isp] = 0
+			continue
+		}
+		var used int
+		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM partner_clean_queue
+				WHERE LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+				  AND (
+				    (mailed_brand = $1
+				       AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver')
+				    OR
+				    (last_touch_brand = $1
+				       AND COALESCE(touch_count, 0) > 1
+				       AND next_touch_at >= (date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver') + INTERVAL '24 hours')
+				  )
+			`, lb, isp).Scan(&used)
+		})
+		if err != nil {
+			log.Printf("[PartnerDripOrchestrator] followup daily-budget count failed brand=%s isp=%s (%v) — keeping static cap", lb, isp, err)
+			continue
+		}
+		remaining := daily - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		if out[isp] > remaining {
+			out[isp] = remaining
+		}
+	}
+	return out
+}
+
 // loadGovernors refreshes the in-memory partner_property_governor cache. Called
 // once per tick (top of tickOnce) so operator edits to caps/subscriptions take
 // effect within one tick without a deploy. Fail-safe: on any error (including a
@@ -3463,6 +3552,15 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 		perISPCaps["apple"] = 0
 	}
 	perISPCaps = applyYahooNewsletterFollowupCaps(perISPCaps, po.cfg.YahooNewsletterOnlyDrip, yahooNewsletter)
+	// Per-ISP DAILY cap on follow-ups (bug fix 2026-07-15): the welcome path
+	// clamps first touches by NewRecordDailyISPCaps (PARTNER_DRIP_DAILY_ISP_CAPS)
+	// via applyNewRecordDailyBudget, but the follow-up path historically skipped
+	// it entirely — so a gmail=0 cap suppressed enrollment/touch-1 yet let t2..t5
+	// keep shipping to already-enrolled gmail recipients (934 gmail follow-up
+	// deliveries observed under gmail=0). Enforce the same daily ceiling here so a
+	// cap of 0 for an ISP suppresses ALL touches to that ISP. Kill switch:
+	// PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED=1 restores the legacy behavior.
+	perISPCaps = po.applyFollowupDailyISPBudget(ctx, brand, perISPCaps)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)

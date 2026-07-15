@@ -100,6 +100,8 @@ var domainToISP = map[string]string{
 	"swbell.net":    Sbcglobal,
 	"ameritech.net": Sbcglobal,
 	"nvbell.net":    Sbcglobal,
+	"prodigy.net":   Sbcglobal,
+	"snet.net":      Sbcglobal,
 
 	// Comcast / Xfinity
 	"comcast.net": Comcast,
