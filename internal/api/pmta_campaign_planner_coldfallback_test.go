@@ -25,8 +25,11 @@ import (
 //      fully satisfied after the primary SDS pass do NOT fire a fallback.
 //   2. Per-ISP queries pass sub.isp = $N as an argument so the planner's
 //      SQL cannot silently drift from the Go isp.GroupFromDomain classifier.
-//   3. The ORDER BY clause uses hashtext(sub.id::text || $1) — the same
-//      subscriber picks differently for two different sending domains.
+//   3. The ORDER BY clause uses a day-salted hashtext stripe keyed on $1
+//      (the sending domain): hashtext(sub.id::text || $1 || <Denver-day>).
+//      The domain keeps two brands' picks disjoint; the Denver-day salt
+//      rotates the daily draw so the cold ramp stops re-hitting the same
+//      members (see rotatingAudienceSelectionEnabled / the kill-switch test).
 //   4. A catch-all pass (sub.isp IS NULL OR sub.isp = '') runs only when
 //      the per-ISP passes leave residual shortfall — ensures correctness
 //      for subscribers the ISP backfill worker has not yet classified.
@@ -34,9 +37,11 @@ import (
 //      brand gets a disjoint stripe of the same ISP pool.
 
 // TestPlanPMTAAudience_MasterSelection_PerISPStripeUsesHashtext verifies the
-// generated SQL includes the hashtext(sub.id::text || $1) ordering. This is
-// the core of the per-brand disjoint selection; without it, two brands
-// launching at the same minute grab the same top-engagement subscribers.
+// generated SQL includes the day-salted hashtext stripe keyed on $1. The $1
+// (sending domain) keeps two brands' picks disjoint; the Denver-day salt
+// rotates the daily draw. Without the domain key, two brands launching at
+// the same minute grab the same top-engagement subscribers; without the day
+// salt, the cold ramp re-hits the same members every day (FIFO-equivalent).
 func TestPlanPMTAAudience_MasterSelection_PerISPStripeUsesHashtext(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -58,10 +63,11 @@ func TestPlanPMTAAudience_MasterSelection_PerISPStripeUsesHashtext(t *testing.T)
 		WithArgs(sendingDomain, orgID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
 
-	// Assert the ORDER BY contains the hashtext expression keyed on $1,
-	// which is the sending domain argument. Matching fails if the planner
-	// reverts to the old engagement_score ordering or drops the $1 key.
-	mock.ExpectQuery(`ORDER BY hashtext\(sub\.id::text \|\| \$1\) ASC`).
+	// Assert the ORDER BY contains the day-salted hashtext stripe keyed on
+	// $1 (the sending domain argument). Matching fails if the planner
+	// reverts to the old engagement_score ordering, drops the $1 key, or
+	// drops the Denver-day rotation salt.
+	mock.ExpectQuery(`ORDER BY hashtext\(sub\.id::text \|\| \$1 \|\| to_char\(now\(\) AT TIME ZONE 'America/Denver', 'YYYY-MM-DD'\)\) ASC`).
 		WithArgs(sendingDomain, orgID, "gmail", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}).
 			AddRow("aa-0000-0000-0000-000000000001", "a@gmail.com").
@@ -357,9 +363,9 @@ func TestPlanPMTAAudience_MasterSelection_QueryShapeIncludesISPFilter(t *testing
 	// fallback SQL:
 	//   - filters by sub.isp = $N
 	//   - anti-joins on SDS for the sending domain
-	//   - orders by hashtext stripe keyed on $1
+	//   - orders by the day-salted hashtext stripe keyed on $1
 	//   - preserves the engagement_score tie-break
-	pattern := regexp.MustCompile(`(?s)sub\.isp = \$\d+.*NOT EXISTS.*mailing_subscriber_domain_state sds.*sending_domain = \$1.*ORDER BY hashtext\(sub\.id::text \|\| \$1\) ASC,\s+sub\.engagement_score DESC NULLS LAST`)
+	pattern := regexp.MustCompile(`(?s)sub\.isp = \$\d+.*NOT EXISTS.*mailing_subscriber_domain_state sds.*sending_domain = \$1.*ORDER BY hashtext\(sub\.id::text \|\| \$1 \|\| to_char\(now\(\) AT TIME ZONE 'America/Denver', 'YYYY-MM-DD'\)\) ASC,\s+sub\.engagement_score DESC NULLS LAST`)
 
 	db, mock, err := sqlmock.New()
 	if err != nil {

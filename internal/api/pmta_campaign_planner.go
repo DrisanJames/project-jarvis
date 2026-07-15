@@ -205,6 +205,28 @@ func segmentBuildFailClosedDisabled() bool {
 	return os.Getenv("DISABLE_SEGMENT_BUILD_FAIL_CLOSED") == "true"
 }
 
+// rotatingAudienceSelectionEnabled controls whether the cold-pool / cold-
+// ramp recipient selection ROTATES daily instead of picking the same
+// members every day. It is the kill switch for the day-salted stripe added
+// to the master-selection cold-fallback ORDER BY (streamSDSColdFallback).
+//
+// Default ON (rotation active). Set DISABLE_ROTATING_AUDIENCE_SELECTION=true
+// to revert the cold-fallback ordering to its prior day-stable form
+// (hashtext(sub.id::text || $domain)), i.e. the exact pre-rotation behavior.
+// This is the one-move rollback for the rotation change.
+//
+// WHY: the cold-fallback selects first-touch subscribers (no SDS row for
+// this sending domain). Its prior ORDER BY hashed only (subscriber,domain),
+// which is STABLE across days, so the same members sorted to the front of
+// the pool every day and the same quota-sized prefix was drawn each send —
+// FIFO-equivalent. Fresh members deeper in the pool were never tried. The
+// day salt (Denver calendar day) rotates the stripe daily while remaining
+// stable/reproducible WITHIN a day, and keeps the per-(subscriber,domain)
+// disjoint-brand property (still keyed on the sending domain) intact.
+func rotatingAudienceSelectionEnabled() bool {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("DISABLE_ROTATING_AUDIENCE_SELECTION"))) != "true"
+}
+
 // segmentBuildLedgerState classifies a segment that read 0 rows from
 // mailing_segment_members using mailing_segment_build_ledger (written by
 // every member-writing build path — see segment_ledger.go).
@@ -1297,13 +1319,26 @@ func planPMTAAudience(
 				args = append(args, scanLimit)
 				limitParam := fmt.Sprintf("$%d", len(args))
 
-				// Deterministic per-(subscriber, sending_domain) stripe.
-				// hashtext() is stable, indexed-friendly when wrapped in
-				// ORDER BY, and gives each brand a disjoint slice of the
-				// eligible pool. Tie-break by engagement_score so within a
-				// brand's slice the higher-engagement records still land
-				// first — preserves the old "top-engagement preferred"
-				// property while eliminating the cross-brand collision.
+				// Per-(subscriber, sending_domain) stripe, ROTATING daily.
+				// hashtext() is index-friendly when wrapped in ORDER BY and
+				// gives each brand a disjoint slice of the eligible pool
+				// (keyed on the sending domain $1) — the 2026-04-20 cross-
+				// brand overlap fix. Tie-break by engagement_score so within
+				// a stripe the higher-engagement records still land first.
+				//
+				// The stripe is salted with the Denver calendar day so the
+				// daily draw ROTATES to different cold members each day
+				// instead of re-hitting the same quota-sized prefix (FIFO-
+				// equivalent). The salt is stable WITHIN a Denver day, so the
+				// selection is reproducible for retries/re-finalizes on the
+				// same day. Gated by rotatingAudienceSelectionEnabled(); the
+				// kill switch restores the prior day-stable ordering. The
+				// disjoint-brand property is preserved because the domain ($1)
+				// remains in the hash input either way.
+				stripeExpr := `hashtext(sub.id::text || $1)`
+				if rotatingAudienceSelectionEnabled() {
+					stripeExpr = `hashtext(sub.id::text || $1 || to_char(now() AT TIME ZONE 'America/Denver', 'YYYY-MM-DD'))`
+				}
 				query := `
 					SELECT sub.id::text, sub.email
 					FROM mailing_subscribers sub
@@ -1316,7 +1351,7 @@ func planPMTAAudience(
 					    WHERE sds.subscriber_id = sub.id
 					      AND sds.sending_domain = $1
 					  )
-					ORDER BY hashtext(sub.id::text || $1) ASC,
+					ORDER BY ` + stripeExpr + ` ASC,
 					         sub.engagement_score DESC NULLS LAST
 					LIMIT ` + limitParam
 				rows, err := db.QueryContext(ctx, query, args...)
