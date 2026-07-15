@@ -211,6 +211,185 @@ func TestColdFallbackRotation_DaySaltRotatesAcrossDenverDays(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Capped inclusion-segment rotation (streamSegment) — the CONDUIT ramp case
+// =============================================================================
+// The family CONDUIT ramp is a CAPPED inclusion-segment send: each cell draws
+// a finite volume (e.g. 900) from a CONDUIT-<ISP>-<BRAND> pool (~5,400
+// members), use_master_selection=true. Those members are read through
+// streamSegment (mailing_segment_members), NOT the SDS cold-fallback — once a
+// member is mailed it has an SDS row, so it is excluded from the cold-fallback
+// (NOT EXISTS sds) pool. streamSegment previously had NO ORDER BY, so
+// allQuotasMet() cut the SAME heap-order front-N every day (FIFO). These tests
+// pin the fix: a FULLY BOUNDED send (all ISP quotas finite) rotates the segment
+// draw by the Denver day; an UNBOUNDED (volume:0) send is left untouched.
+
+// TestPlanPMTAAudience_CappedSegment_RotatesDaily proves that a capped
+// (all-finite-quota) inclusion-segment send emits the day-salted rotating
+// ORDER BY + bounding LIMIT on the mailing_segment_members read. The prelude
+// fills the quota so no SDS query follows.
+func TestPlanPMTAAudience_CappedSegment_RotatesDaily(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "dddddddd-0000-0000-0000-000000000010"
+	segmentID := "eeeeeeee-0000-0000-0000-0000000000c0"
+	sendingDomain := "em.conduit.com"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(true))
+
+	// The capped segment read MUST carry the Denver-day-salted rotating
+	// ORDER BY and a bounding LIMIT. WithArgs stays a single bind ($1 =
+	// segmentID): the salt is subscriber_id + the SQL-side Denver day, so no
+	// extra parameter is introduced.
+	mock.ExpectQuery(`FROM mailing_segment_members WHERE segment_id = \$1 ORDER BY hashtext\(subscriber_id::text \|\| to_char\(now\(\) AT TIME ZONE 'America/Denver', 'YYYY-MM-DD'\)\) ASC LIMIT \d+`).
+		WithArgs(segmentID).
+		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", "c1@gmail.com"))
+
+	input := engine.PMTACampaignInput{
+		CampaignID:    campaignID,
+		SendingDomain: sendingDomain,
+		SendPriority: []engine.PriorityItem{
+			{Type: "segment", ID: segmentID},
+		},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 1},
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 1}},
+	}
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+	if result.CountsByISP["gmail"] != 1 {
+		t.Errorf("gmail count = %d, want 1", result.CountsByISP["gmail"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations (capped segment rotates): %v", err)
+	}
+}
+
+// TestPlanPMTAAudience_UnlimitedSegment_NoOrderBy proves the operator's
+// guardrail: an UNBOUNDED send (any volume:0 ISP) leaves the segment read
+// EXACTLY as before — no ORDER BY, no LIMIT. The end-anchored regex
+// (`segment_id = \$1$`) matches ONLY the bare read; if the code wrongly added
+// a sort to the unbounded path (the work_mem / statement_timeout risk) the
+// expectation would not match and the test fails.
+func TestPlanPMTAAudience_UnlimitedSegment_NoOrderBy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	campaignID := "dddddddd-0000-0000-0000-000000000011"
+	segmentID := "eeeeeeee-0000-0000-0000-0000000000c1"
+	sendingDomain := "em.uncapped.com"
+
+	mock.ExpectQuery(`SELECT offer_id::text FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnError(sql.ErrNoRows)
+	// Non-master path keeps the flow simple (inclusion segment → streamSegment,
+	// no SDS passes) so the assertion isolates the segment read shape. The
+	// volume:0 quota is what drives the no-ORDER-BY branch, independent of the
+	// selection path.
+	mock.ExpectQuery(`SELECT COALESCE\(use_master_selection, false\) FROM mailing_campaigns`).
+		WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"use_master_selection"}).AddRow(false))
+
+	mock.ExpectQuery(`FROM mailing_segment_members WHERE segment_id = \$1$`).
+		WithArgs(segmentID).
+		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "email"}).
+			AddRow("bbbbbbbb-0000-0000-0000-000000000001", "u1@gmail.com").
+			AddRow("bbbbbbbb-0000-0000-0000-000000000002", "u2@gmail.com"))
+
+	input := engine.PMTACampaignInput{
+		CampaignID:        campaignID,
+		SendingDomain:     sendingDomain,
+		InclusionSegments: []string{segmentID},
+		ISPPlans: []engine.PMTAISPScheduleInput{
+			{ISP: "gmail", Quota: 0}, // volume:0 = unlimited → no rotation, no sort
+		},
+	}
+	normalized := pmtaNormalizedCampaign{
+		Plans: []pmtaNormalizedPlan{{ISP: "gmail", Quota: 0}},
+	}
+	result, err := planPMTAAudience(context.Background(), db, orgID, input, normalized, NewSuppressionMatcher(), nil)
+	if err != nil {
+		t.Fatalf("planPMTAAudience: %v", err)
+	}
+	if result.CountsByISP["gmail"] != 2 {
+		t.Errorf("gmail count = %d, want 2 (unlimited streams all segment members)", result.CountsByISP["gmail"])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql expectations (unlimited segment unchanged): %v", err)
+	}
+}
+
+// TestCappedSegmentRotation_DaySaltRotatesAcrossDenverDays MODELS the
+// streamSegment ordering key — subscriber_id || Denver-day — to prove, from a
+// pool LARGER than the quota, two Denver days select a DIFFERENT prefix
+// (rotation) while the SAME day selects an IDENTICAL prefix (within-day
+// reproducibility). See the NOTE ON TEST DEPTH at the top of this file for why
+// the row-level rotation is modeled rather than executed under sqlmock.
+func TestCappedSegmentRotation_DaySaltRotatesAcrossDenverDays(t *testing.T) {
+	// Mirrors the SQL hash INPUT: hashtext(subscriber_id::text || <Denver-day>).
+	// sha256 stands in for hashtext (strong avalanche on any input change).
+	key := func(id, day string) uint64 {
+		sum := sha256.Sum256([]byte(id + day))
+		return binary.BigEndian.Uint64(sum[:8])
+	}
+
+	const poolSize = 5400 // ~CONDUIT-<ISP>-<BRAND> pool size
+	const quota = 900     // volume:900 per cell
+
+	pool := make([]string, 0, poolSize)
+	for i := 0; i < poolSize; i++ {
+		pool = append(pool, fmt.Sprintf("cccccccc-0000-0000-0000-%012d", i))
+	}
+	selectPrefix := func(day string) []string {
+		ids := append([]string(nil), pool...)
+		sort.SliceStable(ids, func(a, b int) bool {
+			ka, kb := key(ids[a], day), key(ids[b], day)
+			if ka != kb {
+				return ka < kb
+			}
+			return ids[a] < ids[b]
+		})
+		return ids[:quota]
+	}
+
+	dayA := selectPrefix("2026-07-15")
+	dayASame := selectPrefix("2026-07-15")
+	dayB := selectPrefix("2026-07-16")
+
+	if !sameSet(dayA, dayASame) {
+		t.Fatalf("within-day segment selection changed across runs; expected identical set")
+	}
+	overlap := overlapCount(dayA, dayB)
+	if overlap >= quota {
+		t.Fatalf("CONDUIT segment did not rotate across Denver days: overlap=%d of quota=%d (front-N FIFO not fixed)", overlap, quota)
+	}
+	// Independent day salts over a pool 6x the quota → expected overlap ~150;
+	// require a strict minority so a near-stable ordering also fails loudly.
+	if overlap > quota/2 {
+		t.Fatalf("segment rotation too weak: overlap=%d of quota=%d (expected a minority)", overlap, quota)
+	}
+}
+
 func sameSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

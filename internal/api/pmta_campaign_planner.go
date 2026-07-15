@@ -1077,8 +1077,36 @@ func planPMTAAudience(
 		// row loop instead of a separate COUNT(*), so a rebuild or cleanup
 		// committing between two statements can no longer make the planner
 		// pass a >0 count gate and then read 0 rows (or vice versa).
-		rows, err := db.QueryContext(ctx,
-			`SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`, segmentID)
+		//
+		// Rotation (2026-07-15): a CAPPED inclusion-segment send — the family
+		// CONDUIT ramp draws volume:900 per cell from CONDUIT-<ISP>-<BRAND>
+		// pools (~5,400 members) — previously read this segment in HEAP order
+		// with no ORDER BY, so allQuotasMet() cut off after the SAME front-N
+		// members every day (FIFO). Once mailed, a member has an SDS row and
+		// is NOT a cold-fallback (no-SDS-row) candidate, so the cold-fallback
+		// rotation fix does NOT reach these members — they are read here.
+		//
+		// When rotation is ON *and* the send is FULLY BOUNDED (every ISP quota
+		// finite — no volume:0 lane), salt the order by the Denver calendar
+		// day so the daily draw ROTATES (stable/reproducible WITHIN a day),
+		// bounded by a scanLimit LIMIT mirroring streamList's oversample. No
+		// new bind arg: segment membership is already brand-partitioned so
+		// subscriber_id + Denver-day is a sufficient rotating key.
+		//
+		// The UNBOUNDED volume:0 path is left EXACTLY as before (no ORDER BY,
+		// no LIMIT): an unlimited send mails everyone (order is irrelevant),
+		// and sorting an unbounded segment would risk work_mem spill / the
+		// 30s statement_timeout — the legitimate reason NOT to touch it.
+		segQuery := `SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`
+		if rotatingAudienceSelectionEnabled() && !hasUnlimited && totalQuota > 0 {
+			scanLimit := totalQuota * 3
+			if scanLimit < 10000 {
+				scanLimit = 10000
+			}
+			segQuery += ` ORDER BY hashtext(subscriber_id::text || to_char(now() AT TIME ZONE 'America/Denver', 'YYYY-MM-DD')) ASC` +
+				fmt.Sprintf(` LIMIT %d`, scanLimit)
+		}
+		rows, err := db.QueryContext(ctx, segQuery, segmentID)
 		if err != nil {
 			log.Printf("[PlanAudience] segment %s materialized read error: %v, skipping", segmentID, err)
 			return nil
