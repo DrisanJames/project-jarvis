@@ -166,6 +166,9 @@ func (m *MemoryStore) WriteState(isp ISP, agentType AgentType, state interface{}
 // AppendDecision buffers a decision entry; the flush loop writes it as part
 // of a small delta object (write-only audit stream, nothing reads it back).
 func (m *MemoryStore) AppendDecision(ctx context.Context, isp ISP, agentType AgentType, decision interface{}) error {
+	if !memoryStreamsS3Enabled() {
+		return nil // dead call — no S3 write (operator 2026-07-16)
+	}
 	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(decision)
 	if err != nil {
@@ -177,6 +180,9 @@ func (m *MemoryStore) AppendDecision(ctx context.Context, isp ISP, agentType Age
 
 // AppendSignal buffers a signal snapshot; flushed as a delta object.
 func (m *MemoryStore) AppendSignal(ctx context.Context, isp ISP, agentType AgentType, signal interface{}) error {
+	if !memoryStreamsS3Enabled() {
+		return nil // dead call — no S3 write (operator 2026-07-16)
+	}
 	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(signal)
 	if err != nil {
@@ -209,22 +215,25 @@ func (m *MemoryStore) WritePatterns(isp ISP, agentType AgentType, patterns inter
 // Conviction Memory — Binary Verdict Storage
 // ---------------------------------------------------------------------------
 
-// convictionS3Enabled reports whether conviction memory is persisted to / read
-// from S3. DISABLED by default (operator 2026-07-16): convictions are not
-// actively used, and their per-append S3 delta stream drove a ~$2.5k/mo GET
-// storm — every ReadConvictions fetched up to streamReadMaxObjects (200) tiny
-// delta objects (+ a legacy-journal GET) across a 7-day window, multiplied by
-// the engine's read loops, and the writes grew the bucket to 47M objects.
-// Convictions now live in the in-memory ring ONLY (conviction.go still calls
-// ring.append). Set ENGINE_CONVICTION_S3_ENABLED=true to restore S3 I/O.
-func convictionS3Enabled() bool {
-	return os.Getenv("ENGINE_CONVICTION_S3_ENABLED") == "true"
+// memoryStreamsS3Enabled reports whether the engine's append-stream memory
+// (convictions / decisions / signals) is persisted to / read from S3. DISABLED
+// by default (operator 2026-07-16): these streams are not actively used, and
+// their per-append S3 delta objects drove the S3 bill from ~$400 to ~$2.8k/mo —
+// ReadConvictions alone fetched up to streamReadMaxObjects (200) tiny delta
+// objects (+ a legacy-journal GET) across a 7-day window × the engine read
+// loops (~6.3B GET/mo = $2,521 Tier2), and the write-only decision/signal
+// streams grew ignite-pmta-engine to 47M objects (16M->47M in a month).
+// Convictions still live in the in-memory ring (conviction.go calls ring.append);
+// only S3 persistence/restore stops. Set ENGINE_MEMORY_STREAMS_S3_ENABLED=true
+// to restore S3 I/O for all three streams.
+func memoryStreamsS3Enabled() bool {
+	return os.Getenv("ENGINE_MEMORY_STREAMS_S3_ENABLED") == "true"
 }
 
 // AppendConviction buffers a single conviction; flushed as a delta object.
 // Dead call unless conviction S3 is explicitly re-enabled (see convictionS3Enabled).
 func (m *MemoryStore) AppendConviction(ctx context.Context, isp ISP, agentType AgentType, conviction interface{}) error {
-	if !convictionS3Enabled() {
+	if !memoryStreamsS3Enabled() {
 		return nil // dead call — no S3 write (operator 2026-07-16)
 	}
 	_ = ctx // buffered; no S3 I/O on the hot path
@@ -242,7 +251,7 @@ func (m *MemoryStore) AppendConviction(ctx context.Context, isp ISP, agentType A
 // alone don't fill the window. Returned oldest-first (the ring hydrator
 // appends sequentially and keeps the last 2000).
 func (m *MemoryStore) ReadConvictions(ctx context.Context, isp ISP, agentType AgentType) ([]Conviction, error) {
-	if !convictionS3Enabled() {
+	if !memoryStreamsS3Enabled() {
 		return nil, nil // dead call — no S3 read (operator 2026-07-16); ring hydrates empty
 	}
 	stream := m.agentPrefix(isp, agentType) + "/convictions"
