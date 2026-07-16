@@ -24,6 +24,7 @@ func newTestMemoryStore() *MemoryStore {
 // hot path (the old GET+concat+PUT per append was the 2026-06 NAT cost
 // incident).
 func TestAppendBuffersLinesPerStream(t *testing.T) {
+	t.Setenv("ENGINE_CONVICTION_S3_ENABLED", "true") // exercise the real conviction S3 append path
 	m := newTestMemoryStore()
 	ctx := context.Background()
 
@@ -51,6 +52,7 @@ func TestAppendBuffersLinesPerStream(t *testing.T) {
 
 // Flush must drain the append queue (nil client == successful no-op PUTs).
 func TestFlushDrainsAppendQueue(t *testing.T) {
+	t.Setenv("ENGINE_CONVICTION_S3_ENABLED", "true") // real conviction append so the flush has something to drain
 	m := newTestMemoryStore()
 	ctx := context.Background()
 	_ = m.AppendConviction(ctx, ISP("gmail"), AgentType("throttle"), map[string]string{"v": "1"})

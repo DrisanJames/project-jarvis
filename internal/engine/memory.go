@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -208,8 +209,24 @@ func (m *MemoryStore) WritePatterns(isp ISP, agentType AgentType, patterns inter
 // Conviction Memory — Binary Verdict Storage
 // ---------------------------------------------------------------------------
 
+// convictionS3Enabled reports whether conviction memory is persisted to / read
+// from S3. DISABLED by default (operator 2026-07-16): convictions are not
+// actively used, and their per-append S3 delta stream drove a ~$2.5k/mo GET
+// storm — every ReadConvictions fetched up to streamReadMaxObjects (200) tiny
+// delta objects (+ a legacy-journal GET) across a 7-day window, multiplied by
+// the engine's read loops, and the writes grew the bucket to 47M objects.
+// Convictions now live in the in-memory ring ONLY (conviction.go still calls
+// ring.append). Set ENGINE_CONVICTION_S3_ENABLED=true to restore S3 I/O.
+func convictionS3Enabled() bool {
+	return os.Getenv("ENGINE_CONVICTION_S3_ENABLED") == "true"
+}
+
 // AppendConviction buffers a single conviction; flushed as a delta object.
+// Dead call unless conviction S3 is explicitly re-enabled (see convictionS3Enabled).
 func (m *MemoryStore) AppendConviction(ctx context.Context, isp ISP, agentType AgentType, conviction interface{}) error {
+	if !convictionS3Enabled() {
+		return nil // dead call — no S3 write (operator 2026-07-16)
+	}
 	_ = ctx // buffered; no S3 I/O on the hot path
 	line, err := json.Marshal(conviction)
 	if err != nil {
@@ -225,6 +242,9 @@ func (m *MemoryStore) AppendConviction(ctx context.Context, isp ISP, agentType A
 // alone don't fill the window. Returned oldest-first (the ring hydrator
 // appends sequentially and keeps the last 2000).
 func (m *MemoryStore) ReadConvictions(ctx context.Context, isp ISP, agentType AgentType) ([]Conviction, error) {
+	if !convictionS3Enabled() {
+		return nil, nil // dead call — no S3 read (operator 2026-07-16); ring hydrates empty
+	}
 	stream := m.agentPrefix(isp, agentType) + "/convictions"
 
 	lines, err := m.readStreamTail(ctx, stream)
