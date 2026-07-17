@@ -858,6 +858,21 @@ func main() {
 			go partnerHumanRollup.Start(ctx)
 			log.Printf("Partner human rollup started (nightly 03:10 UTC, 90d backfill on boot; kill: DISABLE_PARTNER_HUMAN_ROLLUP)")
 
+			// Verified Humans ledger (docs/JAOS/core.md §14) — nightly ACCRETIVE
+			// maintainer of the per-brand "<brand> Verified Humans" segments (the
+			// indefinite human core of the engaged-first anchor). Ledgers every
+			// subscriber with >=1 verdict-human open/click EVER on the brand's
+			// sends; ADD-ONLY (ON CONFLICT DO NOTHING, no DELETE) so a proven
+			// human is retained forever even after their events age out of the
+			// month-partitioned events table. Coverage is resumable via
+			// mailing_verified_humans_ledger_progress; the historical backfill
+			// spreads over several calm nights. Daily 03:40 UTC (calm window, no
+			// send-hours boot pass). Distlock via Redis (PG advisory fallback).
+			// Kill: DISABLE_VERIFIED_HUMANS_LEDGER=true.
+			verifiedHumansLedger := worker.NewVerifiedHumansLedgerWorker(mailingDB, redisClient)
+			go verifiedHumansLedger.Start(ctx)
+			log.Printf("Verified Humans ledger started (nightly 03:40 UTC, resumable backfill; kill: DISABLE_VERIFIED_HUMANS_LEDGER)")
+
 			// Journey Segment Enroller — auto-enrolls subscribers from
 			// segment-triggered journeys (Welcome Series Phase 2). Uses the
 			// segmentation engine for saved segments, and the
@@ -5764,6 +5779,71 @@ END $$`},
 		{"idx_segment_members_lookup", `CREATE INDEX IF NOT EXISTS idx_segment_members_lookup ON mailing_segment_members(segment_id, email)`},
 		{"idx_tracking_events_segment", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment ON mailing_tracking_events (subscriber_id, event_type, sending_domain, event_at)`},
 		{"idx_tracking_events_segment_v2", `CREATE INDEX IF NOT EXISTS idx_tracking_events_segment_v2 ON mailing_tracking_events (event_type, event_at, sending_domain, subscriber_id)`},
+
+		// ── Verified Humans human-ledger (docs/JAOS/core.md §14, operator 2026-07-16) ──
+		// The indefinite (no-window) third dimension of the engaged-first anchor:
+		// recency-openers ∪ recency-clickers ∪ VERIFIED-HUMANS-EVER. One
+		// "<brand> Verified Humans" segment per brand, whose MEMBERS are written
+		// (add-only, never removed) by VerifiedHumansLedgerWorker — NOT by the
+		// SegmentMaterializer, whose DELETE+INSERT rebuild cannot express the
+		// verdict-human-ever predicate and would drop humans whose events aged out
+		// of the month-partitioned events table.
+		//
+		// The segments are seeded segment_type='static' + keep_active=TRUE: the two
+		// flags that keep them out of BOTH the nightly SegmentMaterializer
+		// (segment_type='dynamic' only) AND SegmentCleanupWorker.purgeStaticSnapshots
+		// (which hard-deletes static snapshots UNLESS keep_active — segment_cleanup.go
+		// :506). keep_active also exempts them from the staleness-inactivation path
+		// (:272). The planner streams members straight from mailing_segment_members
+		// (pmta_campaign_planner.go ~1100), so segment_type is irrelevant to
+		// consumption and 'static' works end-to-end.
+		//
+		// Coverage/resume high-water mark for the worker. App-user-owned companion
+		// table (mailing_segments is apex_admin-owned; this avoids any ALTER).
+		{"create_verified_humans_ledger_progress", `CREATE TABLE IF NOT EXISTS mailing_verified_humans_ledger_progress (
+			segment_id UUID PRIMARY KEY,
+			sending_domain TEXT NOT NULL,
+			scanned_through TIMESTAMPTZ,
+			last_added INTEGER NOT NULL DEFAULT 0,
+			total_members BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Seed one "<brand> Verified Humans" per brand, DERIVED from the existing
+		// "<brand> 7D Openers" segments so the brand token matches EXACTLY what the
+		// board resolves via audience.match (same token → same name family) and the
+		// per-brand sending_domain is copied from the opener's own condition (the
+		// worker reads it back to scope its verdict scan). Global openers (no
+		// sending_domain condition) are excluded — the ledger is per-brand only.
+		// Idempotent via the NOT EXISTS guard; DISTINCT dedupes duplicate openers.
+		{"seed_verified_humans_segments", `
+			INSERT INTO mailing_segments (
+				id, organization_id, name, description, segment_type, conditions,
+				status, keep_active, category, subscriber_count, created_at, updated_at
+			)
+			SELECT gen_random_uuid(), t.organization_id,
+				t.prefix || ' Verified Humans',
+				'Permanent human ledger: every subscriber with >=1 verdict-human open/click EVER on ' || t.domain || ' sends. Accretive (add-only, never removed); maintained by VerifiedHumansLedgerWorker. The indefinite third dimension of the engaged-first anchor.',
+				'static',
+				jsonb_build_array(jsonb_build_object('group', 0, 'field', 'sending_domain', 'operator', 'equals', 'value', t.domain)),
+				'active', TRUE, 'cohort_static', 0, NOW(), NOW()
+			FROM (
+				SELECT DISTINCT op.organization_id,
+					regexp_replace(op.name, ' 7D Openers$', '') AS prefix,
+					(SELECT e.value->>'value'
+					   FROM jsonb_array_elements(op.conditions) e
+					  WHERE e.value->>'field' = 'sending_domain'
+					  LIMIT 1) AS domain
+				FROM mailing_segments op
+				WHERE op.name ~ ' 7D Openers$'
+				  AND op.status = 'active'
+			) t
+			WHERE t.domain IS NOT NULL AND t.domain <> ''
+			  AND NOT EXISTS (
+				SELECT 1 FROM mailing_segments m
+				WHERE m.organization_id = t.organization_id
+				  AND m.name = t.prefix || ' Verified Humans'
+			)
+		`},
 
 		// Reset campaigns orphaned in 'preparing' by a previous crash/deploy.
 		{"reset_stale_preparing_v1", `UPDATE mailing_campaigns SET status = 'finalizing_audience', updated_at = NOW() WHERE status = 'preparing' AND updated_at < NOW() - INTERVAL '45 minutes'`},
