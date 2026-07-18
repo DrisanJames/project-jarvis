@@ -5,9 +5,11 @@ package worker
 //
 //   - the member insert is ACCRETIVE: ON CONFLICT (segment_id, subscriber_id)
 //     DO NOTHING and NO DELETE anywhere (a proven human is never removed),
-//   - membership is verdict-HUMAN-filtered on BOTH opens and clicks (the whole
-//     point of the ledger), clicks use the materialized click_verdict first and
-//     EXCLUDE unsub-link clicks,
+//   - membership is by POSITIVE HUMAN ACTION (SIGNAL-GRADING, 2026-07-18): a
+//     brand-scoped CLICK (event_type='clicked', EXCLUDING tracked-unsub clicks)
+//     OR a CONVERSION (mailing_offer_suppressions reason ~* 'convert') — NO
+//     ignite_verdict_is_human gate (it omitted ~20% of real humans), and OPENS
+//     alone do NOT qualify,
 //   - coverage resumes from the per-segment high-water mark (scanned_through),
 //     starting at today-backfill when unset, and is bounded per pass,
 //   - one segment failing does not stop the pass (per-segment isolation),
@@ -76,16 +78,32 @@ func ledgerSegmentRows(scannedThrough interface{}) *sqlmock.Rows {
 // classification predicate and the ADD-ONLY guarantee live in the SQL text.
 func TestVerifiedHumansLedger_InsertShape(t *testing.T) {
 	sql := verifiedHumansMemberInsertSQL
+	// POSITIVE-ACTION predicate: a brand-scoped click inlet + a conversion inlet.
 	for _, want := range []string{
-		"ignite_verdict_is_human(ignite_event_verdict(te.user_agent, te.ip_address))",                             // human opens
-		"ignite_verdict_is_human(COALESCE(te.click_verdict, ignite_event_verdict(te.user_agent, te.ip_address)))", // human clicks (click_verdict first)
-		"NOT ILIKE '%/track/unsubscribe%'",                     // unsub-click exclusion
+		"te.event_type = 'clicked'",                            // click inlet (positive action)
+		"te.sending_domain = $4",                               // brand-scoped click
+		"NOT ILIKE '%/track/unsubscribe%'",                     // unsub-click exclusion (kept)
+		"FROM mailing_offer_suppressions os",                   // conversion inlet
+		"os.reason ~* 'convert'",                               // conversion predicate
+		"UNION",                                                // the two inlets are UNIONed
 		"ON CONFLICT (segment_id, subscriber_id) DO NOTHING",   // accretive / re-run safe
 		"JOIN mailing_subscribers s ON s.id = q.subscriber_id", // email comes from subscribers (te has none)
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("member insert SQL missing %q", want)
 		}
+	}
+	// SIGNAL-GRADING: the ignite_verdict_is_human gate is DROPPED entirely — it
+	// omitted ~20% of real humans (incl. converters). It must not reappear.
+	for _, banned := range []string{"ignite_verdict_is_human", "ignite_event_verdict"} {
+		if strings.Contains(sql, banned) {
+			t.Fatalf("member insert must NOT re-gate on the verdict — found %q", banned)
+		}
+	}
+	// OPENS no longer qualify a subscriber for the HUMAN ledger by themselves:
+	// the insert must not select on an 'opened' event.
+	if strings.Contains(sql, "'opened'") {
+		t.Fatalf("opens must NOT qualify — found an 'opened' predicate in the insert: %s", sql)
 	}
 	// The ledger must NEVER remove a human: no DELETE, no TRUNCATE in the
 	// maintenance statement. This is the load-bearing invariant (a DELETE+INSERT

@@ -5,17 +5,19 @@ import (
 	"testing"
 )
 
-// REQ-045 — pins nonScannerClickFilter's exclusion set (the click-side
-// consumer of the verdict classes) so a verdict-function change can never
-// silently diverge from the segment-entry filter again. The v2 contract:
-//   EXCLUDED: datacenter, machine-bare, farm, unknown, google-egress
-//             (google-egress added per S7-gmail: 14d google-egress CLICKERS
-//             = 0 — near-zero membership impact, closes the automation door)
-//   KEPT:     human, human-relay, proxy-view, apple-mpp (Apple audience),
-//             ses-tracked (vessel/probation — SES clicks formerly died as
-//             'unknown'), human-ua-only (lower-confidence human), and NULL
-//             (not yet classified — never cut the audience before backfill).
-func TestNonScannerClickFilter_V2ExclusionSet(t *testing.T) {
+// REQ-045 / SIGNAL-GRADING (docs/JAOS/core.md §14, 2026-07-18) — pins
+// nonScannerClickFilter's exclusion set (the click-side consumer of the verdict
+// classes) so a verdict-function change can never silently diverge from the
+// segment-entry filter again. The scanner verdict is a scanner-STORM filter, NOT
+// a human detector, so the ONLY excluded class is:
+//   EXCLUDED: farm (the 75.98.0.0/16 Yahoo seed farm — proven pure machine,
+//             0 human converters)
+//   KEPT:     everything else — human, human-relay, proxy-view, apple-mpp,
+//             ses-tracked, human-ua-only, AND the recovered machine-ish classes
+//             (datacenter, machine-bare, unknown, google-egress) that were shown
+//             to contain ~20% of proven human clickers behind proxies/scanners —
+//             plus NULL (not yet classified — never cut the audience before backfill).
+func TestNonScannerClickFilter_SignalGradingExclusionSet(t *testing.T) {
 	frag := nonScannerClickFilter("clicked", "e")
 
 	if !strings.HasPrefix(frag, " AND (") {
@@ -25,13 +27,15 @@ func TestNonScannerClickFilter_V2ExclusionSet(t *testing.T) {
 		t.Fatalf("fragment must keep NULL (not-yet-classified) rows; got %q", frag)
 	}
 
-	excluded := []string{"'datacenter'", "'machine-bare'", "'farm'", "'unknown'", "'google-egress'"}
-	for _, cls := range excluded {
-		if !strings.Contains(frag, cls) {
-			t.Fatalf("exclusion set must contain %s; got %q", cls, frag)
-		}
+	// 'farm' is the ONLY class excluded.
+	if !strings.Contains(frag, "'farm'") {
+		t.Fatalf("exclusion set must contain 'farm'; got %q", frag)
 	}
-	kept := []string{"ses-tracked", "human-ua-only", "apple-mpp", "proxy-view", "human-relay"}
+	// Every recovered/kept class must NOT appear in the exclusion predicate.
+	kept := []string{
+		"datacenter", "machine-bare", "unknown", "google-egress", // recovered
+		"ses-tracked", "human-ua-only", "apple-mpp", "proxy-view", "human-relay", // already human
+	}
 	for _, cls := range kept {
 		if strings.Contains(frag, cls) {
 			t.Fatalf("class %q must be KEPT (not appear in the exclusion set); got %q", cls, frag)

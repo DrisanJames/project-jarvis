@@ -641,34 +641,29 @@ func isDomainScopableField(field, operator string) bool {
 }
 
 // nonScannerClickFilter returns the SQL fragment (leading " AND ...") that
-// restricts a clicked-event subquery to non-SCANNER clicks by reading the
+// restricts a clicked-event subquery to non-SCANNER-STORM clicks by reading the
 // materialized click_verdict (populated at write by the ignite_set_click_verdict
-// trigger and backfilled for history). The excluded classes are
-// 'datacenter','machine-bare','farm','unknown','google-egress' (v2, REQ-045):
-//   - google-egress ADDED: S7-gmail measured google-egress CLICKERS = 0 over
-//     14d — the google-egress mass is opens — so excluding it is near-zero
-//     impact on membership while closing the Google-automation-click door
-//     that ignite_verdict_is_human already treats as non-human.
-//   - 'ses-tracked' (verdict v2) is DELIBERATELY KEPT: vessel/probation class
-//     (tier model T1). Under verdict v1 these SES clicks fell to 'unknown'
-//     and were dropped here — the one brand whose SES-native engagement IS
-//     captured lost it. Forward writes now classify 'ses-tracked' and enter;
-//     rows materialized 'unknown' by v1 stay excluded until the targeted
-//     SES-Tracked backfill lands (proposed follow-on to REQ-045).
-//   - 'human-ua-only' (verdict v2) is KEPT: lower-confidence human (device UA,
-//     no captured IP) — under v1 these entered as 'human'; membership parity.
-// apple-mpp is DELIBERATELY KEPT (Apple MPP = real people; not a scanner) along
-// with human/human-relay/proxy-view — narrowing this to ignite_verdict_is_human()
-// would drop the entire Apple audience, which is out of scope. NULL
-// (not-yet-classified) is kept so the audience is never silently cut before the
-// backfill lands. Empty string for any non-click event type (open/bounce/etc.),
-// where click_verdict is always NULL and the filter is meaningless. alias is the
+// trigger and backfilled for history).
+//
+// SIGNAL-GRADING doctrine (docs/JAOS/core.md §14, operator 2026-07-18): the
+// scanner verdict is a scanner-STORM filter, NOT a human detector. Excluding the
+// full machine-ish set (datacenter/machine-bare/unknown/google-egress) dropped
+// ~20% of PROVEN human clickers — SafeLinks/proxy/egress clicks from real people
+// land in those classes alongside their eventual conversions. So this filter now
+// excludes ONLY 'farm' — the 75.98.0.0/16 Yahoo seed farm, the one tried-and-true
+// pure-machine signal (documented 0 human converters; yahoo-seed-farm). Every
+// other verdict class (including datacenter/machine-bare/unknown/google-egress,
+// which are recovered here) is KEPT so real human clickers behind proxies/scanners
+// re-enter clicker segments. NULL (not-yet-classified) stays kept so the audience
+// is never silently cut before the backfill lands. Empty string for any non-click
+// event type (open/bounce/etc.), where click_verdict is always NULL and the filter
+// is meaningless — so OPENER segments are structurally unaffected. alias is the
 // mailing_tracking_events alias in the surrounding subquery (always "e" here).
 func nonScannerClickFilter(eventType, alias string) string {
 	if eventType != "clicked" {
 		return ""
 	}
-	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR %s.click_verdict NOT IN ('datacenter','machine-bare','farm','unknown','google-egress'))", alias, alias)
+	return fmt.Sprintf(" AND (%s.click_verdict IS NULL OR %s.click_verdict <> 'farm')", alias, alias)
 }
 
 // buildDomainScopedFieldClause converts last_open_at/last_click_at subscriber
@@ -709,10 +704,10 @@ func buildDomainScopedFieldClause(c SegmentConditionInput, argNum int, domain st
 // domainFilter, when non-empty, adds AND e.sending_domain = $N to scope by sending domain.
 func buildEventWhereClause(c SegmentConditionInput, argNum int, domainFilter string) (string, []interface{}, int) {
 	eventType := trackingEventTypeMap[c.Field]
-	// For clicked events, exclude SCANNER clicks only (datacenter/machine-bare/
-	// farm/unknown) via the materialized click_verdict, so Microsoft scanners stop
-	// inflating dynamic clicker segments. apple-mpp (real Apple users) is KEPT.
-	// NULL (not-yet-backfilled) is kept so the audience is never cut before backfill.
+	// For clicked events, exclude only the 'farm' scanner-STORM class via the
+	// materialized click_verdict (SIGNAL-GRADING doctrine — see nonScannerClickFilter).
+	// All other classes (incl. datacenter/machine-bare/unknown/google-egress) are KEPT
+	// so real humans behind proxies/scanners re-enter clicker segments; NULL is kept.
 	hc := nonScannerClickFilter(eventType, "e")
 	var args []interface{}
 
@@ -788,7 +783,7 @@ func buildClickedURLWhereClause(c SegmentConditionInput, argNum int, domainFilte
 	}
 
 	// These subqueries are click-only by construction, so always apply the
-	// non-scanner filter (datacenter/machine-bare/farm/unknown excluded; apple-mpp kept).
+	// non-scanner filter (only 'farm' excluded — SIGNAL-GRADING; see nonScannerClickFilter).
 	hc := nonScannerClickFilter("clicked", "e")
 
 	switch c.Operator {

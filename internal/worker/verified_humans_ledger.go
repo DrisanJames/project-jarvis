@@ -5,10 +5,11 @@ package worker
 // the engaged-first anchor; docs/JAOS/core.md §14, operator 2026-07-16).
 //
 // WHY A DEDICATED WORKER (not a dynamic segment):
-//   * The membership condition is "≥1 verdict-HUMAN open OR click EVER on this
-//     brand's sends" — a predicate the segment condition-builder cannot express
-//     (BuildSegmentWhereClause has no verdict operator; opens carry NO verdict
-//     filter there, only clicks do). So the SegmentMaterializer can't build it.
+//   * The membership condition is "took a POSITIVE HUMAN ACTION EVER — a click on
+//     this brand's sends, OR a conversion" — a predicate the segment
+//     condition-builder cannot express (BuildSegmentWhereClause cannot UNION a
+//     tracking-event click with a mailing_offer_suppressions conversion row). So
+//     the SegmentMaterializer can't build it.
 //   * The ledger must be ACCRETIVE: a proven human is retained INDEFINITELY and
 //     is NEVER removed — the whole point of the third anchor dimension. The
 //     SegmentMaterializer's DELETE+INSERT rebuild would DROP any human whose
@@ -23,14 +24,17 @@ package worker
 // streams members straight from mailing_segment_members (pmta_campaign_planner.go
 // ~1100) — segment_type is irrelevant to consumption — so static works end-to-end.
 //
-// VERDICT PREDICATE (canonical — identical to partner_human_rollup.go and
-// agents/dbknowledge/_db.py HUMAN_VERDICT_PG):
-//   opened : ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
-//   clicked: ignite_verdict_is_human(COALESCE(click_verdict,
-//                ignite_event_verdict(user_agent, ip_address)))   — write-materialized
-//            click_verdict first, and EXCLUDE unsub-link clicks (link_url
-//            '/track/unsubscribe%'): a footer unsub click verdicts HUMAN and would
-//            wrongly ledger a leaving subscriber (unsub-click-ring-inflation).
+// MEMBERSHIP PREDICATE (POSITIVE ACTION — SIGNAL-GRADING, docs/JAOS/core.md §14,
+// operator 2026-07-18; NOT the ignite_verdict_is_human gate, which omitted ~20%
+// of real humans incl. converters — see verifiedHumansMemberInsertSQL):
+//   click : event_type='clicked' on this brand's sends, EXCLUDING tracked-unsub
+//           clicks (link_url '/track/unsubscribe%') — any real click qualifies,
+//           no verdict filter (a footer unsub click is a leaving signal, not a
+//           human-to-retain one; unsub-click-ring-inflation).
+//   convert: a mailing_offer_suppressions row (reason ~* 'convert'), ledgered
+//           globally (conversions carry no sending_domain and are not cleanly
+//           brand-scopable), windowed by suppressed_at on the same coverage cursor.
+//   OPENS DO NOT QUALIFY: an open is liveness/silver, not a positive human action.
 //
 // COVERAGE MODEL (resumable, bounded — mirrors PartnerHumanRollupWorker):
 //   Per segment, mailing_verified_humans_ledger_progress.scanned_through marks the
@@ -93,30 +97,57 @@ const (
 	verifiedHumansChunkPause = 5 * time.Second
 )
 
-// verifiedHumansMemberInsertSQL ledgers every distinct subscriber with ≥1
-// verdict-HUMAN open/click on the given sending domain in [from,to) into the
-// segment's membership. ADD-ONLY: ON CONFLICT DO NOTHING, no DELETE anywhere.
+// verifiedHumansMemberInsertSQL ledgers every distinct subscriber who took a
+// POSITIVE HUMAN ACTION in [from,to) into the segment's membership. ADD-ONLY:
+// ON CONFLICT DO NOTHING, no DELETE anywhere.
+//
+// SIGNAL-GRADING doctrine (docs/JAOS/core.md §14, operator 2026-07-18): the
+// scanner verdict is a scanner-STORM filter, NOT a human detector — gating this
+// ledger on ignite_verdict_is_human omitted ~20% of real humans, including proven
+// converters whose SafeLinks/proxy/egress clicks verdict as machine. So the
+// verdict gate is DROPPED entirely and replaced by two positive-action inlets:
+//
+//   (a) a CLICK on this brand's sends — event_type='clicked' on the brand's
+//       sending_domain, EXCLUDING tracked-unsub clicks (link_url
+//       '/track/unsubscribe%'): a footer unsub click is a leaving signal, not a
+//       human-to-retain one (unsub-click-ring-inflation). NO verdict filter — any
+//       real click is a positive human action.
+//   (b) a CONVERSION — a mailing_offer_suppressions row (reason ~* 'convert').
+//       Conversions carry NO sending_domain, and offers fan out across brands, so
+//       a conversion is NOT cleanly brand-scopable; per operator direction we
+//       ledger EVER-CONVERTED GLOBALLY (any brand's ledger admits a subscriber who
+//       converted in-window). Windowed by suppressed_at on the same [from,to)
+//       coverage cursor as (a) so the chunked/resumable/backfill model is preserved.
+//
+// OPENS NO LONGER QUALIFY: an open is liveness/silver, not a positive human
+// action, so it never by itself ledgers a subscriber into the HUMAN core.
+//
 // email comes from mailing_subscribers (mailing_tracking_events has no email
 // column). The te scan rides idx_tracking_events_segment_v2
-// (event_type, event_at, sending_domain, subscriber_id).
+// (event_type, event_at, sending_domain, subscriber_id); the conversion branch
+// scans mailing_offer_suppressions by suppressed_at + reason (no dedicated index
+// today — conversion volume is low; an idx on (reason, suppressed_at) is a
+// possible follow-on if the chunk ever approaches budget).
 // $1 = segment_id, $2 = from (timestamptz), $3 = to (timestamptz), $4 = sending domain apex.
 const verifiedHumansMemberInsertSQL = `
 	INSERT INTO mailing_segment_members (segment_id, subscriber_id, email, materialized_at)
 	SELECT DISTINCT $1::uuid, q.subscriber_id, s.email, NOW()
 	FROM (
-		SELECT DISTINCT te.subscriber_id
+		-- (a) clicked this brand's sends (any real click, not a tracked-unsub click)
+		SELECT te.subscriber_id
 		FROM mailing_tracking_events te
-		WHERE te.event_type IN ('opened','clicked')
+		WHERE te.event_type = 'clicked'
 		  AND te.subscriber_id IS NOT NULL
 		  AND te.event_at >= $2 AND te.event_at < $3
 		  AND (te.sending_domain = $4 OR te.sending_domain LIKE '%.' || $4)
-		  AND (
-		        (te.event_type = 'opened'
-		           AND ignite_verdict_is_human(ignite_event_verdict(te.user_agent, te.ip_address)))
-		     OR (te.event_type = 'clicked'
-		           AND ignite_verdict_is_human(COALESCE(te.click_verdict, ignite_event_verdict(te.user_agent, te.ip_address)))
-		           AND (te.link_url IS NULL OR te.link_url NOT ILIKE '%/track/unsubscribe%'))
-		  )
+		  AND (te.link_url IS NULL OR te.link_url NOT ILIKE '%/track/unsubscribe%')
+		UNION
+		-- (b) converted (global — conversions are not cleanly brand-scopable)
+		SELECT os.subscriber_id
+		FROM mailing_offer_suppressions os
+		WHERE os.subscriber_id IS NOT NULL
+		  AND os.reason ~* 'convert'
+		  AND os.suppressed_at >= $2 AND os.suppressed_at < $3
 	) q
 	JOIN mailing_subscribers s ON s.id = q.subscriber_id
 	WHERE s.email IS NOT NULL AND s.email <> ''
