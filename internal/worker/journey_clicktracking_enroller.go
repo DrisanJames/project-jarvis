@@ -515,17 +515,19 @@ func clickTrackingPreVerdictDisabled() bool {
 }
 
 // clickTrackingScanQuery builds the per-tick money-click scan SQL
-// ($1=cursor, $2=upper, $3=limit). By default it includes the pre-enrollment
-// verdict gate — ignite_verdict_is_human(ignite_event_verdict(...)) over the
-// event's user_agent/ip_address — so machine/scanner clicks never enter the
-// trigger queue at all (Unit A2, 2026-07-10). Both DB functions exist in
-// prod; the .scratch/journey_machine_click_gate.py cron applies EXACTLY this
-// predicate retroactively and stays running as the backstop for anything
-// enqueued while CLICKDRIP_PREVERDICT_DISABLED is set.
+// ($1=cursor, $2=upper, $3=limit). SIGNAL GRADING (operator 2026-07-18): a
+// money-link CLICK is the strongest possible human signal (GOLD) — MPP/proxy
+// cannot manufacture one — and the verdict is a scanner-STORM filter, not a
+// human detector (~20% false-neg on proven converters; SafeLinks/proxy clicks
+// verdict machine). So the pre-enrollment gate now EXCLUDES ONLY the seed-farm
+// ('farm' verdict = 75.98.0.0/16, the one tried-and-true machine signal), never
+// the whole machine/unknown bucket. Truthy CLICKDRIP_PREVERDICT_DISABLED still
+// omits even the farm predicate. The .scratch/journey_machine_click_gate.py
+// cron applies EXACTLY this farm-only predicate retroactively as the backstop.
 func clickTrackingScanQuery(verdictFnMissing bool) string {
 	verdictPred := ""
 	if !clickTrackingPreVerdictDisabled() && !verdictFnMissing {
-		verdictPred = "AND ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))\n\t\t  "
+		verdictPred = "AND COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)) <> 'farm'\n\t\t  "
 	}
 	return fmt.Sprintf(`
 		SELECT t.subscriber_id::text, t.event_at, t.link_url,

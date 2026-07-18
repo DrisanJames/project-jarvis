@@ -265,23 +265,30 @@ func TestConsumerSignalRedirect(t *testing.T) {
 	}
 }
 
-// TestClickTrackingScanQuery_VerdictGate asserts the pre-enrollment verdict
-// gate (Unit A2, 2026-07-10) is present in the tick scan SQL by default and
-// omitted when CLICKDRIP_PREVERDICT_DISABLED is truthy. The
-// .scratch/journey_machine_click_gate.py cron applies the same predicate
-// retroactively as the backstop.
+// TestClickTrackingScanQuery_VerdictGate asserts the pre-enrollment gate is
+// SIGNAL-GRADED (operator 2026-07-18): a money-link click is GOLD, so by
+// default the scan excludes ONLY the seed-farm ('farm' verdict), never the
+// whole machine/unknown bucket — and it must NOT re-introduce the old
+// human-verdict gate that dropped ~20% of real converters. When
+// CLICKDRIP_PREVERDICT_DISABLED is truthy even the farm predicate is omitted.
+// The .scratch/journey_machine_click_gate.py cron applies the same farm-only
+// predicate retroactively as the backstop.
 func TestClickTrackingScanQuery_VerdictGate(t *testing.T) {
-	const pred = "ignite_verdict_is_human(ignite_event_verdict(t.user_agent, t.ip_address))"
+	const farmPred = "COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)) <> 'farm'"
 
 	q := clickTrackingScanQuery(false)
-	if !strings.Contains(q, pred) {
-		t.Fatalf("default scan query must carry the human-verdict predicate; got:\n%s", q)
+	if !strings.Contains(q, farmPred) {
+		t.Fatalf("default scan query must carry the farm-only exclusion; got:\n%s", q)
+	}
+	// The old human-verdict gate must NOT come back — it over-excluded real humans.
+	if strings.Contains(q, "ignite_verdict_is_human") {
+		t.Fatalf("scan query must not gate on ignite_verdict_is_human (signal grading); got:\n%s", q)
 	}
 
 	t.Setenv("CLICKDRIP_PREVERDICT_DISABLED", "true")
 	q = clickTrackingScanQuery(false)
-	if strings.Contains(q, "ignite_verdict_is_human") {
-		t.Fatalf("CLICKDRIP_PREVERDICT_DISABLED=true must omit the verdict predicate; got:\n%s", q)
+	if strings.Contains(q, "<> 'farm'") || strings.Contains(q, "ignite_verdict_is_human") {
+		t.Fatalf("CLICKDRIP_PREVERDICT_DISABLED=true must omit the verdict predicate entirely; got:\n%s", q)
 	}
 
 	// The money-URL ILIKE list and cursor bounds survive both variants.
