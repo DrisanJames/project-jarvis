@@ -38,12 +38,18 @@ import (
 )
 
 const (
-	// offerAlignmentRefreshInterval — snapshot rebuild cadence. 30m (design
-	// doc B4): each rebuild costs ~2 Athena calls per active offer.
-	offerAlignmentRefreshInterval = 30 * time.Minute
+	// offerAlignmentRefreshInterval — snapshot rebuild cadence. Each rebuild
+	// costs ~2 Athena calls per active offer (×10 chunks at drip scale), and
+	// every Athena call GETs each lake object in the scanned partitions — at
+	// 30m this was ~830M S3 GETs/day (~$330/day, 2026-07 incident). The matrix
+	// feeds daily-cadence decisions; 3h staleness is acceptable, and the POST
+	// force-refresh endpoint covers anyone who needs it fresher.
+	offerAlignmentRefreshInterval = 3 * time.Hour
 	// offerAlignmentStalenessThreshold — matrix reads older than this kick an
-	// async refresh while still serving the current rows.
-	offerAlignmentStalenessThreshold = 60 * time.Minute
+	// async refresh while still serving the current rows. MUST exceed
+	// offerAlignmentRefreshInterval, or portal page views drive the effective
+	// refresh cadence and the interval above is inert.
+	offerAlignmentStalenessThreshold = offerAlignmentRefreshInterval + 30*time.Minute
 	// offerAlignmentRefreshTimeout bounds one full rebuild. Athena serial
 	// latency dominates, and drip-scale offers chunk the lake fetch (20k ids =
 	// 10 chunks × 2 calls), so a full fleet pass can exceed the old 15m
