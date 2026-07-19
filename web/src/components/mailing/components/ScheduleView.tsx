@@ -149,7 +149,8 @@ export const ScheduleView: React.FC = () => {
       const r = await apiFetch(`/api/mailing/schedule/day?date=${encodeURIComponent(date)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as ScheduleModel;
-      setModel(j);
+      // server may emit null for empty lane sets — normalize so spreads are safe
+      setModel({ ...j, board_waves: j.board_waves ?? [], sidecars: j.sidecars ?? [], offers: j.offers ?? [] });
       setFetchedAt(new Date().toLocaleTimeString());
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load schedule');

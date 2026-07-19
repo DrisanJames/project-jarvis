@@ -280,7 +280,10 @@ func (s *Server) HandleScheduleDay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var boardOut, sideOut []*scheduleLane
+	// non-nil so JSON emits [] (a nil slice marshals to null, which the
+	// frontend cannot spread)
+	boardOut := make([]*scheduleLane, 0, len(scheduleBoardFamilies))
+	sideOut := make([]*scheduleLane, 0, len(side))
 	for _, f := range scheduleBoardFamilies {
 		if l := board[f.key]; l != nil {
 			finalize(l, "b:"+f.key)
