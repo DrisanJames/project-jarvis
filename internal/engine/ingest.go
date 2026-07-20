@@ -676,6 +676,46 @@ func (ing *Ingestor) persistToDB(rec AccountingRecord, isp ISP) {
 		// Deferrals live in mailing_tracking_events only; no campaign counter.
 	}
 
+	// KumoMTA per-message delivery truth (kumo-visibility, 2026-07-20).
+	// Kumo-transport message_log rows historically stayed status='sent' forever
+	// (verified: 124,758/124,758 rows, delivered_at NULL) — PMTA/SES have other
+	// per-message truth paths, but message_log is kumo's only per-message store
+	// and the drip/report readers join it. Flip the newest matching 'sent' row:
+	// delivered -> status='delivered' + delivered_at; HARD bounce (same
+	// smtputil verdict as the counters above) -> status='bounced'. Soft
+	// bounces/deferrals leave 'sent' (the message may still deliver on retry).
+	// Kumo-scoped so PMTA/SES behavior is unchanged. Idempotent: this block
+	// only runs on a genuinely-new tracking event (rowsAff > 0 above) and the
+	// status='sent' guard makes replays no-ops. The subquery predicate rides
+	// idx_message_log_lower_email_sent (lower(email), sent_at DESC).
+	// Kill switch: KUMO_MSGLOG_STATUS_DISABLE=1 (no redeploy needed).
+	{
+		switch kumoMsgLogStatus(rec.Source, eventType, hardBounce) {
+		case "delivered":
+			if _, mlErr := ing.db.ExecContext(ctx, `
+				UPDATE mailing_message_log
+				SET status = 'delivered', delivered_at = $3
+				WHERE id = (
+					SELECT id FROM mailing_message_log
+					WHERE campaign_id = $1 AND LOWER(email) = $2 AND status = 'sent'
+					ORDER BY sent_at DESC LIMIT 1
+				)`, campUUID, recipientEmail, eventAt); mlErr != nil {
+				log.Printf("[ingest-db] kumo message_log delivered update error: %v", mlErr)
+			}
+		case "bounced":
+			if _, mlErr := ing.db.ExecContext(ctx, `
+				UPDATE mailing_message_log
+				SET status = 'bounced'
+				WHERE id = (
+					SELECT id FROM mailing_message_log
+					WHERE campaign_id = $1 AND LOWER(email) = $2 AND status = 'sent'
+					ORDER BY sent_at DESC LIMIT 1
+				)`, campUUID, recipientEmail); mlErr != nil {
+				log.Printf("[ingest-db] kumo message_log bounced update error: %v", mlErr)
+			}
+		}
+	}
+
 	// Engagement telemetry bridge: increment Redis counters for delivered/complained
 	ing.incrEngagementCounters(isp, eventType)
 
@@ -809,6 +849,26 @@ func (ing *Ingestor) incrEngagementCounters(isp ISP, eventType string) {
 	if _, err := pipe.Exec(ctx); err != nil {
 		log.Printf("[engagement-redis] incr %s/%s error: %v", isp, field, err)
 	}
+}
+
+// kumoMsgLogStatus returns the mailing_message_log status a kumo accounting
+// event should stamp ("" = leave the row alone). Pure decision helper so the
+// gating is unit-testable independent of sqlmock ordering: only kumo-source
+// records qualify (PMTA/SES have their own per-message truth paths), only
+// delivered and HARD bounce flip a row (soft/deferred may still deliver on
+// retry), and the KUMO_MSGLOG_STATUS_DISABLE=1 kill switch turns the whole
+// behavior off without a redeploy.
+func kumoMsgLogStatus(source, eventType string, hardBounce bool) string {
+	if source != "kumo" || os.Getenv("KUMO_MSGLOG_STATUS_DISABLE") == "1" {
+		return ""
+	}
+	switch {
+	case eventType == "delivered":
+		return "delivered"
+	case eventType == "bounced" && hardBounce:
+		return "bounced"
+	}
+	return ""
 }
 
 // isHardBounceCategory returns true for PMTA bounce categories that indicate a

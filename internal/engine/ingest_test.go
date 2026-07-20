@@ -389,3 +389,257 @@ type mockTracker struct {
 func (m *mockTracker) RecordEvent(e CampaignEvent) {
 	m.events = append(m.events, e)
 }
+
+// --- Kumo message_log outcome updates (kumo-visibility, 2026-07-20) ---------
+//
+// Kumo-transport message_log rows historically stayed status='sent' forever.
+// persistToDB now flips the newest matching 'sent' row on kumo delivered /
+// hard-bounce events. These tests pin: the update fires ONLY for Source="kumo",
+// ONLY for delivered + hard bounce, ONLY on a genuinely-new tracking event,
+// and never when the KUMO_MSGLOG_STATUS_DISABLE kill switch is set.
+
+// expectPersistPreamble mocks the calls persistToDB always makes before the
+// counter/kumo section: raw buffer insert, subscriber+org lookup, tracking
+// event insert (returning trackingRows affected rows).
+func expectPersistPreamble(mock sqlmock.Sqlmock, email string, trackingRows int64) {
+	mock.ExpectExec("INSERT INTO pmta_acct_raw").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT subscriber_id::text, organization_id::text").
+		WithArgs(sqlmock.AnyArg(), email).
+		WillReturnRows(sqlmock.NewRows([]string{"subscriber_id", "organization_id"}).
+			AddRow("66666666-7777-8888-9999-aaaaaaaaaaaa", "11111111-2222-3333-4444-555555555555"))
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WillReturnResult(sqlmock.NewResult(0, trackingRows))
+}
+
+// expectDeliveredTail mocks the post-message-log calls for a delivered event
+// (phantom-bounce reconciliation runs BEFORE the counters for delivered).
+func expectDeliveredPhantomAndCounter(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("WITH deleted AS").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("UPDATE mailing_campaigns SET delivered_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+func expectDeliveredTail(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("UPDATE mailing_ip_addresses SET total_delivered").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+}
+
+// TestKumoMsgLogStatus pins the gating decision as a pure function — this is
+// the authoritative negative-path proof (the sqlmock "no expectation" pattern
+// below documents call sequence but cannot fail on a swallowed unexpected
+// call, since persistToDB logs-and-continues on Exec errors).
+func TestKumoMsgLogStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		source     string
+		eventType  string
+		hardBounce bool
+		want       string
+	}{
+		{"kumo delivered flips", "kumo", "delivered", false, "delivered"},
+		{"kumo hard bounce flips", "kumo", "bounced", true, "bounced"},
+		{"kumo soft bounce leaves sent", "kumo", "bounced", false, ""},
+		{"kumo deferred leaves sent", "kumo", "deferred", false, ""},
+		{"kumo complaint leaves sent", "kumo", "complained", false, ""},
+		{"pmta delivered never touches message_log", "", "delivered", false, ""},
+		{"pmta hard bounce never touches message_log", "", "bounced", true, ""},
+		{"explicit pmta source never touches message_log", "pmta", "delivered", false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, kumoMsgLogStatus(tc.source, tc.eventType, tc.hardBounce))
+		})
+	}
+
+	t.Run("kill switch disables all", func(t *testing.T) {
+		t.Setenv("KUMO_MSGLOG_STATUS_DISABLE", "1")
+		assert.Equal(t, "", kumoMsgLogStatus("kumo", "delivered", false))
+		assert.Equal(t, "", kumoMsgLogStatus("kumo", "bounced", true))
+	})
+}
+
+func TestPersistToDB_KumoDeliveredUpdatesMessageLog(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Source:       "kumo",
+		Type:         "d",
+		Recipient:    "human@yahoo.com",
+		Sender:       "hello@em.mypersonalfinancial.com",
+		JobID:        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		SourceIP:     "16.217.96.42",
+		VMTA:         "mta-mpf-yh1",
+		DeliveryTime: "2026-07-20T20:02:00.016362650Z",
+	}
+
+	expectPersistPreamble(mock, "human@yahoo.com", 1)
+	expectDeliveredPhantomAndCounter(mock)
+	// THE new behavior: message_log flips to delivered with the event time.
+	mock.ExpectExec("UPDATE mailing_message_log").
+		WithArgs(sqlmock.AnyArg(), "human@yahoo.com", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectDeliveredTail(mock)
+
+	ing.persistToDB(rec, ISP("yahoo"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPersistToDB_PMTADeliveredDoesNotTouchMessageLog(t *testing.T) {
+	// Scoping negative path: an identical delivered record with a non-kumo
+	// source must NOT issue the message_log update (PMTA/SES unchanged).
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Type:      "d",
+		Recipient: "human@yahoo.com",
+		Sender:    "hello@em.discountblog.com",
+		JobID:     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		SourceIP:  "15.204.22.180",
+		VMTA:      "mta-db-yh1",
+	}
+
+	expectPersistPreamble(mock, "human@yahoo.com", 1)
+	expectDeliveredPhantomAndCounter(mock)
+	// No UPDATE mailing_message_log expectation — ordered mock fails if issued.
+	expectDeliveredTail(mock)
+
+	ing.persistToDB(rec, ISP("yahoo"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPersistToDB_KumoHardBounceMarksMessageLogBounced(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Source:    "kumo",
+		Type:      "b",
+		Recipient: "gone@aol.com",
+		Sender:    "hello@em.paymydebit.com",
+		JobID:     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		BounceCat: "bad-mailbox",
+		DSNStatus: "5.1.1",
+	}
+
+	expectPersistPreamble(mock, "gone@aol.com", 1)
+	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET hard_bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	// THE new behavior: hard bounce flips the message_log row to bounced.
+	mock.ExpectExec("UPDATE mailing_message_log").
+		WithArgs(sqlmock.AnyArg(), "gone@aol.com").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+
+	ing.persistToDB(rec, ISP("aol"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPersistToDB_KumoSoftBounceLeavesMessageLogSent(t *testing.T) {
+	// A kumo Expiration (message-expired, 4.4.7) is a terminal-soft record:
+	// hard/soft doctrine says it must NOT flip the message_log row.
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Source:    "kumo",
+		Type:      "b",
+		Recipient: "slow@yahoo.com",
+		Sender:    "hello@em.theretirementblog.com",
+		JobID:     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		BounceCat: "message-expired",
+		DSNStatus: "4.4.7",
+	}
+
+	expectPersistPreamble(mock, "slow@yahoo.com", 1)
+	mock.ExpectExec("UPDATE mailing_campaigns SET bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE mailing_campaigns SET soft_bounce_count").
+		WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	// No UPDATE mailing_message_log expectation — soft must not flip status.
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COALESCE").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).AddRow(0, 0, 0, nil))
+
+	ing.persistToDB(rec, ISP("yahoo"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPersistToDB_KumoDuplicateEventIsNoOp(t *testing.T) {
+	// Redelivered kumo webhook batch: the tracking-event insert hits
+	// ON CONFLICT DO NOTHING (0 rows) and persistToDB must stop — no counter
+	// bumps and no message_log update (idempotency).
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Source:    "kumo",
+		Type:      "d",
+		Recipient: "human@yahoo.com",
+		Sender:    "hello@em.mypersonalfinancial.com",
+		JobID:     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	}
+
+	expectPersistPreamble(mock, "human@yahoo.com", 0)
+	// Nothing further expected.
+
+	ing.persistToDB(rec, ISP("yahoo"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPersistToDB_KumoKillSwitchDisablesMessageLogUpdate(t *testing.T) {
+	t.Setenv("KUMO_MSGLOG_STATUS_DISABLE", "1")
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	ing := &Ingestor{db: db}
+
+	rec := AccountingRecord{
+		Source:       "kumo",
+		Type:         "d",
+		Recipient:    "human@yahoo.com",
+		Sender:       "hello@em.mypersonalfinancial.com",
+		JobID:        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		SourceIP:     "16.217.96.42",
+		DeliveryTime: "2026-07-20T20:02:00Z",
+	}
+
+	expectPersistPreamble(mock, "human@yahoo.com", 1)
+	expectDeliveredPhantomAndCounter(mock)
+	// Kill switch set: no UPDATE mailing_message_log expectation.
+	expectDeliveredTail(mock)
+
+	ing.persistToDB(rec, ISP("yahoo"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

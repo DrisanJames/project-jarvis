@@ -98,7 +98,7 @@ type BreakdownFilter struct {
 	To       string            // YYYY-MM-DD, required
 	GroupBy  []string          // 1..3 dims from breakdownDims
 	Eq       map[string]string // optional equality predicates, column -> value
-	SourceIn []string          // optional; values must be in srcAllow {pmta,ses}; emits source IN (...)
+	SourceIn []string          // optional; values must be in srcAllow {pmta,ses,kumo}; emits source IN (...)
 	// CampaignIDs scopes the breakdown to a campaign set: emits
 	// campaign_id IN ('<uuid>', ...). Every value must be a UUID (uuidRe) —
 	// copying the validated-IN-list precedent from reader_audience.go
@@ -166,9 +166,12 @@ var boolRe = regexp.MustCompile(`^(true|false)$`)
 var localHourRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:00$`)
 
 // srcAllow is the fixed allowlist for the SourceIn ("Combined" transport)
-// filter. Only the two real transports may appear in the source IN (...) clause;
-// anything else is rejected before SQL construction.
-var srcAllow = map[string]bool{"pmta": true, "ses": true}
+// filter. Only real transports may appear in the source IN (...) clause;
+// anything else is rejected before SQL construction. "kumo" added 2026-07-20
+// (kumo-visibility): the KumoMTA transport has emitted source=kumo lake rows
+// since 2026-06-17; rows are Athena-visible once the Glue partition-projection
+// enum (projection.source.values) includes kumo.
+var srcAllow = map[string]bool{"pmta": true, "ses": true, "kumo": true}
 
 // localDtExpr converts event_epoch_ms to the America/Denver calendar day.
 // The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
@@ -683,7 +686,7 @@ func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
 	}
 
 	// SourceIn: the "Combined" transport filter. Every value must be in the
-	// fixed allowlist {pmta,ses} — no caller text reaches SQL otherwise.
+	// fixed allowlist {pmta,ses,kumo} — no caller text reaches SQL otherwise.
 	for _, s := range f.SourceIn {
 		if !srcAllow[s] {
 			return nil, fmt.Errorf("invalid source_in value %q", s)
