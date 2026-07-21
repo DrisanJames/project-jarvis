@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 )
 
@@ -34,6 +35,15 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/track/open/{data}/{sig}", h.HandleOpen)
 	r.Get("/track/click/{data}/{sig}", h.HandleClick)
 	r.Get("/track/unsubscribe/{data}/{sig}", h.HandleUnsubscribe)
+	// RFC 8058 one-click: ISPs (Google/Yahoo) POST to the List-Unsubscribe
+	// https URL with body "List-Unsubscribe=One-Click". This service is what
+	// the public trk./t.em tracking hosts route to, and chi answered POST with
+	// 405 Method Not Allowed (live-verified 2026-07-21 on trk.em.discountblog
+	// .com et al.) — failing Google's compliance check on EVERY sending
+	// domain. Register POST on both token shapes (parity with the API
+	// server's registration in server_routes_mailing.go).
+	r.Post("/track/unsubscribe/{data}", h.HandleUnsubscribe)
+	r.Post("/track/unsubscribe/{data}/{sig}", h.HandleUnsubscribe)
 	r.Get("/health", h.HandleHealth)
 	r.Get("/version", h.HandleVersion)
 	return r
@@ -178,11 +188,30 @@ func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		Timestamp:    time.Now().UTC(),
 	}
 	if len(parts) > 3 {
-		evt.EmailID = parts[3]
+		// Two 4-part token shapes reach this endpoint:
+		//   org|campaign|subscriber|emailID    (UUID — legacy pixel/link token)
+		//   org|campaign|subscriber|brandRoot  (e.g. "discountblog.com" — the
+		//       brand-scoped token in the List-Unsubscribe https leg, built by
+		//       worker.GenerateBrandUnsubscribeURL)
+		// Only a UUID is an email id; stuffing a brand root into EmailID would
+		// pollute the event stream. Brand scoping itself is resolved
+		// campaign-side by the SQS consumer, so the brand token needs no
+		// further handling here.
+		if _, err := uuid.Parse(parts[3]); err == nil {
+			evt.EmailID = parts[3]
+		}
 	}
 	h.pub.Publish(r.Context(), evt)
 
-	log.Printf("UNSUB campaign=%s subscriber=%s", evt.CampaignID, evt.SubscriberID)
+	log.Printf("UNSUB campaign=%s subscriber=%s method=%s", evt.CampaignID, evt.SubscriberID, r.Method)
+
+	// RFC 8058: ISP one-click POST expects a minimal 200 response, not HTML.
+	// The unsubscribe above is already recorded unconditionally — no
+	// confirmation step on either method.
+	if r.Method == http.MethodPost {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(`<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;text-align:center;padding:50px;">

@@ -365,12 +365,21 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		t.Errorf("HTML should contain signed unsub URL %q", expectedUnsub)
 	}
 
-	// List-Unsubscribe headers
+	// List-Unsubscribe headers — shared RFC 8058 helper (2026-07-21): proofs
+	// must be header-parity with production sends, carrying BOTH the
+	// From-domain-aligned mailto leg and the brand https one-click leg.
 	if msg.Headers["List-Unsubscribe"] == "" {
 		t.Error("missing List-Unsubscribe header")
 	}
 	if !strings.Contains(msg.Headers["List-Unsubscribe"], "/track/unsubscribe/") {
 		t.Errorf("List-Unsubscribe should use tracking route, got: %s", msg.Headers["List-Unsubscribe"])
+	}
+	if !strings.Contains(msg.Headers["List-Unsubscribe"], "<mailto:unsub+") ||
+		!strings.Contains(msg.Headers["List-Unsubscribe"], "@em.discountblog.com?subject=unsubscribe>") {
+		t.Errorf("List-Unsubscribe missing From-domain-aligned mailto leg: %s", msg.Headers["List-Unsubscribe"])
+	}
+	if !strings.Contains(msg.Headers["List-Unsubscribe"], "https://trk.em.discountblog.com/track/unsubscribe/") {
+		t.Errorf("List-Unsubscribe https leg not on the brand tracking host: %s", msg.Headers["List-Unsubscribe"])
 	}
 	if msg.Headers["List-Unsubscribe-Post"] != "List-Unsubscribe=One-Click" {
 		t.Errorf("wrong List-Unsubscribe-Post: %s", msg.Headers["List-Unsubscribe-Post"])

@@ -2970,34 +2970,11 @@ func (p *SendWorkerPool) generateBrandUnsubscribeURL(campaignID, subscriberID, b
 // Kill switch: DISABLE_LIST_UNSUB_HEADERS=true skips only the header writes
 // (restores the pre-fix behavior) while still returning resolved URLs.
 func (p *SendWorkerPool) buildUnsubscribeHeaders(campaignID, subscriberID, brandRoot, fromEmail, trackBase string, headers map[string]string) (unsubURL, brandUnsubURL string) {
-	unsubURL = p.generateUnsubscribeURL(campaignID, subscriberID, trackBase)
-	// Brand-scoped URL for the TOP unsubscribe link and the HTTPS leg of
-	// List-Unsubscribe. Falls back to the global URL shape when brandRoot is
-	// empty (unknown sending domain) so there is no broken-link risk.
-	brandUnsubURL = p.generateBrandUnsubscribeURL(campaignID, subscriberID, brandRoot, trackBase)
-
-	if os.Getenv("DISABLE_LIST_UNSUB_HEADERS") == "true" {
-		return unsubURL, brandUnsubURL
-	}
-
-	// RFC 8058: both mailto: and https: for maximum ISP compatibility.
-	// mailto: must be domain-aligned with the From address for ISP trust.
-	// The HTTPS leg uses the brand-scoped URL so ISP one-click POSTs hit the
-	// brand suppression path. The mailto leg stays 3-part global — there is no
-	// inbound handler for unsub+<token>@<domain> in this repo (the mailto is
-	// ceremonial for ISP trust scoring); extending its payload shape would
-	// propagate the pre-existing unsigned-mailto bug at a wider scope for zero
-	// functional gain.
-	fromDomain := fromEmail
-	if atIdx := strings.LastIndex(fromEmail, "@"); atIdx >= 0 {
-		fromDomain = fromEmail[atIdx+1:]
-	}
-	unsubData := fmt.Sprintf("%s|%s|%s", p.orgID, campaignID, subscriberID)
-	unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-	mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
-	headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, brandUnsubURL)
-	headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
-	return unsubURL, brandUnsubURL
+	// Delegates to the package-level shared helper (list_unsub_headers.go) so
+	// EVERY send path — broadcast, click-drip, proofs — emits the identical
+	// RFC 8058 header pair. Extracted 2026-07-21 (Google Postmaster one-click
+	// compliance); behavior is byte-for-byte the 2026-07-14 fix.
+	return BuildListUnsubscribeHeaders(p.orgID, campaignID, subscriberID, brandRoot, fromEmail, trackBase, p.trackingSecret, headers)
 }
 
 // buildRenderContext constructs a full Liquid render context from a queue item,

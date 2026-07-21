@@ -27,6 +27,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
@@ -161,8 +162,12 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		headers[k] = v
 	}
 	if unsubURL != "" {
-		headers["List-Unsubscribe"] = "<" + unsubURL + ">"
-		headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+		// Shared RFC 8058 helper (2026-07-21): proofs previously hand-rolled an
+		// https-only List-Unsubscribe with no mailto leg; emit the identical
+		// header pair production sends carry so a proof is header-parity with
+		// the real campaign send.
+		worker.BuildListUnsubscribeHeaders(orgID, proofCampaignID, proofSubscriberID,
+			brand.RootFromEmail(fromEmail), fromEmail, trackBase, h.trackingSecret, headers)
 	}
 
 	msg := &worker.EmailMessage{

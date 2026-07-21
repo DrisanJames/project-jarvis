@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -53,12 +55,21 @@ func NewSESSender(accessKey, secretKey, region string, db *sql.DB) *SESSender {
 	return sender
 }
 
-// Send delivers a single email through AWS SES.
-func (s *SESSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
-	if s.client == nil {
-		return nil, fmt.Errorf("SES client not initialized - check credentials")
-	}
-
+// buildSESEmailInput assembles the SES v2 SendEmail request for a message.
+// Factored out of Send so the header mapping is unit-testable without an AWS
+// client.
+//
+// msg.Headers passthrough (added 2026-07-21): the SES "Simple" content type
+// silently DROPPED every custom SMTP header — including the RFC 8058
+// List-Unsubscribe / List-Unsubscribe-Post pair built by processItem — so all
+// vendor_type='ses' profile sends went out without one-click unsubscribe even
+// after the 2026-07-14 header fix (Google Postmaster "Not compliant" flag).
+// SES v2 supports custom headers on Simple content via Message.Headers; map
+// them in deterministic (sorted) order. X-SES-* headers are excluded: those
+// are SMTP-interface directives (config set / tenant / message tags) that the
+// API expresses as first-class request fields, and SES rejects them as
+// content headers.
+func buildSESEmailInput(msg *EmailMessage) *sesv2.SendEmailInput {
 	input := &sesv2.SendEmailInput{
 		FromEmailAddress: aws.String(fmt.Sprintf("%s <%s>", msg.FromName, msg.FromEmail)),
 		Destination:      &types.Destination{ToAddresses: []string{msg.Email}},
@@ -81,12 +92,40 @@ func (s *SESSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, e
 		},
 	}
 
+	if len(msg.Headers) > 0 {
+		keys := make([]string, 0, len(msg.Headers))
+		for k := range msg.Headers {
+			if strings.HasPrefix(strings.ToUpper(k), "X-SES-") {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		hdrs := make([]types.MessageHeader, 0, len(keys))
+		for _, k := range keys {
+			hdrs = append(hdrs, types.MessageHeader{Name: aws.String(k), Value: aws.String(msg.Headers[k])})
+		}
+		if len(hdrs) > 0 {
+			input.Content.Simple.Headers = hdrs
+		}
+	}
+
 	if msg.TextContent != "" {
 		input.Content.Simple.Body.Text = &types.Content{Data: aws.String(msg.TextContent), Charset: aws.String("UTF-8")}
 	}
 	if msg.ReplyTo != "" {
 		input.ReplyToAddresses = []string{msg.ReplyTo}
 	}
+	return input
+}
+
+// Send delivers a single email through AWS SES.
+func (s *SESSender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("SES client not initialized - check credentials")
+	}
+
+	input := buildSESEmailInput(msg)
 
 	result, err := s.client.SendEmail(ctx, input)
 	if err != nil {

@@ -149,6 +149,8 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 		html = s.renderSystemURLTokens(html, orgID, campaignID, p.SubscriberID, brandRootFromEmail(p.FromEmail), trackBase)
 	}
 
+	headers := buildClickDripHeaders(orgID, campaignID, p, trackBase, s.trackingSecret)
+
 	msg := &EmailMessage{
 		ID:           emailID,
 		CampaignID:   campaignID,
@@ -161,11 +163,7 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 		ProfileID:    p.ProfileID,
 		ESPType:      "pmta",
 		RecipientISP: ClassifySubscriberISP(p.SubscriberEmail),
-		Headers: map[string]string{
-			"X-Journey-ID":       p.JourneyID,
-			"X-Click-Drip-Offer": p.EverflowOfferID,
-			"X-Click-Drip-Step":  fmt.Sprintf("%d", p.ReminderSeq),
-		},
+		Headers:      headers,
 	}
 
 	result, err := s.profileSender.Send(ctx, msg)
@@ -180,6 +178,28 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 	log.Printf("JourneyClickDripSender: sent reminder step=%d offer=%s to %s via profile=%s (vmta=%s, campaign=%s)",
 		p.ReminderSeq, p.EverflowOfferID, p.SubscriberEmail, p.ProfileID, result.VMTA, campaignID)
 	return nil
+}
+
+// buildClickDripHeaders assembles a reminder touch's SMTP headers: the
+// X-Journey-* diagnostics plus — when a tracking base exists — the shared
+// RFC 8058 one-click List-Unsubscribe pair, via the exact same helper the
+// campaign send worker uses (list_unsub_headers.go), so journey reminders are
+// header-identical to broadcast sends.
+//
+// Gap fixed 2026-07-21: reminders shipped with ONLY the X-Journey-* headers —
+// no List-Unsubscribe at all — while Google Postmaster flagged every sending
+// domain "Not compliant" for missing one-click unsubscribe.
+func buildClickDripHeaders(orgID, campaignID string, p ClickDripSendParams, trackBase, secret string) map[string]string {
+	headers := map[string]string{
+		"X-Journey-ID":       p.JourneyID,
+		"X-Click-Drip-Offer": p.EverflowOfferID,
+		"X-Click-Drip-Step":  fmt.Sprintf("%d", p.ReminderSeq),
+	}
+	if trackBase != "" {
+		BuildListUnsubscribeHeaders(orgID, campaignID, p.SubscriberID,
+			brandRootFromEmail(p.FromEmail), p.FromEmail, trackBase, secret, headers)
+	}
+	return headers
 }
 
 // replaceMoneyMergeTags substitutes the scheduler-pipeline lowercase merge
