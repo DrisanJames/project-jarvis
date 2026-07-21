@@ -89,13 +89,14 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		SMTPPass    *string
 		PoolPrefix  *string
 		IPPool      *string
+		RoutingMode string
 	}
 
 	profileQuery := `
-		SELECT id, vendor_type, from_name, from_email, reply_email, 
+		SELECT id, vendor_type, from_name, from_email, reply_email,
 			   api_key, api_endpoint, smtp_host, smtp_port, smtp_username, smtp_password,
-			   pool_prefix, ip_pool
-		FROM mailing_sending_profiles 
+			   pool_prefix, ip_pool, COALESCE(routing_mode, '')
+		FROM mailing_sending_profiles
 		WHERE status = 'active'
 	`
 
@@ -103,7 +104,7 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		return row.Scan(
 			&profile.ID, &profile.VendorType, &profile.FromName, &profile.FromEmail, &profile.ReplyEmail,
 			&profile.APIKey, &profile.APIEndpoint, &profile.SMTPHost, &profile.SMTPPort, &profile.SMTPUser, &profile.SMTPPass,
-			&profile.PoolPrefix, &profile.IPPool,
+			&profile.PoolPrefix, &profile.IPPool, &profile.RoutingMode,
 		)
 	}
 
@@ -354,6 +355,15 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		}
 
 		if profile.APIEndpoint != nil && *profile.APIEndpoint != "" {
+			// routing_mode='kumo': KumoMTA rejects the PMTA bridge's JSON `vmta`
+			// field — it routes off the X-Virtual-MTA content header instead
+			// (mirrors NewKumoAPISender in the send worker).
+			if profile.RoutingMode == "kumo" {
+				if pmtaExtraHeaders == nil {
+					pmtaExtraHeaders = make(map[string]string)
+				}
+				pmtaExtraHeaders[injectionRoutingHeader] = "kumo"
+			}
 			result, err = svc.sendViaPMTAAPI(ctx, *profile.APIEndpoint, input.To, fromEmail, fromName, replyEmail, input.Subject, input.HTMLContent, input.TextContent, pmtaExtraHeaders)
 		} else {
 			host := ""
@@ -981,6 +991,11 @@ func (a *smtpPlainAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	return nil, nil
 }
 
+// injectionRoutingHeader is an internal sentinel (never emitted into RFC822):
+// value "kumo" makes sendViaPMTAAPI keep X-Virtual-MTA as a content header and
+// omit the JSON `vmta` field, which KumoMTA's inject API rejects as unknown.
+const injectionRoutingHeader = "X-Injection-Routing"
+
 // sendViaPMTAAPI sends email through PMTA's HTTP injection API (port 19000).
 // This avoids SMTP port blocking issues between AWS and OVH.
 // Endpoint: POST {api_endpoint}/api/inject/v1
@@ -1009,8 +1024,13 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 	if replyEmail != "" {
 		rfc822.WriteString(fmt.Sprintf("Reply-To: %s\r\n", replyEmail))
 	}
+	kumoRouting := false
 	for _, hdrs := range extraHeaders {
 		for k, v := range hdrs {
+			if k == injectionRoutingHeader {
+				kumoRouting = v == "kumo"
+				continue
+			}
 			rfc822.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 		}
 	}
@@ -1038,11 +1058,15 @@ func (svc *MailingService) sendViaPMTAAPI(ctx context.Context, apiEndpoint, to, 
 		"content":         rfc822.String(),
 	}
 
-	// Pass vmta in the JSON payload so PMTA routes to the correct pool
-	for _, hdrs := range extraHeaders {
-		if vmta, ok := hdrs["X-Virtual-MTA"]; ok && vmta != "" {
-			payload["vmta"] = vmta
-			break
+	// Pass vmta in the JSON payload so PMTA routes to the correct pool.
+	// KumoMTA rejects the field — it routes off the X-Virtual-MTA content
+	// header already written above (kumoRouting).
+	if !kumoRouting {
+		for _, hdrs := range extraHeaders {
+			if vmta, ok := hdrs["X-Virtual-MTA"]; ok && vmta != "" {
+				payload["vmta"] = vmta
+				break
+			}
 		}
 	}
 
