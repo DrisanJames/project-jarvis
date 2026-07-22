@@ -532,6 +532,20 @@ func main() {
 			}
 			sendWorkerPool.SetTrackingConfig(trackURL, trackSecret, "00000000-0000-0000-0000-000000000001")
 
+			// Wave-2 tracking-layer offer minting (opt-in). When
+			// SMARTLINK_HASH_EMIT=true, the send worker rewrites cratoolpro money
+			// links that have a seeded hash into /o/<sub>/<hash>/<campaign>
+			// tracking URLs instead of the /track/click wrap. Flag off/unset ->
+			// disabled emitter (no goroutine, Lookup always misses) -> zero
+			// behavior change. Same mailingDB as the pool.
+			hashEmitOn := os.Getenv("SMARTLINK_HASH_EMIT") == "true"
+			worker.SetOfferHashEmitter(worker.NewSmartLinkEmitter(mailingDB, 60*time.Second, hashEmitOn))
+			if hashEmitOn {
+				log.Println("SmartLink hash emission: ON (cratoolpro money links with a seeded hash -> /o/ tracking URLs)")
+			} else {
+				log.Println("SmartLink hash emission: OFF (offer links use the /track/click wrap as today)")
+			}
+
 			// Start SQS tracking event consumer
 			var trackingConsumer *tracking.Consumer
 			if sqsQueueURL := os.Getenv("SQS_TRACKING_QUEUE_URL"); sqsQueueURL != "" {

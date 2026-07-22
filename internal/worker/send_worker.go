@@ -2855,6 +2855,23 @@ func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, 
 		if strings.Contains(origURL, "/track/") || strings.HasPrefix(origURL, baseURL+"/o/") || strings.Contains(origURL, "mailto:") {
 			return match
 		}
+		// Wave-2 tracking-layer offer minting (opt-in: SMARTLINK_HASH_EMIT=true,
+		// wired at pool init via SetOfferHashEmitter). When the emitter is
+		// ENABLED and origURL is a cratoolpro money link that has a seeded hash,
+		// emit the /o/<sub>/<hash>/<campaign> tracking URL instead of the
+		// /track/click wrap. Every miss falls through to the wrap UNCHANGED:
+		//   - emitter nil or disabled  → short-circuits on Enabled(), so a
+		//     flag-off deploy is byte-identical to pre-Wave-2 (the whole guard
+		//     is skipped before any regex or lookup runs);
+		//   - non-cratoolpro link      → isCratoolproMoneyURL is false;
+		//   - cratoolpro with no hash  → Lookup misses → existing wrap, no drop.
+		// The emitted URL is on baseURL+"/o/", which the skip rule above catches
+		// on any re-processing, so it can never be double-wrapped.
+		if offerHashEmitter.Enabled() && isCratoolproMoneyURL(origURL) {
+			if hash, ok := offerHashEmitter.Lookup(origURL); ok {
+				return fmt.Sprintf(`href="%s/o/%s/%s/%s"`, baseURL, subscriberID, hash, campaignID)
+			}
+		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)
 		linkEncoded := base64.URLEncoding.EncodeToString([]byte(linkData))
 		linkSig := TrackSign(linkEncoded, secret)
