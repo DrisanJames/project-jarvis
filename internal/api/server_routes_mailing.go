@@ -261,6 +261,21 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 		s.router.Get("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 
+		// Smart Link Gateway — public endpoints on the root router:
+		//   GET  /api/smartlinks/public/:brand_root/:slug  — brand site resolves a slug
+		//   POST /api/smartlinks/hit                       — brand site logs a bot/human verdict
+		// Registered on s.router (NOT inside the /api auth Route block) because
+		// these are server-to-server calls from the brand sites' Next.js
+		// backends, made without an operator session cookie — CORS does not
+		// gate them (it only constrains browsers). The public-resolve payload
+		// contains no secrets, only the review slug + offer URL the brand
+		// site needs to render the gateway. Same posture as the Everflow
+		// postbacks above. smartLinks is also used by the admin CRUD group
+		// under /api/mailing/smartlinks below.
+		smartLinks := NewSmartLinkService(db)
+		s.router.Get("/api/smartlinks/public/{brand_root}/{slug}", smartLinks.HandlePublicResolve)
+		s.router.Post("/api/smartlinks/hit", smartLinks.HandleHit)
+
 		// Inbound mailto: unsubscribe webhook — public (called by AWS SNS, no auth headers).
 		// SNS does not authenticate; handler verifies the SNS envelope shape and the
 		// base64-encoded orgID|campaignID|subscriberID token in the recipient localpart.
@@ -325,6 +340,21 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 		})
 
 		s.apiRouter.Route("/mailing", func(r chi.Router) {
+			// Smart Link Gateway admin CRUD — mounted first in this group
+			// because it's cheap (no init cost) and we want the admin UI's
+			// CRUD path live before the engine init below blocks for
+			// several seconds.
+			r.Route("/smartlinks", func(sl chi.Router) {
+				sl.Get("/", smartLinks.HandleAdminList)
+				sl.Post("/", smartLinks.HandleAdminCreate)
+				// Diagnostics MUST be registered before the {id} routes so
+				// chi routes /diagnostics to its handler instead of matching
+				// the wildcard.
+				sl.Get("/diagnostics", smartLinks.HandleAdminDiagnostics)
+				sl.Patch("/{id}", smartLinks.HandleAdminUpdate)
+				sl.Delete("/{id}", smartLinks.HandleAdminDelete)
+			})
+
 			// Creative registry reads (ReviewForge phase 2) — cheap, mounted
 			// early like data-partners. Writes go through the admin-gated
 			// /api/admin/creatives-sync on the root router below.

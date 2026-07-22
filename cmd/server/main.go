@@ -7904,6 +7904,151 @@ END $$`},
 				SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{jvc_header_stripped_jun25}', 'true'::jsonb, true);
 			END IF;
 			END $$;`},
+
+		// May 27 2026: Smart Link Gateway (Phase 1) — brand-domain bot/human
+		// routing layer. /<slug> on a brand site classifies the requester
+		// server-side and either SSRs the review article (bot) or redirects
+		// to the existing tracked-click endpoint (human) so attribution and
+		// SDS state writes keep firing through the unchanged downstream path.
+		// mailing_smart_links: explicit per-slug mapping, operator-managed via
+		// admin UI, allows A/B offer variants without touching review CMS.
+		// mailing_smart_link_hits: append-only telemetry for the passthrough
+		// metric that gates the Phase 2 JS-interstitial ship decision.
+		{"create_mailing_smart_links", `CREATE TABLE IF NOT EXISTS mailing_smart_links (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			brand_root TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			review_slug TEXT NOT NULL,
+			offer_url_template TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			notes TEXT DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(brand_root, slug)
+		)`},
+		{"idx_smart_links_brand_slug_active", `CREATE INDEX IF NOT EXISTS idx_mailing_smart_links_brand_slug_active
+			ON mailing_smart_links(brand_root, slug)
+			WHERE status = 'active'`},
+		{"create_mailing_smart_link_hits", `CREATE TABLE IF NOT EXISTS mailing_smart_link_hits (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			brand_root TEXT NOT NULL,
+			slug TEXT NOT NULL,
+			branch TEXT NOT NULL,
+			ua TEXT DEFAULT '',
+			ip TEXT DEFAULT '',
+			subscriber_id UUID,
+			campaign_id UUID,
+			requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// 2026-05-27 evening: pilot-test additions for the bot-only verification
+		// campaign. rule_fired/matched_scanner/matched_cidr let us answer
+		// "which classifier rule caught this scanner" at SQL time. request_id
+		// lets us correlate the Go-side log line with the TS-side log line
+		// for any one request. Added as separate ALTER COLUMNs so the
+		// migration is safe on a table that may already exist from an
+		// earlier boot.
+		{"add_smart_link_hits_rule", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS rule_fired TEXT DEFAULT ''`},
+		{"add_smart_link_hits_matched_scanner", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS matched_scanner TEXT DEFAULT ''`},
+		{"add_smart_link_hits_matched_cidr", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS matched_cidr TEXT DEFAULT ''`},
+		{"add_smart_link_hits_request_id", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS request_id TEXT DEFAULT ''`},
+		{"add_smart_link_hits_host", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS host TEXT DEFAULT ''`},
+		{"add_smart_link_hits_referer", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS referer TEXT DEFAULT ''`},
+		{"idx_smart_link_hits_slug_time", `CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_slug_time
+			ON mailing_smart_link_hits(brand_root, slug, requested_at DESC)`},
+		{"idx_smart_link_hits_subscriber", `CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_subscriber
+			ON mailing_smart_link_hits(subscriber_id, requested_at DESC)
+			WHERE subscriber_id IS NOT NULL`},
+		{"idx_smart_link_hits_rule_branch", `CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_rule_branch
+			ON mailing_smart_link_hits(branch, rule_fired, requested_at DESC)`},
+
+		// Jul 22 2026: risk_profile on smart links — drives the brand site's
+		// 302-vs-bridge decision on the human branch. 'low' = straight 302 to
+		// the offer; 'high' = interstitial bridge page. Hits carry a
+		// point-in-time stamp of the experience actually served (empty for
+		// legacy rows / posters that predate the field).
+		{"add_smart_links_risk_profile", `ALTER TABLE mailing_smart_links ADD COLUMN IF NOT EXISTS risk_profile TEXT NOT NULL DEFAULT 'low'`},
+		{"drop_smart_links_risk_chk", `ALTER TABLE mailing_smart_links DROP CONSTRAINT IF EXISTS mailing_smart_links_risk_profile_check`},
+		{"readd_smart_links_risk_chk", `ALTER TABLE mailing_smart_links ADD CONSTRAINT mailing_smart_links_risk_profile_check CHECK (risk_profile IN ('low','high'))`},
+		{"add_smart_link_hits_risk", `ALTER TABLE mailing_smart_link_hits ADD COLUMN IF NOT EXISTS risk_profile TEXT DEFAULT ''`},
+		// Time-leading index for the diagnostics endpoint's all-brands
+		// time-window queries (the slug_time index can't serve a WHERE that
+		// has no brand_root/slug prefix).
+		{"idx_smart_link_hits_time", `CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_time ON mailing_smart_link_hits (requested_at DESC)`},
+
+		// Jul 22 2026: convert mailing_smart_link_hits to a monthly-range
+		// partitioned table (same shape as mailing_tracking_events) while the
+		// table is still tiny (~292 rows in prod). The whole DO block is one
+		// transaction: either the table ends up fully converted (relkind='p',
+		// which short-circuits every later boot) or nothing changed. Index /
+		// constraint name collisions are avoided by creating the canonical
+		// names only AFTER the old table is dropped inside the same tx.
+		{"partition_smart_link_hits", `DO $$
+		BEGIN
+			IF to_regclass('public.mailing_smart_link_hits') IS NOT NULL
+			   AND (SELECT relkind FROM pg_class WHERE oid = 'public.mailing_smart_link_hits'::regclass) <> 'p' THEN
+
+				ALTER TABLE mailing_smart_link_hits RENAME TO mailing_smart_link_hits_old;
+
+				CREATE TABLE mailing_smart_link_hits (
+					id UUID NOT NULL DEFAULT gen_random_uuid(),
+					brand_root TEXT NOT NULL,
+					slug TEXT NOT NULL,
+					branch TEXT NOT NULL,
+					ua TEXT DEFAULT '',
+					ip TEXT DEFAULT '',
+					subscriber_id UUID,
+					campaign_id UUID,
+					rule_fired TEXT DEFAULT '',
+					matched_scanner TEXT DEFAULT '',
+					matched_cidr TEXT DEFAULT '',
+					request_id TEXT DEFAULT '',
+					host TEXT DEFAULT '',
+					referer TEXT DEFAULT '',
+					risk_profile TEXT DEFAULT '',
+					requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+				) PARTITION BY RANGE (requested_at);
+
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_05 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-05-01') TO ('2026-06-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_06 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_07 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_08 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_09 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_2026_10 PARTITION OF mailing_smart_link_hits FOR VALUES FROM ('2026-10-01') TO ('2026-11-01');
+				CREATE TABLE IF NOT EXISTS mailing_smart_link_hits_default PARTITION OF mailing_smart_link_hits DEFAULT;
+
+				INSERT INTO mailing_smart_link_hits (
+					id, brand_root, slug, branch, ua, ip,
+					subscriber_id, campaign_id,
+					rule_fired, matched_scanner, matched_cidr,
+					request_id, host, referer, risk_profile,
+					requested_at
+				)
+				SELECT id, brand_root, slug, branch, ua, ip,
+					subscriber_id, campaign_id,
+					rule_fired, matched_scanner, matched_cidr,
+					request_id, host, referer, risk_profile,
+					requested_at
+				FROM mailing_smart_link_hits_old;
+
+				-- Dropping the old table first frees the canonical index and
+				-- constraint names (mailing_smart_link_hits_pkey and the four
+				-- idx_mailing_smart_link_hits_* created earlier this boot) so
+				-- the partitioned parent can claim them.
+				DROP TABLE mailing_smart_link_hits_old;
+
+				ALTER TABLE mailing_smart_link_hits
+					ADD CONSTRAINT mailing_smart_link_hits_pkey PRIMARY KEY (id, requested_at);
+				CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_slug_time
+					ON mailing_smart_link_hits(brand_root, slug, requested_at DESC);
+				CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_subscriber
+					ON mailing_smart_link_hits(subscriber_id, requested_at DESC)
+					WHERE subscriber_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_rule_branch
+					ON mailing_smart_link_hits(branch, rule_fired, requested_at DESC);
+				CREATE INDEX IF NOT EXISTS idx_mailing_smart_link_hits_time
+					ON mailing_smart_link_hits(requested_at DESC);
+			END IF;
+		END $$`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
