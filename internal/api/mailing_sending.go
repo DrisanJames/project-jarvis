@@ -602,6 +602,14 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		}
 	}
 
+	// text/plain fallback (send_worker.go parity): generated from the FINAL
+	// html — after system-URL replacement, pixel, and unsub injection — so the
+	// text part carries real URLs. Must be non-empty before dispatch, or
+	// HandleSendTestEmail's "This is a test email." stub becomes the text part.
+	if strings.TrimSpace(textContent) == "" && strings.TrimSpace(htmlContent) != "" {
+		textContent = worker.GenerateTextFromHTML(htmlContent)
+	}
+
 	// ── Send via HandleSendTestEmail (routing + ESP selection) ──
 	testBody, _ := json.Marshal(map[string]interface{}{
 		"to": email, "subject": subject,

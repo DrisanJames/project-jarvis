@@ -151,6 +151,13 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 
 	headers := buildClickDripHeaders(orgID, campaignID, p, trackBase, s.trackingSecret)
 
+	// text/plain alternative (send_worker.go parity): generated from the FINAL
+	// html — after tracking/system-URL rewrites — so the text part carries real
+	// signed unsubscribe/tracking URLs, never literal {{ system.* }} tokens.
+	// Without this the ESP builders emit multipart/alternative with a single
+	// HTML part, and every journey touch shipped with no plain-text body.
+	textContent := GenerateTextFromHTML(html)
+
 	msg := &EmailMessage{
 		ID:           emailID,
 		CampaignID:   campaignID,
@@ -160,6 +167,7 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 		FromEmail:    p.FromEmail,
 		Subject:      p.Subject,
 		HTMLContent:  html,
+		TextContent:  textContent,
 		ProfileID:    p.ProfileID,
 		ESPType:      "pmta",
 		RecipientISP: ClassifySubscriberISP(p.SubscriberEmail),

@@ -265,6 +265,7 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		FromEmail:    fromEmail,
 		Subject:      renderedSubject,
 		HTMLContent:  renderedHTML,
+		TextContent:  worker.GenerateTextFromHTML(renderedHTML),
 		ProfileID:    profileID,
 		RecipientISP: recipientISP,
 		Headers:      headers,
