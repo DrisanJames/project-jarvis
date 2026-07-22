@@ -715,9 +715,9 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 			results = append(results, res)
 			continue
 		}
-		msgID, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain,
+		msgID, _, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain,
 			subject, strings.TrimSpace(req.FromName), strings.TrimSpace(req.Preheader), htmlForSend, rc.email, id,
-			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id})
+			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id}, nil)
 		if sendErr != nil {
 			res.Status = "error"
 			res.Error = sendErr.Error()

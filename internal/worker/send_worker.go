@@ -431,9 +431,9 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 
 // profileSESInfo holds the per-profile SES tenant-aware routing facts.
 type profileSESInfo struct {
-	ViaSES       bool
-	ConfigSet    string
-	TenantName   string
+	ViaSES     bool
+	ConfigSet  string
+	TenantName string
 }
 
 // sanitizeSESTagValue coerces a value into the SES MessageTag charset
@@ -2846,7 +2846,13 @@ func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, 
 			return match
 		}
 		origURL := parts[1]
-		if strings.Contains(origURL, "/track/") || strings.Contains(origURL, "mailto:") {
+		// A tracking-layer offer link (baseURL + "/o/<sub>/<hash>/<campaign>")
+		// is ALREADY a tracking URL, so wrapping it into /track/click would
+		// double-wrap the redirect. Match ONLY our own tracking host + /o/
+		// prefix — a bare Contains(origURL, "/o/") would also skip unrelated
+		// content links whose path happens to contain an "/o/" segment,
+		// silently dropping their click tracking on live sends.
+		if strings.Contains(origURL, "/track/") || strings.HasPrefix(origURL, baseURL+"/o/") || strings.Contains(origURL, "mailto:") {
 			return match
 		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)

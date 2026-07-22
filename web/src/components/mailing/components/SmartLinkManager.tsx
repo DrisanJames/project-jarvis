@@ -10,6 +10,8 @@ import {
   faExclamationTriangle,
   faCheckCircle,
   faLink,
+  faCopy,
+  faCheck,
 } from '@fortawesome/free-solid-svg-icons';
 import apiFetch from '../shared/apiFetch';
 import { colors, thStyle, tdStyle, tableStyle } from '../shared/theme';
@@ -62,9 +64,24 @@ interface SmartLink {
   offer_url_template: string;
   status: 'active' | 'paused' | 'deleted';
   risk_profile: 'low' | 'high';
+  // Per-row hash minted by the tracking layer; the public offer-redirect URL is
+  // https://t.em.<brand_root>/o/<subscriber_id>/<hash>/<campaign_id>.
+  hash: string;
   notes?: string;
   created_at: string;
   updated_at: string;
+}
+
+// The tracking host is derived from brand_root (strip any leading www.).
+function trackingHost(brandRoot: string): string {
+  return `t.em.${brandRoot.replace(/^www\./, '')}`;
+}
+
+// Sample of the minted offer-redirect URL. SUBSCRIBER_ID and CAMPAIGN_ID are
+// literal placeholder tokens — the real ids are filled at send time. This shows
+// the operator the shape of the new /o/ redirect scheme.
+function sampleTrackingUrl(link: SmartLink): string {
+  return `https://${trackingHost(link.brand_root)}/o/SUBSCRIBER_ID/${link.hash}/CAMPAIGN_ID`;
 }
 
 interface ApiListResponse {
@@ -87,6 +104,38 @@ function statusColor(s: SmartLink['status']): string {
 function riskColor(r: SmartLink['risk_profile']): string {
   return r === 'high' ? colors.warning : colors.textMuted;
 }
+
+// Tiny copy affordance — matches the DomainCenter idiom (faCopy → faCheck on
+// success). No dependency; falls back silently if the clipboard is unavailable.
+const CopyButton: React.FC<{ text: string; title?: string }> = ({ text, title }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard unavailable — ignore */
+        }
+      }}
+      title={title ?? 'Copy'}
+      style={{
+        background: 'none',
+        border: 'none',
+        color: copied ? colors.success : colors.textFaint,
+        cursor: 'pointer',
+        padding: '0 0.25rem',
+        fontSize: '0.6875rem',
+      }}
+    >
+      <FontAwesomeIcon icon={copied ? faCheck : faCopy} />
+    </button>
+  );
+};
 
 export const SmartLinkManager: React.FC = () => {
   const { addToast } = useToast();
@@ -151,6 +200,16 @@ export const SmartLinkManager: React.FC = () => {
         const txt = await res.text();
         throw new Error(`HTTP ${res.status}: ${txt}`);
       }
+      // Create response now carries the minted hash — surface it so the operator
+      // sees the new redirect token immediately (the list refresh below also
+      // shows the new row's hash).
+      const created = (await res.json().catch(() => ({}))) as { hash?: string; smart_link?: { hash?: string } };
+      const mintedHash = created.hash ?? created.smart_link?.hash;
+      addToast({
+        type: 'success',
+        title: `Smart link created — ${form.brand_root}/${form.slug}`,
+        message: mintedHash ? `hash ${mintedHash}` : undefined,
+      });
       setShowCreate(false);
       setForm({
         brand_root: 'discountblog.com',
@@ -166,7 +225,7 @@ export const SmartLinkManager: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
-  }, [form, fetchLinks]);
+  }, [form, fetchLinks, addToast]);
 
   // Generalized row PATCH — status pause/resume and risk_profile changes both
   // flow through here so every mutation reconciles via fetchLinks().
@@ -369,6 +428,7 @@ export const SmartLinkManager: React.FC = () => {
                 <thead style={{ background: '#1e293b' }}>
                   <tr>
                     <th style={thStyle}>Slug</th>
+                    <th style={thStyle}>Hash</th>
                     <th style={thStyle}>Review</th>
                     <th style={thStyle}>Offer URL</th>
                     <th style={thStyle}>Status</th>
@@ -390,6 +450,31 @@ export const SmartLinkManager: React.FC = () => {
                           /{link.slug}
                           <FontAwesomeIcon icon={faExternalLinkAlt} style={{ marginLeft: '0.375rem', fontSize: '0.625rem' }} />
                         </a>
+                      </td>
+                      <td style={tdStyle}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                          <code style={{ fontSize: '0.75rem', color: '#cbd5e1', userSelect: 'all' }}>
+                            {link.hash || '—'}
+                          </code>
+                          {link.hash && <CopyButton text={link.hash} title="Copy hash" />}
+                        </div>
+                        {/* Sample of the /o/ redirect shape (muted, placeholder tokens). */}
+                        <div
+                          title={sampleTrackingUrl(link)}
+                          style={{
+                            marginTop: '0.25rem',
+                            maxWidth: '260px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontFamily: 'monospace',
+                            fontSize: '0.6875rem',
+                            color: colors.textFaint,
+                            userSelect: 'all',
+                          }}
+                        >
+                          {sampleTrackingUrl(link)}
+                        </div>
                       </td>
                       <td style={tdStyle}>
                         <a

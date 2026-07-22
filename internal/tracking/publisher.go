@@ -27,7 +27,13 @@ type TrackingEvent struct {
 	LinkURL      string    `json:"link_url,omitempty"`
 	IPAddress    string    `json:"ip_address"`
 	UserAgent    string    `json:"user_agent"`
-	Timestamp    time.Time `json:"timestamp"`
+	// Actor is a TELEMETRY-ONLY label ("human" | "machine") set by the offer
+	// redirect path from ClassifyClickAsMachine. It NEVER changes what is
+	// served — no cloaking — and is purely a hint for downstream analytics.
+	// omitempty keeps every existing open/click/unsub event byte-identical on
+	// the wire, so the SQS consumer (which ignores this field) is unaffected.
+	Actor     string    `json:"actor,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type Publisher struct {

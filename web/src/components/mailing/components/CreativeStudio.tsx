@@ -87,6 +87,26 @@ interface SendProofResponse {
   status: 'sent' | 'error';
   message_id?: string;
   error?: string;
+  // Present only when route_via_gateway was honored by the server: the creative's
+  // cratoolpro offer links were rewritten to this Smart Link Gateway URL.
+  gateway_url?: string;
+  gateway_slug?: string;
+  risk_profile?: 'low' | 'high';
+  // The full /o/<subscriber_id>/<hash>/<campaign_id> tracking-layer redirect URL
+  // that was minted into the proof. Preferred over gateway_url for display — it's
+  // the actual link the operator clicks to inspect the redirect.
+  tracking_url?: string;
+}
+
+// Minimal shape of an active Smart Link Gateway row (see SmartLinkManager.tsx /
+// internal/api/smartlink_handlers.go). Only the fields the proof-routing test
+// control needs; the full CRUD shape lives in SmartLinkManager.
+interface ActiveSmartLink {
+  id: string;
+  brand_root: string;
+  slug: string;
+  status: 'active' | 'paused' | 'deleted';
+  risk_profile: 'low' | 'high';
 }
 
 interface ChatMsg {
@@ -202,6 +222,12 @@ export const CreativeStudio: React.FC = () => {
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   // Approval / money-link spot-check controls.
   const [proofEmail, setProofEmail] = useState('');
+  // Smart Link Gateway proof-routing (TEST affordance): active gateway rows,
+  // the checkbox+slug the operator picks, and the last proof's routing result.
+  const [smartLinks, setSmartLinks] = useState<ActiveSmartLink[]>([]);
+  const [routeViaGateway, setRouteViaGateway] = useState(false);
+  const [gatewaySlug, setGatewaySlug] = useState('');
+  const [lastGatewayProof, setLastGatewayProof] = useState<{ url: string; slug: string; risk: 'low' | 'high' } | null>(null);
   // Per-creative in-flight state, keyed "<id>:<action>".
   const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
   // Which creative has its inline approve-confirm armed.
@@ -236,6 +262,21 @@ export const CreativeStudio: React.FC = () => {
         }
       } catch {
         /* engine down — banner covers it */
+      }
+      try {
+        // Trailing slash intentional — the chi mount for /api/mailing/smartlinks
+        // expects it on the list endpoint (see SmartLinkManager).
+        const sl = await apiFetch('/api/mailing/smartlinks/', { credentials: 'include' });
+        if (sl.ok) {
+          const json = await sl.json();
+          const active: ActiveSmartLink[] = (json.smart_links ?? []).filter(
+            (r: ActiveSmartLink) => r.status === 'active',
+          );
+          setSmartLinks(active);
+          if (active.length) setGatewaySlug(active[0].slug);
+        }
+      } catch {
+        /* gateway list optional — the route-through-gateway control disables itself */
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -392,24 +433,46 @@ export const CreativeStudio: React.FC = () => {
       addToast({ type: 'warning', title: 'Proof recipient needed', message: 'Enter a test email in the library header first.' });
       return;
     }
+    const useGateway = routeViaGateway && Boolean(gatewaySlug);
     setFlight(c.id, 'proof', true);
     try {
+      // Backward-compatible: gateway fields are added ONLY when the operator
+      // opts in — an un-checked proof sends the exact same body as before.
+      const body: Record<string, unknown> = { to_email: to };
+      if (useGateway) {
+        body.route_via_gateway = true;
+        body.gateway_slug = gatewaySlug;
+      }
       const res = await apiFetch(`/api/mailing/creatives/${c.id}/send-proof`, {
         method: 'POST',
-        body: JSON.stringify({ to_email: to }),
+        body: JSON.stringify(body),
         credentials: 'include',
       });
       const json: SendProofResponse & { error?: string } = await res.json();
       if (!res.ok || json.status === 'error') {
+        // 422 (no ACTIVE smart-link row for this brand+slug) lands here — surface
+        // the server's error text verbatim so the operator knows to seed the row.
         throw new Error(json.error || json.message_id || `HTTP ${res.status}`);
       }
-      addToast({ type: 'success', title: `Proof sent → ${to}`, message: json.message_id ? `message ${json.message_id}` : undefined });
+      // Prefer the tracking-layer /o/ URL when present; fall back to the older
+      // gateway_url for backward-compat with servers that don't yet return it.
+      const proofUrl = json.tracking_url || json.gateway_url;
+      if (proofUrl) {
+        const risk: 'low' | 'high' = json.risk_profile === 'high' ? 'high' : 'low';
+        setLastGatewayProof({ url: proofUrl, slug: json.gateway_slug || gatewaySlug, risk });
+      } else {
+        setLastGatewayProof(null);
+      }
+      const gwNote = proofUrl ? ` · offers → ${proofUrl} (risk:${json.risk_profile ?? '?'})` : '';
+      const msg = `${json.message_id ? `message ${json.message_id}` : ''}${gwNote}`.trim();
+      addToast({ type: 'success', title: `Proof sent → ${to}`, message: msg || undefined });
     } catch (err) {
+      setLastGatewayProof(null);
       addToast({ type: 'error', title: 'Proof send failed', message: err instanceof Error ? err.message : String(err) });
     } finally {
       setFlight(c.id, 'proof', false);
     }
-  }, [isInFlight, setFlight, proofEmail, addToast]);
+  }, [isInFlight, setFlight, proofEmail, addToast, routeViaGateway, gatewaySlug]);
 
   const approveCreative = useCallback(async (c: CreativeMeta) => {
     if (isInFlight(c.id, 'approve')) return;
@@ -734,6 +797,63 @@ export const CreativeStudio: React.FC = () => {
                     />
                   </span>
                 </div>
+                {/* Smart Link Gateway proof-routing — TEST affordance. When checked,
+                    the selected creative's Proof rewrites its cratoolpro offer links
+                    through the gateway (that brand + slug) so the operator can click
+                    the proof and confirm real bot/human/bridge routing. */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <label
+                    title={smartLinks.length === 0
+                      ? 'No active smart links — seed one in the Smart Link Gateway first'
+                      : 'Rewrite the creative’s cratoolpro offer links to the gateway URL so you can click the proof and confirm bot/human/bridge routing'}
+                    style={{ fontSize: 12, color: smartLinks.length === 0 ? '#64748b' : '#cbd5e1', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={routeViaGateway}
+                      disabled={smartLinks.length === 0}
+                      onChange={(e) => setRouteViaGateway(e.target.checked)}
+                    />
+                    Route offers through gateway (test)
+                  </label>
+                  {routeViaGateway && (
+                    <select
+                      value={gatewaySlug}
+                      onChange={(e) => setGatewaySlug(e.target.value)}
+                      style={{ ...inputStyle, width: 300, padding: '5px 8px' }}>
+                      {smartLinks.map((l) => (
+                        <option key={l.id} value={l.slug}>
+                          {l.slug} — risk:{l.risk_profile} ({l.brand_root})
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {smartLinks.length === 0 && (
+                    <span style={{ fontSize: 11, color: '#64748b' }}>
+                      no active smart links — seed one in the Smart Link Gateway
+                    </span>
+                  )}
+                </div>
+                {lastGatewayProof && (
+                  <div style={{
+                    margin: '0 0 8px', padding: '8px 10px', background: '#0f172a',
+                    border: '1px solid #1f2937', borderRadius: 8, fontSize: 12,
+                    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                  }}>
+                    <span style={badgeStyle(lastGatewayProof.risk === 'high' ? '#f59e0b' : '#22c55e')}>
+                      risk:{lastGatewayProof.risk}
+                    </span>
+                    <span style={{ color: '#94a3b8' }}>offers routed via</span>
+                    <a href={lastGatewayProof.url} target="_blank" rel="noopener noreferrer"
+                      style={{ color: '#a78bfa', fontFamily: 'monospace' }}>
+                      {lastGatewayProof.url}
+                    </a>
+                    <span style={{ color: '#64748b' }}>
+                      {lastGatewayProof.risk === 'high'
+                        ? '— you’ll see the bridge page (Continue button)'
+                        : '— you’ll be redirected straight to the offer'}
+                    </span>
+                  </div>
+                )}
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ color: '#94a3b8', textAlign: 'left' }}>

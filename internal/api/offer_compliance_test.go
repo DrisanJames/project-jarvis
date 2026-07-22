@@ -269,6 +269,7 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		trackingURL:    "https://trk.em.discountblog.com",
 		trackingSecret: "test-secret-key",
 		orgID:          "00000000-0000-0000-0000-000000000001",
+		smartLinks:     NewSmartLinkService(db),
 	}
 
 	creativeHTML := `<html><body>` + unsubDisclaimerMarker +
@@ -429,6 +430,7 @@ func TestSendOneProof_CreativeNotFound(t *testing.T) {
 		trackingURL:    "https://trk.example.com",
 		trackingSecret: "secret",
 		orgID:          "org-1",
+		smartLinks:     NewSmartLinkService(db),
 	}
 
 	mock.ExpectQuery(`SELECT COALESCE\(html_content,''\) FROM mailing_offer_creatives`).
@@ -470,6 +472,7 @@ func TestSendOneProof_SenderFailure(t *testing.T) {
 		trackingURL:    "https://trk.example.com",
 		trackingSecret: "secret",
 		orgID:          "org-1",
+		smartLinks:     NewSmartLinkService(db),
 	}
 
 	mock.ExpectQuery(`SELECT COALESCE\(html_content,''\) FROM mailing_offer_creatives`).

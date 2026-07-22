@@ -24,6 +24,10 @@ type ProofSendHandler struct {
 	trackingURL    string
 	trackingSecret string
 	orgID          string
+	// smartLinks resolves the active Smart Link Gateway row when a creative
+	// proof opts into gateway routing (HandleCreativeProof). nil-safe: the
+	// offer proof path never touches it.
+	smartLinks *SmartLinkService
 }
 
 type proofSendRequest struct {
@@ -466,5 +470,6 @@ func NewProofSendHandler(db *sql.DB) *ProofSendHandler {
 		trackingURL:    trackURL,
 		trackingSecret: trackSecret,
 		orgID:          "00000000-0000-0000-0000-000000000001",
+		smartLinks:     NewSmartLinkService(db),
 	}
 }

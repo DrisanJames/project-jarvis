@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
@@ -13,7 +14,40 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
+	_ "github.com/lib/pq"
 )
+
+// openTrackingDB opens the optional Postgres handle the smart-link dictionary
+// reads from. DATABASE_URL is OPTIONAL: if unset — or if the open/ping fails —
+// the service logs a clear warning and runs with a nil-db dictionary, still
+// serving /track/* and the /o/ brand-root fallback exactly as before. The
+// tracking service must never fail to boot over a missing/degraded DB.
+func openTrackingDB() *sql.DB {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Printf("DATABASE_URL not set — smart-link dictionary runs empty (offer /o/ links fall back to brand root)")
+		return nil
+	}
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		log.Printf("WARNING: DATABASE_URL set but sql.Open failed (%v) — smart-link dictionary runs empty", err)
+		return nil
+	}
+	// Small read-only pool: this handle only serves the ~60s dictionary reload.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		log.Printf("WARNING: DATABASE_URL set but ping failed (%v) — smart-link dictionary runs empty", err)
+		db.Close()
+		return nil
+	}
+	log.Printf("smart-link dictionary DB connected")
+	return db
+}
 
 func main() {
 	bi := buildinfo.Current()
@@ -35,7 +69,18 @@ func main() {
 
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	pub := tracking.NewPublisher(sqsClient, queueURL)
-	handler := tracking.NewHandler(pub)
+
+	// Optional smart-link dictionary. Graceful default: db may be nil (no
+	// DATABASE_URL / open failed), in which case the dictionary is an empty
+	// no-op and /o/ links fall back to brand root.
+	db := openTrackingDB()
+	if db != nil {
+		defer db.Close()
+	}
+	dict := tracking.NewSmartLinkDictionary(db, 60*time.Second)
+	defer dict.Close() // cancels the background refresh goroutine on shutdown
+
+	handler := tracking.NewHandler(pub, dict)
 
 	srv := &http.Server{
 		Addr:         ":" + port,

@@ -28,7 +28,7 @@ import (
 // in smartlink_handlers.go.
 var smartLinkCols = []string{
 	"id", "brand_root", "slug", "review_slug", "offer_url_template",
-	"status", "risk_profile", "notes", "created_at", "updated_at",
+	"status", "risk_profile", "notes", "hash", "created_at", "updated_at",
 }
 
 func newSmartLinkService(t *testing.T) (*SmartLinkService, sqlmock.Sqlmock) {
@@ -178,7 +178,7 @@ func TestHandlePublicResolve_SuccessIncludesRiskProfile(t *testing.T) {
 			"11111111-2222-3333-4444-555555555555",
 			"discountblog.com", "auto-refi", "best-auto-refi",
 			"https://cratoolpro.example/offer?source_id=email",
-			"active", "high", "", now, now,
+			"active", "high", "", "abc1234567", now, now,
 		))
 
 	rec := resolveGET(t, svc, "discountblog.com", "auto-refi")

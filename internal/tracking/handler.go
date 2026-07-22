@@ -1,11 +1,14 @@
 package tracking
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"html"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,12 +25,24 @@ var pixelGIF = []byte{
 	0x02, 0x44, 0x01, 0x00, 0x3b,
 }
 
-type Handler struct {
-	pub *Publisher
+// eventPublisher is the async telemetry sink. *Publisher satisfies it in prod;
+// tests inject a capturing fake so the machine/human LABEL can be asserted
+// deterministically.
+type eventPublisher interface {
+	Publish(ctx context.Context, evt TrackingEvent)
 }
 
-func NewHandler(pub *Publisher) *Handler {
-	return &Handler{pub: pub}
+type Handler struct {
+	pub  eventPublisher
+	dict *SmartLinkDictionary
+}
+
+// NewHandler wires the tracking handler. dict may be nil (or a nil-db
+// dictionary) — the /o/ offer redirect then always falls back to brand root,
+// and all /track/* behavior is unchanged. This keeps the service bootable with
+// no DATABASE_URL configured (the graceful default).
+func NewHandler(pub eventPublisher, dict *SmartLinkDictionary) *Handler {
+	return &Handler{pub: pub, dict: dict}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -44,6 +59,10 @@ func (h *Handler) Routes() chi.Router {
 	// server's registration in server_routes_mailing.go).
 	r.Post("/track/unsubscribe/{data}", h.HandleUnsubscribe)
 	r.Post("/track/unsubscribe/{data}/{sig}", h.HandleUnsubscribe)
+	// Path-based, scanner-safe offer redirect (new URL contract 2026-07-22):
+	//   https://t.em.<brand>/o/<subscriber_id>/<hash>/<campaign_id>
+	// Distinct prefix from /track/* and /health — no route collision.
+	r.Get("/o/{subscriber}/{hash}/{campaign}", h.HandleOfferRedirect)
 	r.Get("/health", h.HandleHealth)
 	r.Get("/version", h.HandleVersion)
 	return r
@@ -161,6 +180,154 @@ func carryAttribution(target, originalURL string) string {
 		sep = "&"
 	}
 	return target + sep + keep.Encode()
+}
+
+// hashPattern bounds the smart-link hash to the alphabet the minter uses.
+// Anything else is treated as a bad link and falls back to brand root — never
+// a 500.
+var hashPattern = regexp.MustCompile(`^[A-Za-z0-9]{6,20}$`)
+
+// HandleOfferRedirect resolves the scanner-safe path contract
+//
+//	/o/<subscriber_id>/<hash>/<campaign_id>
+//
+// against the in-memory smart-link dictionary and hands the visitor off to the
+// offer destination. NO CLOAKING: the bot classifier only LABELS the telemetry
+// event; the bytes served for a given hash are identical for every visitor
+// (scanner or human). Nothing in this path can 500 or block on telemetry:
+//   - a panic is recovered into a brand-root fallback redirect;
+//   - a bad/missing hash or a dictionary miss falls back to https://<brand>/;
+//   - telemetry is published on the Publisher's async goroutine.
+func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
+	// brandRoot is derived up front so the panic recovery has a safe fallback.
+	brandRoot := brandRootFromHost(r.Host)
+	fallback := "https://" + brandRoot + "/"
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("PANIC in HandleOfferRedirect (recovered): %v", rec)
+			http.Redirect(w, r, fallback, http.StatusFound)
+		}
+	}()
+
+	subscriber := chi.URLParam(r, "subscriber")
+	hash := chi.URLParam(r, "hash")
+	campaign := chi.URLParam(r, "campaign")
+
+	// Hash gates the lookup; a malformed hash is a dead link -> brand root.
+	if !hashPattern.MatchString(hash) {
+		log.Printf("OFFER bad-hash hash=%q host=%s -> fallback", hash, r.Host)
+		http.Redirect(w, r, fallback, http.StatusFound)
+		return
+	}
+
+	// subscriber/campaign are best-effort UUIDs — used for attribution and
+	// telemetry only, so a malformed value logs but NEVER gates the redirect.
+	if subscriber != "" {
+		if _, err := uuid.Parse(subscriber); err != nil {
+			log.Printf("OFFER malformed subscriber=%q hash=%s (proceeding)", subscriber, hash)
+		}
+	}
+	if campaign != "" {
+		if _, err := uuid.Parse(campaign); err != nil {
+			log.Printf("OFFER malformed campaign=%q hash=%s (proceeding)", campaign, hash)
+		}
+	}
+
+	entry, ok := h.dict.Lookup(hash)
+	if !ok {
+		// Miss (or empty/no-op dictionary): no dead-end, send them to the brand
+		// home page and record the miss for observability.
+		log.Printf("OFFER miss hash=%s host=%s -> fallback", hash, r.Host)
+		http.Redirect(w, r, fallback, http.StatusFound)
+		return
+	}
+
+	// Attribution brand prefers the dictionary's brand_root; fall back to the
+	// host-derived one if the row didn't carry it.
+	attrBrand := entry.BrandRoot
+	if attrBrand == "" {
+		attrBrand = brandRoot
+	}
+	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign)
+
+	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
+	// but has ZERO influence on what is served below. deltaSinceSend is 0 here
+	// (no send-time lookup on the redirect hot path — documented trade-off in
+	// ClassifyClickAsMachine: rules 1 and 2 still apply).
+	label := "human"
+	if ClassifyClickAsMachine(r.UserAgent(), realIP(r), 0) {
+		label = "machine"
+	}
+	h.pub.Publish(r.Context(), TrackingEvent{
+		EventType:    EventClick,
+		OrgID:        "", // not carried in the path contract
+		CampaignID:   campaign,
+		SubscriberID: subscriber,
+		LinkURL:      dest,
+		IPAddress:    realIP(r),
+		UserAgent:    r.UserAgent(),
+		Actor:        label,
+		Timestamp:    time.Now().UTC(),
+	})
+	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
+
+	// HANDOFF — identical for EVERYONE regardless of the label above. High-risk
+	// links get a lightweight branded bridge page (a real interstitial shown to
+	// scanner and human alike); everything else a 302. This branch keys off the
+	// link's RiskProfile, NOT the visitor — that is the no-cloaking guarantee.
+	if entry.RiskProfile == "high" {
+		serveOfferBridge(w, attrBrand, dest)
+		return
+	}
+	http.Redirect(w, r, dest, http.StatusFound)
+}
+
+// brandRootFromHost derives the bare brand root from the request Host by
+// stripping the tracking subdomain prefixes and any port, lowercased. Used only
+// for the safe fallback destination and default attribution brand.
+func brandRootFromHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i] // strip port
+	}
+	for _, p := range []string{"t.em.", "trk.em.", "www."} {
+		if strings.HasPrefix(h, p) {
+			h = strings.TrimPrefix(h, p)
+			break
+		}
+	}
+	if h == "" {
+		// Totally malformed host — avoid emitting "https:///". projectjarvis.io
+		// is a live page, so this is still a no-dead-end fallback.
+		return "projectjarvis.io"
+	}
+	return h
+}
+
+// serveOfferBridge renders the high-risk interstitial. It is deliberately
+// minimal and contains a single Continue anchor to dest. Shown to EVERY visitor
+// for a high-risk hash — this is not cloaking, it is the link's handoff mode.
+// dest is HTML-escaped into the href to prevent attribute breakout.
+func serveOfferBridge(w http.ResponseWriter, brandRoot, dest string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	title := brandRoot
+	if title == "" {
+		title = "Continue"
+	}
+	page := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
+		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
+		`<meta name="robots" content="noindex,nofollow">` +
+		`<title>` + html.EscapeString(title) + `</title></head>` +
+		`<body style="font-family:Arial,Helvetica,sans-serif;text-align:center;padding:60px 20px;">` +
+		`<h1 style="font-size:20px;">You're being redirected</h1>` +
+		`<p style="color:#555;">Click below to continue to your offer.</p>` +
+		`<p style="margin-top:28px;"><a href="` + html.EscapeString(dest) + `" rel="nofollow noopener" ` +
+		`style="display:inline-block;padding:12px 28px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">Continue</a></p>` +
+		`</body></html>`
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(page))
 }
 
 func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {

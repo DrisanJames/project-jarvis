@@ -25,7 +25,8 @@ func testHandler() *Handler {
 	// async Publish goroutine fails fast and logs; the handler's HTTP
 	// behavior — all this test asserts — is independent of publish success.
 	client := sqs.New(sqs.Options{Region: "us-east-1", BaseEndpoint: aws.String("http://127.0.0.1:1")})
-	return NewHandler(NewPublisher(client, "http://127.0.0.1:1/queue"))
+	// nil dictionary: exercises the graceful no-DB path; /track/* is unaffected.
+	return NewHandler(NewPublisher(client, "http://127.0.0.1:1/queue"), nil)
 }
 
 func token(parts ...string) string {

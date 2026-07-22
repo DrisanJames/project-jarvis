@@ -8049,6 +8049,24 @@ END $$`},
 					ON mailing_smart_link_hits(requested_at DESC);
 			END IF;
 		END $$`},
+
+		// Jul 22 2026 (Wave 1 — offer links move to the tracking layer): give
+		// mailing_smart_links a stable, short, URL-safe `hash` that is the
+		// dictionary key in the new offer-link contract
+		// https://t.em.<brand>/o/<subscriber_id>/<hash>/<campaign_id>. The
+		// tracking service resolves <hash> -> smart-link row; the Creative
+		// Studio proof retarget (this binary) mints one on create and reads it
+		// on the proof path. The backfill derives a deterministic 10-char token
+		// from id so a re-run is a no-op (only WHERE hash IS NULL), and the
+		// unique partial index enforces one row per hash while tolerating the
+		// (transient) NULL state between the ALTER and the backfill. ~21 rows —
+		// well inside the 5s budget.
+		{"add_smart_links_hash", `ALTER TABLE mailing_smart_links ADD COLUMN IF NOT EXISTS hash TEXT`},
+		{"backfill_smart_links_hash", `UPDATE mailing_smart_links
+			SET hash = lower(left(replace(md5(id::text),'-',''),10))
+			WHERE hash IS NULL`},
+		{"idx_smart_links_hash", `CREATE UNIQUE INDEX IF NOT EXISTS idx_mailing_smart_links_hash
+			ON mailing_smart_links(hash) WHERE hash IS NOT NULL`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

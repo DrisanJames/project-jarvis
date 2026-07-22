@@ -33,6 +33,28 @@ import (
 
 type creativeProofRequest struct {
 	ToEmail string `json:"to_email"`
+	// RouteViaGateway opts this proof into Smart Link Gateway routing: the
+	// creative's cratoolpro money links are rewritten to the brand-site
+	// gateway BEFORE tracking injection, so the operator can click the proof
+	// and confirm the real bot/human/bridge routing before broad rollout.
+	RouteViaGateway bool `json:"route_via_gateway"`
+	// GatewaySlug is the smart-link slug to route through (e.g. "auto-refi").
+	// Required when RouteViaGateway is true; must be a valid slugPattern slug
+	// and correspond to an active mailing_smart_links row for the resolved
+	// brand root.
+	GatewaySlug string `json:"gateway_slug"`
+}
+
+// proofGateway carries the validated brand root + slug used to rewrite a
+// proof's money links to the Smart Link Gateway. nil means "no gateway" —
+// the default-safe path with zero smart-link queries and no rewrite.
+type proofGateway struct {
+	BrandRoot string
+	Slug      string
+	// Hash is the smart-link dictionary key read at preflight; it keys the
+	// tracking-layer /o/<sub>/<hash>/<campaign> offer URL the proof is
+	// rewritten to.
+	Hash string
 }
 
 // HandleCreativeProof sends ONE proof of a mailing_creatives row to to_email.
@@ -94,9 +116,45 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 	if subject == "" {
 		subject = "Creative Proof"
 	}
-	messageID, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain,
+
+	// Optional Smart Link Gateway routing. When RouteViaGateway is false we make
+	// ZERO smart-link queries and no rewrite — behavior identical to before this
+	// feature existed. When true, we hard-preflight the active gateway row and
+	// DO NOT SEND if it is absent, so a proof never silently ships un-routed.
+	var gw *proofGateway
+	var gwSmartLink SmartLink
+	if req.RouteViaGateway {
+		slug := strings.ToLower(strings.TrimSpace(req.GatewaySlug))
+		if slug == "" || !slugPattern.MatchString(slug) {
+			respondJSON(w, http.StatusBadRequest,
+				map[string]string{"error": "gateway_slug required and must be a valid slug"})
+			return
+		}
+		brandRoot := brandRootFromCode(brandCode)
+		if brandRoot == "" {
+			respondJSON(w, http.StatusUnprocessableEntity,
+				map[string]string{"error": "cannot resolve a brand root for gateway routing from brand_code '" + brandCode + "'"})
+			return
+		}
+		sl, resolveErr := h.smartLinks.resolveActiveSmartLink(ctx, brandRoot, slug)
+		if resolveErr == sql.ErrNoRows {
+			respondJSON(w, http.StatusUnprocessableEntity,
+				map[string]string{"error": "no active smart-link gateway " + brandRoot + "/" + slug + " — seed it in the Smart Links tab first"})
+			return
+		}
+		if resolveErr != nil {
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": resolveErr.Error()})
+			return
+		}
+		gwSmartLink = sl
+		// Hash comes from the preflighted row; it keys the tracking-layer /o/
+		// offer URL the proof's money links are rewritten to.
+		gw = &proofGateway{BrandRoot: brandRoot, Slug: slug, Hash: sl.Hash}
+	}
+
+	messageID, trackingURL, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain,
 		"[PROOF] "+subject, "", preheader, htmlContent, to, creativeID,
-		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID})
+		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID}, gw)
 	if sendErr != nil {
 		log.Printf("[creative-proof] PMTA error creative=%s domain=%s: %v", creativeID, sendingDomain, sendErr)
 		respondJSON(w, http.StatusOK, map[string]string{"status": "error", "error": sendErr.Error()})
@@ -104,7 +162,17 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 	}
 	log.Printf("[creative-proof] sent creative=%s to=%s via PMTA messageID=%s domain=%s isp=%s",
 		creativeID, to, messageID, sendingDomain, worker.ClassifySubscriberISP(to))
-	respondJSON(w, http.StatusOK, map[string]string{"status": "sent", "message_id": messageID})
+
+	resp := map[string]string{"status": "sent", "message_id": messageID}
+	if gw != nil {
+		// tracking_url is the exact /o/ URL minted into the proof HTML so the
+		// operator (and the UI) can see and click precisely what was sent.
+		resp["tracking_url"] = trackingURL
+		resp["gateway_slug"] = gw.Slug
+		resp["hash"] = gw.Hash
+		resp["risk_profile"] = gwSmartLink.RiskProfile
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // sendProofMessage renders an HTML creative with the proof Liquid context,
@@ -114,10 +182,13 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 // merged in (List-Unsubscribe is added automatically when a track base exists).
 // Returns the PMTA message id, or an error if the profile is unresolved or the
 // send fails. fromName "" leaves the profile/default from name.
-func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string) (string, error) {
+// It also returns the tracking-layer /o/ offer URL that was minted into the
+// HTML when gw != nil (empty otherwise), so the caller can surface the exact
+// clickable link in the response.
+func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string, gw *proofGateway) (string, string, error) {
 	profileID, fromEmail, trackBase := h.resolveSendingProfileByDomain(ctx, orgID, sendingDomain)
 	if profileID == "" {
-		return "", fmt.Errorf("no active PMTA sending profile for domain '%s'", sendingDomain)
+		return "", "", fmt.Errorf("no active PMTA sending profile for domain '%s'", sendingDomain)
 	}
 
 	recipientISP := worker.ClassifySubscriberISP(to)
@@ -143,6 +214,24 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 	if rerr != nil {
 		log.Printf("[proof-send] Liquid render error (html): %v", rerr)
 		renderedHTML = htmlContent
+	}
+
+	// Wave-1 tracking-layer rewrite (opt-in): cratoolpro money links -> the
+	// tracking service's /o/<sub>/<hash>/<campaign> offer URL, BEFORE tracking
+	// injection. The /o/ URL is itself a tracking URL, so RewriteClickLinks
+	// (inside InjectTrackingPixelAndLinks) is taught to skip it — the final
+	// href stays the bare /o/ URL, exactly what a real click-tester hits. The
+	// rewrite needs a real tracking domain (trackBase); when trackBase=="" the
+	// rewriter no-ops (returns 0) and the original cratoolpro href survives,
+	// which is the safe failure rather than shipping https:///o/...
+	var trackingURL string
+	if gw != nil && trackBase != "" {
+		trackingURL = SmartLinkTrackingURL(trackBase, proofSubscriberID, gw.Hash, proofCampaignID)
+		var rewritten int
+		renderedHTML, rewritten = RewriteMoneyLinksToTracking(renderedHTML, trackBase, proofSubscriberID, gw.Hash, proofCampaignID)
+		log.Printf("[proof-send] tracking-rewrote %d money link(s) → %s", rewritten, trackingURL)
+	} else if gw != nil {
+		log.Printf("[proof-send] gateway routing requested but no tracking base resolved for domain %s — money links left as-is", sendingDomain)
 	}
 
 	renderedHTML = worker.ReplaceTrackingMergeTags(renderedHTML, proofCampaignID, proofSubscriberID, refID)
@@ -183,12 +272,12 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 
 	result, sendErr := h.sender.Send(ctx, msg)
 	if sendErr != nil {
-		return "", sendErr
+		return "", "", sendErr
 	}
 	if result != nil {
-		return result.MessageID, nil
+		return result.MessageID, trackingURL, nil
 	}
-	return "", nil
+	return "", trackingURL, nil
 }
 
 // resolveSendingProfileByDomain looks up the active PMTA sending profile for an

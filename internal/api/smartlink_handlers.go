@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -81,16 +83,21 @@ func uaPrefix(ua string, n int) string {
 // schema — a divergence here would silently mask bugs the next time we
 // add a column.
 type SmartLink struct {
-	ID               string    `json:"id"`
-	BrandRoot        string    `json:"brand_root"`
-	Slug             string    `json:"slug"`
-	ReviewSlug       string    `json:"review_slug"`
-	OfferURLTemplate string    `json:"offer_url_template"`
-	Status           string    `json:"status"`
-	RiskProfile      string    `json:"risk_profile"`
-	Notes            string    `json:"notes,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID               string `json:"id"`
+	BrandRoot        string `json:"brand_root"`
+	Slug             string `json:"slug"`
+	ReviewSlug       string `json:"review_slug"`
+	OfferURLTemplate string `json:"offer_url_template"`
+	Status           string `json:"status"`
+	RiskProfile      string `json:"risk_profile"`
+	Notes            string `json:"notes,omitempty"`
+	// Hash is the short, URL-safe dictionary key for the tracking-layer offer
+	// link (/o/<subscriber>/<hash>/<campaign>). Minted server-side on create;
+	// COALESCE(hash,'') in every SELECT so legacy rows scan as "" rather than
+	// NULL-panicking the Scan.
+	Hash      string    `json:"hash"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // slugPattern restricts smart-link slugs to lowercase ASCII, digits, and
@@ -152,6 +159,81 @@ func NewSmartLinkService(db *sql.DB) *SmartLinkService {
 	return &SmartLinkService{db: db}
 }
 
+// resolveActiveSmartLink is the single source of truth for the active-row
+// lookup shared by the public brand-site resolve path and the proof-send
+// gateway preflight. It runs the exact SELECT (status='active',
+// COALESCE(risk_profile,'low'), COALESCE(notes,”)) and Scans into a
+// SmartLink, returning sql.ErrNoRows when no active row exists so callers can
+// distinguish "no gateway here" (404/422) from a real DB error (500).
+func (s *SmartLinkService) resolveActiveSmartLink(ctx context.Context, brandRoot, slug string) (SmartLink, error) {
+	var sl SmartLink
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), COALESCE(hash,''), created_at, updated_at
+		FROM mailing_smart_links
+		WHERE brand_root = $1 AND slug = $2 AND status = 'active'
+		LIMIT 1
+	`, brandRoot, slug).Scan(&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.Hash, &sl.CreatedAt, &sl.UpdatedAt)
+	if err != nil {
+		return SmartLink{}, err
+	}
+	return sl, nil
+}
+
+// resolveByHash resolves a single active smart-link by its dictionary hash —
+// the reverse of the (brand_root, slug) lookup, keyed on the tracking-layer
+// /o/<subscriber>/<hash>/<campaign> URL's hash segment. Returns sql.ErrNoRows
+// when no active row carries the hash so callers can distinguish "unknown
+// offer link" from a real DB error. The tracking service (internal/tracking)
+// owns its own copy for the live redirect; this one backs the proof path and
+// any admin/debug lookups inside the API binary.
+func (s *SmartLinkService) resolveByHash(ctx context.Context, hash string) (SmartLink, error) {
+	var sl SmartLink
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), COALESCE(hash,''), created_at, updated_at
+		FROM mailing_smart_links
+		WHERE hash = $1 AND status = 'active'
+		LIMIT 1
+	`, hash).Scan(&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.Hash, &sl.CreatedAt, &sl.UpdatedAt)
+	if err != nil {
+		return SmartLink{}, err
+	}
+	return sl, nil
+}
+
+// SmartLinkTrackingURL builds the tracking-layer offer-link URL for the new
+// contract: https://<trackingDomain>/o/<subscriberID>/<hash>/<campaignID>.
+// trackingDomain may arrive as a bare host (t.em.discountblog.com), a host
+// with a trailing slash, or a full https URL — it is normalized to an
+// https-scheme, no-trailing-slash origin before the /o/ path is appended.
+func SmartLinkTrackingURL(trackingDomain, subscriberID, hash, campaignID string) string {
+	origin := ensureHTTPS(trackingDomain) // "" stays "" (caller guards)
+	return origin + "/o/" + subscriberID + "/" + hash + "/" + campaignID
+}
+
+// mintSmartLinkHash generates a short, URL-safe token ([a-z0-9], 10 chars)
+// for a new smart-link row's dictionary key. 10 chars of 36-symbol alphabet
+// ≈ 51.7 bits of entropy — collision across the ~21-row table is negligible,
+// and HandleAdminCreate still retries on the unique-index conflict as a
+// belt-and-suspenders. Uses crypto/rand so tokens are unguessable (the hash
+// is part of a public offer-link URL).
+func mintSmartLinkHash() (string, error) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const n = 10
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = alphabet[int(buf[i])%len(alphabet)]
+	}
+	return string(buf), nil
+}
+
+// smartLinkHashPattern restricts an operator-supplied hash to the same
+// URL-safe shape mintSmartLinkHash emits, so a hand-set value can't smuggle a
+// slash or other path-breaking byte into the /o/ URL.
+var smartLinkHashPattern = regexp.MustCompile(`^[a-z0-9]{8,16}$`)
+
 // ============================================================================
 // PUBLIC READ ENDPOINT — called by the brand site at request time. No auth.
 // ============================================================================
@@ -183,15 +265,8 @@ func (s *SmartLinkService) HandlePublicResolve(w http.ResponseWriter, r *http.Re
 
 	requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
 
-	row := s.db.QueryRowContext(r.Context(), `
-		SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), created_at, updated_at
-		FROM mailing_smart_links
-		WHERE brand_root = $1 AND slug = $2 AND status = 'active'
-		LIMIT 1
-	`, brandRoot, slug)
-
-	var sl SmartLink
-	if err := row.Scan(&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.CreatedAt, &sl.UpdatedAt); err != nil {
+	sl, err := s.resolveActiveSmartLink(r.Context(), brandRoot, slug)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 404 is the canonical "no gateway here, fall through to
 			// notFound() on the brand site" signal. The brand site
@@ -422,7 +497,7 @@ func (s *SmartLinkService) HandleAdminList(w http.ResponseWriter, r *http.Reques
 	brandRoot := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("brand_root")))
 	includeDeleted, _ := strconv.ParseBool(r.URL.Query().Get("include_deleted"))
 
-	q := `SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), created_at, updated_at
+	q := `SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), COALESCE(hash,''), created_at, updated_at
 		FROM mailing_smart_links WHERE 1=1`
 	args := []interface{}{}
 	idx := 1
@@ -447,7 +522,7 @@ func (s *SmartLinkService) HandleAdminList(w http.ResponseWriter, r *http.Reques
 	out := []SmartLink{}
 	for rows.Next() {
 		var sl SmartLink
-		if err := rows.Scan(&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.CreatedAt, &sl.UpdatedAt); err != nil {
+		if err := rows.Scan(&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.Hash, &sl.CreatedAt, &sl.UpdatedAt); err != nil {
 			log.Printf("[smartlink] admin list scan error: %v", err)
 			continue
 		}
@@ -473,6 +548,9 @@ type AdminUpsertRequest struct {
 	Status           string `json:"status,omitempty"`
 	RiskProfile      string `json:"risk_profile,omitempty"`
 	Notes            string `json:"notes,omitempty"`
+	// Hash is optional on create: when empty the server mints one; when
+	// supplied it must match smartLinkHashPattern.
+	Hash string `json:"hash,omitempty"`
 }
 
 // HandleAdminCreate creates a smart-link row. Status defaults to 'active'.
@@ -490,6 +568,7 @@ func (s *SmartLinkService) HandleAdminCreate(w http.ResponseWriter, r *http.Requ
 	req.ReviewSlug = strings.ToLower(strings.TrimSpace(req.ReviewSlug))
 	req.OfferURLTemplate = strings.TrimSpace(req.OfferURLTemplate)
 	req.RiskProfile = strings.ToLower(strings.TrimSpace(req.RiskProfile))
+	req.Hash = strings.ToLower(strings.TrimSpace(req.Hash))
 	if req.Status == "" {
 		req.Status = "active"
 	}
@@ -500,16 +579,61 @@ func (s *SmartLinkService) HandleAdminCreate(w http.ResponseWriter, r *http.Requ
 	if req.RiskProfile == "" {
 		req.RiskProfile = "low"
 	}
+	// A caller-supplied hash must be URL-safe; an empty one is minted below.
+	suppliedHash := req.Hash != ""
+	if suppliedHash && !smartLinkHashPattern.MatchString(req.Hash) {
+		writeJSONError(w, "hash must match ^[a-z0-9]{8,16}$", http.StatusBadRequest)
+		return
+	}
 
+	// Insert, minting a fresh hash on each attempt when none was supplied. The
+	// unique index idx_mailing_smart_links_hash can (astronomically rarely)
+	// reject a minted token; we retry a handful of times before giving up. A
+	// (brand_root, slug) collision is terminal — we surface it as 409 and do
+	// NOT retry (retrying would loop forever on the same conflict).
 	var sl SmartLink
-	err := s.db.QueryRowContext(r.Context(), `
-		INSERT INTO mailing_smart_links (brand_root, slug, review_slug, offer_url_template, status, risk_profile, notes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), created_at, updated_at
-	`, req.BrandRoot, req.Slug, req.ReviewSlug, req.OfferURLTemplate, req.Status, req.RiskProfile, req.Notes).Scan(
-		&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.CreatedAt, &sl.UpdatedAt,
-	)
+	var err error
+	const maxHashAttempts = 5
+	for attempt := 0; attempt < maxHashAttempts; attempt++ {
+		hash := req.Hash
+		if !suppliedHash {
+			hash, err = mintSmartLinkHash()
+			if err != nil {
+				logJSON("admin_create_hash_mint_error", map[string]interface{}{
+					"brand_root": req.BrandRoot, "slug": req.Slug, "err": err.Error(),
+				})
+				writeJSONError(w, "internal", http.StatusInternalServerError)
+				return
+			}
+		}
+		err = s.db.QueryRowContext(r.Context(), `
+			INSERT INTO mailing_smart_links (brand_root, slug, review_slug, offer_url_template, status, risk_profile, notes, hash)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), COALESCE(hash,''), created_at, updated_at
+		`, req.BrandRoot, req.Slug, req.ReviewSlug, req.OfferURLTemplate, req.Status, req.RiskProfile, req.Notes, hash).Scan(
+			&sl.ID, &sl.BrandRoot, &sl.Slug, &sl.ReviewSlug, &sl.OfferURLTemplate, &sl.Status, &sl.RiskProfile, &sl.Notes, &sl.Hash, &sl.CreatedAt, &sl.UpdatedAt,
+		)
+		if err == nil {
+			break
+		}
+		// A hash-index collision on a MINTED token → retry with a new mint.
+		if !suppliedHash && strings.Contains(err.Error(), "idx_mailing_smart_links_hash") {
+			logJSON("admin_create_hash_retry", map[string]interface{}{
+				"brand_root": req.BrandRoot, "slug": req.Slug, "attempt": attempt,
+			})
+			continue
+		}
+		break
+	}
 	if err != nil {
+		if strings.Contains(err.Error(), "idx_mailing_smart_links_hash") {
+			// Either a supplied-hash collision or exhausted mint retries.
+			logJSON("admin_create_hash_conflict", map[string]interface{}{
+				"brand_root": req.BrandRoot, "slug": req.Slug, "supplied": suppliedHash,
+			})
+			writeJSONError(w, "hash already in use — omit it to mint a fresh one", http.StatusConflict)
+			return
+		}
 		if strings.Contains(err.Error(), "duplicate key") {
 			logJSON("admin_create_conflict", map[string]interface{}{
 				"brand_root": req.BrandRoot,
@@ -533,6 +657,7 @@ func (s *SmartLinkService) HandleAdminCreate(w http.ResponseWriter, r *http.Requ
 		"review_slug":  sl.ReviewSlug,
 		"status":       sl.Status,
 		"risk_profile": sl.RiskProfile,
+		"hash":         sl.Hash,
 	})
 	respondJSON(w, http.StatusCreated, sl)
 }
@@ -565,9 +690,9 @@ func (s *SmartLinkService) HandleAdminUpdate(w http.ResponseWriter, r *http.Requ
 	// Read current row so we can apply a partial update.
 	var current SmartLink
 	if err := s.db.QueryRowContext(r.Context(), `
-		SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), created_at, updated_at
+		SELECT id, brand_root, slug, review_slug, offer_url_template, status, COALESCE(risk_profile,'low'), COALESCE(notes,''), COALESCE(hash,''), created_at, updated_at
 		FROM mailing_smart_links WHERE id = $1
-	`, id).Scan(&current.ID, &current.BrandRoot, &current.Slug, &current.ReviewSlug, &current.OfferURLTemplate, &current.Status, &current.RiskProfile, &current.Notes, &current.CreatedAt, &current.UpdatedAt); err != nil {
+	`, id).Scan(&current.ID, &current.BrandRoot, &current.Slug, &current.ReviewSlug, &current.OfferURLTemplate, &current.Status, &current.RiskProfile, &current.Notes, &current.Hash, &current.CreatedAt, &current.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSONError(w, "not found", http.StatusNotFound)
 			return
