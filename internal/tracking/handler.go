@@ -243,11 +243,18 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Attribution brand prefers the dictionary's brand_root; fall back to the
-	// host-derived one if the row didn't carry it.
-	attrBrand := entry.BrandRoot
-	if attrBrand == "" {
-		attrBrand = brandRoot
+	// Attribution brand (sub2) is the ACTUAL sending brand, derived from the
+	// REQUEST HOST (brandRootFromHost: t.em.<apex>/trk.em.<apex> -> <apex>).
+	// This is correct even when the dictionary row's brand_root is a DIFFERENT
+	// brand: offer destinations dedup ACROSS brands (one hash is reachable from
+	// several sending brands' tracking hosts), so the row that won the dedup can
+	// carry the wrong sending brand. The Host is the ground truth for who sent
+	// this message. entry.BrandRoot is used ONLY as a fallback when the Host
+	// yields no usable brand — the projectjarvis.io sentinel that
+	// brandRootFromHost emits for a malformed/missing Host.
+	attrBrand := brandRoot
+	if (attrBrand == "" || attrBrand == "projectjarvis.io") && entry.BrandRoot != "" {
+		attrBrand = entry.BrandRoot
 	}
 	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign)
 

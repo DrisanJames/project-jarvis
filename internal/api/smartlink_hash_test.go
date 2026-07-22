@@ -66,6 +66,67 @@ func TestRewriteMoneyLinksToTracking_Multiple(t *testing.T) {
 	}
 }
 
+func TestRewriteMoneyLinksToTracking_AllSixNetworks(t *testing.T) {
+	// Every money-network host must be rewritten to the /o/ URL — this is the
+	// network-agnostic proof path. Source of truth is moneyHosts.
+	hosts := []string{
+		"cratoolpro.com", "eos57ytf.com", "k8k0hfdt.com",
+		"codefortwo.com", "kj3rwth8trk.com", "muqes.com",
+	}
+	want := `href="https://t.em.discountblog.com/o/sub-1/hsh12/camp-9"`
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			in := `<a href="https://www.` + host + `/K4C5ZLC/OFFER/?source_id=email&sub1=x">go</a>`
+			out, n := RewriteMoneyLinksToTracking(in, "t.em.discountblog.com", "sub-1", "hsh12", "camp-9")
+			if n != 1 {
+				t.Fatalf("%s: expected 1 rewrite, got %d (out=%s)", host, n, out)
+			}
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: missing /o/ URL %q in: %s", host, want, out)
+			}
+			if strings.Contains(out, host) {
+				t.Errorf("%s: money host should be gone: %s", host, out)
+			}
+		})
+	}
+	// Also verify the bare-host (no www.) and http scheme forms match.
+	in := `<a href="http://muqes.com/A/B/">go</a>`
+	out, n := RewriteMoneyLinksToTracking(in, "t.em.discountblog.com", "sub-1", "hsh12", "camp-9")
+	if n != 1 || !strings.Contains(out, want) {
+		t.Errorf("bare-host/http form: n=%d out=%s", n, out)
+	}
+}
+
+func TestRewriteMoneyLinksToTracking_NonMoneyHostUntouched(t *testing.T) {
+	// A host that merely resembles a money host (superstring) must NOT match —
+	// the (?:www\.)? anchor plus "href=\"https?://" prefix prevents that.
+	in := `<a href="https://notcratoolpro.com/A/B">x</a> ` +
+		`<a href="https://muqes.com.evil.example/A/B">y</a>`
+	out, n := RewriteMoneyLinksToTracking(in, "t.em.discountblog.com", "s", "h", "c")
+	if n != 0 {
+		t.Fatalf("look-alike hosts must NOT be rewritten, got n=%d out=%s", n, out)
+	}
+	if out != in {
+		t.Errorf("look-alike hosts must be untouched:\n in=%s\nout=%s", in, out)
+	}
+}
+
+func TestRewriteMoneyLinksToTracking_MultiNetworkIdempotent(t *testing.T) {
+	in := `<a href="https://www.eos57ytf.com/A/B/?source_id=email">one</a> ` +
+		`<a href="https://k8k0hfdt.com/C/D/">two</a>`
+	once, n1 := RewriteMoneyLinksToTracking(in, "t.em.discountblog.com", "s", "h", "c")
+	twice, n2 := RewriteMoneyLinksToTracking(once, "t.em.discountblog.com", "s", "h", "c")
+	if n1 != 2 {
+		t.Fatalf("first pass expected 2 rewrites, got %d", n1)
+	}
+	if n2 != 0 {
+		t.Fatalf("second pass must be a no-op, got %d", n2)
+	}
+	if once != twice {
+		t.Errorf("multi-network rewrite not idempotent:\nonce =%s\ntwice=%s", once, twice)
+	}
+}
+
 func TestRewriteMoneyLinksToTracking_NonCratoolproUntouched(t *testing.T) {
 	in := `<a href="https://discountblog.com/deal">house</a> ` +
 		`<a href="https://example.com/x">other</a> ` +

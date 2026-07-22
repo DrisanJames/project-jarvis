@@ -189,6 +189,60 @@ func TestOffer_TelemetryLabel_MachineVsHuman_SameServedBytes(t *testing.T) {
 	}
 }
 
+// sub2 (attribution brand) must come from the REQUEST HOST, not the dictionary
+// row's brand_root — offer destinations dedup across brands, so the winning row
+// can carry a different sending brand than the one that actually sent this
+// message. The Host is ground truth.
+func TestOffer_Sub2FromHost_NotEntryBrand(t *testing.T) {
+	pub := &capturePublisher{}
+	// Dictionary row's brand_root is discountblog.com (a DIFFERENT brand that
+	// won the destination dedup), but the request arrives on consumerpro's host.
+	h := NewHandler(pub, stubDict(map[string]smartLinkEntry{
+		"abc123": {
+			Destination: "https://www.eos57ytf.com/K4C5ZLC/OFFER/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+			RiskProfile: "low",
+			BrandRoot:   "discountblog.com",
+		},
+	}))
+
+	rec := doOffer(h, "t.em.consumerpro.net", subUUID, "abc123", campUUID, uaBrowser)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "sub2=consumerpro.net") {
+		t.Errorf("sub2 must be the Host-derived apex consumerpro.net, got Location %q", loc)
+	}
+	if strings.Contains(loc, "sub2=discountblog.com") {
+		t.Errorf("sub2 must NOT be the entry brand discountblog.com, got Location %q", loc)
+	}
+}
+
+// When the Host yields no usable sending brand (the projectjarvis.io sentinel
+// from a malformed/missing Host), sub2 falls back to the dictionary row's
+// brand_root.
+func TestOffer_Sub2FallsBackToEntryBrandWhenHostHasNoBrand(t *testing.T) {
+	pub := &capturePublisher{}
+	h := NewHandler(pub, stubDict(map[string]smartLinkEntry{
+		"abc123": {
+			Destination: "https://www.eos57ytf.com/K4C5ZLC/OFFER/?source_id=email&sub2={{brand.domain}}",
+			RiskProfile: "low",
+			BrandRoot:   "historythinking.com",
+		},
+	}))
+
+	// projectjarvis.io is the sentinel brandRootFromHost emits when the Host is
+	// not a t.em/trk.em sending host — no usable sending brand.
+	rec := doOffer(h, "projectjarvis.io", subUUID, "abc123", campUUID, uaBrowser)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "sub2=historythinking.com") {
+		t.Errorf("sub2 must fall back to the entry brand historythinking.com, got Location %q", loc)
+	}
+}
+
 func TestBrandRootFromHost(t *testing.T) {
 	cases := map[string]string{
 		"t.em.discountblog.com":      "discountblog.com",

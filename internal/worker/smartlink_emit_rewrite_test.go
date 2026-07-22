@@ -133,6 +133,57 @@ func TestRewriteClickLinks_EmitterEnabled_NewsletterUnaffected(t *testing.T) {
 	}
 }
 
+// (f) NETWORK-AGNOSTIC: a seeded money URL on ANY network mints /o/. The hook
+// no longer gates on the cratoolpro host regex — the dictionary Lookup is the
+// sole gate — so eos57ytf, k8k0hfdt, cratoolpro (and any future network) all
+// mint when Enabled + seeded.
+func TestRewriteClickLinks_EmitterEnabled_AllNetworksMint(t *testing.T) {
+	nets := map[string]string{
+		"cratoolpro":  "https://www.cratoolpro.com/BJB4Q5BF/ABC123/?source_id=email&sub1={{subscriber.id}}",
+		"eos57ytf":    "https://www.eos57ytf.com/K4C5ZLC/2HH43PB/?source_id=email&sub1={{subscriber.id}}",
+		"k8k0hfdt":    "https://www.k8k0hfdt.com/3QJ6DW/3LKS16/?source_id=email&sub1={{subscriber.id}}",
+		"codefortwo":  "https://www.codefortwo.com/K4C5ZLC/K9TM4Q/?source_id=email",
+		"kj3rwth8trk": "https://www.kj3rwth8trk.com/AAA/BBB/?source_id=email",
+		"muqes":       "https://www.muqes.com/CCC/DDD/?source_id=email",
+	}
+	for name, money := range nets {
+		t.Run(name, func(t *testing.T) {
+			setEmitter(t, emitterFor(t, normalizeOfferURL(money), "hash-"+name))
+
+			html := `<html><body><a href="` + money + `">CTA</a></body></html>`
+			out := RewriteClickLinks(html, "camp-9", "sub-7", "email-3", clickTestBase, clickTestOrg, clickTestSecret)
+
+			want := `href="` + clickTestBase + `/o/sub-7/hash-` + name + `/camp-9"`
+			if !strings.Contains(out, want) {
+				t.Fatalf("%s: expected minted offer URL %q in:\n%s", name, want, out)
+			}
+			if strings.Contains(out, "/track/click/") {
+				t.Fatalf("%s: seeded money link must be minted, not click-wrapped:\n%s", name, out)
+			}
+		})
+	}
+}
+
+// (g) A money URL on a seeded network but NOT itself seeded => /track/click
+// wrap (Lookup misses on the specific destination). Proves the gate is the
+// per-destination dictionary hit, not the host.
+func TestRewriteClickLinks_EmitterEnabled_UnseededMoneyURLWrapped(t *testing.T) {
+	// Seed ONE eos57ytf destination; request a DIFFERENT eos57ytf destination.
+	seeded := "https://www.eos57ytf.com/K4C5ZLC/SEEDED/?source_id=email"
+	setEmitter(t, emitterFor(t, normalizeOfferURL(seeded), "hash-seeded"))
+
+	other := "https://www.eos57ytf.com/K4C5ZLC/NOTSEEDED/?source_id=email&sub1=x"
+	html := `<html><body><a href="` + other + `">CTA</a></body></html>`
+	out := RewriteClickLinks(html, "camp-1", "sub-1", "email-1", clickTestBase, clickTestOrg, clickTestSecret)
+
+	if strings.Contains(out, clickTestBase+"/o/") {
+		t.Fatalf("unseeded money URL must NOT be minted:\n%s", out)
+	}
+	if got := strings.Count(out, "/track/click/"); got != 1 {
+		t.Fatalf("unseeded money URL: want exactly 1 /track/click wrap, got %d:\n%s", got, out)
+	}
+}
+
 // (e) idempotency: an already-minted /o/ link is left untouched (existing skip).
 func TestRewriteClickLinks_EmitterEnabled_AlreadyMintedUntouched(t *testing.T) {
 	setEmitter(t, emitterFor(t, normalizeOfferURL(craMoney), "hash-xyz"))

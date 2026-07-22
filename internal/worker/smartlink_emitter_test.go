@@ -48,31 +48,6 @@ func TestNormalizeOfferURL_RenderedAndTemplateAgree(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isCratoolproMoneyURL
-// ---------------------------------------------------------------------------
-
-func TestIsCratoolproMoneyURL(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"https://www.cratoolpro.com/BJB4Q5BF/ABC123/?source_id=email", true},
-		{"https://cratoolpro.com/BJB4Q5BF/ABC123", true},
-		{"HTTPS://WWW.CRATOOLPRO.COM/BJB4Q5BF/ABC123", true},
-		{"https://www.cratoolpro.com/integration/postback?x=1", false}, // integration excluded
-		{"https://www.cratoolpro.com/INTEGRATION/pb", false},           // case-insensitive exclusion
-		{"https://example.com/offer", false},
-		{"https://www.eos57ytf.com/K4C5ZLC/S6WFF5/", false}, // other money host, not cratoolpro
-		{"https://notcratoolpro.com/A/B", false},
-	}
-	for _, c := range cases {
-		if got := isCratoolproMoneyURL(c.in); got != c.want {
-			t.Errorf("isCratoolproMoneyURL(%q) = %v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // SmartLinkEmitter — disabled modes start no goroutine and always miss
 // ---------------------------------------------------------------------------
 

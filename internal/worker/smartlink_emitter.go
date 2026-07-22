@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"log"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -227,26 +226,6 @@ func (e *SmartLinkEmitter) Close() {
 	if e != nil && e.cancel != nil {
 		e.cancel()
 	}
-}
-
-// craMoneyURLRe matches a bare cratoolpro money URL (not an href attribute —
-// RewriteClickLinks already extracted the URL from href="..."). It is the
-// URL-granularity sibling of internal/api/smartlink_rewrite.go's
-// cratoolproHrefRe: same host shape (optional www.), same case-insensitive
-// match, group 1 = the path after "cratoolpro.com/". RE2 has no negative
-// lookahead, so the /integration/ exclusion is done in code exactly as the api
-// rewriter does it.
-var craMoneyURLRe = regexp.MustCompile(`(?i)^https?://(?:www\.)?cratoolpro\.com/([^"\s]+)$`)
-
-// isCratoolproMoneyURL reports whether u is a cratoolpro money link eligible
-// for /o/ minting — i.e. a cratoolpro.com URL that is NOT under /integration/
-// (postback/pixel links, left untouched, mirroring the api rewriter).
-func isCratoolproMoneyURL(u string) bool {
-	m := craMoneyURLRe.FindStringSubmatch(u)
-	if m == nil {
-		return false
-	}
-	return !strings.HasPrefix(strings.ToLower(m[1]), "integration/")
 }
 
 // offerHashEmitter is the process-wide send-side emitter handle. It is set
