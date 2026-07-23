@@ -117,6 +117,10 @@ export const OfferProofs: React.FC = () => {
 
   // send form
   const [sendDomain, setSendDomain] = useState('');
+  // 'pmta' = dedicated-IP route (default); 'ses' = the brand's live SES tenant
+  // route — lets a proof measure cold-inbox placement on either path.
+  const [sendTransport, setSendTransport] = useState<'pmta' | 'ses'>(
+    () => (localStorage.getItem('proof_transport') === 'ses' ? 'ses' : 'pmta'));
   const [sendSubject, setSendSubject] = useState('');
   const [sendFromName, setSendFromName] = useState('');
   const [sendRcpts, setSendRcpts] = useState<Record<string, boolean>>({});
@@ -238,12 +242,14 @@ export const OfferProofs: React.FC = () => {
     if (!sendDomain) { addToast({ type: 'warning', title: 'Pick a sending domain' }); return; }
     if (ids.length === 0) { addToast({ type: 'warning', title: 'Select at least one account manager' }); return; }
     setBusy(true);
+    localStorage.setItem('proof_transport', sendTransport);
     try {
       const res = await apiFetch(`/api/mailing/offer-proofs/${selected.id}/send`, {
         method: 'POST',
         body: JSON.stringify({
           recipient_ids: ids, sending_domain: sendDomain,
           subject: sendSubject, from_name: sendFromName,
+          transport: sendTransport,
         }),
       });
       const json = await res.json();
@@ -251,11 +257,12 @@ export const OfferProofs: React.FC = () => {
       addToast({
         type: json.failed > 0 ? 'warning' : 'success',
         title: `Proof sent — ${json.sent} ok, ${json.failed} failed`,
+        message: `via ${sendTransport === 'ses' ? 'SES tenant route' : 'PMTA dedicated IPs'}`,
       });
     } catch (e) {
       addToast({ type: 'error', title: 'Send failed', message: e instanceof Error ? e.message : String(e) });
     } finally { setBusy(false); }
-  }, [selected, sendRcpts, sendDomain, sendSubject, sendFromName, addToast]);
+  }, [selected, sendRcpts, sendDomain, sendSubject, sendFromName, sendTransport, addToast]);
 
   // ── variants / from-names editing (saved on approve or via PATCH) ──────────
   const updateSelected = useCallback((patch: Partial<OfferProof>) => {
@@ -546,6 +553,15 @@ export const OfferProofs: React.FC = () => {
                   <select style={input as React.CSSProperties} value={sendDomain} onChange={(e) => setSendDomain(e.target.value)}>
                     <option value="">— choose domain —</option>
                     {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: '0 1 140px' }}
+                  title="Sending route — PMTA = dedicated IPs (default); SES = the brand's live SES tenant route, for cold-inbox placement checks on that path">
+                  <label style={label}>Route</label>
+                  <select style={input as React.CSSProperties} value={sendTransport}
+                    onChange={(e) => setSendTransport(e.target.value === 'ses' ? 'ses' : 'pmta')}>
+                    <option value="pmta">PMTA (dedicated IPs)</option>
+                    <option value="ses">SES (tenant relay)</option>
                   </select>
                 </div>
                 <div style={{ flex: '1 1 200px' }}>

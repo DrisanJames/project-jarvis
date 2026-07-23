@@ -611,6 +611,10 @@ type sendProofReq struct {
 	Subject       string   `json:"subject"`
 	FromName      string   `json:"from_name"`
 	Preheader     string   `json:"preheader"`
+	// Transport: "pmta" (default — dedicated-IP route, unchanged) or "ses"
+	// (the brand's live SES tenant profile) so proofs can measure cold-inbox
+	// placement on either route. See normalizeProofTransport.
+	Transport string `json:"transport"`
 }
 
 type proofSendResult struct {
@@ -636,6 +640,11 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 	req.SendingDomain = strings.TrimSpace(req.SendingDomain)
 	if req.SendingDomain == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "sending_domain required"})
+		return
+	}
+	transport, terr := normalizeProofTransport(req.Transport)
+	if terr != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": terr.Error()})
 		return
 	}
 	ids := cleanStrings(req.RecipientIDs)
@@ -715,7 +724,7 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 			results = append(results, res)
 			continue
 		}
-		msgID, _, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain,
+		msgID, _, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain, transport,
 			subject, strings.TrimSpace(req.FromName), strings.TrimSpace(req.Preheader), htmlForSend, rc.email, id,
 			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id}, nil)
 		if sendErr != nil {
@@ -738,7 +747,7 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"results": results, "sent": sent, "failed": failed,
+		"results": results, "sent": sent, "failed": failed, "transport": transport,
 	})
 }
 

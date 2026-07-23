@@ -33,6 +33,12 @@ import (
 
 type creativeProofRequest struct {
 	ToEmail string `json:"to_email"`
+	// Transport picks the sending route for this proof: "pmta" (default —
+	// the brand's dedicated-IP em.<apex> profile, unchanged behavior) or
+	// "ses" (the brand's live SES tenant profile: m.<apex>, via_ses=true —
+	// the exact profile SES-routed campaigns deploy with), so a proof
+	// measures cold-inbox placement on the same route live mail takes.
+	Transport string `json:"transport"`
 	// RouteViaGateway opts this proof into Smart Link Gateway routing: the
 	// creative's cratoolpro money links are rewritten to the brand-site
 	// gateway BEFORE tracking injection, so the operator can click the proof
@@ -43,6 +49,40 @@ type creativeProofRequest struct {
 	// and correspond to an active mailing_smart_links row for the resolved
 	// brand root.
 	GatewaySlug string `json:"gateway_slug"`
+}
+
+// proofTransportPMTA / proofTransportSES are the two sending routes a proof
+// can take. PMTA is the default and matches all pre-existing behavior.
+const (
+	proofTransportPMTA = "pmta"
+	proofTransportSES  = "ses"
+)
+
+// normalizeProofTransport maps a request's transport field to a canonical
+// value. "" defaults to PMTA (backward compatible); anything else must be an
+// exact known transport.
+func normalizeProofTransport(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", proofTransportPMTA:
+		return proofTransportPMTA, nil
+	case proofTransportSES:
+		return proofTransportSES, nil
+	default:
+		return "", fmt.Errorf("invalid transport %q — must be \"pmta\" or \"ses\"", s)
+	}
+}
+
+// proofProfile is the resolved sending profile a proof will go out through,
+// including the SES tenant routing fields needed for header parity with the
+// production send worker (send_worker.go processItem's via_ses branch).
+type proofProfile struct {
+	ID            string
+	FromEmail     string
+	TrackBase     string
+	SendingDomain string
+	ViaSES        bool
+	SESConfigSet  string
+	SESTenant     string
 }
 
 // proofGateway carries the validated brand root + slug used to rewrite a
@@ -82,6 +122,11 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 	to := strings.TrimSpace(req.ToEmail)
 	if to == "" || !looksLikeEmail(to) {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "to_email required"})
+		return
+	}
+	transport, terr := normalizeProofTransport(req.Transport)
+	if terr != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": terr.Error()})
 		return
 	}
 
@@ -152,18 +197,18 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 		gw = &proofGateway{BrandRoot: brandRoot, Slug: slug, Hash: sl.Hash}
 	}
 
-	messageID, trackingURL, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain,
+	messageID, trackingURL, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain, transport,
 		"[PROOF] "+subject, "", preheader, htmlContent, to, creativeID,
 		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID}, gw)
 	if sendErr != nil {
-		log.Printf("[creative-proof] PMTA error creative=%s domain=%s: %v", creativeID, sendingDomain, sendErr)
+		log.Printf("[creative-proof] %s send error creative=%s domain=%s: %v", transport, creativeID, sendingDomain, sendErr)
 		respondJSON(w, http.StatusOK, map[string]string{"status": "error", "error": sendErr.Error()})
 		return
 	}
-	log.Printf("[creative-proof] sent creative=%s to=%s via PMTA messageID=%s domain=%s isp=%s",
-		creativeID, to, messageID, sendingDomain, worker.ClassifySubscriberISP(to))
+	log.Printf("[creative-proof] sent creative=%s to=%s via %s messageID=%s domain=%s isp=%s",
+		creativeID, to, transport, messageID, sendingDomain, worker.ClassifySubscriberISP(to))
 
-	resp := map[string]string{"status": "sent", "message_id": messageID}
+	resp := map[string]string{"status": "sent", "message_id": messageID, "transport": transport}
 	if gw != nil {
 		// tracking_url is the exact /o/ URL minted into the proof HTML so the
 		// operator (and the UI) can see and click precisely what was sent.
@@ -185,11 +230,12 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 // It also returns the tracking-layer /o/ offer URL that was minted into the
 // HTML when gw != nil (empty otherwise), so the caller can surface the exact
 // clickable link in the response.
-func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string, gw *proofGateway) (string, string, error) {
-	profileID, fromEmail, trackBase := h.resolveSendingProfileByDomain(ctx, orgID, sendingDomain)
-	if profileID == "" {
-		return "", "", fmt.Errorf("no active PMTA sending profile for domain '%s'", sendingDomain)
+func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, transport, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string, gw *proofGateway) (string, string, error) {
+	pp, err := h.resolveProofProfile(ctx, sendingDomain, transport)
+	if err != nil {
+		return "", "", err
 	}
+	profileID, fromEmail, trackBase := pp.ID, pp.FromEmail, pp.TrackBase
 
 	recipientISP := worker.ClassifySubscriberISP(to)
 	ts := mailing.NewTemplateService()
@@ -250,6 +296,21 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 	for k, v := range extraHeaders {
 		headers[k] = v
 	}
+	// SES tenant routing parity with the production send worker
+	// (send_worker.go processItem, via_ses branch): PMTA's HTTP bridge passes
+	// these through to the SES SMTP relay, which routes the message to the
+	// named tenant + configuration set. Without them a via_ses proof would
+	// relay untagged and not mirror the live campaign route. Message tags are
+	// deliberately omitted — they're SES-side metadata (invisible to the
+	// receiving ISP) and would attribute events to the pseudo proof campaign.
+	if pp.ViaSES {
+		if pp.SESConfigSet != "" {
+			headers["X-SES-CONFIGURATION-SET"] = pp.SESConfigSet
+		}
+		if pp.SESTenant != "" {
+			headers["X-SES-TENANT"] = pp.SESTenant
+		}
+	}
 	if unsubURL != "" {
 		// Shared RFC 8058 helper (2026-07-21): proofs previously hand-rolled an
 		// https-only List-Unsubscribe with no mailto leg; emit the identical
@@ -281,33 +342,61 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 	return "", trackingURL, nil
 }
 
-// resolveSendingProfileByDomain looks up the active PMTA sending profile for an
-// explicit sending domain (the brand_code path can't go through brandKits, which
-// only covers 4 brands). Mirrors resolveSendingProfile's query/track-base logic.
-func (h *ProofSendHandler) resolveSendingProfileByDomain(ctx context.Context, orgID, sendingDomain string) (profileID, fromEmail, trackBase string) {
+// resolveProofProfile looks up the active sending profile a proof should route
+// through for a brand sending domain + transport.
+//
+//   - transport "pmta": the dedicated-IP profile on em.<apex> — the exact
+//     query the proof paths have always used (vendor_type='pmta', active,
+//     is_default first). All em.<apex> rows are via_ses=false in prod.
+//   - transport "ses": the brand's live SES tenant profile — sending domain
+//     m.<apex>, via_ses=true. This is the SAME profile SES-routed board
+//     campaigns pin (e.g. "Discount Blog (SES Tenant)"), so the proof's
+//     route, MAIL FROM, relay pool, and tracking domain are all
+//     campaign-parity. The ses_configuration_set / ses_tenant_name fields
+//     feed the X-SES-* headers the send worker stamps on live via_ses sends.
+//
+// The domain argument may be em.<apex>, m.<apex>, or a bare apex; the SES
+// branch normalizes to m.<apex>.
+func (h *ProofSendHandler) resolveProofProfile(ctx context.Context, sendingDomain, transport string) (proofProfile, error) {
 	if sendingDomain == "" {
-		return "", "", ""
+		return proofProfile{}, fmt.Errorf("no sending domain")
 	}
-	var pID, fEmail string
+	// Default (pmta) keeps the exact historical lookup: whatever active PMTA
+	// profile lives on the given domain, no via_ses filter — so operator
+	// selections of an m.<apex> domain keep resolving as they always have.
+	// "ses" FORCES the brand's SES tenant profile: normalize any domain form
+	// to m.<apex> and require via_ses=true.
+	lookupDomain := sendingDomain
+	sesFilter := ""
+	if transport == proofTransportSES {
+		apex := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(sendingDomain), "em."), "m.")
+		lookupDomain = "m." + apex
+		sesFilter = "AND COALESCE(via_ses, FALSE) = TRUE"
+	}
+
+	var pp proofProfile
 	var trackingDomain, sDomain sql.NullString
 	err := h.db.QueryRowContext(ctx,
-		`SELECT id::text, COALESCE(from_email,''), tracking_domain, sending_domain
+		`SELECT id::text, COALESCE(from_email,''), tracking_domain, sending_domain,
+		        COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set,''), COALESCE(ses_tenant_name,'')
 		 FROM mailing_sending_profiles
-		 WHERE sending_domain = $1 AND vendor_type = 'pmta' AND status = 'active'
+		 WHERE sending_domain = $1 AND vendor_type = 'pmta' AND status = 'active' `+sesFilter+`
 		 ORDER BY is_default DESC, created_at DESC LIMIT 1`,
-		sendingDomain,
-	).Scan(&pID, &fEmail, &trackingDomain, &sDomain)
+		lookupDomain,
+	).Scan(&pp.ID, &pp.FromEmail, &trackingDomain, &sDomain, &pp.ViaSES, &pp.SESConfigSet, &pp.SESTenant)
 	if err != nil {
-		log.Printf("[creative-proof] no sending profile for domain %s: %v", sendingDomain, err)
-		return "", "", ""
+		log.Printf("[proof-send] no %s sending profile for domain %s: %v", transport, lookupDomain, err)
+		return proofProfile{}, fmt.Errorf("no active %s sending profile for domain '%s'", transport, lookupDomain)
 	}
-	tb := h.trackingURL
+
+	pp.SendingDomain = lookupDomain
+	pp.TrackBase = h.trackingURL
 	if trackingDomain.Valid && trackingDomain.String != "" {
-		tb = ensureHTTPS(trackingDomain.String)
+		pp.TrackBase = ensureHTTPS(trackingDomain.String)
 	} else if sDomain.Valid && sDomain.String != "" {
-		tb = ensureHTTPS("trk." + sDomain.String)
+		pp.TrackBase = ensureHTTPS("trk." + sDomain.String)
 	}
-	return pID, fEmail, tb
+	return pp, nil
 }
 
 // sendingDomainFromBrandCode maps a mailing_creatives brand_code to its em.<apex>

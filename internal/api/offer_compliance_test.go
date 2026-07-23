@@ -297,10 +297,13 @@ func TestSendOneProof_FullPipeline(t *testing.T) {
 		context.Background(),
 		ts,
 		"offer-1",
-		"profile-abc",
-		"deals@em.discountblog.com",
-		"https://trk.em.discountblog.com",
-		"em.discountblog.com",
+		proofTransportPMTA,
+		proofProfile{
+			ID:            "profile-abc",
+			FromEmail:     "deals@em.discountblog.com",
+			TrackBase:     "https://trk.em.discountblog.com",
+			SendingDomain: "em.discountblog.com",
+		},
 		"james@gmail.com",
 		"gmail",
 		proofItem{CreativeID: "creative-1", SubjectLineID: "subj-1", FromNameID: "from-1"},
@@ -440,8 +443,10 @@ func TestSendOneProof_CreativeNotFound(t *testing.T) {
 	ts := mailing.NewTemplateService()
 	result := h.sendOneProof(
 		context.Background(), ts,
-		"offer-1", "profile-1", "from@example.com", "https://trk.example.com",
-		"em.example.com", "test@gmail.com", "gmail",
+		"offer-1", proofTransportPMTA,
+		proofProfile{ID: "profile-1", FromEmail: "from@example.com",
+			TrackBase: "https://trk.example.com", SendingDomain: "em.example.com"},
+		"test@gmail.com", "gmail",
 		proofItem{CreativeID: "bad-creative", SubjectLineID: "s1", FromNameID: "f1"},
 		0,
 	)
@@ -490,8 +495,10 @@ func TestSendOneProof_SenderFailure(t *testing.T) {
 	ts := mailing.NewTemplateService()
 	result := h.sendOneProof(
 		context.Background(), ts,
-		"offer-1", "profile-1", "from@example.com", "https://trk.example.com",
-		"em.example.com", "test@gmail.com", "gmail",
+		"offer-1", proofTransportPMTA,
+		proofProfile{ID: "profile-1", FromEmail: "from@example.com",
+			TrackBase: "https://trk.example.com", SendingDomain: "em.example.com"},
+		"test@gmail.com", "gmail",
 		proofItem{CreativeID: "c1", SubjectLineID: "s1", FromNameID: "f1"},
 		0,
 	)

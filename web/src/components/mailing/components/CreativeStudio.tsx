@@ -222,6 +222,10 @@ export const CreativeStudio: React.FC = () => {
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   // Approval / money-link spot-check controls.
   const [proofEmail, setProofEmail] = useState('');
+  // 'pmta' = dedicated-IP route (default); 'ses' = the brand's live SES tenant
+  // route — lets a proof measure cold-inbox placement on either path.
+  const [proofTransport, setProofTransport] = useState<'pmta' | 'ses'>(
+    () => (localStorage.getItem('proof_transport') === 'ses' ? 'ses' : 'pmta'));
   // Smart Link Gateway proof-routing (TEST affordance): active gateway rows,
   // the checkbox+slug the operator picks, and the last proof's routing result.
   const [smartLinks, setSmartLinks] = useState<ActiveSmartLink[]>([]);
@@ -439,6 +443,10 @@ export const CreativeStudio: React.FC = () => {
       // Backward-compatible: gateway fields are added ONLY when the operator
       // opts in — an un-checked proof sends the exact same body as before.
       const body: Record<string, unknown> = { to_email: to };
+      if (proofTransport === 'ses') {
+        body.transport = 'ses';
+      }
+      localStorage.setItem('proof_transport', proofTransport);
       if (useGateway) {
         body.route_via_gateway = true;
         body.gateway_slug = gatewaySlug;
@@ -472,7 +480,7 @@ export const CreativeStudio: React.FC = () => {
     } finally {
       setFlight(c.id, 'proof', false);
     }
-  }, [isInFlight, setFlight, proofEmail, addToast, routeViaGateway, gatewaySlug]);
+  }, [isInFlight, setFlight, proofEmail, proofTransport, addToast, routeViaGateway, gatewaySlug]);
 
   const approveCreative = useCallback(async (c: CreativeMeta) => {
     if (isInFlight(c.id, 'approve')) return;
@@ -795,6 +803,15 @@ export const CreativeStudio: React.FC = () => {
                       placeholder="test@example.com"
                       style={{ ...inputStyle, width: 180, padding: '5px 8px' }}
                     />
+                    <select
+                      value={proofTransport}
+                      onChange={(e) => setProofTransport(e.target.value === 'ses' ? 'ses' : 'pmta')}
+                      title="Sending route — PMTA = dedicated IPs (default); SES = the brand's live SES tenant route, for cold-inbox placement checks on that path"
+                      style={{ ...inputStyle, width: 90, padding: '5px 8px' }}
+                    >
+                      <option value="pmta">PMTA</option>
+                      <option value="ses">SES</option>
+                    </select>
                   </span>
                 </div>
                 {/* Smart Link Gateway proof-routing — TEST affordance. When checked,

@@ -2778,6 +2778,10 @@ const DeployTab: React.FC<{
   const [selectedFromName, setSelectedFromName] = useState('');
   const [proofQueue, setProofQueue] = useState<ProofCard[]>([]);
   const [proofEmail, setProofEmail] = useState(() => localStorage.getItem('proof_email') || '');
+  // Proof transport: 'pmta' = dedicated-IP route (default), 'ses' = the brand's
+  // live SES tenant route — lets a proof measure cold-inbox placement on either.
+  const [proofTransport, setProofTransport] = useState<'pmta' | 'ses'>(
+    () => (localStorage.getItem('proof_transport') === 'ses' ? 'ses' : 'pmta'));
   const [sendingProofs, setSendingProofs] = useState(false);
 
   const approvedSubjects = subjects.filter(s => s.status === 'approved');
@@ -2818,6 +2822,7 @@ const DeployTab: React.FC<{
   const sendProofs = async () => {
     if (proofQueue.length === 0 || !proofEmail) return;
     localStorage.setItem('proof_email', proofEmail);
+    localStorage.setItem('proof_transport', proofTransport);
     setSendingProofs(true);
 
     setProofQueue(prev => prev.map(c => ({ ...c, status: 'sending' as const })));
@@ -2833,6 +2838,7 @@ const DeployTab: React.FC<{
             from_name_id: c.from_name_id,
           })),
           recipient_email: proofEmail,
+          transport: proofTransport,
         }),
       });
 
@@ -2863,7 +2869,7 @@ const DeployTab: React.FC<{
       }));
 
       const sentCount = data.results?.filter((r: { status: string }) => r.status === 'sent').length || 0;
-      addToast({ type: 'success', title: `${sentCount} proof(s) sent`, message: `Delivered to ${proofEmail}` });
+      addToast({ type: 'success', title: `${sentCount} proof(s) sent`, message: `Delivered to ${proofEmail} via ${proofTransport === 'ses' ? 'SES' : 'PMTA dedicated IPs'}` });
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Network error';
       setProofQueue(prev => prev.map(c => ({ ...c, status: 'error' as const, error: errMsg })));
@@ -3037,7 +3043,7 @@ const DeployTab: React.FC<{
 
       {/* Send Proof Section */}
       {proofQueue.length > 0 && (
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 20, maxWidth: 560 }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 20, maxWidth: 640 }}>
           <input
             type="email"
             placeholder="Proof email address…"
@@ -3045,6 +3051,22 @@ const DeployTab: React.FC<{
             onChange={e => setProofEmail(e.target.value)}
             style={{ ...inputStyle, flex: 1 }}
           />
+          <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #334155', flexShrink: 0 }}
+            title="Sending route for the proof — PMTA = our dedicated IPs (default); SES = the brand's live SES tenant route, for cold-inbox placement checks on that path">
+            {(['pmta', 'ses'] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => setProofTransport(t)}
+                style={{
+                  padding: '8px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none',
+                  background: proofTransport === t ? (t === 'ses' ? 'rgba(245,158,11,0.25)' : 'rgba(99,102,241,0.25)') : 'transparent',
+                  color: proofTransport === t ? (t === 'ses' ? '#f59e0b' : '#818cf8') : '#64748b',
+                }}
+              >
+                {t === 'ses' ? 'SES' : 'PMTA'}
+              </button>
+            ))}
+          </div>
           <button
             style={{ ...btnPrimary, padding: '8px 20px', whiteSpace: 'nowrap', opacity: (proofEmail && !sendingProofs) ? 1 : 0.4 }}
             disabled={!proofEmail || sendingProofs}

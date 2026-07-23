@@ -33,6 +33,10 @@ type ProofSendHandler struct {
 type proofSendRequest struct {
 	Proofs         []proofItem `json:"proofs"`
 	RecipientEmail string      `json:"recipient_email"`
+	// Transport: "pmta" (default — the brand's dedicated-IP profile,
+	// unchanged) or "ses" (the brand's live SES tenant profile) so proofs can
+	// measure cold-inbox placement on either route. See normalizeProofTransport.
+	Transport string `json:"transport"`
 }
 
 type proofItem struct {
@@ -84,6 +88,12 @@ func (h *ProofSendHandler) HandleProofSend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	transport, terr := normalizeProofTransport(req.Transport)
+	if terr != nil {
+		http.Error(w, `{"error":"`+terr.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
 	var webProperty string
 	err := h.db.QueryRowContext(ctx,
 		`SELECT COALESCE(web_property,'') FROM mailing_offers WHERE id = $1`, offerID,
@@ -93,37 +103,45 @@ func (h *ProofSendHandler) HandleProofSend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	profileID, fromEmail, trackBase, sendingDomain := h.resolveSendingProfile(ctx, webProperty)
-	if profileID == "" {
-		http.Error(w, `{"error":"no active PMTA sending profile for this brand"}`, http.StatusUnprocessableEntity)
+	var brandDomain string
+	if kit, ok := GetBrandKit(webProperty); ok {
+		brandDomain = kit.SendingDomain
+	}
+	pp, perr := h.resolveProofProfile(ctx, brandDomain, transport)
+	if perr != nil {
+		http.Error(w, `{"error":"no active `+transport+` sending profile for this brand"}`, http.StatusUnprocessableEntity)
 		return
 	}
 
 	recipientISP := worker.ClassifySubscriberISP(req.RecipientEmail)
-	log.Printf("[proof-send] offer=%s domain=%s profile=%s recipientISP=%s recipient=%s",
-		offerID, sendingDomain, profileID, recipientISP, req.RecipientEmail)
+	log.Printf("[proof-send] offer=%s domain=%s transport=%s profile=%s recipientISP=%s recipient=%s",
+		offerID, pp.SendingDomain, transport, pp.ID, recipientISP, req.RecipientEmail)
 
 	ts := mailing.NewTemplateService()
 
 	results := make([]proofResult, 0, len(req.Proofs))
 	for i, p := range req.Proofs {
-		res := h.sendOneProof(ctx, ts, offerID, profileID, fromEmail, trackBase, sendingDomain, req.RecipientEmail, recipientISP, p, i)
+		res := h.sendOneProof(ctx, ts, offerID, transport, pp, req.RecipientEmail, recipientISP, p, i)
 		results = append(results, res)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"results": results,
+		"results":   results,
+		"transport": transport,
 	})
 }
 
 func (h *ProofSendHandler) sendOneProof(
 	ctx context.Context,
 	ts *mailing.TemplateService,
-	offerID, profileID, fromEmail, trackBase, sendingDomain, recipientEmail, recipientISP string,
+	offerID, transport string,
+	pp proofProfile,
+	recipientEmail, recipientISP string,
 	p proofItem,
 	index int,
 ) proofResult {
+	profileID, fromEmail, trackBase, sendingDomain := pp.ID, pp.FromEmail, pp.TrackBase, pp.SendingDomain
 	var htmlContent string
 	err := h.db.QueryRowContext(ctx,
 		`SELECT COALESCE(html_content,'') FROM mailing_offer_creatives WHERE id = $1 AND offer_id = $2`,
@@ -191,6 +209,16 @@ func (h *ProofSendHandler) sendOneProof(
 		"X-Proof-Send": "true",
 		"X-Offer-ID":   offerID,
 	}
+	// SES tenant routing parity with the production send worker (send_worker.go
+	// via_ses branch) — see the matching block in sendProofMessage.
+	if pp.ViaSES {
+		if pp.SESConfigSet != "" {
+			headers["X-SES-CONFIGURATION-SET"] = pp.SESConfigSet
+		}
+		if pp.SESTenant != "" {
+			headers["X-SES-TENANT"] = pp.SESTenant
+		}
+	}
 	if unsubURL != "" {
 		// Shared RFC 8058 helper (2026-07-21): proofs previously hand-rolled an
 		// https-only List-Unsubscribe with no mailto leg; emit the identical
@@ -214,7 +242,7 @@ func (h *ProofSendHandler) sendOneProof(
 
 	result, sendErr := h.sender.Send(ctx, msg)
 	if sendErr != nil {
-		log.Printf("[proof-send] PMTA error for creative %s: %v", p.CreativeID, sendErr)
+		log.Printf("[proof-send] %s error for creative %s: %v", transport, p.CreativeID, sendErr)
 		return proofResult{CreativeID: p.CreativeID, Status: "error", Error: sendErr.Error()}
 	}
 
@@ -222,8 +250,8 @@ func (h *ProofSendHandler) sendOneProof(
 	if result != nil {
 		messageID = result.MessageID
 	}
-	log.Printf("[proof-send] sent proof #%d creative=%s to=%s via PMTA messageID=%s domain=%s profile=%s isp=%s",
-		index+1, p.CreativeID, recipientEmail, messageID, sendingDomain, profileID, recipientISP)
+	log.Printf("[proof-send] sent proof #%d creative=%s to=%s via %s messageID=%s domain=%s profile=%s isp=%s",
+		index+1, p.CreativeID, recipientEmail, transport, messageID, sendingDomain, profileID, recipientISP)
 	return proofResult{CreativeID: p.CreativeID, Status: "sent", MessageID: messageID}
 }
 
