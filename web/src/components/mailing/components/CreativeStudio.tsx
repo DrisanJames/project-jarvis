@@ -11,6 +11,10 @@ import {
   faHammer,
   faRobot,
   faStamp,
+  faLink,
+  faCopy,
+  faCheck,
+  faSpinner,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
@@ -109,10 +113,46 @@ interface ActiveSmartLink {
   risk_profile: 'low' | 'high';
 }
 
+// One detected money href in the open creative + its map status, as reported by
+// GET /api/mailing/creatives/{id}/offer-links (see internal/api creative offer-
+// link detector). `normalized` is the send-path-normalized form the detector
+// uses as the identity key; `mapped` says whether an active Smart Link row
+// already exists for it (then `hash`/`slug`/`risk_profile` are populated).
+interface OfferLink {
+  url: string;
+  host: string;
+  normalized: string;
+  mapped: boolean;
+  hash?: string;
+  slug?: string;
+  risk_profile?: 'low' | 'high';
+  suggested_slug?: string;
+}
+
+// The confirm-card draft for an UNMAPPED offer link, keyed by OfferLink.normalized.
+interface OfferMapDraft {
+  destination: string;
+  slug: string;
+  risk: 'low' | 'high';
+}
+
 interface ChatMsg {
   role: 'user' | 'assistant';
   content: string;
   actions?: string[];
+}
+
+// brand_root is NOMINAL for these gateway rows — sub2 derives from the send host
+// at send time (see the offer-links contract). We onboard offer maps under a
+// single catalog root so they aren't misfiled under one sending brand.
+const OFFER_MAP_BRAND_ROOT = 'offercatalog.com';
+
+// Sample of the tracking-layer /o/ redirect the gateway mints. SUBSCRIBER_ID and
+// CAMPAIGN_ID are literal placeholder tokens filled at send; `hash` is the minted
+// (or, in the confirm preview, a pending) redirect token. Mirrors
+// SmartLinkManager.sampleTrackingUrl so the two surfaces show the same shape.
+function offerTrackingSample(hash: string): string {
+  return `https://t.em.${OFFER_MAP_BRAND_ROOT}/o/SUBSCRIBER_ID/${hash}/CAMPAIGN_ID`;
 }
 
 const inputStyle: React.CSSProperties = {
@@ -185,6 +225,35 @@ function renderAgentText(text: string): React.ReactNode {
   });
 }
 
+// Tiny copy affordance — mirrors the SmartLinkManager idiom (faCopy → faCheck on
+// success), inline-styled to match this screen. Falls back silently if the
+// clipboard is unavailable.
+const CopyButton: React.FC<{ text: string; title?: string }> = ({ text, title }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard unavailable — ignore */
+        }
+      }}
+      title={title ?? 'Copy'}
+      style={{
+        background: 'none', border: 'none', cursor: 'pointer',
+        color: copied ? '#22c55e' : '#64748b', padding: '0 4px', fontSize: 11,
+      }}
+    >
+      <FontAwesomeIcon icon={copied ? faCheck : faCopy} />
+    </button>
+  );
+};
+
 export const CreativeStudio: React.FC = () => {
   const { addToast } = useToast();
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
@@ -237,6 +306,18 @@ export const CreativeStudio: React.FC = () => {
   // Which creative has its inline approve-confirm armed.
   const [approveArmed, setApproveArmed] = useState<string | null>(null);
 
+  // Offer-links section (the offer-onboarding surface): detected money hrefs in
+  // the open creative + their map status. offerLinks === null before the first
+  // fetch for a creative; [] means "fetched, none detected". Drafts + busy are
+  // keyed by OfferLink.normalized. offerLinksReq guards against a stale response
+  // overwriting a newer creative's links.
+  const [offerLinks, setOfferLinks] = useState<OfferLink[] | null>(null);
+  const [offerLinksLoading, setOfferLinksLoading] = useState(false);
+  const [offerLinksError, setOfferLinksError] = useState<string | null>(null);
+  const [offerMapDrafts, setOfferMapDrafts] = useState<Record<string, OfferMapDraft>>({});
+  const [offerMapBusy, setOfferMapBusy] = useState<Record<string, boolean>>({});
+  const offerLinksReq = useRef(0);
+
   // Agent state
   const [chatOpen, setChatOpen] = useState(true);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -244,6 +325,31 @@ export const CreativeStudio: React.FC = () => {
   const [chatBusy, setChatBusy] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Load (or reload) the active Smart Link Gateway rows that feed the proof
+  // route-through-gateway picker. Called on mount and again right after an offer
+  // map is minted so the operator can immediately proof-test the new slug.
+  // Pass `selectSlug` to point the picker at a freshly-created slug.
+  const refreshSmartLinks = useCallback(async (selectSlug?: string) => {
+    try {
+      // Trailing slash intentional — the chi mount for /api/mailing/smartlinks
+      // expects it on the list endpoint (see SmartLinkManager).
+      const sl = await apiFetch('/api/mailing/smartlinks/', { credentials: 'include' });
+      if (!sl.ok) return;
+      const json = await sl.json();
+      const active: ActiveSmartLink[] = (json.smart_links ?? []).filter(
+        (r: ActiveSmartLink) => r.status === 'active',
+      );
+      setSmartLinks(active);
+      if (selectSlug) {
+        setGatewaySlug(selectSlug);
+      } else {
+        setGatewaySlug((cur) => cur || active[0]?.slug || '');
+      }
+    } catch {
+      /* gateway list optional — the route-through-gateway control disables itself */
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -267,21 +373,7 @@ export const CreativeStudio: React.FC = () => {
       } catch {
         /* engine down — banner covers it */
       }
-      try {
-        // Trailing slash intentional — the chi mount for /api/mailing/smartlinks
-        // expects it on the list endpoint (see SmartLinkManager).
-        const sl = await apiFetch('/api/mailing/smartlinks/', { credentials: 'include' });
-        if (sl.ok) {
-          const json = await sl.json();
-          const active: ActiveSmartLink[] = (json.smart_links ?? []).filter(
-            (r: ActiveSmartLink) => r.status === 'active',
-          );
-          setSmartLinks(active);
-          if (active.length) setGatewaySlug(active[0].slug);
-        }
-      } catch {
-        /* gateway list optional — the route-through-gateway control disables itself */
-      }
+      await refreshSmartLinks();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -378,16 +470,109 @@ export const CreativeStudio: React.FC = () => {
       refreshContent, mode, bannerUrl, logoUrl, imageOrientation, titleOverride,
       subtitleOverride, ctaLabel, ctaUrl, soloCreativeUrl, soloBelowMode]);
 
+  // Fetch the detected money links + map status for one creative. Seeds a
+  // confirm-card draft (destination = detected URL, slug = suggested_slug) for
+  // each UNMAPPED link. offerLinksReq discards a stale response if the operator
+  // has since opened a different creative.
+  const fetchOfferLinks = useCallback(async (creativeId: string) => {
+    const myReq = ++offerLinksReq.current;
+    setOfferLinksLoading(true);
+    setOfferLinksError(null);
+    try {
+      const res = await apiFetch(`/api/mailing/creatives/${creativeId}/offer-links`, { credentials: 'include' });
+      const json = await res.json();
+      if (myReq !== offerLinksReq.current) return; // superseded
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      const links: OfferLink[] = json.offer_links ?? [];
+      setOfferLinks(links);
+      setOfferMapDrafts((prev) => {
+        const next = { ...prev };
+        for (const l of links) {
+          if (!l.mapped && !next[l.normalized]) {
+            next[l.normalized] = { destination: l.url, slug: l.suggested_slug ?? '', risk: 'low' };
+          }
+        }
+        return next;
+      });
+    } catch (err) {
+      if (myReq !== offerLinksReq.current) return;
+      setOfferLinks(null);
+      setOfferLinksError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (myReq === offerLinksReq.current) setOfferLinksLoading(false);
+    }
+  }, []);
+
+  const setOfferDraft = useCallback((key: string, patch: Partial<OfferMapDraft>) => {
+    setOfferMapDrafts((cur) => ({
+      ...cur,
+      [key]: { ...(cur[key] ?? { destination: '', slug: '', risk: 'low' }), ...patch },
+    }));
+  }, []);
+
+  // Confirm-create a tracking map for one unmapped offer link. Reuses the
+  // existing Smart Link create (POST /api/mailing/smartlinks). On success:
+  // toast, re-fetch offer-links so the row flips to MAPPED, and refresh the
+  // gateway picker pointed at the new slug so it can be proof-tested immediately.
+  const createOfferMap = useCallback(async (row: OfferLink) => {
+    const key = row.normalized;
+    if (offerMapBusy[key]) return;
+    const draft = offerMapDrafts[key] ?? { destination: row.url, slug: row.suggested_slug ?? '', risk: 'low' as const };
+    const slug = draft.slug.trim();
+    const destination = draft.destination.trim();
+    if (!slug) {
+      addToast({ type: 'warning', title: 'Slug required', message: 'Enter a slug for the tracking map.' });
+      return;
+    }
+    if (!destination) {
+      addToast({ type: 'warning', title: 'Destination required', message: 'The offer destination URL cannot be empty.' });
+      return;
+    }
+    setOfferMapBusy((cur) => ({ ...cur, [key]: true }));
+    try {
+      // Trailing slash intentional — the chi mount expects it on list/create.
+      const res = await apiFetch('/api/mailing/smartlinks/', {
+        method: 'POST',
+        body: JSON.stringify({
+          brand_root: OFFER_MAP_BRAND_ROOT,
+          slug,
+          review_slug: slug,
+          offer_url_template: destination,
+          status: 'active',
+          risk_profile: draft.risk,
+        }),
+        credentials: 'include',
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string; hash?: string; smart_link?: { hash?: string } };
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      const mintedHash = json.hash ?? json.smart_link?.hash;
+      addToast({
+        type: 'success',
+        title: `Tracking map created — ${slug}`,
+        message: mintedHash ? `hash ${mintedHash}` : undefined,
+      });
+      if (selected) fetchOfferLinks(selected.id);
+      refreshSmartLinks(slug);
+    } catch (err) {
+      addToast({ type: 'error', title: 'Create tracking map failed', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setOfferMapBusy((cur) => ({ ...cur, [key]: false }));
+    }
+  }, [offerMapBusy, offerMapDrafts, addToast, selected, fetchOfferLinks, refreshSmartLinks]);
+
   const openPreview = useCallback(async (c: CreativeMeta) => {
     setSelected(c);
     setPreviewHtml(null);
+    setOfferLinks(null);
+    setOfferLinksError(null);
+    fetchOfferLinks(c.id);
     try {
       const res = await apiFetch(`/api/mailing/creatives/${c.id}/preview`, { credentials: 'include' });
       setPreviewHtml(res.ok ? await res.text() : `<p>preview failed: HTTP ${res.status}</p>`);
     } catch (err) {
       setPreviewHtml(`<p>preview failed: ${err instanceof Error ? err.message : String(err)}</p>`);
     }
-  }, []);
+  }, [fetchOfferLinks]);
 
   const flightKey = (id: string, action: CreativeAction) => `${id}:${action}`;
   const isInFlight = useCallback(
@@ -953,7 +1138,7 @@ export const CreativeStudio: React.FC = () => {
                   </tbody>
                 </table>
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 {selected ? (
                   <>
                     <div style={{ fontSize: 13, marginBottom: 8 }}>
@@ -980,8 +1165,142 @@ export const CreativeStudio: React.FC = () => {
                         <FontAwesomeIcon icon={faRotate} spin={isInFlight(selected.id, 'check')} /> Run tracking-link check
                       </button>
                     </div>
+
+                    {/* ── Offer links — the offer-onboarding surface. Each money
+                        href in the creative is either already mapped to a /o/
+                        tracking hash, or gets a confirm-card to mint one. ──── */}
+                    <div style={{
+                      marginBottom: 8, padding: '10px 12px', background: '#0f172a',
+                      border: '1px solid #1f2937', borderRadius: 8, maxHeight: 340, overflowY: 'auto',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: offerLinks && offerLinks.length ? 10 : 0 }}>
+                        <span style={{ ...labelStyle, marginBottom: 0, color: '#a78bfa', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <FontAwesomeIcon icon={faLink} /> Offer links
+                        </span>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>
+                          money links detected in this creative · map unmapped ones to a /o/ tracking hash
+                        </span>
+                        <button
+                          onClick={() => selected && fetchOfferLinks(selected.id)}
+                          disabled={offerLinksLoading}
+                          style={{ ...smallBtnStyle('#1e293b', '#334155'), marginLeft: 'auto', opacity: offerLinksLoading ? 0.5 : 1 }}>
+                          <FontAwesomeIcon icon={faRotate} spin={offerLinksLoading} /> Refresh
+                        </button>
+                      </div>
+
+                      {offerLinksLoading && offerLinks === null ? (
+                        <div style={{ fontSize: 12, color: '#64748b', padding: '4px 2px' }}>
+                          <FontAwesomeIcon icon={faSpinner} spin /> Scanning creative for money links…
+                        </div>
+                      ) : offerLinksError ? (
+                        <div style={{ fontSize: 12, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <FontAwesomeIcon icon={faTriangleExclamation} /> {offerLinksError}
+                          <button onClick={() => selected && fetchOfferLinks(selected.id)} style={smallBtnStyle('#1e293b', '#334155')}>
+                            Retry
+                          </button>
+                        </div>
+                      ) : offerLinks && offerLinks.length === 0 ? (
+                        <div style={{ fontSize: 12, color: '#64748b' }}>No offer links detected in this creative.</div>
+                      ) : offerLinks ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {offerLinks.map((row) => {
+                            if (row.mapped) {
+                              return (
+                                <div key={row.normalized} style={{
+                                  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                                  padding: '7px 9px', background: '#111827', border: '1px solid #1f2937', borderRadius: 6,
+                                }}>
+                                  <span style={badgeStyle('#22c55e')}>mapped</span>
+                                  <span style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 600 }} title={row.url}>{row.host}</span>
+                                  {row.slug && <span style={{ fontSize: 11, color: '#64748b' }}>/{row.slug}</span>}
+                                  {row.hash && (
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                                      <code style={{ fontSize: 11, color: '#a78bfa', userSelect: 'all' }}>{row.hash}</code>
+                                      <CopyButton text={row.hash} title="Copy hash" />
+                                    </span>
+                                  )}
+                                  <span
+                                    title={offerTrackingSample(row.hash ?? 'HASH')}
+                                    style={{
+                                      marginLeft: 'auto', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11, color: '#64748b', userSelect: 'all',
+                                    }}>
+                                    {offerTrackingSample(row.hash ?? 'HASH')}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            const draft = offerMapDrafts[row.normalized]
+                              ?? { destination: row.url, slug: row.suggested_slug ?? '', risk: 'low' as const };
+                            const busy = Boolean(offerMapBusy[row.normalized]);
+                            return (
+                              <div key={row.normalized} style={{
+                                padding: 10, background: '#111827', border: '1px solid #334155',
+                                borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 8,
+                              }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={badgeStyle('#f59e0b')}>unmapped</span>
+                                  <span style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 600 }}>{row.host}</span>
+                                  <span style={{ fontSize: 11, color: '#64748b' }}>— Create tracking map</span>
+                                </div>
+
+                                <div>
+                                  <label style={labelStyle}>Destination URL — verify this is where the offer should land</label>
+                                  <input
+                                    value={draft.destination}
+                                    onChange={(e) => setOfferDraft(row.normalized, { destination: e.target.value })}
+                                    style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12 }} />
+                                </div>
+
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <label style={labelStyle}>Slug</label>
+                                    <input
+                                      value={draft.slug}
+                                      onChange={(e) => setOfferDraft(row.normalized, { slug: e.target.value })}
+                                      placeholder={row.suggested_slug || 'offer-slug'}
+                                      style={inputStyle} />
+                                  </div>
+                                  <div style={{ flex: '0 0 200px' }}>
+                                    <label style={labelStyle}>Risk profile</label>
+                                    <select
+                                      value={draft.risk}
+                                      onChange={(e) => setOfferDraft(row.normalized, { risk: e.target.value === 'high' ? 'high' : 'low' })}
+                                      style={inputStyle}>
+                                      <option value="low">low — direct redirect</option>
+                                      <option value="high">high — bridge page</option>
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <label style={labelStyle}>/o/ link preview — hash mints on create</label>
+                                  <div style={{
+                                    fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', wordBreak: 'break-all',
+                                    background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6, padding: '6px 8px',
+                                  }}>
+                                    {offerTrackingSample('NEW_HASH')}
+                                    <div style={{ color: '#64748b', marginTop: 4 }}>↳ redirects to {draft.destination || '—'}</div>
+                                  </div>
+                                </div>
+
+                                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => createOfferMap(row)}
+                                    style={{ ...btnStyle('#312e81', '#4338ca'), opacity: busy ? 0.6 : 1 }}>
+                                    <FontAwesomeIcon icon={busy ? faSpinner : faCircleCheck} spin={busy} /> Confirm — create tracking map
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+
                     <iframe title="library-preview" sandbox="" srcDoc={previewHtml ?? '<p style="font-family:sans-serif;color:#64748b">loading…</p>'}
-                      style={{ width: '100%', height: 'calc(100% - 108px)', background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                      style={{ width: '100%', flex: 1, minHeight: 180, background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
                   </>
                 ) : (
                   <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>Select a creative to preview.</div>

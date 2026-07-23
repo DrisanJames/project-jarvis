@@ -368,6 +368,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				// reusing the offer proof-send machinery (PMTA + tracking injection).
 				creativeProofSvc := NewProofSendHandler(db)
 				c.Post("/{id}/send-proof", creativeProofSvc.HandleCreativeProof)
+				// Report which of a creative's money links are already mapped to
+				// a tracking-layer /o/ hash (creative_offer_links.go). Uses the
+				// SAME moneylink.Normalize the send worker mints with, so the UI
+				// never disagrees with the send path. Read-only; the create
+				// action is the existing POST /api/mailing/smartlinks.
+				c.Get("/{id}/offer-links", creativeProofSvc.HandleCreativeOfferLinks)
 			})
 
 			// Creative Studio v2 — ReviewForge engine sidecar orchestration +

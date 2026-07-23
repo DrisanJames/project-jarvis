@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
 )
 
 // SmartLinkEmitter is the SEND-SIDE inverse of the tracking service's
@@ -156,34 +157,15 @@ func (e *SmartLinkEmitter) queryDB(ctx context.Context) (map[string]string, erro
 	return next, nil
 }
 
-// normalizeOfferURL reduces an offer URL to a stable dictionary key:
-// scheme + "://" + lowercased-host + path, with the query string, fragment,
-// and any trailing slash(es) on the path stripped. Host is lowercased; the
-// PATH IS KEPT AS-IS because cratoolpro paths are case-significant (uppercase
-// account/offer segments). Stripping the query is what lets a rendered creative
-// href (with concrete ?source_id=email&sub1=123&... params) and the stored
-// template (with ?sub1={{subscriber.id}}&... mustache params) both reduce to
-// the same key, e.g. "https://www.cratoolpro.com/XXX/YYY".
-//
-// The query is chopped off BEFORE url.Parse so mustache braces in a template's
-// params can never trip the parser. An unparseable remainder degrades to a
-// trailing-slash-trimmed copy of the pre-query string.
+// normalizeOfferURL reduces an offer URL to a stable dictionary key. Its body
+// now lives in the shared moneylink package (internal/pkg/moneylink) so the
+// send worker (mint direction), the API rewriter, and the Creative Studio
+// offer-links reporter all key on the IDENTICAL normalization — the UI's
+// "mapped" verdict can never disagree with what this emitter actually mints.
+// Kept as a thin package-local wrapper so the emitter's callers and tests are
+// unchanged.
 func normalizeOfferURL(raw string) string {
-	s := strings.TrimSpace(raw)
-	if i := strings.IndexByte(s, '?'); i >= 0 {
-		s = s[:i]
-	}
-	if i := strings.IndexByte(s, '#'); i >= 0 {
-		s = s[:i]
-	}
-	u, err := url.Parse(s)
-	if err != nil || u.Host == "" {
-		return strings.TrimRight(s, "/")
-	}
-	scheme := strings.ToLower(u.Scheme)
-	host := strings.ToLower(u.Host)
-	path := strings.TrimRight(u.Path, "/")
-	return scheme + "://" + host + path
+	return moneylink.Normalize(raw)
 }
 
 // Lookup normalizes rawOfferURL and returns the seeded hash for it, if any.
