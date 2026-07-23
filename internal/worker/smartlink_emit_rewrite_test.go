@@ -64,7 +64,9 @@ func TestRewriteClickLinks_EmitterEnabled_EmitsOfferURL(t *testing.T) {
 	html := `<html><body><a href="` + craMoney + `">CTA</a></body></html>`
 	out := RewriteClickLinks(html, "camp-9", "sub-7", "email-3", clickTestBase, clickTestOrg, clickTestSecret)
 
-	want := `href="` + clickTestBase + `/o/sub-7/hash-xyz/camp-9"`
+	// Brand-in-path (2026-07-22): clickTestBase = https://t.em.discountblog.com,
+	// so the minted /o/ carries discountblog.com as the FIRST path segment.
+	want := `href="` + clickTestBase + `/o/discountblog.com/sub-7/hash-xyz/camp-9"`
 	if !strings.Contains(out, want) {
 		t.Fatalf("expected minted offer URL %q in:\n%s", want, out)
 	}
@@ -153,7 +155,7 @@ func TestRewriteClickLinks_EmitterEnabled_AllNetworksMint(t *testing.T) {
 			html := `<html><body><a href="` + money + `">CTA</a></body></html>`
 			out := RewriteClickLinks(html, "camp-9", "sub-7", "email-3", clickTestBase, clickTestOrg, clickTestSecret)
 
-			want := `href="` + clickTestBase + `/o/sub-7/hash-` + name + `/camp-9"`
+			want := `href="` + clickTestBase + `/o/discountblog.com/sub-7/hash-` + name + `/camp-9"`
 			if !strings.Contains(out, want) {
 				t.Fatalf("%s: expected minted offer URL %q in:\n%s", name, want, out)
 			}

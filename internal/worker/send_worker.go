@@ -23,6 +23,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
 	"github.com/lib/pq"
 )
 
@@ -2875,7 +2876,12 @@ func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, 
 		// catches on any re-processing, so it can never be double-wrapped.
 		if offerHashEmitter.Enabled() {
 			if hash, ok := offerHashEmitter.Lookup(origURL); ok {
-				return fmt.Sprintf(`href="%s/o/%s/%s/%s"`, baseURL, subscriberID, hash, campaignID)
+				// Brand-in-path /o/ mint (2026-07-22): the shared builder bakes the
+				// sending brand (baseURL's apex) as the FIRST path segment so the
+				// tracking service can derive sub2 even though CloudFront strips the
+				// viewer Host. Emitted URL still starts with baseURL+"/o/", so the
+				// skip rule above catches it on any re-processing (no double-wrap).
+				return `href="` + moneylink.OfferTrackingURL(baseURL, subscriberID, hash, campaignID) + `"`
 			}
 		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)

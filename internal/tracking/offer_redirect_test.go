@@ -53,6 +53,128 @@ func doOffer(h *Handler, host, sub, hash, camp, ua string) *httptest.ResponseRec
 	return rec
 }
 
+// doOffer5 exercises the brand-in-path 5-segment route
+// /o/<brand>/<sub>/<hash>/<campaign>.
+func doOffer5(h *Handler, host, brand, sub, hash, camp, ua string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/o/"+brand+"/"+sub+"/"+hash+"/"+camp, nil)
+	req.Host = host
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+// The brand-in-path segment is the ground-truth sub2, WINNING over both a
+// (differently-branded) dictionary row AND the projectjarvis.io Host sentinel
+// CloudFront leaves behind after stripping the viewer Host. This is the whole
+// point of the 2026-07-22 contract.
+func TestOffer5_PathBrandWins_OverEntryAndSentinelHost(t *testing.T) {
+	pub := &capturePublisher{}
+	h := NewHandler(pub, stubDict(map[string]smartLinkEntry{
+		"abc123": {
+			Destination: "https://www.eos57ytf.com/K4C5ZLC/OFFER/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+			RiskProfile: "low",
+			BrandRoot:   "offercatalog.com", // the WRONG dedup-winner brand
+		},
+	}))
+
+	// Host is the sentinel (CloudFront stripped the real viewer Host); the path
+	// brand consumerpro.net must still win.
+	rec := doOffer5(h, "projectjarvis.io", "consumerpro.net", subUUID, "abc123", campUUID, uaBrowser)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "sub2=consumerpro.net") {
+		t.Errorf("sub2 must be the path brand consumerpro.net, got Location %q", loc)
+	}
+	if strings.Contains(loc, "sub2=offercatalog.com") {
+		t.Errorf("sub2 must NOT be the entry brand offercatalog.com, got Location %q", loc)
+	}
+	if strings.Contains(loc, "sub2=projectjarvis.io") {
+		t.Errorf("sub2 must NOT be the Host sentinel, got Location %q", loc)
+	}
+}
+
+// Backward compat: the legacy 4-segment link (already in inboxes) still resolves,
+// and it resolves the SAME hash to the SAME destination as the 5-segment link.
+// Here the path/host DO agree on the brand so both Locations are byte-identical.
+func TestOffer_LegacyAndBrandInPath_SameDestination(t *testing.T) {
+	entries := map[string]smartLinkEntry{
+		"abc123": {
+			Destination: "https://www.eos57ytf.com/K4C5ZLC/OFFER/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+			RiskProfile: "low",
+			BrandRoot:   "discountblog.com",
+		},
+	}
+	h4 := NewHandler(&capturePublisher{}, stubDict(entries))
+	h5 := NewHandler(&capturePublisher{}, stubDict(entries))
+
+	rec4 := doOffer(h4, "t.em.consumerpro.net", subUUID, "abc123", campUUID, uaBrowser)
+	rec5 := doOffer5(h5, "t.em.consumerpro.net", "consumerpro.net", subUUID, "abc123", campUUID, uaBrowser)
+
+	if rec4.Code != http.StatusFound || rec5.Code != http.StatusFound {
+		t.Fatalf("codes: legacy=%d brand-in-path=%d, want 302/302", rec4.Code, rec5.Code)
+	}
+	loc4 := rec4.Header().Get("Location")
+	loc5 := rec5.Header().Get("Location")
+	if loc4 != loc5 {
+		t.Errorf("same hash must resolve to same destination:\n legacy=%q\n brand-in-path=%q", loc4, loc5)
+	}
+	if !strings.Contains(loc5, "sub2=consumerpro.net") {
+		t.Errorf("both routes should attribute consumerpro.net, got %q", loc5)
+	}
+}
+
+// A junk {brand} path segment (not a domain apex) must NOT poison sub2 — the
+// handler falls through to the Host-derived brand.
+func TestOffer5_JunkPathBrand_FallsBackToHost(t *testing.T) {
+	h := NewHandler(&capturePublisher{}, stubDict(map[string]smartLinkEntry{
+		"abc123": {
+			Destination: "https://ex.com/x?sub2={{brand.domain}}",
+			RiskProfile: "low",
+			BrandRoot:   "discountblog.com",
+		},
+	}))
+	rec := doOffer5(h, "t.em.quizfiesta.com", "not-a-brand", subUUID, "abc123", campUUID, uaBrowser)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); !strings.Contains(loc, "sub2=quizfiesta.com") {
+		t.Errorf("junk path brand should fall back to Host brand quizfiesta.com, got %q", loc)
+	}
+}
+
+// A 5-segment miss falls back to the PATH brand's home page (best available
+// brand), even when the Host is the sentinel.
+func TestOffer5_Miss_302ToPathBrand(t *testing.T) {
+	h := NewHandler(&capturePublisher{}, stubDict(map[string]smartLinkEntry{}))
+	rec := doOffer5(h, "projectjarvis.io", "consumerpro.net", subUUID, "zzz999", campUUID, uaBrowser)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "https://consumerpro.net/" {
+		t.Errorf("miss Location = %q, want https://consumerpro.net/", loc)
+	}
+}
+
+func TestLooksLikeDomainApex(t *testing.T) {
+	good := []string{"consumerpro.net", "historythinking.com", "em.discountblog.com", "a.co"}
+	bad := []string{"", "not-a-brand", "no dot", "has/slash", "trailing.", ".leading"}
+	for _, s := range good {
+		if !looksLikeDomainApex(s) {
+			t.Errorf("looksLikeDomainApex(%q) = false, want true", s)
+		}
+	}
+	for _, s := range bad {
+		if looksLikeDomainApex(s) {
+			t.Errorf("looksLikeDomainApex(%q) = true, want false", s)
+		}
+	}
+}
+
 func TestOffer_HitLowRisk_302WithAttribution(t *testing.T) {
 	pub := &capturePublisher{}
 	h := NewHandler(pub, stubDict(map[string]smartLinkEntry{

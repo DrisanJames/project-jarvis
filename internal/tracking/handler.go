@@ -59,9 +59,16 @@ func (h *Handler) Routes() chi.Router {
 	// server's registration in server_routes_mailing.go).
 	r.Post("/track/unsubscribe/{data}", h.HandleUnsubscribe)
 	r.Post("/track/unsubscribe/{data}/{sig}", h.HandleUnsubscribe)
-	// Path-based, scanner-safe offer redirect (new URL contract 2026-07-22):
-	//   https://t.em.<brand>/o/<subscriber_id>/<hash>/<campaign_id>
-	// Distinct prefix from /track/* and /health — no route collision.
+	// Path-based, scanner-safe offer redirect.
+	//   Brand-in-path (2026-07-22, the mint default):
+	//     https://t.em.<brand>/o/<brand>/<subscriber_id>/<hash>/<campaign_id>
+	//   Legacy 4-segment (still emitted whenever the mint can't derive a brand,
+	//   and by every link already in an inbox):
+	//     https://t.em.<brand>/o/<subscriber_id>/<hash>/<campaign_id>
+	// chi routes the two by SEGMENT COUNT (5 vs 4), both to HandleOfferRedirect;
+	// the handler reads {brand} as OPTIONAL (empty on the legacy route). Distinct
+	// prefix from /track/* and /health — no route collision.
+	r.Get("/o/{brand}/{subscriber}/{hash}/{campaign}", h.HandleOfferRedirect)
 	r.Get("/o/{subscriber}/{hash}/{campaign}", h.HandleOfferRedirect)
 	r.Get("/health", h.HandleHealth)
 	r.Get("/version", h.HandleVersion)
@@ -199,9 +206,23 @@ var hashPattern = regexp.MustCompile(`^[A-Za-z0-9]{6,20}$`)
 //   - a bad/missing hash or a dictionary miss falls back to https://<brand>/;
 //   - telemetry is published on the Publisher's async goroutine.
 func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
-	// brandRoot is derived up front so the panic recovery has a safe fallback.
-	brandRoot := brandRootFromHost(r.Host)
-	fallback := "https://" + brandRoot + "/"
+	// pathBrand is the OPTIONAL first /o/ segment on the brand-in-path route; it
+	// is "" on the legacy 4-segment route. It is the sending brand minted from the
+	// tracking domain at send time — the ONLY reliable brand signal, because our
+	// CloudFront distribution strips the viewer Host (origin-request-policy
+	// allExcept:[host]) before this service sees the request, so r.Host is often
+	// the projectjarvis.io sentinel on real sends.
+	pathBrand := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "brand")))
+	hostBrand := brandRootFromHost(r.Host)
+
+	// bestBrand is the best available SENDING brand for both the safe fallback
+	// destination and the default sub2 attribution: the path brand wins when it
+	// looks like a domain apex; else the Host-derived brand.
+	bestBrand := hostBrand
+	if pathBrand != "" && looksLikeDomainApex(pathBrand) {
+		bestBrand = pathBrand
+	}
+	fallback := "https://" + bestBrand + "/"
 
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -243,18 +264,23 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Attribution brand (sub2) is the ACTUAL sending brand, derived from the
-	// REQUEST HOST (brandRootFromHost: t.em.<apex>/trk.em.<apex> -> <apex>).
+	// Attribution brand (sub2) is the ACTUAL sending brand, resolved by precedence:
+	//   (1) the {brand} PATH segment minted from the tracking domain at send time —
+	//       the CloudFront-safe ground truth (the viewer Host is stripped before we
+	//       see it, so it is the only reliable signal on real sends);
+	//   (2) brandRootFromHost(r.Host) when the Host survived and yields a real
+	//       sending brand (not the projectjarvis.io sentinel) — the pre-brand-in-path
+	//       behavior, still correct for direct/uncached hits;
+	//   (3) the dictionary row's brand_root as the last resort.
 	// This is correct even when the dictionary row's brand_root is a DIFFERENT
 	// brand: offer destinations dedup ACROSS brands (one hash is reachable from
 	// several sending brands' tracking hosts), so the row that won the dedup can
-	// carry the wrong sending brand. The Host is the ground truth for who sent
-	// this message. entry.BrandRoot is used ONLY as a fallback when the Host
-	// yields no usable brand — the projectjarvis.io sentinel that
-	// brandRootFromHost emits for a malformed/missing Host.
-	attrBrand := brandRoot
-	if (attrBrand == "" || attrBrand == "projectjarvis.io") && entry.BrandRoot != "" {
-		attrBrand = entry.BrandRoot
+	// carry the wrong sending brand — the path brand (or Host) is ground truth.
+	attrBrand := bestBrand
+	if attrBrand == "" || attrBrand == "projectjarvis.io" {
+		if entry.BrandRoot != "" {
+			attrBrand = entry.BrandRoot
+		}
 	}
 	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign)
 
@@ -288,6 +314,23 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, dest, http.StatusFound)
+}
+
+// domainApexRe is a cheap "does this look like a bare domain apex?" gate for the
+// {brand} path segment. It is intentionally NOT a registry check — a newly
+// onboarded sending domain must attribute correctly without redeploying the
+// tracking service — it only rejects obvious junk (no dot, path chars, spaces)
+// that could poison sub2.
+var domainApexRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+// looksLikeDomainApex reports whether s is a plausible bare domain apex
+// (lowercased, has at least one dot, only domain-safe characters, ≤253 chars).
+func looksLikeDomainApex(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	return domainApexRe.MatchString(s)
 }
 
 // brandRootFromHost derives the bare brand root from the request Host by

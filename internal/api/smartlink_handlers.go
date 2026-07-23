@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
 )
 
 // VersionSmartLink tracks handler semantics. Bumped on any externally
@@ -200,14 +201,17 @@ func (s *SmartLinkService) resolveByHash(ctx context.Context, hash string) (Smar
 	return sl, nil
 }
 
-// SmartLinkTrackingURL builds the tracking-layer offer-link URL for the new
-// contract: https://<trackingDomain>/o/<subscriberID>/<hash>/<campaignID>.
-// trackingDomain may arrive as a bare host (t.em.discountblog.com), a host
-// with a trailing slash, or a full https URL — it is normalized to an
-// https-scheme, no-trailing-slash origin before the /o/ path is appended.
+// SmartLinkTrackingURL builds the tracking-layer offer-link URL. It delegates to
+// moneylink.OfferTrackingURL — the single source of truth for the /o/ contract,
+// co-owned with the send worker's emitter and the proof rewriter — so the mint
+// shape can never drift between callers. As of 2026-07-22 that shape is the
+// brand-in-path form https://<trackingDomain>/o/<brand>/<subscriberID>/<hash>/
+// <campaignID> (brand = the tracking domain's apex), with a graceful fallback to
+// the legacy 4-segment form when no brand is derivable. The exported name and
+// signature are unchanged so existing callers (smartlink_rewrite.go,
+// creative_proof_send.go) inherit the new shape transparently.
 func SmartLinkTrackingURL(trackingDomain, subscriberID, hash, campaignID string) string {
-	origin := ensureHTTPS(trackingDomain) // "" stays "" (caller guards)
-	return origin + "/o/" + subscriberID + "/" + hash + "/" + campaignID
+	return moneylink.OfferTrackingURL(trackingDomain, subscriberID, hash, campaignID)
 }
 
 // mintSmartLinkHash generates a short, URL-safe token ([a-z0-9], 10 chars)

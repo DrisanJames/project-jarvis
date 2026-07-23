@@ -81,7 +81,8 @@ function trackingHost(brandRoot: string): string {
 // literal placeholder tokens — the real ids are filled at send time. This shows
 // the operator the shape of the new /o/ redirect scheme.
 function sampleTrackingUrl(link: SmartLink): string {
-  return `https://${trackingHost(link.brand_root)}/o/SUBSCRIBER_ID/${link.hash}/CAMPAIGN_ID`;
+  const apex = link.brand_root.replace(/^www\./, '');
+  return `https://${trackingHost(link.brand_root)}/o/${apex}/SUBSCRIBER_ID/${link.hash}/CAMPAIGN_ID`;
 }
 
 interface ApiListResponse {

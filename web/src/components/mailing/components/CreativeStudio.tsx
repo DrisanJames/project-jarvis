@@ -152,7 +152,7 @@ const OFFER_MAP_BRAND_ROOT = 'offercatalog.com';
 // (or, in the confirm preview, a pending) redirect token. Mirrors
 // SmartLinkManager.sampleTrackingUrl so the two surfaces show the same shape.
 function offerTrackingSample(hash: string): string {
-  return `https://t.em.${OFFER_MAP_BRAND_ROOT}/o/SUBSCRIBER_ID/${hash}/CAMPAIGN_ID`;
+  return `https://t.em.${OFFER_MAP_BRAND_ROOT}/o/${OFFER_MAP_BRAND_ROOT}/SUBSCRIBER_ID/${hash}/CAMPAIGN_ID`;
 }
 
 const inputStyle: React.CSSProperties = {

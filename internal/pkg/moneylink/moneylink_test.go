@@ -95,3 +95,70 @@ func TestHrefRe_IntegrationPathCaptured(t *testing.T) {
 		t.Fatalf("group 2 = %q, want integration/postback so callers can exclude it", m[2])
 	}
 }
+
+// BrandFromTrackingDomain strips scheme/prefix/port/path down to the apex, or ""
+// when nothing usable remains.
+func TestBrandFromTrackingDomain(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://t.em.consumerpro.net", "consumerpro.net"},
+		{"t.em.consumerpro.net", "consumerpro.net"},
+		{"trk.em.historythinking.com", "historythinking.com"},
+		{"https://trk.em.historythinking.com/", "historythinking.com"},
+		{"www.discountblog.com", "discountblog.com"},
+		{"T.EM.DiscountBlog.COM", "discountblog.com"},
+		{"t.em.discountblog.com:8081", "discountblog.com"},
+		{"discountblog.com", "discountblog.com"},       // bare apex, no prefix
+		{"em.discountblog.com", "em.discountblog.com"}, // no KNOWN prefix -> unchanged
+		{"  https://t.em.quizfiesta.com/o/x  ", "quizfiesta.com"},
+		{"", ""},
+		{"https://", ""},
+		{"t.em.", ""},
+	}
+	for _, c := range cases {
+		if got := BrandFromTrackingDomain(c.in); got != c.want {
+			t.Errorf("BrandFromTrackingDomain(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// OfferTrackingURL emits the 5-segment brand-in-path form when a brand is
+// derivable, and gracefully falls back to the legacy 4-segment form when it is
+// not — always on an https origin with no double slash.
+func TestOfferTrackingURL(t *testing.T) {
+	cases := []struct {
+		name                string
+		td, sub, hash, camp string
+		want                string
+	}{
+		{
+			name: "bare host mints brand-in-path",
+			td:   "t.em.consumerpro.net", sub: "s1", hash: "h1", camp: "c1",
+			want: "https://t.em.consumerpro.net/o/consumerpro.net/s1/h1/c1",
+		},
+		{
+			name: "full https url mints brand-in-path",
+			td:   "https://trk.em.historythinking.com", sub: "s2", hash: "h2", camp: "c2",
+			want: "https://trk.em.historythinking.com/o/historythinking.com/s2/h2/c2",
+		},
+		{
+			name: "trailing slash normalized",
+			td:   "t.em.discountblog.com/", sub: "s3", hash: "h3", camp: "c3",
+			want: "https://t.em.discountblog.com/o/discountblog.com/s3/h3/c3",
+		},
+		{
+			name: "no derivable brand -> legacy 4-seg",
+			td:   "", sub: "s4", hash: "h4", camp: "c4",
+			want: "/o/s4/h4/c4",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := OfferTrackingURL(c.td, c.sub, c.hash, c.camp); got != c.want {
+				t.Errorf("OfferTrackingURL(%q,...) = %q, want %q", c.td, got, c.want)
+			}
+		})
+	}
+}

@@ -166,8 +166,10 @@ func expectProfileWithTracking(mock sqlmock.Sqlmock) {
 }
 
 // oURL builds the expected tracking-layer /o/ offer URL for the proof consts.
+// Brand-in-path (2026-07-22): trackBase trk.em.discountblog.com → apex
+// discountblog.com is the first /o/ segment.
 func oURL(hash string) string {
-	return "https://trk.em.discountblog.com/o/" + proofSubscriberID + "/" + hash + "/" + proofCampaignID
+	return "https://trk.em.discountblog.com/o/discountblog.com/" + proofSubscriberID + "/" + hash + "/" + proofCampaignID
 }
 
 // (a) route_via_gateway=true + active slug → 200, tracking /o/ URL in HTML,

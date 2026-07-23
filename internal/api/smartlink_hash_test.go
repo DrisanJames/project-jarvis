@@ -41,7 +41,7 @@ func TestRewriteMoneyLinksToTracking_ExactShapeSingle(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected 1 rewrite, got %d", n)
 	}
-	want := `href="https://t.em.discountblog.com/o/sub-1/hsh12/camp-9"`
+	want := `href="https://t.em.discountblog.com/o/discountblog.com/sub-1/hsh12/camp-9"`
 	if !strings.Contains(out, want) {
 		t.Errorf("missing exact /o/ URL %q in: %s", want, out)
 	}
@@ -57,7 +57,7 @@ func TestRewriteMoneyLinksToTracking_Multiple(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("expected 2 rewrites, got %d", n)
 	}
-	want := `href="https://t.em.quizfiesta.com/o/s2/h2/c2"`
+	want := `href="https://t.em.quizfiesta.com/o/quizfiesta.com/s2/h2/c2"`
 	if strings.Count(out, want) != 2 {
 		t.Errorf("expected 2 /o/ hrefs %q: %s", want, out)
 	}
@@ -73,7 +73,7 @@ func TestRewriteMoneyLinksToTracking_AllSixNetworks(t *testing.T) {
 		"cratoolpro.com", "eos57ytf.com", "k8k0hfdt.com",
 		"codefortwo.com", "kj3rwth8trk.com", "muqes.com",
 	}
-	want := `href="https://t.em.discountblog.com/o/sub-1/hsh12/camp-9"`
+	want := `href="https://t.em.discountblog.com/o/discountblog.com/sub-1/hsh12/camp-9"`
 	for _, host := range hosts {
 		t.Run(host, func(t *testing.T) {
 			in := `<a href="https://www.` + host + `/K4C5ZLC/OFFER/?source_id=email&sub1=x">go</a>`
@@ -167,7 +167,7 @@ func TestRewriteMoneyLinksToTracking_MixedIntegrationAndOffer(t *testing.T) {
 	if strings.Contains(out, "cratoolpro.com/REAL") {
 		t.Errorf("offer link should be rewritten away: %s", out)
 	}
-	if !strings.Contains(out, `href="https://t.em.discountblog.com/o/s/h/c"`) {
+	if !strings.Contains(out, `href="https://t.em.discountblog.com/o/discountblog.com/s/h/c"`) {
 		t.Errorf("/o/ href missing: %s", out)
 	}
 }
@@ -219,7 +219,7 @@ func TestRewriteMoneyLinksToTracking_EmptySegmentIsSafeNoOp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSmartLinkTrackingURL_ShapeAndSchemeNormalization(t *testing.T) {
-	want := "https://t.em.discountblog.com/o/sub-1/hsh12/camp-9"
+	want := "https://t.em.discountblog.com/o/discountblog.com/sub-1/hsh12/camp-9"
 	cases := []struct {
 		name, domain string
 	}{

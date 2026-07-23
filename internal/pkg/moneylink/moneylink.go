@@ -67,6 +67,89 @@ func buildHrefRe(hosts []string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)href="(https?://(?:www\.)?(?:` + strings.Join(quoted, "|") + `)/([^"\s]+))"`)
 }
 
+// ensureHTTPSOrigin normalizes a bare host, a host with a trailing slash, or a
+// full URL to an https-scheme origin with no trailing slash. It mirrors the
+// ensureHTTPS helpers in internal/api and internal/worker; it lives here so the
+// shared /o/ builder owns its own scheme handling without importing either
+// package. An empty input stays "" (the caller guards against minting a link
+// with no host).
+func ensureHTTPSOrigin(domainOrURL string) string {
+	d := strings.TrimSpace(domainOrURL)
+	if d == "" {
+		return ""
+	}
+	if !strings.HasPrefix(d, "http") {
+		d = "https://" + d
+	}
+	return strings.TrimRight(d, "/")
+}
+
+// BrandFromTrackingDomain derives the SENDING brand apex from a tracking domain.
+// It lowercases, drops any scheme/path/port, strips the tracking-subdomain
+// prefixes ("t.em.", "trk.em.", "www.") and returns the remaining apex:
+//
+//	"https://t.em.consumerpro.net"  -> "consumerpro.net"
+//	"trk.em.historythinking.com"    -> "historythinking.com"
+//	"em.discountblog.com"           -> "em.discountblog.com" (no known prefix)
+//	"consumerpro.net"               -> "consumerpro.net"
+//
+// Returns "" when nothing usable remains (empty input, "https://", "t.em." with
+// no apex) so callers can fall back to the legacy brand-less /o/ form. This is
+// the mint-time counterpart of the tracking service's brandRootFromHost: the
+// brand is baked into the /o/ path here because our own CloudFront strips the
+// viewer Host before the tracking service can read it.
+func BrandFromTrackingDomain(td string) string {
+	s := strings.ToLower(strings.TrimSpace(td))
+	if s == "" {
+		return ""
+	}
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i] // drop any path
+	}
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		s = s[:i] // drop any port
+	}
+	for _, p := range []string{"t.em.", "trk.em.", "www."} {
+		if strings.HasPrefix(s, p) {
+			s = strings.TrimPrefix(s, p)
+			break
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// OfferTrackingURL builds the tracking-layer offer-link URL for the
+// brand-in-path contract (2026-07-22):
+//
+//	https://<trackingDomain>/o/<brand>/<subscriberID>/<hash>/<campaignID>
+//
+// where <brand> = BrandFromTrackingDomain(trackingDomain). Carrying the sending
+// brand as the FIRST /o/ path segment is what lets the tracking service derive
+// sub2 (brand.domain) even though our CloudFront distribution strips the viewer
+// Host (origin-request-policy allExcept:[host]) before the tracking service sees
+// the request. The hash stays MID-PATH so a truncated link still carries it.
+//
+// When no brand can be derived (empty/malformed trackingDomain), the brand
+// segment is OMITTED and the legacy 4-segment form
+// https://<trackingDomain>/o/<sub>/<hash>/<campaign> is emitted instead — a
+// safe fallback that the tracking handler's legacy route still resolves.
+// trackingDomain may be a bare host, a host with a trailing slash, or a full
+// https URL; it is normalized to an https origin first. An empty trackingDomain
+// yields a host-less "/o/..." — callers (the emitter, the rewriter) already
+// guard against empty inputs, matching the pre-existing SmartLinkTrackingURL
+// contract this replaces.
+func OfferTrackingURL(trackingDomain, subscriberID, hash, campaignID string) string {
+	origin := ensureHTTPSOrigin(trackingDomain)
+	brand := BrandFromTrackingDomain(trackingDomain)
+	if brand == "" {
+		return origin + "/o/" + subscriberID + "/" + hash + "/" + campaignID
+	}
+	return origin + "/o/" + brand + "/" + subscriberID + "/" + hash + "/" + campaignID
+}
+
 // Normalize reduces an offer URL to a stable dictionary key:
 // scheme + "://" + lowercased-host + path, with the query string, fragment,
 // and any trailing slash(es) on the path stripped. Host is lowercased; the
