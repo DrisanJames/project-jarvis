@@ -236,7 +236,7 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	}
 	isContentLocked := contentLocked.Valid && contentLocked.Bool
 	if isContentLocked {
-		log.Printf("[WaveEnqueue] campaign %s content_locked=true — bypassing subject/HTML fingerprint mutations (honeypot still injected)", campaignID)
+		log.Printf("[WaveEnqueue] campaign %s content_locked=true — bypassing subject/HTML fingerprint mutations (sent verbatim)", campaignID)
 	}
 
 	// Hash Fingerprint Diversification: use the campaign's own content directly.
@@ -535,7 +535,6 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 			recipientHTML = mutateHTMLHash(p.baseHTML, seed)
 			recipientSubject = mutateSubjectLine(p.baseSubject, seed, p.brandKey)
 		}
-		recipientHTML = injectHoneypotLink(recipientHTML, rec.subscriberID.String())
 
 		var sourceID interface{}
 		if rec.audienceSourceID.Valid {

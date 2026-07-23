@@ -16,7 +16,7 @@ import (
 // ContentSnapshot is one immutable, hash-addressed base creative shared by all
 // queue rows of a wave. The body stored here is the campaign content AFTER
 // sanitizeVariantURLsAtDispatch but BEFORE per-recipient fingerprint mutation —
-// the mutation layer (mutateHTMLHash + injectHoneypotLink) is recomputed at
+// the mutation layer (mutateHTMLHash) is recomputed at
 // send time from computeMutationSeed(subscriber_id, wave_id), which is
 // deterministic, so the bytes on the wire are identical to the legacy
 // copy-per-row path. See docs/CAMPAIGN_QUEUE_STORAGE_REDESIGN.md §5.
@@ -100,15 +100,15 @@ func ensureContentSnapshot(ctx context.Context, db *sql.DB, campaignID uuid.UUID
 }
 
 // renderSnapshotBody reproduces, at send time, exactly what the legacy enqueue
-// path stored per-row: mutate-then-honeypot, with mutation bypassed for
-// content-locked campaigns. Any change to this ordering breaks byte-for-byte
+// path stored per-row: the per-recipient hash mutation, with mutation bypassed
+// for content-locked campaigns. Any change to this ordering breaks byte-for-byte
 // equivalence with rows enqueued before the snapshot cutover.
 func renderSnapshotBody(snap *ContentSnapshot, subscriberID uuid.UUID, waveID string) string {
 	html := snap.HTMLContent
 	if !snap.ContentLocked {
 		html = mutateHTMLHash(html, computeMutationSeed(subscriberID, waveID))
 	}
-	return injectHoneypotLink(html, subscriberID.String())
+	return html
 }
 
 // ---------------------------------------------------------------------------

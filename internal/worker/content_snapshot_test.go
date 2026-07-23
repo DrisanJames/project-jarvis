@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -36,15 +37,16 @@ func TestComputeContentHash_StableAndDistinct(t *testing.T) {
 
 // TestRenderSnapshotBody_MatchesLegacyEnqueueOrder is the byte-for-byte
 // equivalence contract for the snapshot cutover: send-time rendering must
-// reproduce exactly what enqueueWaveRowAtATime used to store per row
-// (mutateHTMLHash with the (subscriber, wave) seed, then injectHoneypotLink).
+// reproduce exactly what enqueueWaveRowAtATime stores per row — the per-
+// recipient hash mutation, with mutation bypassed for content-locked
+// campaigns. (The honeypot bot-trap link was removed 2026-07-22.)
 func TestRenderSnapshotBody_MatchesLegacyEnqueueOrder(t *testing.T) {
 	subscriberID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
 	waveID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-	// Legacy enqueue path, unlocked: mutate then honeypot.
+	// Legacy enqueue path, unlocked: mutate only.
 	seed := computeMutationSeed(subscriberID, waveID)
-	legacy := injectHoneypotLink(mutateHTMLHash(snapTestHTML, seed), subscriberID.String())
+	legacy := mutateHTMLHash(snapTestHTML, seed)
 
 	snap := &ContentSnapshot{HTMLContent: snapTestHTML, ContentLocked: false}
 	got := renderSnapshotBody(snap, subscriberID, waveID)
@@ -52,11 +54,14 @@ func TestRenderSnapshotBody_MatchesLegacyEnqueueOrder(t *testing.T) {
 		t.Fatalf("unlocked snapshot render diverges from legacy enqueue output\nlegacy: %q\ngot:    %q", legacy, got)
 	}
 
-	// Locked: mutation bypassed, honeypot still injected.
-	legacyLocked := injectHoneypotLink(snapTestHTML, subscriberID.String())
+	// Locked: mutation bypassed — the stored HTML is sent verbatim.
 	snapLocked := &ContentSnapshot{HTMLContent: snapTestHTML, ContentLocked: true}
-	if got := renderSnapshotBody(snapLocked, subscriberID, waveID); got != legacyLocked {
-		t.Fatal("locked snapshot render must bypass mutation but keep the honeypot")
+	if got := renderSnapshotBody(snapLocked, subscriberID, waveID); got != snapTestHTML {
+		t.Fatal("locked snapshot render must send the stored HTML verbatim")
+	}
+	// And a locked render must never carry the removed honeypot link.
+	if strings.Contains(renderSnapshotBody(snapLocked, subscriberID, waveID), "api/mailing/bt/") {
+		t.Fatal("bot-trap honeypot link must not be present in rendered body")
 	}
 
 	// Different recipients in one wave must produce different fingerprints.

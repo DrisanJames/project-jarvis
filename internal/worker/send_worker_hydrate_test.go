@@ -45,8 +45,8 @@ func TestHydrateSnapshots_PassesThroughInlineRows(t *testing.T) {
 
 // TestHydrateSnapshots_RendersDeterministicBody verifies the snapshot path
 // produces exactly the legacy per-row bytes: mutateHTMLHash seeded by
-// (subscriber, wave), then honeypot, and plain content filled from the
-// snapshot when the row has none.
+// (subscriber, wave), and plain content filled from the snapshot when the
+// row has none. (The honeypot bot-trap link was removed 2026-07-22.)
 func TestHydrateSnapshots_RendersDeterministicBody(t *testing.T) {
 	pool, mock := newHydrateTestPool(t)
 
@@ -67,7 +67,7 @@ func TestHydrateSnapshots_RendersDeterministicBody(t *testing.T) {
 		t.Fatalf("expected 1 item, got %d", len(out))
 	}
 
-	want := injectHoneypotLink(mutateHTMLHash(snapTestHTML, computeMutationSeed(subscriberID, waveID.String())), subscriberID.String())
+	want := mutateHTMLHash(snapTestHTML, computeMutationSeed(subscriberID, waveID.String()))
 	if out[0].HTMLContent != want {
 		t.Fatal("hydrated body diverges from the legacy enqueue-time bytes")
 	}

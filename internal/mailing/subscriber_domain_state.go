@@ -308,7 +308,7 @@ func UpsertSDSComplaint(ctx context.Context, db *sql.DB, subscriberID uuid.UUID,
 // Stored as NUMERIC(5,4) — rescaled to 0..1.
 //
 // Bot guard: if the subscriber is flagged as a bot (mailing_subscribers.
-// is_bot = true, set by HandleBotTrap when the honeypot link is followed)
+// is_bot = true, set by data import / the startup bot backstop)
 // we force score_local = 0. Without this guard, every bot open/click
 // would lift score_local toward 1.0, and because the planner orders the
 // SDS primary pass by score_local DESC, bots would monopolise the top

@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 const sampleHTML = `<!DOCTYPE html>
@@ -166,31 +165,17 @@ func TestComputeMutationSeed(t *testing.T) {
 	assert.NotEqual(t, s1, s2, "different subscriber IDs must produce different seeds")
 }
 
-func TestInjectHoneypotLink(t *testing.T) {
-	subID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	result := injectHoneypotLink(sampleHTML, subID)
+// The honeypot bot-trap link was removed 2026-07-22 (operator directive):
+// the injected off-screen /api/mailing/bt/ link was a cloaking signal on
+// SES-routed mail and redundant with the natural-link scanner classifier.
+// Send-time rendering must NOT emit any hidden bot-trap link.
+func TestNoHoneypotLinkInjected(t *testing.T) {
+	subID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	result := mutateHTMLHash(sampleHTML, computeMutationSeed(subID, "wave-x"))
 
-	assert.Contains(t, result, "api/mailing/bt/")
-	assert.Contains(t, result, `aria-hidden="true"`)
-	assert.Contains(t, result, `opacity:0`)
-
-	// Must have two-segment format: /api/mailing/bt/{token}/{nonce}
-	verifyIdx := strings.Index(result, "api/mailing/bt/")
-	require.Greater(t, verifyIdx, 0)
-	afterVerify := result[verifyIdx+len("api/mailing/bt/"):]
-	quoteIdx := strings.Index(afterVerify, `"`)
-	require.Greater(t, quoteIdx, 0)
-	pathPart := afterVerify[:quoteIdx]
-	assert.Contains(t, pathPart, "/", "honeypot URL must have two segments (token/nonce)")
-
-	bodyCloseIdx := strings.LastIndex(result, "</body>")
-	assert.Less(t, verifyIdx, bodyCloseIdx, "honeypot link should be before </body>")
-}
-
-func TestInjectHoneypotLink_NoBody(t *testing.T) {
-	plain := `<div><p>Hello</p></div>`
-	result := injectHoneypotLink(plain, "00000000-0000-0000-0000-000000000000")
-	assert.Contains(t, result, "api/mailing/bt/")
+	assert.NotContains(t, result, "api/mailing/bt/", "bot-trap honeypot link must not be injected")
+	assert.NotContains(t, result, "left:-9999px", "no off-screen cloaked element")
+	assert.NotContains(t, result, `tabindex="-1"`, "no hidden anchor")
 }
 
 func TestMutatePreheader(t *testing.T) {
@@ -211,7 +196,6 @@ func TestFullPipeline_UniquePerRecipient(t *testing.T) {
 		subID := uuid.New()
 		seed := computeMutationSeed(subID, wave)
 		html := mutateHTMLHash(sampleHTML, seed)
-		html = injectHoneypotLink(html, subID.String())
 		subj := mutateSubjectLine(subject, seed, "discountblog")
 
 		combined := html + "||" + subj

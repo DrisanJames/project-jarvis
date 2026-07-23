@@ -1202,10 +1202,10 @@ func planPMTAAudience(
 		//     been stamped yet but the address was terminated elsewhere
 		//   - sub.hard_bounced_at / complained_at: denormalised global
 		//     suppressions (index hit instead of join on suppression_list)
-		//   - sub.is_bot = false: honeypot-detected scanners. The flag is
-		//     set by HandleBotTrap when the hidden off-screen link in the
-		//     email body is followed (only bots ever do this). Excluding
-		//     here prevents reinforcement-loop selection where bot opens
+		//   - sub.is_bot = false: flagged scanners (set by the data-import
+		//     pipeline and the startup bot backstop; the in-email honeypot
+		//     trap was retired 2026-07-22). Excluding here prevents a
+		//     reinforcement loop where bot opens
 		//     inflate score_local → planner prefers bots → more sends.
 		//   - sds.unsubscribed_at / hard_bounced_at / complained_at:
 		//     per-domain terminal events
