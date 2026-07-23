@@ -279,6 +279,7 @@ type eoOutcome struct {
 
 // callEO classifies a single EO call result. The mapping mirrors the spec
 // in the plan:
+//   REJECT shape (account suppression) → suppress (terminal, same class as Undeliverable)
 //   1 (Verified), 7 (Complainer) → ready (mailable)
 //   0 (Retry), 11 (Unknown)      → leave pending_eo, retry next cycle
 //   any other ResultID           → suppress
@@ -286,6 +287,17 @@ func (pv *PartnerValidator) callEO(ctx context.Context, rec pendingRecord) eoOut
 	resp, err := pv.eoClient.Validate(ctx, rec.email)
 	if err != nil {
 		return eoOutcome{kind: outcomeRetry, result: "error: " + err.Error()}
+	}
+	if resp.IsReject() {
+		// EO account-suppression ({"result":"REJECT","reason":"Suppressed
+		// Email Address"}) is a final verdict. Before this check, its missing
+		// ResultId decoded to 0 → the retry arm below → 3 wasted attempts →
+		// dead_letter. Record the human-readable reason as eo_result.
+		result := strings.TrimSpace(resp.Reason)
+		if result == "" {
+			result = resp.Result
+		}
+		return eoOutcome{kind: outcomeSuppress, resultID: resp.ResultID, result: result}
 	}
 	switch resp.ResultID {
 	case 1, 7: // Verified, Complainer (deliverable)

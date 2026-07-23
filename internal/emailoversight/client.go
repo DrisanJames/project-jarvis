@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,17 @@ const (
 	ResultUnknown   = "Unknown"
 	maxRetries      = 3
 	retryBaseDelay  = 500 * time.Millisecond
+
+	// ResultReject is the Result value of EO's account-suppression response
+	// shape: {"result":"REJECT","reason":"Suppressed Email Address",...}.
+	// Note the lowercase keys — a different shape from normal validations.
+	ResultReject = "REJECT"
+
+	// ResultIDRejected is a synthetic ResultId assigned to REJECT responses,
+	// which carry no ResultId of their own (JSON decodes them to 0, which
+	// callers historically confused with EO's retryable result 0). Negative
+	// so it can never collide with a real EO result id.
+	ResultIDRejected = -1
 )
 
 type ValidationRequest struct {
@@ -32,6 +44,17 @@ type ValidationResponse struct {
 	Email    string `json:"Email"`
 	ResultID int    `json:"ResultId"`
 	Result   string `json:"Result"`
+	// Reason is populated only by the REJECT shape (lowercase "reason" key;
+	// Go's JSON decoder matches struct tags case-insensitively, so both
+	// "Reason" and "reason" land here — same for Result/result above).
+	Reason string `json:"Reason"`
+}
+
+// IsReject reports whether the response is EO's account-suppression REJECT
+// shape. This is a terminal verdict (e.g. reason "Suppressed Email Address"),
+// never retryable.
+func (r *ValidationResponse) IsReject() bool {
+	return strings.EqualFold(strings.TrimSpace(r.Result), ResultReject)
 }
 
 type BatchResult struct {
@@ -119,6 +142,12 @@ func (c *Client) Validate(ctx context.Context, email string) (*ValidationRespons
 		var vr ValidationResponse
 		if err := json.Unmarshal(respBody, &vr); err != nil {
 			return nil, fmt.Errorf("decode response: %w", err)
+		}
+		if vr.IsReject() {
+			// REJECT responses carry no ResultId (decodes to 0, which callers
+			// would misread as EO's retryable result 0). Stamp the synthetic
+			// terminal id so consumers see a distinct, final outcome.
+			vr.ResultID = ResultIDRejected
 		}
 
 		c.totalCalls.Add(1)
