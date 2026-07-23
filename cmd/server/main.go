@@ -8081,6 +8081,54 @@ END $$`},
 			WHERE hash IS NULL`},
 		{"idx_smart_links_hash", `CREATE UNIQUE INDEX IF NOT EXISTS idx_mailing_smart_links_hash
 			ON mailing_smart_links(hash) WHERE hash IS NOT NULL`},
+
+		// S0-HOT RESERVOIR (operator 2026-07-23: "S0 = the hot reservoir, nothing more,
+		// not a sidecar effort"; yahoo-family). Provenance tag distinguishing api-feed vs
+		// operator flat-file partner data — the authoritative signal that status='ready' is
+		// NOT (976k EO-null Sam's Club rows sit 'ready'). partner_datasets is 16 rows so
+		// every statement here is trivially inside the 5s budget. See _db.PG_S0_HOT and
+		// tasks/s0-hot-reservoir/001_source_channel.sql.
+		{"add_partner_datasets_source_channel", `ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS source_channel TEXT`},
+		{"chk_partner_datasets_source_channel", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_source_channel_chk') THEN
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_source_channel_chk
+					CHECK (source_channel IS NULL OR source_channel IN ('api_feed','flat_file','internal'));
+			END IF;
+		END $$`},
+		// Backfill the existing 13 populated datasets by batch-cardinality classification
+		// (per-record streaming batches/rows >= 0.9 => api_feed, else flat_file). Sam's Club
+		// (c4400fab) is 'internal' — house data hard-excluded from S0-hot by CHANNEL, so a
+		// future EO validation pass can never pull it into the reservoir. Keyed by id (the
+		// two 'attribits-spicy-clickers' slugs collide across partners). Idempotent via
+		// source_channel IS NULL. New datasets are tagged at ingest (HandleCreateDataset).
+		{"backfill_partner_datasets_source_channel", `UPDATE partner_datasets d
+			SET source_channel = v.ch
+			FROM (VALUES
+				('c4400fab-64dd-41ed-aed3-aa3f7d35c3da'::uuid,'internal'),
+				('9502c7c4-68e7-4dcf-91f5-103a1480fe68'::uuid,'api_feed'),
+				('e36d529c-14f5-4875-b1a7-abfb7108d9f5'::uuid,'api_feed'),
+				('20c2983b-49cb-4d27-a280-c67213dd22a1'::uuid,'api_feed'),
+				('6cb7292a-0702-4497-b63f-e1fb5006227d'::uuid,'flat_file'),
+				('8a5c3cb3-1ff0-4750-b2dd-cb55673a6ede'::uuid,'api_feed'),
+				('7045189d-7ece-4f0d-92c8-3caab990cf52'::uuid,'api_feed'),
+				('d4ba293d-ebc4-4564-8f9a-5b3d8fdf6985'::uuid,'api_feed'),
+				('64facbd5-ddac-429a-ad36-740816a5d80f'::uuid,'flat_file'),
+				('4fdf1a6d-e375-4bc5-a739-ae1a425298d2'::uuid,'flat_file'),
+				('2d40437b-3715-42af-8b8e-425563e47ce7'::uuid,'flat_file'),
+				('76214a9d-0228-46aa-be35-f638d1a51249'::uuid,'flat_file'),
+				('520140c2-7920-4198-9e76-72e314ce2601'::uuid,'flat_file')
+			) AS v(id, ch)
+			WHERE d.id = v.id AND d.source_channel IS NULL`},
+		// The canonical drawable reservoir — the ONLY sanctioned read of S0. Mirrors
+		// _db.PG_S0_HOT. ISP-family filter applied by consumers (draw/gate) via _isp_case;
+		// this view is the clean channel+EO+ready superset. EO-null Sam's Club excluded here.
+		{"create_partner_fresh_drawable_view", `CREATE OR REPLACE VIEW partner_fresh_drawable AS
+			SELECT q.*, d.source_channel, d.slug AS dataset_slug, d.vertical AS dataset_vertical
+			FROM partner_clean_queue q
+			JOIN partner_datasets d ON d.id = q.dataset_id
+			WHERE d.source_channel IN ('api_feed','flat_file')
+			  AND q.eo_result IN ('Verified','Complainer')
+			  AND q.status = 'ready'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

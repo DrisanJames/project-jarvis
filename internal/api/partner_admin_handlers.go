@@ -140,6 +140,11 @@ type createDatasetRequest struct {
 	Slug             string `json:"slug,omitempty"`
 	Vertical         string `json:"vertical"`
 	FlushWindowHours int    `json:"flush_window_hours,omitempty"`
+	// S0-hot provenance (operator 2026-07-23). api_feed = partner streams records
+	// through the minted API key (the default — that is what this endpoint provisions);
+	// flat_file = operator-supplied file loaded by script; internal = house data that
+	// must NEVER enter the S0-hot reservoir (e.g. Sam's Club) regardless of EO state.
+	SourceChannel string `json:"source_channel,omitempty"`
 }
 
 func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +186,15 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 		flushWindow = 168 // cap at 1 week
 	}
 
+	sourceChannel := strings.TrimSpace(req.SourceChannel)
+	if sourceChannel == "" {
+		sourceChannel = "api_feed"
+	}
+	if sourceChannel != "api_feed" && sourceChannel != "flat_file" && sourceChannel != "internal" {
+		writeJSONError(w, "source_channel must be one of: api_feed | flat_file | internal", http.StatusBadRequest)
+		return
+	}
+
 	tx, err := h.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeJSONError(w, "tx begin failed", http.StatusInternalServerError)
@@ -190,9 +204,9 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 
 	datasetID := uuid.New().String()
 	_, err = tx.ExecContext(r.Context(), `
-		INSERT INTO partner_datasets (id, partner_id, name, slug, vertical, flush_window_hours, status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'active')
-	`, datasetID, partnerID, req.Name, slug, req.Vertical, flushWindow)
+		INSERT INTO partner_datasets (id, partner_id, name, slug, vertical, flush_window_hours, status, source_channel)
+		VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)
+	`, datasetID, partnerID, req.Name, slug, req.Vertical, flushWindow, sourceChannel)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeJSONError(w, "dataset slug already exists for this partner", http.StatusConflict)
