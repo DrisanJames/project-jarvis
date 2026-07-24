@@ -203,9 +203,9 @@ func (s *SendingProfileService) HandleOnboardSendingDomain(w http.ResponseWriter
 	res, err := tx.ExecContext(r.Context(), `
 		INSERT INTO mailing_sending_domains
 			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
-		SELECT gen_random_uuid(), $1, $2, false, false, false, 'pending', NOW(), NOW()
+		SELECT gen_random_uuid(), $1::uuid, $2::text, false, false, false, 'pending', NOW(), NOW()
 		WHERE NOT EXISTS (
-			SELECT 1 FROM mailing_sending_domains WHERE organization_id = $1 AND domain = $2
+			SELECT 1 FROM mailing_sending_domains WHERE organization_id = $1::uuid AND domain = $2::text
 		)
 	`, orgID, sendingDomain)
 	if err != nil {
