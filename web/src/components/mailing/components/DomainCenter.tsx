@@ -26,6 +26,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { SendingProfiles } from './SendingProfiles';
 import { TrackingDomainManager } from './TrackingDomainManager';
 import { ImageDomainManager } from './ImageDomainManager';
+import { OnboardSendingDomain } from './OnboardSendingDomain';
 import { SideShelf } from './shared/SideShelf';
 import './DomainCenter.css';
 
@@ -33,7 +34,7 @@ import './DomainCenter.css';
 // TYPES
 // ============================================================================
 
-type ViewMode = 'dashboard' | 'sending' | 'tracking' | 'image-cdn';
+type ViewMode = 'dashboard' | 'sending' | 'tracking' | 'image-cdn' | 'onboard';
 
 interface DomainStats {
   sendingProfiles: number;
@@ -249,6 +250,8 @@ export const DomainCenter: React.FC = () => {
         return <TrackingDomainManager />;
       case 'image-cdn':
         return <ImageDomainManager />;
+      case 'onboard':
+        return <OnboardSendingDomain onNavigateToProfiles={() => navigateTo('sending')} />;
       default:
         return null;
     }
@@ -273,6 +276,7 @@ export const DomainCenter: React.FC = () => {
               {viewMode === 'sending' && 'Sending Domains'}
               {viewMode === 'tracking' && 'Tracking Domains'}
               {viewMode === 'image-cdn' && 'Image CDN'}
+              {viewMode === 'onboard' && 'Onboard Sending Domain'}
             </span>
           </>
         )}
@@ -450,6 +454,15 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
             <div className="domain-action-content">
               <strong>Image CDN</strong>
               <small>Custom image hosting domains for your emails</small>
+            </div>
+            <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
+          </button>
+
+          <button className="domain-action-card onboard ig-btn-glow ig-ripple" onClick={() => onNavigate('onboard')}>
+            <div className="domain-action-icon"><FontAwesomeIcon icon={faRocket} /></div>
+            <div className="domain-action-content">
+              <strong>Onboard Sending Domain</strong>
+              <small>One action: SES tenant profile + owned domain + segment family</small>
             </div>
             <span className="domain-action-arrow"><FontAwesomeIcon icon={faArrowRight} /></span>
           </button>

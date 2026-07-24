@@ -274,6 +274,11 @@
   color: #00b894;
 }
 
+.domain-action-card.onboard .domain-action-icon {
+  background: rgba(253,203,110,0.12);
+  color: #fdcb6e;
+}
+
 .domain-action-content {
   flex: 1;
   min-width: 0;
