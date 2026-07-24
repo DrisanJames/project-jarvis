@@ -85,7 +85,7 @@ func lookupDMARCRecord(ctx context.Context, sendingDomain string) (bool, error) 
 // verifySESRoute performs the real SES verification and writes the result.
 // AWS/API failure responds 200 with verified=false + error populated
 // (matching the legacy "verification failed" semantics), never a 5xx.
-func (s *SendingProfileService) verifySESRoute(w http.ResponseWriter, r *http.Request, profileID string, sendingDomain *string) {
+func (s *SendingProfileService) verifySESRoute(w http.ResponseWriter, r *http.Request, profileID, orgID string, sendingDomain *string) {
 	if sendingDomain == nil || strings.TrimSpace(*sendingDomain) == "" {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "profile has no sending_domain to verify against SES"})
 		return
@@ -131,8 +131,8 @@ func (s *SendingProfileService) verifySESRoute(w http.ResponseWriter, r *http.Re
 			verification_error = $7,
 			status = $8,
 			updated_at = $9
-		WHERE id = $10
-	`, verified, spfOK, dkimOK, dmarcOK, domainOK, now, nilIfEmpty(verificationError), status, now, profileID)
+		WHERE id = $10 AND organization_id = $11
+	`, verified, spfOK, dkimOK, dmarcOK, domainOK, now, nilIfEmpty(verificationError), status, now, profileID, orgID)
 	if uerr != nil {
 		log.Printf("Error updating SES verification status: %v", uerr)
 	}

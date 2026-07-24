@@ -50,7 +50,7 @@ func TestOnboardSendingDomainCreatesEverything(t *testing.T) {
 	now := time.Now()
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT id::text FROM mailing_sending_profiles`).
+	mock.ExpectQuery(`SELECT id::text`).
 		WithArgs(spTestOrg, "em.wcl-heloc.com").
 		WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(`INSERT INTO mailing_sending_profiles`).
@@ -70,7 +70,7 @@ func TestOnboardSendingDomainCreatesEverything(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery(`SELECT id, organization_id, name, description, vendor_type`).
-		WithArgs("aaaaaaaa-0000-0000-0000-000000000001").
+		WithArgs("aaaaaaaa-0000-0000-0000-000000000001", spTestOrg).
 		WillReturnRows(onboardProfileRow(now))
 
 	body := `{"domain":"wcl-heloc.com","ses_configuration_set":"wcl-heloc","ses_tenant_name":"wcl-heloc"}`
@@ -117,9 +117,10 @@ func TestOnboardSendingDomainIdempotent(t *testing.T) {
 	mock.ExpectBegin()
 	// Probe finds the existing profile — NO INSERT INTO
 	// mailing_sending_profiles may follow (the idempotency guarantee).
-	mock.ExpectQuery(`SELECT id::text FROM mailing_sending_profiles`).
+	mock.ExpectQuery(`SELECT id::text`).
 		WithArgs(spTestOrg, "em.wcl-heloc.com").
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("aaaaaaaa-0000-0000-0000-000000000001"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "domain_verified", "dkim_verified"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", false, false))
 	mock.ExpectExec(`INSERT INTO mailing_sending_domains`).
 		WithArgs(spTestOrg, "em.wcl-heloc.com").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -131,7 +132,7 @@ func TestOnboardSendingDomainIdempotent(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 	mock.ExpectQuery(`SELECT id, organization_id, name, description, vendor_type`).
-		WithArgs("aaaaaaaa-0000-0000-0000-000000000001").
+		WithArgs("aaaaaaaa-0000-0000-0000-000000000001", spTestOrg).
 		WillReturnRows(onboardProfileRow(now))
 
 	body := `{"domain":"wcl-heloc.com","ses_configuration_set":"wcl-heloc","ses_tenant_name":"wcl-heloc"}`
@@ -155,6 +156,83 @@ func TestOnboardSendingDomainIdempotent(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations (idempotency — nothing may be created twice): %v", err)
+	}
+}
+
+// DoD #4 activation guard (onboard side): status=active on a brand-new domain
+// must 400 — a freshly-onboarded via_ses profile cannot have passed verify, so
+// only 'draft' is allowed on create. No profile INSERT may run.
+func TestOnboardSendingDomainActiveWithoutVerify400(t *testing.T) {
+	svc, mock := newSPService(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id::text`).
+		WithArgs(spTestOrg, "em.wcl-heloc.com").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	body := `{"domain":"wcl-heloc.com","ses_configuration_set":"wcl-heloc","ses_tenant_name":"wcl-heloc","status":"active"}`
+	req := httptest.NewRequest(http.MethodPost, "/sending-domains/onboard", strings.NewReader(body))
+	req.Header.Set("X-Organization-ID", spTestOrg)
+	rec := httptest.NewRecorder()
+	spRouter(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (cannot onboard active before verify); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "verify") {
+		t.Fatalf("error should name the verify precondition, got %s", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("no profile INSERT may run on a refused active onboard: %v", err)
+	}
+}
+
+// Positive path: re-onboarding an ALREADY-VERIFIED existing profile with
+// status=active is allowed (created=false, no new profile INSERT).
+func TestOnboardSendingDomainActiveAfterVerifyOK(t *testing.T) {
+	svc, mock := newSPService(t)
+	now := time.Now()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id::text`).
+		WithArgs(spTestOrg, "em.wcl-heloc.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "domain_verified", "dkim_verified"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", true, true))
+	mock.ExpectExec(`INSERT INTO mailing_sending_domains`).
+		WithArgs(spTestOrg, "em.wcl-heloc.com").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO mailing_owned_domains`).
+		WithArgs("wcl-heloc.com").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO mailing_segment_registry`).
+		WithArgs(spTestOrg, "wcl-heloc", "WCL-HELOC-%", "sending-domain onboard (operator)", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	mock.ExpectQuery(`SELECT id, organization_id, name, description, vendor_type`).
+		WithArgs("aaaaaaaa-0000-0000-0000-000000000001", spTestOrg).
+		WillReturnRows(onboardProfileRow(now))
+
+	body := `{"domain":"wcl-heloc.com","ses_configuration_set":"wcl-heloc","ses_tenant_name":"wcl-heloc","status":"active"}`
+	req := httptest.NewRequest(http.MethodPost, "/sending-domains/onboard", strings.NewReader(body))
+	req.Header.Set("X-Organization-ID", spTestOrg)
+	rec := httptest.NewRecorder()
+	spRouter(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (verified existing profile may be active); body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Created bool `json:"created"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Created {
+		t.Fatalf("re-onboard of existing profile must report created=false")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
 }
 

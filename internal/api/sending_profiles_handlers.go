@@ -363,8 +363,9 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 // HandleGetProfile returns a specific sending profile
 func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	orgID := resolveOrgID(r)
 
-	p, err := s.getProfileByID(r.Context(), profileID)
+	p, err := s.getProfileByID(r.Context(), profileID, orgID)
 	if err == sql.ErrNoRows {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
 		return
@@ -380,7 +381,7 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 // getProfileByID fetches one profile with credentials masked. Shared by
 // HandleGetProfile and the onboard endpoint's response. Returns
 // sql.ErrNoRows when the profile does not exist.
-func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID string) (*SendingProfile, error) {
+func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID, orgID string) (*SendingProfile, error) {
 	var p SendingProfile
 	var rawAPIKey *string
 	err := s.db.QueryRowContext(ctx, `
@@ -394,8 +395,8 @@ func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID st
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
 			   ip_pool, pool_prefix, status, is_default, created_at, updated_at,
 			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode
-		FROM mailing_sending_profiles WHERE id = $1
-	`, profileID).Scan(
+		FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2
+	`, profileID, orgID).Scan(
 		&p.ID, &p.OrganizationID, &p.Name, &p.Description, &p.VendorType,
 		&p.FromName, &p.FromEmail, &p.ReplyEmail,
 		&rawAPIKey, &p.APIEndpoint,
@@ -426,6 +427,7 @@ func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID st
 // HandleUpdateProfile updates a sending profile
 func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	orgID := resolveOrgID(r)
 
 	var input map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -481,17 +483,29 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Validate the SES routing invariant on the EFFECTIVE (merged) state:
-	// payload values overlaid on the current row. Without this, a two-step
+	// Is this PUT trying to move the profile to status='active'?
+	settingActive := false
+	if v, ok := input["status"]; ok {
+		if st, isStr := v.(string); isStr && strings.EqualFold(strings.TrimSpace(st), "active") {
+			settingActive = true
+		}
+	}
+
+	// Validate the SES routing invariant AND the activation guard on the
+	// EFFECTIVE (merged) state: payload values overlaid on the current row. A
+	// single org-scoped read serves both. Without the routing check, a two-step
 	// "create then update via_ses=true" could persist a profile the planner
-	// preflight (ses_routing_fields) hard-fails on every deploy.
-	if hasAnySESField(input) {
-		var curViaSES bool
+	// preflight (ses_routing_fields) hard-fails on every deploy. Without the
+	// activation guard (DoD #4), a via_ses profile could reach 'active' without
+	// a passing SES verify and then fail at SES on every send.
+	if hasAnySESField(input) || settingActive {
+		var curViaSES, curDomainVerified, curDKIMVerified bool
 		var curConfigSet, curTenant sql.NullString
 		err := s.db.QueryRowContext(r.Context(), `
-			SELECT COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name
-			FROM mailing_sending_profiles WHERE id = $1
-		`, profileID).Scan(&curViaSES, &curConfigSet, &curTenant)
+			SELECT COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name,
+			       COALESCE(domain_verified, false), COALESCE(dkim_verified, false)
+			FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2
+		`, profileID, orgID).Scan(&curViaSES, &curConfigSet, &curTenant, &curDomainVerified, &curDKIMVerified)
 		if err == sql.ErrNoRows {
 			respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
 			return
@@ -509,18 +523,27 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 			}
 			effViaSES = b
 		}
-		effConfigSet := mergeStringField(input, "ses_configuration_set", curConfigSet.String)
-		effTenant := mergeStringField(input, "ses_tenant_name", curTenant.String)
-		if err := validateSESRoutingFields(effViaSES, effConfigSet, effTenant); err != nil {
-			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if v, ok := input["routing_mode"]; ok && v != nil {
-			rm, isStr := v.(string)
-			if !isStr || !validRoutingMode(rm) {
-				respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid routing_mode. Must be empty or 'kumo'"})
+		if hasAnySESField(input) {
+			effConfigSet := mergeStringField(input, "ses_configuration_set", curConfigSet.String)
+			effTenant := mergeStringField(input, "ses_tenant_name", curTenant.String)
+			if err := validateSESRoutingFields(effViaSES, effConfigSet, effTenant); err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			if v, ok := input["routing_mode"]; ok && v != nil {
+				rm, isStr := v.(string)
+				if !isStr || !validRoutingMode(rm) {
+					respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid routing_mode. Must be empty or 'kumo'"})
+					return
+				}
+			}
+		}
+		// Activation guard (DoD #4): refuse activating a via_ses route that has
+		// not passed verify (domain + DKIM confirmed). Draft/paused status and
+		// non-via_ses profiles are unaffected.
+		if settingActive && effViaSES && !(curDomainVerified && curDKIMVerified) {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "SES profile must pass /verify before activation"})
+			return
 		}
 	}
 
@@ -529,11 +552,13 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 	args = append(args, time.Now())
 	argNum++
 
-	// Add WHERE clause
+	// Add WHERE clause (org-scoped so a profile can only be mutated by its org).
 	args = append(args, profileID)
+	orgArgNum := argNum + 1
+	args = append(args, orgID)
 
-	query := fmt.Sprintf("UPDATE mailing_sending_profiles SET %s WHERE id = $%d",
-		strings.Join(updates, ", "), argNum)
+	query := fmt.Sprintf("UPDATE mailing_sending_profiles SET %s WHERE id = $%d AND organization_id = $%d",
+		strings.Join(updates, ", "), argNum, orgArgNum)
 
 	result, err := s.db.ExecContext(r.Context(), query, args...)
 	if err != nil {
@@ -553,6 +578,7 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 // HandleDeleteProfile deletes a sending profile
 func (s *SendingProfileService) HandleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	orgID := resolveOrgID(r)
 
 	// Check if profile is used by any campaigns
 	var count int
@@ -567,7 +593,7 @@ func (s *SendingProfileService) HandleDeleteProfile(w http.ResponseWriter, r *ht
 	}
 
 	result, err := s.db.ExecContext(r.Context(),
-		"DELETE FROM mailing_sending_profiles WHERE id = $1", profileID)
+		"DELETE FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2", profileID, orgID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -585,14 +611,15 @@ func (s *SendingProfileService) HandleDeleteProfile(w http.ResponseWriter, r *ht
 // HandleVerifyCredentials verifies the ESP credentials
 func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	orgID := resolveOrgID(r)
 
 	// Get profile details
 	var vendorType, apiKey string
 	var smtpHost, sendingDomain *string
 	var viaSES bool
 	err := s.db.QueryRowContext(r.Context(),
-		"SELECT vendor_type, COALESCE(api_key, ''), smtp_host, COALESCE(via_ses, false), sending_domain FROM mailing_sending_profiles WHERE id = $1",
-		profileID).Scan(&vendorType, &apiKey, &smtpHost, &viaSES, &sendingDomain)
+		"SELECT vendor_type, COALESCE(api_key, ''), smtp_host, COALESCE(via_ses, false), sending_domain FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2",
+		profileID, orgID).Scan(&vendorType, &apiKey, &smtpHost, &viaSES, &sendingDomain)
 
 	if err == sql.ErrNoRows {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
@@ -602,7 +629,7 @@ func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r
 	// SES routes (via_ses tenant profiles AND plain vendor_type='ses') get a
 	// REAL identity check against SES + DNS (G5) instead of the legacy no-op.
 	if viaSES || vendorType == "ses" {
-		s.verifySESRoute(w, r, profileID, sendingDomain)
+		s.verifySESRoute(w, r, profileID, orgID, sendingDomain)
 		return
 	}
 
@@ -657,14 +684,14 @@ func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r
 	}
 
 	_, err = s.db.ExecContext(r.Context(), `
-		UPDATE mailing_sending_profiles 
-		SET credentials_verified = $1, 
-			last_verification_at = $2, 
+		UPDATE mailing_sending_profiles
+		SET credentials_verified = $1,
+			last_verification_at = $2,
 			verification_error = $3,
 			status = $4,
 			updated_at = $5
-		WHERE id = $6
-	`, verified, now, nilIfEmpty(verificationError), status, now, profileID)
+		WHERE id = $6 AND organization_id = $7
+	`, verified, now, nilIfEmpty(verificationError), status, now, profileID, orgID)
 
 	if err != nil {
 		log.Printf("Error updating verification status: %v", err)
@@ -681,11 +708,13 @@ func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r
 // HandleSetDefault sets a profile as the default
 func (s *SendingProfileService) HandleSetDefault(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	reqOrgID := resolveOrgID(r)
 
-	// Get organization ID
+	// Get organization ID — scoped to the request's org so one org cannot flip
+	// another org's profile to default.
 	var orgID uuid.UUID
 	err := s.db.QueryRowContext(r.Context(),
-		"SELECT organization_id FROM mailing_sending_profiles WHERE id = $1", profileID).Scan(&orgID)
+		"SELECT organization_id FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2", profileID, reqOrgID).Scan(&orgID)
 	if err == sql.ErrNoRows {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
 		return
@@ -697,8 +726,8 @@ func (s *SendingProfileService) HandleSetDefault(w http.ResponseWriter, r *http.
 
 	// Set this one as default
 	_, err = s.db.ExecContext(r.Context(),
-		"UPDATE mailing_sending_profiles SET is_default = TRUE, updated_at = $1 WHERE id = $2",
-		time.Now(), profileID)
+		"UPDATE mailing_sending_profiles SET is_default = TRUE, updated_at = $1 WHERE id = $2 AND organization_id = $3",
+		time.Now(), profileID, orgID)
 
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -711,6 +740,7 @@ func (s *SendingProfileService) HandleSetDefault(w http.ResponseWriter, r *http.
 // HandleGetProfileUsage returns usage statistics for a profile
 func (s *SendingProfileService) HandleGetProfileUsage(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
+	orgID := resolveOrgID(r)
 
 	// Get campaign count using this profile
 	var campaignCount int
@@ -724,11 +754,11 @@ func (s *SendingProfileService) HandleGetProfileUsage(w http.ResponseWriter, r *
 		FROM mailing_profile_usage WHERE profile_id = $1
 	`, profileID).Scan(&totalSent, &totalDelivered, &totalBounced)
 
-	// Get current limits
+	// Get current limits (org-scoped)
 	var hourlyLimit, dailyLimit, currentHourly, currentDaily int
 	s.db.QueryRowContext(r.Context(),
-		"SELECT hourly_limit, daily_limit, current_hourly_count, current_daily_count FROM mailing_sending_profiles WHERE id = $1",
-		profileID).Scan(&hourlyLimit, &dailyLimit, &currentHourly, &currentDaily)
+		"SELECT hourly_limit, daily_limit, current_hourly_count, current_daily_count FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2",
+		profileID, orgID).Scan(&hourlyLimit, &dailyLimit, &currentHourly, &currentDaily)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"profile_id":     profileID,
@@ -899,6 +929,18 @@ func (s *SendingProfileService) HandleRemoveListDefault(w http.ResponseWriter, r
 	}
 
 	respondJSON(w, http.StatusOK, map[string]string{"message": "List default removed"})
+}
+
+// resolveOrgID returns the request's organization ID as a string, falling back
+// to the single-tenant default — the same pattern HandleOnboardSendingDomain and
+// the list/create handlers use. Used to org-scope the by-id profile handlers so
+// one org cannot read or mutate another org's profile (AS-5.2).
+func resolveOrgID(r *http.Request) string {
+	orgID, err := GetOrgIDStringFromRequest(r)
+	if err != nil || orgID == "" {
+		return defaultOrgID
+	}
+	return orgID
 }
 
 // Helper functions

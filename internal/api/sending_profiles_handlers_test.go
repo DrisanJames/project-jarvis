@@ -111,8 +111,8 @@ func TestUpdateProfileViaSESMergedValidation400(t *testing.T) {
 
 	// Current row has no SES fields; flipping via_ses on alone must 400.
 	mock.ExpectQuery(`SELECT COALESCE\(via_ses, false\), ses_configuration_set, ses_tenant_name`).
-		WithArgs(pid).
-		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn"}).AddRow(false, nil, nil))
+		WithArgs(pid, spTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn", "dv", "dkv"}).AddRow(false, nil, nil, false, false))
 
 	req := httptest.NewRequest(http.MethodPut, "/sending-profiles/"+pid, strings.NewReader(`{"via_ses":true}`))
 	rec := httptest.NewRecorder()
@@ -131,8 +131,8 @@ func TestUpdateProfileViaSESWithFieldsOK(t *testing.T) {
 	const pid = "aaaaaaaa-0000-0000-0000-000000000001"
 
 	mock.ExpectQuery(`SELECT COALESCE\(via_ses, false\), ses_configuration_set, ses_tenant_name`).
-		WithArgs(pid).
-		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn"}).AddRow(false, nil, nil))
+		WithArgs(pid, spTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn", "dv", "dkv"}).AddRow(false, nil, nil, false, false))
 	mock.ExpectExec(`UPDATE mailing_sending_profiles SET`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -143,6 +143,85 @@ func TestUpdateProfileViaSESWithFieldsOK(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// ── DoD #4: activation guard — a via_ses profile cannot reach 'active'
+//    without a passing SES verify (negative + positive + non-via_ses paths) ──
+
+// Negative path: PUT status=active on an unverified via_ses row must 400 and
+// run NO update.
+func TestUpdateProfileViaSESActivateWithoutVerify400(t *testing.T) {
+	svc, mock := newSPService(t)
+	const pid = "aaaaaaaa-0000-0000-0000-000000000001"
+
+	// Current row: via_ses=true but domain/dkim NOT verified.
+	mock.ExpectQuery(`SELECT COALESCE\(via_ses, false\), ses_configuration_set, ses_tenant_name`).
+		WithArgs(pid, spTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn", "dv", "dkv"}).AddRow(true, "wcl-heloc", "wcl-heloc", false, false))
+
+	req := httptest.NewRequest(http.MethodPut, "/sending-profiles/"+pid, strings.NewReader(`{"status":"active"}`))
+	req.Header.Set("X-Organization-ID", spTestOrg)
+	rec := httptest.NewRecorder()
+	spRouter(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (unverified via_ses cannot activate); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "verify") {
+		t.Fatalf("error should name the verify precondition, got %s", rec.Body.String())
+	}
+	// The refusal must trip BEFORE any UPDATE — no UPDATE was expected.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("no UPDATE may run on a refused activation: %v", err)
+	}
+}
+
+// Positive path: PUT status=active on a verified via_ses row proceeds to UPDATE.
+func TestUpdateProfileViaSESActivateAfterVerifyOK(t *testing.T) {
+	svc, mock := newSPService(t)
+	const pid = "aaaaaaaa-0000-0000-0000-000000000001"
+
+	mock.ExpectQuery(`SELECT COALESCE\(via_ses, false\), ses_configuration_set, ses_tenant_name`).
+		WithArgs(pid, spTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn", "dv", "dkv"}).AddRow(true, "wcl-heloc", "wcl-heloc", true, true))
+	mock.ExpectExec(`UPDATE mailing_sending_profiles SET`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := httptest.NewRequest(http.MethodPut, "/sending-profiles/"+pid, strings.NewReader(`{"status":"active"}`))
+	req.Header.Set("X-Organization-ID", spTestOrg)
+	rec := httptest.NewRecorder()
+	spRouter(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (verified via_ses may activate); body=%s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// Guard must NOT over-reach: a non-via_ses profile activates without any verify.
+func TestUpdateProfileNonSESActivateAllowed(t *testing.T) {
+	svc, mock := newSPService(t)
+	const pid = "aaaaaaaa-0000-0000-0000-000000000001"
+
+	mock.ExpectQuery(`SELECT COALESCE\(via_ses, false\), ses_configuration_set, ses_tenant_name`).
+		WithArgs(pid, spTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"via_ses", "cs", "tn", "dv", "dkv"}).AddRow(false, nil, nil, false, false))
+	mock.ExpectExec(`UPDATE mailing_sending_profiles SET`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	req := httptest.NewRequest(http.MethodPut, "/sending-profiles/"+pid, strings.NewReader(`{"status":"active"}`))
+	req.Header.Set("X-Organization-ID", spTestOrg)
+	rec := httptest.NewRecorder()
+	spRouter(svc).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (non-via_ses activation is unaffected); body=%s", rec.Code, rec.Body.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
@@ -227,11 +306,11 @@ func TestVerifySESRouteWritesIdentityColumns(t *testing.T) {
 	svc.dmarcLookup = func(ctx context.Context, domain string) (bool, error) { return true, nil }
 
 	mock.ExpectQuery(`SELECT vendor_type, COALESCE\(api_key, ''\), smtp_host, COALESCE\(via_ses, false\), sending_domain`).
-		WithArgs(pid).
+		WithArgs(pid, spTestOrg).
 		WillReturnRows(sqlmock.NewRows([]string{"vendor_type", "api_key", "smtp_host", "via_ses", "sending_domain"}).
 			AddRow("pmta", "", nil, true, "em.wcl-heloc.com"))
 	mock.ExpectExec(`UPDATE mailing_sending_profiles\s+SET credentials_verified`).
-		WithArgs(true, true, true, true, true, sqlmock.AnyArg(), nil, "active", sqlmock.AnyArg(), pid).
+		WithArgs(true, true, true, true, true, sqlmock.AnyArg(), nil, "active", sqlmock.AnyArg(), pid, spTestOrg).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := httptest.NewRequest(http.MethodPost, "/sending-profiles/"+pid+"/verify", nil)
@@ -265,11 +344,11 @@ func TestVerifySESRouteAWSFailureIsTruthful(t *testing.T) {
 	svc.dmarcLookup = func(ctx context.Context, domain string) (bool, error) { return false, errors.New("nxdomain") }
 
 	mock.ExpectQuery(`SELECT vendor_type, COALESCE\(api_key, ''\), smtp_host, COALESCE\(via_ses, false\), sending_domain`).
-		WithArgs(pid).
+		WithArgs(pid, spTestOrg).
 		WillReturnRows(sqlmock.NewRows([]string{"vendor_type", "api_key", "smtp_host", "via_ses", "sending_domain"}).
 			AddRow("ses", "", nil, false, "em.wcl-heloc.com"))
 	mock.ExpectExec(`UPDATE mailing_sending_profiles\s+SET credentials_verified`).
-		WithArgs(false, false, false, false, false, sqlmock.AnyArg(), sqlmock.AnyArg(), "pending", sqlmock.AnyArg(), pid).
+		WithArgs(false, false, false, false, false, sqlmock.AnyArg(), sqlmock.AnyArg(), "pending", sqlmock.AnyArg(), pid, spTestOrg).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	req := httptest.NewRequest(http.MethodPost, "/sending-profiles/"+pid+"/verify", nil)

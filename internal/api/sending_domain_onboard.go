@@ -149,16 +149,35 @@ func (s *SendingProfileService) HandleOnboardSendingDomain(w http.ResponseWriter
 	defer tx.Rollback()
 
 	// Idempotency probe: an existing via_ses pmta profile for this
-	// (org, sending_domain) means the domain is already onboarded.
+	// (org, sending_domain) means the domain is already onboarded. We also read
+	// its verify state so the activation guard below can consult it.
 	var profileID string
+	var existDomainVerified, existDKIMVerified bool
 	created := false
-	err = tx.QueryRowContext(r.Context(), `
-		SELECT id::text FROM mailing_sending_profiles
+	probeErr := tx.QueryRowContext(r.Context(), `
+		SELECT id::text, COALESCE(domain_verified, false), COALESCE(dkim_verified, false)
+		FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND sending_domain = $2
 		  AND vendor_type = 'pmta' AND COALESCE(via_ses, false) = true
 		ORDER BY created_at ASC LIMIT 1
-	`, orgID, sendingDomain).Scan(&profileID)
-	if err == sql.ErrNoRows {
+	`, orgID, sendingDomain).Scan(&profileID, &existDomainVerified, &existDKIMVerified)
+	if probeErr != nil && probeErr != sql.ErrNoRows {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": probeErr.Error()})
+		return
+	}
+	profileExists := probeErr == nil
+
+	// Activation guard (DoD #4): onboarded profiles are via_ses=true by
+	// construction, so 'active' is only permitted when an existing profile has
+	// already passed verify (domain + DKIM confirmed). A brand-new profile
+	// cannot be verified yet, so 'active' on create is REFUSED — the default
+	// 'draft' keeps it invisible to the planner until the operator verifies.
+	if status == "active" && !(profileExists && existDomainVerified && existDKIMVerified) {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "SES profile must pass /verify before activation"})
+		return
+	}
+
+	if !profileExists {
 		err = tx.QueryRowContext(r.Context(), `
 			INSERT INTO mailing_sending_profiles (
 				organization_id, name, vendor_type, from_name, from_email, reply_email,
@@ -176,9 +195,6 @@ func (s *SendingProfileService) HandleOnboardSendingDomain(w http.ResponseWriter
 			return
 		}
 		created = true
-	} else if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
 	}
 
 	// Companion rows — each idempotent, each reporting whether it was added.
@@ -232,7 +248,7 @@ func (s *SendingProfileService) HandleOnboardSendingDomain(w http.ResponseWriter
 	// other instance within one refresh interval.
 	brand.Register(apex)
 
-	profile, err := s.getProfileByID(r.Context(), profileID)
+	profile, err := s.getProfileByID(r.Context(), profileID, orgID)
 	if err != nil {
 		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "onboarded but profile fetch failed: " + err.Error()})
 		return
