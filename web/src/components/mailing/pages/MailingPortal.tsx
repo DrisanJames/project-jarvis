@@ -6,7 +6,7 @@ import {
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faSeedling, faWandMagicSparkles,
-  faTruckFast, faFire, faTriangleExclamation, faRoute, faLink,
+  faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -56,6 +56,7 @@ const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
 const SmartLinkManager = lazy(() => import('../components/SmartLinkManager').then(m => ({ default: m.SmartLinkManager })));
+const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -64,7 +65,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations';
 
 interface Tab {
   id: TabId;
@@ -93,6 +94,7 @@ const tabs: Tab[] = [
   { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, description: 'The AI insights and strategy behind your campaigns.' },
   { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Manage inbound data-partner connections — access keys, submitted lists, automated follow-ups and creatives.' },
   { id: 'outbox', label: 'Delivery Queue', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
+  { id: 'operations', label: 'Operations', icon: faGears, description: 'Platform ownership console — job and worker health, segment-family freshness vs SLA, nightly send-day invariants and engager cohort growth.' },
 ];
 
 interface VersionInfo {
@@ -243,6 +245,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
       case 'cpm-planner':
         return <Suspense fallback={<ChunkLoader />}><CpmPlanner /></Suspense>;
+      case 'operations':
+        return <Suspense fallback={<ChunkLoader />}><OperationsConsole /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
