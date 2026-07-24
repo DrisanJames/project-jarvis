@@ -107,6 +107,10 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/estimate-audience", s.HandleEstimateAudience)
 		cr.Post("/deploy", s.HandleDeployCampaign)
 		cr.Post("/dry-run", s.HandleDryRunCampaign)
+		// Promote post-conditions gate (Coalition WS2, REQ-C18). Read-only —
+		// the stage/promote CLI polls it after deploy; see
+		// tasks/eng-team/coalition/SCHEMA-CONTRACTS.md §4.
+		cr.Post("/verify", s.HandleVerifyCampaigns)
 		cr.Get("/deploy-dynamic-test", s.HandleDeployDynamicTagsTest)
 		cr.Get("/wave-content-test", s.HandleWaveContentTest)
 		cr.Get("/wave-content-cache", s.HandleWaveContentCache)
