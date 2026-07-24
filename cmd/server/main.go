@@ -38,6 +38,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
@@ -468,6 +469,17 @@ func main() {
 		}
 
 		if dbReachable {
+
+			// Load the DB-backed owned-domains registry (union with the
+			// hardcoded brand.OwnedDomains; failure keeps the compiled-in
+			// list — no behavior change) and keep it refreshed so a newly
+			// onboarded sending domain needs no Go redeploy (audit G6).
+			if err := brand.RefreshFromDB(ctx, mailingDB); err != nil {
+				log.Printf("Owned-domains registry load failed (using compiled-in list): %v", err)
+			} else {
+				log.Printf("Owned-domains registry loaded (%d domains, 5m refresh)", len(brand.Domains()))
+			}
+			brand.StartRefresher(ctx, mailingDB, 5*time.Minute)
 
 			// Start Backpressure Monitor
 			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
@@ -2190,6 +2202,18 @@ func ensureConcurrentIndexes(db *sql.DB) {
 // the scheduler and send workers start. These are idempotent and safe to
 // re-run on every boot. Uses a PostgreSQL advisory lock so only one ECS
 // task runs migrations at a time during rolling deployments.
+// ownedDomainsSeedSQL generates the mailing_owned_domains seed from the
+// compile-time brand.OwnedDomains list — one source of truth (AS-2.1): the
+// seed can never drift from the Go list because it IS the Go list.
+func ownedDomainsSeedSQL() string {
+	vals := make([]string, 0, len(brand.OwnedDomains))
+	for _, d := range brand.OwnedDomains {
+		vals = append(vals, fmt.Sprintf("('%s', 'seed')", strings.ReplaceAll(d, "'", "''")))
+	}
+	return "INSERT INTO mailing_owned_domains (domain, source) VALUES " +
+		strings.Join(vals, ", ") + " ON CONFLICT (domain) DO NOTHING"
+}
+
 func runStartupMigrations(db *sql.DB) {
 	const migrationLockID = 8675309 // arbitrary but stable
 	// Hold the advisory lock on a DEDICATED connection pinned for the entire
@@ -3041,6 +3065,57 @@ func runStartupMigrations(db *sql.DB) {
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_sending_domains
 				WHERE domain = 'm.refinanceratesusa.com'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+
+		// ── DB-backed owned-domains registry (sending-domain onboarding, G6) ──
+		// Effective list in Go = union(brand.OwnedDomains hardcoded, this
+		// table) via brand.RefreshFromDB — table unreadable ⇒ identical
+		// behavior to the compiled-in list. Seed is GENERATED from
+		// brand.OwnedDomains (single source of truth, no copy-paste drift);
+		// the onboard endpoint appends rows with source='onboard'.
+		{"create_owned_domains", `CREATE TABLE IF NOT EXISTS mailing_owned_domains (
+			domain     TEXT PRIMARY KEY,
+			source     TEXT NOT NULL DEFAULT 'seed',
+			active     BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"seed_owned_domains", ownedDomainsSeedSQL()},
+
+		// ── wcl-heloc.com first-party SES onboarding (jul 2026) ──
+		// Cloned from seed_pmta_db_ses_tenant_profile. SES identity
+		// em.wcl-heloc.com (runbook estate convention; DNS + config set +
+		// tenant 'wcl-heloc' provisioned by the Cloudflare agent).
+		// status='draft' — the operator verifies (+activates) via the portal;
+		// a draft profile is invisible to the planner's by-domain resolver
+		// (status='active' filter), so this seed cannot affect live sends.
+		// from_name is a placeholder pending the operator's persona choice.
+		{"seed_pmta_wclheloc_ses_tenant_profile", `INSERT INTO mailing_sending_profiles
+			(id, organization_id, name, vendor_type, from_name, from_email, reply_email,
+			 sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain,
+			 hourly_limit, daily_limit, ip_pool, status, is_default,
+			 via_ses, ses_configuration_set, ses_tenant_name,
+			 created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'WCL HELOC (SES Tenant)', 'pmta', 'WCL HELOC',
+				'hello@em.wcl-heloc.com', 'reply@em.wcl-heloc.com',
+				'em.wcl-heloc.com', '15.204.101.125', 587,
+				'http://15.204.101.125:19099', 't.em.wcl-heloc.com',
+				1000, 25000, 'wcl-heloc-ses-pool', 'draft', false,
+				true, 'wcl-heloc', 'wcl-heloc',
+				NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_profiles
+				WHERE name = 'WCL HELOC (SES Tenant)'
+				  AND organization_id = '00000000-0000-0000-0000-000000000001'
+			)`},
+		{"seed_ses_wclheloc_sending_domain", `INSERT INTO mailing_sending_domains
+			(id, organization_id, domain, dkim_verified, spf_verified, dmarc_verified, status, created_at, updated_at)
+			SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001',
+				'em.wcl-heloc.com', true, true, true, 'verified', NOW(), NOW()
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_sending_domains
+				WHERE domain = 'em.wcl-heloc.com'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
 
