@@ -552,7 +552,9 @@ func brandRootFromCode(brandCode string) string {
 	// owned domain (discount-blog -> discountblog -> discountblog.com).
 	collapsed := nonAlnumRe.ReplaceAllString(lc, "")
 	if collapsed != "" {
-		for _, od := range brand.OwnedDomains {
+		// Domains() is the DB-backed union (hardcoded OwnedDomains + onboarded
+		// rows), so a registry-only domain is recognized consistently here.
+		for _, od := range brand.Domains() {
 			base := strings.Split(od, ".")[0]
 			if base == collapsed {
 				return od
@@ -568,7 +570,7 @@ var nonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
 // operate). brand.Root returns its input unchanged for unknown domains, so this
 // distinguishes "resolved to an owned apex" from "passed through unknown".
 func isOwnedBrandRoot(root string) bool {
-	for _, od := range brand.OwnedDomains {
+	for _, od := range brand.Domains() {
 		if od == root {
 			return true
 		}
