@@ -195,6 +195,14 @@ type pmtaPlanWarning struct {
 // (inclusion) or 0 exclusion emails (exclusion) at plan time.
 const planWarnSegmentZeroMembers = "segment_zero_members"
 
+// planWarnReserveShortfall (REQ-C17): a segment_reserves entry accepted fewer
+// recipients than its declared reserve during the reserved-first pass. The
+// plan proceeds (unfilled seats fall through to the remaining sources — never
+// a mid-flight 0-recipient hard failure), but the shortfall is LOUD: this
+// structured warning persists with the plan, and the promote post-conditions
+// verify endpoint FAILs the campaign's reserve_fill check against it.
+const planWarnReserveShortfall = "reserve_shortfall"
+
 // segmentBuildFailClosedDisabled is the REQ-043 kill switch. Set
 // DISABLE_SEGMENT_BUILD_FAIL_CLOSED=true to revert a 0-member EXCLUSION
 // segment with no verified successful build to the legacy warn-and-skip
@@ -317,6 +325,18 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 	}
 	if sendMode != "immediate" && sendMode != "scheduled" {
 		return pmtaNormalizedCampaign{}, fmt.Errorf("send_mode must be 'immediate' or 'scheduled'")
+	}
+
+	// Segment reserves (REQ-C17): validate at the door so a malformed
+	// reservation is a 400 at deploy, never a silent no-op at plan time.
+	// Absent/empty slice = zero iterations = today's behavior untouched.
+	for i, sr := range input.SegmentReserves {
+		if strings.TrimSpace(sr.SegmentID) == "" {
+			return pmtaNormalizedCampaign{}, fmt.Errorf("segment_reserves[%d]: segment_id is required", i)
+		}
+		if sr.Reserve <= 0 {
+			return pmtaNormalizedCampaign{}, fmt.Errorf("segment_reserves[%d] (segment %s): reserve must be > 0", i, sr.SegmentID)
+		}
 	}
 
 	defaultTZ := strings.TrimSpace(input.Timezone)
@@ -1069,9 +1089,15 @@ func planPMTAAudience(
 		return nil
 	}
 
-	streamSegment := func(segmentID string) error {
+	// streamSegmentN streams one segment's members through qualifyEmail.
+	// maxAccept > 0 caps the ACCEPTED draw at that many recipients (REQ-C17
+	// reserved-first capped draws); maxAccept == 0 preserves the original
+	// uncapped behavior byte-for-byte. Returns how many recipients this call
+	// accepted (used by the reserve-shortfall check).
+	streamSegmentN := func(segmentID string, maxAccept int) (int, error) {
+		accepted := 0
 		if allQuotasMet() {
-			return nil
+			return accepted, nil
 		}
 		// ONE members read (REQ-043 DoD-3): emptiness is derived from the
 		// row loop instead of a separate COUNT(*), so a rebuild or cleanup
@@ -1109,7 +1135,7 @@ func planPMTAAudience(
 		rows, err := db.QueryContext(ctx, segQuery, segmentID)
 		if err != nil {
 			log.Printf("[PlanAudience] segment %s materialized read error: %v, skipping", segmentID, err)
-			return nil
+			return accepted, nil
 		}
 		defer rows.Close()
 		matCount := 0
@@ -1118,7 +1144,16 @@ func planPMTAAudience(
 			matCount++
 			var subID, email string
 			if rows.Scan(&subID, &email) == nil {
-				qualifyEmail(subID, email, "segment", segmentID)
+				if qualifyEmail(subID, email, "segment", segmentID) {
+					accepted++
+				}
+			}
+			// REQ-C17 reserved-draw cap: stop once this segment has accepted
+			// its reserve. quotasCut suppresses the zero-members warning path
+			// (accepted >= maxAccept > 0 implies matCount > 0 anyway).
+			if maxAccept > 0 && accepted >= maxAccept {
+				quotasCut = true
+				break
 			}
 			if allQuotasMet() {
 				quotasCut = true
@@ -1127,7 +1162,7 @@ func planPMTAAudience(
 		}
 		if rowsErr := rows.Err(); rowsErr != nil {
 			log.Printf("[PlanAudience] segment %s materialized read error after %d rows: %v, skipping", segmentID, matCount, rowsErr)
-			return nil
+			return accepted, nil
 		}
 		if matCount == 0 && !quotasCut {
 			// REQ-043 DoD-2: a 0-member inclusion segment is a structured,
@@ -1143,7 +1178,50 @@ func planPMTAAudience(
 			})
 			log.Printf("[PlanAudience] WARNING: segment %s contributed 0 materialized members — %s", segmentID, detail)
 		}
-		return nil
+		return accepted, nil
+	}
+	streamSegment := func(segmentID string) error {
+		_, err := streamSegmentN(segmentID, 0)
+		return err
+	}
+
+	// ── Segment reserves (REQ-C17) — reserved-first capped draws ──
+	// Runs BEFORE every audience-source branch below (master-selection
+	// hybrid prelude, send_priority, and the plain inclusion loops), so a
+	// reserved segment gets its floor before ANY other source can drain the
+	// ISP quotas — the fix for the fresh-drew-zero class (Lane 3 F5).
+	// Guarded by len()>0: an absent/empty field leaves the planner
+	// byte-identical to pre-change behavior (golden-tested). Draws are
+	// capped at each entry's reserve; the same segment participates again
+	// uncapped in its normal source position (seenEmails dedup prevents
+	// double-selection), so unfilled reserve seats fall through to the
+	// remaining sources. Shortfalls are LOUD: structured plan warning +
+	// the promote verify endpoint fails reserve_fill against the floor.
+	if len(input.SegmentReserves) > 0 {
+		reserveStart := time.Now()
+		log.Printf("[PlanAudience/reserves] reserved-first pass start — %d reserved segment(s)", len(input.SegmentReserves))
+		for i, sr := range input.SegmentReserves {
+			segID := strings.TrimSpace(sr.SegmentID)
+			if allQuotasMet() {
+				log.Printf("[PlanAudience/reserves] all quotas met before reserve %d/%d (%s) — remaining reserves cannot fill", i+1, len(input.SegmentReserves), safePrefix(segID, 36))
+			}
+			accepted, err := streamSegmentN(segID, sr.Reserve)
+			if err != nil {
+				log.Printf("[PlanAudience/reserves] reserve %d/%d segment %s stream error (continuing): %v", i+1, len(input.SegmentReserves), safePrefix(segID, 36), err)
+			}
+			if accepted < sr.Reserve {
+				addPlanWarning(pmtaPlanWarning{
+					Code:      planWarnReserveShortfall,
+					Scope:     "inclusion",
+					SegmentID: segID,
+					Detail:    fmt.Sprintf("reserved %d, accepted %d — unfilled seats fall through to remaining sources", sr.Reserve, accepted),
+				})
+				log.Printf("[PlanAudience/reserves] WARNING reserve_shortfall: segment %s reserved %d, accepted %d", safePrefix(segID, 36), sr.Reserve, accepted)
+			} else {
+				log.Printf("[PlanAudience/reserves] reserve %d/%d segment %s filled %d/%d", i+1, len(input.SegmentReserves), safePrefix(segID, 36), accepted, sr.Reserve)
+			}
+		}
+		log.Printf("[PlanAudience/reserves] reserved-first pass complete in %v, qualified=%d", time.Since(reserveStart), len(qualified))
 	}
 
 	// Master List Migration P3b/P5c — master-selection path.

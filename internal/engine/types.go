@@ -603,6 +603,24 @@ type PriorityItem struct {
 	Type string `json:"type"` // "list" or "segment"
 }
 
+// SegmentReserve reserves a floor for one inclusion segment's draw
+// (Coalition WS2, REQ-C17). The planner streams reserved segments FIRST, in
+// payload order, each capped at Reserve accepted recipients, before any other
+// audience source can drain the ISP quotas — the fix for the "fresh drew
+// zero" class (Lane 3 F5), where a segment listed late in the source order
+// silently got nothing. All qualification gates (suppression, dedup, per-ISP
+// quota) still apply to reserved draws; a shortfall records a structured
+// plan warning (code "reserve_shortfall") and the plan proceeds — the
+// unfilled seats fall through to the remaining sources.
+//
+// NOT the cap-aware "reserve pool" (IsReserve / RESERVE_POOL_MULTIPLIER over-
+// select substitution) — that is truncation mechanics; this is an input
+// contract. Contract: tasks/eng-team/coalition/SCHEMA-CONTRACTS.md §5.
+type SegmentReserve struct {
+	SegmentID string `json:"segment_id"`
+	Reserve   int    `json:"reserve"`
+}
+
 // PMTATimeSpanInput describes a delivery window for a single ISP plan.
 // It can be expressed either as an absolute span or as a weekly window.
 type PMTATimeSpanInput struct {
@@ -673,6 +691,9 @@ type PMTACampaignInput struct {
 	InclusionSegments []string               `json:"inclusion_segments"`
 	InclusionLists    []string               `json:"inclusion_lists"`
 	SendPriority      []PriorityItem         `json:"send_priority"`
+	// SegmentReserves is ADDITIVE (REQ-C17): absent/empty = planner behavior
+	// is byte-identical to pre-change (golden-tested). See SegmentReserve.
+	SegmentReserves []SegmentReserve `json:"segment_reserves,omitempty"`
 	ExclusionSegments []string               `json:"exclusion_segments"`
 	ExclusionLists    []string               `json:"exclusion_lists"`
 	SendDays          []string               `json:"send_days"`
