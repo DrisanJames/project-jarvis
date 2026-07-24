@@ -11,6 +11,7 @@ interface SendingProfile {
   from_email: string;
   reply_email?: string;
   sending_domain?: string;
+  tracking_domain?: string;
   hourly_limit: number;
   daily_limit: number;
   current_hourly_count: number;
@@ -19,10 +20,48 @@ interface SendingProfile {
   is_default: boolean;
   credentials_verified: boolean;
   domain_verified: boolean;
+  spf_verified?: boolean;
+  dkim_verified?: boolean;
+  dmarc_verified?: boolean;
+  via_ses?: boolean;
+  ses_configuration_set?: string;
+  ses_tenant_name?: string;
+  routing_mode?: string;
   created_at: string;
 }
 
+// Result of POST /{id}/verify. The backend returns per-field DNS/identity
+// verdicts (spf/dkim/dmarc/domain) alongside the credential check; fields the
+// server did not check come back undefined and render as "not checked" —
+// never as a green badge.
+interface VerifyResult {
+  verified?: boolean;
+  spf_verified?: boolean;
+  dkim_verified?: boolean;
+  dmarc_verified?: boolean;
+  domain_verified?: boolean;
+  error?: string;
+  checkedAt: string; // client-side timestamp of this verify run
+}
+
+// Normalize the verify response defensively: per-field verdicts may arrive
+// top-level or nested under `checks` depending on server build.
+function normalizeVerifyResponse(data: any): Omit<VerifyResult, 'checkedAt'> {
+  const src = data && typeof data === 'object' ? { ...(data.checks || {}), ...data } : {};
+  const pick = (k: string): boolean | undefined =>
+    typeof src[k] === 'boolean' ? src[k] : undefined;
+  return {
+    verified: pick('verified') ?? pick('credentials_verified'),
+    spf_verified: pick('spf_verified'),
+    dkim_verified: pick('dkim_verified'),
+    dmarc_verified: pick('dmarc_verified'),
+    domain_verified: pick('domain_verified'),
+    error: typeof src.error === 'string' ? src.error : (typeof src.verification_error === 'string' ? src.verification_error : undefined),
+  };
+}
+
 const VENDOR_TYPES = [
+  { value: 'pmta', label: 'PMTA (SES-routed)', icon: '🛰️' },
   { value: 'sparkpost', label: 'SparkPost', icon: '⚡' },
   { value: 'ses', label: 'AWS SES', icon: '☁️' },
   { value: 'mailgun', label: 'Mailgun', icon: '📧' },
@@ -30,27 +69,46 @@ const VENDOR_TYPES = [
   { value: 'smtp', label: 'Custom SMTP', icon: '🔌' },
 ];
 
+// routing_mode values understood by the send path: '' = server default
+// (PMTA bridge / SES per via_ses), 'kumo' = KumoMTA transport.
+const ROUTING_MODES = [
+  { value: '', label: 'Default (PMTA bridge / SES)' },
+  { value: 'kumo', label: 'KumoMTA' },
+];
+
 export const SendingProfiles: React.FC = () => {
   const { organization } = useAuth();
   const [profiles, setProfiles] = useState<SendingProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingProfile, setEditingProfile] = useState<SendingProfile | null>(null);
   const [verifying, setVerifying] = useState<string | null>(null);
+  const [verifyResults, setVerifyResults] = useState<Record<string, VerifyResult>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // Form state
-  const [form, setForm] = useState({
+  const EMPTY_FORM = {
     name: '',
     description: '',
-    vendor_type: 'sparkpost',
+    vendor_type: 'pmta',
     from_name: '',
     from_email: '',
     reply_email: '',
     api_key: '',
     sending_domain: '',
+    tracking_domain: '',
     hourly_limit: 10000,
     daily_limit: 100000,
-  });
+    via_ses: false,
+    ses_configuration_set: '',
+    ses_tenant_name: '',
+    routing_mode: '',
+  };
+
+  // Form state
+  const [form, setForm] = useState({ ...EMPTY_FORM });
 
   // Helper for API calls with organization context
   const orgFetch = useCallback((url: string, options: RequestInit = {}) => {
@@ -67,10 +125,14 @@ export const SendingProfiles: React.FC = () => {
   const fetchProfiles = useCallback(async () => {
     try {
       const response = await orgFetch('/api/mailing/sending-profiles');
-      const data = await response.json();
-      setProfiles(data.profiles || []);
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data?.error || `HTTP ${response.status}`);
+      }
+      setProfiles(data?.profiles || []);
+      setListError(null);
     } catch (err) {
-      console.error('Failed to fetch profiles');
+      setListError(err instanceof Error ? err.message : 'Failed to fetch profiles');
     } finally {
       setLoading(false);
     }
@@ -81,15 +143,37 @@ export const SendingProfiles: React.FC = () => {
     fetchProfiles();
   }, [fetchProfiles]);
 
+  // Mirrors the backend rule (planner preflight ses_routing_fields): a profile
+  // routed via SES MUST carry both a configuration set and a tenant name, or
+  // planning hard-fails at deploy time. Reject client-side with inline errors.
+  const validateForm = (): Record<string, string> => {
+    const errs: Record<string, string> = {};
+    if (form.via_ses) {
+      if (!form.ses_configuration_set.trim()) {
+        errs.ses_configuration_set = 'Required when SES routing is on — the send worker stamps X-SES-CONFIGURATION-SET from this.';
+      }
+      if (!form.ses_tenant_name.trim()) {
+        errs.ses_tenant_name = 'Required when SES routing is on — the send worker stamps X-SES-TENANT from this.';
+      }
+    }
+    return errs;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    const url = editingProfile 
+
+    const errs = validateForm();
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+
+    const url = editingProfile
       ? `/api/mailing/sending-profiles/${editingProfile.id}`
       : '/api/mailing/sending-profiles';
-    
+
     const method = editingProfile ? 'PUT' : 'POST';
 
+    setSaving(true);
+    setSaveError(null);
     try {
       const response = await orgFetch(url, {
         method,
@@ -102,9 +186,14 @@ export const SendingProfiles: React.FC = () => {
       if (response.ok) {
         fetchProfiles();
         resetForm();
+      } else {
+        const data = await response.json().catch(() => null);
+        setSaveError(data?.error || `Save failed (HTTP ${response.status})`);
       }
     } catch (err) {
-      console.error('Failed to save profile');
+      setSaveError(err instanceof Error ? err.message : 'Failed to save profile');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -114,12 +203,32 @@ export const SendingProfiles: React.FC = () => {
       const response = await orgFetch(`/api/mailing/sending-profiles/${profileId}/verify`, {
         method: 'POST',
       });
-      const data = await response.json();
-      if (data.verified) {
-        fetchProfiles();
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setVerifyResults(prev => ({
+          ...prev,
+          [profileId]: {
+            checkedAt: new Date().toISOString(),
+            error: data?.error || `Verify failed (HTTP ${response.status})`,
+          },
+        }));
+        return;
       }
+      setVerifyResults(prev => ({
+        ...prev,
+        [profileId]: { ...normalizeVerifyResponse(data), checkedAt: new Date().toISOString() },
+      }));
+      // Refresh regardless of outcome — the server persists the *_verified
+      // columns, and the list is the durable projection of the same rows.
+      fetchProfiles();
     } catch (err) {
-      console.error('Verification failed');
+      setVerifyResults(prev => ({
+        ...prev,
+        [profileId]: {
+          checkedAt: new Date().toISOString(),
+          error: err instanceof Error ? err.message : 'Verification failed',
+        },
+      }));
     } finally {
       setVerifying(null);
     }
@@ -160,27 +269,25 @@ export const SendingProfiles: React.FC = () => {
       reply_email: profile.reply_email || '',
       api_key: '', // Don't populate API key for security
       sending_domain: profile.sending_domain || '',
+      tracking_domain: profile.tracking_domain || '',
       hourly_limit: profile.hourly_limit,
       daily_limit: profile.daily_limit,
+      via_ses: profile.via_ses || false,
+      ses_configuration_set: profile.ses_configuration_set || '',
+      ses_tenant_name: profile.ses_tenant_name || '',
+      routing_mode: profile.routing_mode || '',
     });
+    setFieldErrors({});
+    setSaveError(null);
     setShowForm(true);
   };
 
   const resetForm = () => {
     setShowForm(false);
     setEditingProfile(null);
-    setForm({
-      name: '',
-      description: '',
-      vendor_type: 'sparkpost',
-      from_name: '',
-      from_email: '',
-      reply_email: '',
-      api_key: '',
-      sending_domain: '',
-      hourly_limit: 10000,
-      daily_limit: 100000,
-    });
+    setFieldErrors({});
+    setSaveError(null);
+    setForm({ ...EMPTY_FORM });
   };
 
   const getVendorIcon = (type: string) => {
@@ -196,6 +303,37 @@ export const SendingProfiles: React.FC = () => {
   if (loading) {
     return <div className="loading-state">Loading sending profiles...</div>;
   }
+
+  if (listError && profiles.length === 0) {
+    return (
+      <div className="sending-profiles">
+        <div className="list-error-state">
+          <p>⚠️ Could not load sending profiles: {listError}</p>
+          <button
+            className="add-button"
+            onClick={() => {
+              setLoading(true);
+              fetchProfiles();
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Tri-state per-field verification chip: true = verified (green), false =
+  // failed (red), undefined = not checked (muted). Never renders green for an
+  // unchecked field.
+  const VerifyField: React.FC<{ label: string; value: boolean | undefined }> = ({ label, value }) => (
+    <span
+      className={`verify-badge ${value === true ? 'verified' : value === false ? 'failed' : 'unchecked'}`}
+      title={value === undefined ? `${label}: not checked by this server yet` : `${label}: ${value ? 'verified' : 'FAILED'}`}
+    >
+      {value === true ? '✅' : value === false ? '❌' : '·'} {label}
+    </span>
+  );
 
   return (
     <div className="sending-profiles">
@@ -295,6 +433,78 @@ export const SendingProfiles: React.FC = () => {
                 </div>
               </div>
 
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Tracking Domain</label>
+                  <input
+                    type="text"
+                    value={form.tracking_domain}
+                    onChange={e => setForm({...form, tracking_domain: e.target.value})}
+                    placeholder="t.em.yourdomain.com"
+                  />
+                  <span className="field-hint">Open pixel + click-wrap base for this profile's sends.</span>
+                </div>
+                <div className="form-group">
+                  <label>Routing Mode</label>
+                  <select
+                    value={form.routing_mode}
+                    onChange={e => setForm({...form, routing_mode: e.target.value})}
+                  >
+                    {ROUTING_MODES.map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* SES tenant routing — the production convention for first-party
+                  domains is vendor_type='pmta' + via_ses=true (the PMTA HTTP
+                  bridge relays to SES using the headers derived from these). */}
+              <div className={`ses-section ${form.via_ses ? 'open' : ''}`}>
+                <label className="ses-toggle">
+                  <input
+                    type="checkbox"
+                    checked={form.via_ses}
+                    onChange={e => setForm({...form, via_ses: e.target.checked})}
+                  />
+                  <span className="ses-toggle-label">Route via SES (tenant relay)</span>
+                  <span className="ses-toggle-hint">
+                    Sends relay to AWS SES through the PMTA bridge; requires a configuration set and tenant name.
+                  </span>
+                </label>
+
+                {form.via_ses && (
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label>SES Configuration Set *</label>
+                      <input
+                        type="text"
+                        value={form.ses_configuration_set}
+                        onChange={e => setForm({...form, ses_configuration_set: e.target.value})}
+                        placeholder="e.g. discountblog"
+                        className={fieldErrors.ses_configuration_set ? 'input-error' : ''}
+                      />
+                      {fieldErrors.ses_configuration_set && (
+                        <span className="field-error">{fieldErrors.ses_configuration_set}</span>
+                      )}
+                    </div>
+                    <div className="form-group">
+                      <label>SES Tenant Name *</label>
+                      <input
+                        type="text"
+                        value={form.ses_tenant_name}
+                        onChange={e => setForm({...form, ses_tenant_name: e.target.value})}
+                        placeholder="e.g. discountblog"
+                        className={fieldErrors.ses_tenant_name ? 'input-error' : ''}
+                      />
+                      {fieldErrors.ses_tenant_name && (
+                        <span className="field-error">{fieldErrors.ses_tenant_name}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="form-group">
                 <label>API Key {editingProfile && '(leave blank to keep current)'}</label>
                 <input
@@ -324,16 +534,36 @@ export const SendingProfiles: React.FC = () => {
                 </div>
               </div>
 
+              {saveError && (
+                <div className="form-error-banner">
+                  ⚠️ {saveError}
+                </div>
+              )}
+
               <div className="form-actions">
                 <button type="button" className="cancel-button" onClick={resetForm}>
                   Cancel
                 </button>
-                <button type="submit" className="submit-button">
-                  {editingProfile ? 'Update Profile' : 'Create Profile'}
+                <button type="submit" className="submit-button" disabled={saving}>
+                  {saving ? 'Saving…' : editingProfile ? 'Update Profile' : 'Create Profile'}
                 </button>
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Stale-data banner: the grid below still shows the last good fetch */}
+      {listError && profiles.length > 0 && (
+        <div className="form-error-banner" style={{ marginBottom: 14 }}>
+          ⚠️ Refresh failed ({listError}) — showing last loaded profiles.
+          <button
+            className="action-btn verify"
+            style={{ marginLeft: 10 }}
+            onClick={() => fetchProfiles()}
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -352,6 +582,7 @@ export const SendingProfiles: React.FC = () => {
                 <div className="profile-title">
                   <h3>{profile.name}</h3>
                   <span className="vendor-badge">{getVendorLabel(profile.vendor_type)}</span>
+                  {profile.via_ses && <span className="ses-badge">SES-ROUTED</span>}
                   {profile.is_default && <span className="default-badge">⭐ DEFAULT</span>}
                 </div>
                 <span className={`status-badge ${profile.status}`}>
@@ -370,6 +601,27 @@ export const SendingProfiles: React.FC = () => {
                     <span>{profile.sending_domain}</span>
                   </div>
                 )}
+                {profile.tracking_domain && (
+                  <div className="detail-row">
+                    <span className="label">Tracking:</span>
+                    <span>{profile.tracking_domain}</span>
+                  </div>
+                )}
+                {profile.via_ses && (
+                  <div className="detail-row">
+                    <span className="label">SES:</span>
+                    <span>
+                      config-set <code>{profile.ses_configuration_set || '∅'}</code>
+                      {' · '}tenant <code>{profile.ses_tenant_name || '∅'}</code>
+                    </span>
+                  </div>
+                )}
+                {profile.routing_mode && (
+                  <div className="detail-row">
+                    <span className="label">Routing:</span>
+                    <span>{profile.routing_mode}</span>
+                  </div>
+                )}
                 <div className="detail-row">
                   <span className="label">Limits:</span>
                   <span>{profile.hourly_limit.toLocaleString()}/hr, {profile.daily_limit.toLocaleString()}/day</span>
@@ -380,14 +632,34 @@ export const SendingProfiles: React.FC = () => {
                 </div>
               </div>
 
-              <div className="verification-status">
-                <span className={`verify-badge ${profile.credentials_verified ? 'verified' : 'unverified'}`}>
-                  {profile.credentials_verified ? '✅ Credentials Verified' : '⚠️ Unverified'}
-                </span>
-                {profile.domain_verified && (
-                  <span className="verify-badge verified">✅ Domain Verified</span>
-                )}
-              </div>
+              {(() => {
+                // Fresh verify result (this session) wins; the persisted list
+                // row is the fallback projection of the same columns.
+                const vr = verifyResults[profile.id];
+                const spf = vr ? vr.spf_verified : profile.spf_verified;
+                const dkim = vr ? vr.dkim_verified : profile.dkim_verified;
+                const dmarc = vr ? vr.dmarc_verified : profile.dmarc_verified;
+                const dom = vr ? (vr.domain_verified ?? profile.domain_verified) : profile.domain_verified;
+                return (
+                  <div className="verification-status">
+                    <span className={`verify-badge ${profile.credentials_verified ? 'verified' : 'unverified'}`}>
+                      {profile.credentials_verified ? '✅ Credentials' : '⚠️ Credentials unverified'}
+                    </span>
+                    <VerifyField label="SPF" value={spf} />
+                    <VerifyField label="DKIM" value={dkim} />
+                    <VerifyField label="DMARC" value={dmarc} />
+                    <VerifyField label="Domain" value={dom} />
+                    {vr?.error && (
+                      <span className="verify-badge failed" title={vr.error}>❌ {vr.error}</span>
+                    )}
+                    {vr && !vr.error && (
+                      <span className="verify-checked-at">
+                        checked {new Date(vr.checkedAt).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="profile-actions">
                 <button 

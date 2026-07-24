@@ -370,6 +370,141 @@
   opacity: 0.9;
 }
 
+/* SES tenant routing section (create/edit form) */
+.ses-section {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: rgba(116, 185, 255, 0.04);
+  border: 1px solid rgba(116, 185, 255, 0.12);
+  border-radius: 10px;
+}
+
+.ses-section.open {
+  border-color: rgba(116, 185, 255, 0.3);
+}
+
+.ses-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  font-size: 13px;
+  color: #e0e0e0;
+}
+
+.ses-toggle input[type='checkbox'] {
+  width: auto;
+  accent-color: #00b0ff;
+  cursor: pointer;
+}
+
+.ses-toggle-label {
+  font-weight: 600;
+}
+
+.ses-toggle-hint {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: #888;
+  margin-left: 24px;
+}
+
+.ses-section .form-row {
+  margin-top: 12px;
+}
+
+.ses-section .form-group {
+  margin-bottom: 0;
+}
+
+/* Inline field validation */
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #888;
+}
+
+.field-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #e94560;
+}
+
+.modal-content .form-group input.input-error {
+  border-color: rgba(233, 69, 96, 0.6);
+}
+
+/* Save/list error banner */
+.form-error-banner {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #e94560;
+  background: rgba(233, 69, 96, 0.08);
+  border: 1px solid rgba(233, 69, 96, 0.25);
+  border-radius: 8px;
+}
+
+.list-error-state {
+  text-align: center;
+  padding: 60px 20px;
+  background: rgba(233, 69, 96, 0.04);
+  border: 1px solid rgba(233, 69, 96, 0.2);
+  border-radius: 12px;
+  color: #e94560;
+  font-size: 13px;
+}
+
+.list-error-state p {
+  margin: 0 0 16px;
+}
+
+/* SES-routed pill on profile cards */
+.ses-badge {
+  display: inline-block;
+  background: rgba(0, 176, 255, 0.12);
+  color: #00b0ff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-right: 6px;
+}
+
+/* Per-field DNS verification chips: verified green, failed red, unchecked muted */
+.verify-badge.failed {
+  background: rgba(233, 69, 96, 0.12);
+  color: #e94560;
+}
+
+.verify-badge.unchecked {
+  background: rgba(255, 255, 255, 0.04);
+  color: #777;
+}
+
+.verify-checked-at {
+  font-size: 10px;
+  color: #888;
+  align-self: center;
+}
+
+.profile-details code {
+  padding: 1px 5px;
+  font-size: 11px;
+  background: #0a0f1a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+}
+
+.submit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* Empty State */
 .empty-state {
   grid-column: 1 / -1;
