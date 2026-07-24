@@ -64,6 +64,11 @@ var OwnedDomains = []string{
 	"firsttimebuyerhomeloan.com",
 	// Jun 2026 — additional Kumo brand (htm), IPs 16.217.96.186-207.
 	"hometracmortgage.com",
+	// Jul 2026 — first-party SES-routed domain (opted-in audience native to
+	// the domain; SES identity em.wcl-heloc.com per
+	// docs/RUNBOOK-FIRST-PARTY-SES-DOMAIN.md). Profile seeded as draft in
+	// runStartupMigrations (seed_pmta_wclheloc_ses_tenant_profile).
+	"wcl-heloc.com",
 }
 
 // Root maps a sending domain to its brand root.
@@ -82,7 +87,7 @@ func Root(sendingDomain string) string {
 	if d == "" {
 		return ""
 	}
-	for _, od := range OwnedDomains {
+	for _, od := range Domains() {
 		if d == od || strings.HasSuffix(d, "."+od) {
 			return od
 		}

@@ -416,10 +416,10 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 }
 
-// ownedDomains is kept here as a package-local alias for brand.OwnedDomains
-// so that enrichOwnedDomainURL below continues to compile without touching
-// every callsite. All new callers should use brand.OwnedDomains directly.
-var ownedDomains = brand.OwnedDomains
+// The click-tracker rewriter below consults brand.Domains() — the DB-backed
+// owned-domains registry with the hardcoded brand.OwnedDomains as fallback —
+// so a newly onboarded sending domain is rewritten without a Go redeploy
+// (audit G6). New callers should use brand.Domains() / brand.Root directly.
 
 // BrandRoot is a thin wrapper around brand.Root so existing callers in
 // this package can reference api.BrandRoot. New callers should prefer
@@ -442,7 +442,7 @@ func enrichOwnedDomainURL(rawURL string, subscriberID, emailID, campaignID uuid.
 	}
 	host := strings.ToLower(u.Hostname())
 	owned := false
-	for _, d := range ownedDomains {
+	for _, d := range brand.Domains() {
 		if host == d || strings.HasSuffix(host, "."+d) {
 			owned = true
 			break
