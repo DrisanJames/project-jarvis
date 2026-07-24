@@ -953,6 +953,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentRegistrySvc := NewSegmentRegistryService(db)
 			segmentRegistrySvc.RegisterRoutes(r)
 
+			// === OPS CONSOLE JOB-RUN HISTORY (Coalition WS3, REQ-C19 slice) ===
+			// Read-only history over mailing_worker_runs for the Operations
+			// screen (invariant-suite + cohort-growth run records; SCHEMA-
+			// CONTRACTS.md §6). Platform-global like /api/worker-health.
+			opsConsoleSvc := NewOpsConsoleService(db)
+			opsConsoleSvc.RegisterRoutes(r)
+
 			// === IMPORT TEMPLATES & FIELD MAPPING ===
 			importTemplateSvc := NewImportTemplateService(db)
 			importTemplateSvc.RegisterRoutes(r)
