@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -39,6 +40,22 @@ type SegmentCleanupWorker struct {
 	emailSender     EmailSender
 	stopChan        chan struct{}
 	running         bool
+
+	// Per-cycle registry-consent skip counters (REQ-C16). Written only from
+	// the single run() goroutine — reset in processAllOrganizations, folded
+	// into the cycle's mailing_worker_runs detail row so "the worker refused
+	// to delete N segments" is an assertable, operator-visible fact rather
+	// than a silent skip.
+	consentSkippedProtected    int64 // matched an active keep_policy='protect' registry row
+	consentSkippedUnregistered int64 // matched NO registry row at all (closed-by-default)
+}
+
+// segmentRegistryConsentDisabled is the kill switch: setting
+// DISABLE_SEGMENT_REGISTRY_CONSENT=true reverts every delete path to the
+// pre-registry behavior (one ECS env flip — same pattern as
+// DISABLE_SETBASED_ENQUEUE). Read per call so tests can toggle it.
+func segmentRegistryConsentDisabled() bool {
+	return os.Getenv("DISABLE_SEGMENT_REGISTRY_CONSENT") == "true"
 }
 
 // EmailSender interface for sending notification emails
@@ -149,18 +166,29 @@ func (t cleanupCycleTotals) detail() string {
 		t.warned, t.archived, t.purgedStatic, t.deletedArchiv)
 }
 
+// consentDetail renders the registry-consent skip counters for the run row.
+// Always present (even at 0/0) so the operator can tell "the gate ran and
+// skipped nothing" from "the gate never ran" (AS-6.1).
+func (w *SegmentCleanupWorker) consentDetail() string {
+	return fmt.Sprintf(", registry-consent skipped %d protected + %d unregistered",
+		w.consentSkippedProtected, w.consentSkippedUnregistered)
+}
+
 func (w *SegmentCleanupWorker) processAllOrganizations() {
 	ctx := context.Background()
 	start := time.Now()
 
 	hbStatus, hbErr := "ok", ""
 	var totals cleanupCycleTotals
+	// Reset the REQ-C16 consent counters for this cycle (single run()
+	// goroutine — no synchronization needed).
+	w.consentSkippedProtected, w.consentSkippedUnregistered = 0, 0
 	defer func() {
 		EmitHeartbeat(ctx, w.db, "segment_cleanup", int(w.checkInterval.Seconds()), hbStatus, hbErr)
 
 		// Run-level summary, next to the heartbeat: what this cycle did.
 		runStatus := "ok"
-		detail := totals.detail()
+		detail := totals.detail() + w.consentDetail()
 		switch {
 		case hbStatus == "error":
 			runStatus = "failed"
@@ -257,8 +285,13 @@ func (w *SegmentCleanupWorker) processOrganization(ctx context.Context, settings
 func (w *SegmentCleanupWorker) findStaleSegments(ctx context.Context, settings CleanupSettings) []StaleSegment {
 	var segments []StaleSegment
 
+	// The NOT EXISTS clause is REQ-C16: segments belonging to an active
+	// registry-protected family never enter the warn → grace → archive flow
+	// (archiving would pull a live family off the boards even without a
+	// delete). Consent for HARD deletes is enforced separately at
+	// deleteSegmentsWithMembers.
 	query := `
-		SELECT 
+		SELECT
 			s.id,
 			s.name,
 			COALESCE(s.subscriber_count, 0),
@@ -273,6 +306,13 @@ func (w *SegmentCleanupWorker) findStaleSegments(ctx context.Context, settings C
 			AND s.cleanup_warning_sent = FALSE
 			AND s.created_at < NOW() - ($2 || ' days')::INTERVAL
 			AND COALESCE(s.last_used_at, s.created_at) < NOW() - ($3 || ' days')::INTERVAL
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND r.keep_policy = 'protect'
+				  AND s.name LIKE r.family_pattern
+			)
 		ORDER BY s.last_used_at ASC NULLS FIRST
 		LIMIT 50
 	`
@@ -379,6 +419,9 @@ func (w *SegmentCleanupWorker) markSegmentWarned(ctx context.Context, settings C
 func (w *SegmentCleanupWorker) findExpiredNotifications(ctx context.Context, orgID uuid.UUID) []CleanupNotification {
 	var notifications []CleanupNotification
 
+	// REQ-C16: a family registered as protected AFTER a warning was issued is
+	// still exempt at grace expiry — the registry decides at action time, not
+	// only at warn time.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT n.id, n.segment_id, n.segment_name, n.subscriber_count, n.warning_sent_at, n.grace_period_ends_at
 		FROM mailing_segment_cleanup_notifications n
@@ -388,6 +431,13 @@ func (w *SegmentCleanupWorker) findExpiredNotifications(ctx context.Context, org
 			AND n.grace_period_ends_at < NOW()
 			AND s.archived_at IS NULL
 			AND s.keep_active = FALSE
+			AND NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND r.keep_policy = 'protect'
+				  AND s.name LIKE r.family_pattern
+			)
 	`, orgID)
 	if err != nil {
 		log.Printf("SegmentCleanupWorker: Error finding expired notifications: %v", err)
@@ -541,12 +591,102 @@ func (w *SegmentCleanupWorker) purgeStaticSnapshots(ctx context.Context, setting
 	return totalSegs
 }
 
+// filterRegistryConsent is the REQ-C16 closed-by-default consent gate. Given
+// candidate segment ids, it returns ONLY those whose name matches an ACTIVE
+// mailing_segment_registry row with keep_policy='purgeable' in the segment's
+// own org. Everything else is skipped and counted:
+//   - matches an active 'protect' row        → consentSkippedProtected
+//   - matches NO registry row at all         → consentSkippedUnregistered
+//
+// FAIL CLOSED: any error (including the registry table not existing yet on a
+// pre-migration boot) returns nil — this cycle deletes nothing, and the next
+// cycle after runStartupMigrations lands resumes normally. This is the
+// permanent fix for Lane 2 F3 (SegmentCleanupWorker hard-deleted the
+// doctrine-ring and 60D-Human families because ownership existed nowhere it
+// could consult). Kill switch: DISABLE_SEGMENT_REGISTRY_CONSENT=true.
+func (w *SegmentCleanupWorker) filterRegistryConsent(ctx context.Context, ids []uuid.UUID) []uuid.UUID {
+	if len(ids) == 0 {
+		return nil
+	}
+	if segmentRegistryConsentDisabled() {
+		log.Printf("SegmentCleanupWorker: registry consent DISABLED via DISABLE_SEGMENT_REGISTRY_CONSENT — legacy delete behavior")
+		return ids
+	}
+
+	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	rows, err := w.db.QueryContext(qctx, `
+		SELECT s.id, s.name,
+			EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND r.keep_policy = 'purgeable'
+				  AND s.name LIKE r.family_pattern
+			) AS purgeable,
+			EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND s.name LIKE r.family_pattern
+			) AS registered
+		FROM mailing_segments s
+		WHERE s.id = ANY($1::uuid[])
+	`, pq.Array(ids))
+	if err != nil {
+		// Table missing (pre-migration deploy skew) or transient error:
+		// closed by default — nothing is deleted this cycle.
+		log.Printf("SegmentCleanupWorker: registry consent read failed (FAIL CLOSED, %d candidate deletes skipped): %v", len(ids), err)
+		return nil
+	}
+	defer rows.Close()
+
+	allowed := make([]uuid.UUID, 0, len(ids))
+	var protectedNames, unregisteredNames []string
+	for rows.Next() {
+		var id uuid.UUID
+		var name string
+		var purgeable, registered bool
+		if err := rows.Scan(&id, &name, &purgeable, &registered); err != nil {
+			continue
+		}
+		switch {
+		case purgeable:
+			allowed = append(allowed, id)
+		case registered:
+			w.consentSkippedProtected++
+			if len(protectedNames) < 5 {
+				protectedNames = append(protectedNames, name)
+			}
+		default:
+			w.consentSkippedUnregistered++
+			if len(unregisteredNames) < 5 {
+				unregisteredNames = append(unregisteredNames, name)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("SegmentCleanupWorker: registry consent read failed mid-scan (FAIL CLOSED, %d candidate deletes skipped): %v", len(ids), err)
+		return nil
+	}
+	if skipped := len(ids) - len(allowed); skipped > 0 {
+		log.Printf("SegmentCleanupWorker: registry consent SKIPPED %d/%d candidate deletes (protected e.g. %v; unregistered e.g. %v) — only keep_policy='purgeable' families may purge",
+			skipped, len(ids), protectedNames, unregisteredNames)
+	}
+	return allowed
+}
+
 // deleteSegmentsWithMembers removes member rows (indexed by segment_id) and
 // then the segment rows for the given ids. Returns (segmentsDeleted,
 // membersDeleted). Members are deleted first so a mid-operation failure leaves
 // at worst an empty segment that the next cycle re-collects — never orphaned
 // member rows.
+//
+// EVERY hard delete passes through the REQ-C16 registry consent gate first —
+// both callers (purgeStaticSnapshots, cleanupArchivedSegments) inherit
+// closed-by-default behavior through this single choke point.
 func (w *SegmentCleanupWorker) deleteSegmentsWithMembers(ctx context.Context, ids []uuid.UUID) (int64, int64) {
+	ids = w.filterRegistryConsent(ctx, ids)
 	if len(ids) == 0 {
 		return 0, 0
 	}
