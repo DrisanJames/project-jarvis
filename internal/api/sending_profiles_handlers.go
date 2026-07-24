@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,14 @@ type SendingProfile struct {
 	IPPool     *string `json:"ip_pool,omitempty"`
 	PoolPrefix *string `json:"pool_prefix,omitempty"`
 
+	// SES tenant routing (via_ses profiles relay through the PMTA bridge to
+	// SES with X-SES-CONFIGURATION-SET / X-SES-TENANT headers — see
+	// internal/worker/send_worker.go resolveProfileSES) and KumoMTA routing.
+	ViaSES              bool    `json:"via_ses"`
+	SESConfigurationSet *string `json:"ses_configuration_set"`
+	SESTenantName       *string `json:"ses_tenant_name"`
+	RoutingMode         *string `json:"routing_mode"`
+
 	// Status
 	Status       string `json:"status"` // draft, pending, active, inactive, suspended
 	IsDefault    bool   `json:"is_default"`
@@ -88,11 +97,21 @@ type ProfileListDefault struct {
 // SendingProfileService handles sending profile operations
 type SendingProfileService struct {
 	db *sql.DB
+
+	// Injection seams for the SES identity verification path (G5) so the
+	// handler is unit-testable without AWS/DNS. Defaults are the real
+	// implementations (sending_profiles_verify_ses.go).
+	sesIdentity func(ctx context.Context, sendingDomain string) (sesIdentityStatus, error)
+	dmarcLookup func(ctx context.Context, sendingDomain string) (bool, error)
 }
 
 // NewSendingProfileService creates a new sending profile service
 func NewSendingProfileService(db *sql.DB) *SendingProfileService {
-	return &SendingProfileService{db: db}
+	return &SendingProfileService{
+		db:          db,
+		sesIdentity: fetchSESIdentityStatus,
+		dmarcLookup: lookupDMARCRecord,
+	}
 }
 
 // RegisterRoutes registers all sending profile routes
@@ -113,6 +132,11 @@ func (s *SendingProfileService) RegisterRoutes(r chi.Router) {
 		r.Post("/{profileId}/list-defaults", s.HandleSetListDefault)
 		r.Delete("/{profileId}/list-defaults/{listId}", s.HandleRemoveListDefault)
 	})
+
+	// One-transaction SES sending-domain onboarding (audit Tier-3):
+	// profile + mailing_sending_domains + owned-domains registry + segment
+	// family. Final URL: /api/mailing/sending-domains/onboard.
+	r.Post("/sending-domains/onboard", s.HandleOnboardSendingDomain)
 }
 
 // HandleListProfiles returns all sending profiles
@@ -143,10 +167,11 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			   ip_pool, pool_prefix, status, is_default,
 			   CASE WHEN api_key IS NOT NULL AND api_key != '' THEN true ELSE false END as is_configured,
 			   created_at, updated_at,
-			   smtp_host, COALESCE(smtp_port, 0), smtp_username, api_endpoint
+			   smtp_host, COALESCE(smtp_port, 0), smtp_username, api_endpoint,
+			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1
-		  AND (api_key IS NOT NULL AND api_key != '' OR vendor_type = 'pmta' OR vendor_type = 'smtp')
+		  AND (api_key IS NOT NULL AND api_key != '' OR vendor_type IN ('pmta', 'smtp', 'ses') OR COALESCE(via_ses, false) = true)
 	`
 	args := []interface{}{orgID}
 	argNum := 2
@@ -184,6 +209,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
 			&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.IsConfigured, &p.CreatedAt, &p.UpdatedAt,
 			&p.SMTPHost, &p.SMTPPort, &p.SMTPUsername, &p.APIEndpoint,
+			&p.ViaSES, &p.SESConfigurationSet, &p.SESTenantName, &p.RoutingMode,
 		)
 		if err != nil {
 			log.Printf("Error scanning profile: %v", err)
@@ -223,6 +249,15 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 		HourlyLimit    *int    `json:"hourly_limit"`
 		DailyLimit     *int    `json:"daily_limit"`
 		IsDefault      bool    `json:"is_default"`
+
+		// SES tenant routing (G1): the fields the send worker + planner
+		// preflight require for an SES route. via_ses=true demands both
+		// ses_configuration_set and ses_tenant_name (mirrors the planner's
+		// ses_routing_fields check, pmta_campaign_planner.go).
+		ViaSES              bool    `json:"via_ses"`
+		SESConfigurationSet *string `json:"ses_configuration_set"`
+		SESTenantName       *string `json:"ses_tenant_name"`
+		RoutingMode         *string `json:"routing_mode"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -240,6 +275,18 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 	validVendors := map[string]bool{"sparkpost": true, "ses": true, "mailgun": true, "sendgrid": true, "smtp": true, "pmta": true}
 	if !validVendors[strings.ToLower(input.VendorType)] {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid vendor_type. Must be one of: sparkpost, ses, mailgun, sendgrid, smtp, pmta"})
+		return
+	}
+
+	// SES routing-field validation — mirrors the planner preflight
+	// (ses_routing_fields, pmta_campaign_planner.go): a via_ses profile
+	// with a missing config set or tenant would hard-fail every deploy.
+	if err := validateSESRoutingFields(input.ViaSES, strPtrVal(input.SESConfigurationSet), strPtrVal(input.SESTenantName)); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if input.RoutingMode != nil && !validRoutingMode(*input.RoutingMode) {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid routing_mode. Must be empty or 'kumo'"})
 		return
 	}
 
@@ -288,8 +335,9 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 			smtp_host, smtp_port, smtp_username, smtp_password, smtp_encryption,
 			sending_domain, bounce_domain, tracking_domain,
 			ip_pool, hourly_limit, daily_limit,
-			status, is_default
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'draft', $22)
+			status, is_default,
+			via_ses, ses_configuration_set, ses_tenant_name, routing_mode
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'draft', $22, $23, $24, $25, $26)
 		RETURNING id
 	`,
 		input.OrganizationID, input.Name, input.Description, strings.ToLower(input.VendorType),
@@ -298,6 +346,7 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 		input.SMTPHost, smtpPort, input.SMTPUsername, input.SMTPPassword, smtpEncryption,
 		input.SendingDomain, input.BounceDomain, input.TrackingDomain,
 		input.IPPool, hourlyLimit, dailyLimit, input.IsDefault,
+		input.ViaSES, nilIfEmptyPtr(input.SESConfigurationSet), nilIfEmptyPtr(input.SESTenantName), nilIfEmptyPtr(input.RoutingMode),
 	).Scan(&id)
 
 	if err != nil {
@@ -315,9 +364,26 @@ func (s *SendingProfileService) HandleCreateProfile(w http.ResponseWriter, r *ht
 func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.Request) {
 	profileID := chi.URLParam(r, "profileId")
 
+	p, err := s.getProfileByID(r.Context(), profileID)
+	if err == sql.ErrNoRows {
+		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
+		return
+	}
+	if err != nil {
+		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, p)
+}
+
+// getProfileByID fetches one profile with credentials masked. Shared by
+// HandleGetProfile and the onboard endpoint's response. Returns
+// sql.ErrNoRows when the profile does not exist.
+func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID string) (*SendingProfile, error) {
 	var p SendingProfile
 	var rawAPIKey *string
-	err := s.db.QueryRowContext(r.Context(), `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, name, description, vendor_type,
 			   from_name, from_email, reply_email,
 			   api_key, api_endpoint,
@@ -326,7 +392,8 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 			   spf_verified, dkim_verified, dmarc_verified, domain_verified, credentials_verified,
 			   last_verification_at, verification_error,
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
-			   ip_pool, pool_prefix, status, is_default, created_at, updated_at
+			   ip_pool, pool_prefix, status, is_default, created_at, updated_at,
+			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode
 		FROM mailing_sending_profiles WHERE id = $1
 	`, profileID).Scan(
 		&p.ID, &p.OrganizationID, &p.Name, &p.Description, &p.VendorType,
@@ -338,15 +405,10 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 		&p.LastVerificationAt, &p.VerificationError,
 		&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
 		&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt,
+		&p.ViaSES, &p.SESConfigurationSet, &p.SESTenantName, &p.RoutingMode,
 	)
-
-	if err == sql.ErrNoRows {
-		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
-		return
-	}
 	if err != nil {
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return nil, err
 	}
 
 	// Set is_configured based on API key presence
@@ -358,7 +420,7 @@ func (s *SendingProfileService) HandleGetProfile(w http.ResponseWriter, r *http.
 		p.APIKey = &masked
 	}
 
-	respondJSON(w, http.StatusOK, p)
+	return &p, nil
 }
 
 // HandleUpdateProfile updates a sending profile
@@ -398,6 +460,12 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 		"hourly_limit":    "hourly_limit",
 		"daily_limit":     "daily_limit",
 		"status":          "status",
+		// SES tenant routing + KumoMTA routing (G1) — validated against the
+		// MERGED effective state below before any write.
+		"via_ses":               "via_ses",
+		"ses_configuration_set": "ses_configuration_set",
+		"ses_tenant_name":       "ses_tenant_name",
+		"routing_mode":          "routing_mode",
 	}
 
 	for jsonField, dbField := range fieldMap {
@@ -411,6 +479,49 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 	if len(updates) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "No fields to update"})
 		return
+	}
+
+	// Validate the SES routing invariant on the EFFECTIVE (merged) state:
+	// payload values overlaid on the current row. Without this, a two-step
+	// "create then update via_ses=true" could persist a profile the planner
+	// preflight (ses_routing_fields) hard-fails on every deploy.
+	if hasAnySESField(input) {
+		var curViaSES bool
+		var curConfigSet, curTenant sql.NullString
+		err := s.db.QueryRowContext(r.Context(), `
+			SELECT COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name
+			FROM mailing_sending_profiles WHERE id = $1
+		`, profileID).Scan(&curViaSES, &curConfigSet, &curTenant)
+		if err == sql.ErrNoRows {
+			respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
+			return
+		}
+		if err != nil {
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		effViaSES := curViaSES
+		if v, ok := input["via_ses"]; ok {
+			b, isBool := v.(bool)
+			if !isBool {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": "via_ses must be a boolean"})
+				return
+			}
+			effViaSES = b
+		}
+		effConfigSet := mergeStringField(input, "ses_configuration_set", curConfigSet.String)
+		effTenant := mergeStringField(input, "ses_tenant_name", curTenant.String)
+		if err := validateSESRoutingFields(effViaSES, effConfigSet, effTenant); err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if v, ok := input["routing_mode"]; ok && v != nil {
+			rm, isStr := v.(string)
+			if !isStr || !validRoutingMode(rm) {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid routing_mode. Must be empty or 'kumo'"})
+				return
+			}
+		}
 	}
 
 	// Add updated_at
@@ -477,13 +588,21 @@ func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r
 
 	// Get profile details
 	var vendorType, apiKey string
-	var smtpHost *string
+	var smtpHost, sendingDomain *string
+	var viaSES bool
 	err := s.db.QueryRowContext(r.Context(),
-		"SELECT vendor_type, api_key, smtp_host FROM mailing_sending_profiles WHERE id = $1",
-		profileID).Scan(&vendorType, &apiKey, &smtpHost)
+		"SELECT vendor_type, COALESCE(api_key, ''), smtp_host, COALESCE(via_ses, false), sending_domain FROM mailing_sending_profiles WHERE id = $1",
+		profileID).Scan(&vendorType, &apiKey, &smtpHost, &viaSES, &sendingDomain)
 
 	if err == sql.ErrNoRows {
 		respondJSON(w, http.StatusNotFound, map[string]string{"error": "Profile not found"})
+		return
+	}
+
+	// SES routes (via_ses tenant profiles AND plain vendor_type='ses') get a
+	// REAL identity check against SES + DNS (G5) instead of the legacy no-op.
+	if viaSES || vendorType == "ses" {
+		s.verifySESRoute(w, r, profileID, sendingDomain)
 		return
 	}
 
@@ -506,9 +625,9 @@ func (s *SendingProfileService) HandleVerifyCredentials(w http.ResponseWriter, r
 			verificationError = fmt.Sprintf("API returned status %d", resp.StatusCode)
 		}
 
-	case "ses":
-		// For SES, we assume credentials work if configured (would need AWS SDK to verify)
-		verified = true
+	// NOTE: "ses" and via_ses profiles are handled above by verifySESRoute
+	// (real GetEmailIdentity + DNS DMARC check) — the legacy always-true
+	// no-op branch is gone (G5).
 
 	case "mailgun":
 		// Test Mailgun API
@@ -788,6 +907,68 @@ func nilIfEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// validateSESRoutingFields enforces the invariant the planner preflight
+// (ses_routing_fields check, pmta_campaign_planner.go) hard-fails deploys on:
+// a via_ses profile must carry BOTH ses_configuration_set and ses_tenant_name.
+func validateSESRoutingFields(viaSES bool, configSet, tenantName string) error {
+	if !viaSES {
+		return nil
+	}
+	if strings.TrimSpace(configSet) == "" || strings.TrimSpace(tenantName) == "" {
+		return fmt.Errorf("via_ses=true requires both ses_configuration_set and ses_tenant_name")
+	}
+	return nil
+}
+
+// validRoutingMode accepts the live routing_mode values: '' (default PMTA
+// bridge) and 'kumo' (KumoMTA injector — see internal/worker/esp_profile.go).
+func validRoutingMode(m string) bool {
+	m = strings.TrimSpace(strings.ToLower(m))
+	return m == "" || m == "kumo"
+}
+
+func strPtrVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// nilIfEmptyPtr collapses nil-or-empty string pointers to SQL NULL.
+func nilIfEmptyPtr(p *string) interface{} {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return nil
+	}
+	return *p
+}
+
+// hasAnySESField reports whether an update payload touches the SES/Kumo
+// routing fields (and therefore needs merged-state validation).
+func hasAnySESField(input map[string]interface{}) bool {
+	for _, k := range []string{"via_ses", "ses_configuration_set", "ses_tenant_name", "routing_mode"} {
+		if _, ok := input[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeStringField returns the payload's value for key when present (nil →
+// ""), otherwise the current row's value.
+func mergeStringField(input map[string]interface{}, key, current string) string {
+	v, ok := input[key]
+	if !ok {
+		return current
+	}
+	if v == nil {
+		return ""
+	}
+	if s, isStr := v.(string); isStr {
+		return s
+	}
+	return current
 }
 
 func safePercent(num, denom int) float64 {
