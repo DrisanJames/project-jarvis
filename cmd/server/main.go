@@ -2260,6 +2260,76 @@ func runStartupMigrations(db *sql.DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
+		// External-job heartbeat metrics (Platform Coalition WS2, REQ-C18/AS-4.2).
+		// Scaffold-compliant Python jobs (worker_name prefix 'job:') upsert their
+		// per-cycle metrics dict here alongside the same heartbeat columns the Go
+		// workers use — one table, one WorkerHealthMonitor, one stall alarm for
+		// both populations. Contract: tasks/eng-team/coalition/SCHEMA-CONTRACTS.md §3.
+		{"add_worker_heartbeats_metrics", `ALTER TABLE mailing_worker_heartbeats ADD COLUMN IF NOT EXISTS metrics JSONB`},
+		// ── Segment-family ownership registry (Platform Coalition WS2, REQ-C15) ──
+		// Machine-readable owner/cadence/SLA/keep-policy per segment FAMILY
+		// (name pattern). Root-cause fix for F2 (96% of segments unowned), F3
+		// (SegmentCleanupWorker hard-deleted the doctrine-ring and 60D-Human
+		// families because ownership existed nowhere it could consult) and F4
+		// (frozen families with no SLA alarm). Consumers: SegmentCleanupWorker
+		// consent gate (REQ-C16, closed-by-default), the segment-registry CRUD +
+		// freshness API (segment_registry.go), invariant I9, and the WS3 ops
+		// console. New table, no deps, fast — placed near the top of this slice
+		// so the boot budget can't skip it. Contract: SCHEMA-CONTRACTS.md §1.
+		{"create_segment_registry", `CREATE TABLE IF NOT EXISTS mailing_segment_registry (
+			id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id   UUID NOT NULL,
+			family_key        TEXT NOT NULL,
+			family_pattern    TEXT NOT NULL,
+			definition_source TEXT NOT NULL DEFAULT 'script',
+			owner             TEXT NOT NULL,
+			cadence           TEXT NOT NULL DEFAULT '',
+			sla_hours         INTEGER NOT NULL DEFAULT 0,
+			keep_policy       TEXT NOT NULL DEFAULT 'protect',
+			heartbeat_worker  TEXT NOT NULL DEFAULT '',
+			notes             TEXT NOT NULL DEFAULT '',
+			active            BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, family_pattern)
+		)`},
+		{"idx_segment_registry_org", `CREATE INDEX IF NOT EXISTS idx_segment_registry_org ON mailing_segment_registry(organization_id, active)`},
+		// Seed the known families per org (ownership map: CONSOLIDATION-PROPOSAL
+		// Phase 4 + the 2026-07-24 zombie-cron ruling). Idempotent via the
+		// NOT EXISTS guard on (organization_id, family_pattern) — operator edits
+		// via the CRUD API are never overwritten by a redeploy. keep_policy is
+		// 'protect' everywhere EXCEPT data-partner-wave snapshots: those are the
+		// single-use per-wave audience statics purgeStaticSnapshots was built
+		// for, and the one family that keeps purging under the REQ-C16
+		// closed-by-default consent gate.
+		{"seed_segment_registry_families", `
+			INSERT INTO mailing_segment_registry (
+				organization_id, family_key, family_pattern, definition_source,
+				owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes
+			)
+			SELECT o.organization_id, f.family_key, f.family_pattern, f.definition_source,
+			       f.owner, f.cadence, f.sla_hours, f.keep_policy, f.heartbeat_worker, f.notes
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			CROSS JOIN (VALUES
+				('slot', 'SLOT-%', 'slot_ledger', 'board program / slot backfill', 'daily board build', 48, 'protect', '', '2,060 segments, 100 pct of the daily board audience (Lane 2 F2/F3)'),
+				('fresh', 'FRESH-%', 'script', 'agents.scheduling hydrate-fresh (REQ-C04)', 'daily hydrator', 48, 'protect', '', 'dated dailies: FRESH-<tok>-PARTNER-* / FRESH-<tok>-INBASE-*'),
+				('sidecar', 'SIDECAR-%', 'script', 'sidecar warming intake', 'daily', 0, 'protect', '', 'cold-warming sidecar lane segments'),
+				('conduit', 'CONDUIT-%', 'script', 'family conduit pools', 'daily', 0, 'protect', '', 'CONDUIT-<ISP>-<BRAND> pools (see pmta_campaign_planner.go streamSegment rotation note)'),
+				('excl', 'EXCL%', 'script', 'exclusion registry', '', 0, 'protect', '', 'covers EXCL em-dash/hyphen variants, EXCL-CONDUIT-DORMANT-*, EXCL Charter Family Domains'),
+				('welcome_saturated', 'Welcome-Saturated%', 'conditions', 'welcome saturation refresh (CLAUDE.md section 6)', 'daily 06:30 (cron re-owning tracked in coalition backlog)', 48, 'protect', '', 'frozen-family F4; exclusion segment for welcome sends'),
+				('verified_humans', '% Verified Humans', 'conditions', 'VerifiedHumansLedgerWorker', 'nightly 03:40 UTC', 48, 'protect', 'verified_humans_ledger', 'accretive human ledger; add-only, never rebuilt (core.md section 14)'),
+				('rings', '%-MPP-LIVE-%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'doctrine rings purged by F3; do NOT rebuild — re-entry only as a registry-owned family'),
+				('rings', '%-VIEWERS-%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'doctrine rings purged by F3; do NOT rebuild — re-entry only as a registry-owned family'),
+				('rings', '%-CLICKERS-%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'doctrine rings purged by F3; do NOT rebuild — re-entry only as a registry-owned family'),
+				('60d_human', '%60D Human%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'purged 07-22 to 07-23; do not rebuild from the stale jul14 UUID file'),
+				('data_partner_wave', 'data-partner-wave-%', 'script', 'PartnerDripOrchestrator.createWaveSegment', 'per drip wave', 0, 'purgeable', '', 'single-use per-wave audience snapshots; the one family cleanup may purge (7d age rule)')
+			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = o.organization_id
+				  AND r.family_pattern = f.family_pattern
+			)
+		`},
 		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
 		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
 		// (internal/worker/partner_human_rollup.go) because the live

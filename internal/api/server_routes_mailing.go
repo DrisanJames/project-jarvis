@@ -946,6 +946,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentCleanupAPI := NewSegmentCleanupAPI(db)
 			segmentCleanupAPI.RegisterRoutes(r)
 
+			// === SEGMENT-FAMILY OWNERSHIP REGISTRY (Coalition WS2, REQ-C15) ===
+			// CRUD + freshness over mailing_segment_registry; consumed by the
+			// SegmentCleanupWorker consent gate (REQ-C16) and the WS3 ops
+			// console. Contract: tasks/eng-team/coalition/SCHEMA-CONTRACTS.md §1.
+			segmentRegistrySvc := NewSegmentRegistryService(db)
+			segmentRegistrySvc.RegisterRoutes(r)
+
 			// === IMPORT TEMPLATES & FIELD MAPPING ===
 			importTemplateSvc := NewImportTemplateService(db)
 			importTemplateSvc.RegisterRoutes(r)
