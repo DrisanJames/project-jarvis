@@ -149,8 +149,8 @@ func expectProfileNoTracking(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`SELECT id::text, COALESCE\(from_email,''\), tracking_domain, sending_domain`).
 		WithArgs("em.discountblog.com").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "tracking_domain", "sending_domain",
-			"via_ses", "ses_configuration_set", "ses_tenant_name"}).
-			AddRow("profile-abc", "deals@em.discountblog.com", nil, nil, false, "", ""))
+			"via_ses", "ses_configuration_set", "ses_tenant_name", "raw_creative"}).
+			AddRow("profile-abc", "deals@em.discountblog.com", nil, nil, false, "", "", false))
 }
 
 // expectProfileWithTracking registers the sending-profile SELECT returning a
@@ -161,8 +161,8 @@ func expectProfileWithTracking(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`SELECT id::text, COALESCE\(from_email,''\), tracking_domain, sending_domain`).
 		WithArgs("em.discountblog.com").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "tracking_domain", "sending_domain",
-			"via_ses", "ses_configuration_set", "ses_tenant_name"}).
-			AddRow("profile-abc", "deals@em.discountblog.com", nil, "em.discountblog.com", false, "", ""))
+			"via_ses", "ses_configuration_set", "ses_tenant_name", "raw_creative"}).
+			AddRow("profile-abc", "deals@em.discountblog.com", nil, "em.discountblog.com", false, "", "", false))
 }
 
 // oURL builds the expected tracking-layer /o/ offer URL for the proof consts.

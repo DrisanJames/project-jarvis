@@ -240,7 +240,8 @@ func spListCols() []string {
 		"ip_pool", "pool_prefix", "status", "is_default", "is_configured",
 		"created_at", "updated_at",
 		"smtp_host", "smtp_port", "smtp_username", "api_endpoint",
-		"via_ses", "ses_configuration_set", "ses_tenant_name", "routing_mode"}
+		"via_ses", "ses_configuration_set", "ses_tenant_name", "routing_mode",
+		"raw_creative"}
 }
 
 func TestListProfilesIncludesSESVendorWithoutAPIKey(t *testing.T) {
@@ -262,6 +263,7 @@ func TestListProfilesIncludesSESVendorWithoutAPIKey(t *testing.T) {
 			now, now,
 			nil, 0, nil, nil,
 			true, "wcl-heloc", "wcl-heloc", nil,
+			false,
 		))
 
 	req := httptest.NewRequest(http.MethodGet, "/sending-profiles/", nil)

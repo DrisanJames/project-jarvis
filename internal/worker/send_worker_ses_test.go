@@ -25,8 +25,8 @@ func TestResolveProfileSES_ViaSESTrue(t *testing.T) {
 	}
 
 	pid := "ses-tenant-profile-id"
-	rows := sqlmock.NewRows([]string{"via_ses", "ses_configuration_set", "ses_tenant_name"}).
-		AddRow(true, "discountblog", "discountblog")
+	rows := sqlmock.NewRows([]string{"via_ses", "ses_configuration_set", "ses_tenant_name", "raw_creative"}).
+		AddRow(true, "discountblog", "discountblog", false)
 	mock.ExpectQuery("SELECT COALESCE\\(via_ses, FALSE\\), COALESCE\\(ses_configuration_set, ''\\), COALESCE\\(ses_tenant_name, ''\\)").
 		WithArgs(pid).
 		WillReturnRows(rows)
@@ -70,8 +70,8 @@ func TestResolveProfileSES_DefaultPath(t *testing.T) {
 	}
 
 	pid := "dedicated-profile-id"
-	rows := sqlmock.NewRows([]string{"via_ses", "ses_configuration_set", "ses_tenant_name"}).
-		AddRow(false, "", "")
+	rows := sqlmock.NewRows([]string{"via_ses", "ses_configuration_set", "ses_tenant_name", "raw_creative"}).
+		AddRow(false, "", "", false)
 	mock.ExpectQuery("SELECT COALESCE\\(via_ses, FALSE\\)").
 		WithArgs(pid).
 		WillReturnRows(rows)

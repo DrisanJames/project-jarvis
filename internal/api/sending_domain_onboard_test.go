@@ -27,7 +27,8 @@ func onboardGetProfileCols() []string {
 		"last_verification_at", "verification_error",
 		"hourly_limit", "daily_limit", "current_hourly_count", "current_daily_count",
 		"ip_pool", "pool_prefix", "status", "is_default", "created_at", "updated_at",
-		"via_ses", "ses_configuration_set", "ses_tenant_name", "routing_mode"}
+		"via_ses", "ses_configuration_set", "ses_tenant_name", "routing_mode",
+		"raw_creative"}
 }
 
 func onboardProfileRow(now time.Time) *sqlmock.Rows {
@@ -42,6 +43,7 @@ func onboardProfileRow(now time.Time) *sqlmock.Rows {
 		1000, 25000, 0, 0,
 		"wcl-heloc-ses-pool", nil, "draft", false, now, now,
 		true, "wcl-heloc", "wcl-heloc", nil,
+		false,
 	)
 }
 

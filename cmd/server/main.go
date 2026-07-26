@@ -3005,6 +3005,16 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_ses_configuration_set_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS ses_configuration_set TEXT`},
 		{"add_ses_tenant_name_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS ses_tenant_name TEXT`},
 
+		// raw_creative (operator 2026-07-25, wcl-heloc): per-profile footer
+		// bypass — the send worker and proof paths ship the creative AS-IS
+		// (stored unsub-disclaimer block stripped, CAN-SPAM fallback skipped;
+		// List-Unsubscribe HEADERS unaffected). Default FALSE everywhere; the
+		// wcl-heloc SES profile is the first (only) seeded TRUE.
+		{"add_raw_creative_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS raw_creative BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"seed_wclheloc_raw_creative", `UPDATE mailing_sending_profiles
+			SET raw_creative = TRUE
+			WHERE sending_domain = 'm.wcl-heloc.com' AND COALESCE(raw_creative, FALSE) = FALSE`},
+
 		// Discount Blog (SES Tenant) — SECOND profile for em.discountblog.com
 		// brand. Keyed off NAME (not sending_domain) so it coexists with
 		// the legacy SES Relay profile at the same m.discountblog.com

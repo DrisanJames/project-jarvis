@@ -435,6 +435,36 @@ type profileSESInfo struct {
 	ViaSES     bool
 	ConfigSet  string
 	TenantName string
+	// RawCreative (operator 2026-07-25, wcl-heloc): send the creative AS-IS —
+	// strip the stored unsub-disclaimer block and skip the CAN-SPAM fallback
+	// injection. List-Unsubscribe HEADERS still ship (RFC 8058 mandate); only
+	// the visible body footer is bypassed. The creative owns its compliance.
+	RawCreative bool
+}
+
+// unsubDisclaimerMarkerW mirrors internal/api html_template_import.go's
+// unsubDisclaimerMarker — the injector stamps this comment before its two
+// <p> blocks, which makes the block deterministically strippable here.
+const unsubDisclaimerMarkerW = `<!-- unsub-disclaimer -->`
+
+// stripUnsubDisclaimerBlock removes the stored compliance-footer block (marker
+// + its two <p> paragraphs) from a creative. Used only for raw_creative
+// profiles; a no-op when the marker is absent.
+func stripUnsubDisclaimerBlock(html string) string {
+	idx := strings.Index(html, unsubDisclaimerMarkerW)
+	if idx < 0 {
+		return html
+	}
+	rest := html[idx+len(unsubDisclaimerMarkerW):]
+	end := 0
+	for i := 0; i < 2; i++ {
+		p := strings.Index(strings.ToLower(rest[end:]), "</p>")
+		if p < 0 {
+			break
+		}
+		end += p + len("</p>")
+	}
+	return html[:idx] + rest[end:]
 }
 
 // sanitizeSESTagValue coerces a value into the SES MessageTag charset
@@ -487,12 +517,13 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 	}
 	p.psesMu.RUnlock()
 
-	var via sql.NullBool
+	var via, raw sql.NullBool
 	var configSet, tenant sql.NullString
 	err := p.db.QueryRowContext(ctx,
-		`SELECT COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set, ''), COALESCE(ses_tenant_name, '')
+		`SELECT COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set, ''), COALESCE(ses_tenant_name, ''),
+		        COALESCE(raw_creative, FALSE)
 		   FROM mailing_sending_profiles WHERE id = $1`,
-		profileID).Scan(&via, &configSet, &tenant)
+		profileID).Scan(&via, &configSet, &tenant, &raw)
 	if err != nil {
 		// Pre-migration deployments will hit `column "via_ses" does not
 		// exist` until runStartupMigrations has run. Treat that as the
@@ -500,6 +531,7 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 		if !strings.Contains(err.Error(), "via_ses") &&
 			!strings.Contains(err.Error(), "ses_configuration_set") &&
 			!strings.Contains(err.Error(), "ses_tenant_name") &&
+			!strings.Contains(err.Error(), "raw_creative") &&
 			err != sql.ErrNoRows {
 			log.Printf("resolveProfileSES: profile=%s db error: %v", profileID, err)
 		}
@@ -510,9 +542,10 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 		return empty
 	}
 	info := profileSESInfo{
-		ViaSES:     via.Bool,
-		ConfigSet:  configSet.String,
-		TenantName: tenant.String,
+		ViaSES:      via.Bool,
+		ConfigSet:   configSet.String,
+		TenantName:  tenant.String,
+		RawCreative: raw.Bool,
 	}
 	p.psesMu.Lock()
 	p.profileSESCache[profileID] = info
@@ -1795,6 +1828,12 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	if htmlErr != nil {
 		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=html_content err=%v", item.CampaignID, htmlErr)
 	}
+	// raw_creative profiles (operator 2026-07-25, wcl-heloc): the creative ships
+	// AS-IS — strip any store-time compliance-footer block; the CAN-SPAM fallback
+	// injection below is skipped too. List-Unsubscribe headers still apply.
+	if sesInfo.RawCreative {
+		htmlContent = stripUnsubDisclaimerBlock(htmlContent)
+	}
 
 	// Brand-match creative image hosts to the sending brand's img.<apex> CDN
 	// (neutral img.projectjarvis.io -> img.<apex>) when that domain is
@@ -1922,8 +1961,9 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		textContent = strings.ReplaceAll(textContent, "{{ system.preferences_url }}", prefsURL)
 		textContent = strings.ReplaceAll(textContent, "{{system.preferences_url}}", prefsURL)
 
-		// CAN-SPAM: if no unsub link exists in the body, inject one before </body>
-		if !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {
+		// CAN-SPAM: if no unsub link exists in the body, inject one before </body>.
+		// raw_creative profiles opt out — the creative owns its own compliance.
+		if !sesInfo.RawCreative && !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {
 			unsubBlock := fmt.Sprintf(
 				`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
 					`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsubURL)

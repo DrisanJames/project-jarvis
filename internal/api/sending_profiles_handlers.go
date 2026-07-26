@@ -70,6 +70,9 @@ type SendingProfile struct {
 	SESConfigurationSet *string `json:"ses_configuration_set"`
 	SESTenantName       *string `json:"ses_tenant_name"`
 	RoutingMode         *string `json:"routing_mode"`
+	// raw_creative: per-profile footer bypass (operator 2026-07-25, wcl-heloc)
+	// — worker + proof paths ship the creative AS-IS (no injected footer).
+	RawCreative bool `json:"raw_creative"`
 
 	// Status
 	Status       string `json:"status"` // draft, pending, active, inactive, suspended
@@ -168,7 +171,8 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			   CASE WHEN api_key IS NOT NULL AND api_key != '' THEN true ELSE false END as is_configured,
 			   created_at, updated_at,
 			   smtp_host, COALESCE(smtp_port, 0), smtp_username, api_endpoint,
-			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode
+			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode,
+			   COALESCE(raw_creative, false)
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1
 		  AND (api_key IS NOT NULL AND api_key != '' OR vendor_type IN ('pmta', 'smtp', 'ses') OR COALESCE(via_ses, false) = true)
@@ -210,6 +214,7 @@ func (s *SendingProfileService) HandleListProfiles(w http.ResponseWriter, r *htt
 			&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.IsConfigured, &p.CreatedAt, &p.UpdatedAt,
 			&p.SMTPHost, &p.SMTPPort, &p.SMTPUsername, &p.APIEndpoint,
 			&p.ViaSES, &p.SESConfigurationSet, &p.SESTenantName, &p.RoutingMode,
+			&p.RawCreative,
 		)
 		if err != nil {
 			log.Printf("Error scanning profile: %v", err)
@@ -394,7 +399,8 @@ func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID, o
 			   last_verification_at, verification_error,
 			   hourly_limit, daily_limit, current_hourly_count, current_daily_count,
 			   ip_pool, pool_prefix, status, is_default, created_at, updated_at,
-			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode
+			   COALESCE(via_ses, false), ses_configuration_set, ses_tenant_name, routing_mode,
+			   COALESCE(raw_creative, false)
 		FROM mailing_sending_profiles WHERE id = $1 AND organization_id = $2
 	`, profileID, orgID).Scan(
 		&p.ID, &p.OrganizationID, &p.Name, &p.Description, &p.VendorType,
@@ -407,6 +413,7 @@ func (s *SendingProfileService) getProfileByID(ctx context.Context, profileID, o
 		&p.HourlyLimit, &p.DailyLimit, &p.CurrentHourlyCount, &p.CurrentDailyCount,
 		&p.IPPool, &p.PoolPrefix, &p.Status, &p.IsDefault, &p.CreatedAt, &p.UpdatedAt,
 		&p.ViaSES, &p.SESConfigurationSet, &p.SESTenantName, &p.RoutingMode,
+		&p.RawCreative,
 	)
 	if err != nil {
 		return nil, err
@@ -468,6 +475,7 @@ func (s *SendingProfileService) HandleUpdateProfile(w http.ResponseWriter, r *ht
 		"ses_configuration_set": "ses_configuration_set",
 		"ses_tenant_name":       "ses_tenant_name",
 		"routing_mode":          "routing_mode",
+		"raw_creative":          "raw_creative",
 	}
 
 	for jsonField, dbField := range fieldMap {

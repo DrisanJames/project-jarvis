@@ -83,6 +83,10 @@ type proofProfile struct {
 	ViaSES        bool
 	SESConfigSet  string
 	SESTenant     string
+	// RawCreative (operator 2026-07-25, wcl-heloc): proofs mirror the live
+	// worker — send the creative AS-IS, stripping any stored compliance-footer
+	// block instead of appending one.
+	RawCreative bool
 }
 
 // proofGateway carries the validated brand root + slug used to rewrite a
@@ -261,6 +265,11 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		log.Printf("[proof-send] Liquid render error (html): %v", rerr)
 		renderedHTML = htmlContent
 	}
+	// raw_creative profiles (operator 2026-07-25, wcl-heloc): the proof mirrors
+	// the live send — creative AS-IS, any stored compliance-footer block removed.
+	if pp.RawCreative {
+		renderedHTML = stripUnsubDisclaimer(renderedHTML)
+	}
 
 	// Wave-1 tracking-layer rewrite (opt-in): cratoolpro money links -> the
 	// tracking service's /o/<sub>/<hash>/<campaign> offer URL, BEFORE tracking
@@ -378,12 +387,14 @@ func (h *ProofSendHandler) resolveProofProfile(ctx context.Context, sendingDomai
 	var trackingDomain, sDomain sql.NullString
 	err := h.db.QueryRowContext(ctx,
 		`SELECT id::text, COALESCE(from_email,''), tracking_domain, sending_domain,
-		        COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set,''), COALESCE(ses_tenant_name,'')
+		        COALESCE(via_ses, FALSE), COALESCE(ses_configuration_set,''), COALESCE(ses_tenant_name,''),
+		        COALESCE(raw_creative, FALSE)
 		 FROM mailing_sending_profiles
 		 WHERE sending_domain = $1 AND vendor_type = 'pmta' AND status = 'active' `+sesFilter+`
 		 ORDER BY is_default DESC, created_at DESC LIMIT 1`,
 		lookupDomain,
-	).Scan(&pp.ID, &pp.FromEmail, &trackingDomain, &sDomain, &pp.ViaSES, &pp.SESConfigSet, &pp.SESTenant)
+	).Scan(&pp.ID, &pp.FromEmail, &trackingDomain, &sDomain, &pp.ViaSES, &pp.SESConfigSet, &pp.SESTenant,
+		&pp.RawCreative)
 	if err != nil {
 		log.Printf("[proof-send] no %s sending profile for domain %s: %v", transport, lookupDomain, err)
 		return proofProfile{}, fmt.Errorf("no active %s sending profile for domain '%s'", transport, lookupDomain)

@@ -684,9 +684,16 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 
 	// Append the footer/unsub at the bottom, branded with the actual sending
 	// domain (resolved only now, at send time). sendProofMessage renders the
-	// {{ system.unsubscribe_url }} merge tag inside it.
+	// {{ system.unsubscribe_url }} merge tag inside it. raw_creative domains
+	// (operator 2026-07-25, wcl-heloc) bypass: creative ships AS-IS, any stored
+	// block stripped.
 	brand := brandFromSendingDomain(req.SendingDomain)
-	htmlForSend := appendUnsubDisclaimer(p.HTMLContent, brand, "")
+	var htmlForSend string
+	if rawCreativeDomain(r.Context(), s.db, req.SendingDomain) {
+		htmlForSend = stripUnsubDisclaimer(p.HTMLContent)
+	} else {
+		htmlForSend = appendUnsubDisclaimer(p.HTMLContent, brand, "")
+	}
 	// Brand-match image hosts to img.<brand> when provisioned; else stay neutral.
 	htmlForSend = s.brandMatchImageHosts(r.Context(), orgID.String(), brand, htmlForSend)
 

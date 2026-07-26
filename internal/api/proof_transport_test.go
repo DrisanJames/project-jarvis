@@ -52,9 +52,9 @@ func TestHandleCreativeProof_SESTransport(t *testing.T) {
 	mock.ExpectQuery(`SELECT id::text, COALESCE\(from_email,''\), tracking_domain, sending_domain`).
 		WithArgs("m.discountblog.com").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "from_email", "tracking_domain", "sending_domain",
-			"via_ses", "ses_configuration_set", "ses_tenant_name"}).
+			"via_ses", "ses_configuration_set", "ses_tenant_name", "raw_creative"}).
 			AddRow("profile-ses", "hello@em.discountblog.com", "t.m.discountblog.com", "m.discountblog.com",
-				true, "discountblog", "discountblog"))
+				true, "discountblog", "discountblog", false))
 
 	rec := creativeProofPOST(t, h, "creative-1", `{"to_email":"op@gmail.com","transport":"ses"}`)
 

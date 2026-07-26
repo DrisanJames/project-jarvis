@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"fmt"
 	"io"
 	"log"
@@ -233,6 +234,48 @@ func appendUnsubDisclaimer(html, brandName, physicalAddress string) string {
 		return html[:idx] + disclaimer + html[idx:]
 	}
 	return html + disclaimer
+}
+
+// stripUnsubDisclaimer removes the injected compliance-footer block (marker +
+// its two <p> paragraphs). The inverse of appendUnsubDisclaimer, for
+// raw_creative sending profiles (operator 2026-07-25, wcl-heloc): the creative
+// ships AS-IS and owns its own compliance. No-op when the marker is absent.
+func stripUnsubDisclaimer(html string) string {
+	idx := strings.Index(html, unsubDisclaimerMarker)
+	if idx < 0 {
+		return html
+	}
+	rest := html[idx+len(unsubDisclaimerMarker):]
+	end := 0
+	for i := 0; i < 2; i++ {
+		p := strings.Index(strings.ToLower(rest[end:]), "</p>")
+		if p < 0 {
+			break
+		}
+		end += p + len("</p>")
+	}
+	return html[:idx] + rest[end:]
+}
+
+// rawCreativeDomain reports whether the active sending profile on
+// `sendingDomain` (any of em.<apex> / m.<apex> / bare apex forms are checked
+// as-given plus m.<apex>) has raw_creative set — the per-domain footer bypass.
+func rawCreativeDomain(ctx context.Context, db *sql.DB, sendingDomain string) bool {
+	d := strings.ToLower(strings.TrimSpace(sendingDomain))
+	if d == "" {
+		return false
+	}
+	apex := strings.TrimPrefix(strings.TrimPrefix(d, "em."), "m.")
+	var raw bool
+	err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(bool_or(COALESCE(raw_creative, FALSE)), FALSE)
+		   FROM mailing_sending_profiles
+		  WHERE status = 'active' AND sending_domain IN ($1, $2, $3)`,
+		d, "m."+apex, "em."+apex).Scan(&raw)
+	if err != nil {
+		return false
+	}
+	return raw
 }
 
 type rehostResult struct {
