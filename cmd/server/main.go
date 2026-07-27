@@ -2477,11 +2477,11 @@ func runStartupMigrations(db *sql.DB) {
 			       v.eo_mailable::jsonb, 'seed-migration'
 			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
 			CROSS JOIN (VALUES
-				('consumer', TRUE, 60000, '{"gmail":0}', 'tahiti-village', 12,
+				('consumer', TRUE, 60000, '{"gmail":0}', 'liberty-mutual', 12,
 				 'Consumer (Attribits Spicy Clickers)', 'CONSUMER', '',
 				 '["9502c7c4-68e7-4dcf-91f5-103a1480fe68","6cb7292a-0702-4497-b63f-e1fb5006227d"]',
 				 '["DB","CP","QF","HT","TT"]', '["BW"]', '["Verified","Complainer"]'),
-				('mortgage', TRUE, 20000, '{"gmail":0}', 'liberty-mutual', 12,
+				('mortgage', TRUE, 20000, '{"gmail":0}', 'mutual-of-omaha', 12,
 				 'Mortgage (Attribits HELOC)', 'MORTGAGE', 'vertical:mortgage',
 				 '["e36d529c-14f5-4875-b1a7-abfb7108d9f5"]',
 				 '["RR","RB","FC"]', '[]', '["Verified","Complainer"]'),
