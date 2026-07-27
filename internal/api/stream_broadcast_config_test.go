@@ -273,8 +273,8 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 				nil, nil, now, "seed-migration").
 			AddRow("wcm", true, 15000, `{}`, "west-capital-heloc", 12,
 				"West Capital (WCM homeowners)", "WCM", "vertical:mortgage",
-				`[]`, `[]`, `[]`, `["Verified","Complainer"]`,
-				"m.wcl-heloc.com", nil, now, "seed-migration"))
+				`[]`, `["RR","RB","FC"]`, `[]`, `["Verified","Complainer"]`,
+				"m.wcl-heloc.com", "4df6545a-d623-4c18-abe1-195b7b26e463", now, "seed-migration"))
 
 	// Bench: 6 offers, each = ResolveOffer scan (+ counts when resolved).
 	// The offers-table scan is identical per key; liz-buys-homes resolves to
@@ -348,10 +348,17 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 	if b := byKey["west-capital-heloc"]; b.Readiness != benchReady || b.MatchedBy != "name" {
 		t.Errorf("west-capital-heloc = %+v (want ready/name)", b)
 	}
-	// wcm stream row carries its explicit sending lane, read-only.
+	// wcm: explicit lane AND brand-code pools COEXIST (operator: "WCM offer
+	// follows WCM data across properties") — both must round-trip, read-only.
 	wcm := out.Streams[1]
-	if wcm.StreamKey != "wcm" || wcm.SendingDomain == nil || *wcm.SendingDomain != "m.wcl-heloc.com" || wcm.SendingProfileID != nil {
-		t.Errorf("wcm stream = %+v (want sending_domain m.wcl-heloc.com, nil profile)", wcm)
+	if wcm.StreamKey != "wcm" || wcm.SendingDomain == nil || *wcm.SendingDomain != "m.wcl-heloc.com" {
+		t.Errorf("wcm stream = %+v (want sending_domain m.wcl-heloc.com)", wcm)
+	}
+	if wcm.SendingProfileID == nil || *wcm.SendingProfileID != "4df6545a-d623-4c18-abe1-195b7b26e463" {
+		t.Errorf("wcm sending_profile_id = %v (want the seeded profile uuid)", wcm.SendingProfileID)
+	}
+	if string(wcm.PrimarySites) != `["RR","RB","FC"]` {
+		t.Errorf("wcm primary_sites = %s (explicit lane must NOT suppress brand codes)", wcm.PrimarySites)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)

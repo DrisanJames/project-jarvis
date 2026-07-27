@@ -2513,22 +2513,28 @@ func runStartupMigrations(db *sql.DB) {
 		// read-only in the portal UI for now.
 		{"add_stream_broadcast_sending_domain", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS sending_domain TEXT`},
 		{"add_stream_broadcast_sending_profile", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS sending_profile_id TEXT`},
-		// Sixth stream (operator ruling 2026-07-26): West Capital homeowner
-		// data mails via its OWN lane (explicit sending_domain, no brand-code
-		// pools). isp_caps '{}' per the literal operator spec — deliberately
-		// NOT stamped with the gmail:0 doctrine cap the other five carry.
+		// Sixth stream (operator ruling 2026-07-26, amended same day: "WCM
+		// offer follows WCM data across properties"): West Capital homeowner
+		// data mails via BOTH its own explicit lane (sending_domain +
+		// sending_profile_id) AND the mortgage brand-code pools — the Python
+		// builder unions the destinations. isp_caps '{}' per the literal
+		// operator spec (per-destination gmail masking is Python-side logic),
+		// deliberately NOT gmail:0-stamped like the other five.
 		// Same NOT EXISTS idempotency as the main seed.
 		{"seed_stream_broadcast_wcm", `
 			INSERT INTO mailing_stream_broadcast_config (
 				organization_id, stream_key, enabled, daily_cap, isp_caps, offer,
 				throttle_hours, label, seg_prefix, vertical_tag, dataset_ids,
-				primary_sites, secondary_sites, eo_mailable, sending_domain, updated_by
+				primary_sites, secondary_sites, eo_mailable, sending_domain,
+				sending_profile_id, updated_by
 			)
 			SELECT o.organization_id, 'wcm', TRUE, 15000, '{}'::jsonb,
 			       'west-capital-heloc', 12, 'West Capital (WCM homeowners)',
-			       'WCM', 'vertical:mortgage', '[]'::jsonb, '[]'::jsonb,
-			       '[]'::jsonb, '["Verified","Complainer"]'::jsonb,
-			       'm.wcl-heloc.com', 'seed-migration'
+			       'WCM', 'vertical:mortgage', '[]'::jsonb,
+			       '["RR","RB","FC"]'::jsonb, '[]'::jsonb,
+			       '["Verified","Complainer"]'::jsonb,
+			       'm.wcl-heloc.com', '4df6545a-d623-4c18-abe1-195b7b26e463',
+			       'seed-migration'
 			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_stream_broadcast_config c
