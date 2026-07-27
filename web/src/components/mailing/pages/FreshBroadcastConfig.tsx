@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faSliders, faStore, faRotate, faSpinner, faFloppyDisk,
+  faSliders, faStore, faRotate, faSpinner, faFloppyDisk, faPlay, faClockRotateLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
@@ -26,8 +26,12 @@ import { SectionHeader, Pill, SectionError, EmptyState } from '../shared/ui';
 // FilterBar note (PORTAL_DESIGN_SYSTEM §3): current-state config screen —
 // none of the canonical filter vocabulary binds; no FilterBar mounted.
 
+// PAGE_VERSION 1.1 — Fresh Broadcast RUNNER surface (2026-07-28): 'Run DRY
+// now' button (POST /api/mailing/fresh-broadcast/runs), per-stream last-run
+// panel (fill/cap/short + campaigns + trigger + time), and the auto_stage
+// toggle (nightly worker LIVE staging — drafts only; warning dialog).
 // PAGE_VERSION 1.0 — initial Fresh Broadcast Config screen (2026-07-26).
-const PAGE_VERSION = '1.0';
+const PAGE_VERSION = '1.1';
 
 // ── API shapes (mirror stream_broadcast_config.go; do not drift) ────────────
 
@@ -74,6 +78,58 @@ interface ConfigResponse {
 interface PutResponse {
   stream: StreamRow;
   warnings: string[];
+}
+
+// ── Runner API shapes (mirror fresh_broadcast_handlers.go; do not drift) ────
+
+interface RunCampaign {
+  campaign_id?: string;
+  name: string;
+  site: string;
+  sending_domain: string;
+  planned: number;
+  status: string; // draft | planned | refused
+  reason?: string;
+}
+
+interface RunStream {
+  stream: string;
+  status: string; // ok | skipped | refused | error
+  reason?: string;
+  drawn: number;
+  fill: number;
+  cap: number;
+  short: number;
+  per_isp?: Record<string, number>;
+  masked?: number;
+  segments_created: number;
+  members_added: number;
+  claimed: number;
+  campaigns: RunCampaign[];
+}
+
+interface RunResults {
+  run_id: string;
+  date: string;
+  dry: boolean;
+  trigger: string;
+  status: string;
+  streams: RunStream[] | null;
+}
+
+interface RunRecord {
+  id: string;
+  date: string;
+  dry: boolean;
+  trigger: string;
+  status: string;
+  results: RunResults | Record<string, never>;
+  created_at: string;
+}
+
+interface RunnerStatus {
+  streams: { stream_key: string; enabled: boolean; auto_stage: boolean }[];
+  runs: RunRecord[];
 }
 
 // ── Fetch plumbing ──────────────────────────────────────────────────────────
@@ -242,6 +298,92 @@ export const FreshBroadcastConfig: React.FC = () => {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [saves, setSaves] = useState<Record<string, SaveState>>({});
 
+  // ── Runner state (status panel + Run DRY now + auto_stage) ──
+  const [runnerStatus, setRunnerStatus] = useState<RunnerStatus | null>(null);
+  const [runnerError, setRunnerError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [lastRunNow, setLastRunNow] = useState<RunResults | null>(null);
+  const [autoStageBusy, setAutoStageBusy] = useState<Record<string, boolean>>({});
+
+  const refreshRunnerStatus = useCallback(() => {
+    apiFetch('/api/mailing/fresh-broadcast/status')
+      .then(async res => {
+        if (res.status === 404) { setRunnerStatus(null); setRunnerError(null); return; }
+        if (!res.ok) { setRunnerError(`HTTP ${res.status}`); return; }
+        setRunnerStatus((await res.json()) as RunnerStatus);
+        setRunnerError(null);
+      })
+      .catch((e: unknown) => setRunnerError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
+  useEffect(() => { refreshRunnerStatus(); }, [nonce, refreshRunnerStatus]);
+
+  const runDryNow = async () => {
+    setRunning(true);
+    setLastRunNow(null);
+    try {
+      const res = await apiFetch('/api/mailing/fresh-broadcast/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry: true, trigger: 'screen' }),
+      });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) msg += ` — ${body.error}`; } catch { /* non-JSON */ }
+        setRunnerError(msg);
+        return;
+      }
+      setLastRunNow((await res.json()) as RunResults);
+      refreshRunnerStatus();
+    } catch (e: unknown) {
+      setRunnerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const toggleAutoStage = async (streamKey: string, next: boolean) => {
+    if (next && !window.confirm(
+      `Enable AUTO-STAGE for "${streamKey}"?\n\nThe nightly worker (09:00 UTC) will run the LIVE stage step for this stream: `
+      + 'dated segments are created, queue rows are CLAIMED, and draft campaigns are staged automatically.\n\n'
+      + 'Campaigns still land as DRAFTS — the Draft Board remains the approval gate; nothing sends without your approval.',
+    )) return;
+    setAutoStageBusy(prev => ({ ...prev, [streamKey]: true }));
+    try {
+      const res = await apiFetch('/api/mailing/fresh-broadcast/auto-stage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stream_key: streamKey, auto_stage: next }),
+      });
+      if (!res.ok) {
+        let msg = `auto-stage HTTP ${res.status}`;
+        try { const body = await res.json(); if (body?.error) msg += ` — ${body.error}`; } catch { /* non-JSON */ }
+        setRunnerError(msg);
+        return;
+      }
+      refreshRunnerStatus();
+    } catch (e: unknown) {
+      setRunnerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAutoStageBusy(prev => ({ ...prev, [streamKey]: false }));
+    }
+  };
+
+  const autoStageFor = (key: string): boolean =>
+    runnerStatus?.streams.find(s => s.stream_key === key)?.auto_stage ?? false;
+
+  // Latest recorded run + per-stream latest results for the panel.
+  const latestRun = lastRunNow
+    ?? (runnerStatus?.runs?.length ? (runnerStatus.runs[0].results as RunResults) : null);
+  const latestRunMeta = lastRunNow
+    ? { trigger: lastRunNow.trigger, dry: lastRunNow.dry, at: 'just now', status: lastRunNow.status }
+    : (runnerStatus?.runs?.length
+      ? {
+        trigger: runnerStatus.runs[0].trigger, dry: runnerStatus.runs[0].dry,
+        at: fmtRelative(runnerStatus.runs[0].created_at), status: runnerStatus.runs[0].status,
+      }
+      : null);
+
   const d = state.data;
 
   // (Re)seed drafts whenever fresh data lands.
@@ -322,15 +464,30 @@ export const FreshBroadcastConfig: React.FC = () => {
             {state.fetchedAt && <span> · fetched {state.fetchedAt}{state.ms != null ? ` · ${state.ms}ms` : ''}</span>}
           </div>
         </div>
-        <button
-          onClick={() => setNonce(n => n + 1)}
-          style={{
-            background: alpha(colors.indigo500, '22'), border: `1px solid ${alpha(colors.indigo500, '66')}`,
-            color: colors.text, borderRadius: 8, padding: '8px 14px', cursor: 'pointer', fontSize: 12.5,
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}>
-          <FontAwesomeIcon icon={faRotate} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={runDryNow}
+            disabled={running}
+            title="Invoke the fresh-broadcast runner in DRY mode — draws every enabled stream, reports fill vs cap and the campaigns it WOULD stage. No writes."
+            style={{
+              background: alpha(colors.success, '22'), border: `1px solid ${alpha(colors.success, '66')}`,
+              color: colors.text, borderRadius: 8, padding: '8px 14px',
+              cursor: running ? 'default' : 'pointer', opacity: running ? 0.6 : 1, fontSize: 12.5,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+            {running ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPlay} />}
+            Run DRY now
+          </button>
+          <button
+            onClick={() => setNonce(n => n + 1)}
+            style={{
+              background: alpha(colors.indigo500, '22'), border: `1px solid ${alpha(colors.indigo500, '66')}`,
+              color: colors.text, borderRadius: 8, padding: '8px 14px', cursor: 'pointer', fontSize: 12.5,
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>
+            <FontAwesomeIcon icon={faRotate} /> Refresh
+          </button>
+        </div>
       </div>
 
       {state.loading && (
@@ -411,6 +568,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                       <th style={thStyle}>Offer</th>
                       <th style={thStyle}>ISP caps (JSON)</th>
                       <th style={numTh}>Throttle</th>
+                      <th style={thStyle}>Auto-stage</th>
                       <th style={thStyle}>Routing (read-only)</th>
                       <th style={thStyle}>Updated</th>
                       <th style={thStyle} />
@@ -480,6 +638,24 @@ export const FreshBroadcastConfig: React.FC = () => {
                               />
                               <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 4 }}>h</span>
                             </td>
+                            <td style={tdStyle}>
+                              <label
+                                title="When ON, the nightly worker (09:00 UTC) runs the LIVE stage step for this stream: segments + queue claims + DRAFT campaigns. The Draft Board remains the approval gate — auto-stage never promotes or sends."
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={autoStageFor(s.stream_key)}
+                                  disabled={autoStageBusy[s.stream_key] === true || runnerStatus === null}
+                                  onChange={e => toggleAutoStage(s.stream_key, e.target.checked)}
+                                />
+                                {autoStageBusy[s.stream_key]
+                                  ? <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 10 }} />
+                                  : autoStageFor(s.stream_key)
+                                    ? <Pill color={colors.warning}>NIGHTLY</Pill>
+                                    : <span style={{ fontSize: 10.5, color: colors.textFaint }}>manual</span>}
+                              </label>
+                            </td>
                             <td style={{ ...tdStyle, maxWidth: 260 }}>
                               <div>
                                 {s.sending_domain && chip(s.sending_domain, colors.success, `d-${s.stream_key}`)}
@@ -515,7 +691,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                           </tr>
                           {(sv?.error || (sv?.warnings.length ?? 0) > 0) && (
                             <tr>
-                              <td colSpan={9} style={{ padding: '4px 12px 10px', borderTop: 'none' }}>
+                              <td colSpan={10} style={{ padding: '4px 12px 10px', borderTop: 'none' }}>
                                 {sv?.error && (
                                   <div style={{ fontSize: 12, color: sv.conflict ? colors.warningText : colors.dangerText }}>
                                     {sv.error}
@@ -537,6 +713,90 @@ export const FreshBroadcastConfig: React.FC = () => {
                   ISP caps are absolute per-ISP daily ceilings as JSON (<code>{'{"apple":0}'}</code> = do not mail apple). Saves are optimistic-locked on the row's updated_at — a conflict never silently overwrites.
                 </div>
               </div>
+            )}
+          </div>
+
+          {/* ── Last run (fresh-broadcast runner) ── */}
+          <div style={panelStyle}>
+            <SectionHeader title="Fresh broadcast runner — last run" icon={faClockRotateLeft} />
+            {runnerError && (
+              <div style={{ fontSize: 12, color: colors.dangerText, marginBottom: 8 }}>⚠ {runnerError}</div>
+            )}
+            {!latestRun || !latestRunMeta ? (
+              <div style={{ fontSize: 12.5, color: colors.textMuted }}>
+                No runs recorded yet. The nightly worker runs a DRY pass at 09:00 UTC; &quot;Run DRY now&quot; invokes the same runner on demand.
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <Pill color={latestRunMeta.dry ? colors.indigo400 : colors.warning}>
+                    {latestRunMeta.dry ? 'DRY' : 'LIVE'}
+                  </Pill>
+                  <span>trigger: <code style={{ fontFamily: 'monospace' }}>{latestRunMeta.trigger}</code></span>
+                  <span>date: {latestRun.date}</span>
+                  <span>{latestRunMeta.at}</span>
+                  <Pill color={latestRunMeta.status === 'ok' ? colors.success : colors.warning}>
+                    {latestRunMeta.status.toUpperCase()}
+                  </Pill>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>Stream</th>
+                        <th style={thStyle}>Status</th>
+                        <th style={numTh}>Fill</th>
+                        <th style={numTh}>Cap</th>
+                        <th style={numTh}>Short</th>
+                        <th style={numTh}>Staged</th>
+                        <th style={thStyle}>Campaigns</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(latestRun.streams ?? []).map(st => (
+                        <tr key={st.stream}>
+                          <td style={{ ...tdStyle, fontFamily: 'monospace' }}>{st.stream}</td>
+                          <td style={tdStyle} title={st.reason || ''}>
+                            <Pill color={st.status === 'ok' ? colors.success : st.status === 'skipped' ? colors.idle : colors.danger}>
+                              {st.status.toUpperCase()}
+                            </Pill>
+                            {st.reason && (
+                              <div style={{ fontSize: 10.5, color: colors.textFaint, marginTop: 2, maxWidth: 320 }}>{st.reason}</div>
+                            )}
+                          </td>
+                          <td style={numTd}>{st.fill.toLocaleString()}</td>
+                          <td style={numTd}>{st.cap.toLocaleString()}</td>
+                          <td style={{ ...numTd, color: st.short > 0 ? colors.warningText : colors.textMuted }}
+                            title={st.short > 0 ? 'Ready stock cannot meet the cap — this shortfall IS the daily data ask for this feed.' : ''}>
+                            {st.short.toLocaleString()}
+                          </td>
+                          <td style={numTd} title={`segments ${st.segments_created} · members ${st.members_added.toLocaleString()} · claimed ${st.claimed.toLocaleString()}`}>
+                            {st.members_added.toLocaleString()}
+                          </td>
+                          <td style={tdStyle}>
+                            {st.campaigns.length === 0
+                              ? <span style={{ color: colors.textFaint, fontSize: 11 }}>—</span>
+                              : st.campaigns.map(c => (
+                                <div key={`${st.stream}-${c.site}`} style={{ fontSize: 11, marginBottom: 2 }}
+                                  title={`${c.name} · ${c.sending_domain} · ${c.planned.toLocaleString()} planned${c.campaign_id ? ` · ${c.campaign_id}` : ''}${c.reason ? ` · ${c.reason}` : ''}`}>
+                                  {chip(c.site, c.status === 'refused' ? colors.danger : c.status === 'draft' ? colors.success : colors.indigo400, `${st.stream}-${c.site}`)}
+                                  <span style={{ fontFamily: 'monospace', color: colors.textMuted }}>
+                                    {c.planned.toLocaleString()} · {c.status}
+                                    {c.campaign_id ? ` · ${c.campaign_id.slice(0, 8)}` : ''}
+                                  </span>
+                                </div>
+                              ))}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8, lineHeight: 1.6 }}>
+                  Draft campaigns are reviewed and promoted on the <strong>Draft Board</strong> — the runner never deploys.
+                  A SHORT value is the operator&apos;s daily data ask for that feed. LIVE runs skip any stream whose dated segments already exist (resume-safe).
+                </div>
+              </>
             )}
           </div>
         </div>

@@ -977,6 +977,17 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			streamBroadcastSvc := NewStreamBroadcastService(db)
 			streamBroadcastSvc.RegisterRoutes(r)
 
+			// === FRESH BROADCAST RUNNER (operator 2026-07-27) ===
+			// The fresh-data introduction loop as software: POST/GET
+			// /api/mailing/fresh-broadcast/runs (+ runs/{id}, status,
+			// auto-stage) over FreshBroadcastRunner — draw → dated uuid5
+			// segments → queue claims → one DRAFT per stream×destination via
+			// the same stage flow the Draft Board promotes. DRY by default;
+			// drafts only, never deploys (fresh_broadcast_runner.go /
+			// fresh_broadcast_handlers.go).
+			freshBroadcastRunSvc := NewFreshBroadcastRunService(db)
+			freshBroadcastRunSvc.RegisterRoutes(r)
+
 			// === OPS CONSOLE JOB-RUN HISTORY (Coalition WS3, REQ-C19 slice) ===
 			// Read-only history over mailing_worker_runs for the Operations
 			// screen (invariant-suite + cohort-growth run records; SCHEMA-

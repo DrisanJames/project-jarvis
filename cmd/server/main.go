@@ -928,6 +928,22 @@ func main() {
 			go engagementFamilyBuilder.Start(ctx)
 			log.Printf("Engagement family builder started (nightly 05:00 UTC, GMAIL-ENG-* 16 brands + KUMO-ALLTIME-* 9 brands; kill: DISABLE_ENGAGEMENT_FAMILY_BUILDER)")
 
+			// Fresh Broadcast worker (operator 2026-07-27) — the "system
+			// invokes it" leg of the fresh-data introduction runner. Nightly
+			// 09:00 UTC (after the 08:15Z remint): DRY always (fill-vs-cap
+			// summary → mailing_fresh_broadcast_runs), LIVE stage only for
+			// streams with auto_stage=TRUE — campaigns still land as DRAFTS,
+			// the Draft Board remains the approval gate. Runner logic lives
+			// in internal/api (fresh_broadcast_runner.go) and is injected
+			// here (worker→api imports would cycle — the
+			// WrapPMTACampaignDeploy inversion). Distlock; heartbeat
+			// 'fresh_broadcast'; no boot pass. Kill:
+			// DISABLE_FRESH_BROADCAST_RUNNER=true.
+			freshBroadcastRunner := api.NewFreshBroadcastRunner(mailingDB)
+			freshBroadcastWorker := worker.NewFreshBroadcastWorker(mailingDB, redisClient, freshBroadcastRunner.RunForWorker)
+			go freshBroadcastWorker.Start(ctx)
+			log.Printf("Fresh Broadcast worker started (nightly 09:00 UTC; DRY always, LIVE for auto_stage streams; kill: DISABLE_FRESH_BROADCAST_RUNNER)")
+
 			// Journey Segment Enroller — auto-enrolls subscribers from
 			// segment-triggered journeys (Welcome Series Phase 2). Uses the
 			// segmentation engine for saved segments, and the
@@ -2630,6 +2646,37 @@ func runStartupMigrations(db *sql.DB) {
 				  AND c.stream_key = 'wcm'
 			)
 		`},
+		// ── Fresh Broadcast Runner (operator 2026-07-27: the fresh-data
+		// introduction loop as native software). Three column/table adds on
+		// the existing cross-team contract table + the runs ledger:
+		//   source_tags — tag-source streams (the wcm shape: dataset_ids
+		//     empty, records are mailing_subscribers scoped by batch tags);
+		//     seeded for wcm from stream_routing.json's tag_any.
+		//   auto_stage  — lets the nightly FreshBroadcastWorker run the LIVE
+		//     stage step for that stream (campaigns still land as drafts —
+		//     the Draft Board remains the approval gate). Default FALSE.
+		//   mailing_fresh_broadcast_runs — one row per runner invocation
+		//     (api|worker|screen), per-stream results as jsonb. Read by
+		//     GET /api/mailing/fresh-broadcast/runs + the config screen's
+		//     last-run panel. New table, no deps, fast — fits the 5s budget.
+		{"add_stream_broadcast_source_tags", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS source_tags JSONB NOT NULL DEFAULT '[]'`},
+		{"seed_stream_broadcast_wcm_source_tags", `
+			UPDATE mailing_stream_broadcast_config
+			SET source_tags = '["batch:wcm_heloc_001","batch:westcapital_jan2026"]'::jsonb
+			WHERE stream_key = 'wcm' AND source_tags = '[]'::jsonb
+		`},
+		{"add_stream_broadcast_auto_stage", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS auto_stage BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"create_fresh_broadcast_runs", `CREATE TABLE IF NOT EXISTS mailing_fresh_broadcast_runs (
+			id              UUID PRIMARY KEY,
+			organization_id UUID NOT NULL,
+			run_date        DATE NOT NULL,
+			dry             BOOLEAN NOT NULL DEFAULT TRUE,
+			trigger_source  TEXT NOT NULL DEFAULT 'api',
+			results         JSONB NOT NULL DEFAULT '{}',
+			status          TEXT NOT NULL DEFAULT 'running',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_fresh_broadcast_runs_org", `CREATE INDEX IF NOT EXISTS idx_fresh_broadcast_runs_org ON mailing_fresh_broadcast_runs (organization_id, created_at DESC)`},
 		// ── Per-segment daily performance rollup (Segmentation Command) ──
 		// One row per (segment, Denver day), written nightly by
 		// SegmentPerfRollupWorker (internal/worker/segment_perf_rollup.go)
