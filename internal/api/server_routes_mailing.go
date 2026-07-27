@@ -953,6 +953,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentRegistrySvc := NewSegmentRegistryService(db)
 			segmentRegistrySvc.RegisterRoutes(r)
 
+			// === SEGMENTATION COMMAND (membership-build truth vs SLA) ===
+			// One read-only aggregation (registry + build ledger + segments +
+			// worker heartbeats/runs + bounded churn/refs) behind the
+			// Segmentation Command screen: GET /api/mailing/segmentation/health.
+			segmentationHealthSvc := NewSegmentationHealthService(db)
+			segmentationHealthSvc.RegisterRoutes(r)
+
 			// === OPS CONSOLE JOB-RUN HISTORY (Coalition WS3, REQ-C19 slice) ===
 			// Read-only history over mailing_worker_runs for the Operations
 			// screen (invariant-suite + cohort-growth run records; SCHEMA-

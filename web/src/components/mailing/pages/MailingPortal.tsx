@@ -6,7 +6,7 @@ import {
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faSeedling, faWandMagicSparkles,
-  faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears,
+  faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -57,6 +57,7 @@ const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPort
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
 const SmartLinkManager = lazy(() => import('../components/SmartLinkManager').then(m => ({ default: m.SmartLinkManager })));
 const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
+const SegmentationCommand = lazy(() => import('./SegmentationCommand').then(m => ({ default: m.SegmentationCommand })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -65,7 +66,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command';
 
 interface Tab {
   id: TabId;
@@ -79,6 +80,7 @@ const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'schedule'] },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
+  { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Membership-build truth per segment family — staleness verdicts against declared SLAs, worker liveness, churn and campaign use.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
@@ -247,6 +249,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><CpmPlanner /></Suspense>;
       case 'operations':
         return <Suspense fallback={<ChunkLoader />}><OperationsConsole /></Suspense>;
+      case 'segmentation-command':
+        return <Suspense fallback={<ChunkLoader />}><SegmentationCommand /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
