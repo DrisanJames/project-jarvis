@@ -960,6 +960,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentationHealthSvc := NewSegmentationHealthService(db)
 			segmentationHealthSvc.RegisterRoutes(r)
 
+			// === FRESH BROADCAST CONFIG (operator-editable stream knobs) ===
+			// GET/PUT /api/mailing/stream-broadcast/config over
+			// mailing_stream_broadcast_config — the single source of truth the
+			// Python build pipeline also reads (cross-team table contract; see
+			// stream_broadcast_config.go).
+			streamBroadcastSvc := NewStreamBroadcastService(db)
+			streamBroadcastSvc.RegisterRoutes(r)
+
 			// === OPS CONSOLE JOB-RUN HISTORY (Coalition WS3, REQ-C19 slice) ===
 			// Read-only history over mailing_worker_runs for the Operations
 			// screen (invariant-suite + cohort-growth run records; SCHEMA-

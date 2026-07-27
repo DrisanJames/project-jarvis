@@ -2417,6 +2417,83 @@ func runStartupMigrations(db *sql.DB) {
 				  AND r.family_pattern = f.family_pattern
 			)
 		`},
+		// ── Fresh-broadcast stream config (operator-editable, portal screen) ──
+		// Single source of truth for the fresh-introduction broadcast program:
+		// the operator edits it via PUT /api/mailing/stream-broadcast/config
+		// (internal/api/stream_broadcast_config.go) and the Python build
+		// pipeline reads the SAME table (JSON fallback on its side). Table and
+		// column names are a cross-team CONTRACT — do not rename. Editable:
+		// enabled/daily_cap/isp_caps/offer/throttle_hours. Read-only mirror of
+		// agents/scheduling/data/stream_routing.json: label/seg_prefix/
+		// vertical_tag/dataset_ids/primary_sites/secondary_sites/eo_mailable.
+		// New table, no deps, fast — fits the 5s budget.
+		{"create_stream_broadcast_config", `CREATE TABLE IF NOT EXISTS mailing_stream_broadcast_config (
+			organization_id UUID NOT NULL,
+			stream_key      TEXT NOT NULL,
+			enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+			daily_cap       INTEGER NOT NULL DEFAULT 0,
+			isp_caps        JSONB NOT NULL DEFAULT '{}',
+			offer           TEXT NOT NULL DEFAULT '',
+			throttle_hours  INTEGER NOT NULL DEFAULT 8,
+			label           TEXT NOT NULL DEFAULT '',
+			seg_prefix      TEXT NOT NULL DEFAULT '',
+			vertical_tag    TEXT,
+			dataset_ids     JSONB NOT NULL DEFAULT '[]',
+			primary_sites   JSONB NOT NULL DEFAULT '[]',
+			secondary_sites JSONB NOT NULL DEFAULT '[]',
+			eo_mailable     JSONB NOT NULL DEFAULT '[]',
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_by      TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (organization_id, stream_key)
+		)`},
+		// Seed from stream_routing.json values (operator-approved 2026-07-26)
+		// + the operator's fresh-broadcast caps/offers. Idempotent via NOT
+		// EXISTS on (organization_id, stream_key) — operator edits through the
+		// portal are never overwritten by a redeploy. auto_insurance seeds
+		// DISABLED (both feeds dead, datasets paused_emergency). throttle 8h =
+		// the standing fresh/cold window default.
+		{"seed_stream_broadcast_config", `
+			INSERT INTO mailing_stream_broadcast_config (
+				organization_id, stream_key, enabled, daily_cap, isp_caps, offer,
+				throttle_hours, label, seg_prefix, vertical_tag, dataset_ids,
+				primary_sites, secondary_sites, eo_mailable, updated_by
+			)
+			SELECT o.organization_id, v.stream_key, v.enabled, v.daily_cap,
+			       v.isp_caps::jsonb, v.offer, v.throttle_hours, v.label,
+			       v.seg_prefix, NULLIF(v.vertical_tag, ''), v.dataset_ids::jsonb,
+			       v.primary_sites::jsonb, v.secondary_sites::jsonb,
+			       v.eo_mailable::jsonb, 'seed-migration'
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			CROSS JOIN (VALUES
+				('consumer', TRUE, 60000, '{}', 'tahiti-village', 8,
+				 'Consumer (Attribits Spicy Clickers)', 'CONSUMER', '',
+				 '["9502c7c4-68e7-4dcf-91f5-103a1480fe68","6cb7292a-0702-4497-b63f-e1fb5006227d"]',
+				 '["DB","CP","QF","HT","TT"]', '["BW"]', '["Verified","Complainer"]'),
+				('mortgage', TRUE, 20000, '{}', 'liberty-mutual', 8,
+				 'Mortgage (Attribits HELOC)', 'MORTGAGE', 'vertical:mortgage',
+				 '["e36d529c-14f5-4875-b1a7-abfb7108d9f5"]',
+				 '["RR","RB","FC"]', '[]', '["Verified","Complainer"]'),
+				('term_life', TRUE, 10000, '{"apple":0}', 'fidelity', 8,
+				 'Term Life (Attribits Term Life)', 'TERMLIFE', '',
+				 '["7045189d-7ece-4f0d-92c8-3caab990cf52"]',
+				 '["YI"]', '["CI"]', '["Verified","Complainer"]'),
+				('auto_insurance', FALSE, 0, '{}', 'liberty-mutual', 8,
+				 'Auto Insurance (Attribits + Carshield)', 'AUTO', '',
+				 '["20c2983b-49cb-4d27-a280-c67213dd22a1","d4ba293d-ebc4-4564-8f9a-5b3d8fdf6985"]',
+				 '["CP","WF"]', '["CI","YI"]', '["Verified","Complainer"]'),
+				('remodel', TRUE, 5000, '{}', '3-day-blinds', 8,
+				 'Remodel / Home Improvement', 'REMODEL', 'vertical:remodel',
+				 '["8a5c3cb3-1ff0-4750-b2dd-cb55673a6ede","76214a9d-0228-46aa-be35-f638d1a51249","4fdf1a6d-e375-4bc5-a739-ae1a425298d2"]',
+				 '["MR","HW"]', '[]', '["Verified","Complainer"]')
+			) AS v(stream_key, enabled, daily_cap, isp_caps, offer, throttle_hours,
+			       label, seg_prefix, vertical_tag, dataset_ids, primary_sites,
+			       secondary_sites, eo_mailable)
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_stream_broadcast_config c
+				WHERE c.organization_id = o.organization_id
+				  AND c.stream_key = v.stream_key
+			)
+		`},
 		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
 		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
 		// (internal/worker/partner_human_rollup.go) because the live
