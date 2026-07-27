@@ -45,6 +45,8 @@ interface StreamRow {
   primary_sites: string[];
   secondary_sites: string[];
   eo_mailable: string[];
+  sending_domain: string | null;    // explicit-domain streams (wcm) — read-only
+  sending_profile_id: string | null; // read-only
   updated_at: string;
   updated_by: string;
 }
@@ -479,8 +481,14 @@ export const FreshBroadcastConfig: React.FC = () => {
                               <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 4 }}>h</span>
                             </td>
                             <td style={{ ...tdStyle, maxWidth: 260 }}>
-                              <div>{s.primary_sites.map(p => chip(p, colors.indigo400, `p-${s.stream_key}-${p}`))}
-                                {s.secondary_sites.map(p => chip(p, colors.idle, `s-${s.stream_key}-${p}`))}</div>
+                              <div>
+                                {s.sending_domain && chip(s.sending_domain, colors.success, `d-${s.stream_key}`)}
+                                {s.primary_sites.map(p => chip(p, colors.indigo400, `p-${s.stream_key}-${p}`))}
+                                {s.secondary_sites.map(p => chip(p, colors.idle, `s-${s.stream_key}-${p}`))}
+                                {!s.sending_domain && s.primary_sites.length === 0 && s.secondary_sites.length === 0 && (
+                                  <span style={{ color: colors.textFaint, fontSize: 11 }}>no routing declared</span>
+                                )}
+                              </div>
                               <div style={{ fontSize: 10.5, color: colors.textFaint, marginTop: 2 }}
                                 title={`eo_mailable: ${s.eo_mailable.join(', ')}`}>
                                 {s.dataset_ids.length} dataset{s.dataset_ids.length === 1 ? '' : 's'} · EO: {s.eo_mailable.join('/') || '—'}
@@ -525,7 +533,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                   </tbody>
                 </table>
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8, lineHeight: 1.6 }}>
-                  Editable: enabled, daily cap, offer, ISP caps, throttle window. Routing columns are read-only mirrors of the stream router registry.
+                  Editable: enabled, daily cap, offer, ISP caps, throttle window. Routing columns are read-only mirrors of the stream router registry; a green chip is an EXPLICIT sending domain (the stream mails via its own lane, not the brand-code pools).
                   ISP caps are absolute per-ISP daily ceilings as JSON (<code>{'{"apple":0}'}</code> = do not mail apple). Saves are optimistic-locked on the row's updated_at — a conflict never silently overwrites.
                 </div>
               </div>

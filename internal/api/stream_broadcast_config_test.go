@@ -31,7 +31,8 @@ func offerRows() *sqlmock.Rows {
 func streamCfgCols() []string {
 	return []string{"stream_key", "enabled", "daily_cap", "isp_caps", "offer", "throttle_hours",
 		"label", "seg_prefix", "vertical_tag", "dataset_ids", "primary_sites",
-		"secondary_sites", "eo_mailable", "updated_at", "updated_by"}
+		"secondary_sites", "eo_mailable", "sending_domain", "sending_profile_id",
+		"updated_at", "updated_by"}
 }
 
 // ── Pure derivations ────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ func TestStreamConfigPut_DraftOfferWarnsButSaves(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(streamCfgCols()).
 			AddRow("term_life", true, 10000, `{"apple":0}`, "fidelity", 8,
 				"Term Life", "TERMLIFE", nil, `[]`, `["YI"]`, `["CI"]`,
-				`["Verified","Complainer"]`, now, "op@x.com"))
+				`["Verified","Complainer"]`, nil, nil, now, "op@x.com"))
 
 	svc := NewStreamBroadcastService(db)
 	rec := putStreamCfg(t, svc, `{"stream_key":"term_life","enabled":true,"daily_cap":10000,
@@ -268,7 +269,12 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(streamCfgCols()).
 			AddRow("consumer", true, 60000, `{}`, "tahiti-village", 8,
 				"Consumer (Attribits Spicy Clickers)", "CONSUMER", nil,
-				`["9502c7c4"]`, `["DB","CP"]`, `["BW"]`, `["Verified","Complainer"]`, now, "seed-migration"))
+				`["9502c7c4"]`, `["DB","CP"]`, `["BW"]`, `["Verified","Complainer"]`,
+				nil, nil, now, "seed-migration").
+			AddRow("wcm", true, 15000, `{}`, "west-capital-heloc", 12,
+				"West Capital (WCM homeowners)", "WCM", "vertical:mortgage",
+				`[]`, `[]`, `[]`, `["Verified","Complainer"]`,
+				"m.wcl-heloc.com", nil, now, "seed-migration"))
 
 	// Bench: 6 offers, each = ResolveOffer scan (+ counts when resolved).
 	// The offers-table scan is identical per key; liz-buys-homes resolves to
@@ -279,7 +285,8 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 			AddRow("o-lib", "Liberty Mutual Insurance", "", "active").
 			AddRow("o-tah", "Tahiti Village Resort", "tahiti-village", "active").
 			AddRow("o-3db", "3 Day Blinds", "", "active").
-			AddRow("o-moo", "Mutual of Omaha", "", "active")
+			AddRow("o-moo", "Mutual of Omaha", "", "active").
+			AddRow("o-wch", "West Capital HELOC", "", "active")
 	}
 	countsRow := func(proofs, links int) *sqlmock.Rows {
 		return sqlmock.NewRows([]string{"proofs", "links"}).AddRow(proofs, links)
@@ -301,6 +308,9 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_offer_proofs`).WithArgs(sqlmock.AnyArg(), "mutual-of-omaha").WillReturnRows(countsRow(1, 1))
 	// liz-buys-homes: no row → NOT ONBOARDED, no counts query.
 	mock.ExpectQuery(`FROM mailing_offers`).WithArgs(sqlmock.AnyArg()).WillReturnRows(offerSet())
+	// west-capital-heloc (active internal offer, exact slugified-name match)
+	mock.ExpectQuery(`FROM mailing_offers`).WithArgs(sqlmock.AnyArg()).WillReturnRows(offerSet())
+	mock.ExpectQuery(`FROM mailing_offer_proofs`).WithArgs(sqlmock.AnyArg(), "west-capital-heloc").WillReturnRows(countsRow(1, 1))
 
 	svc := NewStreamBroadcastService(db)
 	req := httptest.NewRequest(http.MethodGet, "/stream-broadcast/config", nil)
@@ -315,7 +325,7 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !out.BenchAvailable || len(out.Bench) != 6 || len(out.Streams) != 1 {
+	if !out.BenchAvailable || len(out.Bench) != 7 || len(out.Streams) != 2 {
 		t.Fatalf("shape wrong: bench_available=%v bench=%d streams=%d",
 			out.BenchAvailable, len(out.Bench), len(out.Streams))
 	}
@@ -334,6 +344,14 @@ func TestStreamConfigGet_BenchLights(t *testing.T) {
 	}
 	if b := byKey["liz-buys-homes"]; b.Readiness != benchNotOnboarded || b.Exists {
 		t.Errorf("liz-buys-homes = %+v (want not_onboarded)", b)
+	}
+	if b := byKey["west-capital-heloc"]; b.Readiness != benchReady || b.MatchedBy != "name" {
+		t.Errorf("west-capital-heloc = %+v (want ready/name)", b)
+	}
+	// wcm stream row carries its explicit sending lane, read-only.
+	wcm := out.Streams[1]
+	if wcm.StreamKey != "wcm" || wcm.SendingDomain == nil || *wcm.SendingDomain != "m.wcl-heloc.com" || wcm.SendingProfileID != nil {
+		t.Errorf("wcm stream = %+v (want sending_domain m.wcl-heloc.com, nil profile)", wcm)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)

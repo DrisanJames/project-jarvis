@@ -54,7 +54,7 @@ const VersionStreamBroadcastAPI = "1.0"
 // 2026-07-26). Order is display order.
 var streamOfferBench = []string{
 	"fidelity", "liberty-mutual", "tahiti-village", "3-day-blinds",
-	"mutual-of-omaha", "liz-buys-homes",
+	"mutual-of-omaha", "liz-buys-homes", "west-capital-heloc",
 }
 
 const (
@@ -128,8 +128,13 @@ type streamConfigRow struct {
 	PrimarySites   json.RawMessage `json:"primary_sites"`
 	SecondarySites json.RawMessage `json:"secondary_sites"`
 	EOMailable     json.RawMessage `json:"eo_mailable"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	UpdatedBy      string          `json:"updated_by"`
+	// SendingDomain / SendingProfileID pin a stream to its OWN sending lane
+	// (explicit-domain streams, e.g. wcm → m.wcl-heloc.com). Nullable;
+	// read-only through this API for now (PUT does not write them).
+	SendingDomain    *string   `json:"sending_domain"`
+	SendingProfileID *string   `json:"sending_profile_id"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	UpdatedBy        string    `json:"updated_by"`
 }
 
 type benchOfferStatus struct {
@@ -185,20 +190,30 @@ func NewStreamBroadcastStore(db *sql.DB) *StreamBroadcastStore {
 
 const streamConfigCols = `stream_key, enabled, daily_cap, isp_caps::text, offer, throttle_hours,
 	label, seg_prefix, vertical_tag, dataset_ids::text, primary_sites::text,
-	secondary_sites::text, eo_mailable::text, updated_at, updated_by`
+	secondary_sites::text, eo_mailable::text, sending_domain, sending_profile_id,
+	updated_at, updated_by`
 
 func scanStreamConfigRow(sc interface{ Scan(...any) error }) (streamConfigRow, error) {
 	var row streamConfigRow
 	var ispCaps, datasets, primary, secondary, eo string
-	var vertical sql.NullString
+	var vertical, sendDomain, sendProfile sql.NullString
 	if err := sc.Scan(&row.StreamKey, &row.Enabled, &row.DailyCap, &ispCaps, &row.Offer,
 		&row.ThrottleHours, &row.Label, &row.SegPrefix, &vertical, &datasets,
-		&primary, &secondary, &eo, &row.UpdatedAt, &row.UpdatedBy); err != nil {
+		&primary, &secondary, &eo, &sendDomain, &sendProfile,
+		&row.UpdatedAt, &row.UpdatedBy); err != nil {
 		return row, err
 	}
 	if vertical.Valid {
 		v := vertical.String
 		row.VerticalTag = &v
+	}
+	if sendDomain.Valid {
+		v := sendDomain.String
+		row.SendingDomain = &v
+	}
+	if sendProfile.Valid {
+		v := sendProfile.String
+		row.SendingProfileID = &v
 	}
 	row.ISPCaps = map[string]int{}
 	if err := json.Unmarshal([]byte(ispCaps), &row.ISPCaps); err != nil {

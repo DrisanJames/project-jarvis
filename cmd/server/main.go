@@ -2506,6 +2506,36 @@ func runStartupMigrations(db *sql.DB) {
 				  AND c.stream_key = v.stream_key
 			)
 		`},
+		// Explicit-domain stream support (coordinator/operator 2026-07-26):
+		// nullable sending_domain / sending_profile_id let a stream pin its
+		// OWN sending lane (wcm → m.wcl-heloc.com) instead of the brand-code
+		// router. Read by the Python builder + GET /stream-broadcast/config;
+		// read-only in the portal UI for now.
+		{"add_stream_broadcast_sending_domain", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS sending_domain TEXT`},
+		{"add_stream_broadcast_sending_profile", `ALTER TABLE mailing_stream_broadcast_config ADD COLUMN IF NOT EXISTS sending_profile_id TEXT`},
+		// Sixth stream (operator ruling 2026-07-26): West Capital homeowner
+		// data mails via its OWN lane (explicit sending_domain, no brand-code
+		// pools). isp_caps '{}' per the literal operator spec — deliberately
+		// NOT stamped with the gmail:0 doctrine cap the other five carry.
+		// Same NOT EXISTS idempotency as the main seed.
+		{"seed_stream_broadcast_wcm", `
+			INSERT INTO mailing_stream_broadcast_config (
+				organization_id, stream_key, enabled, daily_cap, isp_caps, offer,
+				throttle_hours, label, seg_prefix, vertical_tag, dataset_ids,
+				primary_sites, secondary_sites, eo_mailable, sending_domain, updated_by
+			)
+			SELECT o.organization_id, 'wcm', TRUE, 15000, '{}'::jsonb,
+			       'west-capital-heloc', 12, 'West Capital (WCM homeowners)',
+			       'WCM', 'vertical:mortgage', '[]'::jsonb, '[]'::jsonb,
+			       '[]'::jsonb, '["Verified","Complainer"]'::jsonb,
+			       'm.wcl-heloc.com', 'seed-migration'
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_stream_broadcast_config c
+				WHERE c.organization_id = o.organization_id
+				  AND c.stream_key = 'wcm'
+			)
+		`},
 		// ── Per-segment daily performance rollup (Segmentation Command) ──
 		// One row per (segment, Denver day), written nightly by
 		// SegmentPerfRollupWorker (internal/worker/segment_perf_rollup.go)
