@@ -1722,7 +1722,17 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		WITH picked AS (
 			SELECT id
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+`
+			WHERE status = 'ready' AND vertical = $1
+			  -- Never-mailed only. Since 2026-07-26 a partner re-push can return
+			  -- an already-mailed row to 'ready' (partner_slicer.bulkInsertSurvivors)
+			  -- so that the stream router re-stages it as fresh signal. Those rows
+			  -- keep their ORIGINAL ingested_at, so without this predicate they
+			  -- would sort to the FRONT of this ORDER BY ingested_at ASC queue and
+			  -- be claimed here — ahead of genuinely new records, and racing the
+			  -- router for the same rows. Re-staging belongs to the router; the
+			  -- drip ladder owns first-touch. No-op for pre-2026-07-26 behaviour:
+			  -- a mailed row could not previously be 'ready' at all.
+			  AND mailed_at IS NULL`+datasetNotEmergencyPausedSQL+`
 			ORDER BY ingested_at ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2

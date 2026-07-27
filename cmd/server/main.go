@@ -3078,6 +3078,19 @@ func runStartupMigrations(db *sql.DB) {
 			SET raw_creative = TRUE
 			WHERE sending_domain = 'm.wcl-heloc.com' AND COALESCE(raw_creative, FALSE) = FALSE`},
 
+		// Re-push = FRESH signal (operator 2026-07-26). A partner feed re-pushes
+		// a record when that email goes ACTIVE in the partner network — the
+		// single most valuable thing the feed tells us. The slicer's
+		// `ON CONFLICT DO NOTHING` discarded it silently: measured jul07-jul25 on
+		// the consumer feed, 1,212,368 received -> 605,635 landed, i.e. ~34k/day
+		// of re-activation signal thrown away with no trace. These columns make
+		// it observable; bulkInsertSurvivors now DO UPDATEs them (and returns an
+		// EO-clean previously-mailed row to 'ready' so it re-stages as new data).
+		// Both are metadata-only ALTERs (non-volatile default) — no table rewrite.
+		{"add_pcq_repush_signal", `ALTER TABLE partner_clean_queue
+			ADD COLUMN IF NOT EXISTS last_pushed_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS push_count INTEGER NOT NULL DEFAULT 1`},
+
 		// Discount Blog (SES Tenant) — SECOND profile for em.discountblog.com
 		// brand. Keyed off NAME (not sending_domain) so it coexists with
 		// the legacy SES Relay profile at the same m.discountblog.com

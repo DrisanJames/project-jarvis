@@ -366,10 +366,22 @@ func (ps *PartnerSlicer) classifyAndFilter(records []partnerRawRecord) ([]partne
 
 // bulkInsertSurvivors inserts records into partner_clean_queue with
 // status='pending_eo'. Uses a single multi-row INSERT for efficiency.
+//
+// A record we have already seen is NOT a no-op: the partner re-pushes an email
+// when it goes active in their network, so the repeat IS the freshness signal
+// (operator 2026-07-26). We record it on the existing row (last_pushed_at /
+// push_count) and, when the row is an EO-clean record we have already mailed,
+// return it to 'ready' so the router stages it again as new data. Rows that are
+// suppressed, dead-lettered, in-flight ('claimed') or still awaiting EO are
+// left exactly as they are — a re-push never revives an unmailable record.
 func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatch, recs []partnerRawRecord) error {
 	if len(recs) == 0 {
 		return nil
 	}
+	// ON CONFLICT DO UPDATE cannot touch the same row twice in one statement,
+	// and a single slice can legitimately carry the same email more than once.
+	// Collapse duplicates here (first wins) or the whole slice errors out.
+	recs = dedupeByMD5(recs)
 
 	const cols = 9
 	args := make([]interface{}, 0, len(recs)*cols)
@@ -402,11 +414,45 @@ func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatc
 	q := fmt.Sprintf(`
 		INSERT INTO partner_clean_queue
 		    (id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata)
-		VALUES %s
-		ON CONFLICT DO NOTHING
-	`, strings.Join(placeholders, ","))
+		VALUES %s`+pcqRepushUpsertClause, strings.Join(placeholders, ","))
 	_, err := ps.db.ExecContext(ctx, q, args...)
 	return err
+}
+
+// pcqRepushUpsertClause is the re-push signal capture (operator 2026-07-26):
+// a repeat push stamps last_pushed_at/push_count on the existing row, and
+// revives ONLY a previously-mailed, EO-clean record back to 'ready' so the
+// stream router re-stages it as fresh signal. Every other status — suppressed_*,
+// dead_letter, claimed, pending_eo, eo_in_flight — falls through the CASE's
+// ELSE untouched: a re-push must never resurrect an unmailable record.
+// Package-level const so the semantics are pinned by tests (QA SEV-3).
+const pcqRepushUpsertClause = `
+		ON CONFLICT (vertical, email_md5) DO UPDATE
+		SET last_pushed_at = now(),
+		    push_count     = partner_clean_queue.push_count + 1,
+		    status         = CASE
+		        WHEN partner_clean_queue.status = 'mailed'
+		         AND partner_clean_queue.eo_result IN ('Verified','Complainer')
+		        THEN 'ready'
+		        ELSE partner_clean_queue.status
+		    END
+	`
+
+// dedupeByMD5 collapses repeat emails inside a single slice, keeping the first
+// occurrence. Required by the ON CONFLICT DO UPDATE in bulkInsertSurvivors:
+// Postgres rejects a statement that would update the same conflicting row more
+// than once ("cannot affect row a second time").
+func dedupeByMD5(recs []partnerRawRecord) []partnerRawRecord {
+	seen := make(map[string]bool, len(recs))
+	out := recs[:0:0]
+	for _, rec := range recs {
+		if seen[rec.MD5] {
+			continue
+		}
+		seen[rec.MD5] = true
+		out = append(out, rec)
+	}
+	return out
 }
 
 // bulkInsertSuppressed records the dropped (globally-suppressed) entries so
