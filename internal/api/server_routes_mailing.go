@@ -960,6 +960,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentationHealthSvc := NewSegmentationHealthService(db)
 			segmentationHealthSvc.RegisterRoutes(r)
 
+			// === EO CLEANING SERVICE (operator ask 2026-07-26) ===
+			// Ad-hoc EmailOversight cleaning jobs — upload / segment / list
+			// sources; already-Verified emails skipped at enqueue (never pay
+			// twice). Drained by worker.EOCleanJobWorker into
+			// mailing_eo_validation. POST/GET /api/mailing/eo-clean/jobs,
+			// GET /{id}, POST /{id}/pause|resume (eo_clean_handlers.go).
+			eoCleanSvc := NewEOCleanService(db)
+			eoCleanSvc.RegisterRoutes(r)
+
 			// === FRESH BROADCAST CONFIG (operator-editable stream knobs) ===
 			// GET/PUT /api/mailing/stream-broadcast/config over
 			// mailing_stream_broadcast_config — the single source of truth the

@@ -277,14 +277,24 @@ type eoOutcome struct {
 	result   string
 }
 
-// callEO classifies a single EO call result. The mapping mirrors the spec
-// in the plan:
+// callEO classifies a single EO call result for the partner_clean_queue path.
+// The transport + classification live in callEOValidation (shared with
+// EOCleanJobWorker) — this wrapper only binds the validator's client/record.
+func (pv *PartnerValidator) callEO(ctx context.Context, rec pendingRecord) eoOutcome {
+	return callEOValidation(ctx, pv.eoClient, rec.email)
+}
+
+// callEOValidation is the SHARED EO transport + classification used by BOTH
+// the PartnerValidator (partner_clean_queue status='pending_eo') and the
+// EOCleanJobWorker (mailing_eo_clean_items) — one EO client call path, one
+// outcome vocabulary (factored out 2026-07-26; behavior byte-stable with the
+// original PartnerValidator.callEO). The mapping mirrors the spec in the plan:
 //   REJECT shape (account suppression) → suppress (terminal, same class as Undeliverable)
 //   1 (Verified), 7 (Complainer) → ready (mailable)
-//   0 (Retry), 11 (Unknown)      → leave pending_eo, retry next cycle
+//   0 (Retry), 11 (Unknown)      → retry next cycle
 //   any other ResultID           → suppress
-func (pv *PartnerValidator) callEO(ctx context.Context, rec pendingRecord) eoOutcome {
-	resp, err := pv.eoClient.Validate(ctx, rec.email)
+func callEOValidation(ctx context.Context, client EOValidator, email string) eoOutcome {
+	resp, err := client.Validate(ctx, email)
 	if err != nil {
 		return eoOutcome{kind: outcomeRetry, result: "error: " + err.Error()}
 	}

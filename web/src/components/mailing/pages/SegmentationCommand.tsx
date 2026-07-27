@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faLayerGroup, faHeartPulse, faTriangleExclamation, faRotate, faSpinner,
-  faChevronDown, faChevronRight,
+  faChevronDown, faChevronRight, faBroom,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
@@ -33,11 +33,20 @@ import { SectionHeader, Stat, Pill, SectionError, EmptyState } from '../shared/u
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
+// PAGE_VERSION 1.2 — EO Clean actions on family + drilldown rows: POSTs a
+// segment-sourced job to /api/mailing/eo-clean/jobs (EO CLEANING SERVICE,
+// operator ask 2026-07-26 — "clean a particular list or segment from the
+// segment command"). Confirm dialog quotes the record count + per-record cost.
 // PAGE_VERSION 1.1 — performance surface: member-scoped 7d/30d windows
 // (delivered/opens/action-clicks/complaints/unsubs/hard/soft, engagement
 // rate) + 14d churn timeline sparkline, from the nightly
 // mailing_segment_perf_daily rollup (operator enrichment ask, 2026-07-26).
-const PAGE_VERSION = '1.1';
+const PAGE_VERSION = '1.2';
+
+// EO_CLEAN_COST_NOTE is quoted in every Clean confirm — cleaning is billed
+// per record; already-Verified emails are skipped at enqueue (never re-billed).
+const EO_CLEAN_COST_NOTE =
+  'EmailOversight validation has a per-record cost. Emails already Verified in the validation gate are skipped and never re-billed.';
 
 // ── API shapes (mirror segmentation_health.go; do not drift) ────────────────
 
@@ -367,12 +376,29 @@ const AlertsPanel: React.FC<{ alerts: AlertRow[] }> = ({ alerts }) => (
   </div>
 );
 
+// CleanButton — the EO-clean trigger shared by family + drilldown rows.
+const CleanButton: React.FC<{ onClick: () => void; busy: boolean; title: string }> = ({ onClick, busy, title }) => (
+  <button
+    onClick={e => { e.stopPropagation(); onClick(); }}
+    disabled={busy}
+    title={title}
+    style={{
+      background: alpha(colors.indigo500, '22'), border: `1px solid ${alpha(colors.indigo500, '44')}`,
+      color: colors.indigo200, borderRadius: 6, padding: '3px 9px',
+      cursor: busy ? 'wait' : 'pointer', fontSize: 11, whiteSpace: 'nowrap',
+    }}>
+    <FontAwesomeIcon icon={faBroom} /> Clean
+  </button>
+);
+
 const SegmentDrilldown: React.FC<{
   family: FamilyRow;
   churnAvailable: boolean;
   perfAvailable: boolean;
   win: '7d' | '30d';
-}> = ({ family, churnAvailable, perfAvailable, win }) => (
+  onClean: (segments: { id: string; name: string }[], records: number, what: string) => void;
+  cleaning: boolean;
+}> = ({ family, churnAvailable, perfAvailable, win, onClean, cleaning }) => (
   <div style={{ ...scrollWrap, padding: '4px 8px 10px 28px' }}>
     <table style={tableStyle}>
       <thead>
@@ -396,6 +422,7 @@ const SegmentDrilldown: React.FC<{
           <th style={numTh}>Inserts 24h</th>
           <th style={numTh}>Refs 3d</th>
           <th style={thStyle}>Divergence</th>
+          <th style={thStyle}>Clean</th>
         </tr>
       </thead>
       <tbody>
@@ -441,6 +468,13 @@ const SegmentDrilldown: React.FC<{
                 <span style={{ color: colors.textFaint }}>—</span>
               )}
             </td>
+            <td style={tdStyle}>
+              <CleanButton
+                busy={cleaning}
+                title={`Queue an EO cleaning job for "${s.name}" (${fmtInt(s.subscriber_count)} members)`}
+                onClick={() => onClean([{ id: s.id, name: s.name }], s.subscriber_count, `segment "${s.name}"`)}
+              />
+            </td>
           </tr>
         ))}
       </tbody>
@@ -465,6 +499,48 @@ export const SegmentationCommand: React.FC = () => {
   const [win, setWin] = useState<'7d' | '30d'>('7d');
   const [state, retry] = useHealthFetch(nonce, win);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanMsg, setCleanMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // cleanSegments — POST one segment-sourced EO cleaning job per segment
+  // (EO CLEANING SERVICE). Confirm quotes record count + per-record cost.
+  const cleanSegments = useCallback(async (
+    segs: { id: string; name: string }[], records: number, what: string,
+  ) => {
+    if (segs.length === 0 || cleaning) return;
+    const across = segs.length > 1 ? ` across ${segs.length} segments` : '';
+    if (!window.confirm(`Queue EO cleaning for ${what} (${fmtInt(records)} records${across})?\n\n${EO_CLEAN_COST_NOTE}`)) {
+      return;
+    }
+    setCleaning(true);
+    setCleanMsg(null);
+    let queued = 0;
+    const errors: string[] = [];
+    for (const s of segs) {
+      try {
+        const res = await apiFetch('/api/mailing/eo-clean/jobs', {
+          method: 'POST',
+          body: JSON.stringify({ source_type: 'segment', source_ref: s.id, label: s.name }),
+        });
+        if (!res.ok) {
+          let msg = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.error) msg += ` — ${body.error}`;
+          } catch { /* non-JSON error body */ }
+          errors.push(`${s.name}: ${msg}`);
+        } else {
+          queued++;
+        }
+      } catch (e: unknown) {
+        errors.push(`${s.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setCleaning(false);
+    setCleanMsg(errors.length === 0
+      ? { ok: true, text: `${queued} cleaning job${queued === 1 ? '' : 's'} queued — track progress in the EO Cleaning tab.` }
+      : { ok: false, text: `${queued} queued, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}` });
+  }, [cleaning]);
 
   const d = state.data;
   const churnAvailable = d?.churn_method === 'materialized_window';
@@ -571,6 +647,24 @@ export const SegmentationCommand: React.FC = () => {
           {/* ── Alerts ── */}
           <AlertsPanel alerts={d.alerts} />
 
+          {/* ── EO Clean action result (jobs live on the EO Cleaning tab) ── */}
+          {cleanMsg && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 8, fontSize: 12.5,
+              background: alpha(cleanMsg.ok ? colors.success : colors.danger, '14'),
+              border: `1px solid ${alpha(cleanMsg.ok ? colors.success : colors.danger, '44')}`,
+              color: cleanMsg.ok ? colors.successText : colors.danger,
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <FontAwesomeIcon icon={faBroom} />
+              {cleanMsg.text}
+              <button onClick={() => setCleanMsg(null)} style={{
+                marginLeft: 'auto', background: 'none', border: 'none', color: 'inherit',
+                cursor: 'pointer', fontSize: 12.5,
+              }}>✕</button>
+            </div>
+          )}
+
           {/* ── Family table ── */}
           <div style={panelStyle}>
             <SectionHeader
@@ -605,6 +699,7 @@ export const SegmentationCommand: React.FC = () => {
                       <th style={thStyle}>Churn 14d</th>
                       <th style={numTh}>Refs 3d</th>
                       <th style={thStyle}>Flags</th>
+                      <th style={thStyle}>Clean</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -672,11 +767,21 @@ export const SegmentationCommand: React.FC = () => {
                                 <Pill color={colors.danger}>{f.failed_now} FAILED</Pill>
                               )}
                             </td>
+                            <td style={tdStyle}>
+                              <CleanButton
+                                busy={cleaning}
+                                title={`Queue EO cleaning jobs for the ${f.segments.length} listed segment(s) of ${f.family_key} (${fmtInt(f.subscriber_total)} members total)${f.segments_truncated ? ' — drilldown is truncated; only the listed segments are cleaned' : ''}`}
+                                onClick={() => cleanSegments(
+                                  f.segments.map(s => ({ id: s.id, name: s.name })),
+                                  f.subscriber_total,
+                                  `family "${f.family_key}"`)}
+                              />
+                            </td>
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={17} style={{ padding: 0, borderTop: `1px solid ${colors.divider}`, background: alpha(colors.indigo500, '0d') }}>
-                                <SegmentDrilldown family={f} churnAvailable={churnAvailable} perfAvailable={perfAvailable} win={win} />
+                              <td colSpan={18} style={{ padding: 0, borderTop: `1px solid ${colors.divider}`, background: alpha(colors.indigo500, '0d') }}>
+                                <SegmentDrilldown family={f} churnAvailable={churnAvailable} perfAvailable={perfAvailable} win={win} onClean={cleanSegments} cleaning={cleaning} />
                               </td>
                             </tr>
                           )}

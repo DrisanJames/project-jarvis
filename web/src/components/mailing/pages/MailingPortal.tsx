@@ -7,6 +7,7 @@ import {
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faSeedling, faWandMagicSparkles,
   faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup, faSliders,
+  faBroom,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -59,6 +60,7 @@ const SmartLinkManager = lazy(() => import('../components/SmartLinkManager').the
 const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
 const SegmentationCommand = lazy(() => import('./SegmentationCommand').then(m => ({ default: m.SegmentationCommand })));
 const FreshBroadcastConfig = lazy(() => import('./FreshBroadcastConfig').then(m => ({ default: m.FreshBroadcastConfig })));
+const EOCleaning = lazy(() => import('./EOCleaning').then(m => ({ default: m.EOCleaning })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -67,7 +69,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast';
+type TabId = 'dashboard' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning';
 
 interface Tab {
   id: TabId;
@@ -83,6 +85,7 @@ const tabs: Tab[] = [
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Membership-build truth per segment family — staleness verdicts against declared SLAs, worker liveness, churn and campaign use.' },
   { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
+  { id: 'eo-cleaning', label: 'EO Cleaning', icon: faBroom, description: 'Clean any list, segment or pasted upload through EmailOversight — job progress, verdict splits and daily-cost caps; verdicts land in the platform validation gate.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
@@ -255,6 +258,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><SegmentationCommand /></Suspense>;
       case 'fresh-broadcast':
         return <Suspense fallback={<ChunkLoader />}><FreshBroadcastConfig /></Suspense>;
+      case 'eo-cleaning':
+        return <Suspense fallback={<ChunkLoader />}><EOCleaning /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }

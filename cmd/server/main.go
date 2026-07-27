@@ -1237,6 +1237,40 @@ func main() {
 				}
 			}
 
+			// EO CLEANING SERVICE drain worker (operator ask 2026-07-26):
+			// validates ad-hoc mailing_eo_clean_jobs items via the SAME EO
+			// transport as the PartnerValidator (worker.callEOValidation) and
+			// lands verdicts in mailing_eo_validation. Independent of the
+			// partner-ingest S3 wiring above — the token config is shared but
+			// this worker runs even when partner ingest is disabled. Cost
+			// controls: per-job daily_cap + global EO_CLEAN_DAILY_BUDGET
+			// (default 100000/day). No boot burst (first drain one poll after
+			// boot); distlock; heartbeat 'eo_clean_jobs'.
+			// Kill: DISABLE_EO_CLEAN_JOBS=true.
+			{
+				eoCleanToken := cfg.DataPipeline.EOAPIToken
+				if eoCleanToken == "" {
+					eoCleanToken = os.Getenv("EO_API_TOKEN")
+				}
+				if eoCleanToken == "" {
+					log.Println("[EOCleanJobs] disabled — no EO API token (data_pipeline.eo_api_token / EO_API_TOKEN); clean jobs will queue until configured")
+				} else {
+					eoCleanListID := cfg.DataPipeline.EOListID
+					if eoCleanListID <= 0 {
+						eoCleanListID = 1
+					}
+					eoCleanConcurrency := cfg.DataPipeline.EOConcurrency
+					if eoCleanConcurrency <= 0 {
+						eoCleanConcurrency = 10
+					}
+					eoCleanWorker := worker.NewEOCleanJobWorker(mailingDB, redisClient,
+						emailoversight.New(eoCleanToken, eoCleanListID, eoCleanConcurrency),
+						worker.EOCleanJobConfig{Concurrency: eoCleanConcurrency})
+					go eoCleanWorker.Start(ctx)
+					log.Printf("EO Clean Job worker started (poll 30s, budget env EO_CLEAN_DAILY_BUDGET; kill: DISABLE_EO_CLEAN_JOBS)")
+				}
+			}
+
 			// Ensure workers stop on shutdown (H12)
 			go func() {
 				<-ctx.Done()
@@ -2429,6 +2463,60 @@ func runStartupMigrations(db *sql.DB) {
 				  AND r.family_pattern = f.family_pattern
 			)
 		`},
+		// ── EO CLEANING SERVICE (operator ask 2026-07-26) ──────────────────
+		// Ad-hoc EmailOversight cleaning jobs: intake via
+		// /api/mailing/eo-clean/* (internal/api/eo_clean_handlers.go), drain
+		// via EOCleanJobWorker (internal/worker/eo_clean_jobs.go). Verdicts
+		// land in mailing_eo_validation — created here IF NOT EXISTS with the
+		// exact prod shape (prod already has it, populated externally by the
+		// jul21 import convention; this entry makes local dev + the worker's
+		// upsert self-sufficient). New tables, no deps, fast — fit the 5s
+		// budget; placed mid-slice with the other new-table entries.
+		{"create_eo_validation", `CREATE TABLE IF NOT EXISTS mailing_eo_validation (
+			email_lower  TEXT PRIMARY KEY,
+			status       TEXT NOT NULL,
+			validated_at TIMESTAMPTZ,
+			source_file  TEXT,
+			imported_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"create_eo_clean_jobs", `CREATE TABLE IF NOT EXISTS mailing_eo_clean_jobs (
+			id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id     UUID NOT NULL,
+			source_type         TEXT NOT NULL,
+			source_ref          TEXT NOT NULL DEFAULT '',
+			label               TEXT NOT NULL DEFAULT '',
+			total_count         BIGINT NOT NULL DEFAULT 0,
+			already_clean_count BIGINT NOT NULL DEFAULT 0,
+			queued_count        BIGINT NOT NULL DEFAULT 0,
+			validated_count     BIGINT NOT NULL DEFAULT 0,
+			verified_count      BIGINT NOT NULL DEFAULT 0,
+			complainer_count    BIGINT NOT NULL DEFAULT 0,
+			undeliverable_count BIGINT NOT NULL DEFAULT 0,
+			other_count         BIGINT NOT NULL DEFAULT 0,
+			failed_count        BIGINT NOT NULL DEFAULT 0,
+			status              TEXT NOT NULL DEFAULT 'queued',
+			daily_cap           INTEGER NOT NULL DEFAULT 0,
+			created_by          TEXT NOT NULL DEFAULT '',
+			created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finished_at         TIMESTAMPTZ
+		)`},
+		{"idx_eo_clean_jobs_org", `CREATE INDEX IF NOT EXISTS idx_eo_clean_jobs_org
+			ON mailing_eo_clean_jobs (organization_id, created_at DESC)`},
+		{"idx_eo_clean_jobs_drainable", `CREATE INDEX IF NOT EXISTS idx_eo_clean_jobs_drainable
+			ON mailing_eo_clean_jobs (created_at) WHERE status IN ('queued', 'running')`},
+		{"create_eo_clean_items", `CREATE TABLE IF NOT EXISTS mailing_eo_clean_items (
+			job_id       UUID NOT NULL,
+			email_lower  TEXT NOT NULL,
+			status       TEXT NOT NULL DEFAULT 'pending',
+			attempts     INTEGER NOT NULL DEFAULT 0,
+			result       TEXT,
+			validated_at TIMESTAMPTZ,
+			PRIMARY KEY (job_id, email_lower)
+		)`},
+		{"idx_eo_clean_items_pending", `CREATE INDEX IF NOT EXISTS idx_eo_clean_items_pending
+			ON mailing_eo_clean_items (job_id, email_lower) WHERE status = 'pending'`},
+		{"idx_eo_clean_items_spend", `CREATE INDEX IF NOT EXISTS idx_eo_clean_items_spend
+			ON mailing_eo_clean_items (validated_at) WHERE validated_at IS NOT NULL`},
 		// ── Fresh-broadcast stream config (operator-editable, portal screen) ──
 		// Single source of truth for the fresh-introduction broadcast program:
 		// the operator edits it via PUT /api/mailing/stream-broadcast/config
