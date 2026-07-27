@@ -544,7 +544,13 @@ func clickTrackingScanQuery(verdictFnMissing bool) string {
 		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM mailing_campaigns c
-		        WHERE c.id = t.campaign_id AND c.campaign_type = 'click_drip'
+		        WHERE c.id = t.campaign_id
+		          AND (c.campaign_type = 'click_drip'
+		               -- Converter-journey thank-you clicks are consent signals for the
+		               -- CONVERTER trigger sequences, never generic-drip enrollments
+		               -- (operator ruling 2026-07-27; QA gauntlet §4).
+		               OR c.name LIKE '%%CONVERTER-THANKYOU%%'
+		               OR c.name LIKE '%%ABANDON-RECOVERY%%')
 		      )
 		ORDER BY t.event_at ASC
 		LIMIT $3
