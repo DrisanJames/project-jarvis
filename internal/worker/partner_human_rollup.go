@@ -1,5 +1,12 @@
 package worker
 
+// ⚠ RETIRED (operator ruling 2026-07-26): "we moved away from human
+// detection." The nightly schedule is disabled BY DEFAULT — Start() returns
+// unless ENABLE_PARTNER_HUMAN_ROLLUP=true (see the gate in Start). The code
+// and the partner_dataset_human_rollup table stay intact: historical rows
+// remain readable by GET /data-partners/datasets/human-rollup, and the worker
+// can be deliberately re-armed if the program ever returns.
+//
 // PartnerHumanRollupWorker (REQ-035/038) — nightly per-dataset HUMAN
 // engagement rollup into partner_dataset_human_rollup.
 //
@@ -205,8 +212,15 @@ func (w *PartnerHumanRollupWorker) Start(ctx context.Context) {
 		log.Printf("[PartnerHumanRollup] disabled (db missing)")
 		return
 	}
-	if os.Getenv("DISABLE_PARTNER_HUMAN_ROLLUP") == "true" {
-		log.Printf("[PartnerHumanRollup] disabled via DISABLE_PARTNER_HUMAN_ROLLUP")
+	// RETIRED (operator ruling 2026-07-26): "we moved away from human
+	// detection." Default-OFF gate — no pass runs unless the operator
+	// deliberately re-arms with ENABLE_PARTNER_HUMAN_ROLLUP=true. This
+	// subsumes the old DISABLE_PARTNER_HUMAN_ROLLUP kill switch (default-on
+	// inverted to default-off); code + table remain intact, and the boot
+	// wiring in cmd/server/main.go is left in place so re-arming is a single
+	// env flip, not a redeploy of new code.
+	if os.Getenv("ENABLE_PARTNER_HUMAN_ROLLUP") != "true" {
+		log.Printf("[PartnerHumanRollup] RETIRED (operator 2026-07-26 — human-detection rollups off by default); set ENABLE_PARTNER_HUMAN_ROLLUP=true to re-arm")
 		return
 	}
 	log.Printf("[PartnerHumanRollup] started (backfill=%dd, trailing=%dd, chunk=%dd, daily 03:10 UTC)",

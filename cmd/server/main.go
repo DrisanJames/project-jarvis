@@ -899,6 +899,23 @@ func main() {
 			go verifiedHumansLedger.Start(ctx)
 			log.Printf("Verified Humans ledger started (nightly 03:40 UTC, resumable backfill; kill: DISABLE_VERIFIED_HUMANS_LEDGER)")
 
+			// Engagement family builder (operator rulings 2026-07-26) —
+			// nightly in-platform rebuild of two segment families:
+			// GMAIL-ENG-<CODE>-OPEN30D/CLK60D per sending brand (replaces the
+			// never-armed agents/jobs/gmail_openers_recalc.py cron; segment
+			// logic ships IN-PLATFORM per the operator) and
+			// KUMO-ALLTIME-<CODE>-ENG per kumo warmup brand (all-time
+			// openers ∪ action-clickers — the 30D pools were 1-19 members).
+			// Full DELETE+INSERT rebuild per segment per night (windowed
+			// families must expel aged-out members); canonical action-click
+			// predicate (asset fetches are NOT clicks). Registered in
+			// mailing_segment_registry with sla_hours=30
+			// (seed_segment_registry_families_jul26). Daily 05:00 UTC calm
+			// window; distlock; kill: DISABLE_ENGAGEMENT_FAMILY_BUILDER=true.
+			engagementFamilyBuilder := worker.NewEngagementFamilyBuilder(mailingDB, redisClient)
+			go engagementFamilyBuilder.Start(ctx)
+			log.Printf("Engagement family builder started (nightly 05:00 UTC, GMAIL-ENG-* 16 brands + KUMO-ALLTIME-* 9 brands; kill: DISABLE_ENGAGEMENT_FAMILY_BUILDER)")
+
 			// Journey Segment Enroller — auto-enrolls subscribers from
 			// segment-triggered journeys (Welcome Series Phase 2). Uses the
 			// segmentation engine for saved segments, and the
@@ -2347,6 +2364,52 @@ func runStartupMigrations(db *sql.DB) {
 				('rings', '%-CLICKERS-%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'doctrine rings purged by F3; do NOT rebuild — re-entry only as a registry-owned family'),
 				('60d_human', '%60D Human%', 'script', 'RETIRED (coalition ruling 2026-07-24)', '', 0, 'protect', '', 'purged 07-22 to 07-23; do not rebuild from the stale jul14 UUID file'),
 				('data_partner_wave', 'data-partner-wave-%', 'script', 'PartnerDripOrchestrator.createWaveSegment', 'per drip wave', 0, 'purgeable', '', 'single-use per-wave audience snapshots; the one family cleanup may purge (7d age rule)')
+			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = o.organization_id
+				  AND r.family_pattern = f.family_pattern
+			)
+		`},
+		// Registry SLA sweep (operator ruling 2026-07-26): "every segment
+		// family gets registered with an SLA, or formally declared static."
+		// Covers the families the audit found UNREGISTERED. Separate entry
+		// (not appended to the jul24 VALUES list) so the minimal-diff seed
+		// idiom holds; same per-row NOT EXISTS guard, so operator CRUD edits
+		// are never overwritten by a redeploy. Notes:
+		//   * brand-engagement ('<CODE> 7D Openers' / '<CODE> 30D Clickers')
+		//     IS rebuilt daily ~06:35Z by the lake-standard build → sla 30h.
+		//     The LIKE patterns also match the Global/vertical rows of the
+		//     same suffix — all rebuilt by the same daily build, so the SLA
+		//     statement stays true; the vertical rows below are the narrower,
+		//     authoritative declaration for their family.
+		//   * vertical-engagement ('{Vertical} ND Openers/Clickers',
+		//     vertical_metadata.py labels) — STATIC/FROZEN pending the
+		//     stream-router revival (tag wiring tracked separately) → sla 0.
+		//   * GMAIL-ENG-% / KUMO-ALLTIME-% — the EngagementFamilyBuilder
+		//     worker families (internal/worker/engagement_family_builder.go),
+		//     nightly 05:00 UTC → sla 30h, heartbeat-owned.
+		//   * WCL-% / CONSUMER-% — formally declared static snapshots.
+		{"seed_segment_registry_families_jul26", `
+			INSERT INTO mailing_segment_registry (
+				organization_id, family_key, family_pattern, definition_source,
+				owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes
+			)
+			SELECT o.organization_id, f.family_key, f.family_pattern, f.definition_source,
+			       f.owner, f.cadence, f.sla_hours, f.keep_policy, f.heartbeat_worker, f.notes
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			CROSS JOIN (VALUES
+				('brand_engagement', '% 7D Openers', 'conditions', 'lake-standard daily build (build_send_day)', 'daily ~06:35Z', 30, 'protect', '', 'per-brand engaged-tier anchor family (<CODE> 7D Openers); pattern also matches Global/vertical 7D rows built by the same daily build'),
+				('brand_engagement', '% 30D Clickers', 'conditions', 'lake-standard daily build (build_send_day)', 'daily ~06:35Z', 30, 'protect', '', 'per-brand engaged-tier anchor family (<CODE> 30D Clickers); pattern also matches Global/vertical 30D rows built by the same daily build'),
+				('vertical_engagement', 'Mortgage %D %', 'conditions', 'STATIC/FROZEN pending stream-router revival (operator 2026-07-26)', '', 0, 'protect', '', 'vertical (data-provenance) engagement rows; formally declared static — no SLA until the stream-router tags are wired'),
+				('vertical_engagement', 'Finance %D %', 'conditions', 'STATIC/FROZEN pending stream-router revival (operator 2026-07-26)', '', 0, 'protect', '', 'vertical (data-provenance) engagement rows; formally declared static — no SLA until the stream-router tags are wired'),
+				('vertical_engagement', 'Lawn Care %D %', 'conditions', 'STATIC/FROZEN pending stream-router revival (operator 2026-07-26)', '', 0, 'protect', '', 'vertical (data-provenance) engagement rows; formally declared static — no SLA until the stream-router tags are wired'),
+				('vertical_engagement', 'Remodel %D %', 'conditions', 'STATIC/FROZEN pending stream-router revival (operator 2026-07-26)', '', 0, 'protect', '', 'vertical (data-provenance) engagement rows; formally declared static — no SLA until the stream-router tags are wired'),
+				('vertical_engagement', 'Tax Relief %D %', 'conditions', 'STATIC/FROZEN pending stream-router revival (operator 2026-07-26)', '', 0, 'protect', '', 'vertical (data-provenance) engagement rows; formally declared static — no SLA until the stream-router tags are wired'),
+				('gmail_per_domain', 'GMAIL-ENG-%', 'script', 'EngagementFamilyBuilder (internal/worker/engagement_family_builder.go)', 'nightly 05:00 UTC', 30, 'protect', 'engagement_family_builder', 'per-sending-brand gmail engagement: OPEN30D + CLK60D (operator 2026-07-26 — replaces the never-armed agents/jobs/gmail_openers_recalc.py cron)'),
+				('kumo_alltime', 'KUMO-ALLTIME-%', 'script', 'EngagementFamilyBuilder (internal/worker/engagement_family_builder.go)', 'nightly 05:00 UTC', 30, 'protect', 'engagement_family_builder', 'all-time openers + action-clickers per kumo warmup brand (operator 2026-07-26 — the 30D pools were 1-19 members, too thin for the daily warm)'),
+				('wcl_static', 'WCL-%', 'script', 'formally declared STATIC (operator ruling 2026-07-26)', '', 0, 'protect', '', 'WCL one-off audience snapshots; static by declaration — no SLA'),
+				('consumer_stream_static', 'CONSUMER-%', 'script', 'formally declared STATIC — stream-router batches (operator ruling 2026-07-26)', '', 0, 'protect', '', 'CONSUMER-*/stream-router batch snapshots; frozen pending the stream-router revival — no SLA')
 			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_segment_registry r
@@ -6318,6 +6381,11 @@ END $$`},
 			ON mailing_subscriber_domain_state (subscriber_id) WHERE state = 'engaged'`},
 		{"sds_state_add_cross_engaged_col", `ALTER TABLE mailing_subscribers
 			ADD COLUMN IF NOT EXISTS cross_engaged BOOLEAN NOT NULL DEFAULT FALSE`},
+		// FROZEN-RETIRED (operator ruling 2026-07-26): cross_engaged_at is
+		// retired along with the human-detection program ("we moved away from
+		// human detection"). The column stays in place (idempotent ADD; no
+		// DROP — historical rows keep their stamps) but no new writer should
+		// be built against it and no consumer should treat it as live signal.
 		{"sds_state_add_cross_engaged_at_col", `ALTER TABLE mailing_subscribers
 			ADD COLUMN IF NOT EXISTS cross_engaged_at TIMESTAMPTZ`},
 		{"sds_state_idx_subscribers_cross_engaged", `CREATE INDEX IF NOT EXISTS idx_subscribers_cross_engaged
