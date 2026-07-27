@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/prefilltoken"
 )
 
 // RenderContext is the data structure exposed to Liquid templates
@@ -126,6 +127,19 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, sub *Subscriber, cam
 		system["brand_unsubscribe_url"] = cb.generateBrandUnsubscribeURL(sub.ID, campaign.ID, campaign.FromEmail)
 		system["preferences_url"] = cb.generatePreferencesURL(sub.ID)
 		system["view_in_browser_url"] = cb.generateViewInBrowserURL(campaign.ID, sub.ID)
+	}
+
+	// {{ system.prefill_token }} — the signed 24h token creatives append as
+	// ?pf=... on funnel links (bake-time minting; redirect-time minting in
+	// the tracking service was the alternative, but the per-recipient Liquid
+	// render is the surface within reach and keeps the tracking hot path
+	// untouched). PROVIDER-APPROVED 2026-07-27 (supersedes the same-day
+	// hold): JOURNEY_PREFILL_ENABLED defaults ON; explicit "false" disarms,
+	// making the key absent so any {{ system.prefill_token }} renders empty.
+	// The compliant shape stands funnel-side: convenience + previously-typed
+	// fields prefill with per-field provenance; consent step NEVER prefilled.
+	if prefilltoken.Enabled() {
+		system["prefill_token"] = prefilltoken.Mint(sub.ID.String(), prefilltoken.DefaultTTL, prefilltoken.SecretFromEnv())
 	}
 
 	rc["system"] = system

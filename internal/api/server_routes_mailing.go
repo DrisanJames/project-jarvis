@@ -259,6 +259,19 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.router.Post("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 		s.router.Get("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 
+		// Converter-journey event bridge (2026-07-27) — public server-to-server
+		// inlet for OUR funnel apps (WCL leadgen-form): lead_accepted +
+		// session_progress events → mailing_journey_events (swept by the
+		// JourneyAbandonDetector worker). Optional shared secret via env
+		// JOURNEY_EVENTS_KEY. Same posture as the Everflow postbacks above.
+		// The prefill GET is gated by JOURNEY_PREFILL_ENABLED — default ON
+		// since the 2026-07-27 provider approval ("false" disarms → 404);
+		// compliant shape + per-field provenance live funnel-side — see
+		// journey_events_bridge.go.
+		journeyBridge := NewJourneyEventsBridge(db)
+		s.router.Post("/api/mailing/journey/events", journeyBridge.HandleJourneyEvent)
+		s.router.Get("/api/mailing/journey/prefill", journeyBridge.HandlePrefill)
+
 		// Smart Link Gateway — public endpoints on the root router:
 		//   GET  /api/smartlinks/public/:brand_root/:slug  — brand site resolves a slug
 		//   POST /api/smartlinks/hit                       — brand site logs a bot/human verdict

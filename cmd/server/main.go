@@ -1003,6 +1003,17 @@ func main() {
 			journeyExecutor.Start()
 			log.Println("Journey Executor started (advances click-drip enrollments; reminders sent via PMTA on original profile)")
 
+			// JourneyAbandonDetector (2026-07-27): sweeps the funnel event
+			// bridge (mailing_journey_events) every 30 min and records
+			// abandoned WCL funnel sessions once-per-session in
+			// mailing_journey_abandon_state (threshold JOURNEY_ABANDON_HOURS,
+			// default 4h; converted sessions retired, never touched). Detection
+			// only — the abandon recovery sends are config-gated in
+			// agents/journeys and DISABLED pending operator copy review.
+			journeyAbandonDetector := worker.NewJourneyAbandonDetector(mailingDB)
+			journeyAbandonDetector.Start(ctx)
+			log.Println("Journey Abandon Detector started (sweeps funnel sessions every 30m)")
+
 			ghostVisitorWorker := worker.NewGhostVisitorWorker(mailingDB, 4*time.Hour)
 			ghostVisitorWorker.Start(ctx)
 			log.Println("Ghost Visitor Worker started (tags ghost visitors every 4h)")
@@ -8240,6 +8251,44 @@ END $$`},
 			ADD COLUMN IF NOT EXISTS lane_stats JSONB`},
 		{"jul10_lane_governor_lane_stats_updated_at", `ALTER TABLE mailing_offer_journey_map
 			ADD COLUMN IF NOT EXISTS lane_stats_updated_at TIMESTAMPTZ`},
+
+		// ────────────────────────────────────────────────────────────────────
+		// CONVERTER JOURNEY event bridge + abandon state (2026-07-27).
+		// mailing_journey_events is the inlet POST /api/mailing/journey/events
+		// writes (fed by the WCL leadgen funnel: lead_accepted on a West
+		// Capital accept, session_progress on step transitions). Idempotency =
+		// the unique (event_type, transid, step) index — step '' for
+		// lead_accepted (once per transid), the funnel step for progress.
+		// mailing_journey_abandon_state is the JourneyAbandonDetector's
+		// once-per-session durable record (never touched for sessions whose
+		// transid converted). Both tiny; well inside the 5s budget.
+		// ────────────────────────────────────────────────────────────────────
+		{"jul27_journey_events_bridge", `CREATE TABLE IF NOT EXISTS mailing_journey_events (
+			id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			event_type  VARCHAR(32) NOT NULL,
+			transid     VARCHAR(128) NOT NULL,
+			session_id  VARCHAR(128) NOT NULL DEFAULT '',
+			sub1        VARCHAR(64) NOT NULL DEFAULT '',
+			email       VARCHAR(255) NOT NULL DEFAULT '',
+			step        VARCHAR(64) NOT NULL DEFAULT '',
+			form_data   JSONB NOT NULL DEFAULT '{}'::jsonb,
+			event_ts    TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"jul27_journey_events_idem_uidx", `CREATE UNIQUE INDEX IF NOT EXISTS uidx_mje_type_transid_step
+			ON mailing_journey_events(event_type, transid, step)`},
+		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
+			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
+		{"jul27_journey_abandon_state", `CREATE TABLE IF NOT EXISTS mailing_journey_abandon_state (
+			session_id     VARCHAR(128) PRIMARY KEY,
+			transid        VARCHAR(128) NOT NULL,
+			email          VARCHAR(255) NOT NULL DEFAULT '',
+			sub1           VARCHAR(64) NOT NULL DEFAULT '',
+			loan_purpose   VARCHAR(64) NOT NULL DEFAULT '',
+			first_event_at TIMESTAMPTZ NOT NULL,
+			detected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			status         VARCHAR(32) NOT NULL DEFAULT 'pending'
+		)`},
 
 		// Partner-drip multi-touch state columns (2026-06-11). The orchestrator's
 		// follow-up path and the idx_pcq_followup_isp concurrent index already
