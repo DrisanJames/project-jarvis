@@ -2600,7 +2600,9 @@ func runStartupMigrations(db *sql.DB) {
 				 'Consumer (Attribits Spicy Clickers)', 'CONSUMER', '',
 				 '["9502c7c4-68e7-4dcf-91f5-103a1480fe68","6cb7292a-0702-4497-b63f-e1fb5006227d"]',
 				 '["DB","CP","QF","HT","TT"]', '["BW"]', '["Verified","Complainer"]'),
-				('mortgage', TRUE, 20000, '{"gmail":0}', 'mutual-of-omaha', 12,
+				-- PAUSED (operator 2026-07-27): mortgage stream holds at cap 0 until a
+				-- mutual-of-omaha approved proof exists (creative+subject+from_name).
+				('mortgage', FALSE, 0, '{"gmail":0}', 'mutual-of-omaha', 12,
 				 'Mortgage (Attribits HELOC)', 'MORTGAGE', 'vertical:mortgage',
 				 '["e36d529c-14f5-4875-b1a7-abfb7108d9f5"]',
 				 '["RR","RB","FC"]', '[]', '["Verified","Complainer"]'),
