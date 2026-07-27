@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ignite/sparkpost-monitor/internal/analytics"
 )
 
@@ -336,8 +338,34 @@ func (s *Server) HandleAudienceLakeMember(w http.ResponseWriter, r *http.Request
 
 	q := r.URL.Query()
 	email := q.Get("email")
+	// Subscriber-id lookup (operator 2026-07-27): resolve the id to its email
+	// up front so every downstream path (lake + PG fallback) works unchanged.
 	if email == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
+		if sid := strings.TrimSpace(q.Get("subscriber_id")); sid != "" {
+			if s.mailingDB == nil {
+				respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "subscriber lookup unavailable (no mailing DB)"})
+				return
+			}
+			if _, err := uuid.Parse(sid); err != nil {
+				respondJSON(w, http.StatusBadRequest, map[string]string{"error": "subscriber_id must be a UUID"})
+				return
+			}
+			var resolved string
+			err := s.mailingDB.QueryRowContext(r.Context(),
+				`SELECT lower(TRIM(BOTH FROM email)) FROM mailing_subscribers WHERE id = $1`, sid).Scan(&resolved)
+			if err == sql.ErrNoRows {
+				respondJSON(w, http.StatusNotFound, map[string]string{"error": "no subscriber with that id"})
+				return
+			}
+			if err != nil {
+				respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			email = resolved
+		}
+	}
+	if email == "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "email or subscriber_id is required"})
 		return
 	}
 

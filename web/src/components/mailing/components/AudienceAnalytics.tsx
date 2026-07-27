@@ -417,12 +417,18 @@ function firstTouchURL(from: string, to: string): string {
 // NOT cached: every /member lookup is an explicit submit, so a cache could
 // never serve a hit across renders that matters — and members change daily.
 async function fetchMember(
-  email: string,
+  emailOrId: string,
   eventsLimit: number,
   signal?: AbortSignal
 ): Promise<CachedPayload<MemberResponse>> {
   const qs = new URLSearchParams();
-  qs.set('email', email);
+  // A UUID-shaped input is a subscriber id (operator 2026-07-27); the server
+  // resolves it to the member's email and the response shape is identical.
+  if (UUID_RE.test(emailOrId.trim())) {
+    qs.set('subscriber_id', emailOrId.trim());
+  } else {
+    qs.set('email', emailOrId);
+  }
   qs.set('events_limit', String(eventsLimit));
   const t0 = performance.now();
   const res = await apiFetch(`${API_BASE}/member?${qs.toString()}`, { signal });
@@ -478,6 +484,8 @@ const fmtEventAt = (e: LakeEvent): string => {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isEmail = (s: string) => EMAIL_RE.test(s.trim());
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isSubscriberId = (s: string) => UUID_RE.test(s.trim());
 
 // Exact event_type → color map (hard rule colors), with heuristic fallback
 // for unknown types so nothing is ever dropped or rendered colorless.
@@ -2094,8 +2102,8 @@ const MemberTab: React.FC = () => {
 
   const runLookup = useCallback(async (raw: string) => {
     const email = raw.trim().toLowerCase();
-    if (!isEmail(email)) {
-      addToast({ type: 'error', title: 'Invalid email', message: 'Enter a valid email address (user@domain.tld).' });
+    if (!isEmail(email) && !isSubscriberId(email)) {
+      addToast({ type: 'error', title: 'Invalid input', message: 'Enter an email (user@domain.tld) or a subscriber id (UUID).' });
       return;
     }
     setRecent(saveRecentMember(email));
@@ -2139,9 +2147,9 @@ const MemberTab: React.FC = () => {
           </div>
         </div>
         <div style={styles.eventFilterBar}>
-          <label style={styles.fieldLabel}>email
+          <label style={styles.fieldLabel}>email or subscriber id
             <input
-              type="text" value={input} placeholder="user@example.com"
+              type="text" value={input} placeholder="user@example.com or d637fff6-352e-…"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') runLookup(input); }}
               style={{ ...styles.input, width: 320 }}
