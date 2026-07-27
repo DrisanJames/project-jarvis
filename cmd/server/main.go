@@ -2471,7 +2471,11 @@ func runStartupMigrations(db *sql.DB) {
 				('gmail_per_domain', 'GMAIL-ENG-%', 'script', 'EngagementFamilyBuilder (internal/worker/engagement_family_builder.go)', 'nightly 05:00 UTC', 30, 'protect', 'engagement_family_builder', 'per-sending-brand gmail engagement: OPEN30D + CLK60D (operator 2026-07-26 — replaces the never-armed agents/jobs/gmail_openers_recalc.py cron)'),
 				('kumo_alltime', 'KUMO-ALLTIME-%', 'script', 'EngagementFamilyBuilder (internal/worker/engagement_family_builder.go)', 'nightly 05:00 UTC', 30, 'protect', 'engagement_family_builder', 'all-time openers + action-clickers per kumo warmup brand (operator 2026-07-26 — the 30D pools were 1-19 members, too thin for the daily warm)'),
 				('wcl_static', 'WCL-%', 'script', 'formally declared STATIC (operator ruling 2026-07-26)', '', 0, 'protect', '', 'WCL one-off audience snapshots; static by declaration — no SLA'),
-				('consumer_stream_static', 'CONSUMER-%', 'script', 'formally declared STATIC — stream-router batches (operator ruling 2026-07-26)', '', 0, 'protect', '', 'CONSUMER-*/stream-router batch snapshots; frozen pending the stream-router revival — no SLA')
+				('consumer_stream_static', 'CONSUMER-%', 'script', 'formally declared STATIC — stream-router batches (operator ruling 2026-07-26)', '', 0, 'protect', '', 'CONSUMER-*/stream-router batch snapshots; frozen pending the stream-router revival — no SLA'),
+				('mortgage_stream_static', 'MORTGAGE-%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'MORTGAGE-* FRESH-BCAST batch snapshots — protect from static cleanup'),
+				('termlife_stream_static', 'TERMLIFE-%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'TERMLIFE-* FRESH-BCAST batch snapshots — protect from static cleanup'),
+				('remodel_stream_static', 'REMODEL-%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'REMODEL-* FRESH-BCAST batch snapshots — protect from static cleanup'),
+				('wcm_stream_static', 'WCM-J%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'WCM-<TOK>-* FRESH-BCAST batch snapshots (token-scoped pattern — must NOT swallow legacy WCM-Mortgage-Activated-* segments) — protect from static cleanup')
 			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_segment_registry r
