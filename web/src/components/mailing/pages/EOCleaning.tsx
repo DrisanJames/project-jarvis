@@ -9,6 +9,7 @@ import {
   thStyle, tdStyle, numTd, numTh, btnStyle,
 } from '../shared/theme';
 import { SectionHeader, Pill, SectionError, EmptyState, ProgressBar } from '../shared/ui';
+import { SendDayScrubCard } from './SendDayScrubCard';
 
 // =============================================================================
 // EO CLEANING — ad-hoc EmailOversight cleaning jobs
@@ -374,6 +375,12 @@ export const EOCleaning: React.FC = () => {
           }}>
           <FontAwesomeIcon icon={faRotate} /> Refresh
         </button>
+      </div>
+
+      {/* Send-Day Scrub (Optizmo opt-out loop) — independent of the EO
+          cleaning jobs backend, so it renders regardless of that fetch. */}
+      <div style={{ margin: '12px 0 16px' }}>
+        <SendDayScrubCard />
       </div>
 
       {state.loading && (

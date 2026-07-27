@@ -969,6 +969,19 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			eoCleanSvc := NewEOCleanService(db)
 			eoCleanSvc.RegisterRoutes(r)
 
+			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
+			// The Optizmo compliance loop as software: GET
+			// /api/mailing/send-day/{date}/audience-md5[/summary] streams the
+			// day's planned audience (union of the "<tok> - " campaigns'
+			// inclusion segments) as MD5s; POST .../scrub-suppressions lands
+			// the returned opt-out MD5s in mailing_global_suppressions
+			// (resolved back to subscriber emails — the send worker's global
+			// check is email-keyed). Hub wired below in the engine block so
+			// the in-memory cache reloads after import
+			// (send_day_scrub_handlers.go).
+			sendDayScrubSvc := NewSendDayScrubService(db)
+			sendDayScrubSvc.RegisterRoutes(r)
+
 			// === FRESH BROADCAST CONFIG (operator-editable stream knobs) ===
 			// GET/PUT /api/mailing/stream-broadcast/config over
 			// mailing_stream_broadcast_config — the single source of truth the
@@ -1553,6 +1566,10 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// Wire global hub to bulk import service for in-memory cache reload after global imports
 			suppImportSvc.svc.SetGlobalSuppressionReloader(globalHub)
+
+			// Wire global hub to the send-day scrub import (same reload-after-
+			// bulk-import contract as SuppressionImportService above)
+			sendDayScrubSvc.SetGlobalSuppressionHub(globalHub)
 
 			// Export for main.go to wire to the send worker pool
 			s.GlobalHub = globalHub
