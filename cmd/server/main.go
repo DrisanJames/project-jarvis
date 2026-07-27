@@ -884,6 +884,18 @@ func main() {
 			go partnerHumanRollup.Start(ctx)
 			log.Printf("Partner human rollup started (nightly 03:10 UTC, 90d backfill on boot; kill: DISABLE_PARTNER_HUMAN_ROLLUP)")
 
+			// Segment performance rollup — nightly per-(segment, Denver day)
+			// member-scoped counters into mailing_segment_perf_daily, read by
+			// GET /api/mailing/segmentation/health (Segmentation Command
+			// performance columns + churn timeline). The live 47M-member ×
+			// events join is unservable on the request path; the rollup makes
+			// any 7d/30d window an indexed SUM. Daily 04:10 UTC, 35d gap-fill,
+			// no boot pass (send-path safety; SEGMENT_PERF_BOOT_PASS=true
+			// forces one). Kill: DISABLE_SEGMENT_PERF_ROLLUP=true.
+			segmentPerfRollup := worker.NewSegmentPerfRollupWorker(mailingDB, redisClient)
+			go segmentPerfRollup.Start(ctx)
+			log.Printf("Segment perf rollup started (nightly 04:10 UTC, 35d gap-fill; kill: DISABLE_SEGMENT_PERF_ROLLUP)")
+
 			// Verified Humans ledger (docs/JAOS/core.md §14) — nightly ACCRETIVE
 			// maintainer of the per-brand "<brand> Verified Humans" segments (the
 			// indefinite human core of the engaged-first anchor). Ledgers every
@@ -2494,6 +2506,29 @@ func runStartupMigrations(db *sql.DB) {
 				  AND c.stream_key = v.stream_key
 			)
 		`},
+		// ── Per-segment daily performance rollup (Segmentation Command) ──
+		// One row per (segment, Denver day), written nightly by
+		// SegmentPerfRollupWorker (internal/worker/segment_perf_rollup.go)
+		// and read by GET /api/mailing/segmentation/health. Member-scoped
+		// counters (see the worker header for semantics); members/added are
+		// the daily membership snapshot that makes removals derivable.
+		// New table, no deps, fast.
+		{"create_segment_perf_daily", `CREATE TABLE IF NOT EXISTS mailing_segment_perf_daily (
+			segment_id    UUID NOT NULL,
+			day           DATE NOT NULL,
+			delivered     BIGINT NOT NULL DEFAULT 0,
+			opens         BIGINT NOT NULL DEFAULT 0,
+			clicks_action BIGINT NOT NULL DEFAULT 0,
+			complaints    BIGINT NOT NULL DEFAULT 0,
+			unsubs        BIGINT NOT NULL DEFAULT 0,
+			hard          BIGINT NOT NULL DEFAULT 0,
+			soft          BIGINT NOT NULL DEFAULT 0,
+			members       BIGINT NOT NULL DEFAULT 0,
+			added         BIGINT NOT NULL DEFAULT 0,
+			computed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (segment_id, day)
+		)`},
+		{"idx_segment_perf_daily_day", `CREATE INDEX IF NOT EXISTS idx_segment_perf_daily_day ON mailing_segment_perf_daily (day)`},
 		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
 		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
 		// (internal/worker/partner_human_rollup.go) because the live

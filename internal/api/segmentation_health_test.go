@@ -124,7 +124,7 @@ func TestBuildSegmentationFamilies_RegistryEmptyAllUnregistered(t *testing.T) {
 		{ID: "s2", Name: "SLOT-2026-yahoo", SegmentType: "static", SubscriberCount: 50},
 		{ID: "s3", Name: "Verified Humans DB", SegmentType: "dynamic", SubscriberCount: 10},
 	}
-	fams := buildSegmentationFamilies(nil, segments, nil, false, nil, now)
+	fams := buildSegmentationFamilies(nil, segments, nil, false, nil, nil, false, nil, false, now)
 	if len(fams) != 2 {
 		t.Fatalf("expected 2 discovered families, got %d: %+v", len(fams), fams)
 	}
@@ -177,7 +177,7 @@ func TestBuildSegmentationFamilies_VerdictsAndAggregates(t *testing.T) {
 	}
 	refs := map[string]int{"a": 3, "c": 1}
 
-	fams := buildSegmentationFamilies(registry, segments, churn, true, refs, now)
+	fams := buildSegmentationFamilies(registry, segments, churn, true, refs, nil, false, nil, false, now)
 	if len(fams) != 3 {
 		t.Fatalf("expected 3 families, got %d", len(fams))
 	}
@@ -237,7 +237,7 @@ func TestBuildSegmentationFamilies_RegisteredButPurgedFamilyIsStale(t *testing.T
 	registry := []segHealthRegistryRow{
 		{FamilyKey: "rings", FamilyPattern: "%-MPP-LIVE-%", Owner: "x", SLAHours: 24, Active: true},
 	}
-	fams := buildSegmentationFamilies(registry, nil, nil, false, nil, now)
+	fams := buildSegmentationFamilies(registry, nil, nil, false, nil, nil, false, nil, false, now)
 	if len(fams) != 1 || fams[0].Verdict != segVerdictStale || fams[0].SegmentsCount != 0 {
 		t.Fatalf("purged registered family: %+v", fams)
 	}
@@ -341,6 +341,10 @@ func TestSegmentationHealth_DegradedSourcesStillRender(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_campaigns`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnError(errFake("no pmta_config column"))
+	// Perf rollup probe fails (table absent on this DB) → perf 'unavailable';
+	// the window/timeline queries must NOT run.
+	mock.ExpectQuery(`FROM mailing_segment_perf_daily`).
+		WillReturnError(errFake("relation does not exist"))
 	mock.ExpectQuery(`FROM mailing_worker_heartbeats`).
 		WillReturnError(errFake("heartbeats missing"))
 	mock.ExpectQuery(`FROM mailing_worker_runs`).
@@ -364,6 +368,12 @@ func TestSegmentationHealth_DegradedSourcesStillRender(t *testing.T) {
 	}
 	if out.ChurnMethod != "unavailable" || out.RefsMethod != "unavailable" {
 		t.Errorf("degraded methods: churn=%s refs=%s, want unavailable/unavailable", out.ChurnMethod, out.RefsMethod)
+	}
+	if out.PerfMethod != "unavailable" || out.ChurnTimelineMethod != "unavailable" {
+		t.Errorf("degraded perf methods: perf=%s timeline=%s, want unavailable", out.PerfMethod, out.ChurnTimelineMethod)
+	}
+	if out.Families[0].Perf != nil {
+		t.Error("family perf must be null (not zeros) when the rollup is unavailable")
 	}
 	if len(out.Families) != 1 || out.Families[0].Verdict != segVerdictUnregistered {
 		t.Fatalf("expected one UNREGISTERED SLOT family, got %+v", out.Families)
@@ -420,6 +430,19 @@ func TestSegmentationHealth_HappyPath(t *testing.T) {
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"val", "n"}).
 			AddRow("aaaaaaaa-0000-0000-0000-000000000001", 2))
+	// Perf rollup: probe true → window sums + churn timeline.
+	mock.ExpectQuery(`FROM mailing_segment_perf_daily`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(`FROM mailing_segment_perf_daily`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"segment_id", "delivered", "opens",
+			"clicks", "complaints", "unsubs", "hard", "soft"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", 1000, 300, 25, 1, 2, 5, 9))
+	mock.ExpectQuery(`FROM mailing_segment_perf_daily`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"segment_id", "day", "members", "added"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", "2026-07-24", 1000, 0).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", "2026-07-25", 990, 40))
 	mock.ExpectQuery(`FROM mailing_worker_heartbeats`).
 		WillReturnRows(sqlmock.NewRows([]string{"worker_name", "last_beat_at", "secs",
 			"last_status", "last_error", "cycle_count", "expected_interval_seconds", "stalled"}).
@@ -455,6 +478,23 @@ func TestSegmentationHealth_HappyPath(t *testing.T) {
 	if f.Verdict != segVerdictLive || f.MemberInserts24 != 42 || f.MemberInserts7d != 300 || f.CampaignRefs3d != 2 {
 		t.Errorf("family wrong: %+v", f)
 	}
+	if out.PerfMethod != "member_scoped_rollup" || out.ChurnTimelineMethod != "rollup_daily" || out.PerfWindowDays != 7 {
+		t.Errorf("perf methods wrong: %s / %s / %d", out.PerfMethod, out.ChurnTimelineMethod, out.PerfWindowDays)
+	}
+	if f.Perf == nil || f.Perf.Delivered != 1000 || f.Perf.ClicksAction != 25 ||
+		f.Perf.HardBounces != 5 || f.Perf.SoftBounces != 9 {
+		t.Errorf("family perf wrong: %+v", f.Perf)
+	}
+	if f.Perf.EngagementRate < 0.024 || f.Perf.EngagementRate > 0.026 {
+		t.Errorf("engagement rate = %f, want 25/1000", f.Perf.EngagementRate)
+	}
+	// Timeline: day 2 removals derived: 1000 + 40 - 990 = 50.
+	if len(f.ChurnTimeline) != 2 || f.ChurnTimeline[1].Removed != 50 || f.ChurnTimeline[1].Added != 40 {
+		t.Errorf("churn timeline wrong: %+v", f.ChurnTimeline)
+	}
+	if seg := f.Segments[0]; seg.Perf == nil || seg.Perf.Opens != 300 {
+		t.Errorf("segment perf wrong: %+v", seg.Perf)
+	}
 	if out.Summary.FamiliesLive != 1 || out.Summary.FamiliesStale != 0 {
 		t.Errorf("summary wrong: %+v", out.Summary)
 	}
@@ -479,6 +519,87 @@ func TestSegmentationHealth_HappyPath(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// ── Perf-window derivations ─────────────────────────────────────────────────
+
+func TestParsePerfWindow(t *testing.T) {
+	if parsePerfWindow("") != 7 || parsePerfWindow("7d") != 7 || parsePerfWindow("bogus") != 7 {
+		t.Error("default window must be 7")
+	}
+	if parsePerfWindow("30d") != 30 || parsePerfWindow("30") != 30 {
+		t.Error("30d window must parse to 30")
+	}
+}
+
+func TestDeriveChurnRemoved(t *testing.T) {
+	// prev 1000, added 40, now 990 → 50 removed.
+	if got := deriveChurnRemoved(1000, 40, 990); got != 50 {
+		t.Errorf("removed = %d, want 50", got)
+	}
+	// Growth with no removals derivable → 0, never negative.
+	if got := deriveChurnRemoved(1000, 0, 1200); got != 0 {
+		t.Errorf("removed = %d, want 0 (floored)", got)
+	}
+	if got := deriveChurnRemoved(0, 0, 0); got != 0 {
+		t.Errorf("removed = %d, want 0", got)
+	}
+}
+
+func TestEngagementRate(t *testing.T) {
+	if got := engagementRate(25, 1000); got != 0.025 {
+		t.Errorf("rate = %f, want 0.025", got)
+	}
+	if got := engagementRate(5, 0); got != 0 {
+		t.Errorf("rate on zero delivered = %f, want 0 (no divide-by-zero)", got)
+	}
+}
+
+func TestBuildSegmentationFamilies_PerfAggregationAndTimeline(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	built := now.Add(-1 * time.Hour)
+	registry := []segHealthRegistryRow{
+		{FamilyKey: "slot", FamilyPattern: "SLOT-%", Owner: "board", SLAHours: 48, Active: true},
+	}
+	segments := []segHealthSegmentRow{
+		{ID: "a", Name: "SLOT-x", SegmentType: "static", SubscriberCount: 10, MatchedPattern: "SLOT-%",
+			LastBuiltAt: tp(built), LastBuildStatus: "ok", LedgerUpdatedAt: tp(built)},
+		{ID: "b", Name: "SLOT-y", SegmentType: "static", SubscriberCount: 20, MatchedPattern: "SLOT-%",
+			LastBuiltAt: tp(built), LastBuildStatus: "ok", LedgerUpdatedAt: tp(built)},
+	}
+	perf := map[string]segHealthPerf{
+		"a": {Delivered: 600, Opens: 100, ClicksAction: 12, Complaints: 1, Unsubs: 2, HardBounces: 3, SoftBounces: 4},
+		"b": {Delivered: 400, Opens: 50, ClicksAction: 8, HardBounces: 1},
+	}
+	daily := map[string][]segHealthChurnDailyRow{
+		"a": {{Day: "2026-07-24", Members: 500, Added: 0}, {Day: "2026-07-25", Members: 480, Added: 30}},
+		"b": {{Day: "2026-07-24", Members: 200, Added: 0}, {Day: "2026-07-25", Members: 220, Added: 20}},
+	}
+	fams := buildSegmentationFamilies(registry, segments, nil, false, nil, perf, true, daily, true, now)
+	if len(fams) != 1 {
+		t.Fatalf("families = %d", len(fams))
+	}
+	f := fams[0]
+	// Family sums: hard and soft stay SEPARATE (bounce doctrine).
+	if f.Perf == nil || f.Perf.Delivered != 1000 || f.Perf.Opens != 150 || f.Perf.ClicksAction != 20 ||
+		f.Perf.HardBounces != 4 || f.Perf.SoftBounces != 4 || f.Perf.Complaints != 1 || f.Perf.Unsubs != 2 {
+		t.Fatalf("family perf sums wrong: %+v", f.Perf)
+	}
+	if f.Perf.EngagementRate != 0.02 {
+		t.Errorf("family engagement rate = %f, want 20/1000", f.Perf.EngagementRate)
+	}
+	// Timeline aggregated across both segments:
+	// 07-24: members 700, added 0; 07-25: members 700, added 50 → removed 50.
+	if len(f.ChurnTimeline) != 2 {
+		t.Fatalf("timeline: %+v", f.ChurnTimeline)
+	}
+	if d := f.ChurnTimeline[1]; d.Members != 700 || d.Added != 50 || d.Removed != 50 {
+		t.Errorf("timeline day2 = %+v, want members 700 added 50 removed 50", d)
+	}
+	// Per-segment perf carried with per-segment rate.
+	if f.Segments[0].Perf == nil || f.Segments[1].Perf == nil {
+		t.Fatal("segment perf missing")
 	}
 }
 

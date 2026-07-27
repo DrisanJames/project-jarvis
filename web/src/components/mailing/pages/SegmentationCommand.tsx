@@ -33,12 +33,33 @@ import { SectionHeader, Stat, Pill, SectionError, EmptyState } from '../shared/u
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
-// PAGE_VERSION 1.0 — initial Segmentation Command screen (2026-07-26).
-const PAGE_VERSION = '1.0';
+// PAGE_VERSION 1.1 — performance surface: member-scoped 7d/30d windows
+// (delivered/opens/action-clicks/complaints/unsubs/hard/soft, engagement
+// rate) + 14d churn timeline sparkline, from the nightly
+// mailing_segment_perf_daily rollup (operator enrichment ask, 2026-07-26).
+const PAGE_VERSION = '1.1';
 
 // ── API shapes (mirror segmentation_health.go; do not drift) ────────────────
 
 type FamilyVerdict = 'LIVE' | 'STALE' | 'STATIC-DECLARED' | 'UNREGISTERED';
+
+interface PerfWindow {
+  delivered: number;
+  opens: number;
+  clicks_action: number;
+  complaints: number;
+  unsubs: number;
+  hard_bounces: number;
+  soft_bounces: number;
+  engagement_rate: number;
+}
+
+interface ChurnDay {
+  day: string;
+  members: number;
+  added: number;
+  removed: number;
+}
 
 interface SegRow {
   id: string;
@@ -53,6 +74,7 @@ interface SegRow {
   member_inserts_24h: number | null; // null = churn unavailable
   campaign_refs_3d: number;
   count_membership_diverged: boolean;
+  perf: PerfWindow | null; // null = rollup unavailable
 }
 
 interface FamilyRow {
@@ -76,6 +98,8 @@ interface FamilyRow {
   member_inserts_7d: number;
   campaign_refs_3d: number;
   diverged_count: number;
+  perf: PerfWindow | null;
+  churn_timeline: ChurnDay[];
   segments: SegRow[];
   segments_truncated: boolean;
 }
@@ -124,6 +148,9 @@ interface HealthResponse {
   refs_method: string;  // 'inclusion_segments_3d' | 'unavailable'
   segments_truncated: boolean;
   registry_available: boolean;
+  perf_method: string; // 'member_scoped_rollup' | 'unavailable'
+  perf_window_days: number;
+  churn_timeline_method: string; // 'rollup_daily' | 'unavailable'
 }
 
 // ── Fetch plumbing (single endpoint; mirrors OperationsConsole's panel hook —
@@ -139,7 +166,7 @@ interface FetchState {
   ms: number | null;
 }
 
-const useHealthFetch = (nonce: number): [FetchState, () => void] => {
+const useHealthFetch = (nonce: number, window: '7d' | '30d'): [FetchState, () => void] => {
   const [state, setState] = useState<FetchState>({
     loading: true, error: null, unavailable: false, data: null, fetchedAt: null, ms: null,
   });
@@ -153,7 +180,7 @@ const useHealthFetch = (nonce: number): [FetchState, () => void] => {
     abortRef.current = ac;
     setState(s => ({ ...s, loading: true, error: null }));
     const t0 = performance.now();
-    apiFetch('/api/mailing/segmentation/health', { signal: ac.signal })
+    apiFetch(`/api/mailing/segmentation/health?window=${window}`, { signal: ac.signal })
       .then(async res => {
         const ms = Math.round(performance.now() - t0);
         const fetchedAt = new Date().toLocaleTimeString();
@@ -181,7 +208,7 @@ const useHealthFetch = (nonce: number): [FetchState, () => void] => {
         });
       });
     return () => ac.abort();
-  }, [nonce, localNonce]);
+  }, [nonce, localNonce, window]);
 
   return [state, retry];
 };
@@ -237,6 +264,45 @@ const buildAgeStyle = (f: FamilyRow): React.CSSProperties => {
 
 const scrollWrap: React.CSSProperties = { overflowX: 'auto' };
 const monoCell: React.CSSProperties = { ...tdStyle, fontFamily: 'monospace', fontSize: 11.5 };
+
+const fmtPct = (rate: number): string => `${(rate * 100).toFixed(2)}%`;
+
+// Negative-signal cell: dims at 0, colors when present. Hard bounces red,
+// soft amber, complaints red, unsubs amber — NEVER combined into one number.
+const negCell = (n: number | undefined, color: string): React.ReactNode => (
+  <span style={{ color: n && n > 0 ? color : colors.textFaint, fontWeight: n && n > 0 ? 700 : 400 }}>
+    {n == null ? '—*' : fmtInt(n)}
+  </span>
+);
+
+// ChurnSparkline: 14 Denver days of adds (up, indigo) / derived removals
+// (down, red) around a baseline. All values from the endpoint's timeline.
+const ChurnSparkline: React.FC<{ timeline: ChurnDay[] }> = ({ timeline }) => {
+  if (timeline.length === 0) return <span style={{ color: colors.textFaint }}>—</span>;
+  const W = 98, H = 26, mid = H / 2;
+  const n = timeline.length;
+  const bw = Math.max(2, Math.floor(W / Math.max(n, 1)) - 2);
+  const peak = Math.max(1, ...timeline.map(d => Math.max(d.added, d.removed)));
+  const latest = timeline[timeline.length - 1];
+  const title = `last ${n}d — latest ${latest.day}: ${fmtInt(latest.members)} members, +${fmtInt(latest.added)} added, -${fmtInt(latest.removed)} removed (derived)`;
+  return (
+    <svg width={W} height={H} role="img" aria-label={title} style={{ display: 'block' }}>
+      <title>{title}</title>
+      <line x1={0} y1={mid} x2={W} y2={mid} stroke={colors.hairline} strokeWidth={1} />
+      {timeline.map((d, i) => {
+        const x = i * (bw + 2);
+        const up = Math.round((d.added / peak) * (mid - 2));
+        const down = Math.round((d.removed / peak) * (mid - 2));
+        return (
+          <g key={d.day}>
+            {up > 0 && <rect x={x} y={mid - up} width={bw} height={up} fill={colors.indigo400} />}
+            {down > 0 && <rect x={x} y={mid + 1} width={bw} height={down} fill={colors.danger} opacity={0.85} />}
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
 
 // ── Sections ────────────────────────────────────────────────────────────────
 
@@ -301,7 +367,12 @@ const AlertsPanel: React.FC<{ alerts: AlertRow[] }> = ({ alerts }) => (
   </div>
 );
 
-const SegmentDrilldown: React.FC<{ family: FamilyRow; churnAvailable: boolean }> = ({ family, churnAvailable }) => (
+const SegmentDrilldown: React.FC<{
+  family: FamilyRow;
+  churnAvailable: boolean;
+  perfAvailable: boolean;
+  win: '7d' | '30d';
+}> = ({ family, churnAvailable, perfAvailable, win }) => (
   <div style={{ ...scrollWrap, padding: '4px 8px 10px 28px' }}>
     <table style={tableStyle}>
       <thead>
@@ -314,6 +385,14 @@ const SegmentDrilldown: React.FC<{ family: FamilyRow; churnAvailable: boolean }>
           <th style={numTh}>Counts refreshed</th>
           <th style={thStyle}>Build status</th>
           <th style={thStyle}>Source</th>
+          <th style={numTh}>Delivered</th>
+          <th style={numTh}>Opens</th>
+          <th style={numTh}>Clicks*</th>
+          <th style={numTh}>Eng rate</th>
+          <th style={numTh}>Cmpl</th>
+          <th style={numTh}>Unsub</th>
+          <th style={numTh}>Hard</th>
+          <th style={numTh}>Soft</th>
           <th style={numTh}>Inserts 24h</th>
           <th style={numTh}>Refs 3d</th>
           <th style={thStyle}>Divergence</th>
@@ -341,6 +420,16 @@ const SegmentDrilldown: React.FC<{ family: FamilyRow; churnAvailable: boolean }>
               </Pill>
             </td>
             <td style={{ ...tdStyle, color: colors.textMuted }}>{s.build_source || '—'}</td>
+            <td style={numTd} title={`member-scoped ${win}`}>{s.perf ? fmtInt(s.perf.delivered) : '—*'}</td>
+            <td style={numTd} title={`RAW opens (machine included) — member-scoped ${win}`}>{s.perf ? fmtInt(s.perf.opens) : '—*'}</td>
+            <td style={numTd} title={`ACTION clicks only — member-scoped ${win}`}>{s.perf ? fmtInt(s.perf.clicks_action) : '—*'}</td>
+            <td style={numTd} title={`action-clicks / delivered; denominator = ${s.perf ? fmtInt(s.perf.delivered) : 'n/a'}`}>
+              {s.perf ? (s.perf.delivered > 0 ? fmtPct(s.perf.engagement_rate) : '—') : '—*'}
+            </td>
+            <td style={numTd}>{negCell(s.perf?.complaints, colors.danger)}</td>
+            <td style={numTd}>{negCell(s.perf?.unsubs, colors.warning)}</td>
+            <td style={numTd} title="HARD bounces — never combined with soft">{negCell(s.perf?.hard_bounces, colors.danger)}</td>
+            <td style={numTd} title="SOFT bounces — never combined with hard">{negCell(s.perf?.soft_bounces, colors.warning)}</td>
             <td style={numTd} title={churnAvailable ? 'rows (re)materialized in the last 24h' : 'churn source unavailable this fetch'}>
               {s.member_inserts_24h == null ? '—*' : fmtInt(s.member_inserts_24h)}
             </td>
@@ -361,6 +450,11 @@ const SegmentDrilldown: React.FC<{ family: FamilyRow; churnAvailable: boolean }>
         Showing the {family.segments.length} most recently built segments — the family has {fmtInt(family.segments_count)} total.
       </div>
     )}
+    {!perfAvailable && (
+      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+        —* performance columns: the nightly rollup (mailing_segment_perf_daily) has no data on this build yet — the segment_perf_rollup worker has not completed a pass.
+      </div>
+    )}
   </div>
 );
 
@@ -368,12 +462,33 @@ const SegmentDrilldown: React.FC<{ family: FamilyRow; churnAvailable: boolean }>
 
 export const SegmentationCommand: React.FC = () => {
   const [nonce, setNonce] = useState(0);
-  const [state, retry] = useHealthFetch(nonce);
+  const [win, setWin] = useState<'7d' | '30d'>('7d');
+  const [state, retry] = useHealthFetch(nonce, win);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const d = state.data;
   const churnAvailable = d?.churn_method === 'materialized_window';
   const refsAvailable = d?.refs_method === 'inclusion_segments_3d';
+  const perfAvailable = d?.perf_method === 'member_scoped_rollup';
+  const timelineAvailable = d?.churn_timeline_method === 'rollup_daily';
+
+  const winToggle = (
+    <span style={{ display: 'inline-flex', gap: 4 }}>
+      {(['7d', '30d'] as const).map(w => (
+        <button
+          key={w}
+          onClick={() => setWin(w)}
+          style={{
+            background: win === w ? alpha(colors.indigo500, '44') : alpha(colors.indigo500, '14'),
+            border: `1px solid ${alpha(colors.indigo500, win === w ? '66' : '33')}`,
+            color: win === w ? colors.indigo200 : colors.textMuted,
+            borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontSize: 11.5, fontWeight: 700,
+          }}>
+          {w.toUpperCase()}
+        </button>
+      ))}
+    </span>
+  );
 
   return (
     <div style={pageStyle}>
@@ -458,7 +573,11 @@ export const SegmentationCommand: React.FC = () => {
 
           {/* ── Family table ── */}
           <div style={panelStyle}>
-            <SectionHeader title="Segment families — membership build vs SLA" icon={faLayerGroup} />
+            <SectionHeader
+              title={`Segment families — build truth + member-scoped performance (${win})`}
+              icon={faLayerGroup}
+              right={winToggle}
+            />
             {d.families.length === 0 ? (
               <EmptyState
                 title="No segments found"
@@ -472,13 +591,18 @@ export const SegmentationCommand: React.FC = () => {
                       <th style={thStyle} />
                       <th style={thStyle}>Family</th>
                       <th style={thStyle}>Verdict</th>
-                      <th style={thStyle}>Owner</th>
-                      <th style={numTh}>SLA</th>
                       <th style={numTh}>Segments</th>
                       <th style={numTh}>Members</th>
                       <th style={numTh}>Last build</th>
-                      <th style={numTh}>Builds 24h</th>
-                      <th style={numTh}>Inserts 24h</th>
+                      <th style={numTh}>Delivered</th>
+                      <th style={numTh}>Opens</th>
+                      <th style={numTh}>Clicks*</th>
+                      <th style={numTh}>Eng rate</th>
+                      <th style={numTh}>Cmpl</th>
+                      <th style={numTh}>Unsub</th>
+                      <th style={numTh}>Hard</th>
+                      <th style={numTh}>Soft</th>
+                      <th style={thStyle}>Churn 14d</th>
                       <th style={numTh}>Refs 3d</th>
                       <th style={thStyle}>Flags</th>
                     </tr>
@@ -497,18 +621,14 @@ export const SegmentationCommand: React.FC = () => {
                             <td style={{ ...tdStyle, width: 24, color: colors.textMuted }}>
                               <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} />
                             </td>
-                            <td style={{ ...tdStyle, fontWeight: 700 }}>
+                            <td style={{ ...tdStyle, fontWeight: 700 }}
+                              title={`${f.family_pattern}${f.registered ? ` · owner: ${f.owner || '—'} · SLA ${f.sla_hours > 0 ? `${f.sla_hours}h` : 'none'}` : ' · UNOWNED (no registry row)'}${f.cadence ? ` · cadence ${f.cadence}` : ''} · builds last 24h: ${f.builds_last_24h} · inserts 24h: ${churnAvailable ? fmtInt(f.member_inserts_24h) : 'n/a'}`}>
                               {f.family_key}
-                              <span style={{ fontFamily: 'monospace', fontSize: 10.5, color: colors.textFaint, marginLeft: 8 }}>
-                                {f.family_pattern}
+                              <span style={{ fontFamily: 'monospace', fontSize: 10.5, color: f.registered ? colors.textFaint : colors.warningText, marginLeft: 8 }}>
+                                {f.registered ? f.family_pattern : 'UNOWNED'}
                               </span>
                             </td>
                             <td style={tdStyle}><Pill color={verdictColor(f.verdict)}>{f.verdict}</Pill></td>
-                            <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: f.registered ? colors.text : colors.warningText }}
-                              title={f.registered ? f.owner : 'no registry row — unowned'}>
-                              {f.registered ? (f.owner || '—') : 'UNOWNED'}
-                            </td>
-                            <td style={numTd}>{f.sla_hours > 0 ? `${f.sla_hours}h` : '—'}</td>
                             <td style={numTd} title={`${f.dynamic_count} dynamic · ${f.static_count} static`}>
                               {fmtInt(f.segments_count)}
                               <span style={{ color: colors.textFaint, fontSize: 10.5 }}> ({f.dynamic_count}d/{f.static_count}s)</span>
@@ -520,12 +640,24 @@ export const SegmentationCommand: React.FC = () => {
                                 : 'no membership build ever recorded in the ledger'}>
                               {f.last_membership_build_max == null ? 'NEVER' : fmtRelative(f.last_membership_build_max)}
                             </td>
-                            <td style={numTd}>{f.builds_last_24h > 0 ? fmtInt(f.builds_last_24h) : '—'}</td>
-                            <td style={numTd}
-                              title={churnAvailable
-                                ? `24h: ${fmtInt(f.member_inserts_24h)} · 7d: ${fmtInt(f.member_inserts_7d)} rows (re)materialized`
-                                : 'churn source unavailable this fetch'}>
-                              {churnAvailable ? fmtInt(f.member_inserts_24h) : '—*'}
+                            <td style={numTd} title={`member-scoped ${win} — distinct current members with a delivery in the window, any campaign`}>
+                              {f.perf ? fmtInt(f.perf.delivered) : '—*'}
+                            </td>
+                            <td style={numTd} title={`RAW opens (machine included, no human-verdict claim) — member-scoped ${win}`}>
+                              {f.perf ? fmtInt(f.perf.opens) : '—*'}
+                            </td>
+                            <td style={numTd} title={`ACTION clicks only (canonical predicate — asset fetches and unsub/pref links are NOT clicks) — member-scoped ${win}`}>
+                              {f.perf ? fmtInt(f.perf.clicks_action) : '—*'}
+                            </td>
+                            <td style={numTd} title={`action-clicks / delivered (member-scoped ${win}); denominator = delivered ${f.perf ? fmtInt(f.perf.delivered) : 'n/a'}`}>
+                              {f.perf ? (f.perf.delivered > 0 ? fmtPct(f.perf.engagement_rate) : '—') : '—*'}
+                            </td>
+                            <td style={numTd} title={`complaints — member-scoped ${win}`}>{negCell(f.perf?.complaints, colors.danger)}</td>
+                            <td style={numTd} title={`unsubscribes — member-scoped ${win}`}>{negCell(f.perf?.unsubs, colors.warning)}</td>
+                            <td style={numTd} title={`HARD bounces — member-scoped ${win}, never combined with soft`}>{negCell(f.perf?.hard_bounces, colors.danger)}</td>
+                            <td style={numTd} title={`SOFT bounces — member-scoped ${win}, never combined with hard`}>{negCell(f.perf?.soft_bounces, colors.warning)}</td>
+                            <td style={tdStyle} title={timelineAvailable ? 'members added (up, indigo) / removed (down, red — derived day-over-day) per Denver day' : 'rollup timeline unavailable'}>
+                              {timelineAvailable ? <ChurnSparkline timeline={f.churn_timeline} /> : <span style={{ color: colors.textFaint }}>—*</span>}
                             </td>
                             <td style={numTd}
                               title={refsAvailable ? 'campaigns created in the last 3 days including this family in inclusion_segments' : 'refs source unavailable this fetch'}>
@@ -543,8 +675,8 @@ export const SegmentationCommand: React.FC = () => {
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={12} style={{ padding: 0, borderTop: `1px solid ${colors.divider}`, background: alpha(colors.indigo500, '0d') }}>
-                                <SegmentDrilldown family={f} churnAvailable={churnAvailable} />
+                              <td colSpan={17} style={{ padding: 0, borderTop: `1px solid ${colors.divider}`, background: alpha(colors.indigo500, '0d') }}>
+                                <SegmentDrilldown family={f} churnAvailable={churnAvailable} perfAvailable={perfAvailable} win={win} />
                               </td>
                             </tr>
                           )}
@@ -556,9 +688,12 @@ export const SegmentationCommand: React.FC = () => {
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8, lineHeight: 1.6 }}>
                   Last build = newest membership build in the family (ledger <code>last_built_at</code>) — NEVER a count-refresh timestamp; red = past the family's SLA.
                   COUNTS≠BUILD = the segment's count clock advanced &gt;24h after its last membership build — the "counts fresh, membership stale" trap, flagged explicitly.
-                  * Members = SUM of per-segment counts (overlap not deduped).
-                  {!churnAvailable && ' —* Inserts: the bounded churn aggregate over mailing_segment_members timed out or failed this fetch (churn_method=unavailable); no number is shown rather than a wrong one.'}
-                  {churnAvailable && ' Inserts 24h counts rows (re)materialized in the window (rebuilds re-stamp all rows), not net-new members.'}
+                  Members = SUM of per-segment counts (overlap not deduped).
+                  {' '}Performance columns are <strong>member-scoped {win}</strong> (Denver days, nightly rollup): distinct CURRENT members with the event in the window, from ANY campaign — NOT send-attributed.
+                  Opens are RAW (machine included; no human-verdict claim). Clicks* = ACTION clicks only (canonical predicate; asset fetches and unsub/pref links are not clicks — ~93% of raw click events are asset noise). Eng rate = action-clicks / delivered. Hard and soft bounces are never combined.
+                  Churn 14d: adds up (indigo) / removals down (red); removals are DERIVED day-over-day from membership snapshots — full rebuilds re-stamp rows, inflating adds and removals equally (net is true).
+                  {!perfAvailable && ' —* Performance: the nightly rollup has no data yet on this build (perf_method=unavailable) — no number is shown rather than a wrong one.'}
+                  {!churnAvailable && ' —* Inserts (drilldown): the bounded churn aggregate over mailing_segment_members timed out or failed this fetch (churn_method=unavailable).'}
                   {!refsAvailable && ' —* Refs: the campaign-reference scan was unavailable this fetch.'}
                 </div>
               </div>

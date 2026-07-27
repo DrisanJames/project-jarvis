@@ -102,6 +102,16 @@ const (
 	segHealthRequestBudget = 25 * time.Second
 	segHealthChurnBudget   = 10 * time.Second
 	segHealthRefsBudget    = 8 * time.Second
+	segHealthPerfBudget    = 8 * time.Second
+)
+
+// Performance-window options (?window=7d|30d) and the churn-timeline depth.
+// Windows are Denver calendar days — the rollup's day column is already
+// Denver-bucketed by SegmentPerfRollupWorker (METRIC_CONTRACT window rule).
+const (
+	segHealthPerfWindowDefault = 7
+	segHealthPerfWindowLong    = 30
+	segHealthTimelineDays      = 14
 )
 
 // ── Pure derivations (unit-tested in segmentation_health_test.go) ───────────
@@ -161,6 +171,38 @@ func segmentWorkerLight(hasBeat, stalled bool, lastStatus string, secondsSinceBe
 	return workerLightOK
 }
 
+// parsePerfWindow maps the ?window= query param to a day count (7 default).
+func parsePerfWindow(raw string) int {
+	if strings.TrimSpace(raw) == "30d" || strings.TrimSpace(raw) == "30" {
+		return segHealthPerfWindowLong
+	}
+	return segHealthPerfWindowDefault
+}
+
+// deriveChurnRemoved derives removals from consecutive membership snapshots:
+// removed(t) = members(t-1) + added(t) - members(t), floored at 0. Removed
+// rows vanish from mailing_segment_members, so the day-over-day rollup
+// snapshot is the only record. Full rebuilds re-stamp materialized_at, so
+// `added` over-counts on rebuild days and this derivation over-counts
+// removals equally — the NET change stays true (labeled on-screen).
+func deriveChurnRemoved(prevMembers, added, members int64) int64 {
+	r := prevMembers + added - members
+	if r < 0 {
+		return 0
+	}
+	return r
+}
+
+// engagementRate is action-clicks over delivered (the coordinator-specified
+// engagement column), 0 when nothing was delivered. Raw unique counts on
+// both sides — no verdict gating (signal-grading doctrine).
+func engagementRate(clicksAction, delivered int64) float64 {
+	if delivered <= 0 {
+		return 0
+	}
+	return float64(clicksAction) / float64(delivered)
+}
+
 // segmentCountsDiverged flags the counts-fresh/membership-stale trap: the
 // count-refresh clock advanced while the membership build clock did not.
 func segmentCountsDiverged(countRefreshedAt, membershipBuiltAt *time.Time) bool {
@@ -190,6 +232,30 @@ func segFamilyVerdictRank(verdict string) int {
 
 // ── JSON shapes ─────────────────────────────────────────────────────────────
 
+// segHealthPerf is the member-scoped performance window (nightly rollup:
+// mailing_segment_perf_daily). ATTRIBUTION HONESTY: distinct current MEMBERS
+// with the event in the window, from ANY campaign — not send-attributed.
+// Opens are RAW (machine included). Hard/soft bounces are NEVER combined.
+type segHealthPerf struct {
+	Delivered      int64   `json:"delivered"`
+	Opens          int64   `json:"opens"`
+	ClicksAction   int64   `json:"clicks_action"`
+	Complaints     int64   `json:"complaints"`
+	Unsubs         int64   `json:"unsubs"`
+	HardBounces    int64   `json:"hard_bounces"`
+	SoftBounces    int64   `json:"soft_bounces"`
+	EngagementRate float64 `json:"engagement_rate"` // clicks_action / delivered
+}
+
+// segHealthChurnDay is one Denver day of a family's membership timeline.
+// Removed is DERIVED (deriveChurnRemoved) — see the over-count note there.
+type segHealthChurnDay struct {
+	Day     string `json:"day"` // YYYY-MM-DD (Denver)
+	Members int64  `json:"members"`
+	Added   int64  `json:"added"`
+	Removed int64  `json:"removed"`
+}
+
 type segHealthSegment struct {
 	ID              string     `json:"id"`
 	Name            string     `json:"name"`
@@ -206,6 +272,8 @@ type segHealthSegment struct {
 	MemberInserts24 *int64     `json:"member_inserts_24h"` // null when churn unavailable
 	CampaignRefs3d  int        `json:"campaign_refs_3d"`
 	Diverged        bool       `json:"count_membership_diverged"`
+	// Perf is nil when the rollup is unavailable (see perf_method).
+	Perf *segHealthPerf `json:"perf"`
 }
 
 type segHealthFamily struct {
@@ -229,8 +297,15 @@ type segHealthFamily struct {
 	MemberInserts7d int64      `json:"member_inserts_7d"`
 	CampaignRefs3d  int        `json:"campaign_refs_3d"`
 	DivergedCount   int        `json:"diverged_count"`
-	Segments        []segHealthSegment `json:"segments"`
-	SegmentsTrunc   bool               `json:"segments_truncated"`
+	// Perf is the family sum over its segments' rollup rows; nil when the
+	// rollup is unavailable. NOTE: member overlap across segments in the
+	// family is NOT deduped (same rule as subscriber_total).
+	Perf *segHealthPerf `json:"perf"`
+	// ChurnTimeline is the last segHealthTimelineDays Denver days of the
+	// family's membership snapshots (empty when the rollup is unavailable).
+	ChurnTimeline []segHealthChurnDay `json:"churn_timeline"`
+	Segments      []segHealthSegment  `json:"segments"`
+	SegmentsTrunc bool                `json:"segments_truncated"`
 }
 
 type segHealthWorker struct {
@@ -283,6 +358,14 @@ type segmentationHealthResponse struct {
 	// RegistryAvailable=false: the registry read failed and every family below
 	// is therefore UNREGISTERED by construction, not by truth.
 	RegistryAvailable bool `json:"registry_available"`
+	// PerfMethod: 'member_scoped_rollup' (nightly mailing_segment_perf_daily,
+	// member-scoped — NOT send-attributed) or 'unavailable' (table absent/
+	// empty/query failed — the worker may not have run yet on this build).
+	PerfMethod string `json:"perf_method"`
+	// PerfWindowDays: the applied ?window= (7 or 30, Denver days).
+	PerfWindowDays int `json:"perf_window_days"`
+	// ChurnTimelineMethod: 'rollup_daily' or 'unavailable'.
+	ChurnTimelineMethod string `json:"churn_timeline_method"`
 }
 
 // ── Store ───────────────────────────────────────────────────────────────────
@@ -510,6 +593,118 @@ func (s *SegmentationHealthStore) CampaignRefs(ctx context.Context, orgID uuid.U
 	return out, true
 }
 
+// denverToday returns the current Denver calendar date (the rollup's day
+// bucketing); UTC fallback mirrors the worker's.
+func denverToday(now time.Time) time.Time {
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		loc = time.UTC
+	}
+	lt := now.In(loc)
+	return time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// RollupExists probes whether the perf rollup has ANY rows — distinguishing
+// "worker never ran / table absent" (perf unavailable) from genuine zeros.
+// Errors degrade to false.
+func (s *SegmentationHealthStore) RollupExists(ctx context.Context) bool {
+	pctx, cancel := context.WithTimeout(ctx, segHealthPerfBudget)
+	defer cancel()
+	var exists bool
+	if err := s.db.QueryRowContext(pctx, `
+		SELECT EXISTS(SELECT 1 FROM mailing_segment_perf_daily LIMIT 1)
+	`).Scan(&exists); err != nil {
+		log.Printf("[segmentation-health] perf rollup probe: %v", err)
+		return false
+	}
+	return exists
+}
+
+// PerfWindow sums the rollup over the trailing `days` Denver days per
+// segment. Degrades to (nil, false).
+func (s *SegmentationHealthStore) PerfWindow(ctx context.Context, orgID uuid.UUID, days int, today time.Time) (map[string]segHealthPerf, bool) {
+	pctx, cancel := context.WithTimeout(ctx, segHealthPerfBudget)
+	defer cancel()
+	cutoff := today.AddDate(0, 0, -days).Format("2006-01-02")
+	rows, err := s.db.QueryContext(pctx, `
+		SELECT p.segment_id::text,
+		       SUM(p.delivered)::bigint, SUM(p.opens)::bigint,
+		       SUM(p.clicks_action)::bigint, SUM(p.complaints)::bigint,
+		       SUM(p.unsubs)::bigint, SUM(p.hard)::bigint, SUM(p.soft)::bigint
+		FROM mailing_segment_perf_daily p
+		JOIN mailing_segments s ON s.id = p.segment_id
+		WHERE s.organization_id = $1 AND p.day > $2::date
+		GROUP BY p.segment_id
+	`, orgID, cutoff)
+	if err != nil {
+		log.Printf("[segmentation-health] perf window degraded: %v", err)
+		return nil, false
+	}
+	defer rows.Close()
+	out := make(map[string]segHealthPerf, 256)
+	for rows.Next() {
+		var id string
+		var p segHealthPerf
+		if err := rows.Scan(&id, &p.Delivered, &p.Opens, &p.ClicksAction,
+			&p.Complaints, &p.Unsubs, &p.HardBounces, &p.SoftBounces); err != nil {
+			log.Printf("[segmentation-health] perf window scan: %v", err)
+			return nil, false
+		}
+		p.EngagementRate = engagementRate(p.ClicksAction, p.Delivered)
+		out[id] = p
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[segmentation-health] perf window mid-read: %v", err)
+		return nil, false
+	}
+	return out, true
+}
+
+type segHealthChurnDailyRow struct {
+	Day     string
+	Members int64
+	Added   int64
+}
+
+// ChurnDaily returns per-segment daily membership snapshots for the trailing
+// timeline window (+1 day so removal derivation has a predecessor).
+// Degrades to (nil, false).
+func (s *SegmentationHealthStore) ChurnDaily(ctx context.Context, orgID uuid.UUID, days int, today time.Time) (map[string][]segHealthChurnDailyRow, bool) {
+	pctx, cancel := context.WithTimeout(ctx, segHealthPerfBudget)
+	defer cancel()
+	cutoff := today.AddDate(0, 0, -(days + 1)).Format("2006-01-02")
+	rows, err := s.db.QueryContext(pctx, `
+		SELECT p.segment_id::text, p.day::text, p.members, p.added
+		FROM mailing_segment_perf_daily p
+		JOIN mailing_segments s ON s.id = p.segment_id
+		WHERE s.organization_id = $1 AND p.day > $2::date
+		ORDER BY p.day
+	`, orgID, cutoff)
+	if err != nil {
+		log.Printf("[segmentation-health] churn timeline degraded: %v", err)
+		return nil, false
+	}
+	defer rows.Close()
+	out := make(map[string][]segHealthChurnDailyRow, 256)
+	for rows.Next() {
+		var id string
+		var r segHealthChurnDailyRow
+		if err := rows.Scan(&id, &r.Day, &r.Members, &r.Added); err != nil {
+			log.Printf("[segmentation-health] churn timeline scan: %v", err)
+			return nil, false
+		}
+		if len(r.Day) > 10 {
+			r.Day = r.Day[:10]
+		}
+		out[id] = append(out[id], r)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[segmentation-health] churn timeline mid-read: %v", err)
+		return nil, false
+	}
+	return out, true
+}
+
 type segHealthBeatRow struct {
 	LastBeatAt              time.Time
 	SecondsSinceBeat        int64
@@ -591,8 +786,14 @@ func buildSegmentationFamilies(
 	segments []segHealthSegmentRow,
 	churn map[string]segHealthChurnRow, churnOK bool,
 	refs map[string]int,
+	perf map[string]segHealthPerf, perfOK bool,
+	churnDaily map[string][]segHealthChurnDailyRow, timelineOK bool,
 	now time.Time,
 ) []segHealthFamily {
+	// Per-family day accumulator for the churn timeline (aggregated over ALL
+	// family segments, before any drilldown truncation).
+	type dayAcc struct{ members, added int64 }
+	famDays := make(map[string]map[string]*dayAcc)
 	byPattern := make(map[string]*segHealthFamily, len(registry)+8)
 	order := make([]string, 0, len(registry)+8)
 
@@ -661,6 +862,35 @@ func buildSegmentationFamilies(
 				seg.MemberInserts24 = &zero
 			}
 		}
+		if perfOK {
+			p := perf[s.ID] // zero value = no events in window (honest zeros)
+			p.EngagementRate = engagementRate(p.ClicksAction, p.Delivered)
+			seg.Perf = &p
+			if f.Perf == nil {
+				f.Perf = &segHealthPerf{}
+			}
+			f.Perf.Delivered += p.Delivered
+			f.Perf.Opens += p.Opens
+			f.Perf.ClicksAction += p.ClicksAction
+			f.Perf.Complaints += p.Complaints
+			f.Perf.Unsubs += p.Unsubs
+			f.Perf.HardBounces += p.HardBounces
+			f.Perf.SoftBounces += p.SoftBounces
+		}
+		if timelineOK {
+			if famDays[pattern] == nil {
+				famDays[pattern] = make(map[string]*dayAcc, segHealthTimelineDays+1)
+			}
+			for _, d := range churnDaily[s.ID] {
+				acc := famDays[pattern][d.Day]
+				if acc == nil {
+					acc = &dayAcc{}
+					famDays[pattern][d.Day] = acc
+				}
+				acc.members += d.Members
+				acc.added += d.Added
+			}
+		}
 
 		f.SegmentsCount++
 		if s.SegmentType == "static" {
@@ -696,6 +926,37 @@ func buildSegmentationFamilies(
 	for _, p := range order {
 		f := byPattern[p]
 		f.Verdict = familyVerdict(f.Registered, f.SLAHours, f.LastBuildMax, now)
+		if f.Perf != nil {
+			f.Perf.EngagementRate = engagementRate(f.Perf.ClicksAction, f.Perf.Delivered)
+		}
+		// Family churn timeline: ascending days, removals derived from the
+		// previous day's membership snapshot (deriveChurnRemoved). The
+		// oldest fetched day only anchors the derivation and is dropped so
+		// the timeline is exactly the display window.
+		f.ChurnTimeline = []segHealthChurnDay{}
+		if days := famDays[p]; len(days) > 0 {
+			keys := make([]string, 0, len(days))
+			for d := range days {
+				keys = append(keys, d)
+			}
+			sort.Strings(keys)
+			var prevMembers int64
+			havePrev := false
+			timeline := make([]segHealthChurnDay, 0, len(keys))
+			for _, k := range keys {
+				acc := days[k]
+				cd := segHealthChurnDay{Day: k, Members: acc.members, Added: acc.added}
+				if havePrev {
+					cd.Removed = deriveChurnRemoved(prevMembers, acc.added, acc.members)
+				}
+				prevMembers, havePrev = acc.members, true
+				timeline = append(timeline, cd)
+			}
+			if len(timeline) > segHealthTimelineDays {
+				timeline = timeline[len(timeline)-segHealthTimelineDays:]
+			}
+			f.ChurnTimeline = timeline
+		}
 		// Drilldown: newest membership build first, never-built last; cap with
 		// an explicit truncation flag.
 		sort.SliceStable(f.Segments, func(i, j int) bool {
@@ -856,10 +1117,24 @@ func (s *SegmentationHealthService) HandleHealth(w http.ResponseWriter, r *http.
 
 	churn, churnOK := s.store.Churn(ctx, orgID)
 	refs, refsOK := s.store.CampaignRefs(ctx, orgID)
+
+	// Performance window (nightly rollup). The probe distinguishes
+	// "worker never ran / table absent" from honest zeros.
+	windowDays := parsePerfWindow(r.URL.Query().Get("window"))
+	today := denverToday(now)
+	var perf map[string]segHealthPerf
+	var churnDaily map[string][]segHealthChurnDailyRow
+	perfOK, timelineOK := false, false
+	if s.store.RollupExists(ctx) {
+		perf, perfOK = s.store.PerfWindow(ctx, orgID, windowDays, today)
+		churnDaily, timelineOK = s.store.ChurnDaily(ctx, orgID, segHealthTimelineDays, today)
+	}
+
 	beats := s.store.Heartbeats(ctx)
 	runs := s.store.LastRuns(ctx)
 
-	families := buildSegmentationFamilies(registry, segments, churn, churnOK, refs, now)
+	families := buildSegmentationFamilies(registry, segments, churn, churnOK, refs,
+		perf, perfOK, churnDaily, timelineOK, now)
 
 	resp := segmentationHealthResponse{
 		APIVersion:        VersionSegmentationHealthAPI,
@@ -867,16 +1142,25 @@ func (s *SegmentationHealthService) HandleHealth(w http.ResponseWriter, r *http.
 		Families:          families,
 		Workers:           buildSegmentationWorkers(beats, runs),
 		Alerts:            buildSegmentationAlerts(families, now),
-		ChurnMethod:       "unavailable",
-		RefsMethod:        "unavailable",
-		SegmentsTruncated: truncated,
-		RegistryAvailable: registryOK,
+		ChurnMethod:         "unavailable",
+		RefsMethod:          "unavailable",
+		SegmentsTruncated:   truncated,
+		RegistryAvailable:   registryOK,
+		PerfMethod:          "unavailable",
+		PerfWindowDays:      windowDays,
+		ChurnTimelineMethod: "unavailable",
 	}
 	if churnOK {
 		resp.ChurnMethod = "materialized_window"
 	}
 	if refsOK {
 		resp.RefsMethod = "inclusion_segments_3d"
+	}
+	if perfOK {
+		resp.PerfMethod = "member_scoped_rollup"
+	}
+	if timelineOK {
+		resp.ChurnTimelineMethod = "rollup_daily"
 	}
 	for _, f := range families {
 		switch f.Verdict {
