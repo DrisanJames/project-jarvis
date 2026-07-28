@@ -56,9 +56,11 @@ const INITIAL_MESSAGE: CopilotMessage = {
 interface CampaignCopilotProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Render in page flow (a portal tab) instead of the slide-over drawer. */
+  inline?: boolean;
 }
 
-export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClose }) => {
+export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClose, inline }) => {
   const [messages, setMessages] = useState<CopilotMessage[]>([INITIAL_MESSAGE]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -160,9 +162,17 @@ export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClos
 
   if (!isOpen) return null;
 
+  const containerStyle: React.CSSProperties = inline
+    ? { display: 'flex', justifyContent: 'stretch' }
+    : styles.overlay;
+  const panelStyle: React.CSSProperties = inline
+    ? { ...styles.panel, width: '100%', maxWidth: 900, height: 'calc(100vh - 210px)', minHeight: 480,
+        border: '1px solid #1e293b', borderRadius: 12, boxShadow: 'none', margin: '0 auto' }
+    : styles.panel;
+
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.panel} onClick={e => e.stopPropagation()}>
+    <div style={containerStyle} onClick={inline ? undefined : onClose}>
+      <div style={panelStyle} onClick={e => e.stopPropagation()}>
         <div style={styles.header}>
           <div style={styles.headerLeft}>
             <div style={styles.botIcon}>AI</div>
