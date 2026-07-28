@@ -136,6 +136,18 @@ def main() -> int:
     upsert_env(env_list, "JARVIS_S3_REGION", "us-west-2")
     upsert_env(env_list, "IMAGE_CDN_DOMAIN", "img.projectjarvis.io")
     upsert_env(env_list, "ENABLE_ENGAGEMENT_ESCALATION", "true")
+
+    # Secrets never live in this file: DEPLOY_UPSERT_ENVS names env vars whose
+    # VALUES come from the deploy shell (e.g. DEPLOY_UPSERT_ENVS=ANTHROPIC_API_KEY
+    # with ANTHROPIC_API_KEY exported). Unset/empty names are skipped loudly.
+    for name in filter(None, os.environ.get("DEPLOY_UPSERT_ENVS", "").split(",")):
+        name = name.strip()
+        value = os.environ.get(name, "")
+        if value:
+            upsert_env(env_list, name, value)
+        else:
+            print(f"WARNING: DEPLOY_UPSERT_ENVS names {name!r} but it is empty in "
+                  "the deploy shell — NOT upserted", file=sys.stderr)
     # 2026-06-04: decommission the convictions/decisions engine DB persistence.
     # Stops INSERTs into mailing_engine_convictions (~37 GB) + mailing_engine_decisions
     # (~19 GB) — the dominant RDS write-IO source, never read by the send path.
