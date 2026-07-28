@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,12 @@ type CampaignCopilot struct {
 	httpClient *http.Client
 	pmtaSvc    *PMTACampaignService
 	segAPI     *SegmentationAPI
+
+	// Anthropic provider (copilot_anthropic.go). anthropicBaseURL is
+	// overridable for tests; empty → api.anthropic.com.
+	anthropicKey        string
+	anthropicBaseURL    string
+	anthropicHTTPClient *http.Client
 }
 
 func NewCampaignCopilot(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACampaignService, segAPI *SegmentationAPI) *CampaignCopilot {
@@ -37,14 +44,21 @@ func NewCampaignCopilot(db *sql.DB, cfg config.OpenAIConfig, pmtaSvc *PMTACampai
 		httpClient: &http.Client{
 			Timeout: 180 * time.Second,
 		},
-		pmtaSvc: pmtaSvc,
-		segAPI:  segAPI,
+		pmtaSvc:      pmtaSvc,
+		segAPI:       segAPI,
+		anthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
+		anthropicHTTPClient: &http.Client{
+			Timeout: 180 * time.Second,
+		},
 	}
 }
 
 type copilotChatRequest struct {
 	Message string              `json:"message"`
 	History []copilotChatMsg    `json:"history"`
+	// Model is optional: "claude-fable-5" | "claude-opus-5" → Anthropic;
+	// ""/"gpt-*" → OpenAI (backward compatible). See resolveCopilotModel.
+	Model string `json:"model,omitempty"`
 }
 
 type copilotChatMsg struct {
@@ -57,6 +71,7 @@ type copilotChatResponse struct {
 	Suggestions  []string `json:"suggestions"`
 	ActionsTaken []string `json:"actions_taken"`
 	AIPowered    bool     `json:"ai_powered"`
+	Model        string   `json:"model,omitempty"`
 }
 
 type copilotOpenAIMsg struct {
@@ -107,11 +122,6 @@ type copilotOpenAIResp struct {
 }
 
 func (c *CampaignCopilot) HandleChat(w http.ResponseWriter, r *http.Request) {
-	if c.openAIKey == "" {
-		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "AI not configured"})
-		return
-	}
-
 	var req copilotChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
@@ -122,9 +132,34 @@ func (c *CampaignCopilot) HandleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	provider, model, errMsg := c.resolveCopilotModel(req.Model)
+	if errMsg != "" {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
+	if provider == "anthropic" && c.anthropicKey == "" {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Anthropic not configured (ANTHROPIC_API_KEY)"})
+		return
+	}
+	if provider == "openai" && c.openAIKey == "" {
+		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "AI not configured"})
+		return
+	}
+
 	orgID := getOrgID(r)
+
+	if provider == "anthropic" {
+		// Fable/Opus turns can run minutes; match the 180s client timeout.
+		ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+		defer cancel()
+		ctx = context.WithValue(ctx, copilotModelCtxKey, model)
+		c.handleChatAnthropic(ctx, w, orgID, model, req)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
+	ctx = context.WithValue(ctx, copilotModelCtxKey, model)
 
 	messages := []copilotOpenAIMsg{
 		{Role: "system", Content: buildCopilotSystemPrompt()},
@@ -137,7 +172,7 @@ func (c *CampaignCopilot) HandleChat(w http.ResponseWriter, r *http.Request) {
 	messages = append(messages, copilotOpenAIMsg{Role: "user", Content: req.Message})
 
 	openaiReq := copilotOpenAIReq{
-		Model:               c.model,
+		Model:               model,
 		Messages:            messages,
 		Tools:               getCopilotTools(),
 		Temperature:         0.3,
@@ -183,6 +218,7 @@ func (c *CampaignCopilot) HandleChat(w http.ResponseWriter, r *http.Request) {
 			Suggestions:  suggestions,
 			ActionsTaken: actionsTaken,
 			AIPowered:    true,
+			Model:        model,
 		})
 		return
 	}
@@ -191,6 +227,7 @@ func (c *CampaignCopilot) HandleChat(w http.ResponseWriter, r *http.Request) {
 		Response:    "I ran into a processing limit. Could you try rephrasing your request?",
 		Suggestions: []string{"Show me scheduled campaigns", "What templates do we have?"},
 		AIPowered:   true,
+		Model:       model,
 	})
 }
 

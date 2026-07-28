@@ -1439,6 +1439,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)
+			// Scheduler-bridge command status (mailing_scheduler_commands) —
+			// backs the copilot UI's command-status strip.
+			r.Get("/copilot/commands", campaignCopilot.HandleListCommands)
 
 			// === DOMAIN AGENT CHAT — conversational scheduling copilot ===
 			// Full-power chat over the Domain Agent lifecycle (scorecard →

@@ -52,6 +52,14 @@ func (c *CampaignCopilot) executeCopilotTool(ctx context.Context, orgID, name, a
 		result = c.toolGetCpmBudgets(ctx, orgID, args)
 	case "get_offer_winners":
 		result = c.toolGetOfferWinners(ctx, orgID, args)
+	case "queue_scheduler_command":
+		result, action = c.toolQueueSchedulerCommand(ctx, orgID, args)
+	case "get_scheduler_command":
+		result = c.toolGetSchedulerCommand(ctx, orgID, args)
+	case "list_scheduler_commands":
+		result = c.toolListSchedulerCommands(ctx, orgID, args)
+	case "get_board_state":
+		result = c.toolGetBoardState(ctx, orgID, args)
 	case "clone_campaign":
 		result, action = c.toolCloneCampaign(ctx, orgID, args)
 	case "deploy_campaign":

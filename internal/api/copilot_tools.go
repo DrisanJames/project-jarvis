@@ -186,6 +186,65 @@ func getCopilotTools() []copilotToolDef {
 			},
 		},
 
+		// ── Scheduler Bridge (local runner via mailing_scheduler_commands) ──
+
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
+				Name:        "queue_scheduler_command",
+				Description: "Queue a scheduling command for the operator's LOCAL scheduler runner (the platform cannot run the Python pipeline itself). Allowed commands EXACTLY: build-send-day, fresh-bcast, promote, intake-forecast, write-directive. args is a JSON object passed through verbatim to the runner. Commands take ~1-15 minutes; poll get_scheduler_command with the returned id before summarizing results. NEVER queue promote without explicit operator approval in this chat.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"command"},
+					"properties": map[string]interface{}{
+						"command": prop("string", "One of: build-send-day, fresh-bcast, promote, intake-forecast, write-directive."),
+						"args":    propObject("Command arguments passed through verbatim, e.g. {date, table} for write-directive or {date, base, confirm} for build-send-day."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
+				Name:        "get_scheduler_command",
+				Description: "Get one queued/running/completed scheduler-bridge command by id (full UUID or prefix): status, output_tail (last lines of runner output), exit_code, timestamps. Poll this after queueing — report the output_tail VERBATIM to the operator.",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"id"},
+					"properties": map[string]interface{}{
+						"id": prop("string", "Command UUID (full or prefix)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
+				Name:        "list_scheduler_commands",
+				Description: "List recent scheduler-bridge commands (newest first) with status, output_tail, and timestamps.",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"limit": prop("integer", "Max commands to return (default 10, max 50)."),
+					},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: copilotToolFuncDef{
+				Name:        "get_board_state",
+				Description: "Read-only board snapshot for a send date: campaigns named '<montok><dd> - %' (e.g. 'jul29 - …') grouped by sending domain, with name, status, total_recipients, and whether offer_id is set (has_offer=false means offer suppression never fires).",
+				Parameters: map[string]interface{}{
+					"type":     "object",
+					"required": []string{"date"},
+					"properties": map[string]interface{}{
+						"date": prop("string", "Send date as YYYY-MM-DD (or a board token like jul29)."),
+					},
+				},
+			},
+		},
+
 		// ── Write Tools (require confirmation) ──────────────────────────
 
 		{

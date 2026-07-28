@@ -2374,6 +2374,24 @@ func runStartupMigrations(db *sql.DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
+		// Scheduler command bridge — the Copilot (copilot_bridge_tools.go)
+		// enqueues whitelisted scheduling commands here (status='queued');
+		// the operator's LOCAL runner polls, executes the Python pipeline,
+		// and writes status/output_tail/exit_code back. New table, no deps,
+		// fast — placed near the top so the boot budget can't skip it.
+		{"create_scheduler_commands", `CREATE TABLE IF NOT EXISTS mailing_scheduler_commands (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			command         TEXT NOT NULL,
+			args            JSONB NOT NULL DEFAULT '{}',
+			status          TEXT NOT NULL DEFAULT 'queued',
+			requested_by    TEXT NOT NULL DEFAULT '',
+			output_tail     TEXT NOT NULL DEFAULT '',
+			exit_code       INTEGER,
+			created_at      TIMESTAMPTZ DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ DEFAULT NOW()
+		)`},
+		{"idx_scheduler_commands_org_created", `CREATE INDEX IF NOT EXISTS idx_scheduler_commands_org_created ON mailing_scheduler_commands (organization_id, created_at DESC)`},
 		// External-job heartbeat metrics (Platform Coalition WS2, REQ-C18/AS-4.2).
 		// Scaffold-compliant Python jobs (worker_name prefix 'job:') upsert their
 		// per-cycle metrics dict here alongside the same heartbeat columns the Go
