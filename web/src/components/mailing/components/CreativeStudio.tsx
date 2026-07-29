@@ -100,6 +100,11 @@ interface SendProofResponse {
   // that was minted into the proof. Preferred over gateway_url for display — it's
   // the actual link the operator clicks to inspect the redirect.
   tracking_url?: string;
+  // Zero-width Subject decision (subject_zw_encode). "true" when the invisible
+  // payload was woven in; otherwise zw_skip_reason names the gate that stopped
+  // it (e.g. recipient_not_yahoo, domain_disabled, kill_switch).
+  zw_encoded?: string;
+  zw_skip_reason?: string;
 }
 
 // Minimal shape of an active Smart Link Gateway row (see SmartLinkManager.tsx /
@@ -300,6 +305,11 @@ export const CreativeStudio: React.FC = () => {
   const [smartLinks, setSmartLinks] = useState<ActiveSmartLink[]>([]);
   const [routeViaGateway, setRouteViaGateway] = useState(false);
   const [gatewaySlug, setGatewaySlug] = useState('');
+  // Zero-width Subject test (Yahoo-only): an optional secret woven invisibly
+  // into the Subject for a proof sent to a YAHOO address. Lets the operator
+  // verify the mechanism end-to-end without a per-domain DB write. Blank = use
+  // the sending domain's stored config (off unless enabled).
+  const [zwSecret, setZwSecret] = useState('');
   const [lastGatewayProof, setLastGatewayProof] = useState<{ url: string; slug: string; risk: 'low' | 'high' } | null>(null);
   // Per-creative in-flight state, keyed "<id>:<action>".
   const [inFlight, setInFlight] = useState<Record<string, boolean>>({});
@@ -636,6 +646,12 @@ export const CreativeStudio: React.FC = () => {
         body.route_via_gateway = true;
         body.gateway_slug = gatewaySlug;
       }
+      // Zero-width Subject test override (Yahoo-only) — sent only when the
+      // operator supplies a secret; the server still enforces the Yahoo gate.
+      const zw = zwSecret.trim();
+      if (zw) {
+        body.zw_secret = zw;
+      }
       const res = await apiFetch(`/api/mailing/creatives/${c.id}/send-proof`, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -657,7 +673,11 @@ export const CreativeStudio: React.FC = () => {
         setLastGatewayProof(null);
       }
       const gwNote = proofUrl ? ` · offers → ${proofUrl} (risk:${json.risk_profile ?? '?'})` : '';
-      const msg = `${json.message_id ? `message ${json.message_id}` : ''}${gwNote}`.trim();
+      // Surface the zero-width Subject decision so a test send is self-explaining.
+      const zwNote = json.zw_encoded === 'true'
+        ? ' · 🕵️ zero-width Subject payload embedded'
+        : (zwSecret.trim() ? ` · zero-width skipped (${json.zw_skip_reason || 'not applied'})` : '');
+      const msg = `${json.message_id ? `message ${json.message_id}` : ''}${gwNote}${zwNote}`.trim();
       addToast({ type: 'success', title: `Proof sent → ${to}`, message: msg || undefined });
     } catch (err) {
       setLastGatewayProof(null);
@@ -665,7 +685,7 @@ export const CreativeStudio: React.FC = () => {
     } finally {
       setFlight(c.id, 'proof', false);
     }
-  }, [isInFlight, setFlight, proofEmail, proofTransport, addToast, routeViaGateway, gatewaySlug]);
+  }, [isInFlight, setFlight, proofEmail, proofTransport, addToast, routeViaGateway, gatewaySlug, zwSecret]);
 
   const approveCreative = useCallback(async (c: CreativeMeta) => {
     if (isInFlight(c.id, 'approve')) return;
@@ -997,6 +1017,13 @@ export const CreativeStudio: React.FC = () => {
                       <option value="pmta">PMTA</option>
                       <option value="ses">SES</option>
                     </select>
+                    <input
+                      value={zwSecret}
+                      onChange={(e) => setZwSecret(e.target.value)}
+                      placeholder="ZW secret (Yahoo)"
+                      title="Zero-width Subject test (Yahoo-only): a secret woven invisibly into the Subject. Send the proof to a YAHOO address to see it applied; other ISPs are skipped. Blank = use the domain's stored config."
+                      style={{ ...inputStyle, width: 140, padding: '5px 8px' }}
+                    />
                   </span>
                 </div>
                 {/* Smart Link Gateway proof-routing — TEST affordance. When checked,

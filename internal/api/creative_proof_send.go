@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -49,6 +50,13 @@ type creativeProofRequest struct {
 	// and correspond to an active mailing_smart_links row for the resolved
 	// brand root.
 	GatewaySlug string `json:"gateway_slug"`
+	// ZWSecret optionally supplies the zero-width Subject payload for THIS test
+	// send directly (parameterizing encode_secret), bypassing the per-domain
+	// mailing_sending_profiles config so the operator can verify the mechanism
+	// without a live DB write. It is still gated Yahoo-only + the global kill
+	// switch: the payload is only woven in when the recipient classifies to the
+	// yahoo ISP group. Empty → fall back to the domain's stored config.
+	ZWSecret string `json:"zw_secret"`
 }
 
 // proofTransportPMTA / proofTransportSES are the two sending routes a proof
@@ -201,18 +209,25 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 		gw = &proofGateway{BrandRoot: brandRoot, Slug: slug, Hash: sl.Hash}
 	}
 
-	messageID, trackingURL, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain, transport,
+	messageID, trackingURL, zwRes, sendErr := h.sendProofMessage(ctx, orgID.String(), sendingDomain, transport,
 		"[PROOF] "+subject, "", preheader, htmlContent, to, creativeID,
-		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID}, gw)
+		map[string]string{"X-Proof-Send": "true", "X-Creative-ID": creativeID}, gw, req.ZWSecret)
 	if sendErr != nil {
 		log.Printf("[creative-proof] %s send error creative=%s domain=%s: %v", transport, creativeID, sendingDomain, sendErr)
 		respondJSON(w, http.StatusOK, map[string]string{"status": "error", "error": sendErr.Error()})
 		return
 	}
-	log.Printf("[creative-proof] sent creative=%s to=%s via %s messageID=%s domain=%s isp=%s",
-		creativeID, to, transport, messageID, sendingDomain, worker.ClassifySubscriberISP(to))
+	log.Printf("[creative-proof] sent creative=%s to=%s via %s messageID=%s domain=%s isp=%s zw_encoded=%t zw_reason=%s",
+		creativeID, to, transport, messageID, sendingDomain, worker.ClassifySubscriberISP(to), zwRes.Applied, zwRes.Reason)
 
 	resp := map[string]string{"status": "sent", "message_id": messageID, "transport": transport}
+	// Report the zero-width Subject decision so a test send is self-explaining:
+	// zw_encoded=true means the invisible payload was woven in; otherwise
+	// zw_skip_reason names the gate that stopped it (e.g. recipient_not_yahoo).
+	resp["zw_encoded"] = strconv.FormatBool(zwRes.Applied)
+	if !zwRes.Applied {
+		resp["zw_skip_reason"] = zwRes.Reason
+	}
 	if gw != nil {
 		// tracking_url is the exact /o/ URL minted into the proof HTML so the
 		// operator (and the UI) can see and click precisely what was sent.
@@ -234,10 +249,10 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 // It also returns the tracking-layer /o/ offer URL that was minted into the
 // HTML when gw != nil (empty otherwise), so the caller can surface the exact
 // clickable link in the response.
-func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, transport, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string, gw *proofGateway) (string, string, error) {
+func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingDomain, transport, subject, fromName, preheader, htmlContent, to, refID string, extraHeaders map[string]string, gw *proofGateway, zwSecret string) (string, string, worker.SubjectZWResult, error) {
 	pp, err := h.resolveProofProfile(ctx, sendingDomain, transport)
 	if err != nil {
-		return "", "", err
+		return "", "", worker.SubjectZWResult{Subject: subject}, err
 	}
 	profileID, fromEmail, trackBase := pp.ID, pp.FromEmail, pp.TrackBase
 
@@ -260,6 +275,14 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		log.Printf("[proof-send] Liquid render error (subject): %v", rerr)
 		renderedSubject = subject
 	}
+	// Zero-width Subject steganography — mirror the production send worker
+	// (send_worker.go processItem): apply the invisible payload AFTER Liquid
+	// render, gated Yahoo-only + the global kill switch. The secret comes from
+	// the per-domain mailing_sending_profiles config, or the inline zwSecret
+	// test override when supplied. No-op (subject unchanged) for every other
+	// case; zwRes records the decision for the response.
+	zwRes := worker.ApplySubjectZW(ctx, h.db, renderedSubject, recipientISP, profileID, zwSecret)
+	renderedSubject = zwRes.Subject
 	renderedHTML, rerr := ts.Render("", htmlContent, rc)
 	if rerr != nil {
 		log.Printf("[proof-send] Liquid render error (html): %v", rerr)
@@ -343,12 +366,12 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 
 	result, sendErr := h.sender.Send(ctx, msg)
 	if sendErr != nil {
-		return "", "", sendErr
+		return "", "", zwRes, sendErr
 	}
 	if result != nil {
-		return result.MessageID, trackingURL, nil
+		return result.MessageID, trackingURL, zwRes, nil
 	}
-	return "", trackingURL, nil
+	return "", trackingURL, zwRes, nil
 }
 
 // resolveProofProfile looks up the active sending profile a proof should route

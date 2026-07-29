@@ -193,3 +193,66 @@ func TestMaybeEncodeSubject_KillSwitch(t *testing.T) {
 		t.Errorf("unexpected DB query when kill switch on: %v", err)
 	}
 }
+
+// --- ApplySubjectZW: the proof / test-send entry point (package api uses it).
+
+// TestApplySubjectZW_OverrideSecret: an inline override secret encodes for a
+// yahoo recipient WITHOUT any DB lookup (nil db) — the test-send path that lets
+// the operator verify the mechanism before enabling a domain.
+func TestApplySubjectZW_OverrideSecret(t *testing.T) {
+	res := ApplySubjectZW(context.Background(), nil, "Hello", subjectZWGroup, "any-profile", "test=1")
+	if !res.Applied {
+		t.Fatalf("override not applied: reason=%s", res.Reason)
+	}
+	if decodeSubjectSecretForTest(res.Subject) != "test=1" {
+		t.Errorf("payload = %q, want test=1", decodeSubjectSecretForTest(res.Subject))
+	}
+}
+
+// TestApplySubjectZW_OverrideStillYahooOnly: even with an override secret, a
+// non-yahoo recipient is skipped — the Yahoo-only invariant holds in test mode.
+func TestApplySubjectZW_OverrideStillYahooOnly(t *testing.T) {
+	res := ApplySubjectZW(context.Background(), nil, "Hello", "gmail", "any-profile", "test=1")
+	if res.Applied {
+		t.Fatalf("override bypassed the Yahoo-only gate")
+	}
+	if res.Reason != "recipient_not_yahoo" {
+		t.Errorf("reason = %q, want recipient_not_yahoo", res.Reason)
+	}
+	if res.Subject != "Hello" {
+		t.Errorf("subject mutated: %q", res.Subject)
+	}
+}
+
+// TestApplySubjectZW_FallbackToDBConfig: no override → the per-domain DB config
+// is read; a disabled profile is skipped with reason domain_disabled.
+func TestApplySubjectZW_FallbackToDBConfig(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+	pid := "some-profile"
+	mock.ExpectQuery("SELECT COALESCE\\(subject_zw_encode, FALSE\\), COALESCE\\(subject_zw_secret, ''\\)").
+		WithArgs(pid).
+		WillReturnRows(sqlmock.NewRows([]string{"subject_zw_encode", "subject_zw_secret"}).
+			AddRow(false, ""))
+
+	res := ApplySubjectZW(context.Background(), db, "Hello", subjectZWGroup, pid, "")
+	if res.Applied || res.Reason != "domain_disabled" {
+		t.Errorf("got applied=%v reason=%q, want applied=false reason=domain_disabled", res.Applied, res.Reason)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// TestApplySubjectZW_KillSwitch: global kill switch skips before any DB lookup
+// even with an override secret.
+func TestApplySubjectZW_KillSwitch(t *testing.T) {
+	t.Setenv("DISABLE_SUBJECT_ZW_ENCODE", "true")
+	res := ApplySubjectZW(context.Background(), nil, "Hello", subjectZWGroup, "p", "test=1")
+	if res.Applied || res.Reason != "kill_switch" {
+		t.Errorf("got applied=%v reason=%q, want applied=false reason=kill_switch", res.Applied, res.Reason)
+	}
+}

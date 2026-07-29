@@ -89,9 +89,25 @@ func (p *SendWorkerPool) resolveSubjectZW(ctx context.Context, profileID string)
 	}
 	p.szwMu.RUnlock()
 
+	enabled, secret := querySubjectZW(ctx, p.db, profileID)
+	cfg := subjectZWConfig{Enabled: enabled, Secret: secret}
+	if cfg.Enabled {
+		log.Printf("resolveSubjectZW: profile=%s subject_zw_encode=true", profileID)
+	}
+	return p.cacheSubjectZW(profileID, cfg)
+}
+
+// querySubjectZW reads the per-profile zero-width subject config directly (no
+// cache). A nil db, empty profile id, missing row, missing column
+// (pre-migration), or any error yields (false, "") — disabled by default, so a
+// live send is never blocked by this feature being unconfigured.
+func querySubjectZW(ctx context.Context, db *sql.DB, profileID string) (bool, string) {
+	if db == nil || profileID == "" {
+		return false, ""
+	}
 	var enabled sql.NullBool
 	var secret sql.NullString
-	err := p.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT COALESCE(subject_zw_encode, FALSE), COALESCE(subject_zw_secret, '')
 		   FROM mailing_sending_profiles WHERE id = $1`,
 		profileID).Scan(&enabled, &secret)
@@ -102,15 +118,53 @@ func (p *SendWorkerPool) resolveSubjectZW(ctx context.Context, profileID string)
 		if !strings.Contains(err.Error(), "subject_zw_encode") &&
 			!strings.Contains(err.Error(), "subject_zw_secret") &&
 			err != sql.ErrNoRows {
-			log.Printf("resolveSubjectZW: profile=%s db error: %v", profileID, err)
+			log.Printf("querySubjectZW: profile=%s db error: %v", profileID, err)
 		}
-		return p.cacheSubjectZW(profileID, subjectZWConfig{})
+		return false, ""
 	}
-	cfg := subjectZWConfig{Enabled: enabled.Bool, Secret: secret.String}
-	if cfg.Enabled {
-		log.Printf("resolveSubjectZW: profile=%s subject_zw_encode=true", profileID)
+	return enabled.Bool, secret.String
+}
+
+// SubjectZWResult reports what the zero-width subject gate decided for one
+// message so a caller (e.g. the proof/test-send path) can surface it.
+type SubjectZWResult struct {
+	Subject string // the (possibly) encoded subject
+	Applied bool   // true when the invisible payload was woven in
+	// Reason, when !Applied, names the gate that stopped it:
+	// empty_subject | kill_switch | recipient_not_yahoo | domain_disabled | no_secret
+	Reason string
+}
+
+// ApplySubjectZW applies the zero-width subject encoding for a SINGLE message
+// under the SAME three gates as the send worker (global kill switch off,
+// recipient Yahoo, a non-empty secret). It is the entry point for send paths
+// that do NOT run through SendWorkerPool — notably the proof/test-send path in
+// package api. When overrideSecret is non-empty it is used directly (a test
+// send parameterizing the input) and the per-domain DB flag is bypassed;
+// otherwise the per-profile mailing_sending_profiles config is read via db.
+// recipientISP must be the classified ISP group of the DESTINATION address.
+func ApplySubjectZW(ctx context.Context, db *sql.DB, subject, recipientISP, profileID, overrideSecret string) SubjectZWResult {
+	if subject == "" {
+		return SubjectZWResult{Subject: subject, Reason: "empty_subject"}
 	}
-	return p.cacheSubjectZW(profileID, cfg)
+	if subjectZWDisabled() {
+		return SubjectZWResult{Subject: subject, Reason: "kill_switch"}
+	}
+	if recipientISP != subjectZWGroup {
+		return SubjectZWResult{Subject: subject, Reason: "recipient_not_yahoo"}
+	}
+	secret := strings.TrimSpace(overrideSecret)
+	if secret == "" {
+		enabled, dbSecret := querySubjectZW(ctx, db, profileID)
+		if !enabled {
+			return SubjectZWResult{Subject: subject, Reason: "domain_disabled"}
+		}
+		secret = dbSecret
+	}
+	if secret == "" {
+		return SubjectZWResult{Subject: subject, Reason: "no_secret"}
+	}
+	return SubjectZWResult{Subject: encodeSubjectSecret(subject, secret), Applied: true}
 }
 
 // cacheSubjectZW stores cfg under profileID and returns it. The map is lazily
