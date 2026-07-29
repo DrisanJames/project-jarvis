@@ -615,6 +615,12 @@ type sendProofReq struct {
 	// (the brand's live SES tenant profile) so proofs can measure cold-inbox
 	// placement on either route. See normalizeProofTransport.
 	Transport string `json:"transport"`
+	// ZWSecret optionally supplies the zero-width Subject payload for THIS test
+	// send (parameterizing encode_secret), bypassing the per-domain
+	// mailing_sending_profiles config so the mechanism can be verified without a
+	// live DB write. Still gated Yahoo-only + the global kill switch: only
+	// recipients that classify to the yahoo ISP group get the payload.
+	ZWSecret string `json:"zw_secret"`
 }
 
 type proofSendResult struct {
@@ -623,6 +629,11 @@ type proofSendResult struct {
 	Status    string `json:"status"`
 	MessageID string `json:"message_id,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// ZWEncoded is true when the zero-width Subject payload was woven in for this
+	// recipient; ZWReason names the gate that skipped it otherwise (e.g.
+	// recipient_not_yahoo) — only set when a zw_secret was requested.
+	ZWEncoded bool   `json:"zw_encoded,omitempty"`
+	ZWReason  string `json:"zw_reason,omitempty"`
 }
 
 func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) {
@@ -720,8 +731,9 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	zwSecret := strings.TrimSpace(req.ZWSecret)
 	results := make([]proofSendResult, 0, len(recipients))
-	sent, failed := 0, 0
+	sent, failed, zwEncoded := 0, 0, 0
 	for _, rc := range recipients {
 		res := proofSendResult{Email: rc.email, Name: rc.name}
 		if !looksLikeEmail(rc.email) {
@@ -731,9 +743,17 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 			results = append(results, res)
 			continue
 		}
-		msgID, _, _, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain, transport,
+		msgID, _, zwRes, sendErr := s.proofSender.sendProofMessage(r.Context(), orgID.String(), req.SendingDomain, transport,
 			subject, strings.TrimSpace(req.FromName), strings.TrimSpace(req.Preheader), htmlForSend, rc.email, id,
-			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id}, nil, "")
+			map[string]string{"X-Proof-Send": "true", "X-Offer-Proof-ID": id}, nil, zwSecret)
+		if zwSecret != "" {
+			res.ZWEncoded = zwRes.Applied
+			if zwRes.Applied {
+				zwEncoded++
+			} else {
+				res.ZWReason = zwRes.Reason
+			}
+		}
 		if sendErr != nil {
 			res.Status = "error"
 			res.Error = sendErr.Error()
@@ -755,6 +775,7 @@ func (s *OfferProofsService) HandleSend(w http.ResponseWriter, r *http.Request) 
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"results": results, "sent": sent, "failed": failed, "transport": transport,
+		"zw_requested": zwSecret != "", "zw_encoded": zwEncoded,
 	})
 }
 

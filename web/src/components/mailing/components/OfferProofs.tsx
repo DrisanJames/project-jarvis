@@ -123,6 +123,11 @@ export const OfferProofs: React.FC = () => {
     () => (localStorage.getItem('proof_transport') === 'ses' ? 'ses' : 'pmta'));
   const [sendSubject, setSendSubject] = useState('');
   const [sendFromName, setSendFromName] = useState('');
+  // Zero-width Subject test (Yahoo-only): an optional secret woven invisibly
+  // into the Subject for recipients on a YAHOO address. Lets the operator verify
+  // the mechanism from the proof screen without a per-domain DB write. Blank =
+  // use the sending domain's stored config (off unless enabled).
+  const [sendZwSecret, setSendZwSecret] = useState('');
   const [sendRcpts, setSendRcpts] = useState<Record<string, boolean>>({});
 
   const fetchProofs = useCallback(async () => {
@@ -250,19 +255,25 @@ export const OfferProofs: React.FC = () => {
           recipient_ids: ids, sending_domain: sendDomain,
           subject: sendSubject, from_name: sendFromName,
           transport: sendTransport,
+          ...(sendZwSecret.trim() ? { zw_secret: sendZwSecret.trim() } : {}),
         }),
       });
       const json = await res.json();
       if (!res.ok) { addToast({ type: 'error', title: 'Send failed', message: json.error }); return; }
+      // When a zero-width secret was requested, report how many Yahoo recipients
+      // actually got the payload (non-Yahoo recipients are skipped by design).
+      const zwNote = json.zw_requested
+        ? ` · 🕵️ zero-width embedded for ${json.zw_encoded}/${json.sent} (Yahoo only)`
+        : '';
       addToast({
         type: json.failed > 0 ? 'warning' : 'success',
         title: `Proof sent — ${json.sent} ok, ${json.failed} failed`,
-        message: `via ${sendTransport === 'ses' ? 'SES tenant route' : 'PMTA dedicated IPs'}`,
+        message: `via ${sendTransport === 'ses' ? 'SES tenant route' : 'PMTA dedicated IPs'}${zwNote}`,
       });
     } catch (e) {
       addToast({ type: 'error', title: 'Send failed', message: e instanceof Error ? e.message : String(e) });
     } finally { setBusy(false); }
-  }, [selected, sendRcpts, sendDomain, sendSubject, sendFromName, sendTransport, addToast]);
+  }, [selected, sendRcpts, sendDomain, sendSubject, sendFromName, sendTransport, sendZwSecret, addToast]);
 
   // ── variants / from-names editing (saved on approve or via PATCH) ──────────
   const updateSelected = useCallback((patch: Partial<OfferProof>) => {
@@ -571,6 +582,11 @@ export const OfferProofs: React.FC = () => {
                 <div style={{ flex: '1 1 160px' }}>
                   <label style={label}>From name</label>
                   <input style={input} value={sendFromName} onChange={(e) => setSendFromName(e.target.value)} placeholder="optional" />
+                </div>
+                <div style={{ flex: '1 1 180px' }}
+                  title="Zero-width Subject test (Yahoo-only): a secret woven invisibly into the Subject. Add a recipient on a YAHOO address to see it applied; other ISPs are skipped. Blank = use the sending domain's stored config.">
+                  <label style={label}>Zero-width secret (Yahoo)</label>
+                  <input style={input} value={sendZwSecret} onChange={(e) => setSendZwSecret(e.target.value)} placeholder="e.g. dom=qf;test=1 — optional" />
                 </div>
               </div>
               <label style={label}>Recipients</label>
