@@ -618,9 +618,14 @@ func (s *PMTASender) updateIPCounters(ipID string) {
 		log.Printf("[PMTA] Failed to update IP counters for %s: %v", ipID, err)
 	}
 
+	// See esp_pmta_api.go updateIPCounters for the full defect note: the old
+	// VALUES form omitted the NOT NULL planned_volume/warmup_day, so this
+	// statement errored 23502 on every send and both warm-up brakes were inert.
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, actual_sent)
-		VALUES (gen_random_uuid(), $1, CURRENT_DATE, 1)
+		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, planned_volume, warmup_day, actual_sent)
+		SELECT gen_random_uuid(), ip.id, CURRENT_DATE,
+		       COALESCE(ip.warmup_daily_limit, 0), COALESCE(ip.warmup_day, 0), 1
+		FROM mailing_ip_addresses ip WHERE ip.id = $1
 		ON CONFLICT (ip_id, date) DO UPDATE SET actual_sent = mailing_ip_warmup_log.actual_sent + 1
 	`, ipID)
 	if err != nil {

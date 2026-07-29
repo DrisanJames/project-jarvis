@@ -2379,6 +2379,15 @@ func runStartupMigrations(db *sql.DB) {
 		// the operator's LOCAL runner polls, executes the Python pipeline,
 		// and writes status/output_tail/exit_code back. New table, no deps,
 		// fast — placed near the top so the boot budget can't skip it.
+		// Belt-and-braces for the 2026-07-29 warm-up counter defect: these two
+		// columns are NOT NULL with no default, which made every
+		// INSERT ... ON CONFLICT on mailing_ip_warmup_log fail 23502 (NOT NULL
+		// is evaluated before the conflict arbiter) and left actual_sent at 0
+		// for four months — disabling the warm-up auto-pause and the per-IP
+		// daily cap. The writers now supply both columns; these defaults make
+		// the trap unreachable for any future writer.
+		{"warmup_log_planned_volume_default", `ALTER TABLE mailing_ip_warmup_log ALTER COLUMN planned_volume SET DEFAULT 0`},
+		{"warmup_log_warmup_day_default", `ALTER TABLE mailing_ip_warmup_log ALTER COLUMN warmup_day SET DEFAULT 0`},
 		{"create_scheduler_commands", `CREATE TABLE IF NOT EXISTS mailing_scheduler_commands (
 			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			organization_id UUID NOT NULL,

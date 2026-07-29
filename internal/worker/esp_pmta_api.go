@@ -264,12 +264,27 @@ func (s *PMTAAPISender) updateIPCounters(ipID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	s.db.ExecContext(ctx, `UPDATE mailing_ip_addresses SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW() WHERE id = $1`, ipID)
-	s.db.ExecContext(ctx, `
-		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, actual_sent)
-		VALUES (gen_random_uuid(), $1, CURRENT_DATE, 1)
+	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_ip_addresses SET total_sent = total_sent + 1, last_sent_at = NOW(), updated_at = NOW() WHERE id = $1`, ipID); err != nil {
+		log.Printf("[PMTA-API] IP counter update failed for %s: %v", ipID, err)
+	}
+	// planned_volume / warmup_day are NOT NULL with no default, and Postgres
+	// evaluates NOT NULL BEFORE the ON CONFLICT arbiter — so the old
+	// VALUES(id, ip_id, date, actual_sent) form errored 23502 on EVERY send and
+	// the DO UPDATE never ran (actual_sent sat at 0 across 12,354 rows from
+	// 2026-03-18 to 2026-07-29). That silently disabled BOTH warm-up brakes:
+	// WarmupScheduler's 3%-bounce/0.1%-complaint auto-pause gates on
+	// actual_sent > 10, and vmtaPool.next()'s per-IP daily cap reads TodaySent.
+	// Sourcing the two columns from the IP row keeps the log meaningful, and
+	// the error is now surfaced instead of discarded.
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO mailing_ip_warmup_log (id, ip_id, date, planned_volume, warmup_day, actual_sent)
+		SELECT gen_random_uuid(), ip.id, CURRENT_DATE,
+		       COALESCE(ip.warmup_daily_limit, 0), COALESCE(ip.warmup_day, 0), 1
+		FROM mailing_ip_addresses ip WHERE ip.id = $1
 		ON CONFLICT (ip_id, date) DO UPDATE SET actual_sent = mailing_ip_warmup_log.actual_sent + 1
-	`, ipID)
+	`, ipID); err != nil {
+		log.Printf("[PMTA-API] warmup log increment failed for %s: %v", ipID, err)
+	}
 }
 
 func quotedprintableEncode(s string) string {
