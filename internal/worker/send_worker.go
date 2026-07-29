@@ -136,6 +136,11 @@ type SendWorkerPool struct {
 	profileSESCache map[string]profileSESInfo
 	psesMu          sync.RWMutex
 
+	// Per-profile zero-width Subject-encoding cache (subject_zw_encode.go).
+	// Keyed by profileID; populated lazily on first send for a profile.
+	subjectZWCache map[string]subjectZWConfig
+	szwMu          sync.RWMutex
+
 	// ISP rate limiter (injected from engine.ISPRateRegistry via interface to avoid import cycle)
 	rateRegistry         ISPRateLimiter
 	perIPEnabled         bool
@@ -428,6 +433,7 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 	p.profileTrackingDomainCache = make(map[string]string)
 	p.profileImageHostCache = make(map[string]string)
 	p.profileSESCache = make(map[string]profileSESInfo)
+	p.subjectZWCache = make(map[string]subjectZWConfig)
 }
 
 // profileSESInfo holds the per-profile SES tenant-aware routing facts.
@@ -1995,6 +2001,14 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	headers["Feedback-ID"] = fmt.Sprintf("%s:%s:%s:%s",
 		item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(), feedbackDomain)
 
+	// Zero-width Subject steganography (subject_zw_encode.go): Yahoo-only,
+	// per-sending-domain-gated, OFF by default. When enabled for this profile
+	// and the recipient is Yahoo, the visible subject is unchanged but carries
+	// an invisible per-domain secret payload. No-op for every other lane. Kill
+	// switch: DISABLE_SUBJECT_ZW_ENCODE=true.
+	recipientISP := ClassifySubscriberISP(item.Email)
+	subject = p.maybeEncodeSubject(ctx, subject, recipientISP, item.ProfileID)
+
 	msg := &EmailMessage{
 		ID:           item.ID.String(),
 		CampaignID:   item.CampaignID.String(),
@@ -2009,7 +2023,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		PreviewText:  previewText,
 		ProfileID:    item.ProfileID,
 		ESPType:      item.ESPType,
-		RecipientISP: ClassifySubscriberISP(item.Email),
+		RecipientISP: recipientISP,
 		AssignedVMTA: item.AssignedVMTA,
 		Headers:      headers,
 	}

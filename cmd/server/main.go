@@ -3396,6 +3396,16 @@ func runStartupMigrations(db *sql.DB) {
 			SET raw_creative = TRUE
 			WHERE sending_domain = 'm.wcl-heloc.com' AND COALESCE(raw_creative, FALSE) = FALSE`},
 
+		// Zero-width Subject steganography (subject_zw_encode.go). Per-profile,
+		// Yahoo-only, OFF by default. subject_zw_encode gates the mechanism for a
+		// sending domain; subject_zw_secret is the parameterized payload woven
+		// invisibly into the Subject for Yahoo recipients. Metadata-only ADDs
+		// (constant default) — well within the 5s startup-migration budget. The
+		// send worker's resolver tolerates these columns being absent, so there
+		// is no schema-before-binary hazard.
+		{"add_subject_zw_encode_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS subject_zw_encode BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"add_subject_zw_secret_col", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS subject_zw_secret TEXT NOT NULL DEFAULT ''`},
+
 		// Re-push = FRESH signal (operator 2026-07-26). A partner feed re-pushes
 		// a record when that email goes ACTIVE in the partner network — the
 		// single most valuable thing the feed tells us. The slicer's
