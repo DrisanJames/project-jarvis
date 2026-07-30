@@ -973,6 +973,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentationHealthSvc := NewSegmentationHealthService(db)
 			segmentationHealthSvc.RegisterRoutes(r)
 
+			// === GROWTH (Reporting → Growth: the daily growth series) ===
+			// Reads mailing_growth_daily (worker.GrowthRollupWorker) — one
+			// row per Denver day for a (sending domain × ISP) slice, with
+			// day-over-day deltas. GET /api/mailing/growth/daily|filters.
+			growthSvc := NewGrowthService(db)
+			growthSvc.RegisterRoutes(r)
+
 			// === EO CLEANING SERVICE (operator ask 2026-07-26) ===
 			// Ad-hoc EmailOversight cleaning jobs — upload / segment / list
 			// sources; already-Verified emails skipped at enqueue (never pay

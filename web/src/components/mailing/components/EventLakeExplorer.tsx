@@ -66,7 +66,7 @@ import {
   faSpinner, faSyncAlt, faExclamationTriangle, faDatabase,
   faCircle, faSearch, faMoon, faInfoCircle, faTable, faLayerGroup,
   faChartLine, faChevronDown, faChevronRight,
-  faCheckCircle, faTimesCircle, faBullseye, faHistory, faCrosshairs,
+  faCheckCircle, faTimesCircle, faBullseye, faHistory, faCrosshairs, faSeedling,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
@@ -87,13 +87,18 @@ import {
 } from '../shared/filters';
 import type { Transport, LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
 import OfferAlignmentTab from '../offeralignment/OfferAlignmentTab';
+// 2.4 (2026-07-29): Growth tab — the daily growth series that replaces the
+// hand-kept spreadsheet (components/mailing/growth/GrowthTab). PG-backed
+// (mailing_growth_daily), so like Offer Alignment it is NOT gated on the
+// lake read layer and owns its own FilterBar.
+import GrowthTab from '../growth/GrowthTab';
 
 // 2.3 (2026-07-07): the Creatives tab is replaced by Offer Alignment
 // (components/mailing/offeralignment/OfferAlignmentTab) — the offer × ISP
 // decision matrix + offer profile + SMTP-evidence drill-down; tab id
 // 'creatives' → 'alignment'. Like its predecessor it is NOT gated on the lake
 // read layer and owns its own controls (rendered outside the FilterBar block).
-const PAGE_VERSION = '2.3';
+const PAGE_VERSION = '2.4';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES (match backend JSON keys exactly)
@@ -279,7 +284,7 @@ interface RecentCampaign {
   at: string; // ISO timestamp of last lookup
 }
 
-type TabId = 'overview' | 'dimensions' | 'campaign' | 'raw' | 'alignment';
+type TabId = 'overview' | 'dimensions' | 'growth' | 'campaign' | 'raw' | 'alignment';
 
 type SortDir = 'asc' | 'desc';
 interface SortState { col: string; dir: SortDir }
@@ -2829,6 +2834,7 @@ const RawEventsTab: React.FC<{
 const TABS: Array<{ id: TabId; label: string; icon: typeof faChartLine }> = [
   { id: 'overview', label: 'Overview', icon: faChartLine },
   { id: 'dimensions', label: 'Dimensions', icon: faLayerGroup },
+  { id: 'growth', label: 'Growth', icon: faSeedling },
   { id: 'campaign', label: 'Campaign Lookup', icon: faBullseye },
   { id: 'raw', label: 'Raw Events', icon: faTable },
   { id: 'alignment', label: 'Offer Alignment', icon: faCrosshairs },
@@ -3027,6 +3033,13 @@ export const EventLakeExplorer: React.FC = () => {
             </div>
           )}
         </>
+      )}
+
+      {/* ─── Growth tab — PG rollup-backed, NOT gated on readEnabled ── */}
+      {status && visited.has('growth') && (
+        <div style={{ display: activeTab === 'growth' ? 'block' : 'none' }}>
+          <GrowthTab />
+        </div>
       )}
 
       {/* ─── Offer Alignment tab — PG/snapshot-backed, NOT gated on readEnabled ── */}

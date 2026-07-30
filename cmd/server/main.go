@@ -896,6 +896,19 @@ func main() {
 			go segmentPerfRollup.Start(ctx)
 			log.Printf("Segment perf rollup started (nightly 04:10 UTC, 35d gap-fill; kill: DISABLE_SEGMENT_PERF_ROLLUP)")
 
+			// Growth rollup — the daily (Denver day × sending domain × ISP)
+			// fact table behind GET /api/mailing/growth/daily (Reporting →
+			// Growth). Delivery half from the Athena lake, engagement half
+			// from mailing_tracking_events; neither is servable live over a
+			// multi-month range. Every 2h: always recompute the trailing 3
+			// days (current day stays fresh), then gap-fill up to 2 older
+			// 7-day chunks back to the lake epoch 2026-04-06. No boot pass
+			// (send-path safety; GROWTH_ROLLUP_BOOT_PASS=true forces one).
+			// Kill: DISABLE_GROWTH_ROLLUP=true.
+			growthRollup := worker.NewGrowthRollupWorker(mailingDB, redisClient)
+			go growthRollup.Start(ctx)
+			log.Printf("Growth rollup started (every 2h, 3d trailing + chunked backfill to 2026-04-06; kill: DISABLE_GROWTH_ROLLUP)")
+
 			// Verified Humans ledger (docs/JAOS/core.md §14) — nightly ACCRETIVE
 			// maintainer of the per-brand "<brand> Verified Humans" segments (the
 			// indefinite human core of the engaged-first anchor). Ledgers every
@@ -2744,6 +2757,36 @@ func runStartupMigrations(db *sql.DB) {
 			PRIMARY KEY (segment_id, day)
 		)`},
 		{"idx_segment_perf_daily_day", `CREATE INDEX IF NOT EXISTS idx_segment_perf_daily_day ON mailing_segment_perf_daily (day)`},
+		// ── Daily growth fact table (Reporting → Growth) ──────────────────
+		// One row per (Denver day × sending-domain apex × ISP), written by
+		// GrowthRollupWorker (internal/worker/growth_rollup.go) and read by
+		// GET /api/mailing/growth/daily. Delivery columns come from the
+		// Athena lake, engagement columns from mailing_tracking_events —
+		// see the worker header for per-column semantics. RATES ARE NEVER
+		// STORED; the API derives them so a denominator change cannot leave
+		// stale percentages behind. sending_domain '' = unattributable lake
+		// volume (pre-2026-07-02 brand gap), surfaced as "(unattributed)".
+		// New table, no deps, fast.
+		{"create_growth_daily", `CREATE TABLE IF NOT EXISTS mailing_growth_daily (
+			day               DATE NOT NULL,
+			sending_domain    TEXT NOT NULL,
+			isp               TEXT NOT NULL,
+			delivered         BIGINT NOT NULL DEFAULT 0,
+			hard_bounce       BIGINT NOT NULL DEFAULT 0,
+			soft_bounce       BIGINT NOT NULL DEFAULT 0,
+			reputation_block  BIGINT NOT NULL DEFAULT 0,
+			complaints        BIGINT NOT NULL DEFAULT 0,
+			open_events       BIGINT NOT NULL DEFAULT 0,
+			open_subs         BIGINT NOT NULL DEFAULT 0,
+			click_events      BIGINT NOT NULL DEFAULT 0,
+			click_subs        BIGINT NOT NULL DEFAULT 0,
+			action_click_subs BIGINT NOT NULL DEFAULT 0,
+			unsubs            BIGINT NOT NULL DEFAULT 0,
+			computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (day, sending_domain, isp)
+		)`},
+		{"idx_growth_daily_day", `CREATE INDEX IF NOT EXISTS idx_growth_daily_day ON mailing_growth_daily (day)`},
+		{"idx_growth_daily_isp_day", `CREATE INDEX IF NOT EXISTS idx_growth_daily_isp_day ON mailing_growth_daily (isp, day)`},
 		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
 		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
 		// (internal/worker/partner_human_rollup.go) because the live
