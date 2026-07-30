@@ -8361,6 +8361,21 @@ END $$`},
 			ON mailing_journey_events(event_type, transid, step)`},
 		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
 			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
+		{"jul30_partner_drip_isp_caps", `CREATE TABLE IF NOT EXISTS partner_drip_isp_caps (
+			isp           TEXT PRIMARY KEY,
+			per_wave_cap  INTEGER NOT NULL CHECK (per_wave_cap >= 0),
+			active        BOOLEAN NOT NULL DEFAULT TRUE,
+			updated_by    TEXT NOT NULL DEFAULT '',
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Seed with the EXACT compiled PerISPCapPerWave values so the first boot
+		// after this change is behaviour-identical; the table is an overlay, not a
+		// replacement. Operator raises a cap by UPDATEing a row — no deploy.
+		{"jul30_partner_drip_isp_caps_seed", `INSERT INTO partner_drip_isp_caps (isp, per_wave_cap, updated_by)
+			VALUES ('gmail',0,'seed'),('yahoo',32,'seed'),('aol',60,'seed'),('microsoft',100000,'seed'),
+			       ('apple',100000,'seed'),('comcast',30,'seed'),('charter',30,'seed'),('att',100,'seed'),
+			       ('sbcglobal',40,'seed'),('cox',20,'seed'),('verizon',40,'seed'),('other',40,'seed')
+			ON CONFLICT (isp) DO NOTHING`},
 		{"jul27_journey_abandon_state", `CREATE TABLE IF NOT EXISTS mailing_journey_abandon_state (
 			session_id     VARCHAR(128) PRIMARY KEY,
 			transid        VARCHAR(128) NOT NULL,

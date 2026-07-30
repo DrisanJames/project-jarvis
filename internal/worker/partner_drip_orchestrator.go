@@ -262,7 +262,35 @@ var brandSendingDomain = map[string]string{
 // to the orchestrator means updating brandSendingDomain in this file
 // only — no cross-package map duplication.
 func BrandSendingDomain(brand string) (string, bool) {
-	d, ok := brandSendingDomain[brand]
+	return resolveBrandSendingDomain(brand)
+}
+
+// dynamicBrandDomain is the DB overlay on brandSendingDomain, refreshed once
+// per tick from mailing_brand_metadata (brand_code -> sending_domain). It lets
+// an operator add a NEW drip lane/brand with no deploy. Empty = static map only.
+var (
+	dynamicBrandDomainMu sync.RWMutex
+	dynamicBrandDomain   = map[string]string{}
+)
+
+// setDynamicBrandDomains swaps the overlay atomically. An empty/nil map clears
+// it, so a failed load falls back to the compiled map rather than breaking sends.
+func setDynamicBrandDomains(m map[string]string) {
+	dynamicBrandDomainMu.Lock()
+	dynamicBrandDomain = m
+	dynamicBrandDomainMu.Unlock()
+}
+
+// resolveBrandSendingDomain prefers the DB overlay, then the compiled map.
+func resolveBrandSendingDomain(brand string) (string, bool) {
+	b := strings.ToLower(strings.TrimSpace(brand))
+	dynamicBrandDomainMu.RLock()
+	d, ok := dynamicBrandDomain[b]
+	dynamicBrandDomainMu.RUnlock()
+	if ok && strings.TrimSpace(d) != "" {
+		return d, true
+	}
+	d, ok = brandSendingDomain[b]
 	return d, ok
 }
 
@@ -394,6 +422,13 @@ type PartnerDripOrchestrator struct {
 	// per tick by loadGovernors. Keyed by brand_code. Guarded by governorMu.
 	governorMu    sync.RWMutex
 	governorCache map[string]propertyGovernor
+
+	// ispCapCache holds partner_drip_isp_caps (isp -> per_wave_cap), refreshed
+	// once per tick by loadISPCaps. It OVERLAYS cfg.PerISPCapPerWave, so an ISP
+	// absent from the table keeps its compiled value and an unreadable table is
+	// a no-op rather than an outage. This is what makes a cap change deploy-free.
+	ispCapMu    sync.RWMutex
+	ispCapCache map[string]int
 }
 
 // propertyGovernor is the in-memory form of a partner_property_governor row.
@@ -661,6 +696,10 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// tick without a deploy. Fail-safe: on load error the cache is emptied so
 	// no governed brand joins any rotation and any governed wave is cap-0.
 	po.loadGovernors(po.ctx)
+	// Same contract as the governor refresh: operator edits to the ISP-cap and
+	// brand-domain tables take effect next tick, no deploy.
+	po.loadISPCaps(po.ctx)
+	po.loadBrandDomains(po.ctx)
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -1638,7 +1677,7 @@ func (po *PartnerDripOrchestrator) fetchOfferSubjects(ctx context.Context, offer
 // matchBrandOfferFromName picks the from-name row that ends with this brand's
 // mailing_brand_metadata.from_name when the pool uses a partner prefix pattern.
 func (po *PartnerDripOrchestrator) matchBrandOfferFromName(ctx context.Context, brand string, fromNames []string) (string, bool) {
-	domain, ok := brandSendingDomain[brand]
+	domain, ok := resolveBrandSendingDomain(brand)
 	if !ok || domain == "" {
 		return "", false
 	}
@@ -1938,6 +1977,78 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 		}
 	}
 	return out
+}
+
+// loadISPCaps refreshes the per-wave ISP cap overlay from partner_drip_isp_caps.
+// Called once per tick so an operator cap change takes effect on the next tick
+// with NO deploy. Fail-safe differs from loadGovernors on purpose: a load error
+// LEAVES the previous overlay in place (and an empty table means "no overlay"),
+// because zeroing caps here would silently stop every lane.
+func (po *PartnerDripOrchestrator) loadISPCaps(ctx context.Context) {
+	loaded := map[string]int{}
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT lower(btrim(isp)), per_wave_cap
+			FROM partner_drip_isp_caps
+			WHERE active
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var cap int
+			if err := rows.Scan(&isp, &cap); err != nil {
+				return err
+			}
+			if isp != "" && cap >= 0 {
+				loaded[isp] = cap
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] loadISPCaps failed (%v) — keeping previous cap overlay", err)
+		return
+	}
+	po.ispCapMu.Lock()
+	po.ispCapCache = loaded
+	po.ispCapMu.Unlock()
+}
+
+// loadBrandDomains refreshes the brand_code -> sending_domain overlay from
+// mailing_brand_metadata so a NEW drip lane needs only a DB row. On error the
+// previous overlay stands; an empty result clears it back to the compiled map.
+func (po *PartnerDripOrchestrator) loadBrandDomains(ctx context.Context) {
+	loaded := map[string]string{}
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT lower(btrim(brand_code)), btrim(sending_domain)
+			FROM mailing_brand_metadata
+			WHERE COALESCE(status, 'active') = 'active'
+			  AND COALESCE(btrim(sending_domain), '') <> ''
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var code, dom string
+			if err := rows.Scan(&code, &dom); err != nil {
+				return err
+			}
+			if code != "" {
+				loaded[code] = dom
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] loadBrandDomains failed (%v) — keeping previous domain overlay", err)
+		return
+	}
+	setDynamicBrandDomains(loaded)
 }
 
 // loadGovernors refreshes the in-memory partner_property_governor cache. Called
@@ -2595,8 +2706,21 @@ func baseISPCap(perISPCaps map[string]int, isp string) int {
 // override becomes the base the drain-horizon clamp is computed against, so a
 // raised cap still floats down on a tiny backlog. Best-effort: any lookup
 // error falls back to the global caps.
+// basePerISPCaps returns the compiled per-wave caps with the DB overlay applied.
+// Overlay-not-replace: a partial table cannot silently zero an ISP that the
+// operator never configured.
+func (po *PartnerDripOrchestrator) basePerISPCaps() map[string]int {
+	out := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	po.ispCapMu.RLock()
+	defer po.ispCapMu.RUnlock()
+	for isp, cap := range po.ispCapCache {
+		out[strings.ToLower(strings.TrimSpace(isp))] = cap
+	}
+	return out
+}
+
 func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertical, datasetID, backlogKind string) (map[string]int, error) {
-	base := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	base := po.basePerISPCaps()
 	if datasetID != "" {
 		po.applyDatasetISPCapOverrides(ctx, datasetID, base)
 	}
@@ -2723,7 +2847,7 @@ func (po *PartnerDripOrchestrator) applyGovernedFloorGate(ctx context.Context, v
 	// resolvePerISPCaps' base: global caps + any per-dataset max_per_wave
 	// override). The drain-horizon clamp in `caps` is what we're guarding
 	// against, so we compare to the UN-drained base here.
-	base := cloneISPCapMap(po.cfg.PerISPCapPerWave)
+	base := po.basePerISPCaps()
 	if datasetID != "" {
 		po.applyDatasetISPCapOverrides(ctx, datasetID, base)
 	}
@@ -2878,7 +3002,7 @@ func tallyISPs(recs []claimedRecord) map[string]int {
 // scheduled_at + cfg.WindowHours so the wave_sanity_check 8h floor is
 // satisfied and time_spans[*].source = "duration-calc".
 func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand string, creative creativeRec, segmentID string, ispCounts map[string]int) (engine.PMTACampaignInput, error) {
-	domain, ok := brandSendingDomain[brand]
+	domain, ok := resolveBrandSendingDomain(brand)
 	if !ok {
 		return engine.PMTACampaignInput{}, fmt.Errorf("unknown brand %q", brand)
 	}
