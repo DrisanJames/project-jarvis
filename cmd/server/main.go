@@ -438,6 +438,20 @@ func main() {
 			// unconditionally, so the binary must never outrun it
 			// (2026-06-10 AAR action item 4).
 			ensureSendPathSchema(mailingDB)
+			// Monthly event partitions land in the SAME synchronous slot and
+			// for the same reason: mailing_tracking_events has no DEFAULT
+			// partition, so a month with no partition makes every open/click/
+			// bounce insert error out. Boot-time ensure + the daily ticker
+			// below; see PartitionManager for the 2026-07-31 near-miss.
+			{
+				pctx, pcancel := context.WithTimeout(context.Background(), 60*time.Second)
+				if created, err := worker.EnsurePartitions(pctx, mailingDB); err != nil {
+					log.Printf("[Boot] CRITICAL: event partition ensure failed (created %d): %v — tracking inserts WILL fail once the current partition's range ends", created, err)
+				} else if created > 0 {
+					log.Printf("[Boot] event partitions provisioned: %d created", created)
+				}
+				pcancel()
+			}
 			go func() {
 				runAdminMigrations()
 				// Drift guard: compare the LIVE verdict-function bodies against
@@ -836,6 +850,18 @@ func main() {
 				segCleanup.Stop()
 			}()
 			log.Println("Segment Cleanup Worker started (static snapshots hard-deleted 7d after last_used; dynamic on warn/grace/archive)")
+
+			// Daily monthly-partition maintenance. The boot-time
+			// EnsurePartitions call above covers deploys; this covers the
+			// long uptime between them — a server running for months without
+			// a redeploy is exactly how the 2026-07-31 gap opened.
+			partitionMgr := worker.NewPartitionManager(mailingDB)
+			partitionMgr.Start()
+			go func() {
+				<-ctx.Done()
+				partitionMgr.Stop()
+			}()
+			log.Printf("Partition Manager started (monthly event partitions kept %d months ahead)", 3)
 
 			// Start Worker Health Monitor. Scans mailing_worker_heartbeats
 			// and alerts (Slack if SLACK_BOT_TOKEN set, else logs) when any
