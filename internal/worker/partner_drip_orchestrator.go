@@ -118,19 +118,28 @@ var governedBrandsList = []string{
 // the welcome + follow-up passes for the 16 normal brands are unchanged (zero
 // side effects on existing brands).
 func brandRosterFor(vertical string) []string {
+	if r, ok := dynamicRosterFor(vertical); ok {
+		return r
+	}
+	if r, ok := verticalBrandRoster[strings.ToLower(strings.TrimSpace(vertical))]; ok {
+		return r
+	}
+	return dripBrands
+}
+
+// dynamicRosterFor returns the DB roster overlay for a vertical, if one is
+// configured (partner_drip_vertical_roster). Both the welcome pass (via
+// brandRosterFor) and the follow-up pass (pickNextFollowupBrand) consult it, so
+// a DB lane gets the FULL multi-touch ladder, not just touch 1.
+func dynamicRosterFor(vertical string) ([]string, bool) {
 	lv := strings.ToLower(strings.TrimSpace(vertical))
-	// DB overlay first: partner_drip_vertical_roster lets an operator stand up a
-	// NEW lane (or confine an existing vertical to one brand) with no deploy.
 	dynamicRosterMu.RLock()
 	r, ok := dynamicRoster[lv]
 	dynamicRosterMu.RUnlock()
 	if ok && len(r) > 0 {
-		return r
+		return r, true
 	}
-	if r, ok := verticalBrandRoster[lv]; ok {
-		return r
-	}
-	return dripBrands
+	return nil, false
 }
 
 // dynamicRoster is the DB overlay on the compiled rosters, refreshed once per
@@ -3269,7 +3278,7 @@ func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			brand, err := po.pickNextFollowupBrand(ctx, state)
+			brand, err := po.pickNextFollowupBrand(ctx, v.vertical, state)
 			if err != nil {
 				log.Printf("[PartnerDripOrchestrator] followup pick_brand: %v", err)
 				return
@@ -3593,7 +3602,20 @@ func (po *PartnerDripOrchestrator) refreshGovernedVerticalState(ctx context.Cont
 	return &v, nil
 }
 
-func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, state *followupState) (string, error) {
+func (po *PartnerDripOrchestrator) pickNextFollowupBrand(ctx context.Context, vertical string, state *followupState) (string, error) {
+	// DB-roster lane (partner_drip_vertical_roster): walk the lane's own roster
+	// WITHOUT writing the shared dripBrands rotation index — a one-brand lane
+	// must not reset the 16-brand rotation for every other vertical each tick.
+	if roster, ok := dynamicRosterFor(vertical); ok {
+		for offset := 0; offset < len(roster); offset++ {
+			brand := roster[(state.brandIndex+offset)%len(roster)]
+			if po.cfg.PausedBrandPredicate != nil && po.cfg.PausedBrandPredicate(ctx, brand) {
+				continue
+			}
+			return brand, nil
+		}
+		return "", fmt.Errorf("all brands in the %s roster paused — no follow-up brand available", vertical)
+	}
 	for offset := 0; offset < len(dripBrands); offset++ {
 		idx := (state.brandIndex + offset) % len(dripBrands)
 		brand := dripBrands[idx]

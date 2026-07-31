@@ -1,6 +1,9 @@
 package worker
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // The overlay must be ADDITIVE: an ISP absent from partner_drip_isp_caps keeps
 // its compiled value, so a partial/empty table can never silently zero a lane.
@@ -90,5 +93,28 @@ func TestDBRosterDoesNotJoinWarmupSet(t *testing.T) {
 	setDynamicRoster(map[string][]string{"refi_heloc": {"wcl"}})
 	if warmupRosterBrands["wcl"] {
 		t.Fatal("DB roster brand leaked into warmupRosterBrands — would force yahoo/aol only")
+	}
+}
+
+// The FOLLOW-UP pass must honour the DB roster too — this is the gap that kept
+// the wcl lane unreachable after brandRosterFor went dynamic (welcome used the
+// roster; pickNextFollowupBrand still walked the compiled dripBrands).
+func TestPickNextFollowupBrandUsesDBRoster(t *testing.T) {
+	t.Cleanup(func() { setDynamicRoster(map[string][]string{}) })
+	po := &PartnerDripOrchestrator{}
+	state := &followupState{brandIndex: 5}
+
+	setDynamicRoster(map[string][]string{"refi_heloc": {"wcl"}})
+	got, err := po.pickNextFollowupBrand(context.Background(), "refi_heloc", state)
+	if err != nil || got != "wcl" {
+		t.Fatalf("DB-roster vertical: got %q err %v, want wcl", got, err)
+	}
+	if state.brandIndex != 5 {
+		t.Fatalf("DB-roster pick mutated the shared rotation index: %d", state.brandIndex)
+	}
+	// an unrostered vertical keeps the exact legacy rotation
+	got, err = po.pickNextFollowupBrand(context.Background(), "term_life", state)
+	if err != nil || got != dripBrands[5] {
+		t.Fatalf("legacy vertical: got %q err %v, want %q", got, err, dripBrands[5])
 	}
 }
