@@ -8361,6 +8361,15 @@ END $$`},
 			ON mailing_journey_events(event_type, transid, step)`},
 		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
 			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
+		{"jul30_partner_drip_vertical_roster", `CREATE TABLE IF NOT EXISTS partner_drip_vertical_roster (
+			vertical    TEXT NOT NULL,
+			brand       TEXT NOT NULL,
+			sort_order  INTEGER NOT NULL DEFAULT 0,
+			active      BOOLEAN NOT NULL DEFAULT TRUE,
+			updated_by  TEXT NOT NULL DEFAULT '',
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (vertical, brand)
+		)`},
 		{"jul30_partner_drip_isp_caps", `CREATE TABLE IF NOT EXISTS partner_drip_isp_caps (
 			isp           TEXT PRIMARY KEY,
 			per_wave_cap  INTEGER NOT NULL CHECK (per_wave_cap >= 0),

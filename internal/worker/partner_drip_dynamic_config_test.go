@@ -56,3 +56,39 @@ func TestResolveBrandSendingDomainOverlay(t *testing.T) {
 		t.Fatalf("empty overlay masked compiled brand: %q %v", d, ok)
 	}
 }
+
+// A DB roster must confine a vertical to exactly the brands configured, and an
+// empty/absent overlay must leave the compiled behaviour untouched.
+func TestBrandRosterForOverlay(t *testing.T) {
+	t.Cleanup(func() { setDynamicRoster(map[string][]string{}) })
+
+	base := brandRosterFor("refi_heloc")
+	if len(base) != len(dripBrands) {
+		t.Fatalf("no overlay should fall back to dripBrands: got %d want %d", len(base), len(dripBrands))
+	}
+
+	setDynamicRoster(map[string][]string{"refi_heloc": {"wcl"}})
+	got := brandRosterFor("refi_heloc")
+	if len(got) != 1 || got[0] != "wcl" {
+		t.Fatalf("overlay roster not applied: %v", got)
+	}
+	// an unrelated vertical is unaffected
+	if other := brandRosterFor("term_life"); len(other) != len(dripBrands) {
+		t.Fatalf("overlay leaked to another vertical: %v", other)
+	}
+	// case/space tolerant
+	if got := brandRosterFor("  REFI_HELOC "); len(got) != 1 || got[0] != "wcl" {
+		t.Fatalf("roster lookup not normalised: %v", got)
+	}
+}
+
+// The warm-up ISP clamp (yahoo/aol only) is derived from the COMPILED roster.
+// A DB lane must never be dragged into it — that would silently drop a lane's
+// non-yahoo audience to zero.
+func TestDBRosterDoesNotJoinWarmupSet(t *testing.T) {
+	t.Cleanup(func() { setDynamicRoster(map[string][]string{}) })
+	setDynamicRoster(map[string][]string{"refi_heloc": {"wcl"}})
+	if warmupRosterBrands["wcl"] {
+		t.Fatal("DB roster brand leaked into warmupRosterBrands — would force yahoo/aol only")
+	}
+}

@@ -118,10 +118,35 @@ var governedBrandsList = []string{
 // the welcome + follow-up passes for the 16 normal brands are unchanged (zero
 // side effects on existing brands).
 func brandRosterFor(vertical string) []string {
-	if r, ok := verticalBrandRoster[strings.ToLower(strings.TrimSpace(vertical))]; ok {
+	lv := strings.ToLower(strings.TrimSpace(vertical))
+	// DB overlay first: partner_drip_vertical_roster lets an operator stand up a
+	// NEW lane (or confine an existing vertical to one brand) with no deploy.
+	dynamicRosterMu.RLock()
+	r, ok := dynamicRoster[lv]
+	dynamicRosterMu.RUnlock()
+	if ok && len(r) > 0 {
+		return r
+	}
+	if r, ok := verticalBrandRoster[lv]; ok {
 		return r
 	}
 	return dripBrands
+}
+
+// dynamicRoster is the DB overlay on the compiled rosters, refreshed once per
+// tick from partner_drip_vertical_roster. Deliberately NOT folded into
+// warmupRosterBrands: that set is derived from the compiled verticalBrandRoster
+// at init, so a DB lane never inherits the warm-up yahoo/aol-only ISP clamp.
+var (
+	dynamicRosterMu sync.RWMutex
+	dynamicRoster   = map[string][]string{}
+)
+
+// setDynamicRoster swaps the roster overlay atomically.
+func setDynamicRoster(m map[string][]string) {
+	dynamicRosterMu.Lock()
+	dynamicRoster = m
+	dynamicRosterMu.Unlock()
 }
 
 // orderedSubscribedGoverned returns the governed brands subscribed to `vertical`
@@ -700,6 +725,7 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// brand-domain tables take effect next tick, no deploy.
 	po.loadISPCaps(po.ctx)
 	po.loadBrandDomains(po.ctx)
+	po.loadVerticalRosters(po.ctx)
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -2049,6 +2075,40 @@ func (po *PartnerDripOrchestrator) loadBrandDomains(ctx context.Context) {
 		return
 	}
 	setDynamicBrandDomains(loaded)
+}
+
+// loadVerticalRosters refreshes the vertical->brand roster overlay. Ordered by
+// sort_order so an operator controls round-robin position. On error the previous
+// overlay stands (same posture as the cap/domain overlays: never fail a lane shut).
+func (po *PartnerDripOrchestrator) loadVerticalRosters(ctx context.Context) {
+	loaded := map[string][]string{}
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT lower(btrim(vertical)), lower(btrim(brand))
+			FROM partner_drip_vertical_roster
+			WHERE active
+			ORDER BY vertical, sort_order, brand
+		`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var v, b string
+			if err := rows.Scan(&v, &b); err != nil {
+				return err
+			}
+			if v != "" && b != "" {
+				loaded[v] = append(loaded[v], b)
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] loadVerticalRosters failed (%v) — keeping previous roster overlay", err)
+		return
+	}
+	setDynamicRoster(loaded)
 }
 
 // loadGovernors refreshes the in-memory partner_property_governor cache. Called
