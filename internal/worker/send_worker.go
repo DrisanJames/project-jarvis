@@ -135,7 +135,7 @@ type SendWorkerPool struct {
 	// gets routed to the right tenant + config set.
 	profileSESCache   map[string]profileSESInfo
 	profileSESCacheAt map[string]time.Time
-	psesMu          sync.RWMutex
+	psesMu            sync.RWMutex
 
 	// Per-profile zero-width Subject-encoding cache (subject_zw_encode.go).
 	// Keyed by profileID; populated lazily on first send for a profile.
@@ -554,6 +554,9 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 		}
 		empty := profileSESInfo{}
 		p.psesMu.Lock()
+		if p.profileSESCacheAt == nil {
+			p.profileSESCacheAt = make(map[string]time.Time)
+		}
 		p.profileSESCache[profileID] = empty
 		p.profileSESCacheAt[profileID] = time.Now()
 		p.psesMu.Unlock()
@@ -566,6 +569,9 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 		RawCreative: raw.Bool,
 	}
 	p.psesMu.Lock()
+	if p.profileSESCacheAt == nil {
+		p.profileSESCacheAt = make(map[string]time.Time)
+	}
 	p.profileSESCache[profileID] = info
 	p.profileSESCacheAt[profileID] = time.Now()
 	p.psesMu.Unlock()
