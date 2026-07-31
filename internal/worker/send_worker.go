@@ -133,7 +133,8 @@ type SendWorkerPool struct {
 	// these sends) and triggers X-SES-CONFIGURATION-SET / X-SES-TENANT
 	// header injection so PMTA's relay to email-smtp.us-west-1.amazonaws.com
 	// gets routed to the right tenant + config set.
-	profileSESCache map[string]profileSESInfo
+	profileSESCache   map[string]profileSESInfo
+	profileSESCacheAt map[string]time.Time
 	psesMu          sync.RWMutex
 
 	// Per-profile zero-width Subject-encoding cache (subject_zw_encode.go).
@@ -433,6 +434,7 @@ func (p *SendWorkerPool) SetTrackingConfig(trackingURL, trackingSecret, orgID st
 	p.profileTrackingDomainCache = make(map[string]string)
 	p.profileImageHostCache = make(map[string]string)
 	p.profileSESCache = make(map[string]profileSESInfo)
+	p.profileSESCacheAt = make(map[string]time.Time)
 	p.subjectZWCache = make(map[string]subjectZWConfig)
 }
 
@@ -508,18 +510,27 @@ func buildSESMessageTags(recipientSendID, campaignID, subscriberID, ispGroup str
 	return strings.Join(pairs, ", ")
 }
 
+// profileSESCacheTTL bounds how long a profile's via_ses/config-set answer is
+// reused. A DB flip of via_ses now takes effect within this window with NO
+// process restart — the /emergency-swap requirement (2026-07-30). Var, not
+// const, so tests can shrink it.
+var profileSESCacheTTL = 60 * time.Second
+
 // resolveProfileSES returns the via_ses / ses_configuration_set / ses_tenant_name
-// values for a sending profile. The result is cached for the lifetime of the
-// process. A nil/empty profile id, a missing row, or any DB error returns
-// the zero value (viaSES=false) so the default Dedicated path is preserved.
+// values for a sending profile. The result is cached for profileSESCacheTTL
+// (formerly process lifetime). A nil/empty profile id, a missing row, or any DB
+// error returns the zero value (viaSES=false) so the default Dedicated path is
+// preserved.
 func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string) profileSESInfo {
 	if profileID == "" {
 		return profileSESInfo{}
 	}
 	p.psesMu.RLock()
 	if cached, ok := p.profileSESCache[profileID]; ok {
-		p.psesMu.RUnlock()
-		return cached
+		if at, ok2 := p.profileSESCacheAt[profileID]; ok2 && time.Since(at) < profileSESCacheTTL {
+			p.psesMu.RUnlock()
+			return cached
+		}
 	}
 	p.psesMu.RUnlock()
 
@@ -544,6 +555,7 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 		empty := profileSESInfo{}
 		p.psesMu.Lock()
 		p.profileSESCache[profileID] = empty
+		p.profileSESCacheAt[profileID] = time.Now()
 		p.psesMu.Unlock()
 		return empty
 	}
@@ -555,6 +567,7 @@ func (p *SendWorkerPool) resolveProfileSES(ctx context.Context, profileID string
 	}
 	p.psesMu.Lock()
 	p.profileSESCache[profileID] = info
+	p.profileSESCacheAt[profileID] = time.Now()
 	p.psesMu.Unlock()
 	if info.ViaSES {
 		log.Printf("resolveProfileSES: profile=%s via_ses=true config_set=%s tenant=%s",

@@ -3944,7 +3944,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND touch_count BETWEEN 1 AND $2
 			  AND next_touch_at <= NOW()
 			  AND engaged_at IS NULL
-			  AND terminal_reason IS NULL
+			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+`
 			GROUP BY touch_count
 			ORDER BY COUNT(*) DESC, touch_count ASC
 			LIMIT 1

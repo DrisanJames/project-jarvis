@@ -8361,6 +8361,21 @@ END $$`},
 			ON mailing_journey_events(event_type, transid, step)`},
 		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
 			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
+		{"jul31_partner_datasets_vertical_consumer", `DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'partner_datasets_vertical_check'
+				  AND pg_get_constraintdef(oid) LIKE '%consumer%'
+			) THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
+						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
+						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
+						'consumer']));
+			END IF;
+		END $$`},
 		{"jul30_partner_drip_vertical_roster", `CREATE TABLE IF NOT EXISTS partner_drip_vertical_roster (
 			vertical    TEXT NOT NULL,
 			brand       TEXT NOT NULL,

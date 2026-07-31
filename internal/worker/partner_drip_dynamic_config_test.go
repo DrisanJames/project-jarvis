@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +118,27 @@ func TestPickNextFollowupBrandUsesDBRoster(t *testing.T) {
 	got, err = po.pickNextFollowupBrand(context.Background(), "term_life", state)
 	if err != nil || got != dripBrands[5] {
 		t.Fatalf("legacy vertical: got %q err %v, want %q", got, err, dripBrands[5])
+	}
+}
+
+// The dominant-touch pick must exclude paused datasets, or a paused dataset's
+// due mass can elect a touch whose UNPAUSED rows are all zero-capped ISPs —
+// silent zero-claim forever (root-caused live 2026-07-31: 99,829 paused Spicy
+// rows elected touch 3 while HELOC's touch-3 pool was 100% gmail/yahoo-family).
+func TestDominantTouchPickExcludesPausedDatasets(t *testing.T) {
+	src, err := os.ReadFile("partner_drip_orchestrator.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Locate the dominant-pick CTE and assert the paused-dataset predicate is
+	// concatenated into it (same guard style as the claim queries).
+	body := string(src)
+	i := strings.Index(body, "// First pick the dominant touch_count for this vertical.")
+	if i < 0 {
+		t.Fatal("dominant-pick comment anchor not found")
+	}
+	window := body[i : i+900]
+	if !strings.Contains(window, "datasetNotEmergencyPausedSQL") {
+		t.Fatal("dominant touch pick does not exclude paused datasets")
 	}
 }
