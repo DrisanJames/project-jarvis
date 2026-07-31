@@ -236,6 +236,151 @@ func TestHandleDaily_DerivesRatesAndDeltas(t *testing.T) {
 	}
 }
 
+// ── Day breakdown (the expand-arrow drill-down) ─────────────────────────────
+
+func growthBreakdownCols() []string {
+	return []string{
+		"key", "delivered", "hard_bounce", "soft_bounce", "reputation_block",
+		"complaints", "unsubs", "open_events", "open_subs", "click_events",
+		"click_subs", "action_click_subs",
+	}
+}
+
+func TestHandleDayBreakdown_ByISP(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows(growthBreakdownCols()).
+		AddRow("microsoft",
+			int64(150000), int64(10), int64(900), int64(0), int64(40), int64(30),
+			int64(160000), int64(40000), int64(15000), int64(3000), int64(500)).
+		AddRow("gmail",
+			int64(50000), int64(4), int64(300), int64(0), int64(9), int64(11),
+			int64(52000), int64(13000), int64(5100), int64(1000), int64(170))
+	mock.ExpectQuery("GROUP BY isp").
+		WithArgs("2026-07-28", "discountblog.com", "").
+		WillReturnRows(rows)
+
+	svc := NewGrowthService(db)
+	r := chi.NewRouter()
+	svc.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/growth/day?day=2026-07-28&sending_domain=em.discountblog.com", nil)
+	req.Header.Set("X-Organization-ID", growthTestOrg)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var body growthBreakdownResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v — %s", err, w.Body.String())
+	}
+	if body.By != "isp" {
+		t.Errorf("by = %q, want the default 'isp'", body.By)
+	}
+	if len(body.Rows) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(body.Rows))
+	}
+	ms := body.Rows[0]
+	// Same derivations as the day series: attempted derived, rates computed.
+	if want := int64(150000 + 10 + 900); ms.Attempted != want {
+		t.Errorf("attempted = %d, want %d", ms.Attempted, want)
+	}
+	if ms.OpenPct != 106.67 {
+		t.Errorf("open_pct = %v, want 106.67", ms.OpenPct)
+	}
+	// Share of the day's delivered: 150000 / 200000 = 75%.
+	if ms.SharePct != 75 {
+		t.Errorf("share_pct = %v, want 75", ms.SharePct)
+	}
+	if body.Rows[1].SharePct != 25 {
+		t.Errorf("gmail share_pct = %v, want 25", body.Rows[1].SharePct)
+	}
+	if len(body.Notes) == 0 {
+		t.Error("notes must always explain the rate conventions")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestHandleDayBreakdown_BySendingDomainLabelsUnattributed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	rows := sqlmock.NewRows(growthBreakdownCols()).
+		AddRow("", // blank apex — pre-attribution volume
+			int64(1000), int64(0), int64(0), int64(0), int64(0), int64(0),
+			int64(900), int64(300), int64(80), int64(20), int64(5))
+	mock.ExpectQuery("GROUP BY sending_domain").
+		WithArgs("2026-06-15", "", "microsoft").
+		WillReturnRows(rows)
+
+	svc := NewGrowthService(db)
+	r := chi.NewRouter()
+	svc.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/growth/day?day=2026-06-15&by=sending_domain&isp=MICROSOFT", nil)
+	req.Header.Set("X-Organization-ID", growthTestOrg)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var body growthBreakdownResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Rows) != 1 || body.Rows[0].Key != growthUnattributedLabel {
+		t.Errorf("blank apex must render as %q: %+v", growthUnattributedLabel, body.Rows)
+	}
+	// A pre-attribution day grouped by domain must carry the honesty caveat.
+	if !containsSub(body.Notes, growthDomainAttributionFrom) {
+		t.Errorf("pre-attribution by-domain breakdown must carry the caveat: %v", body.Notes)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestHandleDayBreakdown_RejectsBadInput(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	svc := NewGrowthService(db)
+	r := chi.NewRouter()
+	svc.RegisterRoutes(r)
+
+	for _, url := range []string{
+		"/growth/day", // missing day
+		"/growth/day?day=garbage",
+		// The dimension is interpolated into SQL — anything off the whitelist
+		// must 400, never reach the query.
+		"/growth/day?day=2026-07-28&by=computed_at",
+	} {
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		req.Header.Set("X-Organization-ID", growthTestOrg)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", url, w.Code)
+		}
+	}
+}
+
 // The range must be clamped to the lake epoch rather than returning leading
 // empty days that read as "we sent nothing".
 func TestHandleDaily_ClampsToLakeEpoch(t *testing.T) {

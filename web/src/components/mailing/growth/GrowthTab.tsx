@@ -1,12 +1,16 @@
 // Growth — the daily send-program growth series.
 //
-// TAB_VERSION 1.0 (2026-07-29). Replaces the hand-kept growth spreadsheet: one
+// TAB_VERSION 1.1 (2026-07-30). Replaces the hand-kept growth spreadsheet: one
 // row per Denver day for a (sending domain × mailbox provider) slice, over ANY
-// historical range, with the day-over-day deltas the operator tracks.
+// historical range, with the day-over-day deltas the operator tracks. Each day
+// row expands (chevron) into that day's per-ISP breakdown — or per-sending-
+// domain when a provider filter is already applied.
 //
 // Backend (READ ONLY, via apiFetch):
 //   GET /api/mailing/growth/daily?from=&to=&sending_domain=&isp=
 //       → { rows: GrowthRow[], totals, coverage, notes }
+//   GET /api/mailing/growth/day?day=&sending_domain=&isp=&by=isp|sending_domain
+//       → { rows: BreakdownRow[], notes }   (the expand drill-down)
 //   GET /api/mailing/growth/filters
 //       → { sending_domains, isps, min_day, max_day }
 //
@@ -26,7 +30,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faSpinner, faArrowUp, faArrowDown, faMinus, faDownload,
-  faChartLine, faTable, faInfoCircle,
+  faChartLine, faTable, faInfoCircle, faChevronRight, faChevronDown,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
@@ -38,7 +42,7 @@ import { Panel, SectionHeader, Stat, SectionError, EmptyState } from '../shared/
 import { FilterBar, denverToday, daysAgoDenver } from '../shared/filters';
 import type { LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
 
-const TAB_VERSION = '1.0';
+const TAB_VERSION = '1.1';
 
 // Series palette — the shared chart tones (PORTAL_DESIGN_SYSTEM §2).
 const C_VOLUME = '#818cf8'; // indigo — delivered
@@ -105,6 +109,45 @@ interface GrowthFilters {
   min_day: string;
   max_day: string;
 }
+
+// Single-day drill-down (internal/api/growth_daily.go HandleDayBreakdown).
+interface BreakdownRow {
+  key: string;
+  delivered: number;
+  attempted: number;
+  hard_bounce: number;
+  soft_bounce: number;
+  reputation_block: number;
+  complaints: number;
+  unsubs: number;
+  open_events: number;
+  open_subs: number;
+  click_events: number;
+  click_subs: number;
+  action_click_subs: number;
+  share_pct: number;
+  delivery_pct: number;
+  open_pct: number;
+  click_pct: number;
+  action_click_pct: number;
+  complaint_pct: number;
+  unsub_pct: number;
+  hard_pct: number;
+  soft_pct: number;
+}
+
+interface BreakdownResponse {
+  version: string;
+  day: string;
+  by: 'isp' | 'sending_domain';
+  rows: BreakdownRow[];
+  notes: string[];
+}
+
+type BreakdownState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; data: BreakdownResponse };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FORMATTING
@@ -184,6 +227,75 @@ function downloadCSV(name: string, csv: string) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DAY DRILL-DOWN — the sub-table a day row expands into. Same column
+// conventions as the parent table; adds "Share" (slice ÷ day delivered).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const BreakdownSubTable: React.FC<{ state: BreakdownState }> = ({ state }) => {
+  if (state.status === 'loading') {
+    return (
+      <div style={{ color: theme.textMuted, padding: '10px 4px', fontSize: 12 }}>
+        <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading breakdown…
+      </div>
+    );
+  }
+  if (state.status === 'error') {
+    return (
+      <div style={{ color: theme.dangerText, padding: '10px 4px', fontSize: 12 }}>
+        Breakdown failed: {state.message} — collapse and expand to retry.
+      </div>
+    );
+  }
+  const { data } = state;
+  const dimLabel = data.by === 'isp' ? 'Provider' : 'Sending domain';
+  if (data.rows.length === 0) {
+    return (
+      <div style={{ color: theme.textMuted, padding: '10px 4px', fontSize: 12 }}>
+        No rollup rows for this day under the current filters.
+      </div>
+    );
+  }
+  return (
+    <table style={{ ...tableStyle, margin: '4px 0' }}>
+      <thead>
+        <tr>
+          <th style={thStyle}>{dimLabel}</th>
+          <th style={numTh} title="Delivered — event lake, real transports only">Delivered</th>
+          <th style={numTh} title="This slice ÷ the day's delivered">Share</th>
+          <th style={numTh} title="Open EVENTS ÷ delivered — exceeds 100% when scanners re-open">Open %</th>
+          <th style={numTh} title="Click EVENTS ÷ delivered (includes asset fetches)">Click %</th>
+          <th style={numTh} title="Unique mailboxes clicking a navigational link — the governing cohort">Action clk</th>
+          <th style={numTh} title="Action clicks ÷ delivered">Action %</th>
+          <th style={numTh} title="Complaint events">Compl</th>
+          <th style={numTh} title="Complaints ÷ delivered">Compl %</th>
+          <th style={numTh} title="Distinct subscribers unsubscribing">Unsub</th>
+          <th style={numTh} title="Hard bounces — never summed with soft">Hard</th>
+          <th style={numTh} title="Soft bounces — never summed with hard">Soft</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.rows.map((b) => (
+          <tr key={b.key}>
+            <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: theme.heading }}>{b.key}</td>
+            <td style={numTd}>{fmtInt(b.delivered)}</td>
+            <td style={numTd}>{fmtPct(b.share_pct, 1)}</td>
+            <td style={{ ...numTd, color: C_OPEN }}>{fmtPct(b.open_pct)}</td>
+            <td style={{ ...numTd, color: C_CLICK }}>{fmtPct(b.click_pct)}</td>
+            <td style={{ ...numTd, color: C_ACTION }}>{fmtInt(b.action_click_subs)}</td>
+            <td style={numTd}>{fmtPct(b.action_click_pct)}</td>
+            <td style={numTd}>{fmtInt(b.complaints)}</td>
+            <td style={numTd}>{fmtPct(b.complaint_pct)}</td>
+            <td style={numTd}>{fmtInt(b.unsubs)}</td>
+            <td style={{ ...numTd, color: b.hard_bounce > 0 ? theme.danger : theme.textMuted }}>{fmtInt(b.hard_bounce)}</td>
+            <td style={{ ...numTd, color: b.soft_bounce > 0 ? theme.warning : theme.textMuted }}>{fmtInt(b.soft_bounce)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -207,6 +319,12 @@ export const GrowthTab: React.FC = () => {
   const [tookMs, setTookMs] = useState(0);
   const [filters, setFilters] = useState<GrowthFilters | null>(null);
   const [chartMetric, setChartMetric] = useState<'rates' | 'volume'>('rates');
+
+  // Day drill-down: which day is expanded + a per-day cache of its breakdown.
+  // Both reset whenever the applied filters change — a cached breakdown for a
+  // different slice would silently disagree with the row above it.
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const [breakdowns, setBreakdowns] = useState<Record<string, BreakdownState>>({});
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -260,6 +378,41 @@ export const GrowthTab: React.FC = () => {
   const onRun = useCallback((next: LakeFilterDraft) => {
     setApplied((prev) => ({ ...next, nonce: prev.nonce + 1 }));
   }, []);
+
+  // New slice → stale drill-downs. Collapse and drop the cache.
+  useEffect(() => {
+    setExpandedDay(null);
+    setBreakdowns({});
+  }, [applied]);
+
+  // The drill-down dimension: by ISP normally; when a provider filter is
+  // already applied, splitting by ISP would return one row, so split by
+  // sending domain instead.
+  const breakdownBy: 'isp' | 'sending_domain' =
+    applied.ispGroup.trim() ? 'sending_domain' : 'isp';
+
+  const toggleDay = useCallback((day: string) => {
+    setExpandedDay((cur) => (cur === day ? null : day));
+    setBreakdowns((cache) => {
+      // Loaded or in flight → keep. An error retries on the next expand.
+      if (cache[day] && cache[day].status !== 'error') return cache;
+      const qs = new URLSearchParams({ day, by: breakdownBy });
+      if (applied.brand.trim()) qs.set('sending_domain', applied.brand.trim());
+      if (applied.ispGroup.trim()) qs.set('isp', applied.ispGroup.trim().toLowerCase());
+      void (async () => {
+        try {
+          const res = await apiFetch(`/api/mailing/growth/day?${qs.toString()}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const body = (await res.json()) as BreakdownResponse & { error?: string };
+          if (body.error) throw new Error(body.error);
+          setBreakdowns((c) => ({ ...c, [day]: { status: 'ready', data: body } }));
+        } catch (e) {
+          setBreakdowns((c) => ({ ...c, [day]: { status: 'error', message: (e as Error).message || 'fetch failed' } }));
+        }
+      })();
+      return { ...cache, [day]: { status: 'loading' } };
+    });
+  }, [applied.brand, applied.ispGroup, breakdownBy]);
 
   const rows = data?.rows ?? [];
   const totals = data?.totals;
@@ -438,6 +591,7 @@ export const GrowthTab: React.FC = () => {
                 <table style={tableStyle}>
                   <thead>
                     <tr>
+                      <th style={{ ...thStyle, width: 28 }} title={`Expand a day to see its breakdown by ${breakdownBy === 'isp' ? 'provider' : 'sending domain'}`} />
                       <th style={thStyle}>Date</th>
                       <th style={numTh} title="Delivered — event lake, real transports only, deduped">Delivered</th>
                       <th style={numTh} title="Change vs the previous day in this range">Δ vol</th>
@@ -458,7 +612,12 @@ export const GrowthTab: React.FC = () => {
                   </thead>
                   <tbody>
                     {rows.map((r) => (
-                      <tr key={r.day}>
+                      <React.Fragment key={r.day}>
+                      <tr onClick={() => toggleDay(r.day)} style={{ cursor: 'pointer' }}
+                        title={`Break ${r.day} down by ${breakdownBy === 'isp' ? 'provider' : 'sending domain'}`}>
+                        <td style={{ ...tdStyle, width: 28, color: expandedDay === r.day ? theme.indigo400 : theme.textFaint }}>
+                          <FontAwesomeIcon icon={expandedDay === r.day ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
+                        </td>
                         <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{r.day}</td>
                         <td style={numTd}>{fmtInt(r.delivered)}</td>
                         <td style={numTd}>{r.delta_delivered == null ? <span style={{ color: theme.textFaint }}>n/a</span>
@@ -479,10 +638,19 @@ export const GrowthTab: React.FC = () => {
                         <td style={{ ...numTd, color: r.hard_bounce > 0 ? theme.danger : theme.textMuted }}>{fmtInt(r.hard_bounce)}</td>
                         <td style={{ ...numTd, color: r.soft_bounce > 0 ? theme.warning : theme.textMuted }}>{fmtInt(r.soft_bounce)}</td>
                       </tr>
+                      {expandedDay === r.day && breakdowns[r.day] && (
+                        <tr>
+                          <td colSpan={17} style={{ ...tdStyle, padding: '4px 8px 10px 32px', background: 'rgba(129,140,248,0.04)' }}>
+                            <BreakdownSubTable state={breakdowns[r.day]} />
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                   <tfoot>
                     <tr>
+                      <td style={tdStyle} />
                       <td style={{ ...tdStyle, fontWeight: 700, color: theme.heading }}>Total</td>
                       <td style={{ ...numTd, fontWeight: 700 }}>{fmtInt(totals.delivered)}</td>
                       <td style={numTd}>—</td>

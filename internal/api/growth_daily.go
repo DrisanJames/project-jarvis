@@ -60,7 +60,9 @@ import (
 // VersionGrowthDaily is bumped on every behaviour change (testing.mdc).
 //
 //	1.0 (2026-07-29): initial — daily growth series + filters.
-const VersionGrowthDaily = "1.0"
+//	1.1 (2026-07-30): + /growth/day — single-day breakdown by ISP or by
+//	    sending domain (the expand-a-day drill-down on the Growth tab).
+const VersionGrowthDaily = "1.1"
 
 const (
 	growthQueryTimeout = 20 * time.Second
@@ -149,6 +151,48 @@ type growthResponse struct {
 	Notes []string `json:"notes"`
 }
 
+// growthBreakdownRow is one dimension value's slice of a single day. Same
+// column contract as growthRow (rates computed here, never stored); no deltas —
+// there is no "previous row" inside one day. SharePct is this slice's share of
+// the day's delivered, so the sub-table shows where the volume went.
+type growthBreakdownRow struct {
+	Key string `json:"key"` // the ISP bucket or the sending-domain apex
+
+	Delivered       int64 `json:"delivered"`
+	Attempted       int64 `json:"attempted"`
+	HardBounce      int64 `json:"hard_bounce"`
+	SoftBounce      int64 `json:"soft_bounce"`
+	ReputationBlock int64 `json:"reputation_block"`
+	Complaints      int64 `json:"complaints"`
+	Unsubs          int64 `json:"unsubs"`
+
+	OpenEvents      int64 `json:"open_events"`
+	OpenSubs        int64 `json:"open_subs"`
+	ClickEvents     int64 `json:"click_events"`
+	ClickSubs       int64 `json:"click_subs"`
+	ActionClickSubs int64 `json:"action_click_subs"`
+
+	SharePct       float64 `json:"share_pct"`
+	DeliveryPct    float64 `json:"delivery_pct"`
+	OpenPct        float64 `json:"open_pct"`
+	ClickPct       float64 `json:"click_pct"`
+	ActionClickPct float64 `json:"action_click_pct"`
+	ComplaintPct   float64 `json:"complaint_pct"`
+	UnsubPct       float64 `json:"unsub_pct"`
+	HardPct        float64 `json:"hard_pct"`
+	SoftPct        float64 `json:"soft_pct"`
+}
+
+type growthBreakdownResponse struct {
+	Version       string               `json:"version"`
+	Day           string               `json:"day"`
+	By            string               `json:"by"`
+	SendingDomain string               `json:"sending_domain"`
+	ISP           string               `json:"isp"`
+	Rows          []growthBreakdownRow `json:"rows"`
+	Notes         []string             `json:"notes"`
+}
+
 type growthFiltersResponse struct {
 	Version        string   `json:"version"`
 	SendingDomains []string `json:"sending_domains"`
@@ -168,6 +212,7 @@ func NewGrowthService(db *sql.DB) *GrowthService { return &GrowthService{db: db}
 // RegisterRoutes mounts the service under the /api/mailing group.
 func (s *GrowthService) RegisterRoutes(r chi.Router) {
 	r.Get("/growth/daily", s.HandleDaily)
+	r.Get("/growth/day", s.HandleDayBreakdown)
 	r.Get("/growth/filters", s.HandleFilters)
 }
 
@@ -380,6 +425,131 @@ func growthNotes(from time.Time, domain string, nRows int) []string {
 		notes = append(notes, "No rows yet for this range — the growth rollup back-fills history in chunks every 2 hours.")
 	}
 	return notes
+}
+
+// HandleDayBreakdown serves GET /api/mailing/growth/day — one day of the same
+// rollup, split by ISP (default) or by sending domain. This is the expand-arrow
+// drill-down under a day row on the Growth tab: same source (mailing_growth_daily,
+// delivery from the Athena lake via the rollup worker), same rate conventions,
+// just a different GROUP BY — so the sub-table can never disagree with the row
+// it expands.
+func (s *GrowthService) HandleDayBreakdown(w http.ResponseWriter, r *http.Request) {
+	if _, err := GetOrgIDFromRequest(r); err != nil {
+		respondError(w, http.StatusBadRequest, "organization not resolved")
+		return
+	}
+	if s.db == nil {
+		respondError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), growthQueryTimeout)
+	defer cancel()
+
+	q := r.URL.Query()
+	day, ok := parseGrowthDay(q.Get("day"))
+	if !ok {
+		respondError(w, http.StatusBadRequest, "day is required (YYYY-MM-DD)")
+		return
+	}
+
+	by := strings.ToLower(strings.TrimSpace(q.Get("by")))
+	if by == "" {
+		by = "isp"
+	}
+	// The dimension is interpolated into SQL, so it is a strict whitelist —
+	// never the raw query value.
+	var dimCol string
+	switch by {
+	case "isp":
+		dimCol = "isp"
+	case "sending_domain":
+		dimCol = "sending_domain"
+	default:
+		respondError(w, http.StatusBadRequest, "by must be 'isp' or 'sending_domain'")
+		return
+	}
+
+	domain := normalizeSendingDomain(q.Get("sending_domain"))
+	if strings.TrimSpace(q.Get("sending_domain")) == "" {
+		domain = "" // all domains
+	}
+	isp := strings.ToLower(strings.TrimSpace(q.Get("isp")))
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+dimCol+`,
+		       COALESCE(SUM(delivered),0), COALESCE(SUM(hard_bounce),0),
+		       COALESCE(SUM(soft_bounce),0), COALESCE(SUM(reputation_block),0),
+		       COALESCE(SUM(complaints),0), COALESCE(SUM(unsubs),0),
+		       COALESCE(SUM(open_events),0), COALESCE(SUM(open_subs),0),
+		       COALESCE(SUM(click_events),0), COALESCE(SUM(click_subs),0),
+		       COALESCE(SUM(action_click_subs),0)
+		  FROM mailing_growth_daily
+		 WHERE day = $1::date
+		   AND ($2 = '' OR sending_domain = $2)
+		   AND ($3 = '' OR isp = $3)
+		 GROUP BY `+dimCol+`
+		 ORDER BY 2 DESC, 1
+	`, day.Format("2006-01-02"), domain, isp)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "growth breakdown query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	resp := growthBreakdownResponse{
+		Version:       VersionGrowthDaily,
+		Day:           day.Format("2006-01-02"),
+		By:            by,
+		SendingDomain: domain,
+		ISP:           isp,
+		Rows:          []growthBreakdownRow{},
+	}
+
+	var dayDelivered int64
+	for rows.Next() {
+		var g growthBreakdownRow
+		if err := rows.Scan(&g.Key,
+			&g.Delivered, &g.HardBounce, &g.SoftBounce, &g.ReputationBlock,
+			&g.Complaints, &g.Unsubs,
+			&g.OpenEvents, &g.OpenSubs, &g.ClickEvents, &g.ClickSubs,
+			&g.ActionClickSubs); err != nil {
+			respondError(w, http.StatusInternalServerError, "growth breakdown scan failed: "+err.Error())
+			return
+		}
+		if g.Key == "" {
+			g.Key = growthUnattributedLabel
+		}
+		g.Attempted = g.Delivered + g.HardBounce + g.SoftBounce
+		g.DeliveryPct = growthPct(g.Delivered, g.Attempted)
+		g.OpenPct = growthPct(g.OpenEvents, g.Delivered)
+		g.ClickPct = growthPct(g.ClickEvents, g.Delivered)
+		g.ActionClickPct = growthPct(g.ActionClickSubs, g.Delivered)
+		g.ComplaintPct = growthPct(g.Complaints, g.Delivered)
+		g.UnsubPct = growthPct(g.Unsubs, g.Delivered)
+		g.HardPct = growthPct(g.HardBounce, g.Attempted)
+		g.SoftPct = growthPct(g.SoftBounce, g.Attempted)
+		dayDelivered += g.Delivered
+		resp.Rows = append(resp.Rows, g)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "growth breakdown iteration failed: "+err.Error())
+		return
+	}
+	for i := range resp.Rows {
+		resp.Rows[i].SharePct = growthPct(resp.Rows[i].Delivered, dayDelivered)
+	}
+
+	resp.Notes = []string{
+		"Same rollup rows as the day series (delivery from the event lake, engagement from platform tracking) — only the grouping differs, so these slices always sum to the day row.",
+		"Open/click rates are EVENTS ÷ delivered; action clicks are unique mailboxes on navigational links only. Hard and soft bounces are never summed.",
+	}
+	attrFrom, _ := time.Parse("2006-01-02", growthDomainAttributionFrom)
+	if by == "sending_domain" && day.Before(attrFrom) {
+		resp.Notes = append(resp.Notes, fmt.Sprintf(
+			"Before %s the sender was not stamped on every delivery row; that volume is grouped under %q.",
+			growthDomainAttributionFrom, growthUnattributedLabel))
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // HandleFilters serves GET /api/mailing/growth/filters — the values actually
