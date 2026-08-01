@@ -54,7 +54,18 @@ const (
 	// latency dominates, and drip-scale offers chunk the lake fetch (20k ids =
 	// 10 chunks × 2 calls), so a full fleet pass can exceed the old 15m
 	// (baseline measured 14m04s before chunking).
-	offerAlignmentRefreshTimeout = 30 * time.Minute
+	//
+	// Raised 30m → 75m on 2026-08-01: the pass gained a THIRD per-offer×window
+	// data fetch (fetchAlignmentLakeClicks, for the non-CPM funnel) and the
+	// first post-deploy run died at exactly 30m — "[offer-alignment-worker]
+	// refresh: context deadline exceeded" — having reached only ~7 of 25
+	// offers. That failure mode is silent and total: rows are swapped in ONE
+	// DELETE+INSERT tx at the very end, so a timeout means the tx never commits
+	// and the WHOLE snapshot (the existing alignment matrix included, not just
+	// the new columns) silently stops updating while still serving stale rows.
+	// The ceiling that actually matters is offerAlignmentRefreshInterval (3h) —
+	// 75m leaves ample headroom, and the advisory lock prevents overlap.
+	offerAlignmentRefreshTimeout = 75 * time.Minute
 	// offerAlignmentMaxOffers caps the per-org offer enumeration so a
 	// pathological slug fan-out can't run the Athena bill unbounded. Offers
 	// are ranked by stamped-campaign count, then click volume.
@@ -448,7 +459,16 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-	log.Printf("[offer-alignment-refresh] wrote %d rows (%d orgs) in %s", rowCount, len(orgs), time.Since(start))
+	elapsed := time.Since(start)
+	log.Printf("[offer-alignment-refresh] wrote %d rows (%d orgs) in %s (budget %s)", rowCount, len(orgs), elapsed, offerAlignmentRefreshTimeout)
+	// Early warning for the silent-stall failure mode: the whole snapshot swaps
+	// in one tx at the end, so once a pass exceeds its budget NOTHING updates
+	// and the matrix serves stale rows indefinitely with no error surface.
+	// Shout while there is still headroom rather than after the cliff.
+	if elapsed > (offerAlignmentRefreshTimeout*3)/4 {
+		log.Printf("[offer-alignment-refresh] WARNING: pass used %s of its %s budget — approaching the timeout, past which the snapshot silently stops updating",
+			elapsed.Round(time.Second), offerAlignmentRefreshTimeout)
+	}
 	return nil
 }
 
