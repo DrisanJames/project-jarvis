@@ -40,10 +40,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/lib/pq"
 )
 
@@ -71,6 +74,10 @@ func (s *ClickFunnelsService) RegisterRoutes(r chi.Router) {
 		r.Post("/upload/preview", s.HandleUploadPreview)
 		r.Post("/upload/enroll", s.HandleUploadEnroll)
 		r.Get("/{offerID}/nodes", s.HandleFunnelNodes)
+		// HubSpot's "Matching enrollments": from any step, see the actual
+		// records that reached it. Without this the funnel is a wall of
+		// aggregates you cannot audit or act on.
+		r.Get("/{offerID}/nodes/{nodeID}/enrollments", s.HandleNodeEnrollments)
 	})
 }
 
@@ -220,6 +227,8 @@ type ClickFunnelNode struct {
 	Delivered   int `json:"delivered"`
 	Opens       int `json:"opens"`
 	Clicks      int `json:"clicks"`
+	HumanClicks int `json:"human_clicks"`
+	Deferred    int `json:"deferred"`
 	Unsubs      int `json:"unsubscribes"`
 	HardBounce  int `json:"hard_bounce"`
 	SoftBounce  int `json:"soft_bounce"`
@@ -228,6 +237,7 @@ type ClickFunnelNode struct {
 	// Rates, 0-100, computed server-side so every surface agrees.
 	OpenRate       float64 `json:"open_rate"`
 	ClickRate      float64 `json:"click_rate"`
+	HumanClickRate float64 `json:"human_click_rate"`
 	ConversionRate float64 `json:"conversion_rate"`
 	StepThrough    float64 `json:"step_through_rate"`
 
@@ -243,7 +253,21 @@ type ClickFunnelNodesResponse struct {
 	TotalEnrolled   int               `json:"total_enrolled"`
 	TotalActive     int               `json:"total_active"`
 	TotalConverted  int               `json:"total_converted"`
-	AttributionNote string            `json:"attribution_note"`
+	// HubSpot parity: outcome split + time-to-goal.
+	// TotalCompleted = finished the sequence (terminal goal node).
+	// TotalExited    = left early ("exits before completion").
+	// MedianHoursToConvert = time-to-goal, median enrolled_at -> converted_at.
+	TotalCompleted       int      `json:"total_completed"`
+	TotalExited          int      `json:"total_exited"`
+	MedianHoursToConvert *float64 `json:"median_hours_to_convert"`
+	CompletionRate       float64  `json:"completion_rate"`
+	ConversionRate       float64  `json:"conversion_rate"`
+	AttributionNote      string   `json:"attribution_note"`
+	// EngagementSource is "lake" (Athena, authoritative) or "pg-fallback".
+	// Surfaced so the screen never implies lake provenance it does not have.
+	EngagementSource string `json:"engagement_source"`
+	WindowFrom       string `json:"window_from"`
+	WindowTo         string `json:"window_to"`
 }
 
 // journeyGraphNode mirrors the persisted node JSON.
@@ -252,11 +276,36 @@ type journeyGraphNode struct {
 	Type   string `json:"type"`
 	Name   string `json:"name"`
 	Config struct {
-		Subject       string  `json:"subject"`
+		Subject string `json:"subject"`
+		// The persisted click-drip graph expresses a wait as
+		// {"delayUnit":"hours","delayValue":1} — NOT delay_hours/delay_minutes.
+		// Reading only the snake_case pair made every delay node render with no
+		// duration (caught by TestFunnelNodes_ReportsPGFallbackProvenance).
+		// Both spellings are honoured so a graph authored by JourneyBuilder and
+		// one authored by the seed migration both display.
+		DelayUnit     string  `json:"delayUnit"`
+		DelayValue    float64 `json:"delayValue"`
 		DelayHours    float64 `json:"delay_hours"`
 		DelayMinutes  float64 `json:"delay_minutes"`
 		ReminderIndex *int    `json:"reminder_sequence_index"`
 	} `json:"config"`
+}
+
+// delayMillis normalizes the two graph spellings into milliseconds.
+func (g journeyGraphNode) delayMillis() int64 {
+	if g.Config.DelayValue > 0 {
+		switch strings.ToLower(g.Config.DelayUnit) {
+		case "minutes", "minute", "min":
+			return int64(g.Config.DelayValue * 60000)
+		case "days", "day":
+			return int64(g.Config.DelayValue * 86400000)
+		case "seconds", "second", "sec":
+			return int64(g.Config.DelayValue * 1000)
+		default: // hours is the click-drip default
+			return int64(g.Config.DelayValue * 3600000)
+		}
+	}
+	return int64(g.Config.DelayHours*3600000 + g.Config.DelayMinutes*60000)
 }
 
 // HandleFunnelNodes serves GET /api/mailing/click-funnels/{offerID}/nodes.
@@ -296,7 +345,10 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		respondError(w, http.StatusInternalServerError, "load awaiting: "+err.Error())
 		return
 	}
-	engagement, err := s.loadNodeEngagement(ctx, offerID)
+	// Lake reads are partition-pruned by dt, so the window bounds both cost and
+	// latency. Default 90d; ?from=&to= override for a narrower look.
+	fromDt, toDt := clickFunnelWindow(r)
+	engagement, engSource, err := s.loadNodeEngagement(ctx, offerID, fromDt, toDt)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "load node engagement: "+err.Error())
 		return
@@ -312,13 +364,26 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var totalEnrolled, totalActive, totalConverted int
+	// Lane outcome split, mirroring HubSpot's enrolled / completed / met-goal /
+	// lost model so the funnel is readable as an outcome and not just a stack of
+	// step counts. `completed` is sequence completion (the terminal goal node,
+	// status='converted'); `converted` is the Everflow postback (converted_at) —
+	// they differ by ~81x and must never be conflated. `exited` is HubSpot's
+	// "exits before completion": left the funnel early (engagement watcher,
+	// postback exit, suppression) without finishing.
+	var totalEnrolled, totalActive, totalConverted, totalCompleted, totalExited int
+	var medianHours sql.NullFloat64
 	_ = s.db.QueryRowContext(ctx, `
 		SELECT COUNT(*),
 		       COUNT(*) FILTER (WHERE status='active'),
-		       COUNT(converted_at)
+		       COUNT(converted_at),
+		       COUNT(*) FILTER (WHERE status IN ('converted','completed')),
+		       COUNT(*) FILTER (WHERE status='exited'),
+		       percentile_cont(0.5) WITHIN GROUP (
+		           ORDER BY EXTRACT(EPOCH FROM (converted_at - enrolled_at)) / 3600.0
+		       ) FILTER (WHERE converted_at IS NOT NULL)
 		FROM mailing_journey_enrollments WHERE enrollment_offer_id=$1
-	`, offerID).Scan(&totalEnrolled, &totalActive, &totalConverted)
+	`, offerID).Scan(&totalEnrolled, &totalActive, &totalConverted, &totalCompleted, &totalExited, &medianHours)
 
 	// Step-through denominator: the first node's reach, so each node reads as
 	// "% of everyone who entered the funnel that got this far".
@@ -345,7 +410,7 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		if n.Label == "" {
 			n.Label = g.ID
 		}
-		n.DelayMs = int64(g.Config.DelayHours*3600000 + g.Config.DelayMinutes*60000)
+		n.DelayMs = g.delayMillis()
 
 		if g.Type == "email" {
 			if g.Config.ReminderIndex != nil {
@@ -364,6 +429,7 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 			}
 			if e, ok := engagement[g.ID]; ok {
 				n.Sent, n.Delivered, n.Opens, n.Clicks = e.sent, e.delivered, e.opens, e.clicks
+				n.HumanClicks, n.Deferred = e.humanClicks, e.deferred
 				n.Unsubs, n.HardBounce, n.SoftBounce = e.unsubs, e.hard, e.soft
 				n.Attributed = true
 				anyAttributed = true
@@ -377,6 +443,7 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 			if base > 0 {
 				n.OpenRate = round2(float64(n.Opens) / base * 100)
 				n.ClickRate = round2(float64(n.Clicks) / base * 100)
+				n.HumanClickRate = round2(float64(n.HumanClicks) / base * 100)
 			}
 			if n.Reached > 0 {
 				n.ConversionRate = round2(float64(n.Conversions) / float64(n.Reached) * 100)
@@ -389,6 +456,12 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		nodes = append(nodes, n)
 	}
 
+	var medianPtr *float64
+	if medianHours.Valid {
+		v := round2(medianHours.Float64)
+		medianPtr = &v
+	}
+
 	note := "Per-node engagement is attributed through each node's own shadow campaign. " +
 		"Touches sent before node-level attribution shipped (2026-08-01) counted toward Reached but " +
 		"cannot be split by node, so their opens/clicks are not shown here."
@@ -396,16 +469,33 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		note = "No node-attributed sends yet. Reached counts are live, but per-node opens/clicks stay " +
 			"at zero until this lane sends its next touch after the 2026-08-01 attribution change."
 	}
+	switch engSource {
+	case "lake":
+		note += " Delivery and engagement come from the analytics lake (deduped by event_uid, real " +
+			"transports only). Clicks split human vs machine; lake opens carry no machine flag, so " +
+			"open counts are raw."
+	case "pg-fallback":
+		note += " LAKE UNAVAILABLE — these engagement numbers came from Postgres, which is " +
+			"PMTA-route-complete and under-reports SES-routed delivery and engagement."
+	}
 
 	writeJSON(w, http.StatusOK, ClickFunnelNodesResponse{
-		APIVersion:      VersionClickFunnels,
-		OfferID:         offerID,
-		JourneyID:       journeyID,
-		Nodes:           nodes,
-		TotalEnrolled:   totalEnrolled,
-		TotalActive:     totalActive,
-		TotalConverted:  totalConverted,
-		AttributionNote: note,
+		APIVersion:       VersionClickFunnels,
+		OfferID:          offerID,
+		JourneyID:        journeyID,
+		Nodes:            nodes,
+		TotalEnrolled:        totalEnrolled,
+		TotalActive:          totalActive,
+		TotalConverted:       totalConverted,
+		TotalCompleted:       totalCompleted,
+		TotalExited:          totalExited,
+		MedianHoursToConvert: medianPtr,
+		CompletionRate:       laneRate(totalCompleted, totalEnrolled),
+		ConversionRate:       laneRate(totalConverted, totalEnrolled),
+		AttributionNote:      note,
+		EngagementSource: engSource,
+		WindowFrom:       fromDt,
+		WindowTo:         toDt,
 	})
 }
 
@@ -477,13 +567,184 @@ func (s *ClickFunnelsService) loadAwaiting(ctx context.Context, offerID string) 
 }
 
 type nodeEngagement struct {
-	sent, delivered, opens, clicks, unsubs, hard, soft int
+	sent, delivered, opens, clicks, humanClicks, unsubs, hard, soft, deferred int
 }
 
-// loadNodeEngagement aggregates each node's own shadow campaign. Uses the
-// canonical HardBounceSQL fragment so the hard/soft split matches every other
-// metrics surface (.cursor/rules/bounce-metrics.mdc).
-func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID string) (map[string]nodeEngagement, error) {
+// nodeCampaigns maps each of the lane's per-node shadow campaign ids to its
+// node id — the join key that lets the LAKE attribute engagement per node.
+func (s *ClickFunnelsService) nodeCampaigns(ctx context.Context, offerID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, journey_node_id
+		FROM mailing_campaigns
+		WHERE journey_offer_id = $1 AND journey_node_id IS NOT NULL
+	`, offerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, node string
+		if err := rows.Scan(&id, &node); err != nil {
+			return nil, err
+		}
+		out[id] = node
+	}
+	return out, rows.Err()
+}
+
+// loadNodeEngagement returns per-node engagement from the ANALYTICS LAKE.
+//
+// The lake is the authoritative recipient-side record: it is route-correct and
+// deduped by event_uid, whereas the PG counters this originally read are
+// PMTA-route-complete only and miss SES-routed delivery entirely. It reaches the
+// lake through internal/analytics.Breakdown — the existing reader — rather than
+// a second Athena client, so this inherits every canonical rule already encoded
+// there and cannot drift from the other lake surfaces:
+//
+//   - COUNT(DISTINCT event_uid) — SNS/accounting retries duplicate rows.
+//   - source IN (pmta, ses, kumo): the REAL transports. The `app` source emits a
+//     duplicate 'delivered' with no distinct delivery key, so including it
+//     double-counts delivery; `relayed_to_ses` is a hop, never a delivery.
+//   - eventTypeExpr normalizes the two bounce spellings (PMTA puts the class in
+//     event_type, SES puts it in bounce_cat) — keying off event_type alone makes
+//     every SES bounce read as zero.
+//   - delivery_delay is deduped by recipient, not per retry (2.6x inflation).
+//
+// Lake event names differ from PG's ('open'/'click' vs 'opened'/'clicked') —
+// mapping them by hand is exactly how a surface silently reports zeros.
+//
+// is_machine_click splits human clicks from scanner traffic. Opens carry NO
+// machine flag in the lake, so opens here are RAW and must be presented as such;
+// per platform doctrine a money-link click is the trustworthy signal anyway.
+//
+// Returns the engagement map plus the source label actually used, so the screen
+// can state its provenance instead of implying lake numbers when it fell back.
+func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID, fromDt, toDt string) (map[string]nodeEngagement, string, error) {
+	byCampaign, err := s.nodeCampaigns(ctx, offerID)
+	if err != nil {
+		return nil, "", err
+	}
+	out := map[string]nodeEngagement{}
+	if len(byCampaign) == 0 {
+		return out, "lake", nil
+	}
+
+	if !analytics.ReaderEnabled() {
+		// Reader not initialized (no Athena config in this environment). Fall
+		// back to PG rather than render an empty funnel, and SAY so.
+		pg, perr := s.loadNodeEngagementPG(ctx, offerID)
+		return pg, "pg-fallback", perr
+	}
+
+	ids := make([]string, 0, len(byCampaign))
+	for id := range byCampaign {
+		ids = append(ids, id)
+	}
+
+	// TWO passes, because delivery and engagement live on DIFFERENT lake sources
+	// and a single filter cannot serve both (verified 2026-08-01 against prod):
+	//
+	//   * Delivery / bounce / deferral ride the real transports (pmta/ses/kumo).
+	//     The source filter is mandatory there — the `app` source emits a
+	//     duplicate 'delivered' with no distinct key and double-counts delivery.
+	//   * open / click exist ONLY on source='app' (the pixel/redirect layer).
+	//     Applying the transport filter to them returns ZERO rows — a 30-day
+	//     probe over the click-drip campaigns returned 7,102 clicks and 2,350
+	//     opens with no source filter, and none at all with it.
+	//
+	// srcAllow rejects "app", so the engagement pass omits SourceIn entirely and
+	// selects on event_type instead; open/click occur on no other source.
+	delivery, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+		From:              fromDt,
+		To:                toDt,
+		GroupBy:           []string{"campaign_id", "event_type"},
+		SourceIn:          []string{"pmta", "ses", "kumo"},
+		CampaignIDs:       ids,
+		DedupDelayByEmail: true,
+		Limit:             5000,
+	})
+	if err != nil {
+		pg, perr := s.loadNodeEngagementPG(ctx, offerID)
+		if perr != nil {
+			return nil, "", fmt.Errorf("lake delivery breakdown failed (%v) and PG fallback failed: %w", err, perr)
+		}
+		return pg, "pg-fallback", nil
+	}
+
+	engagement, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+		From:        fromDt,
+		To:          toDt,
+		GroupBy:     []string{"campaign_id", "event_type", "is_machine_click"},
+		CampaignIDs: ids,
+		Limit:       5000,
+	})
+	if err != nil {
+		pg, perr := s.loadNodeEngagementPG(ctx, offerID)
+		if perr != nil {
+			return nil, "", fmt.Errorf("lake engagement breakdown failed (%v) and PG fallback failed: %w", err, perr)
+		}
+		return pg, "pg-fallback", nil
+	}
+
+	for _, r := range delivery {
+		node, ok := byCampaign[r.Keys["campaign_id"]]
+		if !ok {
+			continue
+		}
+		e := out[node]
+		c := int(r.Count)
+		switch r.Keys["event_type"] {
+		case "delivered":
+			e.delivered += c
+		case "hard_bounce":
+			e.hard += c
+		case "soft_bounce":
+			e.soft += c
+		case "delivery_delay":
+			e.deferred += c
+		}
+		out[node] = e
+	}
+
+	for _, r := range engagement {
+		node, ok := byCampaign[r.Keys["campaign_id"]]
+		if !ok {
+			continue
+		}
+		e := out[node]
+		c := int(r.Count)
+		switch r.Keys["event_type"] {
+		case "open":
+			e.opens += c
+		case "click":
+			e.clicks += c
+			// is_machine_click is a real boolean column; only an explicit
+			// "false" is a human click. Absent/unknown is NOT counted human —
+			// absence of a machine signal is not evidence of humanity.
+			if strings.EqualFold(r.Keys["is_machine_click"], "false") {
+				e.humanClicks += c
+			}
+		case "unsubscribe":
+			e.unsubs += c
+		}
+		out[node] = e
+	}
+
+	// "Sent" is not a lake event — attempted volume is delivered + bounced +
+	// deferred, and the honest denominator for rates is delivered.
+	for node, e := range out {
+		e.sent = e.delivered + e.hard + e.soft
+		out[node] = e
+	}
+	return out, "lake", nil
+}
+
+// loadNodeEngagementPG is the degraded path used only when the lake reader is
+// unavailable. PG is PMTA-route-complete but misses SES-routed engagement until
+// the 10-minute ingester backfills it, so its numbers can run low — the response
+// labels the source so a viewer is never told these are lake numbers.
+func (s *ClickFunnelsService) loadNodeEngagementPG(ctx context.Context, offerID string) (map[string]nodeEngagement, error) {
 	hardSQL := HardBounceSQL("t")
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.journey_node_id,
@@ -583,6 +844,112 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 		out[idx] = c
 	}
 	return out, rows.Err()
+}
+
+// ------------------------------------------------- matching enrollments
+
+// NodeEnrollment is one record that reached a node.
+type NodeEnrollment struct {
+	EnrollmentID string  `json:"enrollment_id"`
+	Email        string  `json:"email"`
+	Status       string  `json:"status"`
+	CurrentNode  string  `json:"current_node_id"`
+	EnrolledAt   string  `json:"enrolled_at"`
+	ExecutedAt   string  `json:"executed_at"`
+	Action       string  `json:"action"`
+	ErrorMessage string  `json:"error_message"`
+	ConvertedAt  *string `json:"converted_at"`
+	ExitReason   string  `json:"exit_reason"`
+}
+
+// NodeEnrollmentsResponse envelopes the drill-down.
+type NodeEnrollmentsResponse struct {
+	APIVersion  string           `json:"api_version"`
+	OfferID     string           `json:"offer_id"`
+	NodeID      string           `json:"node_id"`
+	Total       int              `json:"total"`
+	Enrollments []NodeEnrollment `json:"enrollments"`
+}
+
+// HandleNodeEnrollments serves
+//   GET /api/mailing/click-funnels/{offerID}/nodes/{nodeID}/enrollments
+//
+// HubSpot's "Matching enrollments" affordance: the records that actually
+// reached this step, so an aggregate can be audited instead of trusted. Also
+// accepts ?action=error to list only the touches that FAILED at this node —
+// click-drip send errors block and retry rather than advancing, so this is how
+// an operator sees who is stuck and why.
+func (s *ClickFunnelsService) HandleNodeEnrollments(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	offerID := strings.TrimSpace(chi.URLParam(r, "offerID"))
+	nodeID := strings.TrimSpace(chi.URLParam(r, "nodeID"))
+	if offerID == "" || nodeID == "" {
+		respondError(w, http.StatusBadRequest, "offerID and nodeID are required")
+		return
+	}
+	onlyErrors := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("action")), "error")
+
+	limit := 200
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.id,
+		       COALESCE(e.subscriber_email,''),
+		       COALESCE(e.status,''),
+		       COALESCE(e.current_node_id,''),
+		       to_char(e.enrolled_at,  'YYYY-MM-DD"T"HH24:MI:SSZ'),
+		       to_char(max(l.executed_at), 'YYYY-MM-DD"T"HH24:MI:SSZ'),
+		       COALESCE((array_agg(l.action ORDER BY l.executed_at DESC))[1], ''),
+		       COALESCE((array_agg(COALESCE(l.error_message,'') ORDER BY l.executed_at DESC))[1], ''),
+		       to_char(e.converted_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'),
+		       COALESCE(e.exit_reason,'')
+		FROM mailing_journey_execution_log l
+		JOIN mailing_journey_enrollments e ON e.id = l.enrollment_id
+		WHERE e.enrollment_offer_id = $1
+		  AND l.node_id = $2
+		  AND ($3::bool IS NOT TRUE OR l.action = 'error')
+		GROUP BY e.id, e.subscriber_email, e.status, e.current_node_id,
+		         e.enrolled_at, e.converted_at, e.exit_reason
+		ORDER BY max(l.executed_at) DESC
+		LIMIT $4
+	`, offerID, nodeID, onlyErrors, limit)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "load node enrollments: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := make([]NodeEnrollment, 0, limit)
+	for rows.Next() {
+		var e NodeEnrollment
+		var converted sql.NullString
+		if err := rows.Scan(&e.EnrollmentID, &e.Email, &e.Status, &e.CurrentNode,
+			&e.EnrolledAt, &e.ExecutedAt, &e.Action, &e.ErrorMessage, &converted, &e.ExitReason); err != nil {
+			respondError(w, http.StatusInternalServerError, "scan node enrollment: "+err.Error())
+			return
+		}
+		if converted.Valid {
+			v := converted.String
+			e.ConvertedAt = &v
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "iterate node enrollments: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, NodeEnrollmentsResponse{
+		APIVersion:  VersionClickFunnels,
+		OfferID:     offerID,
+		NodeID:      nodeID,
+		Total:       len(out),
+		Enrollments: out,
+	})
 }
 
 // ------------------------------------------------------------------- upload
@@ -870,6 +1237,41 @@ func splitUploadText(raw string) []string {
 // erroring when org resolution returns a non-UUID (dev single-tenant fallback).
 // The package-level nullableUUID passes non-UUID strings straight through,
 // which would blow up that cast.
+// clickFunnelWindow resolves the lake dt window. Athena bills per byte scanned
+// and email_events is partitioned by dt, so an unbounded window is both slow and
+// expensive (measured: a 30-day engagement pass over the click-drip campaigns
+// scanned ~3.1 GB). Default 30 days;
+// ?from=/?to= narrow it. Values are passed to analytics.Breakdown, which
+// validates them against its dt pattern before they reach SQL.
+// laneRate is the lane-level percentage helper; a zero denominator yields 0
+// rather than NaN (which serializes as invalid JSON and blanks the tile).
+func laneRate(num, den int) float64 {
+	if den <= 0 {
+		return 0
+	}
+	return round2(float64(num) / float64(den) * 100)
+}
+
+func clickFunnelWindow(r *http.Request) (string, string) {
+	const layout = "2006-01-02"
+	to := time.Now().UTC()
+	from := to.AddDate(0, 0, -30)
+	if v := strings.TrimSpace(r.URL.Query().Get("from")); v != "" {
+		if t, err := time.Parse(layout, v); err == nil {
+			from = t
+		}
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("to")); v != "" {
+		if t, err := time.Parse(layout, v); err == nil {
+			to = t
+		}
+	}
+	if to.Before(from) {
+		from, to = to, from
+	}
+	return from.Format(layout), to.Format(layout)
+}
+
 func clickFunnelOrgFilter(s string) interface{} {
 	if _, err := uuid.Parse(s); err != nil {
 		return nil

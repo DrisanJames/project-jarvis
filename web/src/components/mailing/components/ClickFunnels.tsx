@@ -71,8 +71,11 @@ interface FunnelNode {
   hard_bounce: number;
   soft_bounce: number;
   conversions: number;
+  human_clicks: number;
+  deferred: number;
   open_rate: number;
   click_rate: number;
+  human_click_rate: number;
   conversion_rate: number;
   step_through_rate: number;
   attributed: boolean;
@@ -85,7 +88,27 @@ interface NodesResponse {
   total_enrolled: number;
   total_active: number;
   total_converted: number;
+  total_completed: number;
+  total_exited: number;
+  median_hours_to_convert: number | null;
+  completion_rate: number;
+  conversion_rate: number;
   attribution_note: string;
+  engagement_source: string;
+  window_from: string;
+  window_to: string;
+}
+
+interface NodeEnrollmentRow {
+  enrollment_id: string;
+  email: string;
+  status: string;
+  current_node_id: string;
+  executed_at: string;
+  action: string;
+  error_message: string;
+  converted_at: string | null;
+  exit_reason: string;
 }
 
 interface UploadPreview {
@@ -254,6 +277,25 @@ const NodeCard: React.FC<{
   offerId: string;
   onSaved: () => void;
 }> = ({ node, mode, entryReached, offerId, onSaved }) => {
+  const [drill, setDrill] = useState<NodeEnrollmentRow[] | null>(null);
+  const [drillErrOnly, setDrillErrOnly] = useState(false);
+  const [drillBusy, setDrillBusy] = useState(false);
+
+  const loadDrill = async (errorsOnly: boolean) => {
+    setDrillBusy(true); setDrillErrOnly(errorsOnly);
+    try {
+      const qs = errorsOnly ? '?action=error&limit=50' : '?limit=50';
+      const res = await apiFetch(
+        `/api/mailing/click-funnels/${encodeURIComponent(offerId)}/nodes/${encodeURIComponent(node.node_id)}/enrollments${qs}`
+      );
+      const body = await res.json();
+      setDrill(res.ok ? (body.enrollments ?? []) : []);
+    } catch {
+      setDrill([]);
+    } finally {
+      setDrillBusy(false);
+    }
+  };
   const isEmail = node.type === 'email';
   const isGoal = node.type === 'goal';
   const isDelay = node.type === 'delay';
@@ -318,14 +360,16 @@ const NodeCard: React.FC<{
     ? mode === 'rates'
       ? [
           { label: 'Step-through', value: pct(node.step_through_rate), title: `${n(node.reached)} of ${n(entryReached)} who entered reached this touch` },
-          { label: 'Open rate', value: node.attributed ? pct(node.open_rate) : '—', title: 'Opens ÷ delivered for this touch' },
-          { label: 'Click rate', value: node.attributed ? pct(node.click_rate) : '—', title: 'Clicks ÷ delivered for this touch' },
+          { label: 'Open rate', value: node.attributed ? pct(node.open_rate) : '—', title: 'Opens ÷ delivered (lake opens carry no machine flag — raw)' },
+          { label: 'Click rate', value: node.attributed ? pct(node.click_rate) : '—', title: 'All clicks ÷ delivered for this touch' },
+          { label: 'Human click', value: node.attributed ? pct(node.human_click_rate) : '—', title: 'is_machine_click=false ÷ delivered — the trustworthy engagement signal' },
           { label: 'Conv rate', value: pct(node.conversion_rate), title: 'Last-touch conversions ÷ people who reached this touch' },
         ]
       : [
           { label: 'Reached', value: n(node.reached), title: 'Distinct enrollments that executed this node' },
-          { label: 'Opens', value: node.attributed ? n(node.opens) : '—', title: 'Open events on this touch' },
-          { label: 'Clicks', value: node.attributed ? n(node.clicks) : '—', title: 'Click events on this touch' },
+          { label: 'Opens', value: node.attributed ? n(node.opens) : '—', title: 'Open events on this touch (raw — no machine flag in the lake)' },
+          { label: 'Clicks', value: node.attributed ? n(node.clicks) : '—', title: 'All click events on this touch' },
+          { label: 'Human', value: node.attributed ? n(node.human_clicks) : '—', title: 'Clicks with is_machine_click=false' },
           { label: 'Conversions', value: n(node.conversions), title: 'Conversions last-touch attributed to this node' },
         ]
     : [];
@@ -415,13 +459,52 @@ const NodeCard: React.FC<{
         </div>
       </div>
 
-      {(node.awaiting > 0 || node.errors > 0) && (
-        <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: colors.textMuted }}>
+      {(node.awaiting > 0 || node.errors > 0 || node.deferred > 0) && (
+        <div style={{ display: 'flex', gap: 12, marginTop: 10, fontSize: 11, color: colors.textMuted, flexWrap: 'wrap' }}>
           {node.awaiting > 0 && <span>{n(node.awaiting)} currently waiting at this node</span>}
+          {node.deferred > 0 && <span>{n(node.deferred)} deferred (unique mailboxes)</span>}
           {node.errors > 0 && (
             <span style={{ color: colors.warning }}>
               <FontAwesomeIcon icon={faTriangleExclamation} /> {n(node.errors)} send errors (retried, not skipped)
             </span>
+          )}
+        </div>
+      )}
+
+      {/* Matching enrollments — the records behind the aggregate. */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <button onClick={() => loadDrill(false)} disabled={drillBusy} style={{ ...btnGhost, padding: '3px 10px', fontSize: 11 }}>
+          {drillBusy && !drillErrOnly ? 'Loading…' : 'Matching enrollments'}
+        </button>
+        {node.errors > 0 && (
+          <button onClick={() => loadDrill(true)} disabled={drillBusy} style={{ ...btnGhost, padding: '3px 10px', fontSize: 11, color: colors.warning }}>
+            {drillBusy && drillErrOnly ? 'Loading…' : `Show ${n(node.errors)} failures`}
+          </button>
+        )}
+        {drill && (
+          <button onClick={() => setDrill(null)} style={{ ...btnGhost, padding: '3px 10px', fontSize: 11 }}>Hide</button>
+        )}
+      </div>
+
+      {drill && (
+        <div style={{ marginTop: 8, maxHeight: 260, overflow: 'auto', border: `1px solid ${colors.divider}`, borderRadius: 6 }}>
+          {drill.length === 0 ? (
+            <div style={{ padding: 10, fontSize: 11, color: colors.textFaint }}>No matching enrollments.</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <tbody>
+                {drill.map(d => (
+                  <tr key={d.enrollment_id} style={{ borderTop: `1px solid ${colors.divider}` }}>
+                    <td style={{ padding: '5px 8px', color: colors.text }}>{d.email || d.enrollment_id}</td>
+                    <td style={{ padding: '5px 8px', color: colors.textMuted, whiteSpace: 'nowrap' }}>{d.status}</td>
+                    <td style={{ padding: '5px 8px', color: colors.textFaint, whiteSpace: 'nowrap' }}>{d.executed_at}</td>
+                    <td style={{ padding: '5px 8px', color: d.action === 'error' ? colors.warning : colors.textMuted }}>
+                      {d.action === 'error' ? (d.error_message || 'error') : d.action}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}
@@ -794,15 +877,40 @@ export const ClickFunnels: React.FC = () => {
               <div style={{ color: colors.textMuted, fontSize: 13 }}><FontAwesomeIcon icon={faSpinner} spin /> Loading…</div>
             ) : (
               <>
-                <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginBottom: 6 }}>
                   <Stat label="Total enrolled" value={n(detail.total_enrolled)} title="All-time enrollments in this lane" />
                   <Stat label="Active now" value={n(detail.total_active)} color={colors.indigo200} />
                   <Stat
+                    label="Completed"
+                    value={n(detail.total_completed)}
+                    sub={pct(detail.completion_rate)}
+                    title="Finished all four touches (terminal goal node) — sequence completion, NOT a conversion"
+                  />
+                  <Stat
+                    label="Exited early"
+                    value={n(detail.total_exited)}
+                    color={colors.warning}
+                    title="Left the funnel before completing — engagement watcher, postback exit or suppression"
+                  />
+                  <Stat
                     label="Conversions"
                     value={n(detail.total_converted)}
+                    sub={pct(detail.conversion_rate)}
                     color={colors.success}
                     title="Everflow postback conversions (converted_at) — NOT sequence completions"
                   />
+                  <Stat
+                    label="Time to goal"
+                    value={detail.median_hours_to_convert == null ? '—' : `${detail.median_hours_to_convert.toFixed(1)}h`}
+                    title="Median hours from enrollment to conversion"
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: colors.textFaint, marginBottom: 12 }}>
+                  Engagement source:{' '}
+                  <strong style={{ color: detail.engagement_source === 'lake' ? colors.success : colors.warning }}>
+                    {detail.engagement_source === 'lake' ? 'analytics lake (Athena)' : 'Postgres fallback'}
+                  </strong>{' '}
+                  · window {detail.window_from} → {detail.window_to}
                 </div>
 
                 {detail.nodes.map((nd, i) => (
