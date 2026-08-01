@@ -129,12 +129,169 @@ const routingColor = (state: string) =>
     : state === 'redirect' ? colors.indigo300
     : colors.success;
 
+const editInput: React.CSSProperties = {
+  background: 'rgba(10,16,32,0.6)',
+  color: colors.text,
+  border: `1px solid ${colors.panelBorder}`,
+  borderRadius: 6,
+  padding: '6px 9px',
+  fontSize: 12,
+  width: '100%',
+};
+
+const btnPrimary: React.CSSProperties = {
+  background: colors.indigo500, color: '#fff', border: 'none', borderRadius: 6,
+  padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+};
+
+const btnGhost: React.CSSProperties = {
+  background: 'transparent', color: colors.textMuted,
+  border: `1px solid ${colors.panelBorder}`, borderRadius: 6,
+  padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+};
+
+// PAYOUT_TYPES mirrors payoutTypeAllowed() in click_drip_admin_handlers.go,
+// which itself mirrors the CHECK constraint. Sending anything else yields a 400.
+const PAYOUT_TYPES = ['CPM', 'eCPM', 'CPA', 'CPL', 'CPC', 'IO', 'PRV', 'UNKNOWN'];
+
+// LaneEditor creates or updates one offer lane through the existing
+// offer-journey-map upsert. It deliberately does NOT edit the journey GRAPH:
+// every lane currently points at the same journey row, so changing a delay or
+// adding a touch there would silently re-shape all ~22 funnels at once. That
+// needs a per-lane journey before it can be safe, so the graph is read-only
+// here and the reason is stated in the UI rather than hidden.
+const LaneEditor: React.FC<{
+  lane: Lane | null;
+  presetOffer?: string;
+  journeyOptions: { id: string; name: string }[];
+  onSaved: (offerId: string) => void;
+  onCancel: () => void;
+}> = ({ lane, presetOffer, journeyOptions, onSaved, onCancel }) => {
+  const [offerId, setOfferId] = useState(lane?.offer_id ?? presetOffer ?? '');
+  const [journeyId, setJourneyId] = useState(lane?.journey_id ?? journeyOptions[0]?.id ?? '');
+  const [payout, setPayout] = useState(lane?.payout_type || 'UNKNOWN');
+  const [enabled, setEnabled] = useState(lane?.enabled ?? false);
+  const [notes, setNotes] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const isNew = !lane;
+
+  const save = async () => {
+    if (!offerId.trim()) { setErr('Offer id is required.'); return; }
+    setBusy(true); setErr(null);
+    try {
+      const res = await apiFetch(`/api/mailing/offer-journey-map/${encodeURIComponent(offerId.trim())}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          click_journey_id: journeyId,
+          payout_type: payout,
+          enabled,
+          notes,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      onSaved(offerId.trim());
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Panel accent={colors.indigo500} style={{ padding: 16 }}>
+      <SectionHeader title={isNew ? 'Create click funnel' : `Edit funnel · offer ${lane!.offer_id}`} icon={faRoute} />
+      <div style={{ display: 'grid', gap: 8 }}>
+        <label style={{ fontSize: 11, color: colors.textMuted }}>
+          Everflow offer id
+          <input
+            value={offerId}
+            onChange={e => setOfferId(e.target.value)}
+            disabled={!isNew}
+            placeholder="e.g. 1054"
+            style={{ ...editInput, marginTop: 3, opacity: isNew ? 1 : 0.6 }}
+          />
+        </label>
+        <label style={{ fontSize: 11, color: colors.textMuted }}>
+          Journey
+          <select value={journeyId} onChange={e => setJourneyId(e.target.value)} style={{ ...editInput, marginTop: 3 }}>
+            {journeyOptions.length === 0 && <option value="">(no journeys found)</option>}
+            {journeyOptions.map(j => <option key={j.id} value={j.id}>{j.name || j.id}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: colors.textMuted }}>
+          Payout type
+          <select value={payout} onChange={e => setPayout(e.target.value)} style={{ ...editInput, marginTop: 3 }}>
+            {PAYOUT_TYPES.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: colors.textMuted }}>
+          Notes
+          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="why this lane exists" style={{ ...editInput, marginTop: 3 }} />
+        </label>
+        <label style={{ fontSize: 12, color: colors.text, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+          Enabled — clicks on this offer enroll immediately
+        </label>
+        {err && <div style={{ fontSize: 12, color: colors.danger }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+          <button onClick={save} disabled={busy} style={btnPrimary}>{busy ? 'Saving…' : isNew ? 'Create funnel' : 'Save'}</button>
+          <button onClick={onCancel} disabled={busy} style={btnGhost}>Cancel</button>
+        </div>
+      </div>
+    </Panel>
+  );
+};
+
 // ---------------------------------------------------------------- node card
 
-const NodeCard: React.FC<{ node: FunnelNode; mode: 'rates' | 'counts'; entryReached: number }> = ({ node, mode, entryReached }) => {
+const NodeCard: React.FC<{
+  node: FunnelNode;
+  mode: 'rates' | 'counts';
+  entryReached: number;
+  offerId: string;
+  onSaved: () => void;
+}> = ({ node, mode, entryReached, offerId, onSaved }) => {
   const isEmail = node.type === 'email';
   const isGoal = node.type === 'goal';
   const isDelay = node.type === 'delay';
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ subject: '', preheader: '', from_name_override: '', enabled: true });
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  const openEditor = () => {
+    setDraft({
+      subject: node.subject,
+      preheader: node.preheader,
+      from_name_override: node.from_name_override,
+      enabled: node.copy_missing ? true : node.copy_enabled,
+    });
+    setSaveErr(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    if (!draft.subject.trim()) { setSaveErr('Subject is required.'); return; }
+    setSaving(true); setSaveErr(null);
+    try {
+      const res = await apiFetch(
+        `/api/mailing/offer-reminder-subjects/${encodeURIComponent(offerId)}/${node.sequence_index}`,
+        { method: 'PUT', body: JSON.stringify(draft) }
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+      setEditing(false);
+      onSaved();
+    } catch (e: any) {
+      setSaveErr(e?.message ?? String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (isDelay) {
     return (
@@ -194,18 +351,61 @@ const NodeCard: React.FC<{ node: FunnelNode; mode: 'rates' | 'counts'; entryReac
           {/* Creative for this node. Body HTML is per-subscriber (the clicked
               campaign's creative is reused), so subject/preheader is the whole
               of the node-level creative — showing a fake body would mislead. */}
-          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.45 }}>
-            {node.subject || <span style={{ color: colors.textFaint, fontStyle: 'italic' }}>inherits the clicked campaign’s subject</span>}
-          </div>
-          {node.preheader && (
-            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3 }}>{node.preheader}</div>
+          {editing ? (
+            <div style={{ display: 'grid', gap: 6, marginTop: 4 }}>
+              <input
+                value={draft.subject}
+                onChange={e => setDraft({ ...draft, subject: e.target.value })}
+                placeholder="Subject (required)"
+                style={editInput}
+              />
+              <input
+                value={draft.preheader}
+                onChange={e => setDraft({ ...draft, preheader: e.target.value })}
+                placeholder="Preheader"
+                style={editInput}
+              />
+              <input
+                value={draft.from_name_override}
+                onChange={e => setDraft({ ...draft, from_name_override: e.target.value })}
+                placeholder="From-name override (blank = offer default)"
+                style={editInput}
+              />
+              <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={draft.enabled}
+                  onChange={e => setDraft({ ...draft, enabled: e.target.checked })}
+                />
+                touch enabled
+              </label>
+              {saveErr && <div style={{ fontSize: 11, color: colors.danger }}>{saveErr}</div>}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={save} disabled={saving} style={btnPrimary}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={() => setEditing(false)} disabled={saving} style={btnGhost}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.45 }}>
+                {node.subject || <span style={{ color: colors.textFaint, fontStyle: 'italic' }}>inherits the clicked campaign’s subject</span>}
+              </div>
+              {node.preheader && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3 }}>{node.preheader}</div>
+              )}
+              {node.from_name_override && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3 }}>from: {node.from_name_override}</div>
+              )}
+              <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6 }}>
+                body reuses the creative this subscriber originally clicked
+                <button onClick={openEditor} style={{ ...btnGhost, marginLeft: 8, padding: '2px 8px', fontSize: 11 }}>
+                  Edit copy
+                </button>
+              </div>
+            </>
           )}
-          {node.from_name_override && (
-            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3 }}>from: {node.from_name_override}</div>
-          )}
-          <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6 }}>
-            body reuses the creative this subscriber originally clicked
-          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
@@ -387,6 +587,8 @@ export const ClickFunnels: React.FC = () => {
   const [detail, setDetail] = useState<NodesResponse | null>(null);
   const [detailErr, setDetailErr] = useState<string | null>(null);
   const [mode, setMode] = useState<'rates' | 'counts'>('rates');
+  const [editorFor, setEditorFor] = useState<{ lane: Lane | null; preset?: string } | null>(null);
+  const [journeyOptions, setJourneyOptions] = useState<{ id: string; name: string }[]>([]);
 
   const loadList = useCallback(async () => {
     setListErr(null);
@@ -417,6 +619,20 @@ export const ClickFunnels: React.FC = () => {
   useEffect(() => { loadList(); }, [loadList]);
   useEffect(() => { if (selected) loadDetail(selected); }, [selected, loadDetail]);
 
+  // Journey options for the lane editor. Non-fatal: an empty list just means the
+  // editor cannot offer a choice, not that the screen is broken.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/journeys');
+        if (!res.ok) return;
+        const body = await res.json();
+        const raw = Array.isArray(body) ? body : (body?.journeys ?? []);
+        setJourneyOptions(raw.map((j: any) => ({ id: j.id, name: j.name })).filter((j: any) => j.id));
+      } catch { /* editor degrades to whatever the lane already points at */ }
+    })();
+  }, []);
+
   const lane = useMemo(
     () => list?.lanes.find(l => l.offer_id === selected) ?? null,
     [list, selected]
@@ -441,6 +657,13 @@ export const ClickFunnels: React.FC = () => {
             Offer {list.unmapped_slug_offers.join(', ')} — clicks reach the queue and are dropped as
             <code style={{ margin: '0 4px' }}>offer_unmapped_at_processing</code>. Configure a funnel or disable the slug inlet.
           </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {list.unmapped_slug_offers.map(o => (
+              <button key={o} onClick={() => setEditorFor({ lane: null, preset: o })} style={btnGhost}>
+                Create funnel for {o}
+              </button>
+            ))}
+          </div>
         </Panel>
       )}
 
@@ -450,11 +673,31 @@ export const ClickFunnels: React.FC = () => {
           title="Click funnels"
           icon={faRoute}
           right={list && (
-            <span style={{ fontSize: 11, color: colors.textMuted }}>
-              {list.lanes.filter(l => l.enabled).length} active · {n(list.lanes.reduce((s, l) => s + l.active_enrollments, 0))} enrolled
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 11, color: colors.textMuted }}>
+                {list.lanes.filter(l => l.enabled).length} active · {n(list.lanes.reduce((s, l) => s + l.active_enrollments, 0))} enrolled
+              </span>
+              <button onClick={() => setEditorFor({ lane: null })} style={btnGhost}>+ New funnel</button>
+            </div>
           )}
         />
+
+        {editorFor && (
+          <div style={{ marginBottom: 12 }}>
+            <LaneEditor
+              lane={editorFor.lane}
+              presetOffer={editorFor.preset}
+              journeyOptions={journeyOptions}
+              onCancel={() => setEditorFor(null)}
+              onSaved={(offerId) => {
+                setEditorFor(null);
+                setSelected(offerId);
+                loadList();
+                loadDetail(offerId);
+              }}
+            />
+          </div>
+        )}
         {listErr ? (
           <SectionError label="Click funnels" error={listErr} onRetry={loadList} />
         ) : !list ? (
@@ -569,7 +812,7 @@ export const ClickFunnels: React.FC = () => {
                         <FontAwesomeIcon icon={faArrowRight} />
                       </div>
                     )}
-                    <NodeCard node={nd} mode={mode} entryReached={entryReached} />
+                    <NodeCard node={nd} mode={mode} entryReached={entryReached} offerId={selected} onSaved={() => loadDetail(selected)} />
                   </div>
                 ))}
 
@@ -589,7 +832,11 @@ export const ClickFunnels: React.FC = () => {
 
             {lane && (
               <Panel style={{ padding: 16 }}>
-                <SectionHeader title="Lane config" icon={faRoute} />
+                <SectionHeader
+                  title="Lane config"
+                  icon={faRoute}
+                  right={<button onClick={() => setEditorFor({ lane })} style={btnGhost}>Edit</button>}
+                />
                 <div style={{ fontSize: 12, color: colors.textMuted, display: 'grid', gap: 6 }}>
                   <div>Journey: <span style={{ color: colors.text }}>{lane.journey_name || lane.journey_id || '—'}</span></div>
                   <div>Payout type: <span style={{ color: colors.text }}>{lane.payout_type || '—'}</span></div>
@@ -602,8 +849,10 @@ export const ClickFunnels: React.FC = () => {
                   )}
                 </div>
                 <div style={{ marginTop: 10, fontSize: 11, color: colors.textFaint, lineHeight: 1.5 }}>
-                  Per-touch subject and preheader are edited through the click-drip admin endpoints
-                  (<code>offer-reminder-subjects</code>); the lane binding lives in <code>offer-journey-map</code>.
+                  Per-touch copy is editable on each touch above. Delays and the number of touches come
+                  from the journey graph, which every lane currently shares — changing it here would
+                  re-shape all {list?.lanes.length ?? 0} funnels at once, so it stays read-only until lanes
+                  get their own journey.
                 </div>
               </Panel>
             )}
