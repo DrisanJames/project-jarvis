@@ -1487,6 +1487,10 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				// Current-month pacing (operator 2026-07-01): MTD vs target with a
 				// trailing-3-day rate + month-end projection. On-demand only (QA C4).
 				cp.Get("/pacing", cpmPlanner.HandleCurrentMonthPacing)
+				// Non-CPM performance funnel (volume → clickers → conversions).
+				// Lake-backed via the offer-alignment snapshot; see
+				// cpm_non_cpm_performance.go for why it never calls Athena itself.
+				cp.Get("/non-cpm", cpmPlanner.HandleNonCpmPerformance)
 			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===

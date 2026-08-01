@@ -198,11 +198,29 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		// set (>0) it overrides the tracked+uploaded total for eCPA / pacing.
 		// NULL = unset → fall back to the computed count.
 		`ALTER TABLE mailing_cpm_deals ADD COLUMN IF NOT EXISTS conversions_override INTEGER`,
-		// Seed the Sam's Club deal so its ~27% of delivered (broadcast + board) volume
-		// counts toward pacing. Every Sam's send carries "sam" in the campaign name
-		// ([partner-drip] samsclub_internal…, jun27 - … - sams-club, SPICY-COLD … SAMS).
-		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sam%'
+		// Seed the Sam's Club deal so its board/broadcast volume (offer_id=NULL)
+		// counts toward pacing. The pattern must match the OFFER slug the board
+		// name carries ("… - sams-club"), NOT the bare token "sam".
+		//
+		// '%sam%' was the original seed and it conflated the Sam's Club OFFER with
+		// the Sam's Club AUDIENCE: the partner-drip lanes are named for their DATA
+		// SOURCE ("[partner-drip] samsclub_internal …", "[partner-drip]
+		// clickers_samsclub …") but mail OTHER advertisers' offers to that list.
+		// Measured on prod 2026-08-01: of 53,742 campaigns matching '%sam%' since
+		// the deal's Jun 11 start, 20,423 carried a FOREIGN offer_id (Fidelity Life,
+		// Metal Roofing, National Debt Relief, Liberty Mutual, Tahiti Village,
+		// 3 Day Blinds) — 54,569 delivered in July alone billed to Sam's Club, and
+		// the Liberty slice was double-counted into both deals. '%sams-club%' keeps
+		// the 113 offer_id=NULL board sends that actually need the pattern; every
+		// other genuine Sam's campaign carries the offer_id and is attributed by
+		// that branch regardless of its name.
+		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sams-club%'
 		   WHERE lower(name) ~ 'sam' AND COALESCE(campaign_name_pattern,'') = ''`,
+		// One-time corrective for deals already carrying the over-broad seed.
+		// Scoped to the EXACT superseded value so it is a no-op on every boot
+		// after the first and can never stomp a later operator edit.
+		`UPDATE mailing_cpm_deals SET campaign_name_pattern = '%sams-club%', updated_at = NOW()
+		   WHERE campaign_name_pattern = '%sam%'`,
 		// Same fix for Liberty Mutual and Metal Roofing (operator 2026-07-02): both
 		// deals mail entirely as board/broadcast sends that carry offer_id=NULL and
 		// are NOT hand-earmarked, so with no name pattern they attributed ZERO —
@@ -242,6 +260,20 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		// 2026-07-07 backfill. Partial: NULL rows (no offer identity) excluded.
 		`CREATE INDEX IF NOT EXISTS idx_campaigns_org_offer_key
 			ON mailing_campaigns(organization_id, offer_key) WHERE offer_key IS NOT NULL`,
+		// Lake click columns HandleNonCpmPerformance selects. They are also in
+		// runStartupMigrations next to the table's CREATE, but that runs in a
+		// BACKGROUND GOROUTINE (cmd/server/main.go — `go func() { …
+		// runStartupMigrations(mailingDB) … }()`), so on a cold boot the route
+		// can be live before the columns land and the handler would 500 on
+		// "column does not exist". ensureTables runs synchronously inside
+		// NewCpmPlannerHandlers, which is constructed immediately before the
+		// /cpm-planner routes are registered — so the columns cannot be missing
+		// by the time anything can call the handler. Idempotent, and cheap
+		// (constant DEFAULT ⇒ metadata-only on PG 11+, no table rewrite).
+		`ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS lake_clickers BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS lake_clicks BIGINT NOT NULL DEFAULT 0`,
 	}
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {

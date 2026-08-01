@@ -336,6 +336,47 @@ interface PacingResp {
   };
 }
 
+// ─── Non-CPM sending funnel (mirrors HandleNonCpmPerformance) ───────────────
+// delivered/clickers/clicks are ATHENA lake numbers; conversions is POSTGRES
+// (the lake carries no conversion events). The column headers say so — do not
+// collapse them into one "source" label.
+interface NonCpmOffer {
+  offer_key: string;
+  offer_name: string;
+  delivered: number;
+  clickers: number;
+  clicks: number;
+  conversions: number;
+  clicker_rate: number;
+  conv_rate: number;
+  is_cpm: boolean;
+  deal_id: string;
+  deal_name: string;
+  attribution: 'full' | 'partial' | 'none';
+  campaigns: number;
+  campaigns_in_deal: number;
+}
+interface NonCpmTotals {
+  offers: number;
+  delivered: number;
+  clickers: number;
+  clicks: number;
+  conversions: number;
+  clicker_rate: number;
+  conv_rate: number;
+}
+interface NonCpmResp {
+  window_days: number;
+  offers: NonCpmOffer[];
+  totals?: { cpm: NonCpmTotals; non_cpm: NonCpmTotals };
+  refreshed_at?: string;
+  stale?: boolean;
+  building?: boolean;
+  note?: string;
+  offer_cap?: number;
+  offer_cap_hit?: boolean;
+}
+
 // ─── Month-to-date creative/subject rows (mirror HandleAnalyticsCreatives) ───
 interface CreativeRow {
   creative_key: string;
@@ -536,6 +577,15 @@ export const CpmPlanner: React.FC = () => {
   // Month-to-date creative/subject performance per expanded deal.
   const [creatives, setCreatives] = useState<Record<string, CreativesState>>({});
 
+  // Non-CPM sending funnel (volume → clickers → conversions). Server-side this
+  // joins every campaign in the window against the deal attribution map (~8s on
+  // prod), so it is on-demand only — mount + explicit refresh, never the timer.
+  const [nonCpm, setNonCpm] = useState<NonCpmResp | null>(null);
+  const [nonCpmLoading, setNonCpmLoading] = useState(false);
+  const [nonCpmError, setNonCpmError] = useState<string | null>(null);
+  const [nonCpmWindow, setNonCpmWindow] = useState<7 | 30>(30);
+  const [nonCpmShowAll, setNonCpmShowAll] = useState(false);
+
   const loadAll = useCallback(async () => {
     try {
       const [dRes, cRes] = await Promise.all([
@@ -637,6 +687,22 @@ export const CpmPlanner: React.FC = () => {
   }, []);
 
   useEffect(() => { loadAttrGap(); }, [loadAttrGap]);
+
+  const loadNonCpm = useCallback(async (windowDays: 7 | 30) => {
+    setNonCpmLoading(true);
+    try {
+      const res = await apiFetch(`${API}/non-cpm?window=${windowDays}`);
+      if (!res.ok) throw new Error(`non-cpm: HTTP ${res.status}`);
+      setNonCpm(await res.json());
+      setNonCpmError(null);
+    } catch (e) {
+      setNonCpmError(e instanceof Error ? e.message : 'failed to load non-CPM performance');
+    } finally {
+      setNonCpmLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadNonCpm(nonCpmWindow); }, [loadNonCpm, nonCpmWindow]);
 
   // Refresh months after the deal modal closes (a deal may have been created from
   // "Add deal to month") so freshly-created deals appear in the planning grid.
@@ -2674,6 +2740,164 @@ export const CpmPlanner: React.FC = () => {
     );
   };
 
+  // ─── 4 · Non-CPM sending — volume → clickers → conversions ─────────────────
+  // Every offer we mail, split by whether a CPM deal is billing it. The three
+  // funnel columns come from TWO different systems and the header says which:
+  // volume/clickers are Athena lake truth, conversions are the PG Everflow
+  // ledger (the lake has no conversion events).
+  const renderNonCpm = () => {
+    const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
+    const rows = nonCpm?.offers || [];
+    const shown = nonCpmShowAll ? rows : rows.filter(o => !o.is_cpm);
+    const t = nonCpm?.totals;
+
+    const winBtn = (d: 7 | 30) => (
+      <button key={d} onClick={() => setNonCpmWindow(d)}
+        style={{
+          padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer',
+          border: `1px solid ${nonCpmWindow === d ? C.indigo : C.border}`,
+          background: nonCpmWindow === d ? 'rgba(99,102,241,0.25)' : 'transparent',
+          color: nonCpmWindow === d ? C.heading : C.muted, fontWeight: 700,
+        }}>
+        Last {d}d
+      </button>
+    );
+
+    return (
+      <div style={{ marginTop: 30 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 10 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
+              4 · Non-CPM Sending — Volume → Clickers → Conversions
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
+              Everything we mail that no CPM deal is billing. Volume and clickers are{' '}
+              <span style={{ color: C.heading }}>Athena lake</span> truth; conversions are the{' '}
+              <span style={{ color: C.heading }}>Everflow postback ledger in Postgres</span> — the lake
+              carries no conversion events.
+              {nonCpm?.refreshed_at && (
+                <> Snapshot {new Date(nonCpm.refreshed_at).toLocaleString()}{nonCpm.stale ? ' (stale — rebuilding)' : ''}.</>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {[7, 30].map(d => winBtn(d as 7 | 30))}
+            <button onClick={() => setNonCpmShowAll(v => !v)}
+              style={{
+                padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer',
+                border: `1px solid ${nonCpmShowAll ? C.indigo : C.border}`,
+                background: nonCpmShowAll ? 'rgba(99,102,241,0.25)' : 'transparent',
+                color: nonCpmShowAll ? C.heading : C.muted,
+              }}>
+              {nonCpmShowAll ? 'Non-CPM only' : 'Show CPM too'}
+            </button>
+            <button onClick={() => loadNonCpm(nonCpmWindow)} disabled={nonCpmLoading}
+              style={{
+                padding: '6px 12px', borderRadius: 16, fontSize: 12,
+                cursor: nonCpmLoading ? 'default' : 'pointer',
+                border: `1px solid ${C.border}`, background: 'transparent', color: C.muted,
+              }}>
+              {nonCpmLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
+            </button>
+          </div>
+        </div>
+
+        {nonCpmError && (
+          <div style={{
+            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 13,
+            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', color: C.red,
+          }}>
+            {nonCpmError}
+          </div>
+        )}
+
+        {nonCpm?.building && (
+          <div style={{
+            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 13,
+            background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', color: C.amber,
+          }}>
+            {nonCpm.note}
+          </div>
+        )}
+
+        {t && (
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <Stat label="Non-CPM volume" value={fmtInt(t.non_cpm.delivered)} />
+            <Stat label="Non-CPM clickers" value={fmtInt(t.non_cpm.clickers)} color={C.indigo} />
+            <Stat label="Non-CPM clicker rate" value={pct(t.non_cpm.clicker_rate)} />
+            <Stat label="Non-CPM conversions" value={fmtInt(t.non_cpm.conversions)} color={C.green} />
+            <Stat label="CPM volume (billed)" value={fmtInt(t.cpm.delivered)} color={C.muted} />
+          </div>
+        )}
+
+        {nonCpm?.offer_cap_hit && (
+          <div style={{ fontSize: 11, color: C.amber, marginBottom: 8 }}>
+            Showing the top {nonCpm.offer_cap} offers by campaign volume — the snapshot enumerates no
+            more than that per organization, so smaller offers are not listed.
+          </div>
+        )}
+
+        <div style={{ overflowX: 'auto', background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Offer</th>
+                <th style={thStyle}>Billing</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Athena lake: delivered events">Volume</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Athena lake: DISTINCT subscribers clicking a content/commercial link (asset fetches and unsubscribe links removed)">Clickers</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Clicker rate</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Postgres: Everflow postback conversions">Conversions</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Conversions per clicker">Conv / clicker</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.length === 0 && !nonCpmLoading && (
+                <tr>
+                  <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: 28 }}>
+                    {nonCpm?.building ? 'Snapshot building…' : 'No offers in this window.'}
+                  </td>
+                </tr>
+              )}
+              {shown.map(o => (
+                <tr key={o.offer_key}>
+                  <td style={tdStyle}>
+                    <span style={{ color: C.heading }}>{o.offer_name || o.offer_key}</span>
+                    {o.offer_name && o.offer_name !== o.offer_key && (
+                      <span style={{ color: C.muted, fontSize: 11 }}> · {o.offer_key}</span>
+                    )}
+                  </td>
+                  <td style={tdStyle}>
+                    {o.attribution === 'none' && (
+                      <span style={{ color: C.muted, fontSize: 12 }}>No CPM deal</span>
+                    )}
+                    {o.attribution === 'full' && (
+                      <span style={{ color: C.green, fontSize: 12 }}>{o.deal_name}</span>
+                    )}
+                    {o.attribution === 'partial' && (
+                      <span
+                        style={{ color: C.amber, fontSize: 12 }}
+                        title={`Only ${fmtInt(o.campaigns_in_deal)} of ${fmtInt(o.campaigns)} campaigns for this offer fall inside the ${o.deal_name} deal's attribution — the rest is mailed but not billed.`}
+                      >
+                        {o.deal_name} · PARTIAL {fmtInt(o.campaigns_in_deal)}/{fmtInt(o.campaigns)}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(o.delivered)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: C.indigo }}>{fmtInt(o.clickers)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{pct(o.clicker_rate)}</td>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: o.conversions > 0 ? C.green : C.muted }}>
+                    {fmtInt(o.conversions)}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: 'right' }}>{o.clickers > 0 ? pct(o.conv_rate) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ padding: 24 }}>
       {/* Header */}
@@ -2921,6 +3145,8 @@ export const CpmPlanner: React.FC = () => {
           </table>
         </div>
       )}
+
+      {renderNonCpm()}
 
       {renderModal()}
     </div>

@@ -4763,6 +4763,15 @@ func runStartupMigrations(db *sql.DB) {
 			refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (organization_id, window_days, offer_key, isp)
 		)`},
+		// Lake-sourced navigational click metrics (operator 2026-08-01, non-CPM
+		// performance funnel). Separate from clickers/human_clicks above, which
+		// are PG-sourced and verdict-gated — see offerAlignmentSnapRow. Cheap
+		// ADD COLUMN with a constant default (PG 11+ rewrites no rows), so it
+		// fits the 5s startup-migration budget on a table of a few hundred rows.
+		{"add_offer_alignment_lake_clickers", `ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS lake_clickers BIGINT NOT NULL DEFAULT 0`},
+		{"add_offer_alignment_lake_clicks", `ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS lake_clicks BIGINT NOT NULL DEFAULT 0`},
 
 		// =====================================================================
 		// Phase 6: Two-PMTA Multi-Server Infrastructure

@@ -88,14 +88,26 @@ type offerAlignmentSnapRow struct {
 	HumanClicks     int64
 	Clickers        int64
 	PGSent          int64
-	Conversions     int64
-	Revenue         float64
-	Stamped         int
-	Inferred        int
-	Badge           string
-	BadgeReason     string
-	Action          string
-	SampleOK        bool
+	// LakeClickers/LakeClicks are the ATHENA navigational-click metrics
+	// (analytics.ActionClicks) — distinct subscribers and distinct click
+	// events on content/commercial links, asset fetches and compliance links
+	// removed. They are deliberately NOT the same number as Clickers above:
+	// that one is PG-sourced and gated on ignite_verdict_is_human, which the
+	// operator's 2026-07-18 signal-grading doctrine classifies as a
+	// scanner-STORM filter with a ~20% false-negative floor on proven humans,
+	// and which was retired from the click path on 2026-07-21. New surfaces
+	// (the non-CPM performance funnel) read the lake pair; the verdict-gated
+	// columns are kept so the existing matrix badges are unchanged.
+	LakeClickers int64
+	LakeClicks   int64
+	Conversions  int64
+	Revenue      float64
+	Stamped      int
+	Inferred     int
+	Badge        string
+	BadgeReason  string
+	Action       string
+	SampleOK     bool
 }
 
 // StartOfferAlignmentWorker launches the periodic snapshot refresher. Called
@@ -292,12 +304,21 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				days       int
 				minLocalDt string
 				fromTs     time.Time
+				fromDt     string
 			}{
-				{7, from7Dt, from7Ts},
-				{30, "", from30Ts},
+				{7, from7Dt, from7Ts, from7Dt},
+				{30, "", from30Ts, from30Dt},
 			} {
 				delivery := aggregateAlignmentDelivery(dRows, win.minLocalDt)
 				dsn := aggregateAlignmentDSN(dsnRows, win.minLocalDt)
+				// Lake navigational clicks/clickers per ISP. Non-fatal like the
+				// PG engagement and conversion fetches below — a lake hiccup
+				// leaves the pair at 0 and the rest of the cell still lands.
+				lakeClicks, err := fetchAlignmentLakeClicks(ctx, ids, win.fromDt, toDt)
+				if err != nil {
+					log.Printf("[offer-alignment-refresh] lake clicks %s/%dd (non-fatal): %v", off.key, win.days, err)
+					lakeClicks = map[string]*analytics.ActionClickRow{}
+				}
 				eng, err := fetchAlignmentEngagement(ctx, lockConn, org, set30.IDs, win.fromTs, toTs)
 				if err != nil {
 					log.Printf("[offer-alignment-refresh] engagement %s/%dd (non-fatal): %v", off.key, win.days, err)
@@ -320,6 +341,9 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				for k := range conv {
 					ispSet[k] = true
 				}
+				for k := range lakeClicks {
+					ispSet[k] = true
+				}
 				for isp := range ispSet {
 					d := delivery[isp]
 					if d == nil {
@@ -332,6 +356,10 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 					cv := conv[isp]
 					if cv == nil {
 						cv = &alignmentConversions{}
+					}
+					lc := lakeClicks[isp]
+					if lc == nil {
+						lc = &analytics.ActionClickRow{}
 					}
 					fams := dsn[isp]
 					badge, reason, action, sampleOK := classifyAlignmentCell(alignmentCellStats{
@@ -348,6 +376,7 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 						Delivered: d.Delivered, Hard: d.Hard, Soft: d.Soft,
 						ReputationBlock: d.ReputationBlock, Deferred: d.Deferred,
 						HumanClicks: e.HumanClicks, Clickers: e.Clickers, PGSent: e.PGSent,
+						LakeClickers: lc.Clickers, LakeClicks: lc.Clicks,
 						Conversions: cv.Conversions, Revenue: cv.Revenue,
 						Stamped: set30.Stamped, Inferred: set30.Inferred,
 						Badge: badge, BadgeReason: reason, Action: action, SampleOK: sampleOK,
@@ -383,8 +412,9 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				 delivered, hard, soft, reputation_block, deferred,
 				 human_clicks, clickers, pg_sent, conversions, revenue,
 				 stamped_campaigns, inferred_campaigns,
-				 badge, badge_reason, action, sample_ok, refreshed_at)
-				VALUES ($1,$2,$3,'',$4,0,0,0,0,0,0,0,0,0,0,0,0,'META','','',FALSE,NOW())
+				 badge, badge_reason, action, sample_ok, refreshed_at,
+				 lake_clickers, lake_clicks)
+				VALUES ($1,$2,$3,'',$4,0,0,0,0,0,0,0,0,0,0,0,0,'META','','',FALSE,NOW(),0,0)
 			`, org, days, offerAlignmentMetaKey, offerAlignmentMetaKey); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("meta insert (%s/%dd): %w", org, days, err)
@@ -400,13 +430,15 @@ func (s *Server) RefreshOfferAlignmentSnapshot(ctx context.Context) error {
 				 delivered, hard, soft, reputation_block, deferred,
 				 human_clicks, clickers, pg_sent, conversions, revenue,
 				 stamped_campaigns, inferred_campaigns,
-				 badge, badge_reason, action, sample_ok, refreshed_at)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())
+				 badge, badge_reason, action, sample_ok, refreshed_at,
+				 lake_clickers, lake_clicks)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW(),$22,$23)
 			`, k.org, k.days, c.OfferKey, c.OfferName, c.ISP,
 				c.Delivered, c.Hard, c.Soft, c.ReputationBlock, c.Deferred,
 				c.HumanClicks, c.Clickers, c.PGSent, c.Conversions, c.Revenue,
 				c.Stamped, c.Inferred,
-				c.Badge, c.BadgeReason, c.Action, c.SampleOK); err != nil {
+				c.Badge, c.BadgeReason, c.Action, c.SampleOK,
+				c.LakeClickers, c.LakeClicks); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("insert (%s/%s/%dd): %w", c.OfferKey, c.ISP, k.days, err)
 			}

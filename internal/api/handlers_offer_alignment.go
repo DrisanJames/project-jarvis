@@ -454,6 +454,50 @@ func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt stri
 	return delivery, dsn, nil
 }
 
+// fetchAlignmentLakeClicks aggregates ATHENA navigational clicks + distinct
+// clickers per ISP for a campaign set (operator 2026-08-01, non-CPM funnel).
+// Chunked at alignmentLakeChunk like fetchAlignmentLakeRows because the reader
+// caps a single IN-list at 2000 ids.
+//
+// Chunking caveat, stated rather than hidden: click COUNTS sum exactly across
+// disjoint chunks, but per-chunk DISTINCT CLICKERS sum with double-counting
+// when one subscriber clicked campaigns that landed in different chunks. This
+// only bites offers with >2000 campaigns in the window (the drip-scale ones);
+// it is the same second-order caveat fetchAlignmentEngagement carries, and it
+// biases clickers UP, never down.
+func fetchAlignmentLakeClicks(ctx context.Context, ids []string, fromDt, toDt string) (map[string]*analytics.ActionClickRow, error) {
+	out := map[string]*analytics.ActionClickRow{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	for start := 0; start < len(ids); start += alignmentLakeChunk {
+		end := start + alignmentLakeChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		rows, err := analytics.ActionClicks(ctx, analytics.ActionClickFilter{
+			From: fromDt, To: toDt, CampaignIDs: ids[start:end], Limit: 5000,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("lake action clicks (chunk %d): %w", start/alignmentLakeChunk, err)
+		}
+		for _, r := range rows {
+			cell := out[r.ISP]
+			if cell == nil {
+				cell = &analytics.ActionClickRow{ISP: r.ISP}
+				out[r.ISP] = cell
+			}
+			cell.Clickers += r.Clickers
+			cell.Clicks += r.Clicks
+		}
+	}
+	if len(ids) > alignmentLakeChunk {
+		log.Printf("[offer-alignment] lake clicks over %d campaigns chunked into %d calls — clickers may double-count across chunks",
+			len(ids), (len(ids)+alignmentLakeChunk-1)/alignmentLakeChunk)
+	}
+	return out, nil
+}
+
 // aggregateAlignmentDelivery folds delivery breakdown rows (local_dt × isp ×
 // event_type) into per-ISP cells, keeping only rows with local_dt >= minLocalDt
 // ("" = keep all).
