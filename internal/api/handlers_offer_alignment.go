@@ -389,7 +389,10 @@ const alignmentLakeChunk = 2000
 const alignmentLakeConcurrency = 4
 
 func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt string) (delivery, dsn []analytics.BreakdownRow, err error) {
-	type job struct{ dsnPass bool; chunk []string }
+	type job struct {
+		dsnPass bool
+		chunk   []string
+	}
 	jobs := []job{}
 	for start := 0; start < len(ids); start += alignmentLakeChunk {
 		end := start + alignmentLakeChunk
@@ -465,35 +468,72 @@ func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt stri
 // only bites offers with >2000 campaigns in the window (the drip-scale ones);
 // it is the same second-order caveat fetchAlignmentEngagement carries, and it
 // biases clickers UP, never down.
+// Chunks run CONCURRENTLY at alignmentLakeConcurrency, mirroring
+// fetchAlignmentLakeRows. Serial chunking measured on prod 2026-08-01 cost ~80s
+// for one drip-scale offer's 12 chunks, ×2 windows ×25 offers — enough added
+// latency to threaten the 30m offerAlignmentRefreshTimeout. Athena runs
+// concurrent queries happily; chunks are disjoint so the merge is order-free.
 func fetchAlignmentLakeClicks(ctx context.Context, ids []string, fromDt, toDt string) (map[string]*analytics.ActionClickRow, error) {
 	out := map[string]*analytics.ActionClickRow{}
 	if len(ids) == 0 {
 		return out, nil
 	}
+	chunks := [][]string{}
 	for start := 0; start < len(ids); start += alignmentLakeChunk {
 		end := start + alignmentLakeChunk
 		if end > len(ids) {
 			end = len(ids)
 		}
-		rows, err := analytics.ActionClicks(ctx, analytics.ActionClickFilter{
-			From: fromDt, To: toDt, CampaignIDs: ids[start:end], Limit: 5000,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("lake action clicks (chunk %d): %w", start/alignmentLakeChunk, err)
-		}
-		for _, r := range rows {
-			cell := out[r.ISP]
-			if cell == nil {
-				cell = &analytics.ActionClickRow{ISP: r.ISP}
-				out[r.ISP] = cell
-			}
-			cell.Clickers += r.Clickers
-			cell.Clicks += r.Clicks
-		}
+		chunks = append(chunks, ids[start:end])
 	}
-	if len(ids) > alignmentLakeChunk {
-		log.Printf("[offer-alignment] lake clicks over %d campaigns chunked into %d calls — clickers may double-count across chunks",
-			len(ids), (len(ids)+alignmentLakeChunk-1)/alignmentLakeChunk)
+
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, alignmentLakeConcurrency)
+	for i, chunk := range chunks {
+		wg.Add(1)
+		go func(i int, chunk []string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			mu.Lock()
+			done := firstErr != nil || ctx.Err() != nil
+			mu.Unlock()
+			if done {
+				return
+			}
+			rows, err := analytics.ActionClicks(ctx, analytics.ActionClickFilter{
+				From: fromDt, To: toDt, CampaignIDs: chunk, Limit: 5000,
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("lake action clicks (chunk %d): %w", i, err)
+				}
+				return
+			}
+			for _, r := range rows {
+				cell := out[r.ISP]
+				if cell == nil {
+					cell = &analytics.ActionClickRow{ISP: r.ISP}
+					out[r.ISP] = cell
+				}
+				cell.Clickers += r.Clickers
+				cell.Clicks += r.Clicks
+			}
+		}(i, chunk)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if len(chunks) > 1 {
+		log.Printf("[offer-alignment] lake clicks over %d campaigns in %d chunks — clickers may double-count across chunks",
+			len(ids), len(chunks))
 	}
 	return out, nil
 }
@@ -1524,7 +1564,7 @@ func (s *Server) fetchAlignmentCreatives(
 // fetchAlignmentDataSources builds the per-data-source panel: PG sent
 // (delivered proxy), hard bounces, human money clicks/clickers via the
 // subscriber join, plus offer-scoped conversions per the converting
-// subscriber's data_source. NULL/'' data_source is emitted as JSON null
+// subscriber's data_source. NULL/” data_source is emitted as JSON null
 // (the UI renders "(unattributed)"). invalid_rate = hard/(delivered+hard),
 // PG scope.
 func (s *Server) fetchAlignmentDataSources(
