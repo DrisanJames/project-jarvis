@@ -10,11 +10,14 @@ package worker
 // decides WHETHER to take the PMTA path and HOW LONG to wait.
 
 import (
-	"strings"
+	"context"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,15 +117,31 @@ func TestScaleJourneyDelay(t *testing.T) {
 // derivation string would orphan every existing shadow campaign, so this test
 // guards against an accidental change.
 func TestShadowCampaignID(t *testing.T) {
-	a1 := shadowCampaignID("9539")
-	a2 := shadowCampaignID("9539")
-	b := shadowCampaignID("7667")
+	a1 := shadowCampaignID("9539", "")
+	a2 := shadowCampaignID("9539", "")
+	b := shadowCampaignID("7667", "")
 
 	require.Equal(t, a1, a2, "same offer must yield a stable id")
 	require.NotEqual(t, a1, b, "different offers must yield different ids")
 	require.Len(t, a1, 36, "must be a canonical UUID string")
-	// Pin the exact value so a namespace/derivation change is caught.
+	// Pin the exact value so a namespace/derivation change is caught. This is
+	// ALSO the back-compat guarantee for the 2026-08-01 per-node split: an empty
+	// node must still reproduce the original per-offer id byte-for-byte, or every
+	// unsubscribe token minted before the split stops resolving.
 	require.Equal(t, "55f62e3e-dccc-5181-812c-c5459661d5ef", a1)
+
+	// Per-node contract: each (offer, node) gets its own stable id, distinct
+	// from every other node and from the legacy per-offer id. This is what makes
+	// per-node opens/clicks attributable at all — collapsing them back onto one
+	// campaign is the bug this guards.
+	n0a := shadowCampaignID("9539", "email-0")
+	n0b := shadowCampaignID("9539", "email-0")
+	n1 := shadowCampaignID("9539", "email-1")
+	require.Equal(t, n0a, n0b, "same (offer,node) must yield a stable id")
+	require.NotEqual(t, n0a, n1, "different nodes of one offer must yield different ids")
+	require.NotEqual(t, n0a, a1, "node-scoped id must differ from the legacy per-offer id")
+	require.NotEqual(t, n0a, shadowCampaignID("7667", "email-0"), "same node under different offers must differ")
+	require.Len(t, n0a, 36, "must be a canonical UUID string")
 }
 
 func TestReplaceMoneyMergeTags(t *testing.T) {
@@ -248,4 +267,104 @@ func TestApplyISPBrandRouting(t *testing.T) {
 			t.Fatalf("qf: %s want %d got %d", isp, want, got2[isp])
 		}
 	}
+}
+
+// TestEnsureShadowCampaign_StampsNodeAttribution proves the 2026-08-01 node
+// attribution actually reaches the INSERT. Before this, click-drip created ONE
+// campaign per offer and stamped no node identity at all: NodeID was a declared
+// field on ClickDripSendParams that nothing ever wrote, mailing_campaigns'
+// journey_node_id was NULL on all 228k rows, and /journeys/{id}/node-stats had
+// nothing to group by. A column that is written but never read (or declared but
+// never written) is this codebase's most common defect, so assert the exact
+// values bound to the INSERT rather than merely that it ran.
+func TestEnsureShadowCampaign_StampsNodeAttribution(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const (
+		orgID     = "00000000-0000-0000-0000-000000000001"
+		offerID   = "6137"
+		nodeID    = "email-2"
+		profileID = "44444444-4444-4444-4444-444444444444"
+	)
+
+	s := NewJourneyClickDripSender(db, nil, "", "")
+
+	// Miss the fast path so the INSERT branch runs.
+	wantID := shadowCampaignID(offerID, nodeID)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
+		WithArgs(wantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(offerID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// The four attribution stamps, in INSERT order: journey_key (the VARCHAR
+	// journey id the UUID journey_id column cannot hold), journey_node_id,
+	// journey_offer_id (the lane scope the screen groups by — all lanes share
+	// one journey), journey_wave_index (reminder sequence).
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_campaigns`)).
+		WithArgs(
+			wantID, orgID, "Click-Drip Reminder · offer 6137 · email-2",
+			"Still interested?", "Diane", "deals@em.discountblog.com",
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"click-drip-4touch-72h", nodeID, offerID, int32(2),
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	got, err := s.ensureShadowCampaign(context.Background(), orgID, ClickDripSendParams{
+		JourneyID:       "click-drip-4touch-72h",
+		NodeID:          nodeID,
+		ReminderSeq:     2,
+		EverflowOfferID: offerID,
+		Subject:         "Still interested?",
+		FromName:        "Diane",
+		FromEmail:       "deals@em.discountblog.com",
+		ProfileID:       profileID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, wantID, got, "must return the (offer,node)-scoped id, not the per-offer one")
+	require.NotEqual(t, shadowCampaignID(offerID, ""), got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEnsureShadowCampaign_NoNodeKeepsLegacyShape guards the back-compat half:
+// a send with no node context must still resolve the ORIGINAL per-offer id and
+// stamp no node columns, so pre-split rows and their unsubscribe tokens are
+// untouched.
+func TestEnsureShadowCampaign_NoNodeKeepsLegacyShape(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const (
+		orgID   = "00000000-0000-0000-0000-000000000001"
+		offerID = "6137"
+	)
+
+	s := NewJourneyClickDripSender(db, nil, "", "")
+	wantID := shadowCampaignID(offerID, "")
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
+		WithArgs(wantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(offerID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_campaigns`)).
+		WithArgs(
+			wantID, orgID, "Click-Drip Reminder · offer 6137",
+			"", "", "",
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			nil, nil, offerID, nil,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	got, err := s.ensureShadowCampaign(context.Background(), orgID, ClickDripSendParams{
+		EverflowOfferID: offerID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, wantID, got)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

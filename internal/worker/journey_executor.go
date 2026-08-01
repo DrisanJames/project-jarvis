@@ -585,7 +585,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			// shipping a reminder with no working unsubscribe link. Populate
 			// them broadcast-style before rendering (parity with
 			// SendWorkerPool.buildRenderContext).
-			je.mergeClickDripSystemURLs(ctx, renderCtx, enrollment, sub.ID.String(), sendingProfileID, fromEmail)
+			je.mergeClickDripSystemURLs(ctx, renderCtx, enrollment, node.ID, sub.ID.String(), sendingProfileID, fromEmail)
 
 			// Personalize content
 			cacheKey := fmt.Sprintf("journey:%s:node:%s", enrollment.JourneyID, node.ID)
@@ -690,7 +690,7 @@ func isClickDripEnrollment(e Enrollment) bool {
 // URLs (the same generators the campaign send worker uses) instead of
 // stripping them to empty strings. No-op for non-click-drip enrollments and
 // when no clickDripSender is wired, so legacy journeys are untouched.
-func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderCtx mailing.RenderContext, enrollment Enrollment, subscriberID, profileID, fromEmail string) {
+func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderCtx mailing.RenderContext, enrollment Enrollment, nodeID, subscriberID, profileID, fromEmail string) {
 	if je.clickDripSender == nil || !isClickDripEnrollment(enrollment) {
 		return
 	}
@@ -699,7 +699,7 @@ func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderC
 		return
 	}
 	everflowOfferID, _ := enrollment.Metadata["everflow_offer_id"].(string)
-	for k, v := range je.clickDripSender.SystemURLs(ctx, everflowOfferID, subscriberID, profileID, fromEmail) {
+	for k, v := range je.clickDripSender.SystemURLs(ctx, everflowOfferID, nodeID, subscriberID, profileID, fromEmail) {
 		sysCtx[k] = v
 	}
 }

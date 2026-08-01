@@ -483,10 +483,10 @@ func TestClickDripSystemURLs_BroadcastParity(t *testing.T) {
 		WithArgs(subID).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
 
-	urls := s.SystemURLs(context.Background(), offerID, subID, profileID, fromEmail)
+	urls := s.SystemURLs(context.Background(), offerID, "email-0", subID, profileID, fromEmail)
 	require.NotNil(t, urls)
 
-	campaignID := shadowCampaignID(offerID)
+	campaignID := shadowCampaignID(offerID, "email-0")
 	require.Equal(t,
 		GenerateUnsubscribeURL(orgID, campaignID, subID, trackBase, secret),
 		urls["unsubscribe_url"], "must match the broadcast generator exactly")
@@ -539,7 +539,7 @@ func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
 		},
 	}
 	renderCtx := mailing.RenderContext{"system": map[string]interface{}{}}
-	je.mergeClickDripSystemURLs(context.Background(), renderCtx, enrollment, subID, profileID, "deals@em.discountblog.com")
+	je.mergeClickDripSystemURLs(context.Background(), renderCtx, enrollment, "email-0", subID, profileID, "deals@em.discountblog.com")
 
 	// The exact footer shape from the failing prod creative.
 	footer := `<p style="text-decoration:underline;"><a href="{{ system.brand_unsubscribe_url }}">unsubscribe from this brand</a>, ` +
@@ -555,6 +555,6 @@ func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
 
 	// Non-click-drip enrollments must be untouched (no DB calls, no keys).
 	plainCtx := mailing.RenderContext{"system": map[string]interface{}{}}
-	je.mergeClickDripSystemURLs(context.Background(), plainCtx, Enrollment{Metadata: map[string]interface{}{}}, subID, profileID, "x@y.com")
+	je.mergeClickDripSystemURLs(context.Background(), plainCtx, Enrollment{Metadata: map[string]interface{}{}}, "email-0", subID, profileID, "x@y.com")
 	require.Empty(t, plainCtx["system"].(map[string]interface{}))
 }

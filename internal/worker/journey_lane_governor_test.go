@@ -80,7 +80,7 @@ func expectLaneStats(mock sqlmock.Sqlmock, offerID string, enrollments30, active
 		WillReturnRows(sqlmock.NewRows([]string{"enrollments_30d", "active", "conversions_win"}).
 			AddRow(enrollments30, active, conversions30))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_message_log`)).
-		WithArgs(shadowCampaignID(offerID)).
+		WithArgs(shadowCampaignID(offerID, ""), offerID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(touches30))
 }
 

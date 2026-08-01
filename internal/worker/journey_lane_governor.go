@@ -240,15 +240,24 @@ func (w *JourneyLaneGovernor) governLane(ctx context.Context, lane governedLane,
 		return "", false, err
 	}
 
-	// Reminder touches ride the offer's deterministic shadow campaign
-	// (shadowCampaignID, journey_clickdrip_sender.go — UUID v5 on the shared
-	// clickDripShadowNamespace), so a primary-key-friendly campaign_id filter
-	// counts them without any name scan.
+	// Reminder touches ride the lane's shadow campaigns. As of 2026-08-01 there
+	// is ONE PER (offer, node) rather than one per offer, so this must count
+	// across every node of the lane — pinning the single legacy per-offer id
+	// here would silently under-count the lane to just its pre-split history and
+	// drive routing recommendations off a fraction of the real touch volume.
+	// journey_offer_id is indexed (idx_campaigns_journey_offer_node); the legacy
+	// per-offer row (stamped NULL before the split) is unioned in by id so
+	// pre-change history still counts.
 	var touches30 int
 	if err := w.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM mailing_message_log
-		WHERE campaign_id = $1 AND sent_at > NOW() - INTERVAL '30 days'
-	`, shadowCampaignID(lane.offerID)).Scan(&touches30); err != nil {
+		SELECT COUNT(*) FROM mailing_message_log ml
+		WHERE ml.sent_at > NOW() - INTERVAL '30 days'
+		  AND (ml.campaign_id = $1
+		       OR ml.campaign_id IN (
+		            SELECT c.id FROM mailing_campaigns c
+		            WHERE c.journey_offer_id = $2
+		       ))
+	`, shadowCampaignID(lane.offerID, ""), lane.offerID).Scan(&touches30); err != nil {
 		return "", false, err
 	}
 

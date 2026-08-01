@@ -1443,6 +1443,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// new enrollments immediately. See click_drip_admin_handlers.go.
 			RegisterClickDripAdminRoutes(r, db)
 
+			// === CLICK FUNNELS (operator screen: lanes, per-node metrics,
+			// per-touch copy, bulk sub1 upload). Reads the same tables the
+			// admin CRUD above writes; the upload inlet queues into
+			// mailing_journey_event_triggers so JourneyEventEnroller applies
+			// the identical gating an organic click gets. See click_funnels.go.
+			NewClickFunnelsService(db).RegisterRoutes(r)
+
 			// === CAMPAIGN COPILOT — AI Campaign Management Chatbot ===
 			campaignCopilot := NewCampaignCopilot(db, s.openAIConfig, pmtaCampaignAPI, segmentationAPI)
 			r.Post("/copilot/chat", campaignCopilot.HandleChat)

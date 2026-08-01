@@ -97,8 +97,15 @@ func (jb *JourneyBuilder) HandleGetJourneyNodeStats(w http.ResponseWriter, r *ht
 
 // loadJourneyNodeStats does two queries:
 //
+// Scoping note (2026-08-01): the filter matches journey_key OR journey_id::text,
+// never a bare `journey_id = $1`. mailing_journeys.id is VARCHAR while
+// mailing_campaigns.journey_id is UUID, so passing the only journey that exists
+// ('click-drip-4touch-72h') made Postgres raise `invalid input syntax for type
+// uuid` and this endpoint returned 500 rather than data. journey_key holds the
+// varchar id; the ::text arm keeps any genuinely-UUID journey working.
+//
 //  1. Aggregate mailing_tracking_events joined to mailing_campaigns
-//     filtered by journey_id, grouped by journey_node_id. This gives us
+//     filtered by journey key, grouped by journey_node_id. This gives us
 //     send / delivered / open / click / bounce counts per node from the
 //     canonical event log, using the same hard/soft split as every
 //     other metrics surface (HardBounceSQL).
@@ -127,7 +134,7 @@ func loadJourneyNodeStats(ctx context.Context, db *sql.DB, journeyID string) (ma
 			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' AND NOT (`+hardSQL+`)  THEN 1 ELSE 0 END), 0) AS soft_bounce
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_tracking_events t ON t.campaign_id = c.id
-		WHERE c.journey_id = $1
+		WHERE (c.journey_key = $1 OR (c.journey_id IS NOT NULL AND c.journey_id::text = $1))
 		  AND c.journey_node_id IS NOT NULL
 		GROUP BY c.journey_node_id
 	`, journeyID)

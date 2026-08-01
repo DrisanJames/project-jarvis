@@ -7220,6 +7220,22 @@ END $$`},
 		{"alter_campaigns_add_journey_wave_index", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_wave_index INTEGER`},
 		{"idx_campaigns_journey_node", `CREATE INDEX IF NOT EXISTS idx_campaigns_journey_node ON mailing_campaigns(journey_id, journey_node_id) WHERE journey_id IS NOT NULL`},
 
+		// Click-funnel node attribution (2026-08-01). journey_id above is UUID,
+		// but mailing_journeys.id is VARCHAR ('click-drip-4touch-72h'), so the
+		// click-drip journey can NEVER be stored there — node-stats 500'd with
+		// `invalid input syntax for type uuid` for the only journey that exists.
+		// journey_key carries the varchar journey id instead.
+		//
+		// journey_offer_id is the scope that actually matters for click funnels:
+		// all offer lanes share ONE journey, so per-node metrics must be grouped
+		// per (offer lane, node), not per journey. mailing_campaigns.offer_id is
+		// NOT usable for this — it resolves for only 16 of 24 enabled lanes
+		// (mailing_offers has no row for the rest), which would silently drop a
+		// third of the lanes off the screen. Text everflow id, always present.
+		{"alter_campaigns_add_journey_key", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_key TEXT`},
+		{"alter_campaigns_add_journey_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_offer_id TEXT`},
+		{"idx_campaigns_journey_offer_node", `CREATE INDEX IF NOT EXISTS idx_campaigns_journey_offer_node ON mailing_campaigns(journey_offer_id, journey_node_id) WHERE journey_offer_id IS NOT NULL`},
+
 		{"create_journey_executions_view", `CREATE OR REPLACE VIEW mailing_journey_executions AS
 			SELECT
 				enrollment_id,

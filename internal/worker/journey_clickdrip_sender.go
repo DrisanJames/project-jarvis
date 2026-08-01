@@ -48,9 +48,27 @@ const clickDripDefaultOrgID = "00000000-0000-0000-0000-000000000001"
 // but MUST stay stable so ids remain reproducible across deploys.
 var clickDripShadowNamespace = uuid.MustParse("a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5e6f")
 
-// shadowCampaignID returns the deterministic shadow-campaign id for an offer.
-func shadowCampaignID(everflowOfferID string) string {
-	return uuid.NewSHA1(clickDripShadowNamespace, []byte("click-drip-shadow-offer-"+everflowOfferID)).String()
+// shadowCampaignID returns the deterministic shadow-campaign id for one
+// (offer, journey node) pair.
+//
+// It was originally per-OFFER, which collapsed all four reminder touches onto a
+// single mailing_campaigns row. Because tracking events attach to campaign_id,
+// that made per-node opens/clicks/conversions unattributable — every touch's
+// engagement landed in the same bucket, and /journeys/{id}/node-stats (built
+// exactly to split them) had nothing to group by. Deriving the id per node
+// gives each touch its own row, so the entire existing campaign-metrics stack
+// segments the funnel for free.
+//
+// nodeID == "" reproduces the ORIGINAL per-offer string byte-for-byte, so the
+// legacy ids stay resolvable: reminders already in flight carry unsubscribe /
+// view-in-browser tokens minted against them, and those rows must keep
+// resolving after this change ships.
+func shadowCampaignID(everflowOfferID, nodeID string) string {
+	seed := "click-drip-shadow-offer-" + everflowOfferID
+	if nodeID != "" {
+		seed += "-node-" + nodeID
+	}
+	return uuid.NewSHA1(clickDripShadowNamespace, []byte(seed)).String()
 }
 
 // JourneyClickDripSender dispatches a single click-drip reminder through PMTA.
@@ -250,12 +268,15 @@ func brandRootFromEmail(fromEmail string) string {
 // shadow-campaign id, i.e. the same id the subsequent Send() logs against, so
 // unsubscribe tokens resolve to the row the message is attributed to.
 // Returns nil when no tracking base is configured (no sensible URL to build).
-func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID, subscriberID, profileID, fromEmail string) map[string]interface{} {
+func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID, nodeID, subscriberID, profileID, fromEmail string) map[string]interface{} {
 	trackBase := s.resolveTrackingURL(ctx, profileID)
 	if trackBase == "" || subscriberID == "" {
 		return nil
 	}
-	campaignID := shadowCampaignID(everflowOfferID)
+	// MUST use the same (offer, node) id ensureShadowCampaign/Send resolve, or
+	// the unsubscribe + view-in-browser tokens would point at a different
+	// campaign row than the message is attributed to.
+	campaignID := shadowCampaignID(everflowOfferID, nodeID)
 	orgID := s.resolveOrgID(ctx, subscriberID)
 	return map[string]interface{}{
 		"unsubscribe_url":       GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret),
@@ -378,8 +399,11 @@ func normalizeTrackBase(d string) string {
 // The prior name-scan version took ~27s on a 90k-row mailing_campaigns table
 // and tripped the executor's 30s context, failing every reminder send.
 func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID string, p ClickDripSendParams) (string, error) {
-	campaignID := shadowCampaignID(p.EverflowOfferID)
+	campaignID := shadowCampaignID(p.EverflowOfferID, p.NodeID)
 	name := fmt.Sprintf("Click-Drip Reminder · offer %s", p.EverflowOfferID)
+	if p.NodeID != "" {
+		name = fmt.Sprintf("Click-Drip Reminder · offer %s · %s", p.EverflowOfferID, p.NodeID)
+	}
 
 	// Fast path: primary-key existence check.
 	var existing sql.NullString
@@ -400,6 +424,23 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 		profileUUID = uuid.NullUUID{UUID: pid, Valid: true}
 	}
 
+	// Node attribution stamps (2026-08-01). journey_key holds the VARCHAR
+	// journey id that the UUID journey_id column cannot; journey_offer_id is the
+	// lane scope the click-funnel screen groups by (all lanes share one journey);
+	// journey_wave_index carries the reminder sequence so touches sort without
+	// parsing the node id. NULL-safe: a send with no node/journey context stamps
+	// nothing and behaves exactly as before.
+	var journeyKey, journeyNode sql.NullString
+	var waveIndex sql.NullInt32
+	if p.NodeID != "" {
+		journeyNode = sql.NullString{String: p.NodeID, Valid: true}
+		waveIndex = sql.NullInt32{Int32: int32(p.ReminderSeq), Valid: true}
+	}
+	if p.JourneyID != "" {
+		journeyKey = sql.NullString{String: p.JourneyID, Valid: true}
+	}
+	journeyOffer := sql.NullString{String: p.EverflowOfferID, Valid: p.EverflowOfferID != ""}
+
 	// Insert with the deterministic id; ON CONFLICT (id) collapses the race
 	// where a concurrent touch for the same offer inserted first.
 	_, err := s.db.ExecContext(ctx, `
@@ -408,6 +449,7 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			subject, from_name, from_email,
 			campaign_type, execution_mode,
 			sending_profile_id, offer_id,
+			journey_key, journey_node_id, journey_offer_id, journey_wave_index,
 			total_recipients, max_recipients,
 			created_at, updated_at
 		) VALUES (
@@ -415,6 +457,7 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			$4, $5, $6,
 			'click_drip', 'standard',
 			$7, $8,
+			$9, $10, $11, $12,
 			0, 0,
 			NOW(), NOW()
 		)
@@ -423,6 +466,7 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 		campaignID, orgID, name,
 		p.Subject, p.FromName, p.FromEmail,
 		profileUUID, offerUUID,
+		journeyKey, journeyNode, journeyOffer, waveIndex,
 	)
 	if err != nil {
 		return "", err
