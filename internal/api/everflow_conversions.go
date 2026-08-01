@@ -64,9 +64,21 @@ const insertEverflowConversionSQL = `
 // this logs and never propagates. subscriberID/campaignID may be uuid.Nil
 // (stored as NULL) — blank-sub1 conversions are kept, not dropped; they remain
 // joinable later by transaction_id via the export pull.
+//
+// Returns TRUE only when this call actually inserted a new row. Everflow
+// RETRIES postbacks, so the same conversion arrives at this endpoint several
+// times; the ON CONFLICT above absorbs the repeats. Callers use the return
+// value to gate side effects that must fire ONCE PER CONVERSION rather than
+// once per delivery — notably the Slack alert, which on 2026-07-31 announced a
+// single $50 conversion (txn 42ba0910) five times and made the day's revenue
+// look like $400 instead of $200.
+//
+// A false return means "already recorded", NOT "failed" — errors also return
+// false, and are logged. That is the safe direction for an alert gate: a
+// missed alert is recoverable from the durable row, a phantom one is not.
 func recordEverflowConversion(ctx context.Context, db *sql.DB, orgID string,
 	txnID, efOfferID string, subscriberID, campaignID uuid.UUID,
-	sub1, sub2, sub3 string, payout float64) {
+	sub1, sub2, sub3 string, payout float64) bool {
 	var subArg, campArg interface{}
 	if subscriberID != uuid.Nil {
 		subArg = subscriberID
@@ -74,12 +86,27 @@ func recordEverflowConversion(ctx context.Context, db *sql.DB, orgID string,
 	if campaignID != uuid.Nil {
 		campArg = campaignID
 	}
-	if _, err := db.ExecContext(ctx, insertEverflowConversionSQL,
+	res, err := db.ExecContext(ctx, insertEverflowConversionSQL,
 		uuid.New(), orgID, strings.TrimSpace(txnID), strings.TrimSpace(efOfferID),
-		subArg, campArg, sub1, sub2, sub3, payout); err != nil {
+		subArg, campArg, sub1, sub2, sub3, payout)
+	if err != nil {
 		log.Printf("[EverflowConversions] ERROR inserting durable conversion row (txn=%s offer=%s): %v",
 			txnID, efOfferID, err)
+		return false
 	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Driver could not report the count — treat as "already recorded" so a
+		// retry storm cannot fan out into repeat alerts.
+		log.Printf("[EverflowConversions] RowsAffected unavailable (txn=%s): %v", txnID, err)
+		return false
+	}
+	if n == 0 {
+		log.Printf("[EverflowConversions] duplicate postback absorbed (txn=%s offer=%s) — no new row, no alert",
+			txnID, efOfferID)
+		return false
+	}
+	return true
 }
 
 // enrichEverflowConversionSQL upgrades a postback row (conversion_id='') with

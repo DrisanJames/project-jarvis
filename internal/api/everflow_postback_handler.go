@@ -93,7 +93,7 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	// Durable per-conversion revenue row (REQ-037) — BEFORE the sub1 gate so
 	// blank-sub1 conversions persist with their payout instead of vanishing
 	// (the Tahiti class). Best-effort; never blocks the 200 to Everflow.
-	recordEverflowConversion(ctx, h.db, orgID, txnID, efOfferID,
+	isNewConversion := recordEverflowConversion(ctx, h.db, orgID, txnID, efOfferID,
 		subscriberID, campaignID, sub1, sub2, sub3, payout)
 
 	// Associate the converter by their subscriber UUID (sub1). Without it we
@@ -106,12 +106,19 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Every call to this endpoint is a real conversion (revenue event). Surface
-	// it to the operator's #conversions Slack channel — email, offer, payout,
-	// date — independent of whether the offer resolves internally or is in the
-	// click-drip dictionary. Async + best-effort so the 200 to Everflow is never
-	// delayed or blocked by Slack.
-	notifyConversionAsync(h.notifier, h.db, subscriberID, efOfferID, payout, txnID)
+	// Surface NEW conversions to the operator's #conversions Slack channel —
+	// email, offer, payout, date — independent of whether the offer resolves
+	// internally or is in the click-drip dictionary. Async + best-effort so the
+	// 200 to Everflow is never delayed or blocked by Slack.
+	//
+	// Gated on isNewConversion: a call to this endpoint is a DELIVERY, not a
+	// conversion. Everflow retries, so the previous unconditional alert fired
+	// once per retry — five alerts for one $50 conversion on 2026-07-31, which
+	// also made the offer label and subscriber email look inconsistent as the
+	// concurrent enrichment lookups raced each other.
+	if isNewConversion {
+		notifyConversionAsync(h.notifier, h.db, subscriberID, efOfferID, payout, txnID)
+	}
 
 	// Resolve the internal offer UUID (campaign → mailing_offers). This stays
 	// NULL for most click-drip offers, which have no mailing_offers row — that

@@ -124,9 +124,14 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 	// contract governs the click path and must not change; the revenue ledger
 	// simply reads what the request actually carried, falling back to the
 	// parsed values for the JSON-body case.
+	// True only when the ledger insert below actually created a row. Everflow
+	// retries postbacks, so this endpoint receives the same conversion several
+	// times; the Slack alert further down is gated on this so it fires once per
+	// CONVERSION rather than once per DELIVERY (see recordEverflowConversion).
+	isNewConversion := false
 	if isConversionEvent(r) {
 		q := r.URL.Query()
-		recordEverflowConversion(r.Context(), h.db, defaultOrgID,
+		isNewConversion = recordEverflowConversion(r.Context(), h.db, defaultOrgID,
 			firstNonEmpty(q.Get("transaction_id"), in.TransactionID),
 			firstNonEmpty(q.Get("offer_id"), in.EverflowOfferID),
 			in.subscriberID, in.campaignID,
@@ -171,11 +176,14 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 	// shared conversion-STOP path (dictionary-gated exit + converted suppression,
 	// associated by subscriber UUID) and never enroll.
 	if isConversionEvent(r) {
-		// Surface the conversion to the operator's #conversions Slack channel —
-		// email, offer, payout, date — for every conversion received on this
-		// endpoint, independent of the click-drip dictionary outcome below.
-		// Async + best-effort so the 200 to Everflow is never delayed.
-		notifyConversionAsync(h.notifier, h.db, in.subscriberID, in.EverflowOfferID, parsePostbackPayout(r), in.TransactionID)
+		// Surface NEW conversions to the operator's #conversions Slack channel —
+		// email, offer, payout, date — independent of the click-drip dictionary
+		// outcome below. Async + best-effort so the 200 to Everflow is never
+		// delayed. Gated on isNewConversion so an Everflow retry does not post a
+		// second alert for a conversion already announced.
+		if isNewConversion {
+			notifyConversionAsync(h.notifier, h.db, in.subscriberID, in.EverflowOfferID, parsePostbackPayout(r), in.TransactionID)
+		}
 
 		inDict, exited, exErr := exitClickDripEnrollmentsOnConversion(ctx, h.db, in.subscriberID, in.EverflowOfferID)
 		if exErr != nil {
