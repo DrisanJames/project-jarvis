@@ -357,6 +357,7 @@ interface NonCpmOffer {
   is_cpm: boolean;
   deal_id: string;
   deal_name: string;
+  carry_over: boolean;
 }
 interface NonCpmGroup extends NonCpmOffer {
   offers: NonCpmOffer[];
@@ -2947,6 +2948,14 @@ export const CpmPlanner: React.FC = () => {
                         <span style={{ color: C.heading }}>{g.group_name}</span>
                         {multi && (
                           <span style={{ color: C.muted, fontSize: 11 }}> · {g.offers.length} variants</span>
+                        )}
+                        {g.carry_over && (
+                          <span
+                            style={{ color: C.amber, fontSize: 10, marginLeft: 6, border: `1px solid ${C.amber}`, borderRadius: 4, padding: '1px 5px' }}
+                            title="Carry-over advertiser: conversions, payout and revenue on this row are a RUNNING TOTAL through the end of the selected month, not that month alone. Volume and clickers are still month-scoped."
+                          >
+                            running total
+                          </span>
                         )}
                       </td>
                       <td style={tdStyle}>

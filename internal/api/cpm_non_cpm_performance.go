@@ -121,6 +121,18 @@ func nonCpmTableDDL() []string {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_offer_day_rollup_org_day
 			ON mailing_offer_day_rollup(organization_id, day)`,
+		// Per (Denver day, CPM deal) delivered — see cpmDealRollupInsertSQL for
+		// why the live month scan had to go.
+		`CREATE TABLE IF NOT EXISTS mailing_cpm_deal_day_rollup (
+			organization_id UUID NOT NULL,
+			day             DATE NOT NULL,
+			deal_id         UUID NOT NULL,
+			delivered       BIGINT NOT NULL DEFAULT 0,
+			refreshed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (organization_id, day, deal_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_day_rollup_org_day
+			ON mailing_cpm_deal_day_rollup(organization_id, day)`,
 		// Operator-editable grouping — the "tag" that collapses creative
 		// variants and duplicate keys onto one advertiser row (iwchelocv1..4 =
 		// West Capital; liberty-mutual + kqckq7 + the offer-name form = Liberty
@@ -134,6 +146,14 @@ func nonCpmTableDDL() []string {
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (organization_id, offer_identity)
 		)`,
+		// CARRY-OVER (operator 2026-08-01, West Capital HELOC): some advertisers
+		// run a single running conversion tally rather than resetting each
+		// calendar month. For those, CONVERSIONS and REVENUE accumulate from the
+		// offer's first conversion through the end of the selected month, while
+		// VOLUME and CLICKERS stay strictly month-scoped (they are pacing
+		// numbers, not settlement numbers). The row is flagged in the API so the
+		// screen can show that the conversion column has a different time basis.
+		`ALTER TABLE mailing_offer_groups ADD COLUMN IF NOT EXISTS carry_over BOOLEAN NOT NULL DEFAULT FALSE`,
 	}
 }
 
@@ -174,6 +194,11 @@ var nonCpmSeedGroups = map[string]string{
 	"newsletter": "Newsletter (no offer)",
 }
 
+// nonCpmCarryOverGroups are the advertisers whose conversion tally carries
+// across months. Applied on every boot (idempotent) because it is a commercial
+// term of the deal, not an operator preference to be preserved.
+var nonCpmCarryOverGroups = []string{"West Capital HELOC"}
+
 func (h *CpmPlannerHandlers) seedNonCpmGroups() {
 	for identity, group := range nonCpmSeedGroups {
 		if _, err := h.db.Exec(`
@@ -190,6 +215,12 @@ func (h *CpmPlannerHandlers) seedNonCpmGroups() {
 				log.Printf("[CpmPlanner] seed offer group %q: %v / %v", identity, err, err2)
 				return // the table is unusable; one log line, not one per key
 			}
+		}
+	}
+	for _, g := range nonCpmCarryOverGroups {
+		if _, err := h.db.Exec(
+			`UPDATE mailing_offer_groups SET carry_over = TRUE WHERE group_name = $1 AND carry_over = FALSE`, g); err != nil {
+			log.Printf("[CpmPlanner] seed carry-over %q: %v", g, err)
 		}
 	}
 }
@@ -226,6 +257,16 @@ func (h *CpmPlannerHandlers) refreshNonCpmDay(ctx context.Context, orgID string,
 	// day straddles two UTC days); the AT TIME ZONE equality is the exact edge.
 	if _, err := tx.ExecContext(ctx, nonCpmRollupInsertSQL(), orgID, d); err != nil {
 		return fmt.Errorf("rollup insert %s: %w", d, err)
+	}
+	// Same day, same transaction: the per-DEAL rollup that feeds CPM pacing.
+	// Kept together so the two surfaces can never disagree about which days
+	// are rolled up.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM mailing_cpm_deal_day_rollup WHERE organization_id = $1 AND day = $2::date`, orgID, d); err != nil {
+		return fmt.Errorf("deal rollup delete %s: %w", d, err)
+	}
+	if _, err := tx.ExecContext(ctx, cpmDealRollupInsertSQL(), orgID, d); err != nil {
+		return fmt.Errorf("deal rollup insert %s: %w", d, err)
 	}
 	return tx.Commit()
 }
@@ -301,6 +342,38 @@ func (h *CpmPlannerHandlers) nonCpmRollupLoop() {
 // Extracted so the regression tests can assert the SHAPE of each query without
 // a database — these are the exact strings the handlers execute.
 
+// cpmDealRollupInsertSQL rolls DELIVERED up per (Denver day, CPM deal) — the
+// fix for "Mailed MTD is not updating" (operator 2026-08-01).
+//
+// loadAllDealMonthlyActuals scanned a whole month of mailing_tracking_events
+// live on every /pacing and /months request. Past the 30s statement_timeout
+// that scan is cancelled, and its scan helper LOGS AND RETURNS — leaving the
+// actuals map empty, so the handler reported mtd_delivered = 0 as though it
+// were fact. Observed on prod repeatedly:
+//
+//	[CpmPlanner] monthly delivered: pq: canceling statement due to statement timeout
+//	[CpmPlanner] pacing 3d rate:    pq: canceling statement due to statement timeout
+//
+// A silent zero on a budget-pacing screen is worse than an error: it reads as
+// "we mailed nothing" and invites over-sending to "catch up". Delivered is now
+// rolled up per closed day (computed once, immutable) so a month is a cheap
+// SUM that cannot time out, and the handler can tell "no rows" from "no data".
+//
+// $1 = org, $2 = Denver day.
+func cpmDealRollupInsertSQL() string {
+	return dealCampaignMapCTE + `
+		INSERT INTO mailing_cpm_deal_day_rollup (organization_id, day, deal_id, delivered, refreshed_at)
+		SELECT $1::uuid, $2::date, dm.deal_id, COUNT(*), NOW()
+		FROM mailing_tracking_events te
+		JOIN dm ON dm.campaign_id = te.campaign_id
+		WHERE te.organization_id = $1
+		  AND te.event_type = 'delivered'
+		  AND te.event_at >= ($2::date - INTERVAL '1 day')
+		  AND te.event_at <  ($2::date + INTERVAL '2 days')
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date = $2::date
+		GROUP BY dm.deal_id`
+}
+
 // nonCpmRollupInsertSQL: $1 = org, $2 = Denver day.
 func nonCpmRollupInsertSQL() string {
 	return `
@@ -369,7 +442,8 @@ func nonCpmConversionPayoutSQL() string {
 		                      AND eo.organization_id = ec.organization_id), ''),
 		           '(unattributed)')),
 		       COUNT(*) FILTER (WHERE ec.payout > 0),
-		       COALESCE(SUM(ec.payout), 0)
+		       COALESCE(SUM(ec.payout), 0),
+		       COUNT(*)
 		FROM mailing_everflow_conversions ec
 		LEFT JOIN mailing_campaigns c ON c.id = ec.campaign_id
 		LEFT JOIN mailing_offers o ON o.id = c.offer_id
@@ -418,6 +492,10 @@ type nonCpmOfferRow struct {
 	IsCPM    bool   `json:"is_cpm"`
 	DealID   string `json:"deal_id"`
 	DealName string `json:"deal_name"`
+	// CarryOver: conversions/revenue on this row are a RUNNING TOTAL to the end
+	// of the selected month, not that month alone. Volume and clickers on the
+	// same row are still month-scoped -- the screen must say so.
+	CarryOver bool `json:"carry_over"`
 }
 
 type nonCpmGroupRow struct {
@@ -530,6 +608,7 @@ func (h *CpmPlannerHandlers) nonCpmClicks(orgID string, from, to time.Time) (cli
 // consulted: that indirection is exactly what silently zeroed this metric.
 func (h *CpmPlannerHandlers) nonCpmConversions(orgID string, from, to time.Time) (counts, withPayout map[string]int64, revenue map[string]float64, err error) {
 	counts, withPayout, revenue = map[string]int64{}, map[string]int64{}, map[string]float64{}
+	ledger := map[string]int64{}
 
 	// Ledger count — suppressions carry offer_id but no campaign; resolve the
 	// identity through the offer the same way a campaign would.
@@ -557,11 +636,27 @@ func (h *CpmPlannerHandlers) nonCpmConversions(orgID string, from, to time.Time)
 	defer prows.Close()
 	for prows.Next() {
 		var id string
-		var n int64
+		var n, total int64
 		var rev float64
-		if err := prows.Scan(&id, &n, &rev); err == nil {
+		if err := prows.Scan(&id, &n, &rev, &total); err == nil {
 			withPayout[id] += n
 			revenue[id] += rev
+			ledger[id] += total
+		}
+	}
+	// COUNT OF RECORD = the LARGER of the two ledgers, per identity.
+	//
+	// Neither is complete on its own. mailing_offer_suppressions drops
+	// conversions with a blank sub1 and carries no payout;
+	// mailing_everflow_conversions was built later (REQ-037) precisely because
+	// of that, but only holds what has landed since. Taking the max means a
+	// conversion recorded in either place is counted once and never lost --
+	// e.g. Sam's Club reads from the suppression ledger (39 in July vs 6), and
+	// West Capital reads from the everflow ledger (10 vs 5) after the operator
+	// supplied the conversions the postback path never captured.
+	for id, n := range ledger {
+		if n > counts[id] {
+			counts[id] = n
 		}
 	}
 	return counts, withPayout, revenue, prows.Err()
@@ -626,21 +721,27 @@ func (h *CpmPlannerHandlers) nonCpmDealForIdentity(orgID string) (map[string][2]
 	return out, nil
 }
 
-func (h *CpmPlannerHandlers) nonCpmGroups(orgID string) (map[string]string, error) {
+func (h *CpmPlannerHandlers) nonCpmGroups(orgID string) (map[string]string, map[string]bool, error) {
 	rows, err := h.db.Query(
-		`SELECT offer_identity, group_name FROM mailing_offer_groups WHERE organization_id = $1`, orgID)
+		`SELECT offer_identity, group_name, COALESCE(carry_over, FALSE)
+		 FROM mailing_offer_groups WHERE organization_id = $1`, orgID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	out := map[string]string{}
+	carry := map[string]bool{}
 	for rows.Next() {
 		var id, g string
-		if err := rows.Scan(&id, &g); err == nil {
+		var co bool
+		if err := rows.Scan(&id, &g, &co); err == nil {
 			out[id] = g
+			if co {
+				carry[g] = true
+			}
 		}
 	}
-	return out, rows.Err()
+	return out, carry, rows.Err()
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────────────
@@ -702,10 +803,26 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		log.Printf("[CpmPlanner] non-cpm deal map: %v", err)
 		deals = map[string][2]string{}
 	}
-	groups, err := h.nonCpmGroups(orgID)
+	groups, carryOver, err := h.nonCpmGroups(orgID)
 	if err != nil {
 		log.Printf("[CpmPlanner] non-cpm groups: %v", err)
-		groups = map[string]string{}
+		groups, carryOver = map[string]string{}, map[string]bool{}
+	}
+
+	// Carry-over advertisers settle on a running tally, so their conversions and
+	// revenue are read cumulatively up to the end of the selected month instead
+	// of month-only. Cheap to do as a second pass: the conversion ledgers are
+	// tiny next to the delivery tables. Volume and clickers are deliberately NOT
+	// re-read -- those stay month-scoped pacing numbers.
+	var cumCounts, cumPaid map[string]int64
+	var cumRevenue map[string]float64
+	if len(carryOver) > 0 {
+		epoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		if cc, cp, cr, cerr := h.nonCpmConversions(orgID, epoch, to); cerr != nil {
+			log.Printf("[CpmPlanner] non-cpm carry-over conversions: %v", cerr)
+		} else {
+			cumCounts, cumPaid, cumRevenue = cc, cp, cr
+		}
 	}
 
 	// Union every identity seen by ANY metric — an offer with conversions but
@@ -745,6 +862,13 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 			g = identity
 		}
 		row.GroupName = g
+		if carryOver[g] && cumCounts != nil {
+			row.Conversions = cumCounts[identity]
+			row.PayoutCoverage = cumPaid[identity]
+			row.Revenue = cumRevenue[identity]
+			row.CarryOver = true
+			row.deriveRates()
+		}
 
 		gr := byGroup[g]
 		if gr == nil {
@@ -762,6 +886,9 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		// A group is CPM if ANY of its identities is billed by a deal.
 		if row.IsCPM && !gr.IsCPM {
 			gr.IsCPM, gr.DealID, gr.DealName = true, row.DealID, row.DealName
+		}
+		if row.CarryOver {
+			gr.CarryOver = true
 		}
 
 		t := &nonCpmT

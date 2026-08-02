@@ -2196,19 +2196,22 @@ func (h *CpmPlannerHandlers) loadAllDealMonthlyActuals(orgID, windowStart string
 		}
 	}
 
-	// Delivered — one pruned events scan joined to the map. The bare event_at
-	// bound enables partition pruning (mailing_tracking_events is range-
-	// partitioned on event_at); the Denver ::date filter is the exact month edge.
-	scan("delivered", dealCampaignMapCTE+`
-		SELECT dm.deal_id::text,
-		       to_char(te.event_at AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
-		       COUNT(*)
-		FROM mailing_tracking_events te
-		JOIN dm ON dm.campaign_id = te.campaign_id
-		WHERE te.organization_id = $1
-		  AND te.event_type = 'delivered'
-		  AND te.event_at >= ($2::date - INTERVAL '1 day')
-		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
+	// Delivered — read from the per-day rollup, NOT a live month scan.
+	//
+	// This used to scan a whole month of mailing_tracking_events joined to the
+	// deal map on every /pacing and /months request. Past the 30s
+	// statement_timeout the scan is cancelled and the `scan` helper below just
+	// logs and returns, leaving this map EMPTY — so the handler reported
+	// mtd_delivered = 0 as though it were fact. Observed repeatedly on prod
+	// 2026-08-01 ("[CpmPlanner] monthly delivered: pq: canceling statement due
+	// to statement timeout") and reported by the operator as "Mailed MTD is not
+	// updating". A silent zero on a budget-pacing screen is worse than an
+	// error: it reads as "we mailed nothing" and invites over-sending to catch
+	// up. The rollup makes this a cheap indexed SUM that cannot time out.
+	scan("delivered", `
+		SELECT deal_id::text, to_char(day, 'YYYY-MM') AS ym, SUM(delivered)
+		FROM mailing_cpm_deal_day_rollup
+		WHERE organization_id = $1 AND day >= $2::date
 		GROUP BY 1, 2`,
 		func(a *cpmDealMonthActuals, ym string, n int64) { a.delivered[ym] = n },
 		orgID, windowStart)
@@ -2810,16 +2813,15 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 	// Trailing 3-day delivered per deal (last 3 COMPLETE Denver days — today's
 	// partial day would understate the rate). Same pruning pattern as the
 	// monthly loader: bare event_at bound for partitions, Denver ::date edges.
+	// Same rollup, same reason: this scan was also being cancelled on prod
+	// ("[CpmPlanner] pacing 3d rate: pq: canceling statement due to statement
+	// timeout"), which zeroed the trailing rate and therefore the month-end
+	// projection — a deal that was pacing fine rendered as projecting nothing.
 	rate3d := map[string]float64{}
-	if rows, err := h.db.Query(dealCampaignMapCTE+`
-		SELECT dm.deal_id::text, COUNT(*)
-		FROM mailing_tracking_events te
-		JOIN dm ON dm.campaign_id = te.campaign_id
-		WHERE te.organization_id = $1
-		  AND te.event_type = 'delivered'
-		  AND te.event_at >= ($2::date - INTERVAL '1 day')
-		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
-		  AND (te.event_at AT TIME ZONE 'America/Denver')::date < $3::date
+	if rows, err := h.db.Query(`
+		SELECT deal_id::text, SUM(delivered)
+		FROM mailing_cpm_deal_day_rollup
+		WHERE organization_id = $1 AND day >= $2::date AND day < $3::date
 		GROUP BY 1`,
 		orgID, curDate.AddDate(0, 0, -3).Format("2006-01-02"), curDate.Format("2006-01-02")); err == nil {
 		func() {
@@ -2934,11 +2936,25 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 		pf.RequiredDaily += requiredDaily
 	}
 
+	// Rollup coverage for the month so far. MTD delivered is only as complete as
+	// the days that have been rolled up; without this the screen cannot tell
+	// "we mailed less" from "the rollup has not caught up", which is exactly the
+	// ambiguity that made the old silent-zero so hard to spot.
+	var daysRolled int
+	if err := h.db.QueryRow(`
+		SELECT COUNT(DISTINCT day) FROM mailing_cpm_deal_day_rollup
+		WHERE organization_id = $1 AND day >= $2::date`,
+		orgID, curMonth.Format("2006-01-02")).Scan(&daysRolled); err != nil {
+		log.Printf("[CpmPlanner] pacing rollup coverage: %v", err)
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"month":         curYM,
-		"day_of_month":  dayOfMonth,
-		"days_in_month": daysInMonth,
-		"deals":         out,
-		"portfolio":     pf,
+		"month":          curYM,
+		"day_of_month":   dayOfMonth,
+		"days_in_month":  daysInMonth,
+		"deals":          out,
+		"portfolio":      pf,
+		"days_rolled":    daysRolled,
+		"volume_partial": daysRolled < dayOfMonth,
 	})
 }
