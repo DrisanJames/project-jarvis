@@ -2008,6 +2008,19 @@ var criticalSendPathDDL = []struct {
 	name string
 	sql  string
 }{
+	// Click-funnel node attribution (moved here 2026-08-02 after an incident).
+	// JourneyClickDripSender.ensureShadowCampaign writes these columns on every
+	// reminder, so they must exist before the journey executor starts. They were
+	// originally in runStartupMigrations, whose 5s statement budget INCLUDES the
+	// ACCESS EXCLUSIVE lock wait on mailing_campaigns — under active sending the
+	// lock was contended, the ALTER logged "TIMEOUT (skipped — will retry next
+	// boot)", and the new binary went live referencing a column that did not
+	// exist, failing every click-drip touch. Here they get lock_timeout 8s /
+	// statement_timeout 20s / 3 attempts with backoff, applied before any worker.
+	// The sender ALSO degrades to an un-stamped INSERT if they are still absent,
+	// so attribution can never again take the send path down.
+	{"alter_campaigns_add_journey_key", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_key TEXT`},
+	{"alter_campaigns_add_journey_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_offer_id TEXT`},
 	{"create_content_snapshots", `CREATE TABLE IF NOT EXISTS mailing_content_snapshots (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		content_hash TEXT NOT NULL UNIQUE,
@@ -7241,14 +7254,14 @@ END $$`},
 		// NOT usable for this — it resolves for only 16 of 24 enabled lanes
 		// (mailing_offers has no row for the rest), which would silently drop a
 		// third of the lanes off the screen. Text everflow id, always present.
-		// Both are bare ADD COLUMN with no DEFAULT — catalog-only in PG11+, so
-		// they land inside the 5s budget regardless of table size. The matching
-		// INDEX is NOT here: mailing_campaigns is ~4 GB (html_content is inline),
-		// and even a partial-index build scans the whole heap, so it lives in
-		// concurrentIndexSpecs like idx_queue_content_snapshot_id. The columns are
-		// what correctness needs; the index is only a read optimization.
-		{"alter_campaigns_add_journey_key", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_key TEXT`},
-		{"alter_campaigns_add_journey_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_offer_id TEXT`},
+		// journey_key / journey_offer_id are NOT here — they moved to
+		// criticalSendPathDDL after the 2026-08-02 incident. ADD COLUMN is
+		// catalog-only, but it needs an ACCESS EXCLUSIVE lock on
+		// mailing_campaigns, and this runner's 5s statement budget INCLUDES the
+		// lock wait. Under active sending that lock is contended, the ALTER was
+		// skipped, and the binary went live referencing a column that did not
+		// exist. criticalSendPathDDL gives it lock_timeout 8s / statement_timeout
+		// 20s / 3 attempts and runs BEFORE any worker starts.
 
 		{"create_journey_executions_view", `CREATE OR REPLACE VIEW mailing_journey_executions AS
 			SELECT

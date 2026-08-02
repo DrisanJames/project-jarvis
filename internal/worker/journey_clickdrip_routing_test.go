@@ -11,6 +11,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"regexp"
 	"strings"
@@ -367,4 +368,98 @@ func TestEnsureShadowCampaign_NoNodeKeepsLegacyShape(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wantID, got)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestEnsureShadowCampaign_DegradesWhenAttributionColumnsMissing is the
+// regression guard for the 2026-08-02 incident: the node-attribution columns
+// ship via DDL that can lag the binary (the migration runner's 5s budget
+// includes an ACCESS EXCLUSIVE lock wait on a hot mailing_campaigns), and when
+// they were absent EVERY click-drip reminder failed with
+// `column "journey_key" ... does not exist`.
+//
+// Attribution is reporting metadata. A missing column must degrade to the
+// un-stamped INSERT and still SEND — never fail the touch.
+func TestEnsureShadowCampaign_DegradesWhenAttributionColumnsMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const (
+		orgID   = "00000000-0000-0000-0000-000000000001"
+		offerID = "6137"
+		nodeID  = "email-2"
+	)
+	s := NewJourneyClickDripSender(db, nil, "", "")
+	wantID := shadowCampaignID(offerID, nodeID)
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
+		WithArgs(wantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(offerID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	// The stamped INSERT fails exactly as production did...
+	mock.ExpectExec(regexp.QuoteMeta(`journey_key, journey_node_id, journey_offer_id, journey_wave_index`)).
+		WillReturnError(errors.New(`pq: column "journey_key" of relation "mailing_campaigns" does not exist`))
+
+	// ...and the sender must immediately retry WITHOUT those columns.
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_campaigns`)).
+		WithArgs(wantID, orgID, "Click-Drip Reminder · offer 6137 · email-2",
+			"Still interested?", "Diane", "deals@em.discountblog.com",
+			sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	params := ClickDripSendParams{
+		JourneyID:       "click-drip-4touch-72h",
+		NodeID:          nodeID,
+		ReminderSeq:     2,
+		EverflowOfferID: offerID,
+		Subject:         "Still interested?",
+		FromName:        "Diane",
+		FromEmail:       "deals@em.discountblog.com",
+	}
+	got, err := s.ensureShadowCampaign(context.Background(), orgID, params)
+	require.NoError(t, err, "a missing attribution column must NOT fail the send")
+	require.Equal(t, wantID, got)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	// The fallback latches: the next send skips the stamped attempt entirely
+	// rather than paying a failed INSERT every time.
+	require.True(t, s.stampsDisabled(), "fallback must latch after a missing-column error")
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
+		WithArgs(wantID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM mailing_offers WHERE everflow_offer_id=$1`)).
+		WithArgs(offerID).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_campaigns`)).
+		WithArgs(wantID, orgID, "Click-Drip Reminder · offer 6137 · email-2",
+			"Still interested?", "Diane", "deals@em.discountblog.com",
+			sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	_, err = s.ensureShadowCampaign(context.Background(), orgID, params)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	// And it SELF-HEALS: once the recheck window elapses the stamped path is
+	// tried again, so attribution resumes without a restart.
+	s.mu.Lock()
+	s.stampLastProbe = time.Now().Add(-2 * stampRecheckAfter)
+	s.mu.Unlock()
+	require.False(t, s.stampsDisabled(), "must re-probe after the recheck window")
+}
+
+// TestIsMissingColumnErr keeps the detector from swallowing unrelated failures —
+// a broad match here would hide real send errors behind a silent fallback.
+func TestIsMissingColumnErr(t *testing.T) {
+	require.True(t, isMissingColumnErr(errors.New(`pq: column "journey_key" of relation "mailing_campaigns" does not exist`)))
+	require.True(t, isMissingColumnErr(errors.New(`pq: column "journey_offer_id" does not exist`)))
+	require.False(t, isMissingColumnErr(nil))
+	require.False(t, isMissingColumnErr(errors.New("pq: canceling statement due to statement timeout")))
+	require.False(t, isMissingColumnErr(errors.New("connection refused")))
+	require.False(t, isMissingColumnErr(errors.New(`pq: relation "mailing_offers" does not exist`)),
+		"a missing TABLE is a real failure, not an attribution degrade")
 }

@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,6 +78,56 @@ type JourneyClickDripSender struct {
 	profileSender  *ProfileBasedSender
 	trackingURL    string // global fallback tracking base URL
 	trackingSecret string
+
+	// stampColsMissing latches when mailing_campaigns lacks the node-attribution
+	// columns, so ensureShadowCampaign falls back to the un-stamped INSERT
+	// instead of failing the send.
+	//
+	// WHY THIS EXISTS (2026-08-02 incident): the columns ship via the startup
+	// migration runner, whose 5s statement budget includes the ACCESS EXCLUSIVE
+	// lock wait on mailing_campaigns. Under active sending that lock is
+	// contended, the ALTER timed out ("skipped — will retry next boot"), and the
+	// new binary went live referencing a column that did not exist — every
+	// click-drip reminder then failed with `column "journey_key" ... does not
+	// exist`. Attribution is a REPORTING nicety; it must never be able to take
+	// the send path down. Same defensive shape as JourneyEventEnroller's
+	// routingColsOK and loadLaneRouting's "does not exist" tolerance.
+	//
+	// Guarded by mu because Send runs concurrently across journey executor
+	// goroutines. Re-probed after stampRecheckAfter so the stamps switch back on
+	// by themselves once the DDL lands — no restart required.
+	mu               sync.Mutex
+	stampColsMissing bool
+	stampLastProbe   time.Time
+}
+
+// stampRecheckAfter bounds how long the sender stays in un-stamped fallback
+// before retrying the stamped INSERT. Short enough that a successful migration
+// starts producing attribution within minutes; long enough that a genuinely
+// absent column costs one failed INSERT per interval, not per send.
+const stampRecheckAfter = 5 * time.Minute
+
+// stampsDisabled reports whether to skip the attribution columns on this INSERT.
+func (s *JourneyClickDripSender) stampsDisabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.stampColsMissing {
+		return false
+	}
+	if time.Since(s.stampLastProbe) > stampRecheckAfter {
+		// Let one attempt through to see whether the DDL has landed.
+		s.stampColsMissing = false
+		return false
+	}
+	return true
+}
+
+// markStampsMissing latches the fallback after a missing-column error.
+func (s *JourneyClickDripSender) markStampsMissing() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stampColsMissing = true
+	s.stampLastProbe = time.Now()
 }
 
 // NewJourneyClickDripSender builds the sender. profileSender is the same
@@ -390,9 +441,9 @@ func normalizeTrackBase(d string) string {
 // predicate in the codebase can match it:
 //   - status='sent'              (terminal; send/schedule/finalize workers skip)
 //   - campaign_type='click_drip' (NOT 'journey_node'/'regular'; no worker claims
-//                                 it, and it stays out of regular campaign lists)
+//     it, and it stays out of regular campaign lists)
 //   - execution_mode='standard'  (NOT 'pmta_isp_wave'; the wave planner and
-//                                 campaign_health_monitor only act on pmta_isp_wave)
+//     campaign_health_monitor only act on pmta_isp_wave)
 //
 // The id is DETERMINISTIC per offer (shadowCampaignID), so the existence check
 // is a primary-key lookup rather than a (campaign_type, name) sequential scan.
@@ -443,7 +494,12 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 
 	// Insert with the deterministic id; ON CONFLICT (id) collapses the race
 	// where a concurrent touch for the same offer inserted first.
-	_, err := s.db.ExecContext(ctx, `
+	//
+	// Two shapes: the stamped INSERT (node attribution) and a legacy fallback
+	// without those columns. Attribution is reporting metadata — if the columns
+	// are absent because their DDL has not landed yet, the reminder must still
+	// SEND. See stampColsMissing for the incident that motivated this.
+	const stampedInsert = `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status,
 			subject, from_name, from_email,
@@ -461,14 +517,58 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			0, 0,
 			NOW(), NOW()
 		)
-		ON CONFLICT (id) DO NOTHING
-	`,
+		ON CONFLICT (id) DO NOTHING`
+	const legacyInsert = `
+		INSERT INTO mailing_campaigns (
+			id, organization_id, name, status,
+			subject, from_name, from_email,
+			campaign_type, execution_mode,
+			sending_profile_id, offer_id,
+			total_recipients, max_recipients,
+			created_at, updated_at
+		) VALUES (
+			$1, $2, $3, 'sent',
+			$4, $5, $6,
+			'click_drip', 'standard',
+			$7, $8,
+			0, 0,
+			NOW(), NOW()
+		)
+		ON CONFLICT (id) DO NOTHING`
+
+	insertLegacy := func() error {
+		_, err := s.db.ExecContext(ctx, legacyInsert,
+			campaignID, orgID, name,
+			p.Subject, p.FromName, p.FromEmail,
+			profileUUID, offerUUID,
+		)
+		return err
+	}
+
+	if s.stampsDisabled() {
+		if err := insertLegacy(); err != nil {
+			return "", err
+		}
+		return campaignID, nil
+	}
+
+	_, err := s.db.ExecContext(ctx, stampedInsert,
 		campaignID, orgID, name,
 		p.Subject, p.FromName, p.FromEmail,
 		profileUUID, offerUUID,
 		journeyKey, journeyNode, journeyOffer, waveIndex,
 	)
 	if err != nil {
+		if isMissingColumnErr(err) {
+			// The attribution DDL has not landed. Degrade to the legacy shape
+			// rather than fail the send; re-probed after stampRecheckAfter.
+			log.Printf("JourneyClickDripSender: node-attribution columns absent (%v) — sending without attribution until the DDL lands", err)
+			s.markStampsMissing()
+			if lerr := insertLegacy(); lerr != nil {
+				return "", lerr
+			}
+			return campaignID, nil
+		}
 		return "", err
 	}
 	return campaignID, nil
@@ -484,4 +584,18 @@ func (s *JourneyClickDripSender) writeMessageLog(ctx context.Context, messageID,
 	if err != nil {
 		log.Printf("JourneyClickDripSender: message_log insert failed (msg=%s sub=%s): %v", messageID, email, err)
 	}
+}
+
+// isMissingColumnErr reports whether err is Postgres' undefined-column error
+// (SQLSTATE 42703). Matched on the driver's error text because the sender takes
+// *sql.DB, not a pq-typed connection — same string-probe shape the enroller uses
+// for its "does not exist" tolerance.
+func isMissingColumnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "does not exist") &&
+		(strings.Contains(s, "column") || strings.Contains(s, "journey_key") ||
+			strings.Contains(s, "journey_offer_id"))
 }
