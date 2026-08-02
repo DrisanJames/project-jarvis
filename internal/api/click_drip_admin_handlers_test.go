@@ -211,7 +211,7 @@ func TestClickDripAdmin_UpsertReminderSubject_HappyPath(t *testing.T) {
 
 	now := time.Now()
 	mock.ExpectQuery(`INSERT INTO mailing_offer_reminder_subjects[\s\S]*ON CONFLICT`).
-		WithArgs(cdTestOfferID, cdTestSeqIdx, cdTestSubject, cdTestPreheader, "", true, cdTestNotes, nil).
+		WithArgs(cdTestOfferID, cdTestSeqIdx, cdTestSubject, cdTestPreheader, "", true, cdTestNotes, nil, nil).
 		WillReturnRows(sqlmock.NewRows(reminderSubjectCols()).
 			AddRow(cdTestOfferID, cdTestSeqIdx, cdTestSubject, cdTestPreheader, "", true, cdTestNotes, now))
 

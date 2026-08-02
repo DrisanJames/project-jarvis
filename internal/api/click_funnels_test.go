@@ -330,8 +330,11 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"sequence_index", "subject", "preheader", "from_name_override", "enabled",
-			"body_html", "updated_at",
-		}).AddRow(0, "Still interested?", "one more look", "", true, "", time.Now()))
+			"body_html", "updated_at", "creative_id", "filename", "approval_status",
+			"money_link_status", "offer_key", "brand_code",
+		}).AddRow(0, "Still interested?", "one more look", "", true, "", time.Now(),
+			"c0000000-0000-0000-0000-000000000001", "sams-club-touch1.html", "approved",
+			"ok", "sams-club", "DB"))
 	// Lane outcome split: enrolled / active / converted(postback) /
 	// completed(sequence) / exited(early) / median hours-to-goal.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_clickdrip_touch_versions`)).
@@ -403,6 +406,17 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 	}
 	if email == nil {
 		t.Fatal("email-0 missing from the node list")
+	}
+	if email.CreativeID != "c0000000-0000-0000-0000-000000000001" ||
+		email.CreativeName != "sams-club-touch1.html" {
+		t.Fatalf("touch must carry its Creative Studio reference, got id=%q name=%q", email.CreativeID, email.CreativeName)
+	}
+	if email.CreativeApproval != "approved" || email.CreativeMoneyLink != "ok" {
+		t.Fatalf("registry approval/money-link state must reach the screen: %q / %q",
+			email.CreativeApproval, email.CreativeMoneyLink)
+	}
+	if email.BodyInherited {
+		t.Fatal("a touch WITH a Studio creative must not report an inherited body")
 	}
 	if email.Subject != "Still interested?" {
 		t.Fatalf("per-touch copy not surfaced: %q", email.Subject)

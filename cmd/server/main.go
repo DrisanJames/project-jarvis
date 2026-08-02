@@ -8081,6 +8081,16 @@ END $$`},
 		{"aug02_click_drip_touch_body", `ALTER TABLE mailing_offer_reminder_subjects
 			ADD COLUMN IF NOT EXISTS body_html TEXT`},
 
+		// The touch's creative is a REFERENCE into the Creative Studio registry
+		// (mailing_creatives), not a pasted blob. Studio is the platform's source
+		// of truth for creatives (operator ruling 2026-07-29), and it already
+		// carries approval_status, money_link_status, proof-send and preview —
+		// none of which a raw HTML field would inherit. body_html above stays as
+		// the resolved snapshot for touches configured before this and as the
+		// fallback when a referenced creative is withdrawn.
+		{"aug02_click_drip_touch_creative_ref", `ALTER TABLE mailing_offer_reminder_subjects
+			ADD COLUMN IF NOT EXISTS creative_id UUID`},
+
 		// Creative-version registry (2026-08-02). Operator rule: a touch's
 		// metrics are the LIFETIME value of that creative + subject combination,
 		// and changing ANY part of it sunsets the old numbers into a historical

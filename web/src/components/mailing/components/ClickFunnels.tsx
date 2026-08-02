@@ -63,6 +63,12 @@ interface FunnelNode {
   copy_missing: boolean;
   body_html: string;
   body_inherited: boolean;
+  creative_id: string;
+  creative_name: string;
+  creative_approval_status: string;
+  creative_money_link_status: string;
+  creative_offer_key: string;
+  creative_brand_code: string;
   copy_updated_at: string;
   copy_age_days: number;
   versions: TouchVersion[];
@@ -85,6 +91,19 @@ interface FunnelNode {
   conversion_rate: number;
   step_through_rate: number;
   attributed: boolean;
+}
+
+// One row of the Creative Studio registry (GET /api/mailing/creatives).
+interface StudioCreative {
+  id: string;
+  offer_key: string;
+  brand_code: string;
+  filename: string;
+  subject: string;
+  preheader: string;
+  approval_status: string;
+  money_link_status: string;
+  generated_at: string;
 }
 
 interface TouchVersion {
@@ -351,7 +370,9 @@ const NodeCard: React.FC<{
 
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [bodyDraft, setBodyDraft] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [studio, setStudio] = useState<StudioCreative[] | null>(null);
+  const [studioFilter, setStudioFilter] = useState('');
   const [bodySaving, setBodySaving] = useState(false);
   const [bodyErr, setBodyErr] = useState<string | null>(null);
   const [draft, setDraft] = useState({ subject: '', preheader: '', from_name_override: '', enabled: true });
@@ -427,12 +448,25 @@ const NodeCard: React.FC<{
         ]
     : [];
 
-  // Saving the body goes through the SAME reminder-subjects upsert as the copy,
-  // so subject/preheader/from and body stay one atomic creative version. The
-  // content hash changes on save, which mints a new version and sunsets the old
-  // one's metrics — that is the operator's rule, enforced server-side.
-  const saveBody = async () => {
-    if (bodyDraft == null) return;
+  // The touch stores a REFERENCE into the Creative Studio registry, not a copy
+  // of the HTML. Studio is the platform's source of truth for creatives, so
+  // pointing at one keeps its approval state, money-link check, preview and
+  // proof-send — all of which a pasted blob would have thrown away. Saving goes
+  // through the same reminder-subjects upsert as the rest of the copy, so
+  // subject/preheader/from and creative stay one atomic creative version.
+  const loadStudio = async () => {
+    try {
+      const qs = studioFilter.trim() ? `?offer=${encodeURIComponent(studioFilter.trim())}&limit=100` : '?limit=100';
+      const res = await apiFetch(`/api/mailing/creatives${qs}`);
+      const body = await res.json();
+      const rows = Array.isArray(body) ? body : (body?.creatives ?? body?.data ?? []);
+      setStudio(rows);
+    } catch {
+      setStudio([]);
+    }
+  };
+
+  const selectCreative = async (creativeId: string) => {
     setBodySaving(true); setBodyErr(null);
     try {
       const res = await apiFetch(
@@ -444,13 +478,13 @@ const NodeCard: React.FC<{
             preheader: node.preheader,
             from_name_override: node.from_name_override,
             enabled: node.copy_missing ? true : node.copy_enabled,
-            body_html: bodyDraft,
+            creative_id: creativeId,
           }),
         }
       );
       const b = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(b?.error || `HTTP ${res.status}`);
-      setBodyDraft(null);
+      setPicking(false);
       onSaved();
     } catch (e: any) {
       setBodyErr(e?.message ?? String(e));
@@ -534,9 +568,11 @@ const NodeCard: React.FC<{
               )}
               <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span>
-                  {node.body_inherited
-                    ? 'body inherits the creative this subscriber clicked'
-                    : 'body is set for this touch'}
+                  {node.creative_id
+                    ? `creative: ${node.creative_name || node.creative_id}`
+                    : node.body_inherited
+                      ? 'no creative selected — inherits whatever this subscriber clicked'
+                      : 'body snapshot set for this touch'}
                 </span>
                 <button onClick={() => setExpanded(v => !v)} style={{ ...btnGhost, padding: '2px 8px', fontSize: 11 }}>
                   {expanded ? 'Hide creative' : 'View creative'}
@@ -568,63 +604,120 @@ const NodeCard: React.FC<{
         </div>
       )}
 
-      {/* Expanded creative: the body that actually ships, editable, plus the
-          version history whose superseded entries are frozen aggregates. */}
+      {/* Expanded creative: WHICH Creative Studio creative this touch sends,
+          with the registry's own approval + money-link state, plus the version
+          history whose superseded entries are frozen aggregates. */}
       {expanded && (
         <div style={{ marginTop: 12, borderTop: `1px solid ${colors.divider}`, paddingTop: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Creative body
+              Creative
             </span>
-            {bodyDraft == null ? (
-              <button
-                onClick={() => setBodyDraft(node.body_html || '')}
-                style={{ ...btnGhost, padding: '2px 10px', fontSize: 11 }}
-              >
-                {node.body_inherited ? 'Set a body for this touch' : 'Edit body'}
-              </button>
-            ) : (
+            {node.creative_id ? (
               <>
-                <button onClick={saveBody} disabled={bodySaving} style={{ ...btnPrimary, padding: '3px 12px', fontSize: 11 }}>
-                  {bodySaving ? 'Saving…' : 'Save body'}
-                </button>
-                <button onClick={() => { setBodyDraft(null); setBodyErr(null); }} disabled={bodySaving} style={{ ...btnGhost, padding: '3px 10px', fontSize: 11 }}>
-                  Cancel
-                </button>
-                <span style={{ fontSize: 10, color: colors.textFaint }}>
-                  saving mints a new version — the current one’s metrics freeze as historical
-                </span>
+                <span style={{ fontSize: 12, color: colors.text }}>{node.creative_name || node.creative_id}</span>
+                {node.creative_offer_key && (
+                  <span style={{ fontSize: 10, color: colors.textFaint }}>
+                    {node.creative_offer_key}{node.creative_brand_code ? ` · ${node.creative_brand_code}` : ''}
+                  </span>
+                )}
+                <Pill color={node.creative_approval_status === 'approved' ? colors.success : colors.warning}>
+                  {node.creative_approval_status || 'unreviewed'}
+                </Pill>
+                {node.creative_money_link_status && (
+                  <Pill color={node.creative_money_link_status === 'ok' ? colors.success : colors.danger}>
+                    links {node.creative_money_link_status}
+                  </Pill>
+                )}
               </>
+            ) : (
+              <span style={{ fontSize: 12, color: colors.textFaint }}>
+                none selected — each subscriber receives the creative they originally clicked
+              </span>
+            )}
+            <button
+              onClick={() => { setPicking(v => !v); if (!studio) loadStudio(); }}
+              disabled={bodySaving}
+              style={{ ...btnGhost, padding: '2px 10px', fontSize: 11 }}
+            >
+              {picking ? 'Close' : node.creative_id ? 'Change creative' : 'Choose from Creative Studio'}
+            </button>
+            {node.creative_id && (
+              <a
+                href={`/api/mailing/creatives/${encodeURIComponent(node.creative_id)}/preview`}
+                target="_blank" rel="noreferrer"
+                style={{ ...btnGhost, padding: '2px 10px', fontSize: 11, textDecoration: 'none' }}
+              >
+                Open preview
+              </a>
             )}
           </div>
 
           {bodyErr && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 6 }}>{bodyErr}</div>}
 
-          {bodyDraft != null ? (
-            <textarea
-              value={bodyDraft}
-              onChange={e => setBodyDraft(e.target.value)}
-              spellCheck={false}
-              style={{
-                width: '100%', minHeight: 220, resize: 'vertical',
-                background: 'rgba(10,16,32,0.6)', color: colors.text,
-                border: `1px solid ${colors.panelBorder}`, borderRadius: 6, padding: 10,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11, lineHeight: 1.5,
-              }}
-            />
-          ) : node.body_html ? (
-            // Sandboxed: the creative is operator-authored HTML, but it must not
-            // run script or navigate the portal.
-            <iframe
-              title={`creative-${node.node_id}`}
-              srcDoc={node.body_html}
-              sandbox=""
-              style={{ width: '100%', height: 300, border: `1px solid ${colors.panelBorder}`, borderRadius: 6, background: '#fff' }}
-            />
-          ) : (
-            <div style={{ fontSize: 12, color: colors.textFaint, padding: '10px 0' }}>
-              No body set for this touch — each subscriber receives the creative they originally
-              clicked, so the body varies per person and can be far older than the subject above.
+          {picking && (
+            <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, padding: 10, marginBottom: 10 }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <input
+                  value={studioFilter}
+                  onChange={e => setStudioFilter(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') loadStudio(); }}
+                  placeholder="filter by offer key (e.g. sams-club)"
+                  style={{ ...editInput, flex: 1 }}
+                />
+                <button onClick={loadStudio} style={{ ...btnGhost, padding: '4px 12px', fontSize: 11 }}>Search</button>
+              </div>
+              <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+                {studio == null ? (
+                  <div style={{ fontSize: 11, color: colors.textFaint }}>Loading Creative Studio…</div>
+                ) : studio.length === 0 ? (
+                  <div style={{ fontSize: 11, color: colors.textFaint }}>No creatives match.</div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <tbody>
+                      {studio.map(cv => (
+                        <tr key={cv.id} style={{ borderTop: `1px solid ${colors.divider}` }}>
+                          <td style={{ padding: '5px 6px', color: colors.text }}>
+                            {cv.filename || cv.id}
+                            <div style={{ color: colors.textFaint, fontSize: 10 }}>
+                              {cv.offer_key}{cv.brand_code ? ` · ${cv.brand_code}` : ''}
+                            </div>
+                          </td>
+                          <td style={{ padding: '5px 6px' }}>
+                            <Pill color={cv.approval_status === 'approved' ? colors.success : colors.warning}>
+                              {cv.approval_status || 'unreviewed'}
+                            </Pill>
+                          </td>
+                          <td style={{ padding: '5px 6px' }}>
+                            {cv.money_link_status && (
+                              <Pill color={cv.money_link_status === 'ok' ? colors.success : colors.danger}>
+                                {cv.money_link_status}
+                              </Pill>
+                            )}
+                          </td>
+                          <td style={{ padding: '5px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                            <a href={`/api/mailing/creatives/${cv.id}/preview`} target="_blank" rel="noreferrer"
+                               style={{ ...btnGhost, padding: '2px 8px', fontSize: 10, textDecoration: 'none', marginRight: 6 }}>
+                              preview
+                            </a>
+                            <button
+                              onClick={() => selectCreative(cv.id)}
+                              disabled={bodySaving || cv.id === node.creative_id}
+                              style={{ ...btnPrimary, padding: '2px 10px', fontSize: 10 }}
+                            >
+                              {cv.id === node.creative_id ? 'current' : 'Use'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}>
+                Selecting a creative mints a new version — this touch's current metrics freeze as a
+                historical aggregate and the new creative starts its own lifetime record.
+              </div>
             </div>
           )}
 
@@ -635,8 +728,8 @@ const NodeCard: React.FC<{
             </div>
             {(!node.versions || node.versions.length === 0) ? (
               <div style={{ fontSize: 11, color: colors.textFaint }}>
-                No versions recorded yet. A version is registered the first time this touch sends
-                after creative versioning shipped; changing any part of the copy starts a new one.
+                No versions recorded yet. A version is registered the first time this touch sends;
+                changing the creative or any copy field starts a new one.
               </div>
             ) : (
               <div style={{ display: 'grid', gap: 6 }}>

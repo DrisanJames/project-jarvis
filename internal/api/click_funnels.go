@@ -269,6 +269,17 @@ type ClickFunnelNode struct {
 	// how an August body ended up under a June subject on offer 420.
 	BodyHTML      string `json:"body_html"`
 	BodyInherited bool   `json:"body_inherited"`
+	// The Creative Studio creative this touch points at, with the registry
+	// metadata that decides whether it is safe to send: approval state and the
+	// money-link check. A touch pointing at an unapproved creative, or one whose
+	// money links are dead, is exactly what an operator needs to see BEFORE it
+	// mails — and none of that exists for a pasted HTML blob.
+	CreativeID        string `json:"creative_id"`
+	CreativeName      string `json:"creative_name"`
+	CreativeApproval  string `json:"creative_approval_status"`
+	CreativeMoneyLink string `json:"creative_money_link_status"`
+	CreativeOfferKey  string `json:"creative_offer_key"`
+	CreativeBrandCode string `json:"creative_brand_code"`
 	// CopyUpdatedAt / CopyAgeDays surface staleness. Offer 420 shipped copy with
 	// a hard "Ends 7/5" deadline for four weeks after it expired because nothing
 	// showed how old the words were.
@@ -525,7 +536,13 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 			if c, ok := copyBySeq[n.Sequence]; ok {
 				n.Subject, n.Preheader, n.FromOverride, n.CopyEnabled = c.subject, c.preheader, c.fromOverride, c.enabled
 				n.BodyHTML = c.bodyHTML
-				n.BodyInherited = strings.TrimSpace(c.bodyHTML) == ""
+				n.CreativeID, n.CreativeName = c.creativeID, c.creativeName
+				n.CreativeApproval, n.CreativeMoneyLink = c.creativeApproval, c.creativeMoneyLink
+				n.CreativeOfferKey, n.CreativeBrandCode = c.creativeOfferKey, c.creativeBrandCode
+				// Inherited only when the touch has neither a Studio creative nor
+				// a snapshot — that is when the body is whatever each subscriber
+				// happened to click.
+				n.BodyInherited = c.creativeID == "" && strings.TrimSpace(c.bodyHTML) == ""
 				if !c.updatedAt.IsZero() {
 					n.CopyUpdatedAt = c.updatedAt.UTC().Format(time.RFC3339)
 					n.CopyAgeDays = int(time.Since(c.updatedAt).Hours() / 24)
@@ -945,6 +962,10 @@ func (s *ClickFunnelsService) loadNodeConversions(ctx context.Context, offerID s
 
 type reminderCopy struct {
 	subject, preheader, fromOverride, bodyHTML string
+	creativeID                                 string
+	creativeName, creativeApproval             string
+	creativeMoneyLink                          string
+	creativeOfferKey, creativeBrandCode        string
 	enabled                                    bool
 	updatedAt                                  time.Time
 }
@@ -955,17 +976,24 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 	// schema-coupling that took the screen down on 2026-08-02. Try the full
 	// shape, fall back to the pre-migration one.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT sequence_index, COALESCE(subject,''), COALESCE(preheader,''),
-		       COALESCE(from_name_override,''), COALESCE(enabled,false),
-		       COALESCE(body_html,''), COALESCE(updated_at, NOW())
-		FROM mailing_offer_reminder_subjects
-		WHERE everflow_offer_id = $1
+		SELECT rs.sequence_index, COALESCE(rs.subject,''), COALESCE(rs.preheader,''),
+		       COALESCE(rs.from_name_override,''), COALESCE(rs.enabled,false),
+		       COALESCE(rs.body_html,''), COALESCE(rs.updated_at, NOW()),
+		       COALESCE(rs.creative_id::text,''),
+		       COALESCE(cr.filename,''), COALESCE(cr.approval_status,''),
+		       COALESCE(cr.money_link_status,''), COALESCE(cr.offer_key,''),
+		       COALESCE(cr.brand_code,'')
+		FROM mailing_offer_reminder_subjects rs
+		LEFT JOIN mailing_creatives cr ON cr.id = rs.creative_id
+		WHERE rs.everflow_offer_id = $1
 	`, offerID)
 	if err != nil && strings.Contains(err.Error(), "does not exist") {
 		legacy, lerr := s.db.QueryContext(ctx, `
 			SELECT sequence_index, COALESCE(subject,''), COALESCE(preheader,''),
 			       COALESCE(from_name_override,''), COALESCE(enabled,false),
-			       '' AS body_html, COALESCE(updated_at, NOW())
+			       '' AS body_html, COALESCE(updated_at, NOW()),
+			       '' AS creative_id, '' AS filename, '' AS approval_status,
+			       '' AS money_link_status, '' AS offer_key, '' AS brand_code
 			FROM mailing_offer_reminder_subjects
 			WHERE everflow_offer_id = $1
 		`, offerID)
@@ -983,7 +1011,9 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 		var idx int
 		var c reminderCopy
 		if err := rows.Scan(&idx, &c.subject, &c.preheader, &c.fromOverride, &c.enabled,
-			&c.bodyHTML, &c.updatedAt); err != nil {
+			&c.bodyHTML, &c.updatedAt, &c.creativeID, &c.creativeName,
+			&c.creativeApproval, &c.creativeMoneyLink, &c.creativeOfferKey,
+			&c.creativeBrandCode); err != nil {
 			return nil, err
 		}
 		out[idx] = c

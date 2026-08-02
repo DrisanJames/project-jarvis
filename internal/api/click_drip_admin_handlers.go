@@ -229,6 +229,11 @@ type upsertReminderSubjectRequest struct {
 	// copy form must not silently wipe the creative. Send "" explicitly to clear
 	// it and go back to inheriting the clicked campaign's creative.
 	BodyHTML *string `json:"body_html"`
+	// CreativeID points at a Creative Studio registry row (mailing_creatives).
+	// This is how a touch gets its body — Studio is the source of truth, so the
+	// touch references a creative rather than carrying a copy of one. Pointer
+	// semantics match BodyHTML: omitted = unchanged, "" = clear the reference.
+	CreativeID *string `json:"creative_id"`
 }
 
 // UpsertReminderSubject — PUT /api/mailing/offer-reminder-subjects/{everflow_offer_id}/{sequence_index}
@@ -269,8 +274,8 @@ func (h *ClickDripAdminHandlers) UpsertReminderSubject(w http.ResponseWriter, r 
 	err := h.db.QueryRowContext(r.Context(), `
 		INSERT INTO mailing_offer_reminder_subjects (
 			everflow_offer_id, sequence_index, subject, preheader,
-			from_name_override, enabled, notes, body_html, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			from_name_override, enabled, notes, body_html, creative_id, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,'')::uuid, NOW())
 		ON CONFLICT (everflow_offer_id, sequence_index) DO UPDATE SET
 			subject = EXCLUDED.subject,
 			preheader = EXCLUDED.preheader,
@@ -280,13 +285,17 @@ func (h *ClickDripAdminHandlers) UpsertReminderSubject(w http.ResponseWriter, r 
 			-- NULL body_html in the payload means "unchanged", so a subject-only
 			-- edit cannot wipe the creative out from under the touch.
 			body_html = COALESCE(EXCLUDED.body_html, mailing_offer_reminder_subjects.body_html),
+			-- Same "omitted means unchanged" rule as body_html, so editing a
+			-- subject can never detach the touch from its creative.
+			creative_id = CASE WHEN $9::text IS NULL THEN mailing_offer_reminder_subjects.creative_id
+			                   ELSE NULLIF($9,'')::uuid END,
 			updated_at = NOW()
 		RETURNING everflow_offer_id, sequence_index, subject,
 		          COALESCE(preheader, ''), COALESCE(from_name_override, ''),
 		          enabled, COALESCE(notes, ''), updated_at
 	`,
 		offerID, seqIdx, req.Subject, req.Preheader,
-		req.FromNameOverride, enabled, req.Notes, req.BodyHTML,
+		req.FromNameOverride, enabled, req.Notes, req.BodyHTML, req.CreativeID,
 	).Scan(
 		&row.EverflowOfferID, &row.SequenceIndex, &row.Subject,
 		&row.Preheader, &row.FromNameOverride, &row.Enabled,
