@@ -7,7 +7,7 @@ import {
   /* faArrowLeft, */ faGlobe, faStore,
   faSpinner, faSeedling, faWandMagicSparkles,
   faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup, faSliders,
-  faBroom,
+  faRightLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -87,7 +87,10 @@ const tabs: Tab[] = [
   { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Membership-build truth per segment family — staleness verdicts against declared SLAs, worker liveness, churn and campaign use.' },
   { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
   { id: 'click-funnels', label: 'Click Funnels', icon: faRoute, description: 'Click-drip offer funnels — per-node reach, open, click and conversion rates, the copy on each touch, and bulk clicker upload by sub1.' },
-  { id: 'eo-cleaning', label: 'EO Cleaning', icon: faBroom, description: 'Clean any list, segment or pasted upload through EmailOversight — job progress, verdict splits and daily-cost caps; verdicts land in the platform validation gate.' },
+  // Tab id stays 'eo-cleaning' — it is the persisted key in localStorage
+  // ('jarvis.portal.activeTab'); renaming the id would silently bounce the
+  // operator to the Dashboard on their next refresh. Label only.
+  { id: 'eo-cleaning', label: 'Export & Import', icon: faRightLeft, description: 'Export and import audience data — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },

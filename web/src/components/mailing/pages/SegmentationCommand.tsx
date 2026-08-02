@@ -538,7 +538,7 @@ export const SegmentationCommand: React.FC = () => {
     }
     setCleaning(false);
     setCleanMsg(errors.length === 0
-      ? { ok: true, text: `${queued} cleaning job${queued === 1 ? '' : 's'} queued — track progress in the EO Cleaning tab.` }
+      ? { ok: true, text: `${queued} cleaning job${queued === 1 ? '' : 's'} queued — track progress in the Export & Import tab.` }
       : { ok: false, text: `${queued} queued, ${errors.length} failed: ${errors.slice(0, 3).join('; ')}` });
   }, [cleaning]);
 

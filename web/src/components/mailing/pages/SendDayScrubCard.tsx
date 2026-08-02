@@ -5,12 +5,13 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, panelStyle, btnStyle } from '../shared/theme';
+import { daysAgoDenver } from '../shared/filters';
 import { SectionHeader, Pill } from '../shared/ui';
 
 // =============================================================================
 // SEND-DAY SCRUB — the Optizmo opt-out compliance loop (operator 2026-07-27)
 // =============================================================================
-// Lives on the EO Cleaning (List Hygiene) page. Before each send day:
+// Lives on the Export & Import page. Before each send day:
 //   1. Export the day's planned audience as MD5s (union of the "<tok> - "
 //      campaigns' inclusion segments — the DB truth, streamed CSV).
 //   2. Run the file through Optizmo.
@@ -47,10 +48,12 @@ interface ScrubImportResult {
 
 const fmtNum = (n: number) => n.toLocaleString('en-US');
 
-const tomorrowISO = (): string => {
-  const d = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  return d.toISOString().slice(0, 10);
-};
+// Send days are DENVER days (design system §3.1 — no per-screen date math).
+// The previous UTC form (`new Date(Date.now()+24h).toISOString()`) returned the
+// day AFTER tomorrow once Denver passed ~18:00, so an evening scrub exported
+// the wrong day's audience to Optizmo. daysAgoDenver(-1) is the DST-safe
+// "tomorrow in Denver".
+const tomorrowISO = (): string => daysAgoDenver(-1);
 
 const inputStyle: React.CSSProperties = {
   background: colors.panelBgSolid,

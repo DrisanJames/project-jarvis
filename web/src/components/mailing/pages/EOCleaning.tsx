@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faBroom, faRotate, faSpinner, faPlay, faPause, faPlus,
+  faBroom, faRotate, faSpinner, faPlay, faPause, faPlus, faRightLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
@@ -12,8 +12,16 @@ import { SectionHeader, Pill, SectionError, EmptyState, ProgressBar } from '../s
 import { SendDayScrubCard } from './SendDayScrubCard';
 
 // =============================================================================
-// EO CLEANING — ad-hoc EmailOversight cleaning jobs
+// EXPORT & IMPORT — audience data in and out of the platform
 // =============================================================================
+// Nav label is "Export & Import" (operator 2026-08-01); the tab id, the file
+// name and the /api/mailing/eo-clean/* routes stay `eo-cleaning` — the id is
+// the persisted localStorage key and the routes are a public contract.
+// The page carries two things:
+//   1. Send-Day Scrub — MD5 export → Optizmo → suppression import (the panel
+//      the operator actually uses daily). Rendered unconditionally below.
+//   2. EO cleaning jobs — the EmailOversight validation loop.
+//
 // Operator ask (2026-07-26): "Somewhere in the platform I should be able to
 // upload a list and have it cleaned. Or tell the platform to clean a
 // particular list or segment from the segment command."
@@ -28,7 +36,7 @@ import { SendDayScrubCard } from './SendDayScrubCard';
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
-const PAGE_VERSION = '1.0';
+const PAGE_VERSION = '1.1';
 
 // ── API shapes (mirror eo_clean_handlers.go; do not drift) ──────────────────
 
@@ -359,10 +367,10 @@ export const EOCleaning: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faBroom} style={{ color: colors.indigo400 }} /> EO Cleaning
+            <FontAwesomeIcon icon={faRightLeft} style={{ color: colors.indigo400 }} /> Export &amp; Import
           </h2>
           <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-            Clean any list, segment or pasted upload through EmailOversight — verdicts land in the platform validation gate (mailing_eo_validation). v{PAGE_VERSION}
+            Audience data in and out — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight. v{PAGE_VERSION}
             {state.fetchedAt && <span> · fetched {state.fetchedAt}</span>}
           </div>
         </div>
@@ -396,7 +404,8 @@ export const EOCleaning: React.FC = () => {
           color: colors.warning,
         }}>
           <strong>SOURCE UNAVAILABLE.</strong> <code style={{ fontFamily: 'monospace' }}>/api/mailing/eo-clean/jobs</code> is
-          not exposed by this server build — the EO Cleaning backend has not been deployed here yet.
+          not exposed by this server build — the list-cleaning backend has not been deployed here yet.
+          The export/import panel above is unaffected.
         </div>
       )}
 
