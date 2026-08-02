@@ -64,6 +64,15 @@ type CpmPlannerHandlers struct {
 	// recomputed per page view. Guarded by evMu.
 	dealIdentity   map[string][2]string
 	dealIdentityAt time.Time
+	// nonCpmCache holds built non-CPM responses per (org, month). A full build
+	// is a multi-minute job on a busy DB; only COMPLETE builds are cached.
+	nonCpmCache map[string]nonCpmCached
+}
+
+// nonCpmCached is one cached non-CPM payload.
+type nonCpmCached struct {
+	payload map[string]interface{}
+	at      time.Time
 }
 
 const cpmEventCacheRefresh = 4 * time.Minute

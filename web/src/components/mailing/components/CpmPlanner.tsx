@@ -385,6 +385,7 @@ interface NonCpmResp {
   days_rolled?: number;
   days_expected?: number;
   volume_partial?: boolean;
+  degraded?: string[];
 }
 
 // ─── Month-to-date creative/subject rows (mirror HandleAnalyticsCreatives) ───
@@ -2884,6 +2885,17 @@ export const CpmPlanner: React.FC = () => {
             background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)', color: C.red,
           }}>
             {nonCpmError}
+          </div>
+        )}
+
+        {nonCpm?.degraded && nonCpm.degraded.length > 0 && (
+          <div style={{
+            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 12,
+            background: 'rgba(239,68,68,0.1)', border: `1px solid ${C.red}`, color: C.red,
+          }}>
+            Could not build {nonCpm.degraded.join(', ')} for this period — those columns are
+            showing ZERO because the query did not finish, not because the numbers are zero.
+            Hit Refresh; if it persists the database is under load.
           </div>
         )}
 

@@ -102,6 +102,23 @@ const (
 	// wiring change, so a short TTL keeps the page responsive without staleness
 	// that matters.
 	nonCpmDealMapTTL = 5 * time.Minute
+	// nonCpmRollupLockID — PG advisory-lock key giving the rollup loop
+	// CROSS-TASK single-flight. Every ECS task runs this worker; without the
+	// lock two tasks DELETE+INSERT the same day concurrently and one aborts on
+	// "duplicate key value violates unique constraint
+	// mailing_offer_day_rollup_pkey" (observed on prod 2026-08-02, every day of
+	// the backfill). Worse than the error: the wasted duplicate pass doubles
+	// load on mailing_tracking_events, which is what pushed the request-path
+	// click and deal-map queries over their statement timeout. Arbitrary,
+	// unique in this repo.
+	nonCpmRollupLockID int64 = 728104408
+	// nonCpmQueryTimeout — the request-path click and deal-map passes need more
+	// than the pooled 30s (measured 6.9s and 16.5s on a quiet DB, both cancelled
+	// under rollup contention). Scoped per statement via SET LOCAL.
+	nonCpmQueryTimeout = 120
+	// nonCpmResponseTTL — how long a built response is reused. The first load
+	// after a change pays the full cost; everything after is instant.
+	nonCpmResponseTTL = 5 * time.Minute
 )
 
 // ─── Schema ─────────────────────────────────────────────────────────────────
@@ -283,6 +300,35 @@ func (h *CpmPlannerHandlers) nonCpmRollupLoop() {
 		func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 			defer cancel()
+
+			// CROSS-TASK single-flight. Every ECS task runs this loop; without
+			// the lock two tasks recompute the same day at once and one dies on
+			// a duplicate-key abort while both hammer mailing_tracking_events.
+			// Dedicated connection: a pooled lock/unlock can land on different
+			// sessions and leak the lock (the suppression_list.go trap).
+			lockConn, lerr := h.db.Conn(ctx)
+			if lerr != nil {
+				log.Printf("[CpmPlanner] non-cpm rollup lock conn: %v", lerr)
+				return
+			}
+			defer lockConn.Close()
+			var got bool
+			if lerr := lockConn.QueryRowContext(ctx,
+				"SELECT pg_try_advisory_lock($1)", nonCpmRollupLockID).Scan(&got); lerr != nil {
+				log.Printf("[CpmPlanner] non-cpm rollup advisory lock: %v", lerr)
+				return
+			}
+			if !got {
+				return // another task owns this cycle; it will land either way
+			}
+			defer func() {
+				uctx, ucancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer ucancel()
+				if _, uerr := lockConn.ExecContext(uctx,
+					"SELECT pg_advisory_unlock($1)", nonCpmRollupLockID); uerr != nil {
+					log.Printf("[CpmPlanner] non-cpm rollup unlock (released at conn close): %v", uerr)
+				}
+			}()
 
 			orgs := []string{}
 			rows, err := h.db.QueryContext(ctx, `SELECT DISTINCT organization_id::text FROM mailing_cpm_deals`)
@@ -535,6 +581,31 @@ func (r *nonCpmOfferRow) deriveRates() {
 	r.AvgPayout = nonCpmDiv(r.Revenue, float64(r.PayoutCoverage))
 }
 
+// nonCpmQuery runs a request-path aggregate on a DEDICATED connection with a
+// raised statement_timeout. Both the click pass and the deal-map pass exceed
+// the pooled 30s under rollup contention; when they are cancelled their callers
+// fall back to empty maps, which renders as "0 clickers" and "No CPM deal" for
+// every row — a confident-looking wrong answer. Letting them run to completion
+// is the difference between slow and false.
+func (h *CpmPlannerHandlers) nonCpmQuery(query string, args ...interface{}) (*sql.Rows, func(), error) {
+	ctx := context.Background()
+	conn, err := h.db.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf(`SET statement_timeout = '%ds'`, nonCpmQueryTimeout)); err != nil {
+		conn.Close()
+		return nil, func() {}, err
+	}
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		conn.Close()
+		return nil, func() {}, err
+	}
+	return rows, func() { rows.Close(); conn.Close() }, nil
+}
+
 // ─── Per-metric loaders (all keyed on nonCpmIdentityExpr) ───────────────────
 
 // nonCpmVolume sums the daily rollup across the month. Second return is the
@@ -579,11 +650,11 @@ func (h *CpmPlannerHandlers) nonCpmVolume(orgID string, from, to time.Time) (map
 // t.em /o/ smart-link OFFER REDIRECT is kept (it is the money click).
 func (h *CpmPlannerHandlers) nonCpmClicks(orgID string, from, to time.Time) (clicks, clickers map[string]int64, err error) {
 	clicks, clickers = map[string]int64{}, map[string]int64{}
-	rows, qerr := h.db.Query(nonCpmClicksSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	rows, done, qerr := h.nonCpmQuery(nonCpmClicksSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	if qerr != nil {
 		return nil, nil, qerr
 	}
-	defer rows.Close()
+	defer done()
 	for rows.Next() {
 		var id string
 		var ck, cr int64
@@ -686,11 +757,11 @@ func (h *CpmPlannerHandlers) nonCpmDealForIdentity(orgID string) (map[string][2]
 	}
 	h.evMu.Unlock()
 
-	rows, err := h.db.Query(q, orgID)
+	rows, done, err := h.nonCpmQuery(q, orgID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer done()
 	out := map[string][2]string{}
 	best := map[string]int64{}
 	for rows.Next() {
@@ -789,19 +860,39 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("volume rollup: %v", err))
 		return
 	}
+	// Cached response: a full build costs minutes on a busy DB. Serve the cached
+	// payload for the same (org, month) within the TTL.
+	cacheKey := orgID + "|" + ym
+	h.evMu.Lock()
+	if c, ok := h.nonCpmCache[cacheKey]; ok && time.Since(c.at) < nonCpmResponseTTL {
+		payload := c.payload
+		h.evMu.Unlock()
+		respondJSON(w, http.StatusOK, payload)
+		return
+	}
+	h.evMu.Unlock()
+
+	// degraded names the components that failed. It is returned to the client:
+	// a partial build must announce itself, because "0 clickers" and "No CPM
+	// deal" are indistinguishable from real answers once rendered.
+	degraded := []string{}
+
 	clicks, clickers, err := h.nonCpmClicks(orgID, from, to)
 	if err != nil {
 		log.Printf("[CpmPlanner] non-cpm clicks: %v", err)
 		clicks, clickers = map[string]int64{}, map[string]int64{}
+		degraded = append(degraded, "clickers")
 	}
 	convCounts, convPaid, convRevenue, err := h.nonCpmConversions(orgID, from, to)
 	if err != nil {
 		log.Printf("[CpmPlanner] non-cpm conversions: %v", err)
+		degraded = append(degraded, "conversions")
 	}
 	deals, err := h.nonCpmDealForIdentity(orgID)
 	if err != nil {
 		log.Printf("[CpmPlanner] non-cpm deal map: %v", err)
 		deals = map[string][2]string{}
+		degraded = append(degraded, "cpm-allocation")
 	}
 	groups, carryOver, err := h.nonCpmGroups(orgID)
 	if err != nil {
@@ -943,6 +1034,19 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	}
 	if !refreshedAt.IsZero() {
 		resp["refreshed_at"] = refreshedAt.Format(time.RFC3339)
+	}
+	if len(degraded) > 0 {
+		resp["degraded"] = degraded
+	}
+	// Only cache a COMPLETE build — caching a degraded one would pin the wrong
+	// numbers on screen for the whole TTL.
+	if len(degraded) == 0 {
+		h.evMu.Lock()
+		if h.nonCpmCache == nil {
+			h.nonCpmCache = map[string]nonCpmCached{}
+		}
+		h.nonCpmCache[cacheKey] = nonCpmCached{payload: resp, at: time.Now()}
+		h.evMu.Unlock()
 	}
 	respondJSON(w, http.StatusOK, resp)
 }
