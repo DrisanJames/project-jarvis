@@ -10,6 +10,7 @@ import {
 } from '../shared/theme';
 import { SectionHeader, Pill, SectionError, EmptyState, ProgressBar } from '../shared/ui';
 import { SendDayScrubCard } from './SendDayScrubCard';
+import { ListImportPanel } from './ListImportPanel';
 
 // =============================================================================
 // EXPORT & IMPORT — audience data in and out of the platform
@@ -17,10 +18,12 @@ import { SendDayScrubCard } from './SendDayScrubCard';
 // Nav label is "Export & Import" (operator 2026-08-01); the tab id, the file
 // name and the /api/mailing/eo-clean/* routes stay `eo-cleaning` — the id is
 // the persisted localStorage key and the routes are a public contract.
-// The page carries two things:
+// The page carries three things:
 //   1. Send-Day Scrub — MD5 export → Optizmo → suppression import (the panel
 //      the operator actually uses daily). Rendered unconditionally below.
-//   2. EO cleaning jobs — the EmailOversight validation loop.
+//   2. List import — CSV → a target list, with an operator-reviewed column
+//      mapping (ListImportPanel). Also rendered unconditionally.
+//   3. EO cleaning jobs — the EmailOversight validation loop.
 //
 // Operator ask (2026-07-26): "Somewhere in the platform I should be able to
 // upload a list and have it cleaned. Or tell the platform to clean a
@@ -36,7 +39,10 @@ import { SendDayScrubCard } from './SendDayScrubCard';
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
-const PAGE_VERSION = '1.1';
+// 1.2 (2026-08-01, REQ-071): added the list-import panel — pick/create a target
+// list, server-derived headers + preview, operator-reviewed column mapping,
+// import, job watch. Rendered outside the eo-clean jobs guard.
+const PAGE_VERSION = '1.2';
 
 // ── API shapes (mirror eo_clean_handlers.go; do not drift) ──────────────────
 
@@ -300,7 +306,7 @@ const NewJobForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) => {
             style={{ ...inputStyle, fontFamily: 'monospace', resize: 'vertical' }}
           />
           <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
-            CSV file upload is a noted follow-up — paste the email column for now. Malformed entries refuse the whole request (nothing is queued).
+            Paste the email column here for a one-off scrub. To clean a whole CSV, import it into a list with the panel above (max 32 MB), then pick that list as the source. Malformed entries refuse the whole request (nothing is queued).
           </div>
         </div>
       )}
@@ -389,6 +395,15 @@ export const EOCleaning: React.FC = () => {
           cleaning jobs backend, so it renders regardless of that fetch. */}
       <div style={{ margin: '12px 0 16px' }}>
         <SendDayScrubCard />
+      </div>
+
+      {/* List import (REQ-071) — a thin client of the shared import service.
+          Rendered OUTSIDE the eo-clean jobs guard on the SendDayScrubCard
+          precedent above: a hiccup on /eo-clean/jobs must not hide the ability
+          to import a list. Import writes mailing_subscribers.list_id, which is
+          the same membership vehicle the `list` source below reads. */}
+      <div style={{ margin: '0 0 16px' }}>
+        <ListImportPanel />
       </div>
 
       {state.loading && (

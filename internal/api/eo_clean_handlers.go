@@ -21,8 +21,18 @@ package api
 //             server-side from mailing_segment_members.email (the members
 //             table carries its own email column — never join subscribers for
 //             this; see the ambiguous-email footgun).
-//   list    — source_ref = mailing_lists.id (org-verified). Emails resolve via
-//             mailing_list_subscribers → mailing_subscribers.
+//   list    — source_ref = mailing_lists.id (org-verified). Emails resolve from
+//             mailing_subscribers.list_id — the platform's ONE membership
+//             vehicle (ruling R1, 2026-08-01 / REQ-070). This used to read the
+//             legacy list-to-subscriber join table, which has no DDL anywhere
+//             in the repo and which nothing writes: the importer records
+//             membership as list_id (mailing_import.go:493-500), so every
+//             imported list resolved to 0 emails here (or errored outright if
+//             the table is absent in prod). Deliberately NO status predicate —
+//             the number the picker quotes is mailing_lists.subscriber_count,
+//             a bare COUNT(*) over list_id with no status filter
+//             (mailing_import.go:533), so filtering here would make the screen's
+//             quote and the screen's job disagree.
 //
 // NEVER PAY TWICE: enqueue skips emails already status='Verified' in
 // mailing_eo_validation; they are counted as already_clean. Cleaning costs
@@ -285,11 +295,14 @@ func (s *EOCleanStore) CreateJob(r *http.Request, orgID uuid.UUID, req eoCleanCr
 		}
 		queued, _ = res.RowsAffected()
 	case "list":
+		// Membership = mailing_subscribers.list_id (ruling R1). No status
+		// predicate: mailing_lists.subscriber_count — the number the picker
+		// quotes — is COUNT(*) over list_id with no status filter, so quote and
+		// job agree by construction.
 		if err := tx.QueryRowContext(ctx, `
 			SELECT COUNT(DISTINCT lower(s.email))
-			FROM mailing_list_subscribers ls
-			JOIN mailing_subscribers s ON s.id = ls.subscriber_id
-			WHERE ls.list_id = $1::uuid AND COALESCE(s.email, '') <> ''
+			FROM mailing_subscribers s
+			WHERE s.list_id = $1::uuid AND COALESCE(s.email, '') <> ''
 		`, req.SourceRef).Scan(&total); err != nil {
 			return eoCleanJobJSON{}, http.StatusInternalServerError, err
 		}
@@ -297,12 +310,12 @@ func (s *EOCleanStore) CreateJob(r *http.Request, orgID uuid.UUID, req eoCleanCr
 			return eoCleanJobJSON{}, http.StatusBadRequest,
 				fmt.Errorf("list resolves to %d emails — over the %d per-job bound; split the source", total, eoCleanMaxJobSize)
 		}
+		// Same FROM/WHERE as the count above — one predicate, one number.
 		res, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_eo_clean_items (job_id, email_lower)
 			SELECT DISTINCT $1::uuid, lower(s.email)
-			FROM mailing_list_subscribers ls
-			JOIN mailing_subscribers s ON s.id = ls.subscriber_id
-			WHERE ls.list_id = $2::uuid AND COALESCE(s.email, '') <> ''
+			FROM mailing_subscribers s
+			WHERE s.list_id = $2::uuid AND COALESCE(s.email, '') <> ''
 			  AND NOT EXISTS (
 				SELECT 1 FROM mailing_eo_validation v
 				WHERE v.email_lower = lower(s.email) AND v.status = 'Verified'

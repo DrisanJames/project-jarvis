@@ -32,6 +32,7 @@ import {
   faChevronUp,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { apiFetch } from '../shared/apiFetch';
 import { ChunkedUploader } from '../ChunkedUploader';
 import {
   ConditionGroupBuilder,
@@ -2231,7 +2232,24 @@ interface ImportResult {
 
 type ImportStep = 'setup' | 'analyze' | 'importing' | 'complete';
 
-const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, onSuccess, animateIn }) => {
+// One suggested column→field row from POST /api/mailing/import/validate
+// (internal/api/import_templates.go:356-362). The alias vocabulary lives on the
+// server; this component never guesses a field name (ruling R2).
+interface SuggestedColumn {
+  column_index: number;
+  original_header: string;
+  suggested_field: string | null;
+  confidence: string;
+  is_custom: boolean;
+}
+
+// The server REJECTS an upload over 32 MB (MaxImportFileBytes, mailing_import.go)
+// with a 413 naming the limit — it no longer silently truncates to 32 MB.
+const MAX_IMPORT_MB = 32;
+
+// `orgFetch` defaults to apiFetch so the component can never fall back to a bare
+// fetch() that drops the X-Organization-ID header (list-import SEV-3).
+const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, onSuccess, orgFetch = apiFetch, animateIn }) => {
   const [step, setStep] = useState<ImportStep>('setup');
   const [selectedList, setSelectedList] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -2245,6 +2263,13 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
   const [startTime, setStartTime] = useState<number | null>(null);
   const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<string>('');
   const [useAdvancedUploader, setUseAdvancedUploader] = useState(false);
+  // REQ-068: the operator-reviewed column→field mapping. Suggestions come from
+  // POST /api/mailing/import/validate; `mapTargets[i]` is the field column i is
+  // imported as (null = dropped). Without this the server falls back to a
+  // hardcoded positional map and writes ZIP/state into first_name/last_name.
+  const [suggestedCols, setSuggestedCols] = useState<SuggestedColumn[] | null>(null);
+  const [mapTargets, setMapTargets] = useState<(string | null)[]>([]);
+  const [mappingError, setMappingError] = useState<string | null>(null);
 
   // If advanced uploader is selected and a list is chosen, render ChunkedUploader
   if (useAdvancedUploader && selectedList) {
@@ -2350,6 +2375,10 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         invalidRecords: invalidRecords.slice(0, 10),
       });
 
+      // Ask the SERVER what these headers mean. The alias vocabulary lives in
+      // import_templates.go; nothing about it is duplicated here (ruling R2).
+      await loadSuggestedMapping(headers);
+
       setStep('analyze');
     } catch (err) {
       console.error('Error parsing file:', err);
@@ -2380,6 +2409,54 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
     return result.map(s => s.replace(/^"|"$/g, '').trim());
   };
 
+  // REQ-068: fetch the server's suggested column→field mapping for these
+  // headers. On failure the mapping table renders empty and the Import button
+  // stays disabled — an unmapped import is exactly the silent corruption this
+  // requirement exists to stop, so it must not proceed "just in case".
+  const loadSuggestedMapping = async (headers: string[]) => {
+    setMappingError(null);
+    setSuggestedCols(null);
+    setMapTargets(headers.map(() => null));
+    try {
+      const res = await orgFetch('/api/mailing/import/validate', {
+        method: 'POST',
+        body: JSON.stringify({ headers }),
+      });
+      if (!res.ok) {
+        setMappingError(`Could not load the column mapping (HTTP ${res.status}). Nothing will be imported until it loads.`);
+        return;
+      }
+      const data = await res.json();
+      const cols = (data?.mapping ?? []) as SuggestedColumn[];
+      setSuggestedCols(cols);
+      setMapTargets(headers.map((_, i) => cols[i]?.suggested_field ?? null));
+      const errs = (data?.validation?.errors ?? []) as string[];
+      if (errs.length > 0) setMappingError(errs.join(' '));
+    } catch (err) {
+      setMappingError(`Could not load the column mapping: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // The {field: column_index} shape HandleImportSubscribers unmarshals
+  // (mailing_import.go:46-47), built from the operator's reviewed choices.
+  const buildFieldMapping = (): Record<string, number> => {
+    const out: Record<string, number> = {};
+    mapTargets.forEach((f, i) => {
+      if (f && !Object.prototype.hasOwnProperty.call(out, f)) out[f] = i;
+    });
+    return out;
+  };
+
+  const fieldMappingDraft = buildFieldMapping();
+  const emailColumnMapped = Object.prototype.hasOwnProperty.call(fieldMappingDraft, 'email');
+  const duplicateMapTargets = mapTargets.filter(
+    (f, i) => !!f && mapTargets.indexOf(f) !== i,
+  ) as string[];
+  // Options offered per column = the fields the server recognised in THIS file.
+  const suggestedFieldOptions = Array.from(new Set(
+    (suggestedCols ?? []).map(c => c.suggested_field).filter((f): f is string => !!f),
+  )).sort();
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       analyzeFile(e.target.files[0]);
@@ -2398,12 +2475,18 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
       const formData = new FormData();
       formData.append('file', file);
       formData.append('list_id', selectedList);
+      // REQ-068: send the operator-reviewed mapping. Omitting it is what made
+      // the server fall back to a hardcoded positional map.
+      formData.append('field_mapping', JSON.stringify(buildFieldMapping()));
       formData.append('update_existing', updateExisting ? 'true' : 'false');
 
-      const res = await fetch(`/api/mailing/lists/${selectedList}/import`, {
+      // apiFetch (not orgFetch) for the multipart POST: orgFetch forces
+      // Content-Type: application/json, which would destroy the multipart
+      // boundary. apiFetch leaves FormData to own its content type and still
+      // attaches X-Organization-ID + credentials.
+      const res = await apiFetch(`/api/mailing/lists/${selectedList}/import`, {
         method: 'POST',
         body: formData,
-        credentials: 'include',
       });
 
       const data = await res.json();
@@ -2433,7 +2516,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
   const pollJobStatus = async (jobId: string) => {
     const poll = async () => {
       try {
-        const res = await fetch(`/api/mailing/import-jobs/${jobId}`);
+        const res = await orgFetch(`/api/mailing/import-jobs/${jobId}`);
         if (res.ok) {
           const job = await res.json();
           
@@ -2487,6 +2570,9 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
     setAnalysis(null);
     setResult(null);
     setProgress(0);
+    setSuggestedCols(null);
+    setMapTargets([]);
+    setMappingError(null);
   };
 
   // Available fields for reference
@@ -2604,7 +2690,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
                     <>
                       <FontAwesomeIcon icon={faUpload} />
                       <span>Click to select CSV file</span>
-                      <small>We'll validate emails before importing</small>
+                      <small>Maximum {MAX_IMPORT_MB} MB per file — anything larger must be split before upload</small>
                     </>
                   )}
                 </label>
@@ -2672,14 +2758,70 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
               )}
             </div>
 
-            {/* Detected Columns */}
+            {/* Column Mapping (REQ-068) — reviewed by the operator, then SENT.
+                Suggestions are the server's (POST /api/mailing/import/validate);
+                the choices offered are the fields it recognised in this file. */}
             <div className="form-section">
-              <h4>Detected Columns ({analysis.headers.length})</h4>
-              <div className="detected-columns">
-                {analysis.headers.map((h, i) => (
-                  <span key={i} className="column-tag">{h}</span>
-                ))}
+              <h4>Column Mapping ({analysis.headers.length} columns)</h4>
+              {mappingError && (
+                <p className="error-text">{mappingError}</p>
+              )}
+              <div className="preview-table-wrapper">
+                <table className="preview-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Header in file</th>
+                      <th>Server suggestion</th>
+                      <th>Import as</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {analysis.headers.map((h, i) => (
+                      <tr key={i}>
+                        <td>{i}</td>
+                        <td><code>{h}</code></td>
+                        <td>
+                          {suggestedCols?.[i]?.suggested_field
+                            ? `${suggestedCols[i].suggested_field} (${suggestedCols[i].confidence})`
+                            : <span className="error-text">not recognised</span>}
+                        </td>
+                        <td>
+                          <select
+                            value={mapTargets[i] ?? ''}
+                            onChange={e => setMapTargets(prev => {
+                              const next = [...prev];
+                              next[i] = e.target.value || null;
+                              return next;
+                            })}
+                          >
+                            <option value="">— do not import —</option>
+                            {Array.from(new Set([
+                              ...suggestedFieldOptions,
+                              ...(mapTargets[i] ? [mapTargets[i] as string] : []),
+                            ])).sort().map(f => <option key={f} value={f}>{f}</option>)}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+              {!emailColumnMapped && (
+                <p className="error-text">
+                  No column is mapped to <code>email</code>. Nothing can be imported without one.
+                </p>
+              )}
+              {duplicateMapTargets.length > 0 && (
+                <p className="error-text">
+                  Two columns are mapped to the same field ({duplicateMapTargets.join(', ')}). Each
+                  field can come from only one column.
+                </p>
+              )}
+              <p className="fields-note">
+                Columns left as “do not import” are dropped. To import a column the server did not
+                recognise, rename its header in the CSV to the field name and re-select the file.
+              </p>
             </div>
 
             {/* Preview */}
@@ -2762,7 +2904,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
                 type="button" 
                 className="btn btn-primary" 
                 onClick={handleUpload}
-                disabled={!selectedList || analysis.validEmails === 0}
+                disabled={!selectedList || analysis.validEmails === 0 || !emailColumnMapped || duplicateMapTargets.length > 0}
               >
                 <FontAwesomeIcon icon={faUpload} />
                 Import {analysis.validEmails.toLocaleString()} Valid Records
