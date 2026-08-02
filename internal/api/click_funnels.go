@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +61,44 @@ const maxUploadIDs = 200000
 // ClickFunnelsService serves the Click Funnels screen.
 type ClickFunnelsService struct {
 	db *sql.DB
+
+	// attrMu/attrPresent/attrProbed cache whether mailing_campaigns has the
+	// node-attribution columns.
+	//
+	// WHY (2026-08-02): those columns arrive via DDL that can lose a long race
+	// for an ACCESS EXCLUSIVE lock on a continuously-read mailing_campaigns
+	// (measured: four overlapping CPM attribution queries, the oldest 9+ minutes,
+	// starve it indefinitely). The SEND path already degrades when they are
+	// absent — but every READ here referenced them too, so the whole screen 500'd
+	// with `column c.journey_offer_id does not exist` while sending was perfectly
+	// healthy. A reporting screen must degrade to "no attribution yet", never to
+	// an error page.
+	attrMu      sync.Mutex
+	attrPresent bool
+	attrProbed  time.Time
+}
+
+// attrProbeTTL re-checks for the columns periodically so the screen lights up on
+// its own once the DDL finally lands — no redeploy.
+const attrProbeTTL = 2 * time.Minute
+
+// hasAttributionCols reports whether the node-attribution columns exist. Cheap
+// catalog lookup, cached; on any error it answers false (degrade, never 500).
+func (s *ClickFunnelsService) hasAttributionCols(ctx context.Context) bool {
+	s.attrMu.Lock()
+	defer s.attrMu.Unlock()
+	if !s.attrProbed.IsZero() && time.Since(s.attrProbed) < attrProbeTTL {
+		return s.attrPresent
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_name='mailing_campaigns'
+		  AND column_name IN ('journey_key','journey_offer_id')
+	`).Scan(&n)
+	s.attrProbed = time.Now()
+	s.attrPresent = err == nil && n >= 2
+	return s.attrPresent
 }
 
 // NewClickFunnelsService wires the service.
@@ -118,6 +157,16 @@ type ClickFunnelListResponse struct {
 func (s *ClickFunnelsService) HandleListFunnels(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// touches_30d reads journey_offer_id; substitute a constant when the
+	// attribution DDL has not landed so the list still renders.
+	touchesExpr := `(SELECT COUNT(*) FROM mailing_message_log ml
+		          JOIN mailing_campaigns c ON c.id = ml.campaign_id
+		         WHERE c.journey_offer_id = m.everflow_offer_id
+		           AND ml.sent_at > NOW() - INTERVAL '30 days')`
+	if !s.hasAttributionCols(ctx) {
+		touchesExpr = `0`
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.everflow_offer_id,
 		       COALESCE(m.click_journey_id, ''),
@@ -137,10 +186,7 @@ func (s *ClickFunnelsService) HandleListFunnels(w http.ResponseWriter, r *http.R
 		       (SELECT COUNT(*) FROM mailing_journey_enrollments e
 		         WHERE e.enrollment_offer_id = m.everflow_offer_id
 		           AND e.converted_at > NOW() - INTERVAL '30 days')                                AS conversions_30d,
-		       (SELECT COUNT(*) FROM mailing_message_log ml
-		          JOIN mailing_campaigns c ON c.id = ml.campaign_id
-		         WHERE c.journey_offer_id = m.everflow_offer_id
-		           AND ml.sent_at > NOW() - INTERVAL '30 days')                                    AS touches_30d,
+		       `+touchesExpr+`                                                              AS touches_30d,
 		       (SELECT COUNT(*) FROM mailing_offer_reminder_subjects rs
 		         WHERE rs.everflow_offer_id = m.everflow_offer_id AND rs.enabled)                  AS configured_touches
 		FROM mailing_offer_journey_map m
@@ -246,13 +292,13 @@ type ClickFunnelNode struct {
 
 // ClickFunnelNodesResponse envelopes the node view.
 type ClickFunnelNodesResponse struct {
-	APIVersion      string            `json:"api_version"`
-	OfferID         string            `json:"offer_id"`
-	JourneyID       string            `json:"journey_id"`
-	Nodes           []ClickFunnelNode `json:"nodes"`
-	TotalEnrolled   int               `json:"total_enrolled"`
-	TotalActive     int               `json:"total_active"`
-	TotalConverted  int               `json:"total_converted"`
+	APIVersion     string            `json:"api_version"`
+	OfferID        string            `json:"offer_id"`
+	JourneyID      string            `json:"journey_id"`
+	Nodes          []ClickFunnelNode `json:"nodes"`
+	TotalEnrolled  int               `json:"total_enrolled"`
+	TotalActive    int               `json:"total_active"`
+	TotalConverted int               `json:"total_converted"`
 	// HubSpot parity: outcome split + time-to-goal.
 	// TotalCompleted = finished the sequence (terminal goal node).
 	// TotalExited    = left early ("exits before completion").
@@ -469,6 +515,11 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		note = "No node-attributed sends yet. Reached counts are live, but per-node opens/clicks stay " +
 			"at zero until this lane sends its next touch after the 2026-08-01 attribution change."
 	}
+	if !s.hasAttributionCols(ctx) {
+		note = "Node attribution is not active yet: the journey_key / journey_offer_id columns " +
+			"have not landed (their ALTER is waiting on an ACCESS EXCLUSIVE lock on mailing_campaigns). " +
+			"Flow counts below are live; per-node opens/clicks appear once the DDL applies. Sending is unaffected."
+	}
 	switch engSource {
 	case "lake":
 		note += " Delivery and engagement come from the analytics lake (deduped by event_uid, real " +
@@ -480,10 +531,10 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, http.StatusOK, ClickFunnelNodesResponse{
-		APIVersion:       VersionClickFunnels,
-		OfferID:          offerID,
-		JourneyID:        journeyID,
-		Nodes:            nodes,
+		APIVersion:           VersionClickFunnels,
+		OfferID:              offerID,
+		JourneyID:            journeyID,
+		Nodes:                nodes,
 		TotalEnrolled:        totalEnrolled,
 		TotalActive:          totalActive,
 		TotalConverted:       totalConverted,
@@ -493,9 +544,9 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		CompletionRate:       laneRate(totalCompleted, totalEnrolled),
 		ConversionRate:       laneRate(totalConverted, totalEnrolled),
 		AttributionNote:      note,
-		EngagementSource: engSource,
-		WindowFrom:       fromDt,
-		WindowTo:         toDt,
+		EngagementSource:     engSource,
+		WindowFrom:           fromDt,
+		WindowTo:             toDt,
 	})
 }
 
@@ -573,6 +624,12 @@ type nodeEngagement struct {
 // nodeCampaigns maps each of the lane's per-node shadow campaign ids to its
 // node id — the join key that lets the LAKE attribute engagement per node.
 func (s *ClickFunnelsService) nodeCampaigns(ctx context.Context, offerID string) (map[string]string, error) {
+	if !s.hasAttributionCols(ctx) {
+		// No attribution columns yet: no campaign is node-scoped, so there is
+		// nothing to attribute. Empty map (not an error) → nodes render with
+		// live flow counts and an explicit "not node-attributed" marker.
+		return map[string]string{}, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, journey_node_id
 		FROM mailing_campaigns
@@ -745,6 +802,9 @@ func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID, f
 // the 10-minute ingester backfills it, so its numbers can run low — the response
 // labels the source so a viewer is never told these are lake numbers.
 func (s *ClickFunnelsService) loadNodeEngagementPG(ctx context.Context, offerID string) (map[string]nodeEngagement, error) {
+	if !s.hasAttributionCols(ctx) {
+		return map[string]nodeEngagement{}, nil
+	}
 	hardSQL := HardBounceSQL("t")
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.journey_node_id,
@@ -872,7 +932,8 @@ type NodeEnrollmentsResponse struct {
 }
 
 // HandleNodeEnrollments serves
-//   GET /api/mailing/click-funnels/{offerID}/nodes/{nodeID}/enrollments
+//
+//	GET /api/mailing/click-funnels/{offerID}/nodes/{nodeID}/enrollments
 //
 // HubSpot's "Matching enrollments" affordance: the records that actually
 // reached this step, so an aggregate can be audited instead of trusted. Also
@@ -969,19 +1030,19 @@ type UploadRequest struct {
 
 // UploadPreview is the bucketed result the operator approves.
 type UploadPreview struct {
-	APIVersion string `json:"api_version"`
-	OfferID    string `json:"offer_id"`
-	JourneyID  string `json:"journey_id"`
-	LaneEnabled bool  `json:"lane_enabled"`
+	APIVersion  string `json:"api_version"`
+	OfferID     string `json:"offer_id"`
+	JourneyID   string `json:"journey_id"`
+	LaneEnabled bool   `json:"lane_enabled"`
 
-	Submitted        int `json:"submitted"`
-	Malformed        int `json:"malformed"`
-	Duplicates       int `json:"duplicates_in_file"`
-	Unknown          int `json:"unknown_subscriber"`
-	AlreadyActive    int `json:"already_active"`
-	AlreadyConverted int `json:"already_converted"`
+	Submitted         int `json:"submitted"`
+	Malformed         int `json:"malformed"`
+	Duplicates        int `json:"duplicates_in_file"`
+	Unknown           int `json:"unknown_subscriber"`
+	AlreadyActive     int `json:"already_active"`
+	AlreadyConverted  int `json:"already_converted"`
 	RecentlyTriggered int `json:"recently_triggered"`
-	Ready            int `json:"ready"`
+	Ready             int `json:"ready"`
 
 	SampleReady   []string `json:"sample_ready"`
 	SampleUnknown []string `json:"sample_unknown"`

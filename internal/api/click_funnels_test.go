@@ -307,7 +307,10 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		WHERE enrollment_offer_id=`)).
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{"current_node_id", "count"}).AddRow("delay-1h", 7))
-	// loadNodeEngagement -> nodeCampaigns, then (reader disabled) the PG path.
+	// loadNodeEngagement -> nodeCampaigns. That first probes for the attribution
+	// columns (present here), then (reader disabled) takes the PG path.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM information_schema.columns`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text, journey_node_id`)).
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "journey_node_id"}).
@@ -622,5 +625,108 @@ func TestDelayMillis(t *testing.T) {
 				t.Fatalf("delayMillis() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestListFunnels_DegradesWithoutAttributionColumns is the other half of the
+// 2026-08-02 incident. The send path was hardened first, but every READ here
+// also referenced journey_offer_id — so with the DDL still waiting on its lock,
+// sending was perfectly healthy while the screen itself 500'd with
+// `column c.journey_offer_id does not exist`. A reporting screen must degrade to
+// "no attribution yet", never to an error page.
+func TestListFunnels_DegradesWithoutAttributionColumns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Probe reports the columns ABSENT.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM information_schema.columns`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	// The lane list must then run WITHOUT the journey_offer_id subquery.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map m`)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"everflow_offer_id", "click_journey_id", "name", "enabled", "payout_type",
+			"routing_state", "redirect_offer_id", "routing_recommendation",
+			"slug_inlets", "active_enrollments", "enrolled_30d", "conversions_30d",
+			"touches_30d", "configured_touches",
+		}).AddRow("6137", "click-drip-4touch-72h", "Click-Drip 4-Touch", true, "CPM",
+			"active", "", "active", 1, 200, 1011, 0, 0, 4))
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_slug_map s`)).
+		WillReturnRows(sqlmock.NewRows([]string{"everflow_offer_id"}))
+
+	svc := NewClickFunnelsService(db)
+	rec := httptest.NewRecorder()
+	svc.HandleListFunnels(rec, httptest.NewRequest(http.MethodGet, "/api/mailing/click-funnels", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("must render without the attribution columns, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var resp ClickFunnelListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Lanes) != 1 {
+		t.Fatalf("lanes should still render: %+v", resp.Lanes)
+	}
+	if resp.Lanes[0].TouchesSent != 0 {
+		t.Fatalf("touches_30d must degrade to 0, got %d", resp.Lanes[0].TouchesSent)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestNodeCampaigns_EmptyWithoutAttributionColumns: no attribution columns means
+// nothing is node-scoped, which is an empty result — not an error.
+func TestNodeCampaigns_EmptyWithoutAttributionColumns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM information_schema.columns`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	svc := NewClickFunnelsService(db)
+	got, err := svc.nodeCampaigns(context.Background(), "6137")
+	if err != nil {
+		t.Fatalf("must not error when the columns are absent: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected an empty map, got %v", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestHasAttributionCols_CachesAndRequiresBoth: the probe must require BOTH
+// columns (one present is still broken) and must not re-query per request.
+func TestHasAttributionCols_CachesAndRequiresBoth(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// Only ONE of the two columns exists → still degraded.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM information_schema.columns`)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	svc := NewClickFunnelsService(db)
+	if svc.hasAttributionCols(context.Background()) {
+		t.Fatal("one column of two must count as ABSENT")
+	}
+	// Second call inside the TTL must be served from cache (no new query; a
+	// stray query would trip ExpectationsWereMet).
+	if svc.hasAttributionCols(context.Background()) {
+		t.Fatal("cached answer changed")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("probe should be cached, not re-run: %v", err)
 	}
 }
