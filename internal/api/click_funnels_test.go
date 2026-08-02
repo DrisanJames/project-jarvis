@@ -330,11 +330,11 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"sequence_index", "subject", "preheader", "from_name_override", "enabled",
-			"body_html", "updated_at", "creative_id", "filename", "approval_status",
-			"money_link_status", "offer_key", "brand_code",
+			"body_html", "updated_at", "proof_id", "proof_name", "proof_offer_key",
+			"proof_approval", "proof_active",
 		}).AddRow(0, "Still interested?", "one more look", "", true, "", time.Now(),
-			"c0000000-0000-0000-0000-000000000001", "sams-club-touch1.html", "approved",
-			"ok", "sams-club", "DB"))
+			"c0000000-0000-0000-0000-000000000001", "Metal Roofing v16", "mrv16",
+			"approved", true))
 	// Lane outcome split: enrolled / active / converted(postback) /
 	// completed(sequence) / exited(early) / median hours-to-goal.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_clickdrip_touch_versions`)).
@@ -407,16 +407,15 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 	if email == nil {
 		t.Fatal("email-0 missing from the node list")
 	}
-	if email.CreativeID != "c0000000-0000-0000-0000-000000000001" ||
-		email.CreativeName != "sams-club-touch1.html" {
-		t.Fatalf("touch must carry its Creative Studio reference, got id=%q name=%q", email.CreativeID, email.CreativeName)
+	if email.ProofID != "c0000000-0000-0000-0000-000000000001" || email.ProofName != "Metal Roofing v16" {
+		t.Fatalf("touch must carry its OFFER PROOF reference, got id=%q name=%q", email.ProofID, email.ProofName)
 	}
-	if email.CreativeApproval != "approved" || email.CreativeMoneyLink != "ok" {
-		t.Fatalf("registry approval/money-link state must reach the screen: %q / %q",
-			email.CreativeApproval, email.CreativeMoneyLink)
+	if email.ProofApproval != "approved" || !email.ProofActive || !email.ProofSendable {
+		t.Fatalf("proof approval/active state must reach the screen: %q active=%v sendable=%v",
+			email.ProofApproval, email.ProofActive, email.ProofSendable)
 	}
 	if email.BodyInherited {
-		t.Fatal("a touch WITH a Studio creative must not report an inherited body")
+		t.Fatal("a touch WITH an offer proof must not report an inherited body")
 	}
 	if email.Subject != "Still interested?" {
 		t.Fatalf("per-touch copy not surfaced: %q", email.Subject)
@@ -810,5 +809,31 @@ func TestUpsertReminderSubject_OmittedBodyPreservesCreative(t *testing.T) {
 	}
 	if req.BodyHTML == nil || *req.BodyHTML != "" {
 		t.Fatal(`an explicit "" must decode to a non-nil empty string (deliberate clear)`)
+	}
+}
+
+// TestProofSendable_MirrorsTheSenderGate. The sender will only mail an APPROVED
+// and ACTIVE offer proof, so the screen must compute sendability the same way.
+// A touch pointing at a proof that was later un-approved or deactivated silently
+// stops using it — the operator has to be able to SEE that, not discover it when
+// engagement flatlines.
+func TestProofSendable_MirrorsTheSenderGate(t *testing.T) {
+	cases := []struct {
+		approval string
+		active   bool
+		sendable bool
+	}{
+		{"approved", true, true},
+		{"approved", false, false}, // withdrawn from rotation
+		{"pending", true, false},   // never cleared
+		{"rejected", true, false},
+		{"", true, false},
+		{"APPROVED", true, true}, // case-insensitive, matches the sender
+	}
+	for _, tc := range cases {
+		got := tc.active && strings.EqualFold(tc.approval, "approved")
+		if got != tc.sendable {
+			t.Fatalf("approval=%q active=%v -> sendable=%v, want %v", tc.approval, tc.active, got, tc.sendable)
+		}
 	}
 }

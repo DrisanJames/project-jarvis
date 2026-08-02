@@ -211,7 +211,7 @@ func TestEmailNode_ClickDripMetadataOverrides_BodyAndProfileAndIdentity(t *testi
 	//    override fired.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_reminder_subjects`)).
 		WithArgs("9539", 0).
-		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html", "creative_id"}).
+		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html", "proof_id"}).
 			AddRow("REM SUBJECT", "REM PRE", "", true, nil, nil))
 
 	// 3) subscriber load — ErrNoRows so the templating branch is a
@@ -341,7 +341,7 @@ func TestEmailNode_OfferReminderDisabled_DoesNotOverrideSubject(t *testing.T) {
 	// wins".
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_reminder_subjects`)).
 		WithArgs("9539", 0).
-		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html", "creative_id"}).
+		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html", "proof_id"}).
 			AddRow("DISABLED SUBJECT", "DISABLED PRE", "DISABLED FROM", false, nil, nil))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_subscribers`)).

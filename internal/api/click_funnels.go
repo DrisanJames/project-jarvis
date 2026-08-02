@@ -274,12 +274,16 @@ type ClickFunnelNode struct {
 	// money-link check. A touch pointing at an unapproved creative, or one whose
 	// money links are dead, is exactly what an operator needs to see BEFORE it
 	// mails — and none of that exists for a pasted HTML blob.
-	CreativeID        string `json:"creative_id"`
-	CreativeName      string `json:"creative_name"`
-	CreativeApproval  string `json:"creative_approval_status"`
-	CreativeMoneyLink string `json:"creative_money_link_status"`
-	CreativeOfferKey  string `json:"creative_offer_key"`
-	CreativeBrandCode string `json:"creative_brand_code"`
+	ProofID       string `json:"proof_id"`
+	ProofName     string `json:"proof_name"`
+	ProofOfferKey string `json:"proof_offer_key"`
+	ProofApproval string `json:"proof_approval_status"`
+	ProofActive   bool   `json:"proof_active"`
+	// ProofSendable is the gate the sender actually applies: only an APPROVED
+	// and ACTIVE proof may mail. Surfaced so a touch pointing at a withdrawn
+	// proof is visible here rather than discovered when it silently stops
+	// using it.
+	ProofSendable bool `json:"proof_sendable"`
 	// CopyUpdatedAt / CopyAgeDays surface staleness. Offer 420 shipped copy with
 	// a hard "Ends 7/5" deadline for four weeks after it expired because nothing
 	// showed how old the words were.
@@ -536,13 +540,14 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 			if c, ok := copyBySeq[n.Sequence]; ok {
 				n.Subject, n.Preheader, n.FromOverride, n.CopyEnabled = c.subject, c.preheader, c.fromOverride, c.enabled
 				n.BodyHTML = c.bodyHTML
-				n.CreativeID, n.CreativeName = c.creativeID, c.creativeName
-				n.CreativeApproval, n.CreativeMoneyLink = c.creativeApproval, c.creativeMoneyLink
-				n.CreativeOfferKey, n.CreativeBrandCode = c.creativeOfferKey, c.creativeBrandCode
-				// Inherited only when the touch has neither a Studio creative nor
-				// a snapshot — that is when the body is whatever each subscriber
+				n.ProofID, n.ProofName = c.proofID, c.proofName
+				n.ProofOfferKey, n.ProofApproval, n.ProofActive = c.proofOfferKey, c.proofApproval, c.proofActive
+				// Mirrors the sender's gate exactly: approved AND active.
+				n.ProofSendable = c.proofActive && strings.EqualFold(c.proofApproval, "approved")
+				// Inherited only when the touch has neither a proof nor a
+				// snapshot — that is when the body is whatever each subscriber
 				// happened to click.
-				n.BodyInherited = c.creativeID == "" && strings.TrimSpace(c.bodyHTML) == ""
+				n.BodyInherited = c.proofID == "" && strings.TrimSpace(c.bodyHTML) == ""
 				if !c.updatedAt.IsZero() {
 					n.CopyUpdatedAt = c.updatedAt.UTC().Format(time.RFC3339)
 					n.CopyAgeDays = int(time.Since(c.updatedAt).Hours() / 24)
@@ -961,13 +966,11 @@ func (s *ClickFunnelsService) loadNodeConversions(ctx context.Context, offerID s
 }
 
 type reminderCopy struct {
-	subject, preheader, fromOverride, bodyHTML string
-	creativeID                                 string
-	creativeName, creativeApproval             string
-	creativeMoneyLink                          string
-	creativeOfferKey, creativeBrandCode        string
-	enabled                                    bool
-	updatedAt                                  time.Time
+	subject, preheader, fromOverride, bodyHTML       string
+	proofID, proofName, proofOfferKey, proofApproval string
+	proofActive                                      bool
+	enabled                                          bool
+	updatedAt                                        time.Time
 }
 
 func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID string) (map[int]reminderCopy, error) {
@@ -979,12 +982,11 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 		SELECT rs.sequence_index, COALESCE(rs.subject,''), COALESCE(rs.preheader,''),
 		       COALESCE(rs.from_name_override,''), COALESCE(rs.enabled,false),
 		       COALESCE(rs.body_html,''), COALESCE(rs.updated_at, NOW()),
-		       COALESCE(rs.creative_id::text,''),
-		       COALESCE(cr.filename,''), COALESCE(cr.approval_status,''),
-		       COALESCE(cr.money_link_status,''), COALESCE(cr.offer_key,''),
-		       COALESCE(cr.brand_code,'')
+		       COALESCE(rs.proof_id::text,''),
+		       COALESCE(pf.name,''), COALESCE(pf.offer_key,''),
+		       COALESCE(pf.approval_status,''), COALESCE(pf.is_active,false)
 		FROM mailing_offer_reminder_subjects rs
-		LEFT JOIN mailing_creatives cr ON cr.id = rs.creative_id
+		LEFT JOIN mailing_offer_proofs pf ON pf.id = rs.proof_id
 		WHERE rs.everflow_offer_id = $1
 	`, offerID)
 	if err != nil && strings.Contains(err.Error(), "does not exist") {
@@ -992,8 +994,8 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 			SELECT sequence_index, COALESCE(subject,''), COALESCE(preheader,''),
 			       COALESCE(from_name_override,''), COALESCE(enabled,false),
 			       '' AS body_html, COALESCE(updated_at, NOW()),
-			       '' AS creative_id, '' AS filename, '' AS approval_status,
-			       '' AS money_link_status, '' AS offer_key, '' AS brand_code
+			       '' AS proof_id, '' AS proof_name, '' AS proof_offer_key,
+			       '' AS proof_approval, false AS proof_active
 			FROM mailing_offer_reminder_subjects
 			WHERE everflow_offer_id = $1
 		`, offerID)
@@ -1011,9 +1013,8 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 		var idx int
 		var c reminderCopy
 		if err := rows.Scan(&idx, &c.subject, &c.preheader, &c.fromOverride, &c.enabled,
-			&c.bodyHTML, &c.updatedAt, &c.creativeID, &c.creativeName,
-			&c.creativeApproval, &c.creativeMoneyLink, &c.creativeOfferKey,
-			&c.creativeBrandCode); err != nil {
+			&c.bodyHTML, &c.updatedAt, &c.proofID, &c.proofName,
+			&c.proofOfferKey, &c.proofApproval, &c.proofActive); err != nil {
 			return nil, err
 		}
 		out[idx] = c

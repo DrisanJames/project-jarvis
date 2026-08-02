@@ -506,7 +506,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	touchContentVersion := ""
 	if reminderSeq, ok := readReminderSeqIndex(node.Config); ok {
 		if everflowOfferID, ok := enrollment.Metadata["everflow_offer_id"].(string); ok && everflowOfferID != "" {
-			var rSubject, rPreheader, rFromOverride, rBody, rCreativeID sql.NullString
+			var rSubject, rPreheader, rFromOverride, rBody, rProofID sql.NullString
 			var rEnabled sql.NullBool
 			// body_html ships with a migration that can lag this binary. If the
 			// column is absent the 5-column read errors, and the `err == nil`
@@ -514,17 +514,17 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			// overrides too — every touch would quietly revert to generic copy.
 			// Fall back to the pre-migration shape instead.
 			err := je.db.QueryRowContext(ctx, `
-				SELECT subject, preheader, from_name_override, enabled, body_html, creative_id::text
+				SELECT subject, preheader, from_name_override, enabled, body_html, proof_id::text
 				FROM mailing_offer_reminder_subjects
 				WHERE everflow_offer_id=$1 AND sequence_index=$2
-			`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled, &rBody, &rCreativeID)
+			`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled, &rBody, &rProofID)
 			if err != nil && strings.Contains(err.Error(), "does not exist") {
 				err = je.db.QueryRowContext(ctx, `
 					SELECT subject, preheader, from_name_override, enabled
 					FROM mailing_offer_reminder_subjects
 					WHERE everflow_offer_id=$1 AND sequence_index=$2
 				`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled)
-				rBody, rCreativeID = sql.NullString{}, sql.NullString{}
+				rBody, rProofID = sql.NullString{}, sql.NullString{}
 			}
 			if err == nil && rEnabled.Valid && rEnabled.Bool {
 				if rSubject.Valid && rSubject.String != "" {
@@ -546,39 +546,34 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 				// body ship under a June subject (offer 420 paired "Ends 7/5"
 				// with Aug-1 partner-drip creatives). When an operator sets a
 				// body for the touch it wins, making the touch a coherent unit.
-				// Creative Studio reference wins over the snapshot: the registry
-				// is the source of truth for creatives, so a touch points AT one
-				// rather than carrying a copy. Resolving live means a Studio edit
-				// reaches the drip — and because the version hash below covers the
-				// resolved HTML, that edit also mints a new creative version and
-				// sunsets the previous one's metrics, exactly as an operator edit
-				// here would.
-				if rCreativeID.Valid && rCreativeID.String != "" {
-					var cHTML, cSubject, cPre sql.NullString
-					cerr := je.db.QueryRowContext(ctx, `
-						SELECT html_content, subject, preheader
-						FROM mailing_creatives WHERE id = $1::uuid
-					`, rCreativeID.String).Scan(&cHTML, &cSubject, &cPre)
-					if cerr == nil && cHTML.Valid && strings.TrimSpace(cHTML.String) != "" {
-						htmlContent = cHTML.String
-						// The touch's own subject/preheader still win when set;
-						// the creative's are the fallback so a picked creative is
-						// usable without re-typing its copy.
-						if strings.TrimSpace(subject) == "" && cSubject.Valid {
-							subject = cSubject.String
-						}
-						if touchPreheader == "" && cPre.Valid && cPre.String != "" {
-							touchPreheader = cPre.String
-							if node.Config == nil {
-								node.Config = map[string]interface{}{}
-							}
-							node.Config["preheader"] = cPre.String
-						}
-					} else if cerr != nil {
-						// Withdrawn/unreadable creative must not silently ship the
-						// wrong body — fall through to the snapshot below.
-						log.Printf("JourneyExecutor: creative %s unresolved for offer %s seq %d: %v",
-							rCreativeID.String, everflowOfferID, reminderSeq, cerr)
+				// Creative Studio → OFFERS (mailing_offer_proofs) is the source
+				// of truth for an offer lane's creative. Only an APPROVED and
+				// ACTIVE proof may send: the platform's approved-copy rule is a
+				// hard gate, so a proof that was withdrawn or un-approved after
+				// selection must NOT keep mailing — it falls through to the
+				// snapshot instead of shipping unapproved advertiser copy.
+				//
+				// Resolving live (rather than snapshotting at selection) means a
+				// proof edit reaches the drip, and because the version hash below
+				// covers the resolved HTML it also mints a new creative version
+				// and sunsets the previous one's metrics.
+				if rProofID.Valid && rProofID.String != "" {
+					var pHTML sql.NullString
+					var pApproved sql.NullString
+					var pActive sql.NullBool
+					perr := je.db.QueryRowContext(ctx, `
+						SELECT html_content, approval_status, is_active
+						FROM mailing_offer_proofs WHERE id = $1::uuid
+					`, rProofID.String).Scan(&pHTML, &pApproved, &pActive)
+					switch {
+					case perr != nil:
+						log.Printf("JourneyExecutor: offer proof %s unresolved (offer %s seq %d): %v",
+							rProofID.String, everflowOfferID, reminderSeq, perr)
+					case !pActive.Valid || !pActive.Bool || !strings.EqualFold(pApproved.String, "approved"):
+						log.Printf("JourneyExecutor: offer proof %s is not approved+active (status=%q active=%v) — NOT sending it (offer %s seq %d)",
+							rProofID.String, pApproved.String, pActive.Bool, everflowOfferID, reminderSeq)
+					case pHTML.Valid && strings.TrimSpace(pHTML.String) != "":
+						htmlContent = pHTML.String
 					}
 				}
 				if htmlContent == "" && rBody.Valid && strings.TrimSpace(rBody.String) != "" {

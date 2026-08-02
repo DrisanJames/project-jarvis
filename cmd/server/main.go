@@ -8081,15 +8081,21 @@ END $$`},
 		{"aug02_click_drip_touch_body", `ALTER TABLE mailing_offer_reminder_subjects
 			ADD COLUMN IF NOT EXISTS body_html TEXT`},
 
-		// The touch's creative is a REFERENCE into the Creative Studio registry
-		// (mailing_creatives), not a pasted blob. Studio is the platform's source
-		// of truth for creatives (operator ruling 2026-07-29), and it already
-		// carries approval_status, money_link_status, proof-send and preview —
-		// none of which a raw HTML field would inherit. body_html above stays as
-		// the resolved snapshot for touches configured before this and as the
-		// fallback when a referenced creative is withdrawn.
+		// The touch's creative is a REFERENCE into Creative Studio's OFFERS
+		// sub-view — mailing_offer_proofs, the approved advertiser proofs
+		// (operator correction 2026-08-02). NOT mailing_creatives: that is
+		// Studio's LIBRARY (generate saves), and it is the wrong pool for an
+		// offer lane. The proofs registry is where approval actually lives —
+		// 63 of 87 proofs are approved AND active, versus 2 of 121 in the
+		// library — and it additionally carries approved_domains, approved_isps
+		// and the offer's from_names, none of which the library has.
+		//
+		// creative_id below is the superseded library reference, kept because it
+		// already shipped; nothing reads it. proof_id is the live pointer.
 		{"aug02_click_drip_touch_creative_ref", `ALTER TABLE mailing_offer_reminder_subjects
 			ADD COLUMN IF NOT EXISTS creative_id UUID`},
+		{"aug02_click_drip_touch_proof_ref", `ALTER TABLE mailing_offer_reminder_subjects
+			ADD COLUMN IF NOT EXISTS proof_id UUID`},
 
 		// Creative-version registry (2026-08-02). Operator rule: a touch's
 		// metrics are the LIFETIME value of that creative + subject combination,

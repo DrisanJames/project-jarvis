@@ -63,12 +63,12 @@ interface FunnelNode {
   copy_missing: boolean;
   body_html: string;
   body_inherited: boolean;
-  creative_id: string;
-  creative_name: string;
-  creative_approval_status: string;
-  creative_money_link_status: string;
-  creative_offer_key: string;
-  creative_brand_code: string;
+  proof_id: string;
+  proof_name: string;
+  proof_offer_key: string;
+  proof_approval_status: string;
+  proof_active: boolean;
+  proof_sendable: boolean;
   copy_updated_at: string;
   copy_age_days: number;
   versions: TouchVersion[];
@@ -93,17 +93,17 @@ interface FunnelNode {
   attributed: boolean;
 }
 
-// One row of the Creative Studio registry (GET /api/mailing/creatives).
-interface StudioCreative {
+// One approved advertiser proof from Creative Studio's OFFERS sub-view
+// (GET /api/mailing/offer-proofs) — mailing_offer_proofs, not the library.
+interface OfferProof {
   id: string;
+  name: string;
   offer_key: string;
-  brand_code: string;
-  filename: string;
-  subject: string;
-  preheader: string;
   approval_status: string;
-  money_link_status: string;
-  generated_at: string;
+  is_active: boolean;
+  from_names?: string[];
+  approved_domains?: string[];
+  approved_isps?: string[];
 }
 
 interface TouchVersion {
@@ -371,7 +371,7 @@ const NodeCard: React.FC<{
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [studio, setStudio] = useState<StudioCreative[] | null>(null);
+  const [studio, setStudio] = useState<OfferProof[] | null>(null);
   const [studioFilter, setStudioFilter] = useState('');
   const [bodySaving, setBodySaving] = useState(false);
   const [bodyErr, setBodyErr] = useState<string | null>(null);
@@ -454,13 +454,17 @@ const NodeCard: React.FC<{
   // proof-send — all of which a pasted blob would have thrown away. Saving goes
   // through the same reminder-subjects upsert as the rest of the copy, so
   // subject/preheader/from and creative stay one atomic creative version.
+  // Creative Studio → Offers. Only ACTIVE proofs are listed; the sender will
+  // refuse anything not approved AND active, so offering the rest would invite
+  // selecting something that silently never mails.
   const loadStudio = async () => {
     try {
-      const qs = studioFilter.trim() ? `?offer=${encodeURIComponent(studioFilter.trim())}&limit=100` : '?limit=100';
-      const res = await apiFetch(`/api/mailing/creatives${qs}`);
+      const res = await apiFetch('/api/mailing/offer-proofs?active=true');
       const body = await res.json();
-      const rows = Array.isArray(body) ? body : (body?.creatives ?? body?.data ?? []);
-      setStudio(rows);
+      const rows: OfferProof[] = body?.proofs ?? [];
+      const q = studioFilter.trim().toLowerCase();
+      setStudio(q ? rows.filter(p =>
+        `${p.name} ${p.offer_key}`.toLowerCase().includes(q)) : rows);
     } catch {
       setStudio([]);
     }
@@ -478,7 +482,7 @@ const NodeCard: React.FC<{
             preheader: node.preheader,
             from_name_override: node.from_name_override,
             enabled: node.copy_missing ? true : node.copy_enabled,
-            creative_id: creativeId,
+            proof_id: creativeId,
           }),
         }
       );
@@ -568,10 +572,10 @@ const NodeCard: React.FC<{
               )}
               <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span>
-                  {node.creative_id
-                    ? `creative: ${node.creative_name || node.creative_id}`
+                  {node.proof_id
+                    ? `proof: ${node.proof_name || node.proof_id}`
                     : node.body_inherited
-                      ? 'no creative selected — inherits whatever this subscriber clicked'
+                      ? 'no offer proof selected — inherits whatever this subscriber clicked'
                       : 'body snapshot set for this touch'}
                 </span>
                 <button onClick={() => setExpanded(v => !v)} style={{ ...btnGhost, padding: '2px 8px', fontSize: 11 }}>
@@ -611,23 +615,22 @@ const NodeCard: React.FC<{
         <div style={{ marginTop: 12, borderTop: `1px solid ${colors.divider}`, paddingTop: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Creative
+              Offer proof
             </span>
-            {node.creative_id ? (
+            {node.proof_id ? (
               <>
-                <span style={{ fontSize: 12, color: colors.text }}>{node.creative_name || node.creative_id}</span>
-                {node.creative_offer_key && (
-                  <span style={{ fontSize: 10, color: colors.textFaint }}>
-                    {node.creative_offer_key}{node.creative_brand_code ? ` · ${node.creative_brand_code}` : ''}
-                  </span>
+                <span style={{ fontSize: 12, color: colors.text }}>{node.proof_name || node.proof_id}</span>
+                {node.proof_offer_key && (
+                  <span style={{ fontSize: 10, color: colors.textFaint }}>{node.proof_offer_key}</span>
                 )}
-                <Pill color={node.creative_approval_status === 'approved' ? colors.success : colors.warning}>
-                  {node.creative_approval_status || 'unreviewed'}
+                <Pill color={node.proof_approval_status === 'approved' ? colors.success : colors.warning}>
+                  {node.proof_approval_status || 'unreviewed'}
                 </Pill>
-                {node.creative_money_link_status && (
-                  <Pill color={node.creative_money_link_status === 'ok' ? colors.success : colors.danger}>
-                    links {node.creative_money_link_status}
-                  </Pill>
+                <Pill color={node.proof_active ? colors.success : colors.warning}>
+                  {node.proof_active ? 'active' : 'inactive'}
+                </Pill>
+                {!node.proof_sendable && (
+                  <Pill color={colors.danger}>WILL NOT SEND — needs approved + active</Pill>
                 )}
               </>
             ) : (
@@ -640,11 +643,11 @@ const NodeCard: React.FC<{
               disabled={bodySaving}
               style={{ ...btnGhost, padding: '2px 10px', fontSize: 11 }}
             >
-              {picking ? 'Close' : node.creative_id ? 'Change creative' : 'Choose from Creative Studio'}
+              {picking ? 'Close' : node.proof_id ? 'Change proof' : 'Choose an offer proof'}
             </button>
-            {node.creative_id && (
+            {node.proof_id && (
               <a
-                href={`/api/mailing/creatives/${encodeURIComponent(node.creative_id)}/preview`}
+                href={`/api/mailing/offer-proofs/${encodeURIComponent(node.proof_id)}/preview`}
                 target="_blank" rel="noreferrer"
                 style={{ ...btnGhost, padding: '2px 10px', fontSize: 11, textDecoration: 'none' }}
               >
@@ -662,26 +665,24 @@ const NodeCard: React.FC<{
                   value={studioFilter}
                   onChange={e => setStudioFilter(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') loadStudio(); }}
-                  placeholder="filter by offer key (e.g. sams-club)"
+                  placeholder="filter proofs by name or offer key (e.g. metal)"
                   style={{ ...editInput, flex: 1 }}
                 />
                 <button onClick={loadStudio} style={{ ...btnGhost, padding: '4px 12px', fontSize: 11 }}>Search</button>
               </div>
               <div style={{ maxHeight: 260, overflowY: 'auto' }}>
                 {studio == null ? (
-                  <div style={{ fontSize: 11, color: colors.textFaint }}>Loading Creative Studio…</div>
+                  <div style={{ fontSize: 11, color: colors.textFaint }}>Loading offer proofs…</div>
                 ) : studio.length === 0 ? (
-                  <div style={{ fontSize: 11, color: colors.textFaint }}>No creatives match.</div>
+                  <div style={{ fontSize: 11, color: colors.textFaint }}>No active offer proofs match.</div>
                 ) : (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                     <tbody>
                       {studio.map(cv => (
                         <tr key={cv.id} style={{ borderTop: `1px solid ${colors.divider}` }}>
                           <td style={{ padding: '5px 6px', color: colors.text }}>
-                            {cv.filename || cv.id}
-                            <div style={{ color: colors.textFaint, fontSize: 10 }}>
-                              {cv.offer_key}{cv.brand_code ? ` · ${cv.brand_code}` : ''}
-                            </div>
+                            {cv.name || cv.id}
+                            <div style={{ color: colors.textFaint, fontSize: 10 }}>{cv.offer_key}</div>
                           </td>
                           <td style={{ padding: '5px 6px' }}>
                             <Pill color={cv.approval_status === 'approved' ? colors.success : colors.warning}>
@@ -689,23 +690,22 @@ const NodeCard: React.FC<{
                             </Pill>
                           </td>
                           <td style={{ padding: '5px 6px' }}>
-                            {cv.money_link_status && (
-                              <Pill color={cv.money_link_status === 'ok' ? colors.success : colors.danger}>
-                                {cv.money_link_status}
-                              </Pill>
+                            {cv.approval_status !== 'approved' && (
+                              <span style={{ fontSize: 10, color: colors.danger }}>not sendable</span>
                             )}
                           </td>
                           <td style={{ padding: '5px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            <a href={`/api/mailing/creatives/${cv.id}/preview`} target="_blank" rel="noreferrer"
+                            <a href={`/api/mailing/offer-proofs/${cv.id}/preview`} target="_blank" rel="noreferrer"
                                style={{ ...btnGhost, padding: '2px 8px', fontSize: 10, textDecoration: 'none', marginRight: 6 }}>
                               preview
                             </a>
                             <button
                               onClick={() => selectCreative(cv.id)}
-                              disabled={bodySaving || cv.id === node.creative_id}
+                              disabled={bodySaving || cv.id === node.proof_id || cv.approval_status !== 'approved'}
                               style={{ ...btnPrimary, padding: '2px 10px', fontSize: 10 }}
+                              title={cv.approval_status !== 'approved' ? 'Only approved proofs may send' : undefined}
                             >
-                              {cv.id === node.creative_id ? 'current' : 'Use'}
+                              {cv.id === node.proof_id ? 'current' : 'Use'}
                             </button>
                           </td>
                         </tr>
@@ -715,7 +715,7 @@ const NodeCard: React.FC<{
                 )}
               </div>
               <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}>
-                Selecting a creative mints a new version — this touch's current metrics freeze as a
+                Only approved + active proofs can send. Selecting one mints a new version — this touch's current metrics freeze as a
                 historical aggregate and the new creative starts its own lifetime record.
               </div>
             </div>
