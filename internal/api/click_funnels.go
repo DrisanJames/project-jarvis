@@ -125,6 +125,7 @@ func (s *ClickFunnelsService) RegisterRoutes(r chi.Router) {
 // ClickFunnelLane is one offer lane in the list view.
 type ClickFunnelLane struct {
 	OfferID        string `json:"offer_id"`
+	OfferName      string `json:"offer_name"`
 	JourneyID      string `json:"journey_id"`
 	JourneyName    string `json:"journey_name"`
 	Enabled        bool   `json:"enabled"`
@@ -169,6 +170,7 @@ func (s *ClickFunnelsService) HandleListFunnels(w http.ResponseWriter, r *http.R
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.everflow_offer_id,
+		       `+offerNameSubquery("m.everflow_offer_id")+`,
 		       COALESCE(m.click_journey_id, ''),
 		       COALESCE(j.name, ''),
 		       m.enabled,
@@ -203,7 +205,7 @@ func (s *ClickFunnelsService) HandleListFunnels(w http.ResponseWriter, r *http.R
 	for rows.Next() {
 		var l ClickFunnelLane
 		if err := rows.Scan(
-			&l.OfferID, &l.JourneyID, &l.JourneyName, &l.Enabled, &l.PayoutType,
+			&l.OfferID, &l.OfferName, &l.JourneyID, &l.JourneyName, &l.Enabled, &l.PayoutType,
 			&l.RoutingState, &l.RedirectOffer, &l.Recommendation,
 			&l.SlugInlets, &l.Active, &l.Enrolled30d, &l.Conversions,
 			&l.TouchesSent, &l.ConfiguredTo,
@@ -292,8 +294,11 @@ type ClickFunnelNode struct {
 
 // ClickFunnelNodesResponse envelopes the node view.
 type ClickFunnelNodesResponse struct {
-	APIVersion     string            `json:"api_version"`
-	OfferID        string            `json:"offer_id"`
+	APIVersion string `json:"api_version"`
+	OfferID    string `json:"offer_id"`
+	// OfferName is the human label the screen leads with; the id stays in the
+	// payload because it is the key every other surface is scoped by.
+	OfferName      string            `json:"offer_name"`
 	JourneyID      string            `json:"journey_id"`
 	Nodes          []ClickFunnelNode `json:"nodes"`
 	TotalEnrolled  int               `json:"total_enrolled"`
@@ -363,10 +368,11 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	var journeyID string
+	var journeyID, offerName string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(click_journey_id,'') FROM mailing_offer_journey_map WHERE everflow_offer_id=$1`,
-		offerID).Scan(&journeyID); err != nil {
+		`SELECT COALESCE(click_journey_id,''), `+offerNameSubquery("$1")+
+			` FROM mailing_offer_journey_map WHERE everflow_offer_id=$1`,
+		offerID).Scan(&journeyID, &offerName); err != nil {
 		if err == sql.ErrNoRows {
 			respondError(w, http.StatusNotFound, "no funnel configured for offer "+offerID)
 			return
@@ -533,6 +539,7 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, ClickFunnelNodesResponse{
 		APIVersion:           VersionClickFunnels,
 		OfferID:              offerID,
+		OfferName:            offerName,
 		JourneyID:            journeyID,
 		Nodes:                nodes,
 		TotalEnrolled:        totalEnrolled,
@@ -1304,6 +1311,28 @@ func splitUploadText(raw string) []string {
 // scanned ~3.1 GB). Default 30 days;
 // ?from=/?to= narrow it. Values are passed to analytics.Breakdown, which
 // validates them against its dt pattern before they reach SQL.
+// offerNameSubquery renders a scalar subquery resolving ONE display name for an
+// everflow offer id, given the SQL expression holding that id.
+//
+// Two production realities it has to survive:
+//   - DUPLICATES. mailing_offers can hold several rows per everflow id (offer
+//     5990 has three: "CarShield Auto Warranty", "CarShield Auto Warranty -
+//     IceT2000 (545801)", "QF - Carshield Auto Warranty"). A plain LEFT JOIN
+//     would multiply the lane row and show the funnel three times. A scalar
+//     subquery returns exactly one, always.
+//   - GAPS. 8 of 22 enabled lanes have no mailing_offers row at all, so the
+//     result is COALESCEd to "Offer <id>" rather than rendering blank.
+//
+// Ordering picks the least-decorated name (shortest, alphabetical tie-break),
+// which is the canonical offer rather than a per-brand or per-creative variant.
+func offerNameSubquery(idExpr string) string {
+	return `COALESCE((SELECT o.name FROM mailing_offers o
+	                   WHERE o.everflow_offer_id = ` + idExpr + `
+	                     AND COALESCE(o.name,'') <> ''
+	                   ORDER BY length(o.name), o.name
+	                   LIMIT 1), 'Offer ' || ` + idExpr + `)`
+}
+
 // laneRate is the lane-level percentage helper; a zero denominator yields 0
 // rather than NaN (which serializes as invalid JSON and blanks the tile).
 func laneRate(num, den int) float64 {

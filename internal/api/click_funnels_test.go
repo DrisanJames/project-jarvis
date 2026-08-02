@@ -293,9 +293,10 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		`{"id":"email-0","type":"email","config":{"reminder_sequence_index":0}},` +
 		`{"id":"goal","type":"goal","config":{}}]`
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COALESCE(click_journey_id,'') FROM mailing_offer_journey_map`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COALESCE(click_journey_id,''), COALESCE((SELECT o.name`)).
 		WithArgs("6137").
-		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id"}).AddRow("click-drip-4touch-72h"))
+		WillReturnRows(sqlmock.NewRows([]string{"click_journey_id", "offer_name"}).
+			AddRow("click-drip-4touch-72h", "Tahiti Village Resort"))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_journeys WHERE id=`)).
 		WithArgs("click-drip-4touch-72h").
 		WillReturnRows(sqlmock.NewRows([]string{"nodes"}).AddRow([]byte(nodes)))
@@ -352,6 +353,9 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
+	if resp.OfferName != "Tahiti Village Resort" {
+		t.Fatalf("offer_name = %q, want the resolved name (the screen leads with it, not the id)", resp.OfferName)
+	}
 	if resp.EngagementSource != "pg-fallback" {
 		t.Fatalf("engagement_source = %q, want pg-fallback when the lake reader is off", resp.EngagementSource)
 	}
@@ -466,11 +470,11 @@ func TestListFunnels_SurfacesOrphanInlets(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map m`)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"everflow_offer_id", "click_journey_id", "name", "enabled", "payout_type",
+			"everflow_offer_id", "offer_name", "click_journey_id", "name", "enabled", "payout_type",
 			"routing_state", "redirect_offer_id", "routing_recommendation",
 			"slug_inlets", "active_enrollments", "enrolled_30d", "conversions_30d",
 			"touches_30d", "configured_touches",
-		}).AddRow("6137", "click-drip-4touch-72h", "Click-Drip 4-Touch", true, "CPM",
+		}).AddRow("6137", "Tahiti Village Resort", "click-drip-4touch-72h", "Click-Drip 4-Touch", true, "CPM",
 			"active", "", "active", 1, 200, 1011, 0, 3000, 4))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_slug_map s`)).
@@ -489,6 +493,9 @@ func TestListFunnels_SurfacesOrphanInlets(t *testing.T) {
 	}
 	if len(resp.Lanes) != 1 || resp.Lanes[0].OfferID != "6137" {
 		t.Fatalf("lanes wrong: %+v", resp.Lanes)
+	}
+	if resp.Lanes[0].OfferName != "Tahiti Village Resort" {
+		t.Fatalf("offer_name = %q, want the resolved name", resp.Lanes[0].OfferName)
 	}
 	if len(resp.Orphans) != 1 || resp.Orphans[0] != "1054" {
 		t.Fatalf("orphan inlets must be surfaced, got %v", resp.Orphans)
@@ -648,11 +655,11 @@ func TestListFunnels_DegradesWithoutAttributionColumns(t *testing.T) {
 	// The lane list must then run WITHOUT the journey_offer_id subquery.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_journey_map m`)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"everflow_offer_id", "click_journey_id", "name", "enabled", "payout_type",
+			"everflow_offer_id", "offer_name", "click_journey_id", "name", "enabled", "payout_type",
 			"routing_state", "redirect_offer_id", "routing_recommendation",
 			"slug_inlets", "active_enrollments", "enrolled_30d", "conversions_30d",
 			"touches_30d", "configured_touches",
-		}).AddRow("6137", "click-drip-4touch-72h", "Click-Drip 4-Touch", true, "CPM",
+		}).AddRow("6137", "Tahiti Village Resort", "click-drip-4touch-72h", "Click-Drip 4-Touch", true, "CPM",
 			"active", "", "active", 1, 200, 1011, 0, 0, 4))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_slug_map s`)).
 		WillReturnRows(sqlmock.NewRows([]string{"everflow_offer_id"}))
@@ -728,5 +735,34 @@ func TestHasAttributionCols_CachesAndRequiresBoth(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("probe should be cached, not re-run: %v", err)
+	}
+}
+
+// TestOfferNameSubquery_ShapeGuards pins the two production realities the name
+// resolution must survive, both verified against prod 2026-08-02:
+//   - mailing_offers holds DUPLICATE rows per everflow id (offer 5990 has three),
+//     so this must be a scalar subquery — a LEFT JOIN would render that funnel
+//     three times in the lane list.
+//   - 8 of 22 enabled lanes have no mailing_offers row at all, so the result
+//     must COALESCE to "Offer <id>" rather than a blank cell.
+func TestOfferNameSubquery_ShapeGuards(t *testing.T) {
+	q := offerNameSubquery("m.everflow_offer_id")
+
+	if !strings.Contains(q, "LIMIT 1") {
+		t.Fatal("must LIMIT 1 — mailing_offers has duplicate rows per everflow id")
+	}
+	if !strings.Contains(q, "COALESCE(") || !strings.Contains(q, "'Offer '") {
+		t.Fatal("must fall back to 'Offer <id>' for offers with no mailing_offers row")
+	}
+	if !strings.Contains(q, "ORDER BY length(o.name)") {
+		t.Fatal("ordering must be deterministic (shortest = least-decorated canonical name)")
+	}
+	if strings.Contains(strings.ToUpper(q), "JOIN") {
+		t.Fatal("must not be a JOIN — that is what multiplies the lane row")
+	}
+	// The id expression is interpolated in three places; all must agree.
+	// Appears twice: the subquery filter, and the 'Offer <id>' fallback.
+	if strings.Count(q, "m.everflow_offer_id") != 2 {
+		t.Fatalf("id expression must appear in the filter and the fallback, got %d", strings.Count(q, "m.everflow_offer_id"))
 	}
 }

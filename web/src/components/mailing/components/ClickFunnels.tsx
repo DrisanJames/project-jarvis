@@ -29,6 +29,7 @@ import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill, ProgressBar
 
 interface Lane {
   offer_id: string;
+  offer_name: string;
   journey_id: string;
   journey_name: string;
   enabled: boolean;
@@ -83,6 +84,7 @@ interface FunnelNode {
 
 interface NodesResponse {
   offer_id: string;
+  offer_name: string;
   journey_id: string;
   nodes: FunnelNode[];
   total_enrolled: number;
@@ -225,7 +227,10 @@ const LaneEditor: React.FC<{
 
   return (
     <Panel accent={colors.indigo500} style={{ padding: 16 }}>
-      <SectionHeader title={isNew ? 'Create click funnel' : `Edit funnel · offer ${lane!.offer_id}`} icon={faRoute} />
+      <SectionHeader
+        title={isNew ? 'Create click funnel' : (lane!.offer_name || `Offer ${lane!.offer_id}`)}
+        icon={faRoute}
+      />
       <div style={{ display: 'grid', gap: 8 }}>
         <label style={{ fontSize: 11, color: colors.textMuted }}>
           Everflow offer id
@@ -743,7 +748,7 @@ export const ClickFunnels: React.FC = () => {
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             {list.unmapped_slug_offers.map(o => (
               <button key={o} onClick={() => setEditorFor({ lane: null, preset: o })} style={btnGhost}>
-                Create funnel for {o}
+                Create funnel for offer {o}
               </button>
             ))}
           </div>
@@ -792,7 +797,7 @@ export const ClickFunnels: React.FC = () => {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: colors.textMuted, textAlign: 'left' }}>
-                  <th style={{ padding: '6px 8px' }}>Offer</th>
+                  <th style={{ padding: '6px 8px' }}>Funnel</th>
                   <th style={{ padding: '6px 8px' }}>Payout</th>
                   <th style={{ padding: '6px 8px' }}>Inlets</th>
                   <th style={{ padding: '6px 8px', textAlign: 'right' }}>Active</th>
@@ -814,9 +819,14 @@ export const ClickFunnels: React.FC = () => {
                       opacity: l.enabled ? 1 : 0.5,
                     }}
                   >
-                    <td style={{ padding: '7px 8px', fontWeight: 600, color: colors.heading }}>
-                      {l.offer_id}
-                      {!l.enabled && <Pill color={colors.textFaint} style={{ marginLeft: 6 }}>disabled</Pill>}
+                    <td style={{ padding: '7px 8px' }}>
+                      <div style={{ fontWeight: 600, color: colors.heading }}>
+                        {l.offer_name || `Offer ${l.offer_id}`}
+                        {!l.enabled && <Pill color={colors.textFaint} style={{ marginLeft: 6 }}>disabled</Pill>}
+                      </div>
+                      {/* id kept as a subline: it is the key every other surface
+                          (slug map, journey map, Everflow) is scoped by. */}
+                      <div style={{ fontSize: 10, color: colors.textFaint }}>offer {l.offer_id}</div>
                     </td>
                     <td style={{ padding: '7px 8px', color: colors.textMuted }}>{l.payout_type || '—'}</td>
                     <td style={{ padding: '7px 8px', color: l.slug_inlets === 0 ? colors.warning : colors.textMuted }}>
@@ -849,7 +859,7 @@ export const ClickFunnels: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(300px,1fr)', gap: 16, alignItems: 'start' }}>
           <Panel style={{ padding: 16 }}>
             <SectionHeader
-              title={`Funnel · offer ${selected}`}
+              title={detail?.offer_name ? `${detail.offer_name}` : `Offer ${selected}`}
               icon={faBolt}
               right={
                 <div style={{ display: 'flex', gap: 4, background: 'rgba(10,16,32,0.6)', borderRadius: 8, padding: 3 }}>
@@ -934,7 +944,7 @@ export const ClickFunnels: React.FC = () => {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <UploadPanel
               offerId={selected}
-              laneLabel={`offer ${selected}${lane?.payout_type ? ` (${lane.payout_type})` : ''}`}
+              laneLabel={`${lane?.offer_name || `Offer ${selected}`}${lane?.payout_type ? ` · ${lane.payout_type}` : ''}`}
               onEnrolled={() => { loadList(); if (selected) loadDetail(selected); }}
             />
 
@@ -946,6 +956,8 @@ export const ClickFunnels: React.FC = () => {
                   right={<button onClick={() => setEditorFor({ lane })} style={btnGhost}>Edit</button>}
                 />
                 <div style={{ fontSize: 12, color: colors.textMuted, display: 'grid', gap: 6 }}>
+                  <div>Offer: <span style={{ color: colors.text }}>{lane.offer_name || `Offer ${lane.offer_id}`}</span>
+                    <span style={{ color: colors.textFaint }}> (id {lane.offer_id})</span></div>
                   <div>Journey: <span style={{ color: colors.text }}>{lane.journey_name || lane.journey_id || '—'}</span></div>
                   <div>Payout type: <span style={{ color: colors.text }}>{lane.payout_type || '—'}</span></div>
                   <div>Money-slug inlets: <span style={{ color: lane.slug_inlets === 0 ? colors.warning : colors.text }}>{lane.slug_inlets}</span></div>
