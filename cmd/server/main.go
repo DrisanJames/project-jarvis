@@ -2180,6 +2180,15 @@ var concurrentIndexSpecs = []struct {
 	// build scans the full multi-GB queue heap — far beyond the runner's
 	// 5s statement budget.
 	{"idx_queue_content_snapshot_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_queue_content_snapshot_id ON mailing_campaign_queue (content_snapshot_id) WHERE content_snapshot_id IS NOT NULL`},
+	// Click-funnel per-node attribution (2026-08-01). The Click Funnels screen
+	// groups engagement by (journey_offer_id, journey_node_id), and the lane
+	// governor counts a lane's touches across all of its node campaigns. Same
+	// reasoning as the snapshot index above: mailing_campaigns is ~4 GB because
+	// html_content is stored inline, so even this partial build scans the full
+	// heap and cannot fit the migration runner's 5s statement budget. Matching
+	// rows stay few (only click-drip shadow campaigns are stamped), so the index
+	// itself is tiny.
+	{"idx_campaigns_journey_offer_node", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_journey_offer_node ON mailing_campaigns (journey_offer_id, journey_node_id) WHERE journey_offer_id IS NOT NULL`},
 	// Dashboard audience-growth card (dashboard_console_audience_growth.go v1.1):
 	// acquisition = COUNT(created_at >= floor) per org, churn = COUNT(
 	// unsubscribed_at >= floor). Without these the counts seq-scan the ~13M-row
@@ -7232,9 +7241,14 @@ END $$`},
 		// NOT usable for this — it resolves for only 16 of 24 enabled lanes
 		// (mailing_offers has no row for the rest), which would silently drop a
 		// third of the lanes off the screen. Text everflow id, always present.
+		// Both are bare ADD COLUMN with no DEFAULT — catalog-only in PG11+, so
+		// they land inside the 5s budget regardless of table size. The matching
+		// INDEX is NOT here: mailing_campaigns is ~4 GB (html_content is inline),
+		// and even a partial-index build scans the whole heap, so it lives in
+		// concurrentIndexSpecs like idx_queue_content_snapshot_id. The columns are
+		// what correctness needs; the index is only a read optimization.
 		{"alter_campaigns_add_journey_key", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_key TEXT`},
 		{"alter_campaigns_add_journey_offer_id", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS journey_offer_id TEXT`},
-		{"idx_campaigns_journey_offer_node", `CREATE INDEX IF NOT EXISTS idx_campaigns_journey_offer_node ON mailing_campaigns(journey_offer_id, journey_node_id) WHERE journey_offer_id IS NOT NULL`},
 
 		{"create_journey_executions_view", `CREATE OR REPLACE VIEW mailing_journey_executions AS
 			SELECT
