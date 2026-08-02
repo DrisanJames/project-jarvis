@@ -1498,6 +1498,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				// Lake-backed via the offer-alignment snapshot; see
 				// cpm_non_cpm_performance.go for why it never calls Athena itself.
 				cp.Get("/non-cpm", cpmPlanner.HandleNonCpmPerformance)
+				cp.Put("/offer-groups/{identity}", cpmPlanner.HandleUpsertOfferGroup)
 			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===

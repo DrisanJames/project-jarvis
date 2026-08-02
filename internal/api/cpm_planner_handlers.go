@@ -59,6 +59,11 @@ type CpmPlannerHandlers struct {
 	// org-wide delivered scan blew the request-path statement_timeout →
 	// HTTP 500, 2026-07-08). Recomputed by the same refresher cycle.
 	gapByOrg map[string]*cpmAttributionGap
+	// dealIdentity caches the non-CPM surface's offer-identity → CPM deal map
+	// (nonCpmDealForIdentity); a ~16.5s campaign-wide pass, TTL'd rather than
+	// recomputed per page view. Guarded by evMu.
+	dealIdentity   map[string][2]string
+	dealIdentityAt time.Time
 }
 
 const cpmEventCacheRefresh = 4 * time.Minute
@@ -73,6 +78,10 @@ func NewCpmPlannerHandlers(db *sql.DB) *CpmPlannerHandlers {
 	}
 	h.ensureTables()
 	go h.eventCacheLoop()
+	// Daily delivered rollup behind the non-CPM funnel. Process-lifetime, same
+	// posture as eventCacheLoop; each day is an idempotent DELETE+INSERT so a
+	// server bounce mid-pass just recomputes that day next cycle.
+	go h.nonCpmRollupLoop()
 	return h
 }
 
@@ -275,11 +284,15 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		`ALTER TABLE mailing_offer_alignment_snapshot
 			ADD COLUMN IF NOT EXISTS lake_clicks BIGINT NOT NULL DEFAULT 0`,
 	}
+	// Non-CPM performance surface (day rollup + operator offer groups). Same
+	// synchronous slot, same reason: its routes are registered moments later.
+	stmts = append(stmts, nonCpmTableDDL()...)
 	for _, s := range stmts {
 		if _, err := h.db.Exec(s); err != nil {
 			log.Printf("[CpmPlanner] ensure tables: %v", err)
 		}
 	}
+	h.seedNonCpmGroups()
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────

@@ -337,24 +337,29 @@ interface PacingResp {
 }
 
 // ─── Non-CPM sending funnel (mirrors HandleNonCpmPerformance) ───────────────
-// delivered/clickers/clicks are ATHENA lake numbers; conversions is POSTGRES
-// (the lake carries no conversion events). The column headers say so — do not
-// collapse them into one "source" label.
+// Calendar-month scoped, all Postgres — same clock as the CPM rows above.
+// revenue is the SUPPLIED per-conversion payout (mailing_everflow_conversions);
+// payout_coverage says how many of the counted conversions actually carried
+// one, so a low eCPM reads as "payout not supplied yet", never "earned nothing".
 interface NonCpmOffer {
   offer_key: string;
-  offer_name: string;
+  group_name: string;
   delivered: number;
   clickers: number;
   clicks: number;
   conversions: number;
+  payout_coverage: number;
+  revenue: number;
+  avg_payout: number;
   clicker_rate: number;
   conv_rate: number;
+  ecpm: number;
   is_cpm: boolean;
   deal_id: string;
   deal_name: string;
-  attribution: 'full' | 'partial' | 'none';
-  campaigns: number;
-  campaigns_in_deal: number;
+}
+interface NonCpmGroup extends NonCpmOffer {
+  offers: NonCpmOffer[];
 }
 interface NonCpmTotals {
   offers: number;
@@ -362,19 +367,23 @@ interface NonCpmTotals {
   clickers: number;
   clicks: number;
   conversions: number;
+  payout_coverage: number;
+  revenue: number;
   clicker_rate: number;
   conv_rate: number;
+  ecpm: number;
 }
 interface NonCpmResp {
-  window_days: number;
-  offers: NonCpmOffer[];
+  month: string;      // YYYY-MM
+  from: string;
+  to: string;
+  is_current: boolean;
+  groups: NonCpmGroup[];
   totals?: { cpm: NonCpmTotals; non_cpm: NonCpmTotals };
   refreshed_at?: string;
-  stale?: boolean;
-  building?: boolean;
-  note?: string;
-  offer_cap?: number;
-  offer_cap_hit?: boolean;
+  days_rolled?: number;
+  days_expected?: number;
+  volume_partial?: boolean;
 }
 
 // ─── Month-to-date creative/subject rows (mirror HandleAnalyticsCreatives) ───
@@ -583,8 +592,9 @@ export const CpmPlanner: React.FC = () => {
   const [nonCpm, setNonCpm] = useState<NonCpmResp | null>(null);
   const [nonCpmLoading, setNonCpmLoading] = useState(false);
   const [nonCpmError, setNonCpmError] = useState<string | null>(null);
-  const [nonCpmWindow, setNonCpmWindow] = useState<7 | 30>(30);
+  const [nonCpmMonth, setNonCpmMonth] = useState<string>(''); // '' = current Denver month
   const [nonCpmShowAll, setNonCpmShowAll] = useState(false);
+  const [nonCpmExpanded, setNonCpmExpanded] = useState<Record<string, boolean>>({});
 
   const loadAll = useCallback(async () => {
     try {
@@ -688,10 +698,10 @@ export const CpmPlanner: React.FC = () => {
 
   useEffect(() => { loadAttrGap(); }, [loadAttrGap]);
 
-  const loadNonCpm = useCallback(async (windowDays: 7 | 30) => {
+  const loadNonCpm = useCallback(async (month: string) => {
     setNonCpmLoading(true);
     try {
-      const res = await apiFetch(`${API}/non-cpm?window=${windowDays}`);
+      const res = await apiFetch(`${API}/non-cpm${month ? `?month=${month}` : ''}`);
       if (!res.ok) throw new Error(`non-cpm: HTTP ${res.status}`);
       setNonCpm(await res.json());
       setNonCpmError(null);
@@ -702,7 +712,23 @@ export const CpmPlanner: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => { loadNonCpm(nonCpmWindow); }, [loadNonCpm, nonCpmWindow]);
+  useEffect(() => { loadNonCpm(nonCpmMonth); }, [loadNonCpm, nonCpmMonth]);
+
+  // Operator override for an offer's group ("tag"), then reload so the row
+  // collapses onto the advertiser immediately.
+  const saveOfferGroup = useCallback(async (identity: string, groupName: string) => {
+    try {
+      const res = await apiFetch(`${API}/offer-groups/${encodeURIComponent(identity)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_name: groupName }),
+      });
+      if (!res.ok) throw new Error(`offer-group: HTTP ${res.status}`);
+      await loadNonCpm(nonCpmMonth);
+    } catch (e) {
+      setNonCpmError(e instanceof Error ? e.message : 'failed to save offer group');
+    }
+  }, [loadNonCpm, nonCpmMonth]);
 
   // Refresh months after the deal modal closes (a deal may have been created from
   // "Add deal to month") so freshly-created deals appear in the planning grid.
@@ -2745,22 +2771,63 @@ export const CpmPlanner: React.FC = () => {
   // funnel columns come from TWO different systems and the header says which:
   // volume/clickers are Athena lake truth, conversions are the PG Everflow
   // ledger (the lake has no conversion events).
+  // ─── 4 · Non-CPM sending — volume → clickers → conversions → payout → eCPM ──
+  // Calendar-month scoped and all Postgres, so this table shares a clock with
+  // the CPM pacing rows above it. Rows collapse onto the advertiser (the offer
+  // group); the raw identities expand underneath.
   const renderNonCpm = () => {
     const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
-    const rows = nonCpm?.offers || [];
-    const shown = nonCpmShowAll ? rows : rows.filter(o => !o.is_cpm);
+    const money = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const groups = nonCpm?.groups || [];
+    const shown = nonCpmShowAll ? groups : groups.filter(g => !g.is_cpm);
     const t = nonCpm?.totals;
 
-    const winBtn = (d: 7 | 30) => (
-      <button key={d} onClick={() => setNonCpmWindow(d)}
-        style={{
-          padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer',
-          border: `1px solid ${nonCpmWindow === d ? C.indigo : C.border}`,
-          background: nonCpmWindow === d ? 'rgba(99,102,241,0.25)' : 'transparent',
-          color: nonCpmWindow === d ? C.heading : C.muted, fontWeight: 700,
-        }}>
-        Last {d}d
-      </button>
+    // Period pills: current month (MTD) plus the previous five calendar months.
+    const monthOptions: { value: string; label: string }[] = [];
+    {
+      const now = new Date();
+      for (let i = 0; i < 6; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        monthOptions.push({
+          value: i === 0 ? '' : ym,
+          label: i === 0
+            ? `${d.toLocaleString('en-US', { month: 'short' })} (MTD)`
+            : d.toLocaleString('en-US', { month: 'short', year: '2-digit' }),
+        });
+      }
+    }
+
+    // One row renderer shared by the group row and its expanded children, so a
+    // variant can never be formatted differently from its parent.
+    const cells = (o: NonCpmOffer, isChild: boolean) => (
+      <>
+        <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(o.delivered)}</td>
+        <td style={{ ...tdStyle, textAlign: 'right', color: isChild ? C.muted : C.indigo }}>{fmtInt(o.clickers)}</td>
+        <td style={{ ...tdStyle, textAlign: 'right' }}>{o.delivered > 0 ? pct(o.clicker_rate) : '—'}</td>
+        <td style={{ ...tdStyle, textAlign: 'right', color: o.conversions > 0 ? C.green : C.muted }}>
+          {fmtInt(o.conversions)}
+        </td>
+        <td style={{ ...tdStyle, textAlign: 'right' }}>
+          {o.conversions > 0 || o.payout_coverage > 0 ? (
+            <span
+              style={{ color: o.payout_coverage < o.conversions ? C.amber : C.muted }}
+              title={o.payout_coverage < o.conversions
+                ? `Only ${o.payout_coverage} of ${o.conversions} conversions carry a supplied payout — revenue and eCPM below are FLOORS, not the full earn-out.`
+                : 'Every counted conversion carries a supplied payout.'}
+            >
+              {fmtInt(o.payout_coverage)}/{fmtInt(o.conversions)}
+            </span>
+          ) : '—'}
+        </td>
+        <td style={{ ...tdStyle, textAlign: 'right', color: o.revenue > 0 ? C.green : C.muted }}>
+          {o.revenue > 0 ? money(o.revenue) : '—'}
+        </td>
+        <td style={{ ...tdStyle, textAlign: 'right', color: o.ecpm > 0 ? C.heading : C.muted }}
+          title={o.revenue > 0 ? `${money(o.revenue)} / ${fmtInt(o.delivered)} delivered × 1,000` : 'No supplied payout in this period'}>
+          {o.ecpm > 0 ? `$${o.ecpm.toFixed(3)}` : '—'}
+        </td>
+      </>
     );
 
     return (
@@ -2768,20 +2835,28 @@ export const CpmPlanner: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 10 }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-              4 · Non-CPM Sending — Volume → Clickers → Conversions
+              4 · Non-CPM Sending — Volume → Clickers → Conversions → Payout
             </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-              Everything we mail that no CPM deal is billing. Volume and clickers are{' '}
-              <span style={{ color: C.heading }}>Athena lake</span> truth; conversions are the{' '}
-              <span style={{ color: C.heading }}>Everflow postback ledger in Postgres</span> — the lake
-              carries no conversion events.
-              {nonCpm?.refreshed_at && (
-                <> Snapshot {new Date(nonCpm.refreshed_at).toLocaleString()}{nonCpm.stale ? ' (stale — rebuilding)' : ''}.</>
-              )}
+              Everything we mail that no CPM deal is billing, for the selected calendar month —
+              same source and clock as the pacing rows above. <span style={{ color: C.heading }}>eCPM</span> is
+              derived from the supplied per-conversion payout, so it is what this volume actually earned.
+              {nonCpm?.from && <> {nonCpm.from} → {nonCpm.to}.</>}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {[7, 30].map(d => winBtn(d as 7 | 30))}
+            {monthOptions.map(m => (
+              <button key={m.label} onClick={() => setNonCpmMonth(m.value)}
+                style={{
+                  padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+                  border: `1px solid ${nonCpmMonth === m.value ? C.indigo : C.border}`,
+                  background: nonCpmMonth === m.value ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  color: nonCpmMonth === m.value ? C.heading : C.muted,
+                  fontWeight: nonCpmMonth === m.value ? 700 : 400,
+                }}>
+                {m.label}
+              </button>
+            ))}
             <button onClick={() => setNonCpmShowAll(v => !v)}
               style={{
                 padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer',
@@ -2791,7 +2866,7 @@ export const CpmPlanner: React.FC = () => {
               }}>
               {nonCpmShowAll ? 'Non-CPM only' : 'Show CPM too'}
             </button>
-            <button onClick={() => loadNonCpm(nonCpmWindow)} disabled={nonCpmLoading}
+            <button onClick={() => loadNonCpm(nonCpmMonth)} disabled={nonCpmLoading}
               style={{
                 padding: '6px 12px', borderRadius: 16, fontSize: 12,
                 cursor: nonCpmLoading ? 'default' : 'pointer',
@@ -2811,12 +2886,14 @@ export const CpmPlanner: React.FC = () => {
           </div>
         )}
 
-        {nonCpm?.building && (
+        {nonCpm?.volume_partial && (
           <div style={{
-            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 13,
+            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 12,
             background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', color: C.amber,
           }}>
-            {nonCpm.note}
+            Volume is rolled up for {nonCpm.days_rolled} of {nonCpm.days_expected} days in this period —
+            the remaining days are still backfilling, so VOLUME (and eCPM) are understated here.
+            Clickers and conversions are live and complete.
           </div>
         )}
 
@@ -2824,16 +2901,10 @@ export const CpmPlanner: React.FC = () => {
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
             <Stat label="Non-CPM volume" value={fmtInt(t.non_cpm.delivered)} />
             <Stat label="Non-CPM clickers" value={fmtInt(t.non_cpm.clickers)} color={C.indigo} />
-            <Stat label="Non-CPM clicker rate" value={pct(t.non_cpm.clicker_rate)} />
             <Stat label="Non-CPM conversions" value={fmtInt(t.non_cpm.conversions)} color={C.green} />
+            <Stat label="Non-CPM revenue" value={money(t.non_cpm.revenue)} color={C.green} />
+            <Stat label="Non-CPM eCPM" value={`$${t.non_cpm.ecpm.toFixed(3)}`} />
             <Stat label="CPM volume (billed)" value={fmtInt(t.cpm.delivered)} color={C.muted} />
-          </div>
-        )}
-
-        {nonCpm?.offer_cap_hit && (
-          <div style={{ fontSize: 11, color: C.amber, marginBottom: 8 }}>
-            Showing the top {nonCpm.offer_cap} offers by campaign volume — the snapshot enumerates no
-            more than that per organization, so smaller offers are not listed.
           </div>
         )}
 
@@ -2843,54 +2914,78 @@ export const CpmPlanner: React.FC = () => {
               <tr>
                 <th style={thStyle}>Offer</th>
                 <th style={thStyle}>Billing</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Athena lake: delivered events">Volume</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Athena lake: DISTINCT subscribers clicking a content/commercial link (asset fetches and unsubscribe links removed)">Clickers</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Delivered events, Postgres, rolled up per Denver day">Volume</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="DISTINCT subscribers clicking a content/commercial link — asset fetches and unsubscribe links excluded">Clickers</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Clicker rate</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Postgres: Everflow postback conversions">Conversions</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Conversions per clicker">Conv / clicker</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Everflow postback conversion ledger — the same count of record the CPM deal cards use">Conversions</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="How many counted conversions carry a supplied payout. Below 100% means revenue/eCPM are floors.">Payout cov.</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Sum of the supplied per-conversion payout">Revenue</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="revenue / delivered × 1,000">eCPM</th>
               </tr>
             </thead>
             <tbody>
               {shown.length === 0 && !nonCpmLoading && (
                 <tr>
-                  <td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: 28 }}>
-                    {nonCpm?.building ? 'Snapshot building…' : 'No offers in this window.'}
+                  <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: 28 }}>
+                    Nothing in this period.
                   </td>
                 </tr>
               )}
-              {shown.map(o => (
-                <tr key={o.offer_key}>
-                  <td style={tdStyle}>
-                    <span style={{ color: C.heading }}>{o.offer_name || o.offer_key}</span>
-                    {o.offer_name && o.offer_name !== o.offer_key && (
-                      <span style={{ color: C.muted, fontSize: 11 }}> · {o.offer_key}</span>
-                    )}
-                  </td>
-                  <td style={tdStyle}>
-                    {o.attribution === 'none' && (
-                      <span style={{ color: C.muted, fontSize: 12 }}>No CPM deal</span>
-                    )}
-                    {o.attribution === 'full' && (
-                      <span style={{ color: C.green, fontSize: 12 }}>{o.deal_name}</span>
-                    )}
-                    {o.attribution === 'partial' && (
-                      <span
-                        style={{ color: C.amber, fontSize: 12 }}
-                        title={`Only ${fmtInt(o.campaigns_in_deal)} of ${fmtInt(o.campaigns)} campaigns for this offer fall inside the ${o.deal_name} deal's attribution — the rest is mailed but not billed.`}
-                      >
-                        {o.deal_name} · PARTIAL {fmtInt(o.campaigns_in_deal)}/{fmtInt(o.campaigns)}
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(o.delivered)}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right', color: C.indigo }}>{fmtInt(o.clickers)}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>{pct(o.clicker_rate)}</td>
-                  <td style={{ ...tdStyle, textAlign: 'right', color: o.conversions > 0 ? C.green : C.muted }}>
-                    {fmtInt(o.conversions)}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'right' }}>{o.clickers > 0 ? pct(o.conv_rate) : '—'}</td>
-                </tr>
-              ))}
+              {shown.map(g => {
+                const open = !!nonCpmExpanded[g.group_name];
+                const multi = g.offers.length > 1;
+                return (
+                  <React.Fragment key={g.group_name}>
+                    <tr
+                      onClick={() => multi && setNonCpmExpanded(p => ({ ...p, [g.group_name]: !open }))}
+                      style={{ cursor: multi ? 'pointer' : 'default' }}
+                    >
+                      <td style={tdStyle}>
+                        {multi && (
+                          <span style={{ color: C.muted, marginRight: 6, fontSize: 11 }}>{open ? '▾' : '▸'}</span>
+                        )}
+                        <span style={{ color: C.heading }}>{g.group_name}</span>
+                        {multi && (
+                          <span style={{ color: C.muted, fontSize: 11 }}> · {g.offers.length} variants</span>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        {g.is_cpm
+                          ? <span style={{ color: C.green, fontSize: 12 }}>{g.deal_name}</span>
+                          : <span style={{ color: C.muted, fontSize: 12 }}>No CPM deal</span>}
+                      </td>
+                      {cells(g, false)}
+                    </tr>
+                    {open && g.offers.map(o => (
+                      <tr key={`${g.group_name}:${o.offer_key}`} style={{ background: 'rgba(10,20,45,0.35)' }}>
+                        <td style={{ ...tdStyle, paddingLeft: 30, color: C.muted, fontSize: 12 }}>
+                          {o.offer_key}
+                        </td>
+                        <td style={tdStyle}>
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              const next = window.prompt(
+                                `Group "${o.offer_key}" under which advertiser?\n\n(blank clears the override)`,
+                                g.group_name,
+                              );
+                              if (next !== null) saveOfferGroup(o.offer_key, next.trim());
+                            }}
+                            style={{
+                              background: 'none', border: `1px solid ${C.border}`, borderRadius: 6,
+                              color: C.muted, cursor: 'pointer', fontSize: 11, padding: '2px 8px',
+                            }}
+                            title="Change which advertiser this offer key rolls up under"
+                          >
+                            regroup
+                          </button>
+                        </td>
+                        {cells(o, true)}
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
