@@ -8071,6 +8071,52 @@ END $$`},
 			PRIMARY KEY (everflow_offer_id, sequence_index)
 		)`},
 
+		// Per-touch BODY override (2026-08-02). Without it a reminder's body is
+		// whatever campaign the subscriber happened to click, so an August
+		// creative can ship under a June subject — offer 420 was pairing a
+		// "Ends 7/5" subject with Aug-1 partner-drip bodies. When body_html is
+		// set the sender uses it for that touch instead, making the touch a
+		// coherent, reviewable unit. Safe ALTER: 64 rows, 72 kB, no inbound FKs,
+		// no steady lock holders (unlike mailing_campaigns).
+		{"aug02_click_drip_touch_body", `ALTER TABLE mailing_offer_reminder_subjects
+			ADD COLUMN IF NOT EXISTS body_html TEXT`},
+
+		// Creative-version registry (2026-08-02). Operator rule: a touch's
+		// metrics are the LIFETIME value of that creative + subject combination,
+		// and changing ANY part of it sunsets the old numbers into a historical
+		// aggregate rather than blending them into the new copy's stats.
+		//
+		// content_hash is taken over (subject, preheader, from_name_override,
+		// body_html). The sender folds it into the shadow-campaign id, so each
+		// version already owns a distinct campaign_id and its metrics separate
+		// themselves through the existing lake path — no per-version counters to
+		// maintain and nothing to backfill. This table is the human-readable
+		// side: what each version actually SAID, and when it was live.
+		//
+		// CREATE TABLE takes no lock on any hot table, which is why the version
+		// key lives here rather than as another column on mailing_campaigns.
+		{"aug02_clickdrip_touch_versions", `CREATE TABLE IF NOT EXISTS mailing_clickdrip_touch_versions (
+			everflow_offer_id  VARCHAR(64) NOT NULL,
+			node_id            TEXT NOT NULL,
+			content_hash       TEXT NOT NULL,
+			sequence_index     SMALLINT NOT NULL DEFAULT 0,
+			subject            TEXT DEFAULT '',
+			preheader          TEXT DEFAULT '',
+			from_name_override TEXT DEFAULT '',
+			body_html          TEXT,
+			-- The shadow campaign this version's sends are attributed to. Stored
+			-- at registration so the API can pull per-version metrics with a
+			-- plain campaign_id lookup instead of re-deriving the UUIDv5 across
+			-- package boundaries.
+			shadow_campaign_id UUID,
+			first_seen_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			superseded_at      TIMESTAMPTZ,
+			PRIMARY KEY (everflow_offer_id, node_id, content_hash)
+		)`},
+		{"aug02_clickdrip_touch_versions_idx", `CREATE INDEX IF NOT EXISTS idx_clickdrip_touch_versions_lane
+			ON mailing_clickdrip_touch_versions (everflow_offer_id, node_id, last_seen_at DESC)`},
+
 		{"jun01_click_drip_enrollment_exit_cols", `ALTER TABLE mailing_journey_enrollments
 			ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ,
 			ADD COLUMN IF NOT EXISTS exit_reason TEXT,

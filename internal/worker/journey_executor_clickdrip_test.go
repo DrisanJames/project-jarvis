@@ -211,8 +211,8 @@ func TestEmailNode_ClickDripMetadataOverrides_BodyAndProfileAndIdentity(t *testi
 	//    override fired.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_reminder_subjects`)).
 		WithArgs("9539", 0).
-		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled"}).
-			AddRow("REM SUBJECT", "REM PRE", "", true))
+		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html"}).
+			AddRow("REM SUBJECT", "REM PRE", "", true, nil))
 
 	// 3) subscriber load — ErrNoRows so the templating branch is a
 	//    no-op and the literal subject / htmlContent reach the sender
@@ -341,8 +341,8 @@ func TestEmailNode_OfferReminderDisabled_DoesNotOverrideSubject(t *testing.T) {
 	// wins".
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_offer_reminder_subjects`)).
 		WithArgs("9539", 0).
-		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled"}).
-			AddRow("DISABLED SUBJECT", "DISABLED PRE", "DISABLED FROM", false))
+		WillReturnRows(sqlmock.NewRows([]string{"subject", "preheader", "from_name_override", "enabled", "body_html"}).
+			AddRow("DISABLED SUBJECT", "DISABLED PRE", "DISABLED FROM", false, nil))
 
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_subscribers`)).
 		WithArgs("user@example.com").
@@ -483,10 +483,10 @@ func TestClickDripSystemURLs_BroadcastParity(t *testing.T) {
 		WithArgs(subID).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
 
-	urls := s.SystemURLs(context.Background(), offerID, "email-0", subID, profileID, fromEmail)
+	urls := s.SystemURLs(context.Background(), offerID, "email-0", "", subID, profileID, fromEmail)
 	require.NotNil(t, urls)
 
-	campaignID := shadowCampaignID(offerID, "email-0")
+	campaignID := shadowCampaignID(offerID, "email-0", "")
 	require.Equal(t,
 		GenerateUnsubscribeURL(orgID, campaignID, subID, trackBase, secret),
 		urls["unsubscribe_url"], "must match the broadcast generator exactly")
@@ -539,7 +539,7 @@ func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
 		},
 	}
 	renderCtx := mailing.RenderContext{"system": map[string]interface{}{}}
-	je.mergeClickDripSystemURLs(context.Background(), renderCtx, enrollment, "email-0", subID, profileID, "deals@em.discountblog.com")
+	je.mergeClickDripSystemURLs(context.Background(), renderCtx, enrollment, "email-0", "", subID, profileID, "deals@em.discountblog.com")
 
 	// The exact footer shape from the failing prod creative.
 	footer := `<p style="text-decoration:underline;"><a href="{{ system.brand_unsubscribe_url }}">unsubscribe from this brand</a>, ` +
@@ -555,6 +555,6 @@ func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
 
 	// Non-click-drip enrollments must be untouched (no DB calls, no keys).
 	plainCtx := mailing.RenderContext{"system": map[string]interface{}{}}
-	je.mergeClickDripSystemURLs(context.Background(), plainCtx, Enrollment{Metadata: map[string]interface{}{}}, "email-0", subID, profileID, "x@y.com")
+	je.mergeClickDripSystemURLs(context.Background(), plainCtx, Enrollment{Metadata: map[string]interface{}{}}, "email-0", "", subID, profileID, "x@y.com")
 	require.Empty(t, plainCtx["system"].(map[string]interface{}))
 }

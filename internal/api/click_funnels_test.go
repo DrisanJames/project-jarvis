@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
@@ -329,9 +330,16 @@ func TestFunnelNodes_ReportsPGFallbackProvenance(t *testing.T) {
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"sequence_index", "subject", "preheader", "from_name_override", "enabled",
-		}).AddRow(0, "Still interested?", "one more look", "", true))
+			"body_html", "updated_at",
+		}).AddRow(0, "Still interested?", "one more look", "", true, "", time.Now()))
 	// Lane outcome split: enrolled / active / converted(postback) /
 	// completed(sequence) / exited(early) / median hours-to-goal.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_clickdrip_touch_versions`)).
+		WithArgs("6137").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"node_id", "content_hash", "subject", "preheader", "from_name_override",
+			"body_html", "shadow_campaign_id", "first_seen_at", "last_seen_at", "superseded_at",
+		}))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*),`)).
 		WithArgs("6137").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -764,5 +772,29 @@ func TestOfferNameSubquery_ShapeGuards(t *testing.T) {
 	// Appears twice: the subquery filter, and the 'Offer <id>' fallback.
 	if strings.Count(q, "m.everflow_offer_id") != 2 {
 		t.Fatalf("id expression must appear in the filter and the fallback, got %d", strings.Count(q, "m.everflow_offer_id"))
+	}
+}
+
+// TestUpsertReminderSubject_OmittedBodyPreservesCreative is a data-loss guard.
+// The copy form (subject/preheader/from) and the body editor both PUT the same
+// reminder-subjects row. If an omitted body_html were treated as "", editing a
+// subject would silently wipe the touch's creative and every subscriber would
+// fall back to whatever campaign they clicked — the exact incoherence that let
+// an August body ship under a June subject.
+func TestUpsertReminderSubject_OmittedBodyPreservesCreative(t *testing.T) {
+	var req upsertReminderSubjectRequest
+	if err := json.Unmarshal([]byte(`{"subject":"s","preheader":"p","enabled":true}`), &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if req.BodyHTML != nil {
+		t.Fatal("an omitted body_html must decode to nil so COALESCE keeps the stored creative")
+	}
+
+	// An explicit empty string is a deliberate clear, and must be distinguishable.
+	if err := json.Unmarshal([]byte(`{"subject":"s","body_html":""}`), &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if req.BodyHTML == nil || *req.BodyHTML != "" {
+		t.Fatal(`an explicit "" must decode to a non-nil empty string (deliberate clear)`)
 	}
 }

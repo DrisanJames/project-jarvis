@@ -8,10 +8,10 @@ package worker
 // so the polling loop stays out of scope.
 
 import (
-	"time"
 	"context"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
@@ -80,7 +80,7 @@ func expectLaneStats(mock sqlmock.Sqlmock, offerID string, enrollments30, active
 		WillReturnRows(sqlmock.NewRows([]string{"enrollments_30d", "active", "conversions_win"}).
 			AddRow(enrollments30, active, conversions30))
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_message_log`)).
-		WithArgs(shadowCampaignID(offerID, ""), offerID).
+		WithArgs(shadowCampaignID(offerID, "", ""), offerID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(touches30))
 }
 

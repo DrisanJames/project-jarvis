@@ -498,20 +498,40 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 	// originally clicked, so the reminder feels like a continuation,
 	// not a brand-new offer pitch.
 	// ────────────────────────────────────────────────────────────────────
+	// touchPreheader / touchContentVersion carry this touch's creative identity
+	// down to the sender: the hash keys the shadow campaign, which is what makes
+	// each creative version's metrics separate (and freezes the previous
+	// version's as a historical aggregate).
+	touchPreheader := ""
+	touchContentVersion := ""
 	if reminderSeq, ok := readReminderSeqIndex(node.Config); ok {
 		if everflowOfferID, ok := enrollment.Metadata["everflow_offer_id"].(string); ok && everflowOfferID != "" {
-			var rSubject, rPreheader, rFromOverride sql.NullString
+			var rSubject, rPreheader, rFromOverride, rBody sql.NullString
 			var rEnabled sql.NullBool
+			// body_html ships with a migration that can lag this binary. If the
+			// column is absent the 5-column read errors, and the `err == nil`
+			// guard below would silently DROP the subject/preheader/from
+			// overrides too — every touch would quietly revert to generic copy.
+			// Fall back to the pre-migration shape instead.
 			err := je.db.QueryRowContext(ctx, `
-				SELECT subject, preheader, from_name_override, enabled
+				SELECT subject, preheader, from_name_override, enabled, body_html
 				FROM mailing_offer_reminder_subjects
 				WHERE everflow_offer_id=$1 AND sequence_index=$2
-			`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled)
+			`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled, &rBody)
+			if err != nil && strings.Contains(err.Error(), "does not exist") {
+				err = je.db.QueryRowContext(ctx, `
+					SELECT subject, preheader, from_name_override, enabled
+					FROM mailing_offer_reminder_subjects
+					WHERE everflow_offer_id=$1 AND sequence_index=$2
+				`, everflowOfferID, reminderSeq).Scan(&rSubject, &rPreheader, &rFromOverride, &rEnabled)
+				rBody = sql.NullString{}
+			}
 			if err == nil && rEnabled.Valid && rEnabled.Bool {
 				if rSubject.Valid && rSubject.String != "" {
 					subject = rSubject.String
 				}
 				if rPreheader.Valid && rPreheader.String != "" {
+					touchPreheader = rPreheader.String
 					if node.Config == nil {
 						node.Config = map[string]interface{}{}
 					}
@@ -520,6 +540,16 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 				if rFromOverride.Valid && rFromOverride.String != "" {
 					fromName = rFromOverride.String
 				}
+				// Per-touch BODY override (2026-08-02). The original policy was
+				// to reuse whatever creative the subscriber clicked so the
+				// reminder felt like a continuation — but that let an August
+				// body ship under a June subject (offer 420 paired "Ends 7/5"
+				// with Aug-1 partner-drip creatives). When an operator sets a
+				// body for the touch it wins, making the touch a coherent unit.
+				if rBody.Valid && strings.TrimSpace(rBody.String) != "" {
+					htmlContent = rBody.String
+				}
+				touchContentVersion = touchContentHash(subject, touchPreheader, fromName, htmlContent)
 			}
 		}
 	}
@@ -585,7 +615,7 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			// shipping a reminder with no working unsubscribe link. Populate
 			// them broadcast-style before rendering (parity with
 			// SendWorkerPool.buildRenderContext).
-			je.mergeClickDripSystemURLs(ctx, renderCtx, enrollment, node.ID, sub.ID.String(), sendingProfileID, fromEmail)
+			je.mergeClickDripSystemURLs(ctx, renderCtx, enrollment, node.ID, touchContentVersion, sub.ID.String(), sendingProfileID, fromEmail)
 
 			// Personalize content
 			cacheKey := fmt.Sprintf("journey:%s:node:%s", enrollment.JourneyID, node.ID)
@@ -690,7 +720,7 @@ func isClickDripEnrollment(e Enrollment) bool {
 // URLs (the same generators the campaign send worker uses) instead of
 // stripping them to empty strings. No-op for non-click-drip enrollments and
 // when no clickDripSender is wired, so legacy journeys are untouched.
-func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderCtx mailing.RenderContext, enrollment Enrollment, nodeID, subscriberID, profileID, fromEmail string) {
+func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderCtx mailing.RenderContext, enrollment Enrollment, nodeID, contentHash, subscriberID, profileID, fromEmail string) {
 	if je.clickDripSender == nil || !isClickDripEnrollment(enrollment) {
 		return
 	}
@@ -699,7 +729,7 @@ func (je *JourneyExecutor) mergeClickDripSystemURLs(ctx context.Context, renderC
 		return
 	}
 	everflowOfferID, _ := enrollment.Metadata["everflow_offer_id"].(string)
-	for k, v := range je.clickDripSender.SystemURLs(ctx, everflowOfferID, nodeID, subscriberID, profileID, fromEmail) {
+	for k, v := range je.clickDripSender.SystemURLs(ctx, everflowOfferID, nodeID, contentHash, subscriberID, profileID, fromEmail) {
 		sysCtx[k] = v
 	}
 }

@@ -128,7 +128,7 @@ type governedLane struct {
 	offerID      string
 	payoutType   string
 	routingState string
-	createdAt time.Time
+	createdAt    time.Time
 }
 
 // tick recomputes lane stats + recommendations for every offer lane.
@@ -257,7 +257,7 @@ func (w *JourneyLaneGovernor) governLane(ctx context.Context, lane governedLane,
 		            SELECT c.id FROM mailing_campaigns c
 		            WHERE c.journey_offer_id = $2
 		       ))
-	`, shadowCampaignID(lane.offerID, ""), lane.offerID).Scan(&touches30); err != nil {
+	`, shadowCampaignID(lane.offerID, "", ""), lane.offerID).Scan(&touches30); err != nil {
 		return "", false, err
 	}
 
@@ -267,14 +267,14 @@ func (w *JourneyLaneGovernor) governLane(ctx context.Context, lane governedLane,
 	rec := laneRecommendation(lane.offerID, lane.payoutType, enrollments30, conversionsWin, minSample, targetOffer, laneMature)
 
 	statsJSON, _ := json.Marshal(map[string]interface{}{
-		"enrollments_30d": enrollments30,
-		"active":          active,
+		"enrollments_30d":       enrollments30,
+		"active":                active,
 		"conversions_window_d":  convWindowDays,
 		"conversions_in_window": conversionsWin,
 		"lane_mature":           laneMature,
-		"touches_30d":     touches30,
-		"payout_type":     lane.payoutType,
-		"computed_at":     time.Now().UTC().Format(time.RFC3339),
+		"touches_30d":           touches30,
+		"payout_type":           lane.payoutType,
+		"computed_at":           time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// Manual pause always wins: never enforce over an operator-set

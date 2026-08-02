@@ -264,6 +264,19 @@ type ClickFunnelNode struct {
 	FromOverride string `json:"from_name_override"`
 	CopyEnabled  bool   `json:"copy_enabled"`
 	CopyMissing  bool   `json:"copy_missing"`
+	// BodyHTML is the per-touch body override. Empty means the touch still
+	// inherits whatever creative the subscriber originally clicked — which is
+	// how an August body ended up under a June subject on offer 420.
+	BodyHTML      string `json:"body_html"`
+	BodyInherited bool   `json:"body_inherited"`
+	// CopyUpdatedAt / CopyAgeDays surface staleness. Offer 420 shipped copy with
+	// a hard "Ends 7/5" deadline for four weeks after it expired because nothing
+	// showed how old the words were.
+	CopyUpdatedAt string `json:"copy_updated_at"`
+	CopyAgeDays   int    `json:"copy_age_days"`
+	// Versions is the creative history: the live version first, then superseded
+	// ones whose metrics are frozen sunset aggregates.
+	Versions []TouchVersion `json:"versions"`
 
 	// Flow
 	Reached  int `json:"reached"`
@@ -290,6 +303,37 @@ type ClickFunnelNode struct {
 	StepThrough    float64 `json:"step_through_rate"`
 
 	Attributed bool `json:"attributed"`
+}
+
+// TouchVersion is one creative+subject combination of a touch, with the
+// LIFETIME metrics earned by exactly that combination.
+//
+// Operator rule (2026-08-02): a touch's numbers belong to the specific creative
+// and subject that earned them. Changing any part mints a new version; the
+// previous one is superseded and its metrics stop moving — a historical
+// aggregate, never blended into the new copy's stats. The split is structural,
+// not cosmetic: each version has its own shadow campaign, so engagement lands in
+// a different bucket at send time.
+type TouchVersion struct {
+	ContentHash  string `json:"content_hash"`
+	Subject      string `json:"subject"`
+	Preheader    string `json:"preheader"`
+	FromOverride string `json:"from_name_override"`
+	BodyHTML     string `json:"body_html"`
+	IsLive       bool   `json:"is_live"`
+	FirstSeenAt  string `json:"first_seen_at"`
+	LastSeenAt   string `json:"last_seen_at"`
+	SupersededAt string `json:"superseded_at"`
+
+	// Lifetime metrics for THIS version only.
+	Sent        int     `json:"sent"`
+	Delivered   int     `json:"delivered"`
+	Opens       int     `json:"opens"`
+	Clicks      int     `json:"clicks"`
+	HumanClicks int     `json:"human_clicks"`
+	OpenRate    float64 `json:"open_rate"`
+	ClickRate   float64 `json:"click_rate"`
+	Attributed  bool    `json:"attributed"`
 }
 
 // ClickFunnelNodesResponse envelopes the node view.
@@ -415,6 +459,12 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 		respondError(w, http.StatusInternalServerError, "load reminder copy: "+err.Error())
 		return
 	}
+	// Creative history per node, with each version's LIFETIME metrics. Non-fatal:
+	// a lane that has not sent since versioning shipped simply has none.
+	versionsByNode, vErr := s.loadTouchVersions(ctx, offerID, fromDt, toDt)
+	if vErr != nil {
+		versionsByNode = map[string][]TouchVersion{}
+	}
 
 	// Lane outcome split, mirroring HubSpot's enrolled / completed / met-goal /
 	// lost model so the funnel is readable as an outcome and not just a stack of
@@ -474,7 +524,15 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 
 			if c, ok := copyBySeq[n.Sequence]; ok {
 				n.Subject, n.Preheader, n.FromOverride, n.CopyEnabled = c.subject, c.preheader, c.fromOverride, c.enabled
+				n.BodyHTML = c.bodyHTML
+				n.BodyInherited = strings.TrimSpace(c.bodyHTML) == ""
+				if !c.updatedAt.IsZero() {
+					n.CopyUpdatedAt = c.updatedAt.UTC().Format(time.RFC3339)
+					n.CopyAgeDays = int(time.Since(c.updatedAt).Hours() / 24)
+				}
+				n.Versions = versionsByNode[g.ID]
 			} else {
+				n.BodyInherited = true
 				// No row means the sender falls back to the clicked campaign's
 				// own subject — worth flagging rather than rendering blank.
 				n.CopyMissing = true
@@ -886,17 +944,36 @@ func (s *ClickFunnelsService) loadNodeConversions(ctx context.Context, offerID s
 }
 
 type reminderCopy struct {
-	subject, preheader, fromOverride string
-	enabled                          bool
+	subject, preheader, fromOverride, bodyHTML string
+	enabled                                    bool
+	updatedAt                                  time.Time
 }
 
 func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID string) (map[int]reminderCopy, error) {
+	// body_html arrives with a migration that can lag this binary. Reading it
+	// unconditionally would 500 the whole node view in that window — the exact
+	// schema-coupling that took the screen down on 2026-08-02. Try the full
+	// shape, fall back to the pre-migration one.
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sequence_index, COALESCE(subject,''), COALESCE(preheader,''),
-		       COALESCE(from_name_override,''), COALESCE(enabled,false)
+		       COALESCE(from_name_override,''), COALESCE(enabled,false),
+		       COALESCE(body_html,''), COALESCE(updated_at, NOW())
 		FROM mailing_offer_reminder_subjects
 		WHERE everflow_offer_id = $1
 	`, offerID)
+	if err != nil && strings.Contains(err.Error(), "does not exist") {
+		legacy, lerr := s.db.QueryContext(ctx, `
+			SELECT sequence_index, COALESCE(subject,''), COALESCE(preheader,''),
+			       COALESCE(from_name_override,''), COALESCE(enabled,false),
+			       '' AS body_html, COALESCE(updated_at, NOW())
+			FROM mailing_offer_reminder_subjects
+			WHERE everflow_offer_id = $1
+		`, offerID)
+		if lerr != nil {
+			return nil, lerr
+		}
+		rows, err = legacy, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -905,7 +982,8 @@ func (s *ClickFunnelsService) loadReminderCopy(ctx context.Context, offerID stri
 	for rows.Next() {
 		var idx int
 		var c reminderCopy
-		if err := rows.Scan(&idx, &c.subject, &c.preheader, &c.fromOverride, &c.enabled); err != nil {
+		if err := rows.Scan(&idx, &c.subject, &c.preheader, &c.fromOverride, &c.enabled,
+			&c.bodyHTML, &c.updatedAt); err != nil {
 			return nil, err
 		}
 		out[idx] = c
@@ -1367,4 +1445,133 @@ func clickFunnelOrgFilter(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// loadTouchVersions returns each node's creative history, newest first, with the
+// LIFETIME metrics earned by each individual version.
+//
+// This is the operator's rule made real: a touch's numbers belong to the exact
+// creative + subject that earned them, and changing anything sunsets the old
+// numbers rather than blending them into the new copy's stats. The split is
+// structural — the sender folds a content hash into the shadow-campaign id, so
+// each version's sends land on their own campaign_id — which means the metrics
+// here come from the SAME lake path as everything else, keyed per version. A
+// superseded version's numbers simply stop moving once nothing sends against it.
+//
+// Versions predating the 2026-08-02 versioning have no shadow_campaign_id and
+// report Attributed=false rather than a misleading zero.
+func (s *ClickFunnelsService) loadTouchVersions(ctx context.Context, offerID, fromDt, toDt string) (map[string][]TouchVersion, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT node_id, content_hash,
+		       COALESCE(subject,''), COALESCE(preheader,''), COALESCE(from_name_override,''),
+		       COALESCE(body_html,''), COALESCE(shadow_campaign_id::text,''),
+		       first_seen_at, last_seen_at, superseded_at
+		FROM mailing_clickdrip_touch_versions
+		WHERE everflow_offer_id = $1
+		ORDER BY node_id, (superseded_at IS NOT NULL), last_seen_at DESC
+	`, offerID)
+	if err != nil {
+		// Table absent (pre-migration) is not an error for the screen.
+		if strings.Contains(err.Error(), "does not exist") {
+			return map[string][]TouchVersion{}, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string][]TouchVersion{}
+	campaignToKey := map[string][2]string{} // campaign id -> (node, hash)
+	campaignIDs := []string{}
+	for rows.Next() {
+		var node, campaignID string
+		var v TouchVersion
+		var first, last time.Time
+		var superseded sql.NullTime
+		if err := rows.Scan(&node, &v.ContentHash, &v.Subject, &v.Preheader, &v.FromOverride,
+			&v.BodyHTML, &campaignID, &first, &last, &superseded); err != nil {
+			return nil, err
+		}
+		v.FirstSeenAt = first.UTC().Format(time.RFC3339)
+		v.LastSeenAt = last.UTC().Format(time.RFC3339)
+		if superseded.Valid {
+			v.SupersededAt = superseded.Time.UTC().Format(time.RFC3339)
+		} else {
+			v.IsLive = true
+		}
+		if campaignID != "" {
+			campaignToKey[campaignID] = [2]string{node, v.ContentHash}
+			campaignIDs = append(campaignIDs, campaignID)
+		}
+		out[node] = append(out[node], v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(campaignIDs) == 0 || !analytics.ReaderEnabled() {
+		return out, nil
+	}
+
+	// One lake pass over every version's campaign. Delivery and engagement live
+	// on different sources (transport vs app), same as loadNodeEngagement.
+	apply := func(brs []analytics.BreakdownRow) {
+		for _, r := range brs {
+			key, ok := campaignToKey[r.Keys["campaign_id"]]
+			if !ok {
+				continue
+			}
+			list := out[key[0]]
+			for i := range list {
+				if list[i].ContentHash != key[1] {
+					continue
+				}
+				c := int(r.Count)
+				switch r.Keys["event_type"] {
+				case "delivered":
+					list[i].Delivered += c
+				case "hard_bounce", "soft_bounce":
+					list[i].Sent += c
+				case "open":
+					list[i].Opens += c
+				case "click":
+					list[i].Clicks += c
+					if strings.EqualFold(r.Keys["is_machine_click"], "false") {
+						list[i].HumanClicks += c
+					}
+				}
+				list[i].Attributed = true
+			}
+			out[key[0]] = list
+		}
+	}
+
+	if d, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+		From: fromDt, To: toDt,
+		GroupBy: []string{"campaign_id", "event_type"}, SourceIn: []string{"pmta", "ses", "kumo"},
+		CampaignIDs: campaignIDs, DedupDelayByEmail: true, Limit: 5000,
+	}); err == nil {
+		apply(d)
+	}
+	if e, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+		From: fromDt, To: toDt,
+		GroupBy:     []string{"campaign_id", "event_type", "is_machine_click"},
+		CampaignIDs: campaignIDs, Limit: 5000,
+	}); err == nil {
+		apply(e)
+	}
+
+	for node, list := range out {
+		for i := range list {
+			list[i].Sent += list[i].Delivered
+			base := float64(list[i].Delivered)
+			if base == 0 {
+				base = float64(list[i].Sent)
+			}
+			if base > 0 {
+				list[i].OpenRate = round2(float64(list[i].Opens) / base * 100)
+				list[i].ClickRate = round2(float64(list[i].Clicks) / base * 100)
+			}
+		}
+		out[node] = list
+	}
+	return out, nil
 }

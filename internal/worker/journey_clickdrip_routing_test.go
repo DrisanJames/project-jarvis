@@ -118,9 +118,9 @@ func TestScaleJourneyDelay(t *testing.T) {
 // derivation string would orphan every existing shadow campaign, so this test
 // guards against an accidental change.
 func TestShadowCampaignID(t *testing.T) {
-	a1 := shadowCampaignID("9539", "")
-	a2 := shadowCampaignID("9539", "")
-	b := shadowCampaignID("7667", "")
+	a1 := shadowCampaignID("9539", "", "")
+	a2 := shadowCampaignID("9539", "", "")
+	b := shadowCampaignID("7667", "", "")
 
 	require.Equal(t, a1, a2, "same offer must yield a stable id")
 	require.NotEqual(t, a1, b, "different offers must yield different ids")
@@ -135,13 +135,13 @@ func TestShadowCampaignID(t *testing.T) {
 	// from every other node and from the legacy per-offer id. This is what makes
 	// per-node opens/clicks attributable at all — collapsing them back onto one
 	// campaign is the bug this guards.
-	n0a := shadowCampaignID("9539", "email-0")
-	n0b := shadowCampaignID("9539", "email-0")
-	n1 := shadowCampaignID("9539", "email-1")
+	n0a := shadowCampaignID("9539", "email-0", "")
+	n0b := shadowCampaignID("9539", "email-0", "")
+	n1 := shadowCampaignID("9539", "email-1", "")
 	require.Equal(t, n0a, n0b, "same (offer,node) must yield a stable id")
 	require.NotEqual(t, n0a, n1, "different nodes of one offer must yield different ids")
 	require.NotEqual(t, n0a, a1, "node-scoped id must differ from the legacy per-offer id")
-	require.NotEqual(t, n0a, shadowCampaignID("7667", "email-0"), "same node under different offers must differ")
+	require.NotEqual(t, n0a, shadowCampaignID("7667", "email-0", ""), "same node under different offers must differ")
 	require.Len(t, n0a, 36, "must be a canonical UUID string")
 }
 
@@ -293,7 +293,7 @@ func TestEnsureShadowCampaign_StampsNodeAttribution(t *testing.T) {
 	s := NewJourneyClickDripSender(db, nil, "", "")
 
 	// Miss the fast path so the INSERT branch runs.
-	wantID := shadowCampaignID(offerID, nodeID)
+	wantID := shadowCampaignID(offerID, nodeID, "")
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
 		WithArgs(wantID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
@@ -326,7 +326,7 @@ func TestEnsureShadowCampaign_StampsNodeAttribution(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, wantID, got, "must return the (offer,node)-scoped id, not the per-offer one")
-	require.NotEqual(t, shadowCampaignID(offerID, ""), got)
+	require.NotEqual(t, shadowCampaignID(offerID, "", ""), got)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -345,7 +345,7 @@ func TestEnsureShadowCampaign_NoNodeKeepsLegacyShape(t *testing.T) {
 	)
 
 	s := NewJourneyClickDripSender(db, nil, "", "")
-	wantID := shadowCampaignID(offerID, "")
+	wantID := shadowCampaignID(offerID, "", "")
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
 		WithArgs(wantID).
@@ -390,7 +390,7 @@ func TestEnsureShadowCampaign_DegradesWhenAttributionColumnsMissing(t *testing.T
 		nodeID  = "email-2"
 	)
 	s := NewJourneyClickDripSender(db, nil, "", "")
-	wantID := shadowCampaignID(offerID, nodeID)
+	wantID := shadowCampaignID(offerID, nodeID, "")
 
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
 		WithArgs(wantID).
@@ -462,4 +462,43 @@ func TestIsMissingColumnErr(t *testing.T) {
 	require.False(t, isMissingColumnErr(errors.New("connection refused")))
 	require.False(t, isMissingColumnErr(errors.New(`pq: relation "mailing_offers" does not exist`)),
 		"a missing TABLE is a real failure, not an attribution degrade")
+}
+
+// TestTouchContentHash_VersionsOnAnyCopyChange pins the operator's versioning
+// rule: a touch's metrics belong to the exact creative + subject that earned
+// them, so changing ANY part must mint a new version (which sunsets the old
+// one's numbers), while a pure reformat must NOT.
+func TestTouchContentHash_VersionsOnAnyCopyChange(t *testing.T) {
+	base := touchContentHash("Subject A", "Pre A", "From A", "<p>Body A</p>")
+
+	require.Equal(t, base, touchContentHash("Subject A", "Pre A", "From A", "<p>Body A</p>"),
+		"identical copy must be the same version")
+
+	// Every field independently versions.
+	require.NotEqual(t, base, touchContentHash("Subject B", "Pre A", "From A", "<p>Body A</p>"), "subject change")
+	require.NotEqual(t, base, touchContentHash("Subject A", "Pre B", "From A", "<p>Body A</p>"), "preheader change")
+	require.NotEqual(t, base, touchContentHash("Subject A", "Pre A", "From B", "<p>Body A</p>"), "from-name change")
+	require.NotEqual(t, base, touchContentHash("Subject A", "Pre A", "From A", "<p>Body B</p>"), "body change")
+
+	// Whitespace/reformatting is NOT a copy change — otherwise every save would
+	// pointlessly sunset the metrics.
+	require.Equal(t, base, touchContentHash("Subject A ", " Pre A", "From A", "<p>Body A</p>\n"),
+		"whitespace-only differences must not mint a version")
+	require.Equal(t, base, touchContentHash("Subject   A", "Pre A", "From A", "<p>Body  A</p>"),
+		"collapsed internal whitespace must not mint a version")
+
+	// Field boundaries must not be ambiguous: moving text across fields changes
+	// the version rather than colliding.
+	require.NotEqual(t,
+		touchContentHash("AB", "", "", ""),
+		touchContentHash("A", "B", "", ""),
+		"field boundaries must be unambiguous in the hash")
+
+	// And the hash must actually key a distinct campaign.
+	require.NotEqual(t,
+		shadowCampaignID("420", "email-0", base),
+		shadowCampaignID("420", "email-0", touchContentHash("Subject B", "Pre A", "From A", "<p>Body A</p>")),
+		"a new version must land on its own campaign so its metrics separate")
+	require.NotEqual(t, shadowCampaignID("420", "email-0", base), shadowCampaignID("420", "email-0", ""),
+		"versioned id must differ from the unversioned per-node id")
 }

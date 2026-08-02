@@ -56,7 +56,7 @@ func TestClickDripSend_IncludesPlainTextAlternative(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
 
 	// 2) ensureShadowCampaign fast path — campaign already exists.
-	campaignID := shadowCampaignID(offerID, "")
+	campaignID := shadowCampaignID(offerID, "", "")
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
 		WithArgs(campaignID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(campaignID))

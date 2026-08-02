@@ -26,7 +26,9 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -64,12 +66,36 @@ var clickDripShadowNamespace = uuid.MustParse("a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5
 // legacy ids stay resolvable: reminders already in flight carry unsubscribe /
 // view-in-browser tokens minted against them, and those rows must keep
 // resolving after this change ships.
-func shadowCampaignID(everflowOfferID, nodeID string) string {
+func shadowCampaignID(everflowOfferID, nodeID, contentHash string) string {
 	seed := "click-drip-shadow-offer-" + everflowOfferID
 	if nodeID != "" {
 		seed += "-node-" + nodeID
 	}
+	if contentHash != "" {
+		seed += "-v-" + contentHash
+	}
 	return uuid.NewSHA1(clickDripShadowNamespace, []byte(seed)).String()
+}
+
+// touchContentHash identifies one CREATIVE VERSION of a touch: the subject,
+// preheader, from-name override and body that went out together.
+//
+// Operator rule (2026-08-02): a touch's metrics are the LIFETIME value of that
+// creative + subject combination, and changing ANY part of it must sunset the
+// old numbers as a historical aggregate rather than blending them into the new
+// copy's stats. Folding this hash into the shadow-campaign id gives every
+// version its own campaign_id, so the split happens in the SAME place all other
+// engagement is already attributed — no per-version counters, no backfill, and
+// an old version's numbers simply stop moving the moment the copy changes.
+//
+// Whitespace is normalized so a reformat is not mistaken for a copy change; any
+// real edit to any field is.
+func touchContentHash(subject, preheader, fromOverride, body string) string {
+	norm := func(v string) string { return strings.Join(strings.Fields(v), " ") }
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		norm(subject), norm(preheader), norm(fromOverride), norm(body),
+	}, "\x1f")))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // JourneyClickDripSender dispatches a single click-drip reminder through PMTA.
@@ -156,6 +182,13 @@ type ClickDripSendParams struct {
 	FromName        string
 	FromEmail       string
 	ProfileID       string // mailing_sending_profiles.id resolved by the enroller
+	// Preheader participates in the creative-version hash even though the
+	// sender does not render it directly — a preheader edit is a copy change.
+	Preheader string
+	// ContentHash identifies this touch's creative version. Empty means the
+	// caller did not version this send, which reproduces the pre-2026-08-02
+	// per-node id exactly.
+	ContentHash string
 }
 
 // Send dispatches one reminder. Returns an error only for conditions worth
@@ -319,7 +352,7 @@ func brandRootFromEmail(fromEmail string) string {
 // shadow-campaign id, i.e. the same id the subsequent Send() logs against, so
 // unsubscribe tokens resolve to the row the message is attributed to.
 // Returns nil when no tracking base is configured (no sensible URL to build).
-func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID, nodeID, subscriberID, profileID, fromEmail string) map[string]interface{} {
+func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID, nodeID, contentHash, subscriberID, profileID, fromEmail string) map[string]interface{} {
 	trackBase := s.resolveTrackingURL(ctx, profileID)
 	if trackBase == "" || subscriberID == "" {
 		return nil
@@ -327,7 +360,7 @@ func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID
 	// MUST use the same (offer, node) id ensureShadowCampaign/Send resolve, or
 	// the unsubscribe + view-in-browser tokens would point at a different
 	// campaign row than the message is attributed to.
-	campaignID := shadowCampaignID(everflowOfferID, nodeID)
+	campaignID := shadowCampaignID(everflowOfferID, nodeID, contentHash)
 	orgID := s.resolveOrgID(ctx, subscriberID)
 	return map[string]interface{}{
 		"unsubscribe_url":       GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret),
@@ -450,7 +483,7 @@ func normalizeTrackBase(d string) string {
 // The prior name-scan version took ~27s on a 90k-row mailing_campaigns table
 // and tripped the executor's 30s context, failing every reminder send.
 func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID string, p ClickDripSendParams) (string, error) {
-	campaignID := shadowCampaignID(p.EverflowOfferID, p.NodeID)
+	campaignID := shadowCampaignID(p.EverflowOfferID, p.NodeID, p.ContentHash)
 	name := fmt.Sprintf("Click-Drip Reminder · offer %s", p.EverflowOfferID)
 	if p.NodeID != "" {
 		name = fmt.Sprintf("Click-Drip Reminder · offer %s · %s", p.EverflowOfferID, p.NodeID)
@@ -545,6 +578,12 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 		return err
 	}
 
+	// Record what this creative version SAID, so the screen can show a
+	// superseded version's copy alongside its frozen metrics. Best-effort: a
+	// failure here must never block the send (the metrics split itself does not
+	// depend on this row — it comes from the version-keyed campaign id).
+	s.recordTouchVersion(ctx, p, campaignID)
+
 	if s.stampsDisabled() {
 		if err := insertLegacy(); err != nil {
 			return "", err
@@ -598,4 +637,47 @@ func isMissingColumnErr(err error) bool {
 	return strings.Contains(s, "does not exist") &&
 		(strings.Contains(s, "column") || strings.Contains(s, "journey_key") ||
 			strings.Contains(s, "journey_offer_id"))
+}
+
+// recordTouchVersion upserts this touch's creative version into the registry
+// that backs the screen's version history.
+//
+// The METRICS split does not depend on this table — that comes from the
+// version-keyed shadow campaign id. This row is the human-readable half:
+// what the copy actually said and when it was live, so a sunset aggregate can
+// be shown next to the words that earned it. Any failure is logged and
+// swallowed; reporting metadata must never block a send (2026-08-02 incident).
+func (s *JourneyClickDripSender) recordTouchVersion(ctx context.Context, p ClickDripSendParams, campaignID string) {
+	if p.ContentHash == "" || p.EverflowOfferID == "" || p.NodeID == "" {
+		return
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO mailing_clickdrip_touch_versions (
+			everflow_offer_id, node_id, content_hash, sequence_index,
+			subject, preheader, from_name_override, body_html,
+			shadow_campaign_id, first_seen_at, last_seen_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::uuid,NOW(),NOW())
+		ON CONFLICT (everflow_offer_id, node_id, content_hash)
+		DO UPDATE SET last_seen_at = NOW(),
+		              shadow_campaign_id = COALESCE(mailing_clickdrip_touch_versions.shadow_campaign_id, EXCLUDED.shadow_campaign_id)
+	`, p.EverflowOfferID, p.NodeID, p.ContentHash, p.ReminderSeq,
+		p.Subject, p.Preheader, p.FromName, p.HTMLContent, campaignID)
+	if err != nil {
+		log.Printf("JourneyClickDripSender: record touch version (offer=%s node=%s): %v",
+			p.EverflowOfferID, p.NodeID, err)
+		return
+	}
+	// Anything else for this (offer,node) is now historical. Marking it here —
+	// on the first send of the new version — is what makes "changing the
+	// creative sunsets the old numbers" true in the data rather than only in
+	// the UI.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_clickdrip_touch_versions
+		   SET superseded_at = COALESCE(superseded_at, NOW())
+		 WHERE everflow_offer_id=$1 AND node_id=$2 AND content_hash <> $3
+		   AND superseded_at IS NULL
+	`, p.EverflowOfferID, p.NodeID, p.ContentHash); err != nil {
+		log.Printf("JourneyClickDripSender: sunset prior versions (offer=%s node=%s): %v",
+			p.EverflowOfferID, p.NodeID, err)
+	}
 }

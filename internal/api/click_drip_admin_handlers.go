@@ -224,12 +224,17 @@ type upsertReminderSubjectRequest struct {
 	FromNameOverride string `json:"from_name_override"`
 	Enabled          *bool  `json:"enabled"`
 	Notes            string `json:"notes"`
+	// BodyHTML is the per-touch body override (2026-08-02). Pointer so an
+	// omitted field LEAVES the stored body alone — a subject-only edit from the
+	// copy form must not silently wipe the creative. Send "" explicitly to clear
+	// it and go back to inheriting the clicked campaign's creative.
+	BodyHTML *string `json:"body_html"`
 }
 
 // UpsertReminderSubject — PUT /api/mailing/offer-reminder-subjects/{everflow_offer_id}/{sequence_index}
 //
 // Body is the new value for every editable column. Subject is required —
-// the table's NOT NULL DEFAULT '' would otherwise let us write an empty
+// the table's NOT NULL DEFAULT ” would otherwise let us write an empty
 // string, but the operator UI considers an empty subject a usability bug
 // (it would ship a blank-subject email). preheader / from_name_override /
 // notes default to empty; enabled defaults to true.
@@ -264,21 +269,24 @@ func (h *ClickDripAdminHandlers) UpsertReminderSubject(w http.ResponseWriter, r 
 	err := h.db.QueryRowContext(r.Context(), `
 		INSERT INTO mailing_offer_reminder_subjects (
 			everflow_offer_id, sequence_index, subject, preheader,
-			from_name_override, enabled, notes, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			from_name_override, enabled, notes, body_html, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (everflow_offer_id, sequence_index) DO UPDATE SET
 			subject = EXCLUDED.subject,
 			preheader = EXCLUDED.preheader,
 			from_name_override = EXCLUDED.from_name_override,
 			enabled = EXCLUDED.enabled,
 			notes = EXCLUDED.notes,
+			-- NULL body_html in the payload means "unchanged", so a subject-only
+			-- edit cannot wipe the creative out from under the touch.
+			body_html = COALESCE(EXCLUDED.body_html, mailing_offer_reminder_subjects.body_html),
 			updated_at = NOW()
 		RETURNING everflow_offer_id, sequence_index, subject,
 		          COALESCE(preheader, ''), COALESCE(from_name_override, ''),
 		          enabled, COALESCE(notes, ''), updated_at
 	`,
 		offerID, seqIdx, req.Subject, req.Preheader,
-		req.FromNameOverride, enabled, req.Notes,
+		req.FromNameOverride, enabled, req.Notes, req.BodyHTML,
 	).Scan(
 		&row.EverflowOfferID, &row.SequenceIndex, &row.Subject,
 		&row.Preheader, &row.FromNameOverride, &row.Enabled,

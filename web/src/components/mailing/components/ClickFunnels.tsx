@@ -61,6 +61,11 @@ interface FunnelNode {
   from_name_override: string;
   copy_enabled: boolean;
   copy_missing: boolean;
+  body_html: string;
+  body_inherited: boolean;
+  copy_updated_at: string;
+  copy_age_days: number;
+  versions: TouchVersion[];
   reached: number;
   awaiting: number;
   errors: number;
@@ -79,6 +84,26 @@ interface FunnelNode {
   human_click_rate: number;
   conversion_rate: number;
   step_through_rate: number;
+  attributed: boolean;
+}
+
+interface TouchVersion {
+  content_hash: string;
+  subject: string;
+  preheader: string;
+  from_name_override: string;
+  body_html: string;
+  is_live: boolean;
+  first_seen_at: string;
+  last_seen_at: string;
+  superseded_at: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  human_clicks: number;
+  open_rate: number;
+  click_rate: number;
   attributed: boolean;
 }
 
@@ -153,6 +178,25 @@ const routingColor = (state: string) =>
   state === 'paused_auto' ? colors.warning
     : state === 'redirect' ? colors.indigo300
     : colors.success;
+
+// A dated deadline that has already passed is the failure this screen exists to
+// catch: offer 420 shipped "Ends 7/5" for four weeks after it expired. Match
+// explicit M/D or Month-D references in the copy and compare to today.
+const expiredDateInCopy = (text: string): string | null => {
+  if (!text) return null;
+  const now = new Date();
+  const md = text.match(/\b(\d{1,2})\/(\d{1,2})\b/);
+  if (md) {
+    const m = parseInt(md[1], 10), d = parseInt(md[2], 10);
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      const cand = new Date(now.getFullYear(), m - 1, d);
+      // Only flag a date in the recent past; a far-future one is a live promo.
+      const daysAgo = (now.getTime() - cand.getTime()) / 86400000;
+      if (daysAgo > 1 && daysAgo < 300) return md[0];
+    }
+  }
+  return null;
+};
 
 const editInput: React.CSSProperties = {
   background: 'rgba(10,16,32,0.6)',
@@ -306,6 +350,10 @@ const NodeCard: React.FC<{
   const isDelay = node.type === 'delay';
 
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState<string | null>(null);
+  const [bodySaving, setBodySaving] = useState(false);
+  const [bodyErr, setBodyErr] = useState<string | null>(null);
   const [draft, setDraft] = useState({ subject: '', preheader: '', from_name_override: '', enabled: true });
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -379,6 +427,40 @@ const NodeCard: React.FC<{
         ]
     : [];
 
+  // Saving the body goes through the SAME reminder-subjects upsert as the copy,
+  // so subject/preheader/from and body stay one atomic creative version. The
+  // content hash changes on save, which mints a new version and sunsets the old
+  // one's metrics — that is the operator's rule, enforced server-side.
+  const saveBody = async () => {
+    if (bodyDraft == null) return;
+    setBodySaving(true); setBodyErr(null);
+    try {
+      const res = await apiFetch(
+        `/api/mailing/offer-reminder-subjects/${encodeURIComponent(offerId)}/${node.sequence_index}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            subject: node.subject,
+            preheader: node.preheader,
+            from_name_override: node.from_name_override,
+            enabled: node.copy_missing ? true : node.copy_enabled,
+            body_html: bodyDraft,
+          }),
+        }
+      );
+      const b = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(b?.error || `HTTP ${res.status}`);
+      setBodyDraft(null);
+      onSaved();
+    } catch (e: any) {
+      setBodyErr(e?.message ?? String(e));
+    } finally {
+      setBodySaving(false);
+    }
+  };
+
+  const staleDate = expiredDateInCopy(`${node.subject} ${node.preheader}`);
+
   return (
     <Panel
       accent={node.errors > 0 ? colors.warning : colors.indigo500}
@@ -395,6 +477,9 @@ const NodeCard: React.FC<{
             {!node.copy_enabled && !node.copy_missing && <Pill color={colors.warning}>copy disabled</Pill>}
             {node.copy_missing && <Pill color={colors.warning}>no copy row</Pill>}
             {!node.attributed && <Pill color={colors.textFaint}>not node-attributed</Pill>}
+            {staleDate && <Pill color={colors.danger}>expired date “{staleDate}”</Pill>}
+            {node.copy_age_days > 30 && <Pill color={colors.warning}>copy {node.copy_age_days}d old</Pill>}
+            {node.body_inherited && <Pill color={colors.textFaint}>body inherited</Pill>}
           </div>
 
           {/* Creative for this node. Body HTML is per-subscriber (the clicked
@@ -447,9 +532,16 @@ const NodeCard: React.FC<{
               {node.from_name_override && (
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3 }}>from: {node.from_name_override}</div>
               )}
-              <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6 }}>
-                body reuses the creative this subscriber originally clicked
-                <button onClick={openEditor} style={{ ...btnGhost, marginLeft: 8, padding: '2px 8px', fontSize: 11 }}>
+              <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>
+                  {node.body_inherited
+                    ? 'body inherits the creative this subscriber clicked'
+                    : 'body is set for this touch'}
+                </span>
+                <button onClick={() => setExpanded(v => !v)} style={{ ...btnGhost, padding: '2px 8px', fontSize: 11 }}>
+                  {expanded ? 'Hide creative' : 'View creative'}
+                </button>
+                <button onClick={openEditor} style={{ ...btnGhost, padding: '2px 8px', fontSize: 11 }}>
                   Edit copy
                 </button>
               </div>
@@ -473,6 +565,113 @@ const NodeCard: React.FC<{
               <FontAwesomeIcon icon={faTriangleExclamation} /> {n(node.errors)} send errors (retried, not skipped)
             </span>
           )}
+        </div>
+      )}
+
+      {/* Expanded creative: the body that actually ships, editable, plus the
+          version history whose superseded entries are frozen aggregates. */}
+      {expanded && (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${colors.divider}`, paddingTop: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Creative body
+            </span>
+            {bodyDraft == null ? (
+              <button
+                onClick={() => setBodyDraft(node.body_html || '')}
+                style={{ ...btnGhost, padding: '2px 10px', fontSize: 11 }}
+              >
+                {node.body_inherited ? 'Set a body for this touch' : 'Edit body'}
+              </button>
+            ) : (
+              <>
+                <button onClick={saveBody} disabled={bodySaving} style={{ ...btnPrimary, padding: '3px 12px', fontSize: 11 }}>
+                  {bodySaving ? 'Saving…' : 'Save body'}
+                </button>
+                <button onClick={() => { setBodyDraft(null); setBodyErr(null); }} disabled={bodySaving} style={{ ...btnGhost, padding: '3px 10px', fontSize: 11 }}>
+                  Cancel
+                </button>
+                <span style={{ fontSize: 10, color: colors.textFaint }}>
+                  saving mints a new version — the current one’s metrics freeze as historical
+                </span>
+              </>
+            )}
+          </div>
+
+          {bodyErr && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 6 }}>{bodyErr}</div>}
+
+          {bodyDraft != null ? (
+            <textarea
+              value={bodyDraft}
+              onChange={e => setBodyDraft(e.target.value)}
+              spellCheck={false}
+              style={{
+                width: '100%', minHeight: 220, resize: 'vertical',
+                background: 'rgba(10,16,32,0.6)', color: colors.text,
+                border: `1px solid ${colors.panelBorder}`, borderRadius: 6, padding: 10,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11, lineHeight: 1.5,
+              }}
+            />
+          ) : node.body_html ? (
+            // Sandboxed: the creative is operator-authored HTML, but it must not
+            // run script or navigate the portal.
+            <iframe
+              title={`creative-${node.node_id}`}
+              srcDoc={node.body_html}
+              sandbox=""
+              style={{ width: '100%', height: 300, border: `1px solid ${colors.panelBorder}`, borderRadius: 6, background: '#fff' }}
+            />
+          ) : (
+            <div style={{ fontSize: 12, color: colors.textFaint, padding: '10px 0' }}>
+              No body set for this touch — each subscriber receives the creative they originally
+              clicked, so the body varies per person and can be far older than the subject above.
+            </div>
+          )}
+
+          {/* Version history */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+              Creative versions — lifetime metrics per subject + creative
+            </div>
+            {(!node.versions || node.versions.length === 0) ? (
+              <div style={{ fontSize: 11, color: colors.textFaint }}>
+                No versions recorded yet. A version is registered the first time this touch sends
+                after creative versioning shipped; changing any part of the copy starts a new one.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {node.versions.map(v => (
+                  <div
+                    key={v.content_hash}
+                    style={{
+                      border: `1px solid ${v.is_live ? colors.panelBorderStrong : colors.divider}`,
+                      borderRadius: 6, padding: 8,
+                      opacity: v.is_live ? 1 : 0.72,
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                      <Pill color={v.is_live ? colors.success : colors.textFaint}>
+                        {v.is_live ? 'live' : 'sunset'}
+                      </Pill>
+                      <span style={{ fontSize: 12, color: colors.text }}>{v.subject || '(no subject)'}</span>
+                      <span style={{ fontSize: 10, color: colors.textFaint }}>{v.content_hash}</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: colors.textFaint, marginBottom: 4 }}>
+                      {v.is_live
+                        ? `live since ${v.first_seen_at?.slice(0, 10)}`
+                        : `${v.first_seen_at?.slice(0, 10)} → ${(v.superseded_at || v.last_seen_at)?.slice(0, 10)} · frozen historical aggregate`}
+                    </div>
+                    <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                      <Stat label="Delivered" value={v.attributed ? n(v.delivered) : '—'} />
+                      <Stat label="Open rate" value={v.attributed ? pct(v.open_rate) : '—'} />
+                      <Stat label="Click rate" value={v.attributed ? pct(v.click_rate) : '—'} />
+                      <Stat label="Human clicks" value={v.attributed ? n(v.human_clicks) : '—'} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -733,6 +932,37 @@ export const ClickFunnels: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Lane editor as an overlay. It used to render inside the lane-list panel
+          at the top of the page, so clicking Edit down in Lane config scrolled
+          nothing into view and looked broken. A modal is visible from wherever
+          the operator clicked. */}
+      {editorFor && (
+        <div
+          onClick={() => setEditorFor(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(4,8,18,0.72)',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+            padding: '8vh 16px 16px', overflowY: 'auto',
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 520 }}>
+            <LaneEditor
+              lane={editorFor.lane}
+              presetOffer={editorFor.preset}
+              journeyOptions={journeyOptions}
+              onCancel={() => setEditorFor(null)}
+              onSaved={(offerId) => {
+                setEditorFor(null);
+                setSelected(offerId);
+                loadList();
+                loadDetail(offerId);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Orphan inlets — an enabled money-slug with no lane silently drops every
           click it receives (skip_reason=offer_unmapped_at_processing). */}
       {list && list.unmapped_slug_offers?.length > 0 && (
@@ -770,22 +1000,6 @@ export const ClickFunnels: React.FC = () => {
           )}
         />
 
-        {editorFor && (
-          <div style={{ marginBottom: 12 }}>
-            <LaneEditor
-              lane={editorFor.lane}
-              presetOffer={editorFor.preset}
-              journeyOptions={journeyOptions}
-              onCancel={() => setEditorFor(null)}
-              onSaved={(offerId) => {
-                setEditorFor(null);
-                setSelected(offerId);
-                loadList();
-                loadDetail(offerId);
-              }}
-            />
-          </div>
-        )}
         {listErr ? (
           <SectionError label="Click funnels" error={listErr} onRetry={loadList} />
         ) : !list ? (
