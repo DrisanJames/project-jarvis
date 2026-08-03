@@ -373,6 +373,25 @@ export const DraftBoardView: React.FC = () => {
           Include automated follow-ups
         </label>
         <button onClick={() => void load()} style={ghostBtn}>{loading ? 'Loading…' : 'Refresh'}</button>
+        <button
+          onClick={() => {
+            // Week export (operator 2026-08-03): CSV of all draft+scheduled
+            // campaigns in the next 7 days — one row per campaign.
+            void (async () => {
+              const r = await fetch('/api/mailing/pmta-campaign/board-export?days=7', { headers });
+              if (!r.ok) return;
+              const blob = await r.blob();
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = `board-week-${new Date().toISOString().slice(0, 10)}.csv`;
+              a.click();
+              URL.revokeObjectURL(a.href);
+            })();
+          }}
+          style={ghostBtn}
+        >
+          Export week (CSV)
+        </button>
         {draftIds.length > 0 && (
           <button
             onClick={() => void handleApproveAll()}

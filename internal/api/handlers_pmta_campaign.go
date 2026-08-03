@@ -98,6 +98,7 @@ func (s *PMTACampaignService) SetGlobalSuppressionHub(hub *engine.GlobalSuppress
 // RegisterRoutes mounts all PMTA campaign wizard routes.
 func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 	r.Route("/pmta-campaign", func(cr chi.Router) {
+		cr.Get("/board-export", s.HandleBoardWeekExport)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)
