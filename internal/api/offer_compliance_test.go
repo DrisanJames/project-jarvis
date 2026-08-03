@@ -198,7 +198,7 @@ func TestBrandKits_AllHavePhysicalAddress(t *testing.T) {
 
 func TestBuildProofRenderContext_UsesSignedUnsubURL(t *testing.T) {
 	signedURL := "https://trk.example.com/track/unsubscribe/b3JnfGNhbXBhaWdu/abc123sig"
-	rc := buildProofRenderContext("test@gmail.com", "https://trk.example.com", "email-uuid-123", signedURL)
+	rc := buildProofRenderContext("test@gmail.com", "https://trk.example.com", "email-uuid-123", signedURL, "offers@em.discountblog.com")
 
 	system, ok := rc["system"].(map[string]interface{})
 	if !ok {
@@ -218,7 +218,7 @@ func TestBuildProofRenderContext_UsesSignedUnsubURL(t *testing.T) {
 }
 
 func TestBuildProofRenderContext_FallbackWhenNoSignedURL(t *testing.T) {
-	rc := buildProofRenderContext("test@gmail.com", "https://trk.example.com", "email-uuid-123", "")
+	rc := buildProofRenderContext("test@gmail.com", "https://trk.example.com", "email-uuid-123", "", "offers@em.discountblog.com")
 
 	system := rc["system"].(map[string]interface{})
 	unsub := system["unsubscribe_url"].(string)
@@ -229,7 +229,7 @@ func TestBuildProofRenderContext_FallbackWhenNoSignedURL(t *testing.T) {
 }
 
 func TestBuildProofRenderContext_SubscriberFields(t *testing.T) {
-	rc := buildProofRenderContext("james@example.com", "https://trk.example.com", "eid", "https://unsub")
+	rc := buildProofRenderContext("james@example.com", "https://trk.example.com", "eid", "https://unsub", "offers@em.discountblog.com")
 
 	if rc["email"] != "james@example.com" {
 		t.Error("email not set")

@@ -3110,10 +3110,12 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 		rc["custom"] = make(map[string]interface{})
 	}
 
-	// Brand root for Everflow sub2={{ brand.domain }} on offer-center creatives.
+	// Brand root for Everflow sub2={{ brand.domain }} on offer-center creatives;
+	// brand.name is the display label for partner-offer disclosures.
 	if item.BrandRoot != "" {
 		rc["brand"] = map[string]interface{}{
 			"domain": item.BrandRoot,
+			"name":   brand.Label(item.BrandRoot),
 		}
 	}
 

@@ -71,6 +71,50 @@ var OwnedDomains = []string{
 	"wcl-heloc.com",
 }
 
+// labels maps each brand root to its recipient-facing display name, used by
+// the {{ brand.name }} Liquid merge tag (partner-offer disclosures, footers).
+// Keep in sync with agents/registry/brand_metadata.py brand_label.
+var labels = map[string]string{
+	"discountblog.com":           "Discount Blog",
+	"quizfiesta.com":             "Quiz Fiesta",
+	"historythinking.com":        "History Thinking",
+	"myownhealth.net":            "My Own Health",
+	"getmecoupons.net":           "Get Me Coupons",
+	"businessweeklypro.com":      "Business Weekly Pro",
+	"financialcalculate.com":     "Financial Calculate",
+	"consumerpro.net":            "Consumer Pro",
+	"homewarrantyservices.org":   "Home Warranty Services",
+	"refinanceratesusa.com":      "Refinance Rates USA",
+	"thingoftheday.org":          "Thing of the Day",
+	"yourinsurancehub.com":       "Your Insurance Hub",
+	"myrepairdiy.com":            "My Repair DIY",
+	"casainsure.com":             "Casa Insure",
+	"learnpersonalloans.com":     "Learn Personal Loans",
+	"ratesbazar.com":             "Rates Bazar",
+	"warrantyforyou.com":         "Warranty For You",
+	"mypersonalfinancial.com":    "MyPersonalFinancial",
+	"paymydebit.com":             "PayMyDebit",
+	"theretirementblog.com":      "The Retirement Blog",
+	"bestcreditcare.com":         "Best Credit Care",
+	"us-finance.com":             "US Finance",
+	"yourfinancialblog.com":      "Your Financial Blog",
+	"homeloansbyjaime.com":       "Home Loans by Jaime",
+	"firsttimebuyerhomeloan.com": "First Time Buyer Home Loan",
+	"hometracmortgage.com":       "HomeTrac Mortgage",
+	"wcl-heloc.com":              "West Capital Lending",
+}
+
+// Label maps a sending domain (or brand root) to the brand's recipient-facing
+// display name: em.quizfiesta.com -> "Quiz Fiesta". Unknown domains fall back
+// to their brand root verbatim (truthful, never empty for non-empty input).
+func Label(sendingDomain string) string {
+	root := Root(sendingDomain)
+	if l, ok := labels[root]; ok {
+		return l
+	}
+	return root
+}
+
 // Root maps a sending domain to its brand root.
 //
 //	em.discountblog.com -> discountblog.com

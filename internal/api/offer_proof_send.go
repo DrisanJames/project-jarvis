@@ -177,7 +177,7 @@ func (h *ProofSendHandler) sendOneProof(
 		unsubURL = worker.GenerateUnsubscribeURL(h.orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
 	}
 
-	rc := buildProofRenderContext(recipientEmail, trackBase, emailID, unsubURL)
+	rc := buildProofRenderContext(recipientEmail, trackBase, emailID, unsubURL, fromEmail)
 
 	renderedSubject, err := ts.Render("", subject, rc)
 	if err != nil {
@@ -431,13 +431,22 @@ func (h *ProofSendHandler) resolveSendingProfile(ctx context.Context, webPropert
 	return pID, fEmail, tb, sendingDomain
 }
 
-func buildProofRenderContext(email, trackBase, emailID, unsubURL string) map[string]interface{} {
+func buildProofRenderContext(email, trackBase, emailID, unsubURL, fromEmail string) map[string]interface{} {
 	rc := make(mailing.RenderContext)
 
 	rc["first_name"] = "Proof"
 	rc["last_name"] = "Recipient"
 	rc["email"] = email
 	rc["full_name"] = "Proof Recipient"
+
+	// Mirror the send worker's brand context so {{ brand.domain }} and
+	// {{ brand.name }} render in proofs exactly as they will at send.
+	if root := brand.RootFromEmail(fromEmail); root != "" {
+		rc["brand"] = map[string]interface{}{
+			"domain": root,
+			"name":   brand.Label(root),
+		}
+	}
 
 	if parts := strings.SplitN(email, "@", 2); len(parts) == 2 {
 		rc["email_local"] = parts[0]

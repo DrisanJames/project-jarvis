@@ -265,7 +265,7 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		unsubURL = worker.GenerateUnsubscribeURL(orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
 	}
 
-	rc := buildProofRenderContext(to, trackBase, emailID, unsubURL)
+	rc := buildProofRenderContext(to, trackBase, emailID, unsubURL, fromEmail)
 	if preheader != "" {
 		rc["preheader"] = preheader
 	}

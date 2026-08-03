@@ -65,3 +65,33 @@ func TestRootFromEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestLabel(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"em.discountblog.com", "Discount Blog"},
+		{"discountblog.com", "Discount Blog"},
+		{"em.quizfiesta.com", "Quiz Fiesta"},
+		{"M.QUIZFIESTA.COM", "Quiz Fiesta"},
+		{"us-finance.com", "US Finance"},
+		{"unknown.io", "unknown.io"}, // unknown brand falls back to its root, never empty
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := Label(c.in); got != c.want {
+			t.Errorf("Label(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// Every owned brand must have a display label — a missing entry would make
+// {{ brand.name }} render the bare apex domain in a recipient-facing disclosure.
+func TestLabelCoversAllOwnedDomains(t *testing.T) {
+	for _, od := range OwnedDomains {
+		if _, ok := labels[od]; !ok {
+			t.Errorf("OwnedDomains entry %q has no display label", od)
+		}
+	}
+}
