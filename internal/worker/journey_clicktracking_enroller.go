@@ -91,10 +91,19 @@ var k8k0hfdtSlugRe = regexp.MustCompile(`(?i)k8k0hfdt\.com/3QJ6DW/([A-Za-z0-9_-]
 // Example: https://www.muqes.com/TQ5MX18J/XLRZDZ8K/?source_id=email...
 var muqesSlugRe = regexp.MustCompile(`(?i)muqes\.com/TQ5MX18J/([A-Za-z0-9_-]+)`)
 
+// codefortwoSlugRe extracts the trailing offer slug from a codefortwo
+// affiliate money URL. 2026-08-03: BOTH August CPM headliners ride this
+// network — Metal Roofing (K4C5ZLC/S6WFF5, operator 2026-07-31) and Liberty
+// Mutual (K4C5ZLC/KQCKQ7, operator 2026-08-02). Its absence here was the
+// aug01 inlet host-list drift class recurring: clicks on these offers never
+// reached the enroller. Example:
+// https://www.codefortwo.com/K4C5ZLC/S6WFF5/?source_id=email...
+var codefortwoSlugRe = regexp.MustCompile(`(?i)codefortwo\.com/K4C5ZLC/([A-Za-z0-9_-]+)`)
+
 // moneySlugRes is the ordered list of per-network slug extractors. Each
 // captures the slug as submatch 1, already in the same form the
 // mailing_offer_slug_map dictionary keys use.
-var moneySlugRes = []*regexp.Regexp{cratoolproSlugRe, eos57ytfSlugRe, xnonuSlugRe, muqesSlugRe, k8k0hfdtSlugRe}
+var moneySlugRes = []*regexp.Regexp{cratoolproSlugRe, eos57ytfSlugRe, xnonuSlugRe, muqesSlugRe, k8k0hfdtSlugRe, codefortwoSlugRe}
 
 // affiliateSlugRe is the legacy PS#### extractor kept as a last-resort
 // fallback for affiliate URLs on hosts not covered by moneySlugRes. Example:
@@ -541,6 +550,7 @@ func clickTrackingScanQuery(verdictFnMissing bool) string {
 		     OR t.link_url ILIKE '%%xnonu.com/TQ5MX18J/%%'
 		     OR t.link_url ILIKE '%%muqes.com/TQ5MX18J/%%'
 		     OR t.link_url ILIKE '%%k8k0hfdt.com/3QJ6DW/%%'
+		     OR t.link_url ILIKE '%%codefortwo.com/K4C5ZLC/%%'
 		      )
 		  AND NOT EXISTS (
 		        SELECT 1 FROM mailing_campaigns c
