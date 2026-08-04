@@ -46,13 +46,15 @@ type offerSyncResult struct {
 // registryStatusToDB maps the Python registry's lifecycle onto the status
 // values the Offer Center already stores/renders (schema default 'draft';
 // OverviewTab select = draft|active|paused — OfferManagement.tsx:876-878).
-// sunset → paused (kept forever, not mailing); onboarding → draft (pre-launch).
+// sunset stays 'sunset' — the live table already carries that value (verified
+// 2026-08-04: draft 7 / active 28 / sunset 1); mapping it to 'paused' would
+// mint a second spelling for the same lifecycle state. onboarding → draft.
 func registryStatusToDB(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "active":
 		return "active"
 	case "sunset":
-		return "paused"
+		return "sunset"
 	case "onboarding":
 		return "draft"
 	default:

@@ -102,7 +102,7 @@ func TestHandleOffersSyncPost_CreatesThenUnchanged(t *testing.T) {
 }
 
 // TestHandleOffersSyncPost_UpdatesAndStatusMapping: a drifted row is UPDATEd,
-// and the registry's 'sunset' maps onto the Offer Center's 'paused' (never a
+// and the registry's 'sunset' stays 'sunset' (the live table's own value; never a
 // DELETE — offers are permanent).
 func TestHandleOffersSyncPost_UpdatesAndStatusMapping(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -120,7 +120,7 @@ func TestHandleOffersSyncPost_UpdatesAndStatusMapping(t *testing.T) {
 			AddRow(offerID, "CarShield", "5990", "https://old.example/", "active"))
 	mock.ExpectExec(`UPDATE mailing_offers`).
 		WithArgs("CarShield Auto Warranty", "5990", "https://www.eos57ytf.com/K4C5ZLC/LSX1XK/",
-			"carshield", "paused", offerID, orgID).
+			"carshield", "sunset", offerID, orgID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	item := `{"key":"carshield","display":"CarShield Auto Warranty","everflow_id":"5990","money_url":"https://www.eos57ytf.com/K4C5ZLC/LSX1XK/","status":"sunset"}`
