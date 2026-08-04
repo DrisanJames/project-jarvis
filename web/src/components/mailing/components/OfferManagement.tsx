@@ -332,6 +332,10 @@ export const OfferManagement: React.FC = () => {
   const [expandedBrands, setExpandedBrands] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
   const [showNewOfferModal, setShowNewOfferModal] = useState(false);
+  // Rollup view (audience unification P3): org-wide per-offer campaign
+  // aggregation from /api/mailing/offers/rollup — the live replacement for
+  // the dead mailing_offer_deployments performance path.
+  const [showRollup, setShowRollup] = useState(false);
   const [showNewVerticalInput, setShowNewVerticalInput] = useState(false);
   const [newVerticalName, setNewVerticalName] = useState('');
   const [treeLoading, setTreeLoading] = useState(true);
@@ -534,6 +538,13 @@ export const OfferManagement: React.FC = () => {
         <div style={{ display: 'flex', gap: 6 }}>
           <button style={btnPrimary} onClick={() => setShowNewOfferModal(true)}>+ Offer</button>
           <button style={btnGhost} onClick={() => setShowNewVerticalInput(true)}>+ Vertical</button>
+          <button
+            style={showRollup ? btnPrimary : btnGhost}
+            onClick={() => setShowRollup(v => !v)}
+            title="Live per-offer campaign rollup (delivered / opens / clicks / conversions)"
+          >
+            Rollup
+          </button>
         </div>
       </div>
 
@@ -600,7 +611,7 @@ export const OfferManagement: React.FC = () => {
                       return (
                         <div
                           key={o.id}
-                          onClick={() => setSelectedOfferId(o.id)}
+                          onClick={() => { setSelectedOfferId(o.id); setShowRollup(false); }}
                           style={{
                             padding: '4px 12px 4px 48px', cursor: 'pointer', fontSize: 12,
                             color: selectedOfferId === o.id ? '#818cf8' : 'rgba(255,255,255,0.55)',
@@ -759,12 +770,162 @@ export const OfferManagement: React.FC = () => {
     <div className="offer-mgmt-container">
       {renderFolderTree()}
       <div className="offer-mgmt-detail">
-        {selectedOfferId && offer ? renderDetail() : renderEmptyState()}
+        {showRollup ? <OfferRollupView /> : selectedOfferId && offer ? renderDetail() : renderEmptyState()}
       </div>
       {showNewOfferModal && renderNewOfferModal()}
       <div style={{ position: 'fixed', bottom: 8, right: 12, fontSize: 10, color: 'rgba(255,255,255,0.15)' }}>
         Offer Management v{PAGE_VERSION}
       </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VIEW: OFFER ROLLUP (audience unification P3)
+// Live per-offer aggregation over campaigns by offer_id — reads
+// /api/mailing/offers/rollup (denormalized campaign counters + the
+// mailing_offer_suppressions converted ledger). Errors are surfaced, never
+// swallowed.
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface OfferRollupRow {
+  offer_id: string;
+  offer_key: string;
+  offer_name: string;
+  campaigns: number;
+  total_recipients: number;
+  sent_count: number;
+  delivered_count: number;
+  unique_open_count: number;
+  unique_click_count: number;
+  hard_bounce_count: number;
+  soft_bounce_count: number;
+  conversions: number;
+}
+
+const OfferRollupView: React.FC = () => {
+  const [days, setDays] = useState<7 | 30 | 90>(30);
+  const [rows, setRows] = useState<OfferRollupRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const fetchRollup = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await apiFetch(`/api/mailing/offers/rollup?days=${days}`, { credentials: 'include' });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { msg = (await res.json()).error || msg; } catch { /* keep status */ }
+        setError(`Failed to load offer rollup: ${msg}`);
+        setRows([]);
+      } else {
+        const data = await res.json();
+        setRows(data.rows || []);
+      }
+    } catch (e: any) {
+      setError(`Failed to load offer rollup: ${e?.message || 'network error'}`);
+      setRows([]);
+    }
+    setLoading(false);
+  }, [days]);
+
+  useEffect(() => { fetchRollup(); }, [fetchRollup]);
+
+  const th: React.CSSProperties = {
+    textAlign: 'right', padding: '8px 10px', fontSize: 11, fontWeight: 700,
+    color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: 0.5,
+    borderBottom: '1px solid rgba(255,255,255,0.08)', whiteSpace: 'nowrap',
+  };
+  const td: React.CSSProperties = {
+    textAlign: 'right', padding: '7px 10px', fontSize: 12.5, color: '#e0e6f0',
+    borderBottom: '1px solid rgba(255,255,255,0.04)', whiteSpace: 'nowrap',
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+        <div>
+          <h3 style={{ ...sectionTitle, margin: 0 }}>Offer Rollup</h3>
+          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.4)', marginTop: 2 }}>
+            Campaigns grouped by stamped offer_id · conversions from the converted-suppression ledger · last {days} days
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {([7, 30, 90] as const).map(d => (
+            <button
+              key={d}
+              style={days === d ? btnPrimary : btnGhost}
+              onClick={() => setDays(d)}
+            >
+              {d}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', fontSize: 12.5, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span>{error}</span>
+          <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }} onClick={fetchRollup}>Retry</button>
+        </div>
+      )}
+
+      {loading && (
+        <div style={{ padding: 30, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Loading…</div>
+      )}
+
+      {!loading && !error && rows.length === 0 && (
+        <div style={{ padding: 30, textAlign: 'center', color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>
+          No campaigns in the last {days} days.
+        </div>
+      )}
+
+      {!loading && rows.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: 'left' }}>Offer</th>
+                <th style={th}>Campaigns</th>
+                <th style={th}>Delivered</th>
+                <th style={th}>Opens</th>
+                <th style={th}>Clicks</th>
+                <th style={th}>Conversions</th>
+                <th style={th}>Hard</th>
+                <th style={th}>Soft</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={r.offer_id || `unattributed-${i}`} style={r.offer_id ? undefined : { opacity: 0.65 }}>
+                  <td style={{ ...td, textAlign: 'left' }}>
+                    <span style={{ fontWeight: 600 }}>{r.offer_name}</span>
+                    {r.offer_key && (
+                      <span style={{ marginLeft: 8, fontSize: 10.5, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace' }}>{r.offer_key}</span>
+                    )}
+                  </td>
+                  <td style={td}>{r.campaigns.toLocaleString()}</td>
+                  <td style={td}>{r.delivered_count.toLocaleString()}</td>
+                  <td style={td}>
+                    {r.unique_open_count.toLocaleString()}
+                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'rgba(255,255,255,0.35)' }}>{fmtRate(r.unique_open_count, r.delivered_count)}</span>
+                  </td>
+                  <td style={td}>
+                    {r.unique_click_count.toLocaleString()}
+                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'rgba(255,255,255,0.35)' }}>{fmtRate(r.unique_click_count, r.delivered_count)}</span>
+                  </td>
+                  <td style={{ ...td, color: r.conversions > 0 ? '#22c55e' : td.color as string, fontWeight: r.conversions > 0 ? 700 : 400 }}>
+                    {r.conversions.toLocaleString()}
+                  </td>
+                  <td style={{ ...td, color: r.hard_bounce_count > 0 ? '#ef4444' : td.color as string }}>{r.hard_bounce_count.toLocaleString()}</td>
+                  <td style={{ ...td, color: r.soft_bounce_count > 0 ? '#f59e0b' : td.color as string }}>{r.soft_bounce_count.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };

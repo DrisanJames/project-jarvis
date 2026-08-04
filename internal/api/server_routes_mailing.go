@@ -167,6 +167,31 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			campaignTagsBackfill(w, req)
 		})
 
+		// Admin: offer registry sync (audience unification Phase 3). The
+		// operator-side registry (mailing-saas agents/scheduling/offers_sync.py)
+		// POSTs the Python REGISTRY here; mailing_offers is the canonical
+		// store (upsert by landing_page_slug, never deletes). GET returns the
+		// key→id map for the drift report. Same X-Admin-Key gate as the
+		// other admin endpoints, closed by default.
+		offersSyncPost := HandleOffersSyncPost(db)
+		s.router.Post("/api/admin/offers/sync", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			offersSyncPost(w, req)
+		})
+		offersSyncGet := HandleOffersSyncGet(db)
+		s.router.Get("/api/admin/offers/sync", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			offersSyncGet(w, req)
+		})
+
 		// Admin: bulk-tag canonical CSV loader. Mirrors the local
 		// Python loader (scripts/import/load_eo_harvest_keepers.py and
 		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
@@ -1371,6 +1396,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Report MUST register before the {campaignID} wildcard.
 			r.Get("/campaign-tags/report", HandleCampaignTagsReport(db))
 			r.Get("/campaign-tags/{campaignID}", HandleCampaignTagsForCampaign(db))
+
+			// === OFFER ROLLUP + PICKER (audience unification Phase 3) ===
+			// Live per-offer aggregation over campaigns by offer_id (replaces
+			// the dead mailing_offer_deployments performance path) and the
+			// lean offer catalog the Campaign Manager wizard's selector reads.
+			r.Get("/offers/rollup", HandleOffersRollup(db))
+			r.Get("/offers/list", HandleOffersList(db))
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)

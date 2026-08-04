@@ -358,6 +358,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
   const [selectedDomain, setSelectedDomain] = useState('');
+  // Offer selection (audience unification P3): optional; flows into the
+  // draft/deploy payload as offer_id so attribution + offer suppression fire.
+  const [offersCatalog, setOffersCatalog] = useState<{ id: string; key: string; name: string; status: string }[]>([]);
+  const [selectedOfferId, setSelectedOfferId] = useState('');
+  const [offersError, setOffersError] = useState('');
 
   // Step 3 state
   const [variants, setVariants] = useState<ContentVariant[]>([
@@ -569,6 +574,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
   }, [fetchWithRetry]);
 
+  const fetchOffers = useCallback(async () => {
+    setOffersError('');
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/offers/list`);
+      if (!res.ok) {
+        setOffersError(`Failed to load offers (HTTP ${res.status}).`);
+        return;
+      }
+      const data = await res.json();
+      setOffersCatalog(data.offers || []);
+    } catch {
+      setOffersError('Network error loading offers.');
+    }
+  }, [fetchWithRetry]);
+
   const fetchAudienceData = useCallback(async () => {
     setAudienceError('');
     setAudienceDataLoading(true);
@@ -776,11 +796,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // Load data on step entry
   useEffect(() => {
     if (step === 1) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
-    if (step === 2) fetchDomains();
+    if (step === 2) { fetchDomains(); fetchOffers(); }
     if (step === 3) fetchTemplates();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchTemplates, fetchAudienceData, fetchIntel, insightDomainFilter]);
+  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchTemplates, fetchAudienceData, fetchIntel, insightDomainFilter]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -1334,6 +1354,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     if (campaignId) {
       payload.campaign_id = campaignId;
     }
+    if (selectedOfferId) {
+      // Chosen offer (mailing_offers UUID) → engine.PMTACampaignInput.OfferID:
+      // attribution stamps it at stage/deploy and offer/converted suppression fires.
+      payload.offer_id = selectedOfferId;
+    }
     if (sendMode === 'scheduled' && scheduledAt) {
       payload.scheduled_at = new Date(scheduledAt).toISOString();
     }
@@ -1351,6 +1376,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     selectedDomain,
     selectedExclusionSegments,
     selectedISPs,
+    selectedOfferId,
     selectedSuppLists,
     sendMode,
     sendPriority,
@@ -2304,6 +2330,46 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           </div>
           );
         })}
+      </div>
+
+      {/* Offer selection (audience unification P3) — optional; the chosen
+          mailing_offers UUID rides the draft/deploy payload as offer_id. */}
+      <div style={{ marginTop: 20 }}>
+        <h3 style={{ margin: '0 0 4px' }}>Offer</h3>
+        <p style={{ margin: '0 0 10px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+          Optional. Attributes every send of this campaign to an offer (rollups, converted-suppression, drift-free reporting).
+        </p>
+        {offersError && (
+          <div style={{ padding: '8px 12px', color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 8, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span>{offersError}</span>
+            <button onClick={fetchOffers} style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
+              Retry
+            </button>
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <select
+            aria-label="Select offer"
+            value={selectedOfferId}
+            onChange={e => setSelectedOfferId(e.target.value)}
+            style={{
+              background: '#0d1526', color: '#e0e6f0', border: '2px solid rgba(0,200,255,0.15)',
+              borderRadius: 8, padding: '8px 10px', fontSize: 13, minWidth: 280,
+            }}
+          >
+            <option value="">No offer (unattributed)</option>
+            {offersCatalog.map(o => (
+              <option key={o.id} value={o.id}>
+                {o.name}{o.status !== 'active' ? ` — ${o.status}` : ''}
+              </option>
+            ))}
+          </select>
+          {selectedOfferId && (
+            <span style={{ fontSize: 12, color: '#00e5ff', background: 'rgba(0,200,255,0.08)', border: '1px solid rgba(0,200,255,0.25)', borderRadius: 6, padding: '4px 8px', fontFamily: 'monospace' }}>
+              key: {offersCatalog.find(o => o.id === selectedOfferId)?.key || '(no key)'}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
