@@ -185,11 +185,21 @@ func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
 			break
 		}
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		// ORDER BY the exact prefix of idx_mcq_terminal_cleanup so the victim
+		// SELECT is ALWAYS an index scan. Without it the planner pairs LIMIT
+		// with a Seq Scan whenever it estimates matches are plentiful — and
+		// once the aged rows are a thin slice clustered at the old end of a
+		// multi-GB heap (aug03: 349k of 10.3M rows, 70 GB), that scan reads
+		// most of the table before finding victims, hits statement_timeout,
+		// and the purge makes zero progress every cycle while the backlog
+		// grows. The ordered shape is deterministic regardless of planner
+		// statistics.
 		res, err := dc.db.ExecContext(queryCtx, `
 			WITH doomed AS (
 				SELECT id FROM mailing_campaign_queue
 				WHERE status IN ('accepted','cancelled','failed','dead_letter','dead_letter_strict')
 				  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+				ORDER BY status, COALESCE(updated_at, created_at)
 				LIMIT $1
 			)
 			DELETE FROM mailing_campaign_queue q

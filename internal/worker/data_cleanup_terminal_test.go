@@ -30,7 +30,7 @@ func TestCleanupTerminalQueueItems_RowAgeDriven(t *testing.T) {
 
 	// The purge DELETE: terminal-status list → row-age predicate → DELETE on the
 	// queue. 5 rows affected (< batch size) breaks the loop after one batch.
-	mock.ExpectExec(`(?s)status IN \('accepted','cancelled','failed','dead_letter','dead_letter_strict'\).*COALESCE\(updated_at, created_at\) < NOW\(\) - INTERVAL '14 days'.*DELETE FROM mailing_campaign_queue`).
+	mock.ExpectExec(`(?s)status IN \('accepted','cancelled','failed','dead_letter','dead_letter_strict'\).*COALESCE\(updated_at, created_at\) < NOW\(\) - INTERVAL '14 days'.*ORDER BY status, COALESCE\(updated_at, created_at\).*DELETE FROM mailing_campaign_queue`).
 		WillReturnResult(sqlmock.NewResult(0, 5))
 
 	// logTerminalQueueStats: two COUNT(*) probes (aged terminal + accepted-html).
