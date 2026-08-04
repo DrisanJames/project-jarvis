@@ -1,0 +1,59 @@
+/* AudienceCommand.css — per-component styles for the unified Audiences screen.
+   Colors mirror shared/theme.ts tokens (indigo family over slate-blue panels);
+   structural/hover/truncation rules live here, tokenized colors stay inline. */
+
+.ac-row {
+  cursor: pointer;
+}
+.ac-row:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+/* Definition column — truncated, full value in title= (design system §1.7) */
+.ac-def {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #94a3b8;
+  font-size: 11.5px;
+}
+
+/* Sortable header cells */
+.ac-sort {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.ac-sort:hover {
+  color: #c7d2fe;
+}
+
+/* Pretty-printed criteria JSON block in the row expansion */
+.ac-json {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: rgba(10, 14, 28, 0.6);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #c7d2fe;
+  white-space: pre;
+}
+
+/* Expansion container */
+.ac-expand {
+  padding: 10px 14px 14px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Horizontal scroll wrapper for the catalog table (design system §1.4) */
+.ac-scroll {
+  overflow-x: auto;
+}
