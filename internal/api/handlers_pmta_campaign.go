@@ -2331,6 +2331,24 @@ func buildSegmentQuery(conditionsRaw string, listIDVal interface{}) (string, []i
 		return "SELECT id::text, email FROM mailing_subscribers WHERE FALSE", nil
 	}
 
+	// Criteria-v2 segments ({"v2":{...}} — audience unification Phase 2)
+	// compile to one indexed SELECT. This branch MUST run before the legacy
+	// parsers: a v2 blob unmarshals into ConditionGroupBuilder with an empty
+	// LogicOperator and would fall to the legacy array parser, whose
+	// discarded error degrades to an unscoped full-base query (the same
+	// hazard class as lake_spec). Invalid v2 fails CLOSED to the empty set.
+	if v2, v2Err := segmentation.ParseV2Criteria(raw); v2Err != nil {
+		log.Printf("[buildSegmentQuery] invalid criteria-v2 conditions — failing closed to empty set: %v", v2Err)
+		return "SELECT id::text, email FROM mailing_subscribers WHERE FALSE", nil
+	} else if v2 != nil {
+		query, args, cErr := segmentation.CompileV2SQL(v2)
+		if cErr != nil {
+			log.Printf("[buildSegmentQuery] criteria-v2 compile error — failing closed to empty set: %v", cErr)
+			return "SELECT id::text, email FROM mailing_subscribers WHERE FALSE", nil
+		}
+		return query, args
+	}
+
 	if raw[0] == '{' {
 		var group segmentation.ConditionGroupBuilder
 		if err := json.Unmarshal([]byte(raw), &group); err == nil && group.LogicOperator != "" {

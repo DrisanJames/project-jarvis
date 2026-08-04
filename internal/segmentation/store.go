@@ -132,6 +132,54 @@ func (s *Store) CreateSegment(ctx context.Context, segment *Segment, rootGroup *
 	return tx.Commit()
 }
 
+// CreateSegmentV2 creates a segment whose conditions are the canonical
+// criteria-v2 payload ({"v2":{...}}, see criteria_v2.go) stored RAW in
+// mailing_segments.conditions. Mirrors CreateSegment's insert exactly but
+// skips the normalized condition-group tables (v2 criteria are
+// criteria-as-data — the JSON is the single source of truth). Callers
+// validate via ParseV2Criteria BEFORE storage; this method re-checks as
+// defense-in-depth so an invalid blob can never be persisted.
+func (s *Store) CreateSegmentV2(ctx context.Context, segment *Segment, rawConditions json.RawMessage) error {
+	if v2, err := ParseV2Criteria(string(rawConditions)); err != nil {
+		return fmt.Errorf("v2 conditions: %w", err)
+	} else if v2 == nil {
+		return fmt.Errorf("v2 conditions: payload does not carry a \"v2\" criteria block")
+	}
+
+	segment.ID = uuid.New()
+	segment.CreatedAt = time.Now()
+	segment.UpdatedAt = time.Now()
+	if segment.Status == "" {
+		segment.Status = "active"
+	}
+	if segment.SegmentType == "" {
+		segment.SegmentType = "dynamic"
+	}
+	if segment.CalculationMode == "" {
+		segment.CalculationMode = "batch"
+	}
+	category := segment.Category
+	if category == "" {
+		category = "uncategorized"
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO mailing_segments (
+			id, organization_id, list_id, name, description, segment_type, category,
+			conditions, calculation_mode, refresh_interval_minutes, include_suppressed,
+			global_exclusion_rules, status, created_by, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	`,
+		segment.ID, segment.OrganizationID, segment.ListID, segment.Name, segment.Description,
+		segment.SegmentType, category, []byte(rawConditions), segment.CalculationMode, segment.RefreshIntervalMin,
+		segment.IncludeSuppressed, segment.GlobalExclusionRules, segment.Status,
+		segment.CreatedBy, segment.CreatedAt, segment.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("insert v2 segment: %w", err)
+	}
+	return nil
+}
+
 // createConditionGroup recursively creates condition groups and conditions
 func (s *Store) createConditionGroup(ctx context.Context, tx *sql.Tx, segmentID uuid.UUID, parentGroupID *uuid.UUID, group *ConditionGroupBuilder, sortOrder int) error {
 	groupID := uuid.New()

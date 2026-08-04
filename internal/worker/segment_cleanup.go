@@ -31,6 +31,16 @@ const (
 	// staticPurgeMaxPerCycle caps total segments purged per org per cycle so a
 	// large backlog cannot monopolize a single run under send-day IO.
 	staticPurgeMaxPerCycle = 5000
+
+	// autoArchiveMaxPerCycle caps the Phase-2 self-pruning archive pass
+	// (autoArchiveUnreferencedSegments) per cycle. Archive-only — never a
+	// delete; hard deletes stay behind the REQ-C16 registry consent gate.
+	autoArchiveMaxPerCycle = 2000
+
+	// autoArchiveIdleDays: a segment with no include-campaign reference AND
+	// no use AND no youth inside this window gets archived (AUDIENCE
+	// UNIFICATION Phase 2 — "no mail in 30d → dissolve", archive-only).
+	autoArchiveIdleDays = 30
 )
 
 // SegmentCleanupWorker handles automatic cleanup of unused segments
@@ -48,6 +58,15 @@ type SegmentCleanupWorker struct {
 	// than a silent skip.
 	consentSkippedProtected    int64 // matched an active keep_policy='protect' registry row
 	consentSkippedUnregistered int64 // matched NO registry row at all (closed-by-default)
+}
+
+// segmentAutoArchiveDisabled is the kill switch for the Phase-2 self-pruning
+// archive pass. Self-pruning is ON by default (operator mandate, AUDIENCE
+// UNIFICATION design); DISABLE_SEGMENT_AUTO_ARCHIVE=1 (or "true") is the
+// one-move rollback. Read per call so tests can toggle it.
+func segmentAutoArchiveDisabled() bool {
+	v := os.Getenv("DISABLE_SEGMENT_AUTO_ARCHIVE")
+	return v == "1" || v == "true"
 }
 
 // segmentRegistryConsentDisabled is the kill switch: setting
@@ -154,16 +173,17 @@ type cleanupCycleTotals struct {
 	archived      int64 // grace-expired segments archived or deactivated
 	purgedStatic  int64 // aged static snapshots hard-deleted
 	deletedArchiv int64 // archived segments hard-deleted past retention
+	autoArchived  int64 // Phase-2 self-pruning: 30d-unreferenced segments archived
 	failedOrgs    int64 // orgs whose settings row could not be processed
 }
 
 func (t cleanupCycleTotals) processed() int64 {
-	return t.warned + t.archived + t.purgedStatic + t.deletedArchiv
+	return t.warned + t.archived + t.purgedStatic + t.deletedArchiv + t.autoArchived
 }
 
 func (t cleanupCycleTotals) detail() string {
-	return fmt.Sprintf("warned %d, archived/deactivated %d, purged %d static snapshots, deleted %d expired archives",
-		t.warned, t.archived, t.purgedStatic, t.deletedArchiv)
+	return fmt.Sprintf("warned %d, archived/deactivated %d, purged %d static snapshots, deleted %d expired archives, auto-archived %d unreferenced",
+		t.warned, t.archived, t.purgedStatic, t.deletedArchiv, t.autoArchived)
 }
 
 // consentDetail renders the registry-consent skip counters for the run row.
@@ -248,6 +268,76 @@ func (w *SegmentCleanupWorker) processAllOrganizations() {
 		// Process this organization
 		w.processOrganization(ctx, settings, &totals)
 	}
+
+	// Phase-2 self-pruning (AUDIENCE UNIFICATION): archive segments no
+	// campaign has referenced in 30d. Runs once per cycle, estate-wide
+	// (deliberately NOT gated on a per-org cleanup-settings row — the
+	// operator mandated self-pruning ON by default); the kill switch
+	// DISABLE_SEGMENT_AUTO_ARCHIVE is the rollback.
+	totals.autoArchived += w.autoArchiveUnreferencedSegments(ctx)
+}
+
+// autoArchiveUnreferencedSegments ARCHIVES (never deletes — same UPDATE
+// shape as processExpiredSegments: status='archived', archived_at=NOW())
+// segments that meet ALL of:
+//   - status='active', keep_active=FALSE, archived_at IS NULL
+//   - no ACTIVE mailing_segment_registry family match with keep_policy='protect'
+//   - NOT referenced as role='include' by any campaign created in the last
+//     30d (mailing_campaign_audiences ⋈ mailing_campaigns — the Phase-1
+//     links table; indexed by idx_campaign_audiences_segment)
+//   - last_used_at (NULL-safe via created_at) older than 30d
+//   - created_at older than 30d (grace for newborn segments)
+//
+// Capped at autoArchiveMaxPerCycle per cycle; a backlog drains across
+// cycles (hourly ticker). Returns the number archived.
+func (w *SegmentCleanupWorker) autoArchiveUnreferencedSegments(ctx context.Context) int64 {
+	if segmentAutoArchiveDisabled() {
+		log.Printf("SegmentCleanupWorker: auto-archive DISABLED via DISABLE_SEGMENT_AUTO_ARCHIVE — skipping self-pruning pass")
+		return 0
+	}
+
+	qctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	res, err := w.db.ExecContext(qctx, `
+		WITH candidates AS (
+			SELECT s.id
+			FROM mailing_segments s
+			WHERE s.status = 'active'
+			  AND s.keep_active = FALSE
+			  AND s.archived_at IS NULL
+			  AND s.created_at < NOW() - ($1 || ' days')::INTERVAL
+			  AND COALESCE(s.last_used_at, s.created_at) < NOW() - ($1 || ' days')::INTERVAL
+			  AND NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND r.keep_policy = 'protect'
+				  AND s.name LIKE r.family_pattern
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM mailing_campaign_audiences ca
+				JOIN mailing_campaigns c ON c.id = ca.campaign_id
+				WHERE ca.segment_id = s.id
+				  AND ca.role = 'include'
+				  AND c.created_at > NOW() - ($1 || ' days')::INTERVAL
+			  )
+			LIMIT $2
+		)
+		UPDATE mailing_segments
+		SET status = 'archived', archived_at = NOW()
+		WHERE id IN (SELECT id FROM candidates)
+	`, autoArchiveIdleDays, autoArchiveMaxPerCycle)
+	if err != nil {
+		log.Printf("SegmentCleanupWorker: auto-archive pass error (skipping this cycle): %v", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("SegmentCleanupWorker: auto-archived %d segment(s) with no campaign reference in %dd (archive-only; cap %d/cycle)",
+			n, autoArchiveIdleDays, autoArchiveMaxPerCycle)
+	}
+	return n
 }
 
 func (w *SegmentCleanupWorker) processOrganization(ctx context.Context, settings CleanupSettings, totals *cleanupCycleTotals) {

@@ -75,6 +75,10 @@ func (api *SegmentationAPI) RegisterRoutes(r chi.Router) {
 		r.Get("/", api.ListSegments)
 		r.Post("/", api.CreateSegment)
 		r.Post("/preview", api.PreviewSegment)
+		// Audience-unification Phase 2 catalog: one org-scoped, paginated
+		// read joining ledger counts, perf rollup, campaign refs, registry
+		// verdicts and prune countdowns. See segmentation_overview.go.
+		r.Get("/overview", api.HandleSegmentsOverview)
 
 		r.Route("/{segmentID}", func(r chi.Router) {
 			r.Get("/", api.GetSegment)
@@ -144,6 +148,12 @@ type CreateSegmentRequest struct {
 	Category          string                             `json:"category,omitempty"` // enum: see validSegmentCategories; falls back to 'uncategorized'
 	RootGroup         segmentation.ConditionGroupBuilder `json:"root_group"`
 	GlobalExclusions  []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
+	// Conditions optionally carries the canonical criteria-v2 payload
+	// ({"v2":{...}}, internal/segmentation/criteria_v2.go — audience
+	// unification Phase 2). When present with a "v2" key, the segment is
+	// created via the v2 path (raw storage + compiled-SQL materialization)
+	// and RootGroup is ignored.
+	Conditions json.RawMessage `json:"conditions,omitempty"`
 }
 
 // segmentCategoryToken validates category filter values. We deliberately do
@@ -702,6 +712,25 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Criteria-v2 path (audience unification Phase 2): a request whose
+	// conditions carry a "v2" key is validated, stored raw, counted via the
+	// compiled SQL and hydrated through the shared materializer (which
+	// recognizes v2 and stamps build_source='criteria-v2').
+	if len(req.Conditions) > 0 {
+		v2, v2Err := segmentation.ParseV2Criteria(string(req.Conditions))
+		if v2Err != nil {
+			segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+				"error":   "invalid_v2_criteria",
+				"details": v2Err.Error(),
+			})
+			return
+		}
+		if v2 != nil {
+			api.createSegmentV2(w, r, orgID, userID, &req, v2)
+			return
+		}
+	}
+
 	// Validate conditions
 	errors := api.engine.ValidateConditions(req.RootGroup)
 	if len(errors) > 0 {
@@ -798,6 +827,92 @@ func (api *SegmentationAPI) CreateSegment(w http.ResponseWriter, r *http.Request
 			}
 		}()
 	}
+
+	segmentRespondJSON(w, segment)
+}
+
+// createSegmentV2 is the criteria-v2 create path: validated spec stored RAW
+// in mailing_segments.conditions, synchronous LIMIT-capped count, async
+// hydration through the shared materializer (buildSegmentQuery's v2 branch
+// compiles the same SQL; the ledger row lands with build_source
+// 'criteria-v2'). Same category-validation and response contract as the
+// legacy path.
+func (api *SegmentationAPI) createSegmentV2(w http.ResponseWriter, r *http.Request, orgID uuid.UUID, userID *uuid.UUID, req *CreateSegmentRequest, v2 *segmentation.V2Criteria) {
+	ctx := r.Context()
+
+	if strings.TrimSpace(req.Name) == "" {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"error": "name is required",
+		})
+		return
+	}
+	category := req.Category
+	if category != "" && !validSegmentCategories[category] {
+		segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   "invalid_category",
+			"details": "category must be one of: engagement_brand, engagement_global, engagement_isp, engagement_vertical, framework, funnel, cohort_static, suppression_exclusion, partner_wave_static, legacy_snapshot, uncategorized",
+		})
+		return
+	}
+
+	exclusionsJSON, _ := json.Marshal(req.GlobalExclusions)
+	segment := &segmentation.Segment{
+		OrganizationID:       orgID,
+		ListID:               req.ListID,
+		Name:                 req.Name,
+		Description:          req.Description,
+		Category:             category,
+		CalculationMode:      req.CalculationMode,
+		IncludeSuppressed:    req.IncludeSuppressed,
+		GlobalExclusionRules: exclusionsJSON,
+		CreatedBy:            userID,
+	}
+
+	if err := api.engine.Store().CreateSegmentV2(ctx, segment, req.Conditions); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Synchronous count via the compiled SQL (LIMIT-capped), best-effort.
+	countCtx, countCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer countCancel()
+	if cq, cargs, err := segmentation.CompileV2CountSQL(v2); err != nil {
+		log.Printf("[Segment] v2 count compile error for %s (%s): %v", segment.Name, segment.ID, err)
+	} else {
+		var count int
+		if err := api.db.QueryRowContext(countCtx, cq, cargs...).Scan(&count); err != nil {
+			log.Printf("[Segment] v2 count exec error for %s (%s): %v", segment.Name, segment.ID, err)
+		} else {
+			segment.SubscriberCount = count
+			if err := api.engine.Store().UpdateSegmentCount(countCtx, segment.ID, count); err != nil {
+				log.Printf("[Segment] v2 count update error for %s (%s): %v", segment.Name, segment.ID, err)
+			} else {
+				log.Printf("[Segment] created v2 %s (%s) with %d subscribers", segment.Name, segment.ID, count)
+			}
+		}
+	}
+
+	// Async hydration — same idiom as the legacy dynamic path: re-read the
+	// stored conditions and run the shared materializer (v2-aware).
+	db := api.db
+	sid := segment.ID.String()
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		var listIDStr string
+		var conditionsRaw sql.NullString
+		if err := db.QueryRowContext(bgCtx,
+			`SELECT COALESCE(list_id::text,''), COALESCE(conditions::text,'[]') FROM mailing_segments WHERE id = $1`, sid,
+		).Scan(&listIDStr, &conditionsRaw); err != nil {
+			log.Printf("[CreateSegmentV2] failed to read segment %s for hydration: %v", sid, err)
+			return
+		}
+		if count, err := MaterializeSegment(bgCtx, db, sid, listIDStr, conditionsRaw.String); err != nil {
+			log.Printf("[CreateSegmentV2] failed to hydrate segment %s: %v", sid, err)
+		} else {
+			log.Printf("[CreateSegmentV2] hydrated segment %s with %d members", sid, count)
+		}
+	}()
 
 	segmentRespondJSON(w, segment)
 }
@@ -963,10 +1078,53 @@ func (api *SegmentationAPI) PreviewSegment(w http.ResponseWriter, r *http.Reques
 		RootGroup        segmentation.ConditionGroupBuilder `json:"root_group"`
 		GlobalExclusions []segmentation.ConditionBuilder    `json:"global_exclusions,omitempty"`
 		Limit            int                                `json:"limit,omitempty"`
+		// Conditions optionally carries a criteria-v2 payload ({"v2":{...}});
+		// when present the preview is a LIMIT-capped COUNT over the compiled
+		// SQL (no sample rows) — see CompileV2CountSQL.
+		Conditions json.RawMessage `json:"conditions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+
+	if len(req.Conditions) > 0 {
+		v2, v2Err := segmentation.ParseV2Criteria(string(req.Conditions))
+		if v2Err != nil {
+			segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+				"error":   "invalid_v2_criteria",
+				"details": v2Err.Error(),
+			})
+			return
+		}
+		if v2 != nil {
+			cq, cargs, err := segmentation.CompileV2CountSQL(v2)
+			if err != nil {
+				segmentRespondJSONStatus(w, http.StatusBadRequest, map[string]interface{}{
+					"error":   "invalid_v2_criteria",
+					"details": err.Error(),
+				})
+				return
+			}
+			countCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+			defer cancel()
+			var count int64
+			if err := api.db.QueryRowContext(countCtx, cq, cargs...).Scan(&count); err != nil {
+				log.Printf("[Segment] v2 preview count error: %v", err)
+				segmentRespondJSONStatus(w, http.StatusServiceUnavailable, map[string]interface{}{
+					"error":  "preview_count_failed",
+					"detail": err.Error(),
+				})
+				return
+			}
+			segmentRespondJSON(w, map[string]interface{}{
+				"api_version":     VersionSegmentationAPI,
+				"count":           count,
+				"audience_source": "criteria-v2",
+				"summary":         segmentation.SummarizeV2(v2),
+			})
+			return
+		}
 	}
 
 	if req.Limit == 0 {

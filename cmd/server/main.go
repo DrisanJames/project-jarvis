@@ -2282,6 +2282,22 @@ var concurrentIndexSpecs = []struct {
 	// Both live here (not the 5s slice) because each build scans a large heap.
 	{"idx_message_log_partner_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_partner_dataset ON mailing_message_log (partner_dataset_id, sent_at DESC) WHERE partner_dataset_id IS NOT NULL`},
 	{"idx_pcq_subscriber_id", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_subscriber_id ON partner_clean_queue (subscriber_id) WHERE subscriber_id IS NOT NULL`},
+
+	// ---- AUDIENCE UNIFICATION Phase 2 (docs/AUDIENCE_UNIFICATION.md) ----
+	// Criteria-v2 segments compile to one SELECT over mailing_subscribers
+	// keyed on (list_id, last_open_at/last_click_at) with the compiler's
+	// verbatim `status IN ('active','confirmed')` predicate — these partial
+	// indexes make those engagement-window scans index range reads instead
+	// of 13M-row heap scans. Partial on the live statuses + NOT NULL clock
+	// so the never-engaged majority costs nothing. Live here (not the 5s
+	// slice) because each build scans the full subscriber heap.
+	{"idx_subscribers_list_last_open", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_list_last_open ON mailing_subscribers (list_id, last_open_at DESC) WHERE status IN ('active','confirmed') AND last_open_at IS NOT NULL`},
+	{"idx_subscribers_list_last_click", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_list_last_click ON mailing_subscribers (list_id, last_click_at DESC) WHERE status IN ('active','confirmed') AND last_click_at IS NOT NULL`},
+	// Reverse membership lookups (subscriber → segments). The members
+	// rollup (~47M rows) is only indexed by (segment_id, ...) today, so any
+	// per-subscriber probe seq-scans the heap. Full build scans the 47M-row
+	// heap — far beyond the migration runner's budget.
+	{"idx_segment_members_subscriber", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_segment_members_subscriber ON mailing_segment_members (subscriber_id)`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2586,6 +2602,34 @@ func runStartupMigrations(db *sql.DB) {
 				('termlife_stream_static', 'TERMLIFE-%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'TERMLIFE-* FRESH-BCAST batch snapshots — protect from static cleanup'),
 				('remodel_stream_static', 'REMODEL-%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'REMODEL-* FRESH-BCAST batch snapshots — protect from static cleanup'),
 				('wcm_stream_static', 'WCM-J%', 'script', 'formally declared STATIC — stream-router batches', '', 0, 'protect', '', 'WCM-<TOK>-* FRESH-BCAST batch snapshots (token-scoped pattern — must NOT swallow legacy WCM-Mortgage-Activated-* segments) — protect from static cleanup')
+			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = o.organization_id
+				  AND r.family_pattern = f.family_pattern
+			)
+		`},
+		// AUDIENCE UNIFICATION Phase 2 (docs/AUDIENCE_UNIFICATION.md §Phases):
+		// registry rows for the per-transid carve-out families the journey
+		// engine will replace in Phase 4. keep_policy='purgeable' is the
+		// REGISTRY CONSENT GROUNDWORK ONLY — today every row in these
+		// families is minted keep_active=TRUE, which exempts it from both
+		// the static purge and the Phase-2 auto-archive, so nothing deletes
+		// yet; once Phase 4 stops minting them (and drops keep_active), the
+		// existing static-cleanup can finally drain the ~7k mini-segments.
+		// Same per-row NOT EXISTS guard as the seeds above.
+		{"seed_segment_registry_carveouts_aug04", `
+			INSERT INTO mailing_segment_registry (
+				organization_id, family_key, family_pattern, definition_source,
+				owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes
+			)
+			SELECT o.organization_id, f.family_key, f.family_pattern, f.definition_source,
+			       f.owner, f.cadence, f.sla_hours, f.keep_policy, f.heartbeat_worker, f.notes
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			CROSS JOIN (VALUES
+				('converter_thankyou', 'CONVERTER-THANKYOU-%', 'script', 'converter thank-you carve-out generator (agents/journeys) — Phase 4 replaces with journey enrollments', 'per-event', 0, 'purgeable', '', 'audience-unification P2: purge consent groundwork; rows are keep_active=TRUE until Phase 4 stops minting them, so nothing deletes yet'),
+				('abandon_recovery', 'ABANDON-RECOVERY-%', 'script', 'abandon-recovery carve-out generator (agents/journeys) — Phase 4 replaces with journey enrollments', 'per-event', 0, 'purgeable', '', 'audience-unification P2: purge consent groundwork; rows are keep_active=TRUE until Phase 4 stops minting them, so nothing deletes yet'),
+				('recert', 'RECERT-%', 'script', 'recert carve-out generator (agents/journeys) — Phase 4 replaces with journey enrollments', 'per-event', 0, 'purgeable', '', 'audience-unification P2: purge consent groundwork; rows are keep_active=TRUE until Phase 4 stops minting them, so nothing deletes yet')
 			) AS f(family_key, family_pattern, definition_source, owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes)
 			WHERE NOT EXISTS (
 				SELECT 1 FROM mailing_segment_registry r

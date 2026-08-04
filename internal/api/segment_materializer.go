@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/lib/pq"
 )
 
@@ -387,6 +388,21 @@ func materializeSegmentWithLedger(ctx context.Context, db *sql.DB, segmentID, li
 	// (materializeSegmentCore repeats the check as defense-in-depth).
 	if parseLakeSpec(conditionsRaw) != nil {
 		return 0, errLakeSegmentNotMaterializable
+	}
+	// Criteria-v2 segments stamp their own ledger source so the catalog can
+	// tell "materialized from criteria-v2 SQL" apart from legacy builds. An
+	// INVALID v2 blob refuses the build outright (keeping the previous good
+	// member set + a 'failed' ledger row) — it must never wipe members via
+	// buildSegmentQuery's fail-closed empty set.
+	if v2, v2Err := segmentation.ParseV2Criteria(conditionsRaw); v2Err != nil {
+		// Keep the previous good count (same rule as the failed-build path).
+		prev, _ := ledgerPriorCount(ctx, db, segmentID)
+		if lerr := UpsertSegmentLedger(ctx, db, segmentID, prev, source, "failed", 0, 0, v2Err.Error()); lerr != nil {
+			log.Printf("[SegmentLedger] upsert(failed, invalid v2) for %s: %v", safePrefix(segmentID, 12), lerr)
+		}
+		return 0, fmt.Errorf("refusing build: %w", v2Err)
+	} else if v2 != nil {
+		source = "criteria-v2"
 	}
 	if err := MarkSegmentBuildRunning(ctx, db, segmentID, source); err != nil {
 		log.Printf("[SegmentLedger] mark-running failed for %s (continuing): %v", safePrefix(segmentID, 12), err)
