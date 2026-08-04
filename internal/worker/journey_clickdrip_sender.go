@@ -31,6 +31,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -377,6 +379,10 @@ func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID
 // Liquid render was skipped. It also injects a minimal unsubscribe block when
 // the body carries none (CAN-SPAM), mirroring send_worker's fallback, so a
 // click-drip reminder can never ship without a working unsubscribe link.
+// residualMustacheRe matches any leftover '{{ ... }}' token (non-greedy, no
+// nested braces). Used as the last-resort strip before QP encoding.
+var residualMustacheRe = regexp.MustCompile(`\{\{[^{}]*\}\}`)
+
 func (s *JourneyClickDripSender) renderSystemURLTokens(html, orgID, campaignID, subscriberID, brandRoot, trackBase string) string {
 	unsubURL := GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret)
 	brandUnsubURL := GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRoot, trackBase, s.trackingSecret)
@@ -390,6 +396,18 @@ func (s *JourneyClickDripSender) renderSystemURLTokens(html, orgID, campaignID, 
 		"{{system.preferences_url}}":         prefsURL,
 	} {
 		html = strings.ReplaceAll(html, tag, url)
+	}
+
+	// EXHAUSTIVE SWEEP (2026-08-04): the enumerated map above covers only the
+	// three URL tokens. Any OTHER surviving '{{ ... }}' — e.g. the footer's
+	// '{{ system.current_year }}' — hits the same QP-split → PMTA 422 class
+	// ("unexpected `=`" at the copyright line), which cost ~1-2% of touches.
+	// Render the known scalars, then strip anything still unresolved so no raw
+	// mustache can reach the QP encoder.
+	html = strings.ReplaceAll(html, "{{ system.current_year }}", strconv.Itoa(time.Now().Year()))
+	html = strings.ReplaceAll(html, "{{system.current_year}}", strconv.Itoa(time.Now().Year()))
+	if strings.Contains(html, "{{") {
+		html = residualMustacheRe.ReplaceAllString(html, "")
 	}
 
 	// CAN-SPAM: if no unsub link exists in the body, inject one before </body>
