@@ -55,11 +55,20 @@ func NewJourneyEventsBridge(db *sql.DB) *JourneyEventsBridge {
 }
 
 // journeyEventInput is the funnel's posted event.
+//
+// Affid (2026-08-04): the traffic source. Until now the platform never received
+// it, so no per-affiliate rule could be expressed and no per-affiliate coverage
+// could be measured — abandon recovery was silently dark for whole affiliates
+// and nobody could see it. Measured that day: of 103 sessions that reached the
+// `email` step, 36 (35%) never sent us the address, and 1,093 of 2,378 abandons
+// (46%) were unreachable. Optional and free-form on purpose: an affiliate that
+// omits it degrades to '' (reported as "unknown") rather than losing the event.
 type journeyEventInput struct {
 	Type      string                 `json:"type"`
 	TransID   string                 `json:"transid"`
 	SessionID string                 `json:"session_id"`
 	Sub1      string                 `json:"sub1"`
+	Affid     string                 `json:"affid"`
 	Email     string                 `json:"email"`
 	FormData  map[string]interface{} `json:"form_data"`
 	TS        string                 `json:"ts"` // RFC3339, optional
@@ -75,8 +84,8 @@ var validJourneyEventTypes = map[string]bool{
 // uidx_mje_type_transid_step makes a duplicate a clean no-op.
 const insertJourneyEventSQL = `
 	INSERT INTO mailing_journey_events
-		(event_type, transid, session_id, sub1, email, step, form_data, event_ts)
-	VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+		(event_type, transid, session_id, sub1, affid, email, step, form_data, event_ts)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
 	ON CONFLICT (event_type, transid, step) DO NOTHING`
 
 // HandleJourneyEvent records one funnel event. Mirrors the postback handlers'
@@ -128,7 +137,8 @@ func (h *JourneyEventsBridge) HandleJourneyEvent(w http.ResponseWriter, r *http.
 
 	res, err := h.db.ExecContext(r.Context(), insertJourneyEventSQL,
 		in.Type, in.TransID, strings.TrimSpace(in.SessionID),
-		strings.TrimSpace(in.Sub1), strings.ToLower(strings.TrimSpace(in.Email)),
+		strings.TrimSpace(in.Sub1), strings.TrimSpace(in.Affid),
+		strings.ToLower(strings.TrimSpace(in.Email)),
 		step, formJSON, eventTS)
 	if err != nil {
 		log.Printf("[JourneyEventsBridge] insert %s/%s: %v", in.Type, in.TransID, err)

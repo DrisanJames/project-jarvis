@@ -52,13 +52,18 @@ const DefaultAbandonHours = 4
 // collapses on the PK.
 const abandonDetectSQL = `
 	INSERT INTO mailing_journey_abandon_state
-		(session_id, transid, email, sub1, loan_purpose, first_event_at)
-	SELECT s.session_id, s.transid, s.email, s.sub1, s.loan_purpose, s.first_event_at
+		(session_id, transid, email, sub1, affid, loan_purpose, first_event_at)
+	SELECT s.session_id, s.transid, s.email, s.sub1, s.affid, s.loan_purpose, s.first_event_at
 	FROM (
 		SELECT session_id,
 		       MAX(transid)                                        AS transid,
 		       COALESCE(MAX(NULLIF(email, '')), '')                AS email,
 		       COALESCE(MAX(NULLIF(sub1, '')), '')                 AS sub1,
+		       -- affid (2026-08-04): carried so reachability can be reported
+		       -- PER AFFILIATE. Without it, an affiliate whose funnel never
+		       -- sends an email is invisible — the abandon program is simply
+		       -- dark for them and nothing says so.
+		       COALESCE(MAX(NULLIF(affid, '')), '')                AS affid,
 		       COALESCE(MAX(NULLIF(form_data->>'loan_purpose','')), '') AS loan_purpose,
 		       MIN(received_at)                                    AS first_event_at
 		FROM mailing_journey_events

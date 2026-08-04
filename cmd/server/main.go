@@ -8501,6 +8501,20 @@ END $$`},
 			ON mailing_journey_events(event_type, transid, step)`},
 		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
 			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
+		// affid (2026-08-04): the funnel's traffic source. Never captured
+		// before, so no per-affiliate rule was expressible and no per-affiliate
+		// coverage was measurable — abandon recovery was dark for whole
+		// affiliates with nothing to show it. Measured that day: 1,093 of 2,378
+		// abandons (46%) unreachable, and 36 of the 103 sessions that reached
+		// the `email` step never sent us the address. Nullable/defaulted so an
+		// affiliate that omits it degrades to '' rather than losing the event;
+		// both tables are tiny, well inside the 5s migration budget.
+		{"aug04_journey_events_affid", `ALTER TABLE mailing_journey_events
+			ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
+		{"aug04_abandon_state_affid", `ALTER TABLE mailing_journey_abandon_state
+			ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
+		{"aug04_journey_events_affid_idx", `CREATE INDEX IF NOT EXISTS idx_mje_affid
+			ON mailing_journey_events(affid) WHERE affid <> ''`},
 		{"jul31_partner_datasets_vertical_consumer", `DO $$
 		BEGIN
 			IF NOT EXISTS (

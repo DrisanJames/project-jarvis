@@ -49,7 +49,7 @@ func postJourneyEvent(t *testing.T, h *JourneyEventsBridge, body string) *httpte
 func TestJourneyEventRecorded(t *testing.T) {
 	h, mock := newJourneyBridge(t)
 	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
-		WithArgs("lead_accepted", "txn-1", "sess-1", "", "marcoxpaez@gmail.com",
+		WithArgs("lead_accepted", "txn-1", "sess-1", "", "", "marcoxpaez@gmail.com",
 			"", sqlmock.AnyArg(), nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -80,7 +80,7 @@ func TestJourneyEventIdempotentDuplicate(t *testing.T) {
 func TestJourneyEventSessionProgressStepIsTheDiscriminator(t *testing.T) {
 	h, mock := newJourneyBridge(t)
 	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
-		WithArgs("session_progress", "txn-2", "sess-2", "sub-uuid", "",
+		WithArgs("session_progress", "txn-2", "sess-2", "sub-uuid", "", "",
 			"home_value", sqlmock.AnyArg(), nil).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -203,5 +203,43 @@ func TestPrefillUnknownSubscriberIs404(t *testing.T) {
 		WillReturnError(sql.ErrNoRows)
 	token := prefilltoken.Mint(prefillSubUUID, time.Hour, prefilltoken.SecretFromEnv())
 	assert.Equal(t, http.StatusNotFound, getPrefill(t, h, token).Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventCapturesAffid pins the 2026-08-04 contract addition.
+//
+// Before this, the platform never received the funnel's traffic source, so no
+// per-affiliate rule could be expressed and — worse — no per-affiliate coverage
+// could be MEASURED. Abandon recovery was silently dark for whole affiliates:
+// 1,093 of 2,378 abandons (46%) were unreachable, and 36 of the 103 sessions
+// that reached the `email` step never sent us the address, with nothing in the
+// platform able to show it. affid is what makes that reportable per affiliate.
+func TestJourneyEventCapturesAffid(t *testing.T) {
+	h, mock := newJourneyBridge(t)
+	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+		WithArgs("session_progress", "txn-9", "sess-9", "PMK_iT2", "10",
+			"gbryan52@icloud.com", "email", sqlmock.AnyArg(), nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-9",
+		"session_id":"sess-9","sub1":"PMK_iT2","affid":"10",
+		"email":"GBryan52@iCloud.com","form_data":{"step":"email"}}`)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventMissingAffidDegradesToEmpty: an affiliate that omits affid
+// must still have its event stored. Losing the event would be strictly worse
+// than not knowing the source.
+func TestJourneyEventMissingAffidDegradesToEmpty(t *testing.T) {
+	h, mock := newJourneyBridge(t)
+	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+		WithArgs("session_progress", "txn-10", "sess-10", "sub-x", "", "",
+			"zip", sqlmock.AnyArg(), nil).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-10",
+		"session_id":"sess-10","sub1":"sub-x","form_data":{"step":"zip"}}`)
+	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
