@@ -14,6 +14,7 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -227,6 +228,29 @@ func TestRenderSystemURLTokens_SafetyNet(t *testing.T) {
 		// exactly the 4 replaced tokens (2 brand + 2 global), no 5th injected.
 		if strings.Count(out, "/track/unsubscribe/") != 4 {
 			t.Fatalf("expected exactly the 4 replaced unsub links (no fallback injection), got: %s", out)
+		}
+	})
+
+	// Regression (2026-08-04, ccba9ec): the enumerated URL map above let any
+	// OTHER token — the footer's {{ system.current_year }} — reach the QP
+	// encoder, whose soft line-breaks split it mid-name ("&copy; {{ sys=") and
+	// PMTA's template parse 422'd the whole message (~1-2% of touches lost).
+	// Known scalars must render; anything else must be stripped outright.
+	t.Run("current_year renders and residual mustache is swept", func(t *testing.T) {
+		html := `<body><p>&copy; {{ system.current_year }} and {{system.current_year}}</p>` +
+			`<p>unknown {{ some.unknown_token }} here</p>` +
+			`<a href="{{ system.unsubscribe_url }}">unsubscribe</a></body>`
+		out := s.renderSystemURLTokens(html, orgID, campID, subID, brandRoot, trackBase)
+
+		year := strconv.Itoa(time.Now().Year())
+		if strings.Count(out, "&copy; "+year+" and "+year) != 1 {
+			t.Fatalf("current_year token variants not rendered to %s: %s", year, out)
+		}
+		if strings.Contains(out, "{{") || strings.Contains(out, "}}") {
+			t.Fatalf("residual mustache survived the sweep (would 422 at PMTA after QP encoding): %s", out)
+		}
+		if !strings.Contains(out, "unknown  here") {
+			t.Fatalf("unknown token should be stripped, leaving surrounding text intact: %s", out)
 		}
 	})
 
