@@ -62,7 +62,7 @@ func NewJourneyEventsBridge(db *sql.DB) *JourneyEventsBridge {
 // and nobody could see it. Measured that day: of 103 sessions that reached the
 // `email` step, 36 (35%) never sent us the address, and 1,093 of 2,378 abandons
 // (46%) were unreachable. Optional and free-form on purpose: an affiliate that
-// omits it degrades to '' (reported as "unknown") rather than losing the event.
+// omits it degrades to ” (reported as "unknown") rather than losing the event.
 type journeyEventInput struct {
 	Type      string                 `json:"type"`
 	TransID   string                 `json:"transid"`
@@ -80,13 +80,40 @@ var validJourneyEventTypes = map[string]bool{
 	"session_progress": true,
 }
 
-// insertJourneyEventSQL is the idempotent write. The unique index
-// uidx_mje_type_transid_step makes a duplicate a clean no-op.
+// insertJourneyEventSQL is the idempotent write, with MONOTONIC ENRICHMENT on
+// conflict.
+//
+// DO NOTHING was silently destroying every captured email (proven live
+// 2026-08-04). The funnel fires TWO beacons per step with the SAME step id:
+// `view` on arrival (no values) and `complete` on advance (values, including
+// the typed email). The view lands first, so under DO NOTHING the complete
+// beacon — the one carrying the address — was discarded as a duplicate.
+// Result: 4,399 session_progress events with ZERO emails, 1,093 of 2,378
+// abandoned sessions unreachable, and whole affiliates invisible to abandon
+// recovery. Reproduced against the live funnel by posting view-then-complete:
+// the email was lost; complete alone stored fine.
+//
+// Enrichment is strictly monotonic — COALESCE(NULLIF(new,”), old) can only
+// fill a blank, never blank a value — so beacon order and retries are safe in
+// any sequence. form_data likewise only widens (a '{}' payload never clobbers
+// real values).
+//
+// RETURNING (xmax = 0) distinguishes a true INSERT from an enriching UPDATE;
+// RowsAffected cannot, because DO UPDATE always reports 1. Without it the
+// handler would call every enrichment a fresh record.
 const insertJourneyEventSQL = `
 	INSERT INTO mailing_journey_events
 		(event_type, transid, session_id, sub1, affid, email, step, form_data, event_ts)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-	ON CONFLICT (event_type, transid, step) DO NOTHING`
+	ON CONFLICT (event_type, transid, step) DO UPDATE
+	SET email     = COALESCE(NULLIF(EXCLUDED.email, ''), mailing_journey_events.email),
+	    affid     = COALESCE(NULLIF(EXCLUDED.affid, ''), mailing_journey_events.affid),
+	    sub1      = COALESCE(NULLIF(EXCLUDED.sub1,  ''), mailing_journey_events.sub1),
+	    session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), mailing_journey_events.session_id),
+	    form_data = CASE WHEN EXCLUDED.form_data <> '{}'::jsonb
+	                     THEN EXCLUDED.form_data
+	                     ELSE mailing_journey_events.form_data END
+	RETURNING (xmax = 0) AS inserted`
 
 // HandleJourneyEvent records one funnel event. Mirrors the postback handlers'
 // posture: validation failures respond 200 with a skipped status (the funnel's
@@ -135,21 +162,23 @@ func (h *JourneyEventsBridge) HandleJourneyEvent(w http.ResponseWriter, r *http.
 		}
 	}
 
-	res, err := h.db.ExecContext(r.Context(), insertJourneyEventSQL,
+	var inserted bool
+	err := h.db.QueryRowContext(r.Context(), insertJourneyEventSQL,
 		in.Type, in.TransID, strings.TrimSpace(in.SessionID),
 		strings.TrimSpace(in.Sub1), strings.TrimSpace(in.Affid),
 		strings.ToLower(strings.TrimSpace(in.Email)),
-		step, formJSON, eventTS)
+		step, formJSON, eventTS).Scan(&inserted)
 	if err != nil {
 		log.Printf("[JourneyEventsBridge] insert %s/%s: %v", in.Type, in.TransID, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "store failed"})
 		return
 	}
-	n, _ := res.RowsAffected()
+	// "enriched" replaces the old "duplicate": a repeat beacon is no longer a
+	// no-op, it is how the typed email arrives (view first, complete second).
 	status := "recorded"
-	if n == 0 {
-		status = "duplicate"
+	if !inserted {
+		status = "enriched"
 	}
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 }

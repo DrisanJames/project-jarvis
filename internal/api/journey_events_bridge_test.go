@@ -48,10 +48,10 @@ func postJourneyEvent(t *testing.T, h *JourneyEventsBridge, body string) *httpte
 
 func TestJourneyEventRecorded(t *testing.T) {
 	h, mock := newJourneyBridge(t)
-	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
 		WithArgs("lead_accepted", "txn-1", "sess-1", "", "", "marcoxpaez@gmail.com",
 			"", sqlmock.AnyArg(), nil).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(true))
 
 	rr := postJourneyEvent(t, h, `{"type":"lead_accepted","transid":"txn-1",
 		"session_id":"sess-1","email":"MarcoXPaez@gmail.com",
@@ -65,24 +65,24 @@ func TestJourneyEventRecorded(t *testing.T) {
 
 func TestJourneyEventIdempotentDuplicate(t *testing.T) {
 	h, mock := newJourneyBridge(t)
-	// ON CONFLICT DO NOTHING → 0 rows affected → "duplicate", still 200.
-	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
-		WillReturnResult(sqlmock.NewResult(0, 0))
+	// ON CONFLICT DO UPDATE → xmax<>0 → "enriched", still 200.
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(false))
 
 	rr := postJourneyEvent(t, h, `{"type":"lead_accepted","transid":"txn-1"}`)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
-	assert.Equal(t, "duplicate", resp["status"])
+	assert.Equal(t, "enriched", resp["status"])
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestJourneyEventSessionProgressStepIsTheDiscriminator(t *testing.T) {
 	h, mock := newJourneyBridge(t)
-	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
 		WithArgs("session_progress", "txn-2", "sess-2", "sub-uuid", "", "",
 			"home_value", sqlmock.AnyArg(), nil).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(true))
 
 	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-2",
 		"session_id":"sess-2","sub1":"sub-uuid","form_data":{"step":"home_value"}}`)
@@ -216,10 +216,10 @@ func TestPrefillUnknownSubscriberIs404(t *testing.T) {
 // platform able to show it. affid is what makes that reportable per affiliate.
 func TestJourneyEventCapturesAffid(t *testing.T) {
 	h, mock := newJourneyBridge(t)
-	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
 		WithArgs("session_progress", "txn-9", "sess-9", "PMK_iT2", "10",
 			"gbryan52@icloud.com", "email", sqlmock.AnyArg(), nil).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(true))
 
 	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-9",
 		"session_id":"sess-9","sub1":"PMK_iT2","affid":"10",
@@ -233,13 +233,52 @@ func TestJourneyEventCapturesAffid(t *testing.T) {
 // than not knowing the source.
 func TestJourneyEventMissingAffidDegradesToEmpty(t *testing.T) {
 	h, mock := newJourneyBridge(t)
-	mock.ExpectExec(`INSERT INTO mailing_journey_events`).
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
 		WithArgs("session_progress", "txn-10", "sess-10", "sub-x", "", "",
 			"zip", sqlmock.AnyArg(), nil).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(true))
 
 	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-10",
 		"session_id":"sess-10","sub1":"sub-x","form_data":{"step":"zip"}}`)
 	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestJourneyEventEnrichmentFillsBlankEmail is the regression guard for the
+// 2026-08-04 data-loss bug.
+//
+// The funnel fires TWO beacons per step with the SAME step id: `view` on
+// arrival (no values) then `complete` on advance (values, incl. the typed
+// email). Under the old ON CONFLICT DO NOTHING the view landed first and the
+// complete — the one carrying the address — was thrown away as a duplicate.
+// Live proof before the fix: posting view-then-complete stored email=”.
+// Consequence: 4,399 session_progress events with ZERO emails and 1,093 of
+// 2,378 abandoned sessions unreachable.
+//
+// The SQL must therefore enrich on conflict, and monotonically.
+func TestJourneyEventEnrichmentFillsBlankEmail(t *testing.T) {
+	sql := strings.Join(strings.Fields(insertJourneyEventSQL), " ")
+	assert.Contains(t, sql, "ON CONFLICT (event_type, transid, step) DO UPDATE",
+		"a repeat beacon MUST enrich — DO NOTHING discards the complete-beacon email")
+	// Monotonic: a blank incoming value can never erase a stored one.
+	assert.Contains(t, sql, "email = COALESCE(NULLIF(EXCLUDED.email, ''), mailing_journey_events.email)")
+	assert.Contains(t, sql, "affid = COALESCE(NULLIF(EXCLUDED.affid, ''), mailing_journey_events.affid)")
+	// RowsAffected cannot distinguish insert from update under DO UPDATE.
+	assert.Contains(t, sql, "RETURNING (xmax = 0)")
+}
+
+// TestJourneyEventEnrichedStatusOnConflict: the second beacon reports
+// "enriched", not "recorded" — it is not a new event, it completed one.
+func TestJourneyEventEnrichedStatusOnConflict(t *testing.T) {
+	h, mock := newJourneyBridge(t)
+	mock.ExpectQuery(`INSERT INTO mailing_journey_events`).
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(false))
+
+	rr := postJourneyEvent(t, h, `{"type":"session_progress","transid":"txn-11",
+		"session_id":"s","email":"late@example.com","form_data":{"step":"email"}}`)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "enriched", resp["status"])
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
