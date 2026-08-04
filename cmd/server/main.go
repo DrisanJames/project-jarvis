@@ -2052,6 +2052,17 @@ var criticalSendPathDDL = []struct {
 	// bridge for vendor_type='pmta' profiles. ProfileBasedSender reads it
 	// UNCONDITIONALLY per send, so the column must exist before any worker starts.
 	{"add_profile_routing_mode", `ALTER TABLE mailing_sending_profiles ADD COLUMN IF NOT EXISTS routing_mode TEXT`},
+	// ---- Funnel traffic source (affid), 2026-08-04 ----
+	// JourneyEventsBridge's INSERT lists affid UNCONDITIONALLY, and the
+	// JourneyAbandonDetector's sweep selects it — so the binary must not come
+	// up ahead of these. Both tables are tiny (~4.4k / ~2.4k rows) and cold, so
+	// the ALTER is instant; the reason they are HERE rather than in the 5s
+	// migration slice is the failure MODE, not the size: if the ALTER were
+	// skipped on a lock wait, every funnel beacon would 500 and we would lose
+	// the entire journey feed silently — the same shape as the 2026-08-02
+	// click-drip incident above.
+	{"aug04_journey_events_affid", `ALTER TABLE mailing_journey_events ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
+	{"aug04_abandon_state_affid", `ALTER TABLE mailing_journey_abandon_state ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
 	// ---- Kafka send-queue ledger (migration 050, SK-4) ----
 	// Additive: NEW table only — no existing table is altered. It sits on the
 	// send path (the QueueWriterConsumer's optional ledger record + the
@@ -8501,18 +8512,10 @@ END $$`},
 			ON mailing_journey_events(event_type, transid, step)`},
 		{"jul27_journey_events_session_idx", `CREATE INDEX IF NOT EXISTS idx_mje_session
 			ON mailing_journey_events(session_id) WHERE session_id <> ''`},
-		// affid (2026-08-04): the funnel's traffic source. Never captured
-		// before, so no per-affiliate rule was expressible and no per-affiliate
-		// coverage was measurable — abandon recovery was dark for whole
-		// affiliates with nothing to show it. Measured that day: 1,093 of 2,378
-		// abandons (46%) unreachable, and 36 of the 103 sessions that reached
-		// the `email` step never sent us the address. Nullable/defaulted so an
-		// affiliate that omits it degrades to '' rather than losing the event;
-		// both tables are tiny, well inside the 5s migration budget.
-		{"aug04_journey_events_affid", `ALTER TABLE mailing_journey_events
-			ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
-		{"aug04_abandon_state_affid", `ALTER TABLE mailing_journey_abandon_state
-			ADD COLUMN IF NOT EXISTS affid VARCHAR(64) NOT NULL DEFAULT ''`},
+		// affid columns themselves live in criticalSendPathDDL — the bridge
+		// INSERT and the abandon detector's sweep reference them
+		// UNCONDITIONALLY, so they must land before the binary. Only the
+		// (optional, read-side) index belongs here.
 		{"aug04_journey_events_affid_idx", `CREATE INDEX IF NOT EXISTS idx_mje_affid
 			ON mailing_journey_events(affid) WHERE affid <> ''`},
 		{"jul31_partner_datasets_vertical_consumer", `DO $$
