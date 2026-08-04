@@ -858,6 +858,21 @@ func (s *PMTACampaignService) HandleStageCampaign(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Attribution stamp at STAGE (audience unification W2) — the exact
+	// invocation finalizeDeploy/finalizeAudience use post-commit, so drafts
+	// carry offer_id/offer_key from the moment they land on the Draft Board.
+	// Idempotency-gated on attribution_source (the deploy-time re-run is a
+	// no-op); log-and-continue inside; kill switch DISABLE_ATTRIBUTION_STAMPING=1.
+	stampSubject, stampHTML, stampFromName := "", "", ""
+	if len(input.Variants) > 0 {
+		stampSubject = input.Variants[0].Subject
+		stampHTML = input.Variants[0].HTMLContent
+		stampFromName = input.Variants[0].FromName
+	}
+	stampCtx, stampCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	stampCampaignAttribution(stampCtx, s.db, orgID, result.CampaignID, input, input.Name, stampSubject, stampHTML, stampFromName)
+	stampCancel()
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"campaign_id":  result.CampaignID,
 		"name":         result.Name,
@@ -1367,6 +1382,13 @@ func (s *PMTACampaignService) reserveCampaignForDeploy(ctx context.Context, orgI
 	if err := verifyCampaignPersisted(s.db, campaignID.String(), orgID); err != nil {
 		return "", "", false, fmt.Errorf("reserve campaign for deploy: %w", err)
 	}
+
+	// Audience-identity links (audience unification W1): persist which
+	// segments this campaign includes/excludes so the identity survives
+	// outside the pmta_config blob. Non-fatal (log + continue) and
+	// kill-switch guarded — must never fail a deploy.
+	writeCampaignAudienceLinks(ctx, s.db, campaignID.String(), input.InclusionSegments, input.ExclusionSegments)
+
 	return campaignID.String(), "", false, nil
 }
 

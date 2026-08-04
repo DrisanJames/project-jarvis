@@ -154,6 +154,21 @@ func stampCampaignAttribution(ctx context.Context, db attributionQuerier, orgID,
 			log.Printf("[attribution] campaign %s: stamped-check failed (continuing): %v", campaignID, err)
 		}
 	} else if alreadyStamped {
+		// Auto-tagging (audience unification W4a) still applies when the stamp
+		// is skipped as already-stamped — a stage-time stamp followed by the
+		// deploy-time re-run must still land the tags. The stored offer_key is
+		// re-read because this run never computed one. ON CONFLICT DO NOTHING
+		// keeps the re-run idempotent; kill switch DISABLE_CAMPAIGN_AUTO_TAGS=1.
+		if os.Getenv(autoTagKillSwitch) != "1" {
+			var storedKey sql.NullString
+			if err := db.QueryRowContext(ctx, `
+				SELECT offer_key FROM mailing_campaigns WHERE id = $1
+			`, campaignID).Scan(&storedKey); err != nil && err != sql.ErrNoRows {
+				log.Printf("[AutoTag] campaign %s: offer_key read failed (continuing): %v", campaignID, err)
+			}
+			autoTagCampaign(ctx, db, campaignID,
+				deriveCampaignTags(name, storedKey.String, input.SendingDomain, firstVariantFromEmail(input)))
+		}
 		return
 	}
 
@@ -247,6 +262,16 @@ func stampCampaignAttribution(ctx context.Context, db attributionQuerier, orgID,
 	}
 
 	stampAttributionUpdate(ctx, db, campaignID, offerID, offerKey, creativeID, subjectLineID, attributionSource)
+
+	// Auto-tagger (audience unification W4a) — after a successful stamp, derive
+	// the campaign's rollup tags from the same identity facts. Log-and-continue
+	// inside; kill switch DISABLE_CAMPAIGN_AUTO_TAGS=1.
+	keyForTags := ""
+	if s, ok := offerKey.(string); ok {
+		keyForTags = s
+	}
+	autoTagCampaign(ctx, db, campaignID,
+		deriveCampaignTags(name, keyForTags, input.SendingDomain, firstVariantFromEmail(input)))
 }
 
 // resolveOfferIDViaSlugMap resolves an offer token/slug to a mailing_offers id

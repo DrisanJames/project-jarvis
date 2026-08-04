@@ -336,6 +336,12 @@ func createPMTAWaveCampaign(
 		})
 	}
 
+	// Audience-identity links (audience unification W1) — written through the
+	// non-tx db handle so a link failure can never poison the wave TX, and
+	// ON CONFLICT DO NOTHING makes the reserve-path + finalize-path double
+	// write idempotent. Non-fatal; kill switch DISABLE_CAMPAIGN_AUDIENCE_LINKS=1.
+	writeCampaignAudienceLinks(ctx, db, campaignID.String(), input.InclusionSegments, input.ExclusionSegments)
+
 	return engine.PMTAWavePlanResult{
 		CampaignID:    campaignID.String(),
 		Name:          input.Name,
@@ -710,6 +716,11 @@ func stagePMTADraftCampaign(
 	if err := verifyCampaignPersisted(db, campaignID.String(), orgID); err != nil {
 		return engine.PMTACampaignDraftResult{}, fmt.Errorf("stage PMTA draft: %w", err)
 	}
+
+	// Audience-identity links (audience unification W1): staged drafts record
+	// their include/exclude segments immediately, not only at deploy. Non-fatal
+	// (log + continue) and kill-switch guarded — never fails a stage.
+	writeCampaignAudienceLinks(ctx, db, campaignID.String(), input.InclusionSegments, input.ExclusionSegments)
 
 	return engine.PMTACampaignDraftResult{
 		CampaignID:    campaignID.String(),

@@ -38,9 +38,13 @@ interface CampaignRow {
   preview_text: string;
   profile_name?: string;
   segment_names?: string[];
+  list_names?: string[];
 }
 
 interface IspQuota { isp: string; volume: number; }
+// GET /api/mailing/pmta-campaign/{id}/isp-volume → {isps:[...]} — real per-ISP plan
+// from mailing_campaign_isp_plans (planned = audience_selected_count; quota 0 = uncapped).
+interface IspVolumeRow { isp: string; planned: number; sent: number; quota: number; estimated: number; }
 interface Variant { subject?: string; preview_text?: string; from_name?: string; html_content?: string; }
 interface EditData {
   sending_domain?: string;
@@ -103,6 +107,9 @@ export const DraftBoardView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [details, setDetails] = useState<Record<string, EditData | 'loading' | 'error'>>({});
+  // Per-campaign real ISP plan (isp-volume). 'error' fails SOFT: the IspTable simply
+  // renders without the Planned column, exactly as before this feature existed.
+  const [ispVol, setIspVol] = useState<Record<string, IspVolumeRow[] | 'loading' | 'error'>>({});
   // Per-campaign action state for approve/disapprove (in-flight + inline error/success).
   // failedGates carries the server's REQ-007 gate verdicts when a deploy was
   // blocked (HTTP 412 {failed_gates}) so the board can offer the override path.
@@ -156,6 +163,19 @@ export const DraftBoardView: React.FC = () => {
       setDetails(prev => ({ ...prev, [id]: ci }));
     } catch {
       setDetails(prev => ({ ...prev, [id]: 'error' }));
+    }
+  }, [headers]);
+
+  const fetchIspVolume = useCallback(async (id: string) => {
+    setIspVol(prev => (prev[id] && prev[id] !== 'error' ? prev : { ...prev, [id]: 'loading' }));
+    try {
+      const r = await fetch(`/api/mailing/pmta-campaign/${id}/isp-volume`, { headers });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const isps: IspVolumeRow[] = Array.isArray(j.isps) ? j.isps : [];
+      setIspVol(prev => ({ ...prev, [id]: isps }));
+    } catch {
+      setIspVol(prev => ({ ...prev, [id]: 'error' }));
     }
   }, [headers]);
 
@@ -247,10 +267,14 @@ export const DraftBoardView: React.FC = () => {
     setExpanded(prev => {
       const next = new Set(prev);
       if (next.has(id)) { next.delete(id); }
-      else { next.add(id); if (!details[id] || details[id] === 'error') void fetchDetail(id); }
+      else {
+        next.add(id);
+        if (!details[id] || details[id] === 'error') void fetchDetail(id);
+        if (!ispVol[id] || ispVol[id] === 'error') void fetchIspVolume(id);
+      }
       return next;
     });
-  }, [details, fetchDetail]);
+  }, [details, fetchDetail, ispVol, fetchIspVolume]);
 
   // Filter to the selected MT day, then group by sending domain.
   // Bucket by scheduled_at ONLY — that's the campaign's actual MST send time.
@@ -506,13 +530,45 @@ export const DraftBoardView: React.FC = () => {
                           )}
                         </div>
 
+                        {/* WHICH audience this campaign mails — segment/list names from the
+                            roster (GET /campaigns emits segment_names + list_names per row). */}
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={fieldLabel}>Audience</div>
+                          {((c.segment_names?.length ?? 0) > 0 || (c.list_names?.length ?? 0) > 0) ? (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+                              {(c.segment_names ?? []).map(nm => (
+                                <span key={`seg-${nm}`} style={segmentChip}>{nm}</span>
+                              ))}
+                              {(c.list_names?.length ?? 0) > 0 && (
+                                <>
+                                  <span style={{ ...fieldLabel, marginBottom: 0 }}>Lists:</span>
+                                  {(c.list_names ?? []).map(nm => (
+                                    <span key={`list-${nm}`} style={listChip}>{nm}</span>
+                                  ))}
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <div style={{ display: 'inline-block', padding: '3px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.45)', color: '#f59e0b', fontSize: 12, fontWeight: 600 }}>
+                              ⚠ No named audience recorded
+                            </div>
+                          )}
+                        </div>
+
                         {/* Per-ISP volume targets / caps */}
                         <div style={fieldLabel}>Volume targets by mailbox provider</div>
                         {det === 'loading' && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>Loading mailbox provider plan…</div>}
                         {det === 'error' && <div style={{ fontSize: 12, color: '#e94560' }}>Could not load mailbox provider plan for this campaign.</div>}
-                        {det && det !== 'loading' && det !== 'error' && (
-                          <IspTable det={det} totalAudience={c.total_recipients} />
-                        )}
+                        {det && det !== 'loading' && det !== 'error' && (() => {
+                          const iv = ispVol[c.id];
+                          return (
+                            <IspTable
+                              det={det}
+                              totalAudience={c.total_recipients}
+                              vol={Array.isArray(iv) ? iv : undefined}
+                            />
+                          );
+                        })()}
 
                         {/* Approve / Disapprove — only for staged drafts. */}
                         {c.status === 'draft' && (() => {
@@ -549,34 +605,52 @@ export const DraftBoardView: React.FC = () => {
       </div>
 
       <div style={{ marginTop: 18, fontSize: 10, color: 'rgba(180,210,240,0.35)' }}>
-        Draft Board v1.2 · send-day gates enforced server-side on Approve (red gate → blocked; override requires an audit-logged reason) · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
+        Draft Board v1.3 · audience segments/lists shown per campaign; per-provider Planned = planner-selected recipients (mailing_campaign_isp_plans) · send-day gates enforced server-side on Approve (red gate → blocked; override requires an audit-logged reason) · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
       </div>
     </div>
   );
 };
 
-const IspTable: React.FC<{ det: EditData; totalAudience: number }> = ({ det, totalAudience }) => {
+const IspTable: React.FC<{ det: EditData; totalAudience: number; vol?: IspVolumeRow[] }> = ({ det, totalAudience, vol }) => {
   const quotaByIsp = new Map<string, number>();
   (det.isp_quotas || []).forEach(q => quotaByIsp.set(q.isp, q.volume));
-  // The ISPs this campaign actually targets, in canonical order.
+  // Real per-ISP planner-selected recipients (mailing_campaign_isp_plans). Absent
+  // (fetch failed / no plan rows yet) → the table renders exactly as before.
+  const plannedByIsp = new Map<string, number>();
+  (vol ?? []).forEach(v => { if (v && v.isp) plannedByIsp.set(String(v.isp).toLowerCase(), v.planned || 0); });
+  const hasPlanned = plannedByIsp.size > 0;
+  // The ISPs this campaign actually targets (∪ ISPs with a real plan row), canonical order.
   const targeted = (det.target_isps && det.target_isps.length ? det.target_isps : (det.isp_quotas || []).map(q => q.isp));
-  const ordered = ISP_ORDER.filter(i => targeted.includes(i)).concat(targeted.filter(i => !ISP_ORDER.includes(i)));
+  const shown = new Set<string>([...targeted, ...plannedByIsp.keys()]);
+  const ordered = ISP_ORDER.filter(i => shown.has(i)).concat([...shown].filter(i => !ISP_ORDER.includes(i)));
   const anyCap = (det.isp_quotas || []).some(q => (q.volume || 0) > 0);
+  const plannedSum = [...plannedByIsp.values()].reduce((s, n) => s + n, 0);
 
   return (
     <table style={{ borderCollapse: 'collapse', fontSize: 12, marginTop: 6, minWidth: 320 }}>
       <thead>
         <tr style={{ color: 'rgba(180,210,240,0.6)', textAlign: 'left' }}>
           <th style={thCell}>Mailbox provider</th>
+          {hasPlanned && (
+            <th style={{ ...thCell, textAlign: 'right' }} title="Planner-selected recipients per provider (mailing_campaign_isp_plans.audience_selected_count)">
+              Planned
+            </th>
+          )}
           <th style={{ ...thCell, textAlign: 'right' }}>{anyCap ? 'Volume target / cap' : 'Cap'}</th>
         </tr>
       </thead>
       <tbody>
         {ordered.map(isp => {
           const v = quotaByIsp.get(isp) ?? 0;
+          const p = plannedByIsp.get(isp);
           return (
             <tr key={isp} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <td style={tdCell}>{ISP_LABEL[isp] || isp}</td>
+              {hasPlanned && (
+                <td style={{ ...tdCell, textAlign: 'right', color: (p ?? 0) > 0 ? '#00e5ff' : 'rgba(180,210,240,0.55)', fontWeight: (p ?? 0) > 0 ? 600 : 400 }}>
+                  {p === undefined ? '—' : num(p)}
+                </td>
+              )}
               <td style={{ ...tdCell, textAlign: 'right', color: v > 0 ? '#00e5ff' : 'rgba(180,210,240,0.55)', fontWeight: v > 0 ? 600 : 400 }}>
                 {v > 0 ? num(v) : 'Uncapped'}
               </td>
@@ -585,7 +659,19 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number }> = ({ det, tot
         })}
         <tr style={{ borderTop: '1px solid rgba(0,200,255,0.18)' }}>
           <td style={{ ...tdCell, fontWeight: 700 }}>Audience (planned)</td>
-          <td style={{ ...tdCell, textAlign: 'right', color: '#00e5ff', fontWeight: 700 }}>{num(totalAudience)}</td>
+          {hasPlanned ? (
+            <>
+              <td
+                style={{ ...tdCell, textAlign: 'right', color: '#00e5ff', fontWeight: 700 }}
+                title={`Σ planner-selected per provider. Campaign total_recipients: ${num(totalAudience)}`}
+              >
+                {num(plannedSum)}
+              </td>
+              <td style={tdCell} />
+            </>
+          ) : (
+            <td style={{ ...tdCell, textAlign: 'right', color: '#00e5ff', fontWeight: 700 }}>{num(totalAudience)}</td>
+          )}
         </tr>
       </tbody>
     </table>
@@ -600,6 +686,8 @@ const Field: React.FC<{ label: string; value: string }> = ({ label, value }) => 
 );
 
 const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.5)', marginBottom: 3 };
+const segmentChip: React.CSSProperties = { display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: 'rgba(99,102,241,0.14)', border: '1px solid rgba(99,102,241,0.45)', color: '#a5b4fc', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' };
+const listChip: React.CSSProperties = { ...segmentChip, background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.45)', color: '#c084fc' };
 const thCell: React.CSSProperties = { padding: '4px 14px 4px 0', fontWeight: 600 };
 const tdCell: React.CSSProperties = { padding: '4px 14px 4px 0', color: 'rgba(220,235,250,0.9)' };
 const ghostBtn: React.CSSProperties = { background: 'rgba(0,176,255,0.12)', color: '#00b0ff', border: '1px solid rgba(0,176,255,0.35)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };

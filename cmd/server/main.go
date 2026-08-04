@@ -4765,6 +4765,29 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"uq_subject_identities_org_md5", `CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_identities_org_md5 ON mailing_subject_identities(organization_id, subject_md5)`},
 
+		// Audience unification Phase 1 (2026-08-04) — app-owned companion
+		// tables (apex_admin owns mailing_campaigns; never ALTER it). Both are
+		// written log-and-continue OUTSIDE the deploy TX (campaign_audience_links.go,
+		// campaign_tags.go), so the background slice is safe: a boot where the
+		// DDL hasn't landed yet only logs failed link/tag inserts, never blocks
+		// a stage or deploy. Tiny DDL — comfortably inside the 5s budget.
+		{"create_campaign_audiences", `CREATE TABLE IF NOT EXISTS mailing_campaign_audiences (
+			campaign_id UUID NOT NULL,
+			segment_id UUID NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('include','exclude')),
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			PRIMARY KEY (campaign_id, segment_id, role)
+		)`},
+		{"idx_campaign_audiences_segment", `CREATE INDEX IF NOT EXISTS idx_campaign_audiences_segment ON mailing_campaign_audiences(segment_id)`},
+		{"create_campaign_tags", `CREATE TABLE IF NOT EXISTS mailing_campaign_tags (
+			campaign_id UUID NOT NULL,
+			tag TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'auto',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			PRIMARY KEY (campaign_id, tag)
+		)`},
+		{"idx_campaign_tags_tag", `CREATE INDEX IF NOT EXISTS idx_campaign_tags_tag ON mailing_campaign_tags(tag)`},
+
 		// Offer Alignment matrix snapshot (PART B, 2026-07-07). READ-path
 		// materialisation refreshed by RefreshOfferAlignmentSnapshot
 		// (internal/api/offer_alignment_snapshot.go) — deliberately in the

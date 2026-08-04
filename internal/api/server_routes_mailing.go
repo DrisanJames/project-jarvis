@@ -143,6 +143,30 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			everflowConversionsSync(w, req)
 		})
 
+		// Admin: audience unification Phase 1 backfills (W4c). Both are
+		// batched (500 ids per loop, id cursor) so they never run one
+		// statement over the whole campaigns table, idempotent
+		// (ON CONFLICT DO NOTHING), and safe to re-run. Same X-Admin-Key
+		// gate, closed by default. Params: days=N (default 30, max 365).
+		audienceLinksBackfill := HandleAudienceLinksBackfill(db)
+		s.router.Post("/api/admin/audience-links/backfill", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			audienceLinksBackfill(w, req)
+		})
+		campaignTagsBackfill := HandleCampaignTagsBackfill(db)
+		s.router.Post("/api/admin/campaign-tags/backfill", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			campaignTagsBackfill(w, req)
+		})
+
 		// Admin: bulk-tag canonical CSV loader. Mirrors the local
 		// Python loader (scripts/import/load_eo_harvest_keepers.py and
 		// .scratch/apr29_load_trugreen_attribits.py) so vendor batches
@@ -1340,6 +1364,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// Send-Day Schedule (day-clock) — read-only lane timeline for a
 			// send day (schedule_day.go). Backs the portal "Schedule" tab.
 			r.Get("/schedule/day", s.HandleScheduleDay)
+
+			// === CAMPAIGN TAGS (audience unification Phase 1, W4b) ===
+			// Read side of mailing_campaign_tags: per-tag family rollups over
+			// the denormalized campaign counters, and one campaign's tags.
+			// Report MUST register before the {campaignID} wildcard.
+			r.Get("/campaign-tags/report", HandleCampaignTagsReport(db))
+			r.Get("/campaign-tags/{campaignID}", HandleCampaignTagsForCampaign(db))
 
 			// === PMTA CAMPAIGN WIZARD (ISP-native campaign creation) ===
 			pmtaCampaignAPI := NewPMTACampaignService(db, orchestrator, convictionStore, signalProcessor, engineOrgID)
