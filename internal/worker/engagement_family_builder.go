@@ -244,14 +244,14 @@ const engagementFamilyEnsureSegmentSQL = `
 		id, organization_id, name, description, segment_type, conditions,
 		status, keep_active, category, subscriber_count, created_at, updated_at
 	)
-	SELECT gen_random_uuid(), o.organization_id, $1, $2, 'static',
+	SELECT gen_random_uuid(), o.organization_id, $1::text, $2::text, 'static',
 		jsonb_build_array(jsonb_build_object('group', 0, 'field', 'sending_domain', 'operator', 'equals', 'value', $3::text)),
-		'active', TRUE, $4, 0, NOW(), NOW()
+		'active', TRUE, $4::text, 0, NOW(), NOW()
 	FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
 	WHERE NOT EXISTS (
 		SELECT 1 FROM mailing_segments m
 		WHERE m.organization_id = o.organization_id
-		  AND m.name = $1
+		  AND m.name = $1::text
 	)`
 
 // engagementFamilyListSQL resolves the family segment ids to rebuild. Reads
@@ -260,7 +260,7 @@ const engagementFamilyEnsureSegmentSQL = `
 const engagementFamilyListSQL = `
 	SELECT s.id::text, s.name
 	FROM mailing_segments s
-	WHERE s.name = ANY($1)
+	WHERE s.name = ANY($1::text[])
 	  AND s.segment_type = 'static'
 	  AND s.status = 'active'
 	ORDER BY s.name`
@@ -610,7 +610,7 @@ func (w *EngagementFamilyBuilder) recordBuild(ctx context.Context, segmentID str
 	}
 	if _, err := w.db.ExecContext(bctx, `
 		UPDATE mailing_segments
-		SET subscriber_count   = $1,
+		SET subscriber_count   = $1::int,
 		    last_calculated_at = NOW(),
 		    updated_at         = NOW()
 		WHERE id = $2::uuid`, count, segmentID); err != nil {
