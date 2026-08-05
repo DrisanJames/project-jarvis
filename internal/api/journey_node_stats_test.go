@@ -41,6 +41,15 @@ func TestHandleGetJourneyNodeStats_ApiVersionAndShape(t *testing.T) {
 			AddRow("node_email_1", 2, 100, 95, 25, 4, 3, 2).
 			AddRow("node_email_2", 1, 50, 48, 12, 1, 1, 1))
 
+	// Sent override from the message_log send-truth ledger (v1.1): click-drip
+	// touches emit no 'sent' tracking event, so the event-derived sent above
+	// is replaced per node by the message_log count. node_email_2 has no
+	// message_log row here and must keep its event-derived fallback.
+	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_message_log ml`)).
+		WithArgs("j1").
+		WillReturnRows(sqlmock.NewRows([]string{"journey_node_id", "count"}).
+			AddRow("node_email_1", 288))
+
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT current_node_id, COUNT(*)
 		FROM mailing_journey_enrollments`)).
 		WithArgs("j1").
@@ -74,8 +83,14 @@ func TestHandleGetJourneyNodeStats_ApiVersionAndShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing node_email_1 in response")
 	}
-	if n1.Sent != 100 || n1.HardBounce != 3 || n1.SoftBounce != 2 || n1.AudienceAwaiting != 7 {
+	// Sent must be the message_log override (288), NOT the event-derived 100 —
+	// regressing to tracking-event 'sent' re-creates the aug04 "funnel not
+	// mailing" zero for click-drip nodes.
+	if n1.Sent != 288 || n1.HardBounce != 3 || n1.SoftBounce != 2 || n1.AudienceAwaiting != 7 {
 		t.Fatalf("node_email_1 stats wrong: %+v", n1)
+	}
+	if n2 := resp.Nodes["node_email_2"]; n2.Sent != 50 {
+		t.Fatalf("node_email_2 must keep event-derived sent fallback (50), got %d", n2.Sent)
 	}
 
 	n3, ok := resp.Nodes["node_email_3"]

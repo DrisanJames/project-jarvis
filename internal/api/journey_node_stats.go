@@ -51,7 +51,10 @@ import (
 
 // VersionJourneyNodeStats is bumped on shape changes to the response
 // body so the page footer round-trip catches stale deploys.
-const VersionJourneyNodeStats = "1.0"
+//
+// 1.1 (2026-08-04): sent is sourced from mailing_message_log (send truth)
+// instead of 'sent' tracking events, which click-drip never emits.
+const VersionJourneyNodeStats = "1.1"
 
 // JourneyNodeStat is one row in the response map.
 type JourneyNodeStat struct {
@@ -158,6 +161,41 @@ func loadJourneyNodeStats(ctx context.Context, db *sql.DB, journeyID string) (ma
 			continue
 		}
 		out[nodeID.String] = stat
+	}
+
+	// Sent from mailing_message_log — the send-truth ledger (2026-08-04).
+	// Click-drip touches NEVER emit a 'sent' tracking event (send truth lives
+	// in message_log; JourneyClickDripSender.writeMessageLog), so the
+	// tracking-events aggregate above reads sent=0 for every click-drip node
+	// while opens/clicks show real traffic — the exact shape that caused the
+	// "funnel not mailing" false alarm. message_log is written by BOTH journey
+	// send paths (send_worker.markSent and the click-drip sender), so it
+	// overrides the event-derived count wholesale. Delivered stays event-based
+	// and UNDER-COUNTS SES-relayed drip touches (PMTA's terminal event is
+	// relayed_to_ses; post-relay SES events carry no journey campaign id).
+	sentRows, err := db.QueryContext(ctx, `
+		SELECT c.journey_node_id, COUNT(*)
+		FROM mailing_message_log ml
+		JOIN mailing_campaigns c ON c.id = ml.campaign_id
+		WHERE (c.journey_key = $1 OR (c.journey_id IS NOT NULL AND c.journey_id::text = $1))
+		  AND c.journey_node_id IS NOT NULL
+		GROUP BY c.journey_node_id
+	`, journeyID)
+	if err == nil {
+		defer sentRows.Close()
+		for sentRows.Next() {
+			var nodeID sql.NullString
+			var sent int
+			if err := sentRows.Scan(&nodeID, &sent); err != nil {
+				continue
+			}
+			if !nodeID.Valid || nodeID.String == "" {
+				continue
+			}
+			stat := out[nodeID.String]
+			stat.Sent = sent
+			out[nodeID.String] = stat
+		}
 	}
 
 	// Audience awaiting injection per current node.

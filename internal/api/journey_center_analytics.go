@@ -23,7 +23,11 @@ import (
 //	      through the mailing_journey_executions view that bridges the
 //	      executor's mailing_journey_execution_log table; entered/completed/
 //	      exited/failed counts now reflect real executor activity.
-const VersionJourneyAnalytics = "1.1"
+//	1.2 - email metrics read the real ledgers (message_log for sent,
+//	      tracking events on shadow campaigns for opens/clicks/bounces/
+//	      unsubs) instead of the view's placeholder '{}' details JSONB,
+//	      which rendered every email number as a confident zero.
+const VersionJourneyAnalytics = "1.2"
 
 // HandleJourneyMetrics returns detailed metrics for a specific journey
 // GET /api/journey-center/journeys/{id}/metrics
@@ -72,20 +76,36 @@ func (jc *JourneyCenter) HandleJourneyMetrics(w http.ResponseWriter, r *http.Req
 		metrics.AverageTimeToComplete = formatJourneyDuration(time.Duration(avgSeconds.Float64) * time.Second)
 	}
 
-	// Get email metrics
+	// Get email metrics (2026-08-04): from the REAL ledgers, not the bridge
+	// view's details JSONB — that column is a documented '{}' placeholder
+	// (main.go create_journey_executions_view, "Phase 3"), so every number
+	// here rendered a confident zero since the view shipped.
+	//   - sent: mailing_message_log, the send-truth ledger written by both
+	//     journey send paths (click-drip touches emit NO 'sent' tracking event).
+	//   - opens/clicks/bounces/unsubs: tracking events on the journey's shadow
+	//     campaigns — the same scoping as HandleGetJourneyNodeStats (journey_key
+	//     OR journey_id::text; mailing_journeys.id is VARCHAR, campaigns
+	//     journey_id is UUID).
 	jc.db.QueryRowContext(ctx, `
-		SELECT 
-			COALESCE(SUM((details->>'sent')::int), 0),
-			COALESCE(SUM((details->>'opens')::int), 0),
-			COALESCE(SUM((details->>'unique_opens')::int), 0),
-			COALESCE(SUM((details->>'clicks')::int), 0),
-			COALESCE(SUM((details->>'unique_clicks')::int), 0),
-			COALESCE(SUM((details->>'bounces')::int), 0),
-			COALESCE(SUM((details->>'unsubscribes')::int), 0)
-		FROM mailing_journey_executions
-		WHERE journey_id = $1 AND node_type = 'email'
+		SELECT COUNT(*)
+		FROM mailing_message_log ml
+		JOIN mailing_campaigns c ON c.id = ml.campaign_id
+		WHERE (c.journey_key = $1 OR (c.journey_id IS NOT NULL AND c.journey_id::text = $1))
+		  AND c.journey_node_id IS NOT NULL
+	`, journeyID).Scan(&metrics.EmailMetrics.TotalSent)
+	jc.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(CASE WHEN t.event_type = 'opened' THEN 1 ELSE 0 END), 0),
+			COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'opened'),
+			COALESCE(SUM(CASE WHEN t.event_type = 'clicked' THEN 1 ELSE 0 END), 0),
+			COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked'),
+			COALESCE(SUM(CASE WHEN t.event_type = 'bounced' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN t.event_type = 'unsubscribed' THEN 1 ELSE 0 END), 0)
+		FROM mailing_tracking_events t
+		JOIN mailing_campaigns c ON c.id = t.campaign_id
+		WHERE (c.journey_key = $1 OR (c.journey_id IS NOT NULL AND c.journey_id::text = $1))
+		  AND c.journey_node_id IS NOT NULL
 	`, journeyID).Scan(
-		&metrics.EmailMetrics.TotalSent,
 		&metrics.EmailMetrics.TotalOpens,
 		&metrics.EmailMetrics.UniqueOpens,
 		&metrics.EmailMetrics.TotalClicks,

@@ -48,14 +48,18 @@ func TestHandleJourneyMetrics_FromExecutionLogView(t *testing.T) {
 		WithArgs("j-1").
 		WillReturnRows(sqlmock.NewRows([]string{"avg_seconds"}).AddRow(86400.0))
 
-	// 4. Email metrics — now reads through the mailing_journey_executions
-	// view added in Phase 0. View returns details='{}' so all values are 0
-	// until Phase 3 plugs in shadow-campaign tracking events.
-	mock.ExpectQuery(`FROM mailing_journey_executions\s+WHERE journey_id`).
+	// 4. Email metrics (2026-08-04) — sent from the message_log send-truth
+	// ledger, engagement from tracking events on the journey's shadow
+	// campaigns. The old details-JSONB source was a documented '{}'
+	// placeholder that rendered every email number as a confident zero.
+	mock.ExpectQuery(`FROM mailing_message_log ml\s+JOIN mailing_campaigns c`).
+		WithArgs("j-1").
+		WillReturnRows(sqlmock.NewRows([]string{"sent"}).AddRow(994))
+	mock.ExpectQuery(`FROM mailing_tracking_events t\s+JOIN mailing_campaigns c`).
 		WithArgs("j-1").
 		WillReturnRows(sqlmock.NewRows(
-			[]string{"sent", "opens", "u_opens", "clicks", "u_clicks", "bounces", "unsubs"},
-		).AddRow(0, 0, 0, 0, 0, 0, 0))
+			[]string{"opens", "u_opens", "clicks", "u_clicks", "bounces", "unsubs"},
+		).AddRow(277, 180, 644, 402, 2, 1))
 
 	// 5. Hourly distribution.
 	mock.ExpectQuery(`EXTRACT\(HOUR FROM enrolled_at\)`).
@@ -82,6 +86,17 @@ func TestHandleJourneyMetrics_FromExecutionLogView(t *testing.T) {
 	assert.Equal(t, 10, resp.ExitedCount)
 	assert.InDelta(t, 0.25, resp.CompletionRate, 0.001)
 	assert.InDelta(t, 1.0/12.0, resp.ConversionRate, 0.001)
+	// Email metrics from the real ledgers — a zero here means the handler
+	// regressed to a source click-drip does not write (the aug04 false alarm).
+	assert.Equal(t, 994, resp.EmailMetrics.TotalSent)
+	assert.Equal(t, 277, resp.EmailMetrics.TotalOpens)
+	assert.Equal(t, 180, resp.EmailMetrics.UniqueOpens)
+	assert.Equal(t, 644, resp.EmailMetrics.TotalClicks)
+	assert.Equal(t, 402, resp.EmailMetrics.UniqueClicks)
+	assert.Equal(t, 2, resp.EmailMetrics.Bounces)
+	assert.Equal(t, 1, resp.EmailMetrics.Unsubscribes)
+	assert.InDelta(t, 180.0/994.0, resp.EmailMetrics.OpenRate, 0.001)
+	assert.InDelta(t, 402.0/994.0, resp.EmailMetrics.ClickRate, 0.001)
 	assert.Equal(t, VersionJourneyAnalytics, resp.APIVersion,
 		"api_version must surface so the frontend can verify the deployed build")
 
