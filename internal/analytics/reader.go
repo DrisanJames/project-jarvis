@@ -113,6 +113,13 @@ type BreakdownFilter struct {
 	// Other event types keep event_uid semantics; the two count domains are
 	// prefix-tagged so they can never collide inside one DISTINCT.
 	DedupDelayByEmail bool
+	// DedupEngagementByEmail counts open/click events by DISTINCT recipient
+	// email instead of event_uid — the standard UNIQUE open/click metric.
+	// Raw event counts inflate badly on these two: measured 2026-08-05 on one
+	// click-drip node, 244 click events came from 27 mailboxes (9x), which is
+	// how a funnel node rendered a 533% click rate. Delay keeps its own
+	// dedup domain; the prefixes keep the count domains from colliding.
+	DedupEngagementByEmail bool
 }
 
 // maxBreakdownCampaignIDs bounds the campaign IN-list so a pathological caller
@@ -210,14 +217,14 @@ const ispExpr = "CASE" +
 
 // brandExpr is the CLEAN brand classification (apex domain). The stored `brand`
 // column is authoritative when present — but only the PG→lake backfill (source
-// 'app') has historically set it; the live pmta/ses emitters wrote brand=''
+// 'app') has historically set it; the live pmta/ses emitters wrote brand=”
 // (verified 2026-07-01: 100% of pmta+ses rows blank), which collapsed every
 // delivery metric on the Brand dimension into one "(empty)" row. For blank
 // rows we fall back to the brand code embedded in the VMTA name — every pmta
 // row carries one ("mta-<code>-<pool>N" / "vmta-<code>-ses"; zero blank-vmta
 // pmta rows in the lake). The code→apex map mirrors the VMTA seeds in
 // cmd/server/main.go (seed rows "mta-bw-gn1.mail.em.businessweeklypro.com" …).
-// ses-source rows have no vmta, so their history stays '' — write-time
+// ses-source rows have no vmta, so their history stays ” — write-time
 // enrichment (Brand set at Emit) covers them from 2026-07 forward. Values are
 // apex domains, matching brand.OwnedDomains and the stored app-row values.
 const brandCodeExpr = "CASE split_part(vmta, '-', 2)" +
@@ -290,7 +297,7 @@ const eventTypeExpr = "CASE WHEN event_type IN ('bounced','hard_bounce','soft_bo
 //   - Gmail rate/auth deferrals: 4.7.0, 4.7.28.
 //   - List quality: 5.1.1 (invalid mailbox), 5.2.2 (mailbox full).
 //
-// Rows with no matching pattern fall back to COALESCE(NULLIF(dsn_code,''),'other')
+// Rows with no matching pattern fall back to COALESCE(NULLIF(dsn_code,”),'other')
 // so a classified DSN code still buckets sensibly. NULL dsn_diag makes every
 // LIKE/regexp predicate non-true in Presto, so NULL rows reach the ELSE arm.
 // Order matters only within the substring checks: 4.7.650 is tested before
@@ -753,8 +760,15 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 	}
 
 	countExpr := "COUNT(DISTINCT event_uid)"
-	if f.DedupDelayByEmail {
+	switch {
+	case f.DedupDelayByEmail && f.DedupEngagementByEmail:
+		countExpr = "COUNT(DISTINCT IF(event_type IN ('delivery_delay','open','click'), " +
+			"'e:' || event_type || ':' || email, 'u:' || event_uid))"
+	case f.DedupDelayByEmail:
 		countExpr = "COUNT(DISTINCT IF(event_type = 'delivery_delay', 'e:' || email, 'u:' || event_uid))"
+	case f.DedupEngagementByEmail:
+		countExpr = "COUNT(DISTINCT IF(event_type IN ('open','click'), " +
+			"'e:' || event_type || ':' || email, 'u:' || event_uid))"
 	}
 	var b strings.Builder
 	b.WriteString("SELECT ")

@@ -1166,7 +1166,7 @@ export const ClickFunnels: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(300px,1fr)', gap: 16, alignItems: 'start' }}>
           <Panel style={{ padding: 16 }}>
             <SectionHeader
-              title={detail?.offer_name ? `${detail.offer_name}` : `Offer ${selected}`}
+              title={detail?.offer_name ? `${detail.offer_name} · EF ${selected}` : `Offer ${selected}`}
               icon={faBolt}
               right={
                 <div style={{ display: 'flex', gap: 4, background: 'rgba(10,16,32,0.6)', borderRadius: 8, padding: 3 }}>

@@ -304,6 +304,7 @@ type ClickFunnelNode struct {
 	Opens       int `json:"opens"`
 	Clicks      int `json:"clicks"`
 	HumanClicks int `json:"human_clicks"`
+	Relayed     int `json:"relayed"`
 	Deferred    int `json:"deferred"`
 	Unsubs      int `json:"unsubscribes"`
 	HardBounce  int `json:"hard_bounce"`
@@ -562,20 +563,25 @@ func (s *ClickFunnelsService) HandleFunnelNodes(w http.ResponseWriter, r *http.R
 			if e, ok := engagement[g.ID]; ok {
 				n.Sent, n.Delivered, n.Opens, n.Clicks = e.sent, e.delivered, e.opens, e.clicks
 				n.HumanClicks, n.Deferred = e.humanClicks, e.deferred
+				n.Relayed = e.relayed
 				n.Unsubs, n.HardBounce, n.SoftBounce = e.unsubs, e.hard, e.soft
 				n.Attributed = true
 				anyAttributed = true
 			}
 			n.Conversions = conversions[g.ID]
 
-			base := float64(n.Delivered)
+			// Denominator = ACCEPTED volume. 'delivered' alone undercounts any
+			// node whose mail was SES-relayed (booked as relayed_to_ses), which
+			// is what produced >100% rates. Fall back to sent when the lake has
+			// neither.
+			base := float64(n.Delivered + n.Relayed)
 			if base == 0 {
 				base = float64(n.Sent)
 			}
 			if base > 0 {
-				n.OpenRate = round2(float64(n.Opens) / base * 100)
-				n.ClickRate = round2(float64(n.Clicks) / base * 100)
-				n.HumanClickRate = round2(float64(n.HumanClicks) / base * 100)
+				n.OpenRate = clampRate(float64(n.Opens) / base * 100)
+				n.ClickRate = clampRate(float64(n.Clicks) / base * 100)
+				n.HumanClickRate = clampRate(float64(n.HumanClicks) / base * 100)
 			}
 			if n.Reached > 0 {
 				n.ConversionRate = round2(float64(n.Conversions) / float64(n.Reached) * 100)
@@ -706,10 +712,25 @@ func (s *ClickFunnelsService) loadAwaiting(ctx context.Context, offerID string) 
 
 type nodeEngagement struct {
 	sent, delivered, opens, clicks, humanClicks, unsubs, hard, soft, deferred int
+	// relayed counts 'relayed_to_ses' — click-drip mail handed to SES books
+	// delivery under that event, NOT 'delivered'. Excluding it collapsed the
+	// rate denominator to ~11% of real volume (193 sends -> 21 "delivered").
+	relayed int
 }
 
 // nodeCampaigns maps each of the lane's per-node shadow campaign ids to its
 // node id — the join key that lets the LAKE attribute engagement per node.
+// clampRate bounds a percentage at 100. A rate above 100 means numerator and
+// denominator came from different scopes — the funnel showed 533% for exactly
+// that reason. Clamping keeps the surface honest while the underlying counts
+// (opens/clicks/delivered/relayed) stay visible for diagnosis.
+func clampRate(v float64) float64 {
+	if v > 100 {
+		return 100
+	}
+	return round2(v)
+}
+
 func (s *ClickFunnelsService) nodeCampaigns(ctx context.Context, offerID string) (map[string]string, error) {
 	if !s.hasAttributionCols(ctx) {
 		// No attribution columns yet: no campaign is node-scoped, so there is
@@ -750,6 +771,10 @@ func (s *ClickFunnelsService) nodeCampaigns(ctx context.Context, offerID string)
 //   - source IN (pmta, ses, kumo): the REAL transports. The `app` source emits a
 //     duplicate 'delivered' with no distinct delivery key, so including it
 //     double-counts delivery; `relayed_to_ses` is a hop, never a delivery.
+//     It IS counted toward the rate DENOMINATOR as accepted volume (2026-08-05):
+//     SES-relayed click-drip mail books relayed_to_ses (source=pmta) and its
+//     final SES delivery is not attributed back to the node campaign, so
+//     'delivered' alone read 21 against 193 real sends and rendered >100% rates.
 //   - eventTypeExpr normalizes the two bounce spellings (PMTA puts the class in
 //     event_type, SES puts it in bounce_cat) — keying off event_type alone makes
 //     every SES bounce read as zero.
@@ -817,11 +842,16 @@ func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID, f
 	}
 
 	engagement, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
-		From:        fromDt,
-		To:          toDt,
-		GroupBy:     []string{"campaign_id", "event_type", "is_machine_click"},
-		CampaignIDs: ids,
-		Limit:       5000,
+		From:    fromDt,
+		To:      toDt,
+		GroupBy: []string{"campaign_id", "event_type", "is_machine_click"},
+		// UNIQUE opens/clicks (2026-08-05). Raw event counts are per-fetch:
+		// one node showed 244 click events from 27 mailboxes and rendered a
+		// 533% click rate. Unique-per-recipient is the standard metric and
+		// cannot exceed the recipient base.
+		DedupEngagementByEmail: true,
+		CampaignIDs:            ids,
+		Limit:                  5000,
 	})
 	if err != nil {
 		pg, perr := s.loadNodeEngagementPG(ctx, offerID)
@@ -847,6 +877,8 @@ func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID, f
 			e.soft += c
 		case "delivery_delay":
 			e.deferred += c
+		case "relayed_to_ses":
+			e.relayed += c
 		}
 		out[node] = e
 	}
