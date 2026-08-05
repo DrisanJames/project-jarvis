@@ -846,12 +846,12 @@ func (s *ClickFunnelsService) loadNodeEngagement(ctx context.Context, offerID, f
 		To:      toDt,
 		GroupBy: []string{"campaign_id", "event_type", "is_machine_click"},
 		// UNIQUE opens/clicks (2026-08-05). Raw event counts are per-fetch:
-		// one node showed 244 click events from 27 mailboxes and rendered a
-		// 533% click rate. Unique-per-recipient is the standard metric and
-		// cannot exceed the recipient base.
-		DedupEngagementByEmail: true,
-		CampaignIDs:            ids,
-		Limit:                  5000,
+		// one node showed 244 click events from 27 recipients and rendered a
+		// 533% click rate. Keyed on subscriber_id — email is NULL on ~87% of
+		// app-source engagement rows.
+		DedupEngagementByRecipient: true,
+		CampaignIDs:                ids,
+		Limit:                      5000,
 	})
 	if err != nil {
 		pg, perr := s.loadNodeEngagementPG(ctx, offerID)

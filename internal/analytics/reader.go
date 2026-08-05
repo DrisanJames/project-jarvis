@@ -113,13 +113,18 @@ type BreakdownFilter struct {
 	// Other event types keep event_uid semantics; the two count domains are
 	// prefix-tagged so they can never collide inside one DISTINCT.
 	DedupDelayByEmail bool
-	// DedupEngagementByEmail counts open/click events by DISTINCT recipient
-	// email instead of event_uid — the standard UNIQUE open/click metric.
-	// Raw event counts inflate badly on these two: measured 2026-08-05 on one
-	// click-drip node, 244 click events came from 27 mailboxes (9x), which is
-	// how a funnel node rendered a 533% click rate. Delay keeps its own
-	// dedup domain; the prefixes keep the count domains from colliding.
-	DedupEngagementByEmail bool
+	// DedupEngagementByRecipient counts open/click by DISTINCT RECIPIENT —
+	// the standard UNIQUE open/click metric. Raw event counts inflate badly on
+	// these two: measured 2026-08-05 on one click-drip node, 244 click events
+	// came from 27 recipients (9x), which is how a funnel node rendered a 533%
+	// click rate.
+	//
+	// The key is subscriber_id, NOT email: open/click ride source='app' where
+	// email is NULL on ~87% of rows (measured 2026-08-05: 4.21M opens ->
+	// 78,382 distinct emails vs 102,020 distinct subscriber_ids). Keying on
+	// email collapses a node's uniques toward 1. Rows with no subscriber_id
+	// fall back to event_uid so they are counted, never dropped.
+	DedupEngagementByRecipient bool
 }
 
 // maxBreakdownCampaignIDs bounds the campaign IN-list so a pathological caller
@@ -761,14 +766,19 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 
 	countExpr := "COUNT(DISTINCT event_uid)"
 	switch {
-	case f.DedupDelayByEmail && f.DedupEngagementByEmail:
-		countExpr = "COUNT(DISTINCT IF(event_type IN ('delivery_delay','open','click'), " +
-			"'e:' || event_type || ':' || email, 'u:' || event_uid))"
+	case f.DedupDelayByEmail && f.DedupEngagementByRecipient:
+		countExpr = "COUNT(DISTINCT CASE " +
+			"WHEN event_type = 'delivery_delay' THEN 'e:' || email " +
+			"WHEN event_type IN ('open','click') AND subscriber_id IS NOT NULL " +
+			"THEN 's:' || event_type || ':' || subscriber_id " +
+			"ELSE 'u:' || event_uid END)"
 	case f.DedupDelayByEmail:
 		countExpr = "COUNT(DISTINCT IF(event_type = 'delivery_delay', 'e:' || email, 'u:' || event_uid))"
-	case f.DedupEngagementByEmail:
-		countExpr = "COUNT(DISTINCT IF(event_type IN ('open','click'), " +
-			"'e:' || event_type || ':' || email, 'u:' || event_uid))"
+	case f.DedupEngagementByRecipient:
+		countExpr = "COUNT(DISTINCT CASE " +
+			"WHEN event_type IN ('open','click') AND subscriber_id IS NOT NULL " +
+			"THEN 's:' || event_type || ':' || subscriber_id " +
+			"ELSE 'u:' || event_uid END)"
 	}
 	var b strings.Builder
 	b.WriteString("SELECT ")
