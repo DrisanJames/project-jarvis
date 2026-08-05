@@ -7658,6 +7658,12 @@ END $$`},
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (partner_id, slug)
 		)`},
+		// Per-lane daily NEW-RECORD budget (operator 2026-08-05). The drip
+		// orchestrator caps per (brand x ISP); this is the per-dataset daily
+		// ceiling the Drip Lanes screen edits and drip_lane_release.py meters
+		// against (NULL/0 = uncapped). Instant ADD COLUMN on a small table.
+		{"dp_datasets_daily_cap",
+			`ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS daily_cap INTEGER`},
 		{"dp_create_partner_api_keys", `CREATE TABLE IF NOT EXISTS partner_api_keys (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			partner_id UUID NOT NULL REFERENCES data_partners(id) ON DELETE CASCADE,

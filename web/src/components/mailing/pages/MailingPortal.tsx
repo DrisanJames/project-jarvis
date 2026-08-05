@@ -37,6 +37,7 @@ const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
 const SendDayPlanner = lazy(() => import('../components/SendDayPlanner').then(m => ({ default: m.SendDayPlanner })));
 const DraftBoardView = lazy(() => import('../components/DraftBoardView').then(m => ({ default: m.DraftBoardView })));
+const DripLanesView = lazy(() => import('../components/DripLanesView').then(m => ({ default: m.DripLanesView })));
 const ScheduleView = lazy(() => import('../components/ScheduleView').then(m => ({ default: m.ScheduleView })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
@@ -71,7 +72,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes';
 
 interface Tab {
   id: TabId;
@@ -83,7 +84,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'schedule', 'scheduling-copilot'] },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'send-day', 'draft-board', 'drip-lanes', 'schedule', 'scheduling-copilot'] },
   { id: 'audiences', label: 'Audiences', icon: faUsers, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Membership-build truth per segment family — staleness verdicts against declared SLAs, worker liveness, churn and campaign use.' },
@@ -2068,7 +2069,7 @@ const CampaignCenterSection: React.FC<{
   setCopilotOpen: (v: boolean) => void;
 }> = ({ activeSubTab, onSubTabChange, pendingOffer, onOfferConsumed, copilotOpen, setCopilotOpen }) => {
   const { organization } = useAuth();
-  const subTab = (['pmta-wizard', 'send-day', 'draft-board', 'marketing-agent', 'schedule', 'scheduling-copilot'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
+  const subTab = (['pmta-wizard', 'send-day', 'draft-board', 'drip-lanes', 'marketing-agent', 'schedule', 'scheduling-copilot'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
   const [editCampaignId, setEditCampaignId] = useState<string | null>(null);
   const [preparingCampaigns, setPreparingCampaigns] = useState<PreparingCampaign[]>([]);
   const [transitions, setTransitions] = useState<{ id: string; name: string; status: string }[]>([]);
@@ -2123,6 +2124,7 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
         <button style={subNavBtnStyle(subTab === 'send-day')} onClick={() => onSubTabChange('send-day')}>Send Day</button>
         <button style={subNavBtnStyle(subTab === 'draft-board')} onClick={() => onSubTabChange('draft-board')}>Draft Board</button>
+        <button style={subNavBtnStyle(subTab === 'drip-lanes')} onClick={() => onSubTabChange('drip-lanes')}>Drip Lanes</button>
         <button style={subNavBtnStyle(subTab === 'schedule')} onClick={() => onSubTabChange('schedule')}>Schedule</button>
         <button style={subNavBtnStyle(subTab === 'scheduling-copilot')} onClick={() => onSubTabChange('scheduling-copilot')}>Copilot</button>
       </div>
@@ -2161,6 +2163,8 @@ const CampaignCenterSection: React.FC<{
           <SendDayPlanner onEditInWizard={handleEditInWizard} onCampaignPreparing={handleCampaignPreparing} />
         ) : subTab === 'draft-board' ? (
           <DraftBoardView />
+        ) : subTab === 'drip-lanes' ? (
+          <DripLanesView />
         ) : subTab === 'scheduling-copilot' ? (
           <CampaignCopilotPanel isOpen inline onClose={() => onSubTabChange('campaign-center')} />
         ) : subTab === 'schedule' ? (

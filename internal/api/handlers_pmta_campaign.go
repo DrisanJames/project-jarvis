@@ -99,6 +99,8 @@ func (s *PMTACampaignService) SetGlobalSuppressionHub(hub *engine.GlobalSuppress
 func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 	r.Route("/pmta-campaign", func(cr chi.Router) {
 		cr.Get("/board-export", s.HandleBoardWeekExport)
+		cr.Get("/drip-lanes", s.HandleListDripLanes)
+		cr.Post("/drip-lanes/update", s.HandleUpdateDripLane)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)
