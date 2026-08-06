@@ -505,13 +505,20 @@ func TestHandleUpdateISPDistribution(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
 	dsID := "00000000-0000-0000-0000-000000000abc"
 	mock.ExpectBegin()
+	// daily_cap snapshot (core.md §14 2026-08-06): yahoo carries a lane budget
+	// of 150 set outside this request — the per-wave edit must NOT wipe it.
+	mock.ExpectQuery(`SELECT LOWER\(TRIM\(isp\)\), daily_cap FROM partner_isp_distribution_overrides`).
+		WithArgs(dsID).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "daily_cap"}).AddRow("yahoo", 150))
 	mock.ExpectExec(`DELETE FROM partner_isp_distribution_overrides WHERE dataset_id = \$1`).
 		WithArgs(dsID).WillReturnResult(sqlmock.NewResult(0, 0))
+	// gmail: request sets daily_cap=500 explicitly.
 	mock.ExpectExec(`INSERT INTO partner_isp_distribution_overrides`).
-		WithArgs(dsID, "gmail", 0.4, 1000, sqlmock.AnyArg()).
+		WithArgs(dsID, "gmail", 0.4, 1000, 500, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// yahoo: request omits daily_cap -> prior lane budget 150 is preserved.
 	mock.ExpectExec(`INSERT INTO partner_isp_distribution_overrides`).
-		WithArgs(dsID, "yahoo", 0.3, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(dsID, "yahoo", 0.3, sqlmock.AnyArg(), 150, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectExec(`INSERT INTO partner_admin_audit_log`).
@@ -520,7 +527,7 @@ func TestHandleUpdateISPDistribution(t *testing.T) {
 	h := NewPartnerAdminHandler(db)
 	body, _ := json.Marshal(map[string]interface{}{
 		"overrides": []map[string]interface{}{
-			{"isp": "gmail", "pct_override": 0.4, "max_per_wave": 1000},
+			{"isp": "gmail", "pct_override": 0.4, "max_per_wave": 1000, "daily_cap": 500},
 			{"isp": "YAHOO", "pct_override": 0.3},
 		},
 	})
@@ -541,6 +548,9 @@ func TestHandleUpdateISPDistribution_PctOutOfRange(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
 	dsID := "00000000-0000-0000-0000-000000000abc"
 	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT LOWER\(TRIM\(isp\)\), daily_cap FROM partner_isp_distribution_overrides`).
+		WithArgs(dsID).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "daily_cap"}))
 	mock.ExpectExec(`DELETE FROM partner_isp_distribution_overrides WHERE dataset_id = \$1`).
 		WithArgs(dsID).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
@@ -659,10 +669,10 @@ func TestHandleGetDatasetThroughput(t *testing.T) {
 		WithArgs(dsID).
 		WillReturnRows(sqlmock.NewRows([]string{"isp_family", "count"}).
 			AddRow("gmail", 600).AddRow("yahoo", 300).AddRow("other", 100))
-	mock.ExpectQuery(`SELECT isp, pct_override, COALESCE\(max_per_wave, 0\) FROM partner_isp_distribution_overrides`).
+	mock.ExpectQuery(`SELECT isp, pct_override, COALESCE\(max_per_wave, 0\), daily_cap FROM partner_isp_distribution_overrides`).
 		WithArgs(dsID).
-		WillReturnRows(sqlmock.NewRows([]string{"isp", "pct_override", "max_per_wave"}).
-			AddRow("gmail", 0.5, 500))
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "pct_override", "max_per_wave", "daily_cap"}).
+			AddRow("gmail", 0.5, 500, 250))
 
 	h := NewPartnerAdminHandler(db)
 	rec := httptest.NewRecorder()

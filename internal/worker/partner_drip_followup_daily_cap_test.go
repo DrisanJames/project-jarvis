@@ -30,7 +30,7 @@ func TestFollowupDailyISPBudget_GmailZeroSuppressesFollowups(t *testing.T) {
 	// Follow-up wave caps: gmail carries a positive per-wave cap (e.g. from a
 	// dataset override) — this is exactly how gmail follow-ups escaped before.
 	in := map[string]int{"gmail": 200, "yahoo": 32, "other": 40}
-	out := po.applyFollowupDailyISPBudget(context.Background(), "db", in)
+	out := po.applyFollowupDailyISPBudget(context.Background(), "db", "", in)
 
 	assert.Equal(t, 0, out["gmail"], "gmail (daily cap 0) must be suppressed on follow-up touches")
 	assert.Equal(t, 32, out["yahoo"], "non-capped yahoo still sends (unchanged)")
@@ -61,7 +61,7 @@ func TestFollowupDailyISPBudget_PositiveCapClampsByRemaining(t *testing.T) {
 	mock.ExpectCommit()
 
 	in := map[string]int{"gmail": 200, "yahoo": 32, "other": 40}
-	out := po.applyFollowupDailyISPBudget(context.Background(), "db", in)
+	out := po.applyFollowupDailyISPBudget(context.Background(), "db", "", in)
 
 	assert.Equal(t, 0, out["gmail"], "gmail=0 still hard-suppressed")
 	assert.Equal(t, 10, out["yahoo"], "yahoo clamped to remaining daily budget (100-90)")
@@ -83,7 +83,7 @@ func TestFollowupDailyISPBudget_KillSwitch(t *testing.T) {
 	}}
 
 	in := map[string]int{"gmail": 200, "yahoo": 32, "other": 40}
-	out := po.applyFollowupDailyISPBudget(context.Background(), "db", in)
+	out := po.applyFollowupDailyISPBudget(context.Background(), "db", "", in)
 
 	assert.Equal(t, in, out, "kill switch on -> caps returned unchanged (legacy follow-up behavior)")
 	assert.NoError(t, mock.ExpectationsWereMet(), "no DB queries when disabled")
@@ -105,7 +105,7 @@ func TestFollowupDailyISPBudget_BrandGate(t *testing.T) {
 
 	// brand "yih" is NOT in the gmail allow-set -> gmail zeroed with no DB call.
 	in := map[string]int{"gmail": 200, "other": 40}
-	out := po.applyFollowupDailyISPBudget(context.Background(), "yih", in)
+	out := po.applyFollowupDailyISPBudget(context.Background(), "yih", "", in)
 	assert.Equal(t, 0, out["gmail"], "gmail zeroed for a non-allow-listed brand")
 	assert.Equal(t, 40, out["other"], "other unchanged")
 	assert.NoError(t, mock.ExpectationsWereMet())

@@ -1366,7 +1366,7 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 		// Per-brand daily new-record budget (operator 2026-06-10): clamp the
 		// wave's per-ISP caps to what this brand may still mail TODAY. Gmail is
 		// additionally brand-gated. Follow-ups bypass this (separate loop).
-		perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, perISPCaps)
+		perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, v.datasetID, perISPCaps)
 		// Deliverability routing (operator 2026-06-13): pin the hard,
 		// engagement-priced ISPs to the warmed mature-4 domains. When a
 		// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
@@ -1954,26 +1954,124 @@ func (po *PartnerDripOrchestrator) applyFollowupGmailRouting(brand string, caps 
 	return out
 }
 
-// applyNewRecordDailyBudget clamps a wave's per-ISP caps to the brand's
-// remaining daily new-record budget (NewRecordDailyISPCaps, America/Denver
-// day). mailed_at is written exactly once (first touch), so counting rows
-// with mailed_brand=brand AND mailed_at >= local midnight counts NEW records
-// only — follow-up touches never move mailed_at. Best-effort: on count error
-// the static caps stand (consistent with resolvePerISPCaps degradation).
-func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context, brand string, caps map[string]int) map[string]int {
-	if len(po.cfg.NewRecordDailyISPCaps) == 0 {
+// laneDailyCapsDisabled is the one-move kill switch for per-drip daily ISP
+// budgets (drip-specific caps doctrine, core.md §14 2026-08-06). Set
+// PARTNER_DRIP_LANE_DAILY_CAPS_DISABLED=1 to ignore every daily_cap value in
+// partner_isp_distribution_overrides and restore the pure per-brand env
+// behavior — no data changes needed. Default false = enforce.
+func laneDailyCapsDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_LANE_DAILY_CAPS_DISABLED"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// datasetDailyISPCaps loads the lane-owned daily ISP budgets for one dataset
+// (partner_isp_distribution_overrides.daily_cap, NULL = no override). Read
+// fresh per budget application — like loadISPCaps, an operator change takes
+// effect on the next wave with no deploy. Best-effort: any error returns nil
+// and the caller falls back to the global per-brand env behavior.
+func (po *PartnerDripOrchestrator) datasetDailyISPCaps(ctx context.Context, datasetID string) map[string]int {
+	if datasetID == "" || laneDailyCapsDisabled() {
+		return nil
+	}
+	var loaded map[string]int
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT LOWER(TRIM(isp)) AS isp, daily_cap
+			FROM partner_isp_distribution_overrides
+			WHERE dataset_id = $1::uuid AND daily_cap IS NOT NULL
+		`, datasetID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var isp string
+			var cap int
+			if err := rows.Scan(&isp, &cap); err != nil {
+				continue
+			}
+			if isp == "" {
+				continue
+			}
+			if loaded == nil {
+				loaded = map[string]int{}
+			}
+			loaded[isp] = cap
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] lane daily-cap load failed dataset=%s (%v) — using global daily caps", datasetID, err)
+		return nil
+	}
+	return loaded
+}
+
+// applyNewRecordDailyBudget clamps a wave's per-ISP caps to the remaining
+// daily new-record budget (America/Denver day). mailed_at is written exactly
+// once (first touch), so counting rows with mailed_at >= local midnight counts
+// NEW records only — follow-up touches never move mailed_at. Best-effort: on
+// count error the static caps stand (consistent with resolvePerISPCaps
+// degradation).
+//
+// Two budget scopes (drip-specific caps doctrine, core.md §14 2026-08-06),
+// precedence per-drip override → global default:
+//   - LANE: an ISP with a daily_cap row in partner_isp_distribution_overrides
+//     for this wave's dataset is governed by the LANE's budget — counted per
+//     (dataset, ISP) across ALL brands — and the shared per-brand env value is
+//     not consulted for it. daily_cap=0 hard-suppresses the ISP for the lane.
+//   - GLOBAL (legacy, byte-identical when no override row exists): ISPs in
+//     NewRecordDailyISPCaps count per (brand, ISP) — the shared budget.
+//
+// The brand-allow gate (NewRecordISPBrandAllow) applies to BOTH scopes — it is
+// deliverability routing (which brands may carry the ISP at all), the hard
+// platform ceiling a lane override must not bypass.
+func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context, brand, datasetID string, caps map[string]int) map[string]int {
+	laneCaps := po.datasetDailyISPCaps(ctx, datasetID)
+	if len(po.cfg.NewRecordDailyISPCaps) == 0 && len(laneCaps) == 0 {
 		return caps
 	}
 	out := cloneISPCapMap(caps)
 	lb := strings.ToLower(strings.TrimSpace(brand))
-	for isp, daily := range po.cfg.NewRecordDailyISPCaps {
-		isp = strings.ToLower(strings.TrimSpace(isp))
+	seen := map[string]bool{}
+	for isp := range laneCaps {
+		seen[isp] = true
+	}
+	for isp := range po.cfg.NewRecordDailyISPCaps {
+		seen[strings.ToLower(strings.TrimSpace(isp))] = true
+	}
+	for isp := range seen {
 		if allow, gated := po.cfg.NewRecordISPBrandAllow[isp]; gated && !allow[lb] {
+			out[isp] = 0
+			continue
+		}
+		daily, lane := laneCaps[isp]
+		if !lane {
+			var ok bool
+			daily, ok = po.cfg.NewRecordDailyISPCaps[isp]
+			if !ok {
+				continue
+			}
+		}
+		if lane && daily <= 0 {
+			// Lane hard suppression: no DB round-trip (mirrors the follow-up
+			// path's cap==0 semantics).
 			out[isp] = 0
 			continue
 		}
 		var used int
 		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			if lane {
+				return tx.QueryRowContext(ctx, `
+					SELECT COUNT(*) FROM partner_clean_queue
+					WHERE dataset_id = $1::uuid
+					  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+					  AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
+				`, datasetID, isp).Scan(&used)
+			}
 			return tx.QueryRowContext(ctx, `
 				SELECT COUNT(*) FROM partner_clean_queue
 				WHERE mailed_brand = $1
@@ -1982,7 +2080,7 @@ func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(ctx context.Context
 			`, lb, isp).Scan(&used)
 		})
 		if err != nil {
-			log.Printf("[PartnerDripOrchestrator] daily-budget count failed brand=%s isp=%s (%v) — keeping static cap", lb, isp, err)
+			log.Printf("[PartnerDripOrchestrator] daily-budget count failed brand=%s isp=%s lane=%v (%v) — keeping static cap", lb, isp, lane, err)
 			continue
 		}
 		remaining := daily - used
@@ -2035,19 +2133,42 @@ func followupDailyCapsDisabled() bool {
 // cap can under-count by the terminal touch — this only ever makes the cap
 // slightly more generous, never over-suppresses. The cap==0 path (the reported
 // bug and the standing gmail rule) is exact and DB-free.
-func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Context, brand string, caps map[string]int) map[string]int {
-	if len(po.cfg.NewRecordDailyISPCaps) == 0 || followupDailyCapsDisabled() {
+func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Context, brand, datasetID string, caps map[string]int) map[string]int {
+	if followupDailyCapsDisabled() {
+		return caps
+	}
+	laneCaps := po.datasetDailyISPCaps(ctx, datasetID)
+	if len(po.cfg.NewRecordDailyISPCaps) == 0 && len(laneCaps) == 0 {
 		return caps
 	}
 	out := cloneISPCapMap(caps)
 	lb := strings.ToLower(strings.TrimSpace(brand))
-	for isp, daily := range po.cfg.NewRecordDailyISPCaps {
-		isp = strings.ToLower(strings.TrimSpace(isp))
+	seen := map[string]bool{}
+	for isp := range laneCaps {
+		seen[isp] = true
+	}
+	for isp := range po.cfg.NewRecordDailyISPCaps {
+		seen[strings.ToLower(strings.TrimSpace(isp))] = true
+	}
+	for isp := range seen {
 		// Brand-allow gate mirrors the welcome path: a gated ISP (e.g. gmail)
-		// ships from allow-listed brands only.
+		// ships from allow-listed brands only — the platform ceiling; a lane
+		// daily_cap override does not bypass it.
 		if allow, gated := po.cfg.NewRecordISPBrandAllow[isp]; gated && !allow[lb] {
 			out[isp] = 0
 			continue
+		}
+		// Precedence per-drip override → global default (core.md §14
+		// 2026-08-06): a lane daily_cap governs this dataset's touches counted
+		// per (dataset, ISP) across all brands; otherwise the shared per-brand
+		// env value applies exactly as before.
+		daily, lane := laneCaps[isp]
+		if !lane {
+			var ok bool
+			daily, ok = po.cfg.NewRecordDailyISPCaps[isp]
+			if !ok {
+				continue
+			}
 		}
 		// Hard suppression: a daily cap of 0 zeroes the per-wave cap so the ISP
 		// is dropped from the follow-up claim entirely (no DB round-trip).
@@ -2057,6 +2178,19 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 		}
 		var used int
 		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			if lane {
+				return tx.QueryRowContext(ctx, `
+					SELECT COUNT(*) FROM partner_clean_queue
+					WHERE dataset_id = $1::uuid
+					  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
+					  AND (
+					    mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
+					    OR
+					    (COALESCE(touch_count, 0) > 1
+					       AND next_touch_at >= (date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver') + INTERVAL '24 hours')
+					  )
+				`, datasetID, isp).Scan(&used)
+			}
 			return tx.QueryRowContext(ctx, `
 				SELECT COUNT(*) FROM partner_clean_queue
 				WHERE LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
@@ -2071,7 +2205,7 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 			`, lb, isp).Scan(&used)
 		})
 		if err != nil {
-			log.Printf("[PartnerDripOrchestrator] followup daily-budget count failed brand=%s isp=%s (%v) — keeping static cap", lb, isp, err)
+			log.Printf("[PartnerDripOrchestrator] followup daily-budget count failed brand=%s isp=%s lane=%v (%v) — keeping static cap", lb, isp, lane, err)
 			continue
 		}
 		remaining := daily - used
@@ -3895,7 +4029,7 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	// deliveries observed under gmail=0). Enforce the same daily ceiling here so a
 	// cap of 0 for an ISP suppresses ALL touches to that ISP. Kill switch:
 	// PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED=1 restores the legacy behavior.
-	perISPCaps = po.applyFollowupDailyISPBudget(ctx, brand, perISPCaps)
+	perISPCaps = po.applyFollowupDailyISPBudget(ctx, brand, v.datasetID, perISPCaps)
 	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)

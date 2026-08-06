@@ -7914,6 +7914,12 @@ END $$`},
 			updated_by TEXT,
 			PRIMARY KEY (dataset_id, isp)
 		)`},
+		// Per-drip DAILY ISP budget (drip-specific caps doctrine, core.md §14
+		// 2026-08-06). A row's daily_cap gives its dataset a lane-owned daily
+		// new-record budget for that ISP, counted per (dataset, ISP) across ALL
+		// brands — replacing the shared per-brand PARTNER_DRIP_DAILY_ISP_CAPS
+		// env value for that lane. NULL = lane stays on the global default.
+		{"dp_add_isp_overrides_daily_cap", `ALTER TABLE partner_isp_distribution_overrides ADD COLUMN IF NOT EXISTS daily_cap INTEGER`},
 		{"dp_create_partner_admin_audit_log", `CREATE TABLE IF NOT EXISTS partner_admin_audit_log (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			actor TEXT NOT NULL,

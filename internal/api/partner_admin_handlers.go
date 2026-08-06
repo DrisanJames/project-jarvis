@@ -453,7 +453,7 @@ func (h *PartnerAdminHandler) HandleGetDatasetThroughput(w http.ResponseWriter, 
 	}
 
 	overrideRows, _ := h.db.QueryContext(r.Context(),
-		`SELECT isp, pct_override, COALESCE(max_per_wave, 0) FROM partner_isp_distribution_overrides WHERE dataset_id = $1`, datasetID)
+		`SELECT isp, pct_override, COALESCE(max_per_wave, 0), daily_cap FROM partner_isp_distribution_overrides WHERE dataset_id = $1`, datasetID)
 	overrides := make([]map[string]interface{}, 0)
 	if overrideRows != nil {
 		defer overrideRows.Close()
@@ -461,12 +461,19 @@ func (h *PartnerAdminHandler) HandleGetDatasetThroughput(w http.ResponseWriter, 
 			var isp string
 			var pct float64
 			var maxPerWave int
-			if err := overrideRows.Scan(&isp, &pct, &maxPerWave); err == nil {
-				overrides = append(overrides, map[string]interface{}{
+			var dailyCap sql.NullInt64
+			if err := overrideRows.Scan(&isp, &pct, &maxPerWave, &dailyCap); err == nil {
+				entry := map[string]interface{}{
 					"isp":          isp,
 					"pct_override": pct,
 					"max_per_wave": maxPerWave,
-				})
+				}
+				// Lane daily budget (core.md §14 2026-08-06): null = lane on
+				// the global per-brand default; 0 = hard-suppressed.
+				if dailyCap.Valid {
+					entry["daily_cap"] = dailyCap.Int64
+				}
+				overrides = append(overrides, entry)
 			}
 		}
 	}
@@ -490,6 +497,11 @@ type ispDistributionRequest struct {
 		ISP         string  `json:"isp"`
 		PctOverride float64 `json:"pct_override,omitempty"`
 		MaxPerWave  int     `json:"max_per_wave,omitempty"`
+		// Per-drip DAILY ISP budget (drip-specific caps doctrine, core.md §14
+		// 2026-08-06). Pointer semantics: omitted/null = preserve the ISP's
+		// existing daily_cap (a per-wave edit must not clobber the lane
+		// budget); 0 = hard-suppress the ISP for this lane; >0 = set.
+		DailyCap *int `json:"daily_cap,omitempty"`
 	} `json:"overrides"`
 }
 
@@ -512,6 +524,24 @@ func (h *PartnerAdminHandler) HandleUpdateISPDistribution(w http.ResponseWriter,
 	}
 	defer tx.Rollback()
 
+	// The rewrite below is DELETE + reinsert, so lane daily budgets
+	// (daily_cap, core.md §14 2026-08-06) set outside this request would be
+	// silently wiped by a per-wave-only edit. Snapshot them first; an ISP the
+	// request omits daily_cap for gets its prior value back.
+	priorDaily := map[string]int{}
+	if dRows, dErr := tx.QueryContext(r.Context(),
+		`SELECT LOWER(TRIM(isp)), daily_cap FROM partner_isp_distribution_overrides
+		 WHERE dataset_id = $1 AND daily_cap IS NOT NULL`, datasetID); dErr == nil {
+		for dRows.Next() {
+			var isp string
+			var cap int
+			if err := dRows.Scan(&isp, &cap); err == nil && isp != "" {
+				priorDaily[isp] = cap
+			}
+		}
+		dRows.Close()
+	}
+
 	if _, err := tx.ExecContext(r.Context(),
 		`DELETE FROM partner_isp_distribution_overrides WHERE dataset_id = $1`, datasetID); err != nil {
 		writeJSONError(w, "delete_overrides_failed: "+err.Error(), http.StatusInternalServerError)
@@ -530,15 +560,22 @@ func (h *PartnerAdminHandler) HandleUpdateISPDistribution(w http.ResponseWriter,
 		if ov.MaxPerWave > 0 {
 			maxPtr = ov.MaxPerWave
 		}
+		var dailyPtr interface{}
+		if ov.DailyCap != nil {
+			dailyPtr = *ov.DailyCap
+		} else if prior, ok := priorDaily[isp]; ok {
+			dailyPtr = prior
+		}
 		_, err := tx.ExecContext(r.Context(), `
-			INSERT INTO partner_isp_distribution_overrides (dataset_id, isp, pct_override, max_per_wave, updated_by)
-			VALUES ($1, $2, $3, $4, $5)
+			INSERT INTO partner_isp_distribution_overrides (dataset_id, isp, pct_override, max_per_wave, daily_cap, updated_by)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (dataset_id, isp) DO UPDATE
 			SET pct_override = EXCLUDED.pct_override,
 			    max_per_wave = EXCLUDED.max_per_wave,
+			    daily_cap = EXCLUDED.daily_cap,
 			    updated_at = NOW(),
 			    updated_by = EXCLUDED.updated_by
-		`, datasetID, isp, ov.PctOverride, maxPtr, actorFromRequest(r))
+		`, datasetID, isp, ov.PctOverride, maxPtr, dailyPtr, actorFromRequest(r))
 		if err != nil {
 			writeJSONError(w, "upsert_override_failed: "+err.Error(), http.StatusInternalServerError)
 			return
