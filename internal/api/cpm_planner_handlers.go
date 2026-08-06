@@ -59,6 +59,14 @@ type CpmPlannerHandlers struct {
 	// org-wide delivered scan blew the request-path statement_timeout →
 	// HTTP 500, 2026-07-08). Recomputed by the same refresher cycle.
 	gapByOrg map[string]*cpmAttributionGap
+	// gapCustom caches NON-default-days attribution-gap responses (key
+	// "org|days"), and gapRunning single-flights every gap compute. Before
+	// this, each poll of a custom window ran the dealCampaignMapCTE scan
+	// live and uncached — one open browser tab stacked concurrent 5-minute
+	// queries and pinned RDS CPU, timing out the drip deploy path
+	// (2026-08-06). Bounded: days is clamped to 1..90 per org.
+	gapCustom  map[string]gapCustomCached
+	gapRunning map[string]chan struct{}
 	// dealIdentity caches the non-CPM surface's offer-identity → CPM deal map
 	// (nonCpmDealForIdentity); a ~16.5s campaign-wide pass, TTL'd rather than
 	// recomputed per page view. Guarded by evMu.
@@ -75,15 +83,28 @@ type nonCpmCached struct {
 	at      time.Time
 }
 
+// gapCustomCached is one cached non-default-window attribution-gap payload.
+type gapCustomCached struct {
+	gap *cpmAttributionGap
+	at  time.Time
+}
+
+// cpmGapCustomTTL bounds staleness for non-default attribution-gap windows.
+// Custom windows are exploratory reads; 10 minutes keeps one open tab to at
+// most one dealCampaignMapCTE scan per window per TTL instead of one per poll.
+const cpmGapCustomTTL = 10 * time.Minute
+
 const cpmEventCacheRefresh = 4 * time.Minute
 
 func NewCpmPlannerHandlers(db *sql.DB) *CpmPlannerHandlers {
 	h := &CpmPlannerHandlers{
-		db:        db,
-		evByOrg:   map[string]map[string]*cpmDealEventCounts{},
-		evWarmed:  map[string]time.Time{},
-		evRunning: map[string]bool{},
-		gapByOrg:  map[string]*cpmAttributionGap{},
+		db:         db,
+		evByOrg:    map[string]map[string]*cpmDealEventCounts{},
+		evWarmed:   map[string]time.Time{},
+		evRunning:  map[string]bool{},
+		gapByOrg:   map[string]*cpmAttributionGap{},
+		gapCustom:  map[string]gapCustomCached{},
+		gapRunning: map[string]chan struct{}{},
 	}
 	h.ensureTables()
 	go h.eventCacheLoop()
@@ -2557,26 +2578,52 @@ func (h *CpmPlannerHandlers) HandleAttributionGap(w http.ResponseWriter, r *http
 	if n, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && n >= 1 && n <= 90 {
 		days = n
 	}
-	if days == cpmAttributionGapDefaultDays {
+	// Every window is cached and every compute is single-flighted. The
+	// default window's cache is refresher-owned (no TTL — the refresher
+	// keeps it fresh); custom windows TTL at cpmGapCustomTTL. Concurrent
+	// requests for the same (org, days) wait for the in-flight compute and
+	// then serve from cache instead of stacking dealCampaignMapCTE scans
+	// (one open tab pinned RDS CPU and timed out drip deploys, 2026-08-06).
+	key := orgID + "|" + strconv.Itoa(days)
+	var flight chan struct{}
+	for {
 		h.evMu.Lock()
-		cached := h.gapByOrg[orgID]
-		h.evMu.Unlock()
-		if cached != nil {
-			respondJSON(w, http.StatusOK, cached)
+		if days == cpmAttributionGapDefaultDays {
+			if cached := h.gapByOrg[orgID]; cached != nil {
+				h.evMu.Unlock()
+				respondJSON(w, http.StatusOK, cached)
+				return
+			}
+		} else if e, ok := h.gapCustom[key]; ok && time.Since(e.at) < cpmGapCustomTTL {
+			h.evMu.Unlock()
+			respondJSON(w, http.StatusOK, e.gap)
 			return
 		}
-		// Cold cache (fresh boot, refresher not done yet): compute once,
-		// synchronously, and prime the cache.
+		if ch, running := h.gapRunning[key]; running {
+			h.evMu.Unlock()
+			<-ch // another request is computing this exact window — wait, then re-read cache
+			continue
+		}
+		flight = make(chan struct{})
+		h.gapRunning[key] = flight
+		h.evMu.Unlock()
+		break
 	}
 	gap, err := h.computeAttributionGap(orgID, days)
+	h.evMu.Lock()
+	delete(h.gapRunning, key)
+	close(flight)
+	if err == nil {
+		if days == cpmAttributionGapDefaultDays {
+			h.gapByOrg[orgID] = gap
+		} else {
+			h.gapCustom[key] = gapCustomCached{gap: gap, at: time.Now()}
+		}
+	}
+	h.evMu.Unlock()
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("attribution gap: %v", err))
 		return
-	}
-	if days == cpmAttributionGapDefaultDays {
-		h.evMu.Lock()
-		h.gapByOrg[orgID] = gap
-		h.evMu.Unlock()
 	}
 	respondJSON(w, http.StatusOK, gap)
 }
