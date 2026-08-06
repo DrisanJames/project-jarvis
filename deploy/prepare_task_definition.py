@@ -17,6 +17,11 @@ DISALLOWED_KEYS = {
 }
 
 PASSTHROUGH_ENV_VARS = [
+    # Drip SES pins: (brand=isp=profileUUID) triples routing throttled-ISP drip
+    # waves via the brands' SES tenants (bypasses the PMTA throttle deferral —
+    # 2026-08-05 outage). Set in the deploy shell on first rollout; inherited
+    # by subsequent deploys once the task definition holds it.
+    "PARTNER_DRIP_BRAND_ISP_SES_PROFILES",
     # Only set after apex-postgres-read is healthy and streaming. Empty/unset
     # means SegmentRefreshWorker uses the primary (safe default post Sev-1).
     "READ_REPLICA_URL",

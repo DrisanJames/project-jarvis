@@ -2496,9 +2496,20 @@ func (po *PartnerDripOrchestrator) releaseClaim(ctx context.Context, recs []clai
 	for i, r := range recs {
 		ids[i] = r.id
 	}
+	// A released FOLLOW-UP claim (touch_count >= 1, already t1-mailed) must go
+	// back to 'mailed' — that is the pool the t2..tN pass claims from. Releasing
+	// it to 'ready' ejects it from the reminder ladder AND exposes it to the
+	// first-touch pass, which re-sends t1 to someone mid-sequence (2026-08-05
+	// outage: 30k records ejected, WCL follow-ups collapsed 9,338 -> 122/day
+	// while first-touches inflated with duplicates).
 	_, err := po.db.ExecContext(ctx, `
 		UPDATE partner_clean_queue
-		SET status = 'ready', claimed_at = NULL
+		SET status = CASE
+		        WHEN COALESCE(touch_count, 0) >= 1 AND mailed_campaign_id IS NOT NULL
+		        THEN 'mailed'
+		        ELSE 'ready'
+		    END,
+		    claimed_at = NULL
 		WHERE id = ANY($1::uuid[])
 	`, "{"+strings.Join(ids, ",")+"}")
 	return err
