@@ -166,12 +166,13 @@ def main() -> int:
     # Partner drip phase 2: follow-ups on; bypass stale ISP throttle deferrals.
     upsert_env(env_list, "PARTNER_DRIP_THROTTLE_THRESHOLD", "0")
     upsert_env(env_list, "PARTNER_DRIP_CREATIVES_DIR", "docs/emails")
-    # Yahoo is a NEWSLETTER-ONLY drip lane (operator 2026-07-14: "for our Yahoo
-    # drips we must mail newsletter only"). Excludes yahoo from every offer
-    # follow-up claim and serves the brand newsletter at every touch instead.
-    # Standing doctrine → baked here so it persists across all deploys.
-    # Reversible: remove this line (or set to "0") and redeploy.
-    upsert_env(env_list, "PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY", "1")
+    # Yahoo newsletter-only drip lane: OFF (operator 2026-08-06, Empire flooring
+    # diagnosis). The 2026-07-14 newsletter-only ruling suppressed every Yahoo
+    # offer *reminder* touch — the touch type that produced both known Empire
+    # conversions — and the setting is global (no per-drip dimension, F9), so
+    # it starved reminders across all drip lanes. Yahoo now receives offer
+    # follow-ups like every other ISP. Reversible: set back to "1" and redeploy.
+    upsert_env(env_list, "PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY", "0")
     # Analytics event-lake READ layer (Athena). Setting ANALYTICS_ATHENA_OUTPUT
     # enables the reader (/api/mailing/analytics/lake/*) and un-darks the Event
     # Lake screen; it points at the live ignite_analytics Glue DB + Athena
