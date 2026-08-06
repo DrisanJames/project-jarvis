@@ -442,6 +442,11 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		linkPtr = &linkURL
 	}
 	if bounceType != "" {
+		// bounce_type is varchar(64); an oversized value would error the
+		// INSERT and drop the event from both PG and the lake.
+		if len(bounceType) > 64 {
+			bounceType = bounceType[:64]
+		}
 		bouncePtr = &bounceType
 	}
 

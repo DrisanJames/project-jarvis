@@ -495,6 +495,13 @@ func main() {
 			}
 			brand.StartRefresher(ctx, mailingDB, 5*time.Minute)
 
+			// Everflow conversions export pull on a 6h cadence — conversions
+			// that miss the live postback (blank-sub1, dropped webhooks)
+			// otherwise never land in mailing_everflow_conversions and lane
+			// governors optimize on conversions=0 (Empire flooring F5).
+			// Idempotent upserts; kill: EVERFLOW_CONVERSIONS_SYNC_DISABLED=1.
+			api.StartEverflowConversionsSyncScheduler(mailingDB)
+
 			// Start Backpressure Monitor
 			backpressure := worker.NewBackpressureMonitor(mailingDB, 100000)
 			go backpressure.Start(ctx)
@@ -2138,6 +2145,29 @@ var criticalSendPathDDL = []struct {
 	// precedent to close the fresh-DB/DR boot race where a claim would error
 	// (and sending stall) until the background slice lands it. No-op on prod.
 	{"add_campaigns_partner_dataset_id_critical", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS partner_dataset_id UUID`},
+	// ---- bounce_type widen (Empire flooring diagnosis F6, 2026-08-06) ----
+	// SES DeliveryDelay.DelayType values (e.g. TransientCommunicationFailure,
+	// 29 chars) overflow varchar(20), erroring the tracking-events INSERT and
+	// dropping the deferral event from BOTH PG and the lake (persistSESEvent
+	// returns before the lake emit on error). Not send-path-critical, but the
+	// widen needs an ACCESS EXCLUSIVE on the hot partitioned parent — only
+	// this slice's 8s lock_timeout / 20s statement_timeout / 3 retries can
+	// land it (the 5s runner budget cannot). The DO guard makes every
+	// post-application boot a pure catalog read: no lock is ever re-taken.
+	{"widen_tracking_bounce_type", `DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM information_schema.columns
+		           WHERE table_schema='public' AND table_name='mailing_tracking_events'
+		             AND column_name='bounce_type' AND character_maximum_length < 64) THEN
+			ALTER TABLE mailing_tracking_events ALTER COLUMN bounce_type TYPE varchar(64);
+		END IF;
+	END $$`},
+	{"widen_bounces_bounce_type", `DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM information_schema.columns
+		           WHERE table_schema='public' AND table_name='mailing_bounces'
+		             AND column_name='bounce_type' AND character_maximum_length < 64) THEN
+			ALTER TABLE mailing_bounces ALTER COLUMN bounce_type TYPE varchar(64);
+		END IF;
+	END $$`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded

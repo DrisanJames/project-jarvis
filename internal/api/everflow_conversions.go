@@ -136,30 +136,114 @@ const upsertEverflowConversionSQL = `
 	DO UPDATE SET payout = EXCLUDED.payout, status = EXCLUDED.status,
 	              event_name = EXCLUDED.event_name, updated_at = NOW()`
 
-// HandleEverflowConversionsSync pulls the Everflow conversions report for a
-// date range and upserts durable rows. Registered behind the X-Admin-Key gate
-// (same as /api/admin/attribution-backfill). Params: days (default 7, max 90)
-// or from/to (YYYY-MM-DD). Backfills payout onto historical conversions the
+// EverflowSyncStats reports one export-pull's outcome.
+type EverflowSyncStats struct {
+	Fetched  int
+	Enriched int
+	Upserted int
+	Skipped  int
+	Failed   int
+}
+
+// RunEverflowConversionsSync pulls the Everflow conversions report for a date
+// range and upserts durable rows — the core shared by the admin endpoint and
+// the boot-started scheduler (Empire flooring diagnosis F5, 2026-08-06: the
+// endpoint existed but nothing called it, so any conversion that missed the
+// live postback never landed and lane governors optimized on conversions=0).
+// Idempotent by construction: enrich-then-upsert keyed on conversion_id /
+// transaction_id, safe on double-fire.
+func RunEverflowConversionsSync(ctx context.Context, db *sql.DB, from, to time.Time) (EverflowSyncStats, error) {
+	// Same key resolution as the Everflow creatives integration
+	// (server_routes_mailing.go RegisterEverflowCreativeRoutes call site).
+	apiKey := os.Getenv("EVERFLOW_API_KEY")
+	if apiKey == "" {
+		apiKey = "Pn9S4t76TWezyTJ5iwtQbQ" // Default from config
+	}
+	baseURL := os.Getenv("EVERFLOW_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.eflow.team"
+	}
+	client := everflow.NewClient(everflow.Config{
+		APIKey:     apiKey,
+		BaseURL:    baseURL,
+		TimezoneID: 90,
+		CurrencyID: "USD",
+	})
+
+	var stats EverflowSyncStats
+	records, err := client.GetConversions(ctx,
+		from.Format("2006-01-02"), to.Format("2006-01-02"), nil, false)
+	if err != nil {
+		return stats, err
+	}
+	stats.Fetched = len(records)
+
+	orgID := "00000000-0000-0000-0000-000000000001"
+	for _, rec := range records {
+		convID := strings.TrimSpace(rec.ConversionID)
+		txnID := strings.TrimSpace(rec.TransactionID)
+		if convID == "" && txnID == "" {
+			stats.Skipped++
+			continue
+		}
+
+		// Enrich an existing postback row for this transaction first —
+		// it predates the export row and must not be double-counted.
+		if convID != "" && txnID != "" {
+			res, uErr := db.ExecContext(ctx, enrichEverflowConversionSQL,
+				convID, rec.Payout, rec.Status, rec.EventName, txnID)
+			if uErr != nil {
+				log.Printf("[EverflowConversionsSync] ERROR enriching txn=%s: %v", txnID, uErr)
+				stats.Failed++
+				continue
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				stats.Enriched++
+				continue
+			}
+		}
+
+		subscriberID, _ := uuid.Parse(strings.TrimSpace(rec.Sub1))
+		campaignID, _ := uuid.Parse(strings.TrimSpace(rec.Sub3))
+		var subArg, campArg interface{}
+		if subscriberID != uuid.Nil {
+			subArg = subscriberID
+		}
+		if campaignID != uuid.Nil {
+			campArg = campaignID
+		}
+		convertedAt := time.Now()
+		if rec.ConversionUnixTimestamp > 0 {
+			convertedAt = time.Unix(rec.ConversionUnixTimestamp, 0)
+		}
+		efOfferID := strings.TrimSpace(rec.OfferID)
+		if rec.Relationship != nil && rec.Relationship.Offer != nil && rec.Relationship.Offer.NetworkOfferID > 0 {
+			efOfferID = strconv.Itoa(rec.Relationship.Offer.NetworkOfferID)
+		}
+
+		if _, iErr := db.ExecContext(ctx, upsertEverflowConversionSQL,
+			uuid.New(), orgID, convID, txnID, efOfferID,
+			subArg, campArg, rec.Sub1, rec.Sub2, rec.Sub3,
+			rec.Payout, rec.Status, rec.EventName, convertedAt); iErr != nil {
+			log.Printf("[EverflowConversionsSync] ERROR upserting conversion=%s: %v", convID, iErr)
+			stats.Failed++
+			continue
+		}
+		stats.Upserted++
+	}
+
+	log.Printf("[EverflowConversionsSync] %s → %s: fetched=%d enriched=%d upserted=%d skipped=%d failed=%d",
+		from.Format("2006-01-02"), to.Format("2006-01-02"), stats.Fetched, stats.Enriched, stats.Upserted, stats.Skipped, stats.Failed)
+	return stats, nil
+}
+
+// HandleEverflowConversionsSync is the admin HTTP wrapper around
+// RunEverflowConversionsSync. Registered behind the X-Admin-Key gate (same as
+// /api/admin/attribution-backfill). Params: days (default 7, max 90) or
+// from/to (YYYY-MM-DD). Backfills payout onto historical conversions the
 // postback path stored at $0 or missed entirely.
 func HandleEverflowConversionsSync(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Same key resolution as the Everflow creatives integration
-		// (server_routes_mailing.go RegisterEverflowCreativeRoutes call site).
-		apiKey := os.Getenv("EVERFLOW_API_KEY")
-		if apiKey == "" {
-			apiKey = "Pn9S4t76TWezyTJ5iwtQbQ" // Default from config
-		}
-		baseURL := os.Getenv("EVERFLOW_BASE_URL")
-		if baseURL == "" {
-			baseURL = "https://api.eflow.team"
-		}
-		client := everflow.NewClient(everflow.Config{
-			APIKey:     apiKey,
-			BaseURL:    baseURL,
-			TimezoneID: 90,
-			CurrencyID: "USD",
-		})
-
 		days := 7
 		if v, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil && v > 0 && v <= 90 {
 			days = v
@@ -177,78 +261,52 @@ func HandleEverflowConversionsSync(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		records, err := client.GetConversions(r.Context(),
-			from.Format("2006-01-02"), to.Format("2006-01-02"), nil, false)
+		stats, err := RunEverflowConversionsSync(r.Context(), db, from, to)
 		if err != nil {
 			respondJSON(w, 502, map[string]string{"error": "everflow fetch failed: " + err.Error()})
 			return
 		}
-
-		orgID := "00000000-0000-0000-0000-000000000001"
-		var enriched, upserted, skipped, failed int
-		for _, rec := range records {
-			convID := strings.TrimSpace(rec.ConversionID)
-			txnID := strings.TrimSpace(rec.TransactionID)
-			if convID == "" && txnID == "" {
-				skipped++
-				continue
-			}
-
-			// Enrich an existing postback row for this transaction first —
-			// it predates the export row and must not be double-counted.
-			if convID != "" && txnID != "" {
-				res, uErr := db.ExecContext(r.Context(), enrichEverflowConversionSQL,
-					convID, rec.Payout, rec.Status, rec.EventName, txnID)
-				if uErr != nil {
-					log.Printf("[EverflowConversionsSync] ERROR enriching txn=%s: %v", txnID, uErr)
-					failed++
-					continue
-				}
-				if n, _ := res.RowsAffected(); n > 0 {
-					enriched++
-					continue
-				}
-			}
-
-			subscriberID, _ := uuid.Parse(strings.TrimSpace(rec.Sub1))
-			campaignID, _ := uuid.Parse(strings.TrimSpace(rec.Sub3))
-			var subArg, campArg interface{}
-			if subscriberID != uuid.Nil {
-				subArg = subscriberID
-			}
-			if campaignID != uuid.Nil {
-				campArg = campaignID
-			}
-			convertedAt := time.Now()
-			if rec.ConversionUnixTimestamp > 0 {
-				convertedAt = time.Unix(rec.ConversionUnixTimestamp, 0)
-			}
-			efOfferID := strings.TrimSpace(rec.OfferID)
-			if rec.Relationship != nil && rec.Relationship.Offer != nil && rec.Relationship.Offer.NetworkOfferID > 0 {
-				efOfferID = strconv.Itoa(rec.Relationship.Offer.NetworkOfferID)
-			}
-
-			if _, iErr := db.ExecContext(r.Context(), upsertEverflowConversionSQL,
-				uuid.New(), orgID, convID, txnID, efOfferID,
-				subArg, campArg, rec.Sub1, rec.Sub2, rec.Sub3,
-				rec.Payout, rec.Status, rec.EventName, convertedAt); iErr != nil {
-				log.Printf("[EverflowConversionsSync] ERROR upserting conversion=%s: %v", convID, iErr)
-				failed++
-				continue
-			}
-			upserted++
-		}
-
-		log.Printf("[EverflowConversionsSync] %s → %s: fetched=%d enriched=%d upserted=%d skipped=%d failed=%d",
-			from.Format("2006-01-02"), to.Format("2006-01-02"), len(records), enriched, upserted, skipped, failed)
 		respondJSON(w, 200, map[string]interface{}{
 			"from":     from.Format("2006-01-02"),
 			"to":       to.Format("2006-01-02"),
-			"fetched":  len(records),
-			"enriched": enriched,
-			"upserted": upserted,
-			"skipped":  skipped,
-			"failed":   failed,
+			"fetched":  stats.Fetched,
+			"enriched": stats.Enriched,
+			"upserted": stats.Upserted,
+			"skipped":  stats.Skipped,
+			"failed":   stats.Failed,
 		})
 	}
+}
+
+// StartEverflowConversionsSyncScheduler runs the export pull on a fixed
+// cadence so conversions that miss the live postback still land without an
+// operator remembering to call the admin endpoint (Empire flooring diagnosis
+// F5: 417791's two July $180 conversions never landed and the lane governor
+// optimized on conversions=0). Every 6h it re-pulls the trailing 3 days —
+// wide enough to catch late postback misses and Everflow status moves
+// (pending→approved) on recent conversions. Double-fire across ECS tasks is
+// safe: the sync is idempotent (enrich/upsert keyed on conversion_id /
+// transaction_id), the duplicate cost is only a repeated report pull.
+// Kill switch: EVERFLOW_CONVERSIONS_SYNC_DISABLED=1.
+func StartEverflowConversionsSyncScheduler(db *sql.DB) {
+	if os.Getenv("EVERFLOW_CONVERSIONS_SYNC_DISABLED") == "1" {
+		log.Printf("[EverflowConversionsSync] scheduler disabled via EVERFLOW_CONVERSIONS_SYNC_DISABLED")
+		return
+	}
+	go func() {
+		// First pull shortly after boot (let the pool settle), then every 6h.
+		timer := time.NewTimer(2 * time.Minute)
+		defer timer.Stop()
+		for {
+			<-timer.C
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			to := time.Now()
+			from := to.AddDate(0, 0, -3)
+			if _, err := RunEverflowConversionsSync(ctx, db, from, to); err != nil {
+				log.Printf("[EverflowConversionsSync] scheduled pull failed: %v", err)
+			}
+			cancel()
+			timer.Reset(6 * time.Hour)
+		}
+	}()
 }

@@ -28,6 +28,14 @@ PASSTHROUGH_ENV_VARS = [
     "PMTA_SSH_KEY",
     "PMTA_SSH_PASSPHRASE",
     "ANTHROPIC_API_KEY",
+    # Everflow conversions export pull (Empire flooring F5). The hardcoded
+    # legacy key in internal/api/everflow_conversions.go is REJECTED by
+    # api.eflow.team (verified 2026-08-06: 401 on both network and affiliate
+    # endpoints; mailing_everflow_conversions has ZERO source='export' rows
+    # ever) — the sync scheduler stays dark until a valid affiliate API key is
+    # set here once in the deploy shell, after which the task definition
+    # inherits it.
+    "EVERFLOW_API_KEY",
     # Campaign-lateness SMS pager (see internal/worker/campaign_health_monitor.go).
     # All five must be present in the deploy shell on first rollout; once the
     # ECS task definition holds them, subsequent deploys inherit them and these
