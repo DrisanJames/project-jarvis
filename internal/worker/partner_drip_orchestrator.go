@@ -32,6 +32,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1509,10 +1510,80 @@ type creativeRec struct {
 // Either path returns a populated creativeRec with htmlBody pre-loaded so
 // the caller doesn't need to know which path produced it.
 func (po *PartnerDripOrchestrator) resolveCreativeForVertical(ctx context.Context, v verticalState, brand string) (creativeRec, error) {
+	var c creativeRec
+	var err error
 	if v.offerID != "" {
-		return po.resolveOfferCreative(ctx, v.offerID, brand)
+		c, err = po.resolveOfferCreative(ctx, v.offerID, brand)
+	} else {
+		c, err = po.resolveCreative(ctx, v.vertical, brand)
 	}
-	return po.resolveCreative(ctx, v.vertical, brand)
+	if err != nil {
+		return c, err
+	}
+	c.htmlBody = ensureMoneyLinkAttribution(c.htmlBody)
+	return c, nil
+}
+
+// dripMoneyHostHrefRE matches money-network hrefs across every affiliate host
+// the click enroller recognizes (moneySlugRes), excluding nothing by host —
+// the /integration/ unsub URLs are filtered post-match, mirroring
+// appendTrackingToCratoolpro (send_day_creative_resolve.go). Group 1 = URL
+// through the path, group 2 = optional query string.
+var dripMoneyHostHrefRE = regexp.MustCompile(
+	`(?i)(https?://(?:www\.)?(?:cratoolpro|eos57ytf|xnonu|muqes|k8k0hfdt|codefortwo)\.com/[A-Za-z0-9_/.\-]+)(\?[^"'\s>]*)?`,
+)
+
+// dripMoneyAttributionSuffix carries the Everflow attribution params every
+// money link must ship: sub1 = subscriber UUID, sub3 = campaign UUID. The
+// UPPERCASE merge tags are substituted at send time by BOTH send paths —
+// send_worker.ReplaceTrackingMergeTags for drip/broadcast campaigns and the
+// click-drip reminder sender (which calls the same function). sub2 (brand
+// domain) is deliberately omitted: drip creatives are brand-agnostic and the
+// campaign-send path has no lowercase {{brand.domain}} substitution; sub3's
+// campaign resolves the brand instead. The 2026-07-09/10 Empire conversions
+// arrived sub-less and permanently unattributable because the creative links
+// carried only creative_id — this guard makes that class impossible.
+const dripMoneyAttributionSuffix = "source_id=email&sub1={{SUBSCRIBER_ID}}&sub3={{CAMPAIGN_ID}}"
+
+// ensureMoneyLinkAttribution appends dripMoneyAttributionSuffix to every
+// money-network URL in html that does not already carry source_id=.
+// Idempotent; /integration/ unsub URLs (which carry ?_redir= tokens that must
+// not be mutated) are left untouched.
+func ensureMoneyLinkAttribution(html string) string {
+	matches := dripMoneyHostHrefRE.FindAllStringSubmatchIndex(html, -1)
+	if len(matches) == 0 {
+		return html
+	}
+	var b strings.Builder
+	b.Grow(len(html) + len(matches)*(len(dripMoneyAttributionSuffix)+1))
+	cursor := 0
+	for _, m := range matches {
+		matchStart, matchEnd := m[0], m[1]
+		base := html[m[2]:m[3]]
+		qs := ""
+		if m[4] >= 0 && m[5] >= 0 {
+			qs = html[m[4]:m[5]]
+		}
+		if strings.Contains(base, "/integration/") || strings.Contains(qs, "source_id=") {
+			b.WriteString(html[cursor:matchEnd])
+			cursor = matchEnd
+			continue
+		}
+		b.WriteString(html[cursor:matchStart])
+		b.WriteString(base)
+		if qs != "" {
+			b.WriteString(qs)
+			if !strings.HasSuffix(qs, "&") {
+				b.WriteString("&")
+			}
+		} else {
+			b.WriteString("?")
+		}
+		b.WriteString(dripMoneyAttributionSuffix)
+		cursor = matchEnd
+	}
+	b.WriteString(html[cursor:])
+	return b.String()
 }
 
 func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical, brand string) (creativeRec, error) {
@@ -2515,6 +2586,34 @@ func (po *PartnerDripOrchestrator) releaseClaim(ctx context.Context, recs []clai
 	return err
 }
 
+// namesFromExtra extracts personalization names from a clean-queue record's
+// extra_metadata. Both ingest doors (partner API slicer, drivesource) write
+// top-level first_name/last_name keys; empty string means "not provided"
+// (the API door marshals absent fields as "") and the record mails generic.
+// Names are trimmed and capped to the mailing_subscribers VARCHAR(100)
+// columns — an oversized value must not fail the insert (a failed insert
+// silently drops the record from the wave).
+func namesFromExtra(extra []byte) (first, last string) {
+	if len(extra) == 0 {
+		return "", ""
+	}
+	var m struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	}
+	if err := json.Unmarshal(extra, &m); err != nil {
+		return "", ""
+	}
+	cap100 := func(s string) string {
+		s = strings.TrimSpace(s)
+		if r := []rune(s); len(r) > 100 {
+			return string(r[:100])
+		}
+		return s
+	}
+	return cap100(m.FirstName), cap100(m.LastName)
+}
+
 // promoteToSubscribers inserts each claimed email into mailing_subscribers
 // (under the Data Partners Master list) with full provenance columns. Returns
 // the subscriber IDs in the same order as recs (empty string for inserts that
@@ -2531,15 +2630,21 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 		INSERT INTO mailing_subscribers
 		    (id, organization_id, list_id, email, email_hash,
 		     status, source, engagement_score,
-		     source_system, source_detail, source_metadata, imported_at)
+		     source_system, source_detail, source_metadata, imported_at,
+		     first_name, last_name)
 		VALUES ($1, $2, $3, $4, $5,
 		        'confirmed', $6, 50.0,
-		        $7, $8, $9::jsonb, NOW())
+		        $7, $8, $9::jsonb, NOW(),
+		        NULLIF($10, ''), NULLIF($11, ''))
 		ON CONFLICT (list_id, email) DO UPDATE SET
 		    source = EXCLUDED.source,
 		    source_system = EXCLUDED.source_system,
 		    source_detail = EXCLUDED.source_detail,
 		    source_metadata = EXCLUDED.source_metadata,
+		    -- follow-up touches re-run this statement: never let a nameless
+		    -- re-promote blank out a name some earlier door populated
+		    first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), mailing_subscribers.first_name),
+		    last_name  = COALESCE(NULLIF(EXCLUDED.last_name, ''),  mailing_subscribers.last_name),
 		    updated_at = NOW()
 		RETURNING id
 	`)
@@ -2560,6 +2665,7 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 			"clean_q_id":   r.id,
 		}
 		metaJSON, _ := json.Marshal(metadata)
+		firstName, lastName := namesFromExtra(r.extra)
 		var subID string
 		err := stmt.QueryRowContext(ctx,
 			uuid.New().String(),
@@ -2571,6 +2677,8 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 			sourceSystem,
 			sourceDetail,
 			string(metaJSON),
+			firstName,
+			lastName,
 		).Scan(&subID)
 		if err != nil {
 			log.Printf("[PartnerDripOrchestrator] insert subscriber %s: %v", r.email, err)
