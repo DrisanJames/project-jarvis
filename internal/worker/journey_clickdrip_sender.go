@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 )
 
 // defaultOrgID matches the platform's single-tenant organization used across
@@ -251,6 +252,19 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 		// no raw '{{ system.* }}' ever reaches the QP encoder and the
 		// reminder always ships a working unsubscribe link (CAN-SPAM).
 		html = s.renderSystemURLTokens(html, orgID, campaignID, p.SubscriberID, brandRootFromEmail(p.FromEmail), trackBase)
+
+		// Systematic partner disclosure (operator 2026-08-07): sender-ID
+		// header + intended-for/unsubscribe footer on every reminder touch,
+		// injected with concrete strings — this is the path that shipped raw
+		// '{{ brand.name }}' tokens to inboxes on 2026-08-04 (no Liquid brand
+		// context here). Injected BEFORE GenerateTextFromHTML below so the
+		// text part inherits both lines. raw_creative profiles (first-party,
+		// em.wcl-heloc.com) are exempt, matching send_worker semantics.
+		if !s.profileRawCreative(ctx, p.ProfileID) {
+			unsubURL := GenerateUnsubscribeURL(orgID, campaignID, p.SubscriberID, trackBase, s.trackingSecret)
+			html = injectPartnerDisclosureHeader(html, brand.Label(brandRootFromEmail(p.FromEmail)))
+			html = injectIntendedForFooter(html, p.SubscriberEmail, unsubURL, time.Now())
+		}
 	}
 
 	headers := buildClickDripHeaders(orgID, campaignID, p, trackBase, s.trackingSecret)
@@ -462,6 +476,25 @@ func (s *JourneyClickDripSender) resolveTrackingURL(ctx context.Context, profile
 		return normalizeTrackBase(trackingDomain.String)
 	}
 	return base
+}
+
+// profileRawCreative reports whether the sending profile is flagged
+// raw_creative (first-party mail, e.g. em.wcl-heloc.com) and therefore exempt
+// from partner-disclosure injection. Fails open to FALSE (inject) — a
+// transient lookup error must not let an offer touch ship without its
+// disclosure; missing-column errors (pre-migration DB) also land here.
+func (s *JourneyClickDripSender) profileRawCreative(ctx context.Context, profileID string) bool {
+	pid, err := uuid.Parse(profileID)
+	if err != nil {
+		return false
+	}
+	var raw sql.NullBool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(raw_creative, FALSE) FROM mailing_sending_profiles WHERE id=$1`,
+		pid).Scan(&raw); err != nil {
+		return false
+	}
+	return raw.Valid && raw.Bool
 }
 
 func normalizeTrackBase(d string) string {

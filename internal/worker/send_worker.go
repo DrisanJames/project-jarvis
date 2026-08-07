@@ -1986,6 +1986,33 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		textContent = strings.ReplaceAll(textContent, "{{ system.preferences_url }}", prefsURL)
 		textContent = strings.ReplaceAll(textContent, "{{system.preferences_url}}", prefsURL)
 
+		// Systematic partner disclosure (operator 2026-08-07): sender-ID header
+		// at the top, intended-for + unsubscribe footer at the bottom, on EVERY
+		// dispatched email — injected here with concrete strings (label, email,
+		// signed unsub URL), never tokens. raw_creative profiles (first-party,
+		// em.wcl-heloc.com) opt out, same as the compliance-footer bypass.
+		// Runs BEFORE the CAN-SPAM fallback so the footer's unsub link
+		// satisfies its check and the fallback stays a kill-switch safety net.
+		if !sesInfo.RawCreative {
+			discLabel := brand.Label(item.BrandRoot)
+			if discLabel == "" {
+				discLabel = brand.Label(brandRootFromEmail(item.FromEmail))
+			}
+			now := time.Now()
+			htmlContent = injectPartnerDisclosureHeader(htmlContent, discLabel)
+			htmlContent = injectIntendedForFooter(htmlContent, item.Email, unsubURL, now)
+			if hdr, ftr := disclosureTextParts(discLabel, item.Email, unsubURL, now); hdr != "" || ftr != "" {
+				// Same legacy-block rule as the HTML injector: creatives that
+				// still carry a baked-in disclosure keep it (once, not twice).
+				if hdr != "" && !strings.Contains(strings.ToLower(textContent), legacyDisclosurePhrase) {
+					textContent = hdr + "\n\n" + textContent
+				}
+				if ftr != "" && !strings.Contains(textContent, "This email was intended for ") {
+					textContent = strings.TrimRight(textContent, "\n") + "\n\n" + ftr + "\n"
+				}
+			}
+		}
+
 		// CAN-SPAM: if no unsub link exists in the body, inject one before </body>.
 		// raw_creative profiles opt out — the creative owns its own compliance.
 		if !sesInfo.RawCreative && !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {

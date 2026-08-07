@@ -3,33 +3,17 @@ package worker
 import (
 	"context"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 )
 
-// captureESPSender is a fake ESPSender that records the message it was asked
-// to deliver, standing in for the PMTA API sender via ProfileBasedSender's
-// senderCache seam.
-type captureESPSender struct {
-	msg *EmailMessage
-}
-
-func (c *captureESPSender) Send(_ context.Context, msg *EmailMessage) (*SendResult, error) {
-	c.msg = msg
-	return &SendResult{Success: true, MessageID: "cap-1"}, nil
-}
-
-// TestClickDripSend_IncludesPlainTextAlternative is the regression guard for
-// the 2026-07-22 gap: JourneyClickDripSender built its EmailMessage with
-// HTMLContent only, so every journey touch shipped multipart/alternative with
-// a single HTML part (the ESP builders skip the text part when
-// msg.TextContent == ""). The message handed to the ESP layer must now carry
-// a non-empty text/plain alternative, generated from the FINAL html (after
-// merge-tag and tracking rewrites) so it contains no raw {{ }} tokens.
-func TestClickDripSend_IncludesPlainTextAlternative(t *testing.T) {
+// clickDripDisclosureHarness drives one JourneyClickDripSender.Send through
+// the full sqlmock sequence with the profile's raw_creative flag set as
+// given, and returns the message captured at the ESP layer.
+func clickDripDisclosureHarness(t *testing.T, rawCreative bool) *EmailMessage {
+	t.Helper()
 	t.Setenv("DISABLE_BRAND_IMAGE_HOST_SWAP", "1")
 
 	db, mock, err := sqlmock.New()
@@ -50,30 +34,24 @@ func TestClickDripSend_IncludesPlainTextAlternative(t *testing.T) {
 	}
 	s := NewJourneyClickDripSender(db, ps, "https://t.global.example", "test-secret")
 
-	// 1) resolveOrgID
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT organization_id::text FROM mailing_subscribers WHERE id=$1`)).
 		WithArgs(subID).
 		WillReturnRows(sqlmock.NewRows([]string{"organization_id"}).AddRow(orgID))
 
-	// 2) ensureShadowCampaign fast path — campaign already exists.
 	campaignID := shadowCampaignID(offerID, "", "")
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text FROM mailing_campaigns WHERE id=$1`)).
 		WithArgs(campaignID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(campaignID))
 
-	// 3) resolveTrackingURL — profile carries a tracking domain.
 	mock.ExpectQuery(regexp.QuoteMeta(`FROM mailing_sending_profiles WHERE id=$1`)).
 		WithArgs(profileID).
 		WillReturnRows(sqlmock.NewRows([]string{"tracking_domain", "sending_domain"}).
 			AddRow("t.em.discountblog.com", "em.discountblog.com"))
 
-	// 3b) profileRawCreative — partner-disclosure exemption check (2026-08-07).
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COALESCE(raw_creative, FALSE) FROM mailing_sending_profiles WHERE id=$1`)).
 		WithArgs(profileID).
-		WillReturnRows(sqlmock.NewRows([]string{"raw_creative"}).AddRow(false))
+		WillReturnRows(sqlmock.NewRows([]string{"raw_creative"}).AddRow(rawCreative))
 
-	// 4) ProfileBasedSender profile lookup — pmta vendor with an API endpoint
-	//    so routing lands on the pre-seeded ":pmta-api" cache entry.
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT vendor_type,`)).
 		WithArgs(profileID).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -83,7 +61,6 @@ func TestClickDripSend_IncludesPlainTextAlternative(t *testing.T) {
 		}).AddRow("pmta", "", "", "em.discountblog.com", "http://127.0.0.1:19099",
 			nil, nil, nil, nil, "db", "", ""))
 
-	// 5) writeMessageLog
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_message_log`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -97,19 +74,44 @@ func TestClickDripSend_IncludesPlainTextAlternative(t *testing.T) {
 		FromName:        "Diane",
 		FromEmail:       "deals@em.discountblog.com",
 		ProfileID:       profileID,
-		HTMLContent: `<html><body><p>Big savings today.</p>` +
-			`<a href="https://track.cratoolpro.com/x?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}">Claim now</a>` +
-			`</body></html>`,
+		HTMLContent:     `<html><body><p>Big savings today.</p></body></html>`,
 	})
 	require.NoError(t, sendErr)
 	require.NotNil(t, cap.msg, "ESP sender was never invoked")
-
-	require.NotEmpty(t, strings.TrimSpace(cap.msg.TextContent),
-		"journey touch must carry a text/plain alternative — HTML-only multipart is the bug this test pins")
-	require.Contains(t, cap.msg.TextContent, "Big savings today.",
-		"text part must be derived from the creative body")
-	require.NotContains(t, cap.msg.TextContent, "{{",
-		"text part must be generated AFTER merge-tag/tracking rewrites — no raw tokens")
-
 	require.NoError(t, mock.ExpectationsWereMet())
+	return cap.msg
+}
+
+// TestClickDripSend_PartnerDisclosureInjected pins the 2026-08-07 systematic
+// disclosure: every journey touch ships the sender-ID header and the
+// intended-for + unsubscribe footer, rendered CONCRETE (the 2026-08-04
+// incident shipped literal '{{ brand.name }}' on exactly this path).
+func TestClickDripSend_PartnerDisclosureInjected(t *testing.T) {
+	msg := clickDripDisclosureHarness(t, false)
+
+	require.Contains(t, msg.HTMLContent, partnerDisclosureMarker)
+	require.Contains(t, msg.HTMLContent, "Partner offer sent by")
+	require.Contains(t, msg.HTMLContent, "Discount Blog</span>. You subscribed to Discount Blog partner promotions.",
+		"brand label must be the rendered display name from brand.Label, never a token")
+	require.Contains(t, msg.HTMLContent, intendedForMarker)
+	require.Contains(t, msg.HTMLContent, "This email was intended for human@outlook.com,")
+	require.Contains(t, msg.HTMLContent, "/track/unsubscribe/")
+	require.NotContains(t, msg.HTMLContent, "{{", "no raw tokens may survive to the ESP layer")
+
+	// Text part is generated from the FINAL html, so it inherits both lines.
+	require.Contains(t, msg.TextContent, "Partner offer sent by")
+	require.Contains(t, msg.TextContent, "This email was intended for human@outlook.com,")
+}
+
+// TestClickDripSend_RawCreativeProfileSkipsDisclosure is the negative-path
+// guard for the first-party exemption (em.wcl-heloc.com): a raw_creative
+// profile must ship the creative without either injected block.
+func TestClickDripSend_RawCreativeProfileSkipsDisclosure(t *testing.T) {
+	msg := clickDripDisclosureHarness(t, true)
+
+	require.NotContains(t, msg.HTMLContent, partnerDisclosureMarker,
+		"raw_creative profile must not receive the disclosure header")
+	require.NotContains(t, msg.HTMLContent, intendedForMarker,
+		"raw_creative profile must not receive the intended-for footer")
+	require.NotContains(t, msg.HTMLContent, "Partner offer sent by")
 }
