@@ -598,7 +598,20 @@ export const CpmPlanner: React.FC = () => {
   const [nonCpmShowAll, setNonCpmShowAll] = useState(false);
   const [nonCpmExpanded, setNonCpmExpanded] = useState<Record<string, boolean>>({});
 
+  // Overlap guard (incident 2026-08-08). /deals runs the whole-org deal->campaign
+  // attribution CTE, which measured 7-9 MINUTES in production — longer than the
+  // 5-minute auto-refresh below. Without this guard each tick fired before the
+  // previous finished, so an unattended open tab stacked 3+ concurrent copies
+  // indefinitely and saturated database IO: it starved the audience finalizer
+  // (a 608ms plan took >30min and timed out, cycling 3 campaigns) and was the
+  // root blocker in two lock convoys the same night. Skip a tick when one is
+  // still in flight — a refresh that cannot finish before the next is due must
+  // never queue behind itself.
+  const inFlight = useRef(false);
+
   const loadAll = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const [dRes, cRes] = await Promise.all([
         apiFetch(`${API}/deals`),
@@ -614,13 +627,18 @@ export const CpmPlanner: React.FC = () => {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load');
     } finally {
+      inFlight.current = false;
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     loadAll();
-    const t = window.setInterval(loadAll, 300_000); // 5-min auto-refresh (heavy aggregates server-side)
+    // 15-min auto-refresh. Was 5 min, which is SHORTER than the server-side
+    // aggregate takes (7-9 min) — see the overlap guard above. The guard alone
+    // prevents stacking; the longer interval also stops a background tab from
+    // re-running a multi-minute whole-org CTE twelve times an hour for nobody.
+    const t = window.setInterval(loadAll, 900_000);
     return () => window.clearInterval(t);
   }, [loadAll]);
 
