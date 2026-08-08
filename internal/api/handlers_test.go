@@ -142,7 +142,17 @@ func TestHealthCheck(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "alive", liveResp["status"])
 
-	// Test /health/ready endpoint
+	// Test /health/ready endpoint.
+	// Readiness now also reports whether the /api/mailing/* route tree has
+	// finished registering (mailing_routes_readiness.go — it registers in a
+	// background goroutine that can take >10 min, and traffic arriving before
+	// then used to get a silent 404). A fully-booted server has registered
+	// them, so simulate that; the not-ready path is covered by
+	// TestReadiness_NotReadyUntilRoutesRegistered. The ALB's own check is
+	// /health, which stays an unconditional 200 either way.
+	MarkMailingRoutesReady()
+	t.Cleanup(resetMailingRoutesReadyForTest)
+
 	req = httptest.NewRequest(http.MethodGet, "/health/ready", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

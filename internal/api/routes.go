@@ -163,6 +163,12 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	r.Get("/api/data-partners/analytics", h.GetDataPartnerAnalytics)
 	r.Post("/api/data-partners/refresh", h.RefreshDataPartnerCache)
 
+	// Unmatched routes: while /api/mailing/* registration is still running in
+	// its background goroutine, answer /api/* with a retryable 503 instead of
+	// a misleading 404 (see mailing_routes_readiness.go — this silently ate 25
+	// board-deploy POSTs on 2026-08-06).
+	r.NotFound(handleUnmatchedRoute)
+
 	// Serve static files for React frontend (SPA with fallback to index.html)
 	spaHandler(r, "./web/dist")
 
@@ -175,9 +181,11 @@ func spaHandler(r chi.Router, staticPath string) {
 		// Get the path
 		path := req.URL.Path
 		
-		// Skip API routes
+		// Skip API routes. The SPA catch-all is registered at router-build
+		// time, so it shadows /api GETs whose real handler has not been
+		// registered yet — route them through the same startup-aware path.
 		if strings.HasPrefix(path, "/api") || strings.HasPrefix(path, "/health") {
-			http.NotFound(w, req)
+			handleUnmatchedRoute(w, req)
 			return
 		}
 		

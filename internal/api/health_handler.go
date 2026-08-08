@@ -128,17 +128,25 @@ func (hc *HealthChecker) HandleReadiness(w http.ResponseWriter, r *http.Request)
 
 	overall := determineOverallStatus(checks)
 
-	ready := overall != "unhealthy"
+	// Mailing routes register asynchronously and can take >10 minutes; a task
+	// serving traffic before then answers /api/mailing/* with 503 rather than
+	// 404 (mailing_routes_readiness.go). Readiness must reflect that, so deploy
+	// scripts and operators can tell "starting up" from "broken". /health stays
+	// an unconditional 200 for the ALB — gating it here would let ECS kill
+	// tasks mid-registration.
+	routesReady := MailingRoutesReady()
+	ready := overall != "unhealthy" && routesReady
 	httpStatus := http.StatusOK
 	if !ready {
 		httpStatus = http.StatusServiceUnavailable
 	}
 
 	respondJSON(w, httpStatus, map[string]interface{}{
-		"ready":  ready,
-		"status": overall,
-		"build":  buildinfo.Current(),
-		"checks": checks,
+		"ready":          ready,
+		"status":         overall,
+		"mailing_routes": map[string]interface{}{"registered": routesReady},
+		"build":          buildinfo.Current(),
+		"checks":         checks,
 	})
 }
 

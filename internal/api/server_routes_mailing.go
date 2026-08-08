@@ -1751,4 +1751,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			r.Post("/pipeline/validate-existing", pipelineH.HandleValidateExisting)
 		})
 	}
+
+	// Route tree is now live. Until this point every /api/mailing/* request
+	// hit chi's default 404; unmatched /api/* now answers 503 instead
+	// (mailing_routes_readiness.go, incident 2026-08-06).
+	MarkMailingRoutesReady()
 }
