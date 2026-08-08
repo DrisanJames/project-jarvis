@@ -9088,6 +9088,58 @@ END $$`},
 			WHERE d.source_channel IN ('api_feed','flat_file')
 			  AND q.eo_result IN ('Verified','Complainer')
 			  AND q.status = 'ready'`},
+		// ---- auto_coverage feed → its own vertical (operator 2026-08-08) ----
+		// "Attribits - Internal Car Insurance" (the auto_coverage feed) was
+		// onboarded under 'personal_loans', which would have mailed personal-loan
+		// drip creatives to car-insurance leads. It stays SEPARATE from the shared
+		// 'auto_insurance' lane (Carshield / GlobUSA / Jarvis-ATT Liberty Mutual)
+		// because it is an internal mail opportunity — same reasoning as
+		// samsclub_internal / jarvis_att / jarvis_apple.
+		//
+		// These four run in ORDER and the order is load-bearing: the CHECK must
+		// widen before the dataset UPDATE, and both seeds must exist before the
+		// drip orchestrator's first tick on the new vertical. resolveCreative
+		// (partner_drip_orchestrator.go:1589) is an exact (vertical,brand) match
+		// with NO fallback row, and the welcome pass INNER JOINs
+		// partner_drip_state (:966) — either one missing means the vertical never
+		// mails and never errors loudly.
+		//
+		// The guard literal MUST name the NEWEST vertical. Reusing an older one
+		// (this block's predecessor guards on '%consumer%') silently no-ops the
+		// whole DO block and the constraint never widens.
+		{"aug08_partner_datasets_vertical_auto_coverage_internal", `DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'partner_datasets_vertical_check'
+				  AND pg_get_constraintdef(oid) LIKE '%auto_coverage_internal%'
+			) THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
+						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
+						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
+						'consumer','auto_coverage_internal']));
+			END IF;
+		END $$`},
+		// Clone the 16-brand creative set from auto_insurance so the new vertical
+		// has a complete (vertical,brand) row for every brand on the roster.
+		{"aug08_seed_auto_coverage_internal_creatives", `INSERT INTO partner_drip_creatives
+			(vertical, brand, creative_filename, subject_line, preheader, from_name, offer_id, active, updated_by)
+			SELECT 'auto_coverage_internal', brand, creative_filename, subject_line, preheader,
+			       from_name, offer_id, active, 'aug08_auto_coverage_seed'
+			FROM partner_drip_creatives
+			WHERE vertical = 'auto_insurance'
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		{"aug08_seed_auto_coverage_internal_drip_state", `INSERT INTO partner_drip_state (vertical, next_brand_index)
+			VALUES ('auto_coverage_internal', 0)
+			ON CONFLICT (vertical) DO NOTHING`},
+		// Scoped by id AND current vertical: re-running is a no-op, and a later
+		// operator re-assignment is never stomped by a redeploy.
+		{"aug08_attribits_internal_car_insurance_vertical", `UPDATE partner_datasets
+			SET vertical = 'auto_coverage_internal'
+			WHERE id = '99137b10-969c-4c9b-84a6-28042b779a07'::uuid
+			  AND vertical = 'personal_loans'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

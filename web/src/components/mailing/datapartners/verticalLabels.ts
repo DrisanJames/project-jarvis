@@ -12,6 +12,7 @@ export const VERTICAL_LABEL: Record<string, string> = {
   samsclub_internal: "Sam's Club (internal)",
   clickers_samsclub: "Sam's Club (clickers)",
   metal_roofing_signal: 'Metal Roofing (signal)',
+  auto_coverage_internal: 'Auto Coverage (internal)',
 };
 
 // labelForVertical resolves a vertical slug to a display label. Mapped slugs win.

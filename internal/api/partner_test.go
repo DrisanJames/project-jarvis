@@ -77,7 +77,16 @@ func TestSlugifyForPartner(t *testing.T) {
 }
 
 func TestIsValidVertical(t *testing.T) {
-	for _, v := range []string{"refi_heloc", "personal_loans", "tax_relief", "remodel"} {
+	// Must stay in lockstep with the partner_datasets_vertical_check CHECK
+	// array in cmd/server/main.go — a vertical the DB accepts but this rejects
+	// is unmanageable through the portal (HandleUpdateCreative 400s on it).
+	for _, v := range []string{
+		"refi_heloc", "personal_loans", "tax_relief", "remodel",
+		"direct_offer", "clickers_samsclub", "metal_roofing_signal",
+		"samsclub_internal", "flooring", "term_life", "senior_care",
+		"auto_insurance", "jarvis_att", "jarvis_apple", "consumer",
+		"auto_coverage_internal",
+	} {
 		if !isValidVertical(v) {
 			t.Errorf("isValidVertical(%q) should be true", v)
 		}

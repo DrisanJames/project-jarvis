@@ -165,7 +165,7 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 		return
 	}
 	if !isValidVertical(req.Vertical) {
-		writeJSONError(w, "vertical must be one of: refi_heloc | personal_loans | tax_relief | remodel", http.StatusBadRequest)
+		writeJSONError(w, "unknown vertical: must match the partner_datasets vertical CHECK constraint", http.StatusBadRequest)
 		return
 	}
 	slug := strings.TrimSpace(req.Slug)
@@ -2061,12 +2061,21 @@ func slugifyForPartner(s string) string {
 	return strings.Trim(string(out), "-")
 }
 
+// validVerticals mirrors the partner_datasets_vertical_check CHECK constraint
+// (cmd/server/main.go). It had drifted to just the original four, which meant
+// the eleven verticals added since could not be created OR have their drip
+// creatives edited through the portal — HandleUpdateCreative rejected them
+// before reaching the DB. Keep this list and the CHECK array in lockstep.
+var validVerticals = map[string]bool{
+	"refi_heloc": true, "personal_loans": true, "tax_relief": true, "remodel": true,
+	"direct_offer": true, "clickers_samsclub": true, "metal_roofing_signal": true,
+	"samsclub_internal": true, "flooring": true, "term_life": true, "senior_care": true,
+	"auto_insurance": true, "jarvis_att": true, "jarvis_apple": true, "consumer": true,
+	"auto_coverage_internal": true,
+}
+
 func isValidVertical(v string) bool {
-	switch v {
-	case "refi_heloc", "personal_loans", "tax_relief", "remodel":
-		return true
-	}
-	return false
+	return validVerticals[v]
 }
 
 func isValidBrand(b string) bool {
