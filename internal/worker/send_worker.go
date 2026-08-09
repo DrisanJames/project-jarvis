@@ -3158,6 +3158,22 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 
 	// System fields
 	now := time.Now()
+	// Dispatch-time stamp for express lanes, where "we received your form and
+	// mailed you right now" is the whole message (operator 2026-08-09,
+	// internal_auto_insurance). ADDITIVE — every pre-existing key below keeps
+	// its exact prior value and formatting.
+	//
+	// Rendered in DENVER, not the server's UTC. The task runs in UTC, so
+	// current_hour is already UTC and a naive "current_time" built from it
+	// would tell a Boise recipient their quotes were prepared six hours in
+	// the future. LoadLocation can fail on a container without tzdata, so it
+	// degrades to UTC with an explicit label rather than silently lying about
+	// the zone.
+	dispatchAt, zoneLabel := now, "UTC"
+	if den, err := time.LoadLocation("America/Denver"); err == nil {
+		dispatchAt = now.In(den)
+		zoneLabel = dispatchAt.Format("MST")
+	}
 	system := map[string]interface{}{
 		"current_date":    now.Format("January 2, 2006"),
 		"current_year":    now.Year(),
@@ -3166,6 +3182,10 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 		"current_weekday": now.Weekday().String(),
 		"current_hour":    now.Hour(),
 		"timestamp":       now.Unix(),
+		// e.g. "3:04 PM MDT" / "August 9, 2026 at 3:04 PM MDT"
+		"current_time":  dispatchAt.Format("3:04 PM ") + zoneLabel,
+		"dispatch_date": dispatchAt.Format("January 2, 2006"),
+		"dispatched_at": dispatchAt.Format("January 2, 2006") + " at " + dispatchAt.Format("3:04 PM ") + zoneLabel,
 	}
 	tBase := trackBase
 	if tBase == "" {

@@ -47,19 +47,19 @@ type SuppressionHub interface {
 
 // PartnerSlicerConfig knobs.
 type PartnerSlicerConfig struct {
-	SliceSize     int           // records per slice (default 1000)
-	PollInterval  time.Duration // how often to look for new batches (default 30s)
-	Concurrency   int           // batches processed concurrently (default 1 — keep FIFO ordering)
-	S3Region      string
+	SliceSize    int           // records per slice (default 1000)
+	PollInterval time.Duration // how often to look for new batches (default 30s)
+	Concurrency  int           // batches processed concurrently (default 1 — keep FIFO ordering)
+	S3Region     string
 }
 
 // PartnerSlicer drains S3 partner batches into partner_clean_queue.
 type PartnerSlicer struct {
-	db        *sql.DB
-	s3Client  *s3.Client
-	bucket    string
-	hub       SuppressionHub
-	cfg       PartnerSlicerConfig
+	db       *sql.DB
+	s3Client *s3.Client
+	bucket   string
+	hub      SuppressionHub
+	cfg      PartnerSlicerConfig
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -152,14 +152,14 @@ func (ps *PartnerSlicer) processOnce() {
 }
 
 type partnerBatch struct {
-	id           string
-	datasetID    string
-	partnerID    string
-	vertical     string
-	s3Bucket     string
-	s3Key        string
-	recordCount  int
-	nextOffset   int
+	id          string
+	datasetID   string
+	partnerID   string
+	vertical    string
+	s3Bucket    string
+	s3Key       string
+	recordCount int
+	nextOffset  int
 }
 
 // claimNextBatch grabs the FIFO oldest non-emergency-stopped batch in
@@ -173,6 +173,21 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 	}
 	defer tx.Rollback()
 
+	// EXPRESS datasets jump the queue (operator 2026-08-09).
+	//
+	// Partners post one record per HTTP call, so the backlog is not "a few big
+	// batches" — measured 2026-08-09 it was 37,958 batches of record_count=1,
+	// draining at 328/min. Because the slicer is FIFO with Concurrency=1, a
+	// record that must mail on arrival (fresh, already-validated form fill)
+	// waited ~1.9 HOURS behind unrelated bulk intake before it was even sliced.
+	// That queue position — not the drip tick, not the 2.1-minute campaign
+	// path — was the entire latency.
+	//
+	// Ordering only. No batch is skipped, starved, or reordered relative to its
+	// own kind: express datasets are a tiny trickle (a form fill at a time),
+	// and every non-express batch keeps its exact received_at FIFO order
+	// relative to the others. With zero express datasets this ORDER BY is
+	// byte-for-byte the old behavior.
 	row := tx.QueryRowContext(ctx, `
 		SELECT b.id, b.dataset_id, b.partner_id, d.vertical,
 		       b.s3_bucket, b.s3_key, b.record_count, b.next_record_offset
@@ -182,7 +197,7 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 		  AND b.status IN ('received', 'slicing')
 		  AND d.paused_emergency = false
 		  AND d.status = 'active'
-		ORDER BY b.received_at ASC
+		ORDER BY COALESCE(d.express_dispatch, false) DESC, b.received_at ASC
 		FOR UPDATE OF b SKIP LOCKED
 		LIMIT 1
 	`)

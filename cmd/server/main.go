@@ -9155,6 +9155,18 @@ END $$`},
 			SET vertical = 'internal_auto_insurance'
 			WHERE id = '99137b10-969c-4c9b-84a6-28042b779a07'::uuid
 			  AND vertical = 'personal_loans'`},
+		// ---- express dispatch: mail on arrival (operator 2026-08-09) ----
+		// Fresh, partner-validated form fills must mail immediately, not queue
+		// behind bulk intake. Partners post ONE record per call, so the slicer's
+		// FIFO backlog is tens of thousands of single-record batches (measured
+		// 37,958 draining at 328/min = ~1.9h). claimNextBatch orders express
+		// datasets first so an arriving record is claimed on the next poll.
+		// Defaults FALSE: every existing dataset keeps pure FIFO behavior.
+		{"aug09_partner_datasets_express_dispatch", `ALTER TABLE partner_datasets
+			ADD COLUMN IF NOT EXISTS express_dispatch BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"aug09_attribits_internal_car_insurance_express", `UPDATE partner_datasets
+			SET express_dispatch = TRUE
+			WHERE id = '99137b10-969c-4c9b-84a6-28042b779a07'::uuid`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
