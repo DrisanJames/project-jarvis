@@ -382,6 +382,26 @@ func parseJSONObject(body []byte) ([]ingestRecord, error) {
 }
 
 func parseNDJSON(body []byte) ([]ingestRecord, error) {
+	trimmedBody := bytes.TrimSpace(body)
+
+	// A JSON ARRAY is never valid NDJSON, but partners send one anyway. It has
+	// to be handled BEFORE the line scan: scanning an array yields a SILENT
+	// SUBSET — element lines that end in a comma fail Unmarshal and are
+	// skipped, while the last element (no trailing comma) parses. That returns
+	// a partial batch with no error, which is worse than rejecting it.
+	if len(trimmedBody) > 0 && trimmedBody[0] == '[' {
+		var arr []ingestRecord
+		if err := json.Unmarshal(trimmedBody, &arr); err == nil {
+			out := make([]ingestRecord, 0, len(arr))
+			for _, rec := range arr {
+				if normalized, ok := normalizeRecord(rec); ok {
+					out = append(out, normalized)
+				}
+			}
+			return out, nil
+		}
+	}
+
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
 	cleaned := make([]ingestRecord, 0, 1024)
@@ -400,6 +420,29 @@ func parseNDJSON(body []byte) ([]ingestRecord, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan ndjson: %w", err)
+	}
+
+	// Pretty-printed fallback (2026-08-09). A partner posting ONE
+	// pretty-printed JSON object with an ndjson content-type loses every
+	// record: each physical line ("{", `"email": "...",`) fails Unmarshal and
+	// hits the `continue` above, so cleaned ends empty and the handler answers
+	// 400 no_records — with no log line and the api-key's last_used_at still
+	// stamped, which makes it look like the feed is connected when nothing is
+	// landing. The Internal Car Insurance feed sat that way from 2026-07-28
+	// (key creation) to 2026-08-09: 0 batches, 0 S3 objects, 0 queue rows.
+	// Formatting is not a reason to discard a well-formed record, so when
+	// line-parsing yields nothing, retry the whole body as a single object or
+	// a {"records":[...]} envelope before giving up.
+	if len(cleaned) == 0 && len(trimmedBody) > 0 && trimmedBody[0] == '{' {
+		var rec ingestRecord
+		if err := json.Unmarshal(trimmedBody, &rec); err == nil {
+			if normalized, ok := normalizeRecord(rec); ok {
+				return []ingestRecord{normalized}, nil
+			}
+		}
+		if recs, err := parseJSONObject(trimmedBody); err == nil && len(recs) > 0 {
+			return recs, nil
+		}
 	}
 	return cleaned, nil
 }
