@@ -2525,6 +2525,10 @@ func runStartupMigrations(db *sql.DB) {
 		// workers use — one table, one WorkerHealthMonitor, one stall alarm for
 		// both populations. Contract: tasks/eng-team/coalition/SCHEMA-CONTRACTS.md §3.
 		{"add_worker_heartbeats_metrics", `ALTER TABLE mailing_worker_heartbeats ADD COLUMN IF NOT EXISTS metrics JSONB`},
+		// Reactive stall alerting (operator 2026-08-09): a stall older than the
+		// monitor's muteAfter gets one final notice, then alerts_muted silences
+		// re-alerts until the worker beats again (EmitHeartbeat clears it).
+		{"add_worker_heartbeats_alerts_muted", `ALTER TABLE mailing_worker_heartbeats ADD COLUMN IF NOT EXISTS alerts_muted BOOLEAN NOT NULL DEFAULT FALSE`},
 		// ── Segment-family ownership registry (Platform Coalition WS2, REQ-C15) ──
 		// Machine-readable owner/cadence/SLA/keep-policy per segment FAMILY
 		// (name pattern). Root-cause fix for F2 (96% of segments unowned), F3

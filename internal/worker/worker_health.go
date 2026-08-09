@@ -63,6 +63,7 @@ func EmitHeartbeat(ctx context.Context, db *sql.DB, workerName string, expectedI
 			expected_interval_seconds = EXCLUDED.expected_interval_seconds,
 			stalled                   = FALSE,
 			stalled_since             = NULL,
+			alerts_muted              = FALSE,
 			updated_at                = NOW()
 	`, workerName, status, errArg, expectedIntervalSeconds)
 	if err != nil {
@@ -164,6 +165,13 @@ type WorkerHealthMonitor struct {
 	stallMultiplier int
 	// reAlertAfter throttles repeat alerts for a still-stalled worker.
 	reAlertAfter time.Duration
+	// muteAfter: once a worker has been stalled this long it is presumed
+	// retired/decommissioned — one final "muting" notice is sent and further
+	// re-alerts stop (a resumed heartbeat auto-unmutes). Before this existed,
+	// retired jobs (converter_autosender, send_day_bridge — dead since the
+	// jul28 Scheduling Copilot cutover) re-alerted every hour for 11+ days
+	// (operator 2026-08-09: "worker-stall should be reactive not proactive").
+	muteAfter time.Duration
 }
 
 // NewWorkerHealthMonitor builds the monitor. notifier may be nil (defaults to
@@ -177,7 +185,8 @@ func NewWorkerHealthMonitor(db *sql.DB, notifier notify.Notifier) *WorkerHealthM
 		notifier:        notifier,
 		interval:        5 * time.Minute,
 		stallMultiplier: 3,
-		reAlertAfter:    1 * time.Hour,
+		reAlertAfter:    6 * time.Hour,
+		muteAfter:       48 * time.Hour,
 	}
 }
 
@@ -231,12 +240,59 @@ func (m *WorkerHealthMonitor) checkOnce(ctx context.Context) {
 		return
 	}
 
-	// Select stalled workers that haven't been alerted within the re-alert
-	// window, claim them by stamping last_alerted_at, and alert.
+	// Mute workers stalled beyond muteAfter — presumed retired. Claim them
+	// here so each gets exactly ONE final notice; a resumed heartbeat clears
+	// alerts_muted (see EmitHeartbeat) and monitoring resumes automatically.
+	muted, err := m.db.QueryContext(qctx, `
+		UPDATE mailing_worker_heartbeats
+		SET alerts_muted = TRUE, last_alerted_at = NOW()
+		WHERE stalled = TRUE AND alerts_muted = FALSE
+		  AND stalled_since < NOW() - make_interval(secs => $1)
+		RETURNING worker_name, last_beat_at
+	`, int(m.muteAfter.Seconds()))
+	if err != nil {
+		// Also covers the alerts_muted column not existing yet on first boot
+		// (startup migrations run in a background goroutine).
+		if !isTableNotExistsError(err) {
+			log.Printf("[WorkerHealthMonitor] mute-claim error: %v", err)
+		}
+		return
+	}
+	type mute struct {
+		name     string
+		lastBeat time.Time
+	}
+	var mutes []mute
+	for muted.Next() {
+		var s mute
+		if err := muted.Scan(&s.name, &s.lastBeat); err == nil {
+			mutes = append(mutes, s)
+		}
+	}
+	muted.Close()
+	for _, s := range mutes {
+		age := time.Since(s.lastBeat).Round(time.Hour)
+		msg := notify.Message{
+			Tier:     notify.TierWatch,
+			Scope:    "Worker stall",
+			Headline: fmt.Sprintf("🔕 *%s* muted — stalled %s (> %s), presumed retired", s.name, age, m.muteAfter),
+			Body: "no further stall alerts for this worker · restarting it auto-resumes monitoring · " +
+				"if it is truly retired, delete its row from mailing_worker_heartbeats",
+		}
+		if err := notify.Deliver(m.notifier, msg); err != nil {
+			log.Printf("[WorkerHealthMonitor] mute notice failed for %s: %v", s.name, err)
+		} else {
+			log.Printf("[WorkerHealthMonitor] MUTED stall alerts: %s (idle %s)", s.name, age)
+		}
+	}
+
+	// Select stalled, unmuted workers that haven't been alerted within the
+	// re-alert window, claim them by stamping last_alerted_at, and alert.
 	rows, err := m.db.QueryContext(qctx, `
 		UPDATE mailing_worker_heartbeats
 		SET last_alerted_at = NOW()
 		WHERE stalled = TRUE
+		  AND alerts_muted = FALSE
 		  AND (last_alerted_at IS NULL OR last_alerted_at < NOW() - make_interval(secs => $1))
 		RETURNING worker_name, last_beat_at, expected_interval_seconds, last_status, COALESCE(last_error, '')
 	`, int(m.reAlertAfter.Seconds()))
