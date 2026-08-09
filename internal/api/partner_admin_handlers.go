@@ -2071,7 +2071,7 @@ var validVerticals = map[string]bool{
 	"direct_offer": true, "clickers_samsclub": true, "metal_roofing_signal": true,
 	"samsclub_internal": true, "flooring": true, "term_life": true, "senior_care": true,
 	"auto_insurance": true, "jarvis_att": true, "jarvis_apple": true, "consumer": true,
-	"auto_coverage_internal": true,
+	"internal_auto_insurance": true,
 }
 
 func isValidVertical(v string) bool {
