@@ -58,24 +58,56 @@ func (h *PartnerIngestHandler) SetS3Client(c *PartnerIngestS3Client) {
 // ============ Request limits ============
 
 const (
-	maxIngestBytes        = 25 * 1024 * 1024 // 25 MiB JSON / NDJSON body
-	maxRecordsPerBatch    = 50_000
-	maxEmailLength        = 254
-	defaultBatchTimeout   = 60 * time.Second
+	maxIngestBytes      = 25 * 1024 * 1024 // 25 MiB JSON / NDJSON body
+	maxRecordsPerBatch  = 50_000
+	maxEmailLength      = 254
+	defaultBatchTimeout = 60 * time.Second
 )
 
 // ============ Wire types ============
 
+// ingestRecord is a CLOSED struct: json.Unmarshal silently discards any posted
+// field with no home here, and the canonical NDJSON written to S3 is a re-marshal
+// of THIS struct — so a field missing below is destroyed at the door and can
+// never be recovered downstream, no matter what the drip or the send path do.
+//
+// That is not hypothetical: a partner posting the documented shape
+// {"city":"Boise","postal_code":"83669",...} landed in partner_clean_queue as
+// {"zip":"","state":"ID",...} with the city gone and the ZIP empty — the struct
+// accepted only "zip" (2026-08-09). Personalized creatives rendered their
+// location fields blank and the cause looked like a templating bug three layers
+// away. Adding a field here is cheap; add it rather than dropping partner data.
 type ingestRecord struct {
 	Email     string                 `json:"email"`
 	FirstName string                 `json:"first_name,omitempty"`
 	LastName  string                 `json:"last_name,omitempty"`
+	City      string                 `json:"city,omitempty"`
 	Zip       string                 `json:"zip,omitempty"`
 	State     string                 `json:"state,omitempty"`
 	IPAddress string                 `json:"ip_address,omitempty"`
 	OptInDate string                 `json:"opt_in_date,omitempty"`
 	Source    string                 `json:"source,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// PostalCode is the spelling most partners send; Zip is the legacy field this
+// struct already had. UnmarshalJSON accepts EITHER and normalizes onto Zip so
+// exactly one representation reaches S3 and every downstream reader keeps
+// working unchanged.
+func (r *ingestRecord) UnmarshalJSON(b []byte) error {
+	type raw ingestRecord // alias: no recursion back into this method
+	var v struct {
+		raw
+		PostalCode string `json:"postal_code"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*r = ingestRecord(v.raw)
+	if strings.TrimSpace(r.Zip) == "" {
+		r.Zip = v.PostalCode
+	}
+	return nil
 }
 
 type ingestRequest struct {
@@ -241,13 +273,13 @@ func (h *PartnerIngestHandler) HandleGetBatch(w http.ResponseWriter, r *http.Req
 	`, batchID, authCtx.PartnerID)
 
 	var (
-		id, status                                      string
-		recordCount, nextOffset                          int
-		receivedAt                                       time.Time
-		completedAt                                      sql.NullTime
-		lastError                                        sql.NullString
-		emergencyStopped                                 bool
-		sliced, suppGlobal, suppEO, ready, mailed        int
+		id, status                                string
+		recordCount, nextOffset                   int
+		receivedAt                                time.Time
+		completedAt                               sql.NullTime
+		lastError                                 sql.NullString
+		emergencyStopped                          bool
+		sliced, suppGlobal, suppEO, ready, mailed int
 	)
 	if err := row.Scan(&id, &status, &recordCount, &nextOffset, &receivedAt, &completedAt, &lastError, &emergencyStopped,
 		&sliced, &suppGlobal, &suppEO, &ready, &mailed); err != nil {
@@ -269,11 +301,11 @@ func (h *PartnerIngestHandler) HandleGetBatch(w http.ResponseWriter, r *http.Req
 		"last_error":         nullStringValue(lastError),
 		"emergency_stopped":  emergencyStopped,
 		"counters": map[string]int{
-			"sliced":             sliced,
-			"suppressed_global":  suppGlobal,
-			"suppressed_eo":      suppEO,
-			"ready":              ready,
-			"mailed":             mailed,
+			"sliced":            sliced,
+			"suppressed_global": suppGlobal,
+			"suppressed_eo":     suppEO,
+			"ready":             ready,
+			"mailed":            mailed,
 		},
 	})
 }
@@ -285,7 +317,7 @@ func (h *PartnerIngestHandler) HandleGetBatch(w http.ResponseWriter, r *http.Req
 // No auth required — this is purely documentation.
 func (h *PartnerIngestHandler) HandleGetSchema(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"endpoint":  "POST /api/partner-ingest/v1/records",
+		"endpoint": "POST /api/partner-ingest/v1/records",
 		"auth": map[string]interface{}{
 			"header":  partnerKeyHeader,
 			"format":  "dpk_<32 chars>",

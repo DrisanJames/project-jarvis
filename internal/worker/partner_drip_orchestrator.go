@@ -2738,14 +2738,91 @@ func namesFromExtra(extra []byte) (first, last string) {
 	if err := json.Unmarshal(extra, &m); err != nil {
 		return "", ""
 	}
-	cap100 := func(s string) string {
-		s = strings.TrimSpace(s)
-		if r := []rune(s); len(r) > 100 {
-			return string(r[:100])
-		}
-		return s
-	}
 	return cap100(m.FirstName), cap100(m.LastName)
+}
+
+// cap100 trims a personalization value and caps it to the 100-rune width of the
+// mailing_subscribers VARCHAR(100) name columns. Shared by namesFromExtra and
+// personaFieldsFromExtra so both doors truncate identically — an oversized
+// value must never fail the promote insert (a failed insert silently drops the
+// record from the wave).
+func cap100(s string) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > 100 {
+		return string(r[:100])
+	}
+	return s
+}
+
+// personaFieldsFromExtra extracts the geo/vehicle personalization a clean-queue
+// record carries beyond first/last name, for mailing_subscribers.custom_fields
+// (JSONB — migrations/001_mailing_schema.sql:94). That is the existing
+// per-subscriber custom-field mechanism: the send worker's claim query already
+// selects s.custom_fields (send_worker.go:872) into QueueItem.CustomFields
+// (send_worker.go:326) and buildRenderContext exposes it to Liquid as
+// rc["custom"] (send_worker.go:3134) — i.e. {{ custom.city }}, NOT {{ city }}.
+//
+// Two shapes have to be read because the two ingest doors disagree on nesting:
+// the partner-API slicer writes state/zip at the TOP level (partner_slicer.go
+// :445-453), while the drivesource door routes city and the lead-detail fields
+// into the nested "metadata" object (agents/drivesource/pull.py NESTED_MAP).
+// Top level wins when a key appears in both.
+//
+// Keys are emitted under the portal's canonical import names — city / state /
+// postal_code (mailing_import.go:358-361) — so a drip-promoted subscriber is
+// segmentable by the same custom_fields->>'city' the CSV door produces.
+//
+// Hardened against a bad payload on every axis, because promoteToSubscribers
+// runs one prepared statement per record and a single insert error drops that
+// recipient from the wave: only non-empty values are emitted, every value is
+// trimmed and capped to 100 runes, a "metadata" value that is not an object is
+// ignored WITHOUT discarding the top-level fields, and an unparseable payload
+// yields an empty (not nil) map, which merges as a no-op.
+func personaFieldsFromExtra(extra []byte) map[string]interface{} {
+	out := map[string]interface{}{}
+	if len(extra) == 0 {
+		return out
+	}
+	// Metadata is decoded separately (RawMessage) so a partner sending
+	// "metadata": "n/a" cannot fail the whole struct and cost us city/state.
+	var m struct {
+		City       string          `json:"city"`
+		State      string          `json:"state"`
+		PostalCode string          `json:"postal_code"`
+		Zip        string          `json:"zip"`
+		Vehicle    string          `json:"vehicle"`
+		Metadata   json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(extra, &m); err != nil {
+		return out
+	}
+	var meta map[string]interface{}
+	if len(m.Metadata) > 0 {
+		_ = json.Unmarshal(m.Metadata, &meta)
+	}
+	// A zip posted as a JSON number is still a zip.
+	nested := func(key string) string {
+		switch v := meta[key].(type) {
+		case string:
+			return v
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		}
+		return ""
+	}
+	put := func(key string, candidates ...string) {
+		for _, c := range candidates {
+			if v := cap100(c); v != "" {
+				out[key] = v
+				return
+			}
+		}
+	}
+	put("city", m.City, nested("city"))
+	put("state", m.State, nested("state"))
+	put("postal_code", m.PostalCode, m.Zip, nested("postal_code"), nested("zip"))
+	put("vehicle", m.Vehicle, nested("vehicle"))
+	return out
 }
 
 // promoteToSubscribers inserts each claimed email into mailing_subscribers
@@ -2765,11 +2842,11 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 		    (id, organization_id, list_id, email, email_hash,
 		     status, source, engagement_score,
 		     source_system, source_detail, source_metadata, imported_at,
-		     first_name, last_name)
+		     first_name, last_name, custom_fields)
 		VALUES ($1, $2, $3, $4, $5,
 		        'confirmed', $6, 50.0,
 		        $7, $8, $9::jsonb, NOW(),
-		        NULLIF($10, ''), NULLIF($11, ''))
+		        NULLIF($10, ''), NULLIF($11, ''), $12::jsonb)
 		ON CONFLICT (list_id, email) DO UPDATE SET
 		    source = EXCLUDED.source,
 		    source_system = EXCLUDED.source_system,
@@ -2779,6 +2856,11 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 		    -- re-promote blank out a name some earlier door populated
 		    first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), mailing_subscribers.first_name),
 		    last_name  = COALESCE(NULLIF(EXCLUDED.last_name, ''),  mailing_subscribers.last_name),
+		    -- same rule for the geo/vehicle fields, expressed as a JSONB merge
+		    -- (the datanorm importer idiom): keys this promote carries win,
+		    -- every key some other door wrote (provenance, domain_group, ...)
+		    -- survives, and an empty object is a no-op rather than a wipe.
+		    custom_fields = COALESCE(mailing_subscribers.custom_fields, '{}'::jsonb) || EXCLUDED.custom_fields,
 		    updated_at = NOW()
 		RETURNING id
 	`)
@@ -2800,6 +2882,15 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 		}
 		metaJSON, _ := json.Marshal(metadata)
 		firstName, lastName := namesFromExtra(r.extra)
+		// Geo/vehicle personalization -> custom_fields, read by templates as
+		// {{ custom.city }}. Marshal cannot fail for a map[string]string-shaped
+		// value, but a defensive fallback keeps a hypothetical error from
+		// binding an empty string to a ::jsonb parameter (which WOULD fail the
+		// insert and drop this recipient from the wave).
+		customJSON, cfErr := json.Marshal(personaFieldsFromExtra(r.extra))
+		if cfErr != nil || len(customJSON) == 0 {
+			customJSON = []byte("{}")
+		}
 		var subID string
 		err := stmt.QueryRowContext(ctx,
 			uuid.New().String(),
@@ -2813,6 +2904,7 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 			string(metaJSON),
 			firstName,
 			lastName,
+			string(customJSON),
 		).Scan(&subID)
 		if err != nil {
 			log.Printf("[PartnerDripOrchestrator] insert subscriber %s: %v", r.email, err)
