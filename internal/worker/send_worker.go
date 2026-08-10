@@ -1853,6 +1853,21 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	if htmlErr != nil {
 		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=html_content err=%v", item.CampaignID, htmlErr)
 	}
+
+	// ── FAIL CLOSED on a render error (2026-08-10 incident) ──────────────
+	// TemplateService.Render returns the ORIGINAL TEMPLATE STRING when the
+	// Liquid parse or render fails (internal/mailing/template_engine.go:384,
+	// :396). Until today this loop only logged RENDER_WARN and shipped that
+	// string, so three messages reached a real inbox as raw Liquid source —
+	// every {{ }} and {% %} visible to the recipient. A body we could not
+	// render is not a body: quarantine it instead of mailing it.
+	if rf := firstRenderFailure(
+		renderFailure{"subject", subjErr},
+		renderFailure{"preview_text", pvErr},
+		renderFailure{"html_content", htmlErr},
+	); rf != nil {
+		return p.quarantineUnrenderable(ctx, item, rf.field, rf.err)
+	}
 	// raw_creative profiles (operator 2026-07-25, wcl-heloc): the creative ships
 	// AS-IS — strip any store-time compliance-footer block; the CAN-SPAM fallback
 	// injection below is skipped too. List-Unsubscribe headers still apply.
@@ -1877,6 +1892,9 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	textContent, textErr := templateSvc.Render("t:"+item.CampaignID.String()+":"+item.SubscriberID.String(), item.TextContent, renderCtx)
 	if textErr != nil {
 		log.Printf("[SendWorkerPool] RENDER_WARN campaign=%s field=text_content err=%v", item.CampaignID, textErr)
+		// Same fail-closed rule as the html/subject bodies above: the
+		// text/plain part is recipient-visible, so raw source must not ship.
+		return p.quarantineUnrenderable(ctx, item, "text_content", textErr)
 	}
 
 	// Detect unresolved template syntax in rendered subject (high signal)
@@ -2074,10 +2092,21 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		Headers:      headers,
 	}
 
-	// Post-render validation: audit or enforce based on VALIDATOR_MODE env var
+	// Post-render validation: audit or enforce based on VALIDATOR_MODE env var.
+	//
+	// FATAL issues are the exception — they block in EVERY mode. Before
+	// 2026-08-10 this gate was inert against the incident it was built for:
+	// VALIDATOR_MODE is unset in prod (so mode == audit and this branch could
+	// never fire), AND the raw-liquid-in-html finding was warning-severity, so
+	// even VALIDATOR_MODE=enforce would have shipped it. raw_liquid_source is
+	// now fatal and quarantines on the same terminal path as a render error.
 	validatorMode := GetValidatorMode()
 	messageClass := "promotional"
 	validationIssues := ValidateRenderedMessage(msg, validatorMode, messageClass)
+	if HasFatalIssues(validationIssues) {
+		return p.quarantineUnrenderable(ctx, item, "validator",
+			fmt.Errorf("fatal content validation: %s", firstFatalMessage(validationIssues)))
+	}
 	if validatorMode == ValidatorEnforce && HasBlockingIssues(validationIssues) {
 		atomic.AddInt64(&p.totalFailed, 1)
 		return p.markFailed(ctx, item.ID, "message validation failed: blocking issues detected")
@@ -2373,6 +2402,85 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 	}
 
 	return nil
+}
+
+// renderFailure pairs a recipient-visible message field with the error the
+// Liquid engine returned for it.
+type renderFailure struct {
+	field string
+	err   error
+}
+
+// firstRenderFailure returns the first field that failed to render, or nil.
+func firstRenderFailure(candidates ...renderFailure) *renderFailure {
+	for i := range candidates {
+		if candidates[i].err != nil {
+			return &candidates[i]
+		}
+	}
+	return nil
+}
+
+// renderFailClosedDisabled is the kill switch for the 2026-08-10 fail-closed
+// render guard: set DISABLE_RENDER_FAILCLOSED=1 to restore the previous
+// log-and-ship-anyway behavior without a redeploy. Same idiom as
+// DISABLE_BRAND_IMAGE_HOST_SWAP / DISABLE_SEND_OWNERSHIP_RECHECK.
+func renderFailClosedDisabled() bool {
+	return os.Getenv("DISABLE_RENDER_FAILCLOSED") == "1"
+}
+
+// quarantineUnrenderable is the terminal, non-retrying disposition for a queue
+// row whose body could not be rendered.
+//
+// WHY dead_letter and not a retry: a Liquid parse failure is a property of the
+// CREATIVE, not of this attempt. It fails identically for every recipient and
+// on every retry, so 'failed_retryable' would spin the row through the full
+// MaxRetryCount backoff ladder — pointless load, a misleading "transient"
+// status, and a delayed terminal signal. dead_letter is the existing terminal
+// bucket: it does not retry, it is already surfaced to operators
+// (outbox_engine_status.go:420 dead_letter_24h, outbox_admin.go:298 browser,
+// outbox_selfcheck.go:117 dead_letter_spike), and — critically — it already
+// counts toward wave/campaign completion (campaign_scheduler.go:163), so
+// quarantining does NOT strand the campaign in 'sending' forever.
+//
+// WHY NOT fail the whole campaign here: this runs per-message inside 25
+// concurrent workers under FOR UPDATE SKIP LOCKED. A per-row actor mutating
+// campaign-level state is a race and an autonomous-remediation violation
+// (JAOS core §1.8). It is also unnecessary: when the creative is broken every
+// row quarantines, failed == total, and checkCompletedCampaigns marks the
+// campaign 'cancelled' with a log line (campaign_scheduler.go:194-198). The
+// campaign-level signal arrives on its own, from the component that owns it.
+//
+// The status guard mirrors markFailed's: if QueueRecovery requeued this row
+// mid-flight, it belongs to the re-claimer's lifecycle and we must not clobber
+// it.
+func (p *SendWorkerPool) quarantineUnrenderable(ctx context.Context, item QueueItem, field string, cause error) error {
+	if renderFailClosedDisabled() {
+		log.Printf("[SendWorkerPool] RENDER_FAILCLOSED_DISABLED campaign=%s field=%s — shipping unrendered body per DISABLE_RENDER_FAILCLOSED=1", item.CampaignID, field)
+		return nil
+	}
+
+	atomic.AddInt64(&p.totalFailed, 1)
+	reason := fmt.Sprintf("render_blocked: %s failed to render (body would have shipped as raw template source): %v", field, cause)
+
+	// Loud, greppable, and carries everything an operator needs to find the
+	// creative: this is the line that should have existed on 2026-08-10.
+	log.Printf("[SendWorkerPool] RENDER_BLOCKED campaign=%s item=%s field=%s email=%s — NOT SENT, quarantined to dead_letter: %v",
+		item.CampaignID, item.ID, field, logger.RedactEmail(item.Email), cause)
+
+	_, err := p.db.ExecContext(ctx, `
+		UPDATE mailing_campaign_queue
+		SET status = 'dead_letter',
+		    error_message = $2,
+		    attempts = COALESCE(attempts, 0) + 1,
+		    last_attempt_at = NOW()
+		WHERE id = $1
+		  AND status IN ('submitting', 'sending', 'claimed', 'failed_retryable')
+	`, item.ID, reason)
+	if err != nil {
+		log.Printf("[SendWorkerPool] RENDER_BLOCKED quarantine write failed for item %s: %v", item.ID, err)
+	}
+	return err
 }
 
 // markFailed marks a queue item as failed, or as dead_letter if max retries exceeded.

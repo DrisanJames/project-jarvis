@@ -23,6 +23,17 @@ type ValidationSeverity string
 const (
 	SeverityError   ValidationSeverity = "error"   // Blocks send in enforce mode
 	SeverityWarning ValidationSeverity = "warning" // Logged, never blocks
+	// SeverityFatal blocks the send in EVERY mode, including audit.
+	//
+	// Reserved for defects where the rendered body is provably not a rendered
+	// body at all — there is no judgement call and no false-positive tail, so
+	// there is no reason to let VALIDATOR_MODE decide. Introduced 2026-08-10
+	// after three messages shipped as raw Liquid SOURCE: the validator did fire
+	// and did enumerate the tokens, but the html finding is SeverityWarning
+	// (see reUnresolvedLiquid check below) and the mode was audit, so nothing
+	// blocked. A gate that enumerates a catastrophe and ships it anyway is
+	// worse than no gate.
+	SeverityFatal ValidationSeverity = "fatal"
 )
 
 // ValidationIssue describes a single content quality problem.
@@ -41,6 +52,16 @@ var (
 	reFillerGlyphs     = regexp.MustCompile(`&#847;|&#8199;|&#65279;|&zwnj;`)
 	reUnsubPath        = regexp.MustCompile(`(?i)/track/unsubscribe/`)
 	reUnsubLiquid      = regexp.MustCompile(`\{\{\s*system\.unsubscribe_url\s*\}\}`)
+
+	// reLiquidControlTag matches a Liquid CONTROL-FLOW tag surviving in output
+	// that has supposedly already been rendered. This is the raw-source
+	// fingerprint: a successful parse consumes every {% %} tag, so a surviving
+	// if/for/assign/end* proves the body is the unrendered template — which is
+	// exactly what TemplateService.Render hands back on a parse failure
+	// (internal/mailing/template_engine.go:384 returns the original string).
+	// Deliberately narrower than "any {% %}" so a legitimate {% raw %} block
+	// emitting literal braces is not swept up.
+	reLiquidControlTag = regexp.MustCompile(`(?is)\{%-?\s*(if|unless|for|case|when|else|elsif|assign|capture|endif|endunless|endfor|endcase|endcapture)\b`)
 )
 
 // GetValidatorMode reads the VALIDATOR_MODE environment variable.
@@ -83,6 +104,26 @@ func ValidateRenderedMessage(msg *EmailMessage, mode ValidatorMode, messageClass
 					Field:    "html_content",
 				})
 			}
+		}
+	}
+
+	// 2b. Raw Liquid SOURCE in a body that has already been rendered.
+	// Unlike check 2 (which reasons about {{ variable }} names and is
+	// necessarily heuristic, hence warning-severity), a surviving control-flow
+	// tag is proof — not suspicion — that this body never rendered. Fatal in
+	// every mode.
+	for _, f := range []struct{ field, content string }{
+		{"subject", msg.Subject},
+		{"html_content", msg.HTMLContent},
+		{"text_content", msg.TextContent},
+	} {
+		if m := reLiquidControlTag.FindString(f.content); m != "" {
+			issues = append(issues, ValidationIssue{
+				Code:     "raw_liquid_source",
+				Severity: SeverityFatal,
+				Message:  fmt.Sprintf("unrendered Liquid control tag in %s (body is raw template source): %s", f.field, m),
+				Field:    f.field,
+			})
 		}
 	}
 
@@ -180,10 +221,34 @@ func ValidateRenderedMessage(msg *EmailMessage, mode ValidatorMode, messageClass
 	return issues
 }
 
-// HasBlockingIssues returns true if any issue has error severity.
+// HasBlockingIssues returns true if any issue blocks the send in enforce mode
+// (error or fatal severity).
 func HasBlockingIssues(issues []ValidationIssue) bool {
 	for _, issue := range issues {
-		if issue.Severity == SeverityError {
+		if issue.Severity == SeverityError || issue.Severity == SeverityFatal {
+			return true
+		}
+	}
+	return false
+}
+
+// firstFatalMessage returns the message of the first fatal issue, for logs.
+func firstFatalMessage(issues []ValidationIssue) string {
+	for _, issue := range issues {
+		if issue.Severity == SeverityFatal {
+			return issue.Message
+		}
+	}
+	return ""
+}
+
+// HasFatalIssues returns true if any issue blocks the send in EVERY mode,
+// including audit. This is what makes the validator authoritative for the
+// raw-source class without changing the blast radius of the heuristic rules
+// that VALIDATOR_MODE still governs.
+func HasFatalIssues(issues []ValidationIssue) bool {
+	for _, issue := range issues {
+		if issue.Severity == SeverityFatal {
 			return true
 		}
 	}

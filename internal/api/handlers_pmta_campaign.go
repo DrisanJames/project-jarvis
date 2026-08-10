@@ -850,6 +850,14 @@ func (s *PMTACampaignService) HandleStageCampaign(w http.ResponseWriter, r *http
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one content variant is required"})
 		return
 	}
+	// Creative render gate (2026-08-10 raw-source incident). The Draft Board is
+	// the operator's approval surface, so a creative that can never render must
+	// be rejected HERE — landing it as a draft only defers the failure to the
+	// promote, after the operator has already approved it by eye.
+	if err := validateVariantTemplates(input); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	ctx := r.Context()
 	orgID := getOrgID(r)
@@ -1151,6 +1159,63 @@ func validateSegmentOwnership(ctx context.Context, db *sql.DB, orgID string, inp
 	return nil
 }
 
+// templateParseGateDisabled is the kill switch for the deploy/stage render
+// gate: DISABLE_TEMPLATE_PARSE_GATE=true restores the previous
+// accept-anything behavior without a redeploy. Same idiom as
+// DISABLE_SEND_DAY_GATE_ENFORCEMENT above.
+func templateParseGateDisabled() bool {
+	return os.Getenv("DISABLE_TEMPLATE_PARSE_GATE") == "true"
+}
+
+// validateVariantTemplates rejects a deploy/stage whose creative cannot be
+// parsed as a Liquid template (REQ: 2026-08-10 raw-source incident).
+//
+// This is the CHEAP, EARLY half of the fix. The send worker now fails closed
+// on a render error (quarantineUnrenderable), but discovering a broken
+// creative one message at a time — after the audience is finalized, the waves
+// are enqueued and 25 workers are chewing through the queue — is strictly
+// worse than refusing the campaign at the door. A parse failure is a property
+// of the creative, so ONE parse per variant answers it for every recipient.
+//
+// Parse-only on purpose: mailing.TemplateService.Parse compiles the template
+// and discards it (template_engine.go:364). No render context is built, no
+// per-recipient work is done, no DB is touched — this is microseconds per
+// variant, unlike validateSegmentOwnership which does a round trip.
+//
+// The incident's creative had an unterminated {% if %} inside an HTML comment;
+// Liquid tokenizes tags inside comments, so the whole parse aborted and
+// Render handed back the raw source. That template fails here.
+func validateVariantTemplates(input engine.PMTACampaignInput) error {
+	if templateParseGateDisabled() {
+		log.Printf("[TemplateGate] enforcement DISABLED by kill switch — skipping creative parse check for campaign %q", input.Name)
+		return nil
+	}
+
+	ts := mailing.NewTemplateService()
+	for i, v := range input.Variants {
+		name := strings.TrimSpace(v.VariantName)
+		if name == "" {
+			name = fmt.Sprintf("#%d", i+1)
+		}
+		for _, f := range []struct{ field, content string }{
+			{"subject", v.Subject},
+			{"preview_text", v.PreviewText},
+			{"html_content", v.HTMLContent},
+			{"plain_content", v.PlainContent},
+		} {
+			if strings.TrimSpace(f.content) == "" {
+				continue
+			}
+			if err := ts.Parse(f.content); err != nil {
+				return &deployInputError{fmt.Sprintf(
+					"variant %s %s is not a valid template and would ship as raw source: %v",
+					name, f.field, err)}
+			}
+		}
+	}
+	return nil
+}
+
 // DeployFromInput runs the synchronous deploy path — validation, preflight,
 // normalization, campaign reservation — for an already-decoded payload. It is
 // shared by HandleDeployCampaign and in-process callers (Domain Agent plan
@@ -1178,6 +1243,12 @@ func (s *PMTACampaignService) deployFromInput(ctx context.Context, orgID string,
 		if strings.TrimSpace(v.HTMLContent) == "" {
 			return "", "", false, &deployInputError{fmt.Sprintf("variant %s has empty HTML content", input.Variants[i].VariantName)}
 		}
+	}
+	// Creative render gate (2026-08-10 raw-source incident): a template that
+	// cannot be parsed must never reach the queue. Runs before preflight and
+	// before any campaign row is reserved — no DB, no network, parse only.
+	if err := validateVariantTemplates(input); err != nil {
+		return "", "", false, err
 	}
 	if len(input.TargetISPs) == 0 {
 		if len(input.ISPPlans) == 0 {
