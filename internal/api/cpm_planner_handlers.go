@@ -2641,6 +2641,28 @@ func (h *CpmPlannerHandlers) computeAttributionGap(orgID string, days int) (*cpm
 	if _, err := tx.Exec(`SET LOCAL statement_timeout = '600s'`); err != nil {
 		return nil, err
 	}
+	// FLEET-WIDE single-flight. The caller's single-flight is h.evMu — an
+	// IN-PROCESS mutex, so it serializes this scan within one task and not
+	// across the service. The fleet runs more than one ECS task, so two tasks
+	// each held their own cache and ran this multi-minute scan at the same
+	// time; measured 2026-08-09, two concurrent 5m39s runs from two task IPs,
+	// waiting on LWLock/BufferMapping and IO/DataFileWrite, which starved the
+	// segment draws queued behind them on IO.
+	//
+	// pg_advisory_xact_lock is keyed on (org, days) so different windows still
+	// run in parallel, and it releases automatically when this read-only tx
+	// rolls back — there is no unlock path to leak. A second task BLOCKS here
+	// rather than duplicating the scan, then returns the same answer; blocking
+	// is correct because the alternative is both tasks doing the expensive work.
+	// Two-int4 form: hashtext() already returns int4, and there is no
+	// (bigint, int) overload — casting the first arg to bigint fails at
+	// RUNTIME with "no function matches", which a compile and the unit tests
+	// both pass straight through.
+	if _, err := tx.Exec(
+		`SELECT pg_advisory_xact_lock(hashtext($1), $2::int)`,
+		"cpm_attribution_gap:"+orgID, days); err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(dealCampaignMapCTE+`
 		, vol AS (
 			SELECT te.campaign_id, COUNT(*) AS delivered
