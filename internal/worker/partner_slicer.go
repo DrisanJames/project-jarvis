@@ -37,6 +37,12 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
 
+// batchLeaseTTL is how long a claimed batch stays off-limits to other workers.
+// A worker renews it on every slice, so this bounds how long an ABANDONED
+// batch (crashed or hung worker) waits before another worker recovers it —
+// not how long a batch may legitimately take.
+const batchLeaseTTL = "15 minutes"
+
 // SuppressionHub is the minimal interface PartnerSlicer needs from the
 // engine.GlobalSuppressionHub. Pulled out so the worker is unit-testable
 // without spinning up the real hub.
@@ -49,7 +55,7 @@ type SuppressionHub interface {
 type PartnerSlicerConfig struct {
 	SliceSize    int           // records per slice (default 1000)
 	PollInterval time.Duration // how often to look for new batches (default 30s)
-	Concurrency  int           // batches processed concurrently (default 1 — keep FIFO ordering)
+	Concurrency  int           // batches processed concurrently (default 1)
 	S3Region     string
 }
 
@@ -95,9 +101,27 @@ func NewPartnerSlicer(db *sql.DB, s3Client *s3.Client, bucket string, hub Suppre
 
 func (ps *PartnerSlicer) Start() {
 	ps.startOnce.Do(func() {
-		ps.wg.Add(1)
-		go ps.run()
-		log.Printf("[PartnerSlicer] started — slice_size=%d poll_interval=%s", ps.cfg.SliceSize, ps.cfg.PollInterval)
+		// Start cfg.Concurrency workers. Cost is per BATCH (one S3 GetObject
+		// plus a claim/complete transaction), and partners may post a single
+		// record per call, so throughput is bound by API-call count rather
+		// than data volume — one worker cannot keep up with a real-time feed.
+		// Workers claim disjoint rows via SKIP LOCKED and hold a renewed lease
+		// (batchLeaseTTL) for the duration of processing.
+		for i := 0; i < ps.cfg.Concurrency; i++ {
+			ps.wg.Add(1)
+			go func(worker int) {
+				// Stagger so N workers don't hit S3/PG in lockstep on boot.
+				select {
+				case <-ps.ctx.Done():
+					ps.wg.Done()
+					return
+				case <-time.After(time.Duration(worker) * 250 * time.Millisecond):
+				}
+				ps.run()
+			}(i)
+		}
+		log.Printf("[PartnerSlicer] started — slice_size=%d poll_interval=%s workers=%d",
+			ps.cfg.SliceSize, ps.cfg.PollInterval, ps.cfg.Concurrency)
 	})
 }
 
@@ -162,10 +186,10 @@ type partnerBatch struct {
 	nextOffset  int
 }
 
-// claimNextBatch grabs the FIFO oldest non-emergency-stopped batch in
-// status 'received' or 'slicing' and atomically flips it to 'slicing'
-// so concurrent slicer instances don't double-process. Returns nil when
-// no batch is eligible.
+// claimNextBatch takes the next eligible batch — express datasets first, then
+// oldest received_at — and atomically flips it to 'slicing' under a lease, so
+// concurrent workers never process the same batch. Returns nil when no batch
+// is eligible.
 func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, error) {
 	tx, err := ps.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -173,34 +197,36 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 	}
 	defer tx.Rollback()
 
-	// EXPRESS datasets jump the queue (operator 2026-08-09).
+	// Express datasets are claimed ahead of bulk intake so a record that must
+	// mail on arrival is not queued behind unrelated backlog. Ordering only:
+	// nothing is skipped, and non-express batches keep their received_at FIFO
+	// order relative to each other.
 	//
-	// Partners post one record per HTTP call, so the backlog is not "a few big
-	// batches" — measured 2026-08-09 it was 37,958 batches of record_count=1,
-	// draining at 328/min. Because the slicer is FIFO with Concurrency=1, a
-	// record that must mail on arrival (fresh, already-validated form fill)
-	// waited ~1.9 HOURS behind unrelated bulk intake before it was even sliced.
-	// That queue position — not the drip tick, not the 2.1-minute campaign
-	// path — was the entire latency.
-	//
-	// Ordering only. No batch is skipped, starved, or reordered relative to its
-	// own kind: express datasets are a tiny trickle (a form fill at a time),
-	// and every non-express batch keeps its exact received_at FIFO order
-	// relative to the others. With zero express datasets this ORDER BY is
-	// byte-for-byte the old behavior.
+	// A 'slicing' row is claimable only once its LEASE has expired. The row
+	// lock taken here is released when this short transaction commits — long
+	// before the S3 fetch and insert work finishes — so with more than one
+	// worker, matching 'slicing' unconditionally would let a second worker
+	// claim a batch the first is still actively processing, racing its
+	// next_record_offset writes. The lease keeps crash recovery (a worker that
+	// dies stops renewing, and the batch is picked up after the timeout)
+	// without allowing concurrent processing of the same batch.
 	row := tx.QueryRowContext(ctx, `
 		SELECT b.id, b.dataset_id, b.partner_id, d.vertical,
 		       b.s3_bucket, b.s3_key, b.record_count, b.next_record_offset
 		FROM partner_inbound_batches b
 		JOIN partner_datasets d ON d.id = b.dataset_id
 		WHERE b.emergency_stopped = false
-		  AND b.status IN ('received', 'slicing')
+		  AND (
+		        b.status = 'received'
+		     OR (b.status = 'slicing'
+		         AND COALESCE(b.slicing_started_at, 'epoch'::timestamptz) < NOW() - $1::interval)
+		      )
 		  AND d.paused_emergency = false
 		  AND d.status = 'active'
 		ORDER BY COALESCE(d.express_dispatch, false) DESC, b.received_at ASC
 		FOR UPDATE OF b SKIP LOCKED
 		LIMIT 1
-	`)
+	`, batchLeaseTTL)
 	var b partnerBatch
 	if err := row.Scan(&b.id, &b.datasetID, &b.partnerID, &b.vertical,
 		&b.s3Bucket, &b.s3Key, &b.recordCount, &b.nextOffset); err != nil {
@@ -209,10 +235,14 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 		}
 		return nil, err
 	}
+	// NOW(), not COALESCE(slicing_started_at, NOW()): this column is the lease
+	// clock. Preserving the first-claim time would leave a stale-recovered
+	// batch permanently past its lease, so every worker would consider it
+	// claimable and the guard above would protect nothing.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE partner_inbound_batches
 		SET status = 'slicing',
-		    slicing_started_at = COALESCE(slicing_started_at, NOW())
+		    slicing_started_at = NOW()
 		WHERE id = $1
 	`, b.id); err != nil {
 		return nil, err
@@ -288,10 +318,16 @@ func (ps *PartnerSlicer) processBatch(ctx context.Context, b *partnerBatch) erro
 
 		totalSliced += sliceCount
 		totalSurvived += len(survivors)
+		// Renew the lease with each slice. A 50k-record batch can legitimately
+		// run longer than batchLeaseTTL; without renewal another worker would
+		// treat it as abandoned and process it concurrently. Progress itself is
+		// the liveness signal, so a worker that hangs or dies stops renewing and
+		// the batch is correctly recovered.
 		newOffset := b.nextOffset + totalSliced
 		if _, err := ps.db.ExecContext(ctx, `
 			UPDATE partner_inbound_batches
-			SET next_record_offset = $1
+			SET next_record_offset = $1,
+			    slicing_started_at = NOW()
 			WHERE id = $2
 		`, newOffset, b.id); err != nil {
 			return fmt.Errorf("update offset: %w", err)

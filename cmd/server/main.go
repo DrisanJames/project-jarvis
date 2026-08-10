@@ -1277,7 +1277,21 @@ func main() {
 						if hubAdapter == nil {
 							log.Println("[PartnerSlicer] WARNING: GlobalHub not yet ready — slicer will operate without suppression check")
 						}
-						partnerSlicer = worker.NewPartnerSlicer(mailingDB, s3RawClient, partnerS3.Bucket(), hubAdapter, worker.PartnerSlicerConfig{})
+						// Slicer cost is per BATCH, and partners may post one record
+						// per call, so throughput is bound by API-call count rather
+						// than data volume. Env-tunable so the pool can be dialed
+						// back without a deploy.
+						slicerWorkers := 6
+						if v := strings.TrimSpace(os.Getenv("PARTNER_SLICER_CONCURRENCY")); v != "" {
+							if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 32 {
+								slicerWorkers = n
+							} else {
+								log.Printf("[PartnerSlicer] ignoring PARTNER_SLICER_CONCURRENCY=%q (want 1-32)", v)
+							}
+						}
+						partnerSlicer = worker.NewPartnerSlicer(mailingDB, s3RawClient, partnerS3.Bucket(), hubAdapter, worker.PartnerSlicerConfig{
+							Concurrency: slicerWorkers,
+						})
 						partnerSlicer.Start()
 						server.SetPartnerSlicer(partnerSlicer)
 
