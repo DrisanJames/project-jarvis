@@ -379,6 +379,33 @@ func (ps *PartnerSlicer) readSlice(scanner *bufio.Scanner, sliceSize int) ([]par
 	return out, count
 }
 
+// extraMetadataJSON builds the partner_clean_queue.extra_metadata payload.
+//
+// THIRD and final place a partner field can be destroyed on this path. It is a
+// hand-written field list, NOT a marshal of partnerRawRecord — so adding a
+// struct field does NOTHING unless it is also named here. That is exactly how
+// `city` survived two consecutive fixes (the api door, then partnerRawRecord)
+// and still arrived empty across three live sends: door -> struct -> THIS
+// FUNCTION, and only the first two were extended (2026-08-10).
+//
+// Extracted from bulkInsertSurvivors so a test can bind to the REAL field list.
+// Inline, the only way to test it was to copy the map into the test, which
+// yields a test that passes even when production drops a field.
+func extraMetadataJSON(rec partnerRawRecord) []byte {
+	out, _ := json.Marshal(map[string]interface{}{
+		"first_name":  rec.FirstName,
+		"last_name":   rec.LastName,
+		"city":        rec.City,
+		"zip":         rec.Zip,
+		"state":       rec.State,
+		"ip_address":  rec.IPAddress,
+		"opt_in_date": rec.OptInDate,
+		"source":      rec.Source,
+		"metadata":    rec.Metadata,
+	})
+	return out
+}
+
 // partnerRawRecord is the SECOND closed struct on the ingest path, and it has
 // the same destroy-on-omission property as api.ingestRecord: the S3 NDJSON is
 // decoded into this and re-marshaled into partner_clean_queue.extra_metadata,
@@ -453,16 +480,7 @@ func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatc
 			"($%d::uuid, $%d::uuid, $%d::uuid, $%d::uuid, $%d, $%d, $%d, $%d, $%d::jsonb)",
 			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7, offset+8, offset+9,
 		))
-		extra, _ := json.Marshal(map[string]interface{}{
-			"first_name":  rec.FirstName,
-			"last_name":   rec.LastName,
-			"zip":         rec.Zip,
-			"state":       rec.State,
-			"ip_address":  rec.IPAddress,
-			"opt_in_date": rec.OptInDate,
-			"source":      rec.Source,
-			"metadata":    rec.Metadata,
-		})
+		extra := extraMetadataJSON(rec)
 		args = append(args,
 			uuid.New().String(),
 			b.id, b.datasetID, b.partnerID,
