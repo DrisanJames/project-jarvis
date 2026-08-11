@@ -2791,6 +2791,10 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 		PostalCode string          `json:"postal_code"`
 		Zip        string          `json:"zip"`
 		Vehicle    string          `json:"vehicle"`
+		Address1   string          `json:"address_1"`
+		SignupURL  string          `json:"signup_url"`
+		SignupAt   string          `json:"signup_date"`
+		TID        string          `json:"tid"`
 		Metadata   json.RawMessage `json:"metadata"`
 	}
 	if err := json.Unmarshal(extra, &m); err != nil {
@@ -2822,6 +2826,15 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 	put("state", m.State, nested("state"))
 	put("postal_code", m.PostalCode, m.Zip, nested("postal_code"), nested("zip"))
 	put("vehicle", m.Vehicle, nested("vehicle"))
+	put("address_1", m.Address1, nested("address_1"))
+	put("signup_url", m.SignupURL, nested("signup_url"))
+	put("signup_date", m.SignupAt, nested("signup_date"))
+	// tid is the PER-USER money-link token. It must reach custom_fields or the
+	// creative's {{ custom.tid }} renders empty and EVERY recipient gets the
+	// same untracked link — attribution silently dies for the whole feed while
+	// the send looks healthy. Partners spell its parent object "data" (merged
+	// into metadata at the door) as well as "metadata".
+	put("tid", m.TID, nested("tid"))
 	return out
 }
 

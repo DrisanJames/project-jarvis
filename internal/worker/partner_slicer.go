@@ -398,8 +398,11 @@ func extraMetadataJSON(rec partnerRawRecord) []byte {
 		"city":        rec.City,
 		"zip":         rec.Zip,
 		"state":       rec.State,
+		"address_1":   rec.Address1,
 		"ip_address":  rec.IPAddress,
 		"opt_in_date": rec.OptInDate,
+		"signup_url":  rec.SignupURL,
+		"signup_date": rec.SignupAt,
 		"source":      rec.Source,
 		"metadata":    rec.Metadata,
 	})
@@ -422,8 +425,11 @@ type partnerRawRecord struct {
 	City      string                 `json:"city,omitempty"`
 	Zip       string                 `json:"zip,omitempty"`
 	State     string                 `json:"state,omitempty"`
+	Address1  string                 `json:"address_1,omitempty"`
 	IPAddress string                 `json:"ip_address,omitempty"`
 	OptInDate string                 `json:"opt_in_date,omitempty"`
+	SignupURL string                 `json:"signup_url,omitempty"`
+	SignupAt  string                 `json:"signup_date,omitempty"`
 	Source    string                 `json:"source,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 	MD5       string                 `json:"-"`

@@ -66,7 +66,7 @@ func TestPersonaFieldsFromExtra(t *testing.T) {
 		{
 			"nested metadata door",
 			`{"first_name":"Ann","metadata":{"city":"Boise","vehicle":"2019 Honda Civic","tid":"ff2007"}}`,
-			map[string]interface{}{"city": "Boise", "vehicle": "2019 Honda Civic"},
+			map[string]interface{}{"city": "Boise", "vehicle": "2019 Honda Civic", "tid": "ff2007"},
 		},
 		{
 			"full posted payload",
@@ -76,6 +76,7 @@ func TestPersonaFieldsFromExtra(t *testing.T) {
 			map[string]interface{}{
 				"city": "Hollywood", "state": "FL",
 				"postal_code": "33021", "vehicle": "2021 Ford F-150",
+				"tid": "7552",
 			},
 		},
 		// postal_code beats zip beats metadata.zip; top level always wins.
@@ -156,7 +157,7 @@ func TestPromoteToSubscribersCarriesCustomFields(t *testing.T) {
 			"derek@example.com", "md5hash",
 			"data_partner", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"Derek", "Delfino",
-			`{"city":"Hollywood","postal_code":"33021","state":"FL","vehicle":"2021 Ford F-150"}`,
+			`{"city":"Hollywood","postal_code":"33021","state":"FL","tid":"7552","vehicle":"2021 Ford F-150"}`,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("sub-1"))
 	mock.ExpectCommit()

@@ -84,8 +84,11 @@ type ingestRecord struct {
 	City      string                 `json:"city,omitempty"`
 	Zip       string                 `json:"zip,omitempty"`
 	State     string                 `json:"state,omitempty"`
+	Address1  string                 `json:"address_1,omitempty"`
 	IPAddress string                 `json:"ip_address,omitempty"`
 	OptInDate string                 `json:"opt_in_date,omitempty"`
+	SignupURL string                 `json:"signup_url,omitempty"`
+	SignupAt  string                 `json:"signup_date,omitempty"`
 	Source    string                 `json:"source,omitempty"`
 	Metadata  map[string]interface{} `json:"metadata,omitempty"`
 }
@@ -98,7 +101,9 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 	type raw ingestRecord // alias: no recursion back into this method
 	var v struct {
 		raw
-		PostalCode string `json:"postal_code"`
+		PostalCode string                 `json:"postal_code"`
+		Data       map[string]interface{} `json:"data"`
+		SignupIP   string                 `json:"signup_ip"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -106,6 +111,24 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 	*r = ingestRecord(v.raw)
 	if strings.TrimSpace(r.Zip) == "" {
 		r.Zip = v.PostalCode
+	}
+	if strings.TrimSpace(r.IPAddress) == "" {
+		r.IPAddress = v.SignupIP
+	}
+	// "data" is the partner's spelling of "metadata" and it carries `tid` — the
+	// PER-USER money-link token. Dropping it silently ships every recipient the
+	// same (or an empty) tokenid, which breaks attribution for the whole feed
+	// while looking like a working send. Merge rather than replace so a payload
+	// carrying both keys loses neither.
+	if len(v.Data) > 0 {
+		if r.Metadata == nil {
+			r.Metadata = map[string]interface{}{}
+		}
+		for k, val := range v.Data {
+			if _, exists := r.Metadata[k]; !exists {
+				r.Metadata[k] = val
+			}
+		}
 	}
 	return nil
 }
