@@ -66,7 +66,12 @@ func TestEmergencyStop_ClaimRecordsByISPCapsExcludesPausedDatasets(t *testing.T)
 	// The predicate must appear in BOTH the ranked CTE (so paused rows don't
 	// consume per-ISP rank slots) and the picked re-check (matching the
 	// status='ready' re-check idiom).
-	claimRe := `(?s)WITH ranked AS.*status = 'ready' AND vertical = \$1\s*AND NOT EXISTS.*d\.paused_emergency.*picked AS.*status = 'ready'\s*AND NOT EXISTS.*d\.paused_emergency.*FOR UPDATE SKIP LOCKED`
+	// Anchored on `ranked AS` rather than `WITH ranked AS`: the caps CTE was
+	// moved ahead of ranked on 2026-08-11 so ranked can bucket unknown ISPs to
+	// 'other' (see TestClaimByISPCaps_UnknownISPBucketsToOther). CTE ORDER is not
+	// what this test is about — both paused_emergency guards still are, and both
+	// are still required below.
+	claimRe := `(?s)ranked AS.*status = 'ready' AND vertical = \$1\s*AND NOT EXISTS.*d\.paused_emergency.*picked AS.*status = 'ready'\s*AND NOT EXISTS.*d\.paused_emergency.*FOR UPDATE SKIP LOCKED`
 
 	// Paused dataset: no rows come back.
 	mock.ExpectBegin()

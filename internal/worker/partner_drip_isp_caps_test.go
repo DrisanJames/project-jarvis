@@ -354,3 +354,42 @@ func TestDatasetIsExpress_FailsSafe(t *testing.T) {
 	assert.False(t, po.datasetIsExpress(context.Background(), datasetID),
 		"lookup failure must report NOT express so the drain horizon stays on")
 }
+
+// TestClaimByISPCaps_UnknownISPBucketsToOther guards the 2026-08-11 starvation
+// fix. The caps CTE is built only from PerISPCapPerWave keys (12 of them) and
+// the eligible join is an INNER join, so before this an isp_family outside that
+// set matched no caps row and its records were NEVER claimable — protonmail sat
+// at 17 received / 0 mailed, with no error raised and no cap an operator could
+// raise to release them.
+//
+// This is a SQL-SHAPE guard, and deliberately labelled as one: sqlmock returns
+// rows we choose, so it cannot exercise Postgres actually evaluating the CASE.
+// What it does pin is that (a) caps is declared before ranked and (b) the
+// unknown-ISP fallback bucket is still in the query — reverting either makes
+// the ExpectQuery regex fail to match. The behavioral proof is protonmail
+// draining to 0 'ready' after deploy.
+func TestClaimByISPCaps_UnknownISPBucketsToOther(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Both halves of the fix must appear in the emitted SQL. sqlmock treats the
+	// argument as a regexp over the actual query, so a revert fails to match.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`WITH caps\(isp, cap\)[\s\S]*ELSE 'other' END AS isp_bucket[\s\S]*JOIN caps c ON c\.isp = r\.isp_bucket`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "email", "email_md5", "isp_family", "dataset_id", "partner_id", "batch_id", "extra_metadata",
+		}))
+	mock.ExpectCommit()
+
+	po := &PartnerDripOrchestrator{db: db, cfg: PartnerDripOrchestratorConfig{
+		PerISPCapPerWave: map[string]int{"aol": 400, "other": 400},
+		MaxWaveSize:      5000,
+	}}
+	_, err = po.claimRecordsByISPCaps(context.Background(), "internal_auto_insurance",
+		map[string]int{"aol": 400, "other": 400}, 100)
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet(),
+		"claim SQL must declare caps first and bucket unknown ISPs to 'other'")
+}

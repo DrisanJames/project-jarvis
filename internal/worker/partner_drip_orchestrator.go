@@ -2581,23 +2581,43 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 		return nil, fmt.Errorf("perISPCaps has no positive entries")
 	}
 
+	// caps is declared FIRST so ranked can bucket against it.
+	//
+	// The isp bucket falls back to 'other' for any isp_family with no caps row.
+	// The join below is an INNER join, so before this an unrecognized
+	// isp_family matched nothing and its records were NEVER claimable — they
+	// sat in 'ready' forever, silently, with no cap to raise and no error.
+	// Measured 2026-08-11 on internal_auto_insurance: protonmail 17 received,
+	// 0 ever mailed, 14 stuck since morning. PerISPCapPerWave carries 12 keys
+	// (gmail yahoo aol microsoft apple comcast charter att sbcglobal cox
+	// verizon other); ANY class outside them starves — protonmail today, the
+	// next unclassified domain family tomorrow.
+	//
+	// This mirrors baseISPCap(), which already falls back to perISPCaps["other"]
+	// when RESOLVING a cap. The fallback existed on one side of the same concept
+	// and not the other; now both agree.
 	query := fmt.Sprintf(`
-		WITH ranked AS (
+		WITH caps(isp, cap) AS (
+			VALUES %s
+		),
+		ranked AS (
 			SELECT id, isp_family, ingested_at,
 			       ROW_NUMBER() OVER (
-			           PARTITION BY COALESCE(NULLIF(isp_family, ''), 'other')
+			           PARTITION BY CASE
+			               WHEN COALESCE(NULLIF(isp_family, ''), 'other') IN (SELECT isp FROM caps)
+			               THEN COALESCE(NULLIF(isp_family, ''), 'other') ELSE 'other' END
 			           ORDER BY ingested_at ASC
-			       ) AS rn
+			       ) AS rn,
+			       CASE
+			           WHEN COALESCE(NULLIF(isp_family, ''), 'other') IN (SELECT isp FROM caps)
+			           THEN COALESCE(NULLIF(isp_family, ''), 'other') ELSE 'other' END AS isp_bucket
 			FROM partner_clean_queue
 			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+`
-		),
-		caps(isp, cap) AS (
-			VALUES %s
 		),
 		eligible AS (
 			SELECT r.id
 			FROM ranked r
-			JOIN caps c ON c.isp = COALESCE(NULLIF(r.isp_family, ''), 'other')
+			JOIN caps c ON c.isp = r.isp_bucket
 			WHERE r.rn <= c.cap
 			ORDER BY r.ingested_at ASC
 			LIMIT $2
