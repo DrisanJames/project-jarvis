@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -80,7 +81,15 @@ func TestResolvePerISPCaps_DatasetOverride(t *testing.T) {
 			AddRow("aol", 39))
 	mock.ExpectCommit()
 
-	// 2) readyByISP recompute for drain-horizon (yahoo is in PerISPDrainDays).
+	// 2) express_dispatch probe — NOT express, so the drain horizon stays on.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WithArgs(datasetID).
+		WillReturnRows(sqlmock.NewRows([]string{"express_dispatch"}).AddRow(false))
+	mock.ExpectCommit()
+
+	// 3) readyByISP recompute for drain-horizon (yahoo is in PerISPDrainDays).
 	mock.ExpectBegin()
 	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`FROM partner_clean_queue`).
@@ -124,6 +133,13 @@ func TestResolvePerISPCaps_NoDatasetOverride(t *testing.T) {
 	mock.ExpectQuery(`partner_isp_distribution_overrides`).
 		WithArgs(datasetID).
 		WillReturnRows(sqlmock.NewRows([]string{"isp", "max_per_wave"})) // empty
+	mock.ExpectCommit()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WithArgs(datasetID).
+		WillReturnRows(sqlmock.NewRows([]string{"express_dispatch"}).AddRow(false))
 	mock.ExpectCommit()
 
 	mock.ExpectBegin()
@@ -255,4 +271,86 @@ func TestApplyThroughputSafety_SESBypassesThrottle(t *testing.T) {
 	keepDB, _, _, err := po.applyThroughputSafety(context.Background(), "db", recs, caps)
 	require.NoError(t, err)
 	assert.Empty(t, idsOf(keepDB), "db: microsoft+apple both throttled → none kept")
+}
+
+// TestResolvePerISPCaps_ExpressBypassesDrainHorizon pins the 2026-08-11 fix.
+//
+// An express_dispatch dataset mails on arrival, so the multi-day drain horizon
+// must NOT apply. Reproduces the internal_auto_insurance shape that motivated
+// it: AOL base cap 400, drain_days 2, a 290-record ready pool. With the horizon
+// on, ceil(290/(384*2)) clamps AOL to 1/wave and the queue grows faster than it
+// drains; express must yield the full base cap instead.
+//
+// Negative control: revert the express check in resolvePerISPCaps and this
+// fails with caps["aol"] == 1.
+func TestResolvePerISPCaps_ExpressBypassesDrainHorizon(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const datasetID = "99137b10-969c-4c9b-84a6-28042b779a07"
+	const vertical = "internal_auto_insurance"
+
+	// Dataset override fetch — none configured for this lane.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`partner_isp_distribution_overrides`).
+		WithArgs(datasetID).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "max_per_wave"}))
+	mock.ExpectCommit()
+
+	// express_dispatch probe -> TRUE, so resolvePerISPCaps must return the base
+	// caps and never run the readyByISP recompute below.
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WithArgs(datasetID).
+		WillReturnRows(sqlmock.NewRows([]string{"express_dispatch"}).AddRow(true))
+	mock.ExpectCommit()
+
+	po := &PartnerDripOrchestrator{db: db, cfg: PartnerDripOrchestratorConfig{
+		PerISPCapPerWave: map[string]int{"aol": 400, "microsoft": 800, "other": 400},
+		PerISPDrainDays:  map[string]int{"aol": 2, "yahoo": 2, "att": 2, "sbcglobal": 2},
+		TickInterval:     15 * time.Minute,
+		BrandsPerTick:    4,
+	}}
+
+	caps, err := po.resolvePerISPCaps(context.Background(), vertical, datasetID, ispCapBacklogReady)
+	require.NoError(t, err)
+
+	assert.Equal(t, 400, caps["aol"], "express lane must keep the full AOL base cap, not the 2-day drain clamp")
+	assert.Equal(t, 800, caps["microsoft"], "non-drained ISP unchanged")
+	// Every expectation met proves the readyByISP recompute never ran.
+	assert.NoError(t, mock.ExpectationsWereMet())
+
+	// The counterfactual this fix exists to remove: with the horizon applied to
+	// the same 290-record AOL pool, the cap collapses to 1/wave — which at the
+	// 15m cadence is what pinned the live lane to a flat 16/hour against
+	// 60-100/hour of inflow. Pinned here so the magnitude cannot regress
+	// silently if the horizon is ever re-applied to express lanes.
+	clamped := ispCapForDrainHorizon(290, 400, 2, 384)
+	assert.Equal(t, 1, clamped, "drain horizon would clamp this pool to 1/wave")
+	assert.Less(t, clamped, caps["aol"], "express bypass must be strictly larger than the clamped cap")
+}
+
+// TestDatasetIsExpress_FailsSafe: a lookup error must leave the drain horizon
+// ON. Removing a reputation guard because a query lost an IO race is the wrong
+// direction to fail.
+func TestDatasetIsExpress_FailsSafe(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	const datasetID = "99137b10-969c-4c9b-84a6-28042b779a07"
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WithArgs(datasetID).
+		WillReturnError(errors.New("statement timeout"))
+	mock.ExpectRollback()
+
+	po := &PartnerDripOrchestrator{db: db, cfg: PartnerDripOrchestratorConfig{}}
+	assert.False(t, po.datasetIsExpress(context.Background(), datasetID),
+		"lookup failure must report NOT express so the drain horizon stays on")
 }

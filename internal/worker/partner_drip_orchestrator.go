@@ -3156,6 +3156,30 @@ func (po *PartnerDripOrchestrator) resolvePerISPCaps(ctx context.Context, vertic
 		return caps, nil
 	}
 
+	// EXPRESS datasets are exempt from the multi-day drain horizon.
+	//
+	// The horizon exists to spread a large COLD backlog over N days so a
+	// refilling ingest queue can't dump on a reputation-sensitive ISP. An
+	// express dataset is the opposite shape: partner-validated form fills
+	// arriving in real time, whose creative says "your quotes are ready" —
+	// their value decays in minutes, and the operator set express_dispatch
+	// precisely to mail on arrival.
+	//
+	// Leaving the horizon on silently defeats that. Measured 2026-08-11 on
+	// internal_auto_insurance: AOL (drain_days=2) drained at a FLAT 16/hour
+	// against 60-100/hour of inflow, so the queue grew ~+45..+84/hour to 290
+	// records aged 4h, while every ISP NOT in PerISPDrainDays cleared in ~11
+	// minutes. Raising the cap could not fix it — both the DB overlay and the
+	// per-dataset max_per_wave override are the BASE the horizon clamps down
+	// from, so the horizon always won.
+	//
+	// Scope: express_dispatch is 1 of 29 datasets, so this changes exactly the
+	// lane it is set on. The per-wave base cap still applies — this removes the
+	// multi-day SPREAD, not the ceiling.
+	if datasetID != "" && po.datasetIsExpress(ctx, datasetID) {
+		return caps, nil
+	}
+
 	followup := backlogKind == ispCapBacklogFollowup
 	query := `
 		SELECT COALESCE(NULLIF(isp_family, ''), 'other') AS isp, COUNT(*)
@@ -3302,6 +3326,24 @@ func (po *PartnerDripOrchestrator) applyGovernedFloorGate(ctx context.Context, v
 // pct_override (distribution shaping) is ignored here. Best-effort — on any
 // error the caller keeps the global caps. dataset_id is a UUID column, so the
 // param is cast explicitly.
+// datasetIsExpress reports whether the dataset is flagged express_dispatch
+// (mail-on-arrival). Fail-SAFE: any lookup error returns false, which keeps the
+// conservative drain-horizon clamp in place rather than removing a
+// reputation guard because a query lost an IO race.
+func (po *PartnerDripOrchestrator) datasetIsExpress(ctx context.Context, datasetID string) bool {
+	var express bool
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			SELECT COALESCE(express_dispatch, FALSE)
+			FROM partner_datasets WHERE id = $1::uuid
+		`, datasetID).Scan(&express)
+	}); err != nil {
+		log.Printf("[PartnerDripOrchestrator] express lookup (dataset=%s) failed (%v) — keeping drain horizon", datasetID, err)
+		return false
+	}
+	return express
+}
+
 func (po *PartnerDripOrchestrator) applyDatasetISPCapOverrides(ctx context.Context, datasetID string, base map[string]int) {
 	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
