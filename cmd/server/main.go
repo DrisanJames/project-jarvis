@@ -1954,6 +1954,11 @@ func main() {
 	// the producer taps). Safe no-op on a nil/dark handle.
 	eventBus.Stop()
 
+	// Drain buffered SES webhook events before the task dies. SNS has already
+	// been told 200 for these, and the subscription has no dead-letter queue,
+	// so anything still in the buffer at exit is unrecoverable.
+	api.ShutdownSESIngest()
+
 	// Flush any buffered analytics events to the lake (no-op when disabled).
 	analytics.Shutdown()
 

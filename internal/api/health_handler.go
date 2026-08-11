@@ -36,12 +36,13 @@ var deliveryBuildFlags = map[string]bool{
 
 // HealthStatus represents the overall health of the system.
 type HealthStatus struct {
-	Status   string                    `json:"status"` // "healthy", "degraded", "unhealthy"
-	Version  string                    `json:"version"`
-	Uptime   string                    `json:"uptime"`
-	Build    buildinfo.Info            `json:"build"`
-	Checks   map[string]ComponentCheck `json:"checks"`
-	EventBus EventBusStatus            `json:"event_bus"`
+	Status     string                    `json:"status"` // "healthy", "degraded", "unhealthy"
+	Version    string                    `json:"version"`
+	Uptime     string                    `json:"uptime"`
+	Build      buildinfo.Info            `json:"build"`
+	Checks     map[string]ComponentCheck `json:"checks"`
+	EventBus   EventBusStatus            `json:"event_bus"`
+	SESWebhook SESWebhookStatus          `json:"ses_webhook"`
 }
 
 // ComponentCheck represents the health of a single component.
@@ -89,6 +90,9 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime":    formatUptime(time.Since(hc.startTime)),
 		"build":     buildinfo.Current(),
 		"event_bus": CurrentEventBusStatus(),
+		// SES webhook ingest health — non-zero failed/rejected/engagement_failed
+		// means SES delivery/open/click telemetry was lost for that window.
+		"ses_webhook": CurrentSESWebhookStatus(),
 		// Send-Day Gate C reads this — see deliveryBuildFlags.
 		"build_contains": deliveryBuildFlags,
 	})
@@ -99,12 +103,13 @@ func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) 
 	checks := hc.runAllChecks(r.Context())
 	overall := determineOverallStatus(checks)
 	respondJSON(w, http.StatusOK, HealthStatus{
-		Status:   overall,
-		Version:  healthVersion,
-		Uptime:   formatUptime(time.Since(hc.startTime)),
-		Build:    buildinfo.Current(),
-		Checks:   checks,
-		EventBus: CurrentEventBusStatus(),
+		Status:     overall,
+		Version:    healthVersion,
+		Uptime:     formatUptime(time.Since(hc.startTime)),
+		Build:      buildinfo.Current(),
+		Checks:     checks,
+		EventBus:   CurrentEventBusStatus(),
+		SESWebhook: CurrentSESWebhookStatus(),
 	})
 }
 

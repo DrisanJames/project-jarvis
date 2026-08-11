@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -95,6 +96,10 @@ type SESEventsHandler struct {
 	mu       sync.RWMutex
 	certs    map[string]*x509.Certificate
 	disableSig bool // test override only
+
+	// queue is the async ingest buffer (ses_events_queue.go). nil means the
+	// SES_WEBHOOK_ASYNC kill switch is off and ServeHTTP processes inline.
+	queue *sesIngestQueue
 }
 
 // NewSESEventsHandler constructs the handler. The org ID matches the engine
@@ -105,7 +110,7 @@ func NewSESEventsHandler(db *sql.DB, hub *engine.GlobalSuppressionHub, orgID str
 	if disableSig {
 		log.Printf("[ses-events] WARNING: SES_WEBHOOK_DISABLE_SIG=true — signature verification is DISABLED. Set this only for unit tests.")
 	}
-	return &SESEventsHandler{
+	h := &SESEventsHandler{
 		db:         db,
 		hub:        hub,
 		orgID:      orgID,
@@ -113,6 +118,12 @@ func NewSESEventsHandler(db *sql.DB, hub *engine.GlobalSuppressionHub, orgID str
 		certs:      make(map[string]*x509.Certificate),
 		disableSig: disableSig,
 	}
+	// Start the async ingest queue so SNS is answered in ~1ms and the server's
+	// DB latency stops deciding whether SES events survive. Returns nil (and
+	// ServeHTTP stays synchronous) when SES_WEBHOOK_ASYNC=false.
+	h.queue = startSESIngestQueue(h)
+	registerSESQueue(h.queue)
+	return h
 }
 
 // snsEnvelope mirrors the field set documented at
@@ -226,7 +237,43 @@ func (h *SESEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case "Notification":
-		h.processNotification(r, env)
+		// Decode the inner SES payload on the request path (CPU only, no I/O)
+		// so a malformed body is rejected here rather than poisoning the queue.
+		var note sesEventNotification
+		if err := json.Unmarshal([]byte(env.Message), &note); err != nil {
+			log.Printf("[ses-events] inner Message JSON decode failed for MessageId=%s: %v", env.MessageId, err)
+			// Still 200: a payload we cannot parse will never parse, so making
+			// SNS retry it just burns its 3-attempt budget.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// ASYNC PATH (default): hand the event to the ingest queue and answer
+		// SNS immediately. The SNS HTTPS subscription allows only 3 retries at
+		// 20s with NO dead-letter queue, so any notification we cannot answer
+		// inside its delivery timeout is destroyed permanently. Doing DB work
+		// on this request path is what made 13,078 events unrecoverable in a
+		// single 24h window on 2026-08-11. Answering in ~1ms removes the
+		// server's latency from SNS's delivery decision entirely.
+		if h.queue != nil {
+			if h.queue.enqueue(env, note) {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			// Queue full — the buffer is the last line of defence, so fall back
+			// to 503. SNS will retry, which is strictly better than dropping.
+			atomic.AddUint64(&sesQueueRejected, 1)
+			log.Printf("[ses-events] ingest queue FULL — returning 503 so SNS retries MessageId=%s", env.MessageId)
+			http.Error(w, "ingest queue full", http.StatusServiceUnavailable)
+			return
+		}
+
+		// SYNC FALLBACK: only when SES_WEBHOOK_ASYNC=false. Preserves the exact
+		// pre-fix behavior as a one-env-var rollback.
+		if err := h.dispatchNotification(r.Context(), env, note); err != nil {
+			atomic.AddUint64(&sesSyncPersistFailed, 1)
+			log.Printf("[ses-events] sync dispatch failed MessageId=%s: %v", env.MessageId, err)
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 
@@ -255,13 +302,16 @@ func (h *SESEventsHandler) confirmSubscription(env snsEnvelope) {
 	}
 }
 
-func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope) {
-	var note sesEventNotification
-	if err := json.Unmarshal([]byte(env.Message), &note); err != nil {
-		log.Printf("[ses-events] inner Message JSON decode failed for MessageId=%s: %v", env.MessageId, err)
-		return
-	}
-
+// dispatchNotification performs the DB-bound work for one decoded SES
+// notification. It takes a plain context — NOT the *http.Request — because the
+// async ingest queue runs it AFTER the HTTP handler has already returned 200 to
+// SNS, at which point the request context is cancelled. Passing r.Context()
+// here would cancel every DB write the instant the response was written.
+//
+// It returns a non-nil error only for RETRYABLE failures (the tracking-event
+// INSERT itself); malformed payloads return nil so a poison message is not
+// retried forever.
+func (h *SESEventsHandler) dispatchNotification(ctx context.Context, env snsEnvelope, note sesEventNotification) error {
 	// SES sends "eventType" (configuration-set event-publishing) OR
 	// "notificationType" (legacy identity-feedback). Pick whichever is set.
 	eventType := note.EventType
@@ -270,7 +320,7 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 	}
 	if eventType == "" {
 		log.Printf("[ses-events] notification missing eventType/notificationType for MessageId=%s", env.MessageId)
-		return
+		return nil
 	}
 
 	tagConfig := firstTag(note.Mail.Tags, "ses:configuration-set")
@@ -285,20 +335,26 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 
 	switch eventType {
 	case "Bounce":
-		h.handleBounce(r, env, note, tagConfig, tagTenant)
+		return h.handleBounce(ctx, env, note, tagConfig, tagTenant)
 	case "Complaint":
-		h.handleComplaint(r, env, note, tagConfig, tagTenant)
+		return h.handleComplaint(ctx, env, note, tagConfig, tagTenant)
 	case "Open":
-		h.persistSESEvent(r, "opened", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", note.Open.IPAddress, note.Open.UserAgent, note.Open.Timestamp)
+		if err := h.persistSESEvent(ctx, "opened", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", note.Open.IPAddress, note.Open.UserAgent, note.Open.Timestamp); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] OPEN config_set=%s tenant=%s ip=%s", tagConfig, tagTenant, note.Open.IPAddress)
 	case "Click":
-		h.persistSESEvent(r, "clicked", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", note.Click.Link, note.Click.IPAddress, note.Click.UserAgent, note.Click.Timestamp)
+		if err := h.persistSESEvent(ctx, "clicked", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", note.Click.Link, note.Click.IPAddress, note.Click.UserAgent, note.Click.Timestamp); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] CLICK config_set=%s tenant=%s link=%s ip=%s", tagConfig, tagTenant, note.Click.Link, note.Click.IPAddress)
 	case "Send":
-		h.persistSESEvent(r, "sent", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", "", "", note.Mail.Timestamp)
+		if err := h.persistSESEvent(ctx, "sent", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", "", "", note.Mail.Timestamp); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] SEND config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Delivery":
 		rcpt := firstRecipient(note.Delivery.Recipients)
@@ -311,23 +367,30 @@ func (h *SESEventsHandler) processNotification(r *http.Request, env snsEnvelope)
 		}
 		// SES DELIVERY is the authoritative delivery signal for SES-routed
 		// mail (accepted by the recipient mail system; NOT inbox placement).
-		h.persistSESEvent(r, "delivered", note, tagCampaign, tagSubscriber, tagSendID, rcpt, "", "", "", "", "", "", ts)
+		if err := h.persistSESEvent(ctx, "delivered", note, tagCampaign, tagSubscriber, tagSendID, rcpt, "", "", "", "", "", "", ts); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] DELIVERY config_set=%s tenant=%s msgid=%s", tagConfig, tagTenant, env.MessageId)
 	case "Reject":
-		h.persistSESEvent(r, "rejected", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), note.Reject.Reason, "", note.Reject.Reason, "", "", "", note.Mail.Timestamp)
+		if err := h.persistSESEvent(ctx, "rejected", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), note.Reject.Reason, "", note.Reject.Reason, "", "", "", note.Mail.Timestamp); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] REJECT reason=%s config_set=%s tenant=%s msgid=%s",
 			note.Reject.Reason, tagConfig, tagTenant, env.MessageId)
 	case "DeliveryDelay":
 		// A delivery delay is a transient deferral, not a terminal state.
-		h.persistSESEvent(r, "deferred", note, tagCampaign, tagSubscriber, tagSendID,
-			firstRecipient(note.Mail.CommonHeaders.To), note.DeliveryDelay.DelayType, "", note.DeliveryDelay.DelayType, "", "", "", note.Mail.Timestamp)
+		if err := h.persistSESEvent(ctx, "deferred", note, tagCampaign, tagSubscriber, tagSendID,
+			firstRecipient(note.Mail.CommonHeaders.To), note.DeliveryDelay.DelayType, "", note.DeliveryDelay.DelayType, "", "", "", note.Mail.Timestamp); err != nil {
+			return err
+		}
 		log.Printf("[ses-events] DELIVERY_DELAY type=%s expire=%s config_set=%s tenant=%s",
 			note.DeliveryDelay.DelayType, note.DeliveryDelay.ExpirationTime, tagConfig, tagTenant)
 	default:
 		log.Printf("[ses-events] unhandled eventType=%q config_set=%s tenant=%s — accepting",
 			eventType, tagConfig, tagTenant)
 	}
+	return nil
 }
 
 // subscriberIDStr renders an optional subscriber UUID for the event lake.
@@ -375,21 +438,26 @@ func parseSESTime(s string) time.Time {
 // redeliveries collapse to a single row. recipientSendID is recorded in
 // bounce_reason-adjacent metadata only via the dedupe key for now; a dedicated
 // column rides the event lake in Phase 1.
-func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, note sesEventNotification,
-	campaignID, subscriberID, recipientSendID, recipientEmail, bounceType, bounceStatus, bounceDiag, linkURL, ipAddress, userAgent, tsRaw string) {
+// persistSESEvent returns nil on success (or on a deliberate no-op such as an
+// untagged event), and a non-nil error when the tracking-event INSERT itself
+// failed. The caller uses that error to decide whether the notification should
+// be RETRIED — swallowing it is what made SES event loss permanent before the
+// async ingest queue existed (see ses_events_queue.go).
+func (h *SESEventsHandler) persistSESEvent(ctx context.Context, eventType string, note sesEventNotification,
+	campaignID, subscriberID, recipientSendID, recipientEmail, bounceType, bounceStatus, bounceDiag, linkURL, ipAddress, userAgent, tsRaw string) error {
 
 	if h.db == nil || campaignID == "" {
 		// Without a campaign tag we cannot attribute the event. Pre-tag
 		// in-flight sends will simply not persist; post-deploy sends carry
 		// the tag. (Suppression for bounce/complaint is unaffected.)
-		return
+		return nil
 	}
 	campUUID, err := uuid.Parse(campaignID)
 	if err != nil {
-		return
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, sesPersistTimeout())
 	defer cancel()
 
 	recipientEmail = strings.ToLower(strings.TrimSpace(recipientEmail))
@@ -469,13 +537,16 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 		ON CONFLICT (id, event_at) DO NOTHING
 	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick, ipAddress, userAgent, bounceDiag)
 	if err != nil {
+		// RETURN the error rather than swallowing it. The async ingest worker
+		// retries on this; a permanent failure is counted in the /health
+		// ses_webhook block instead of vanishing silently.
 		log.Printf("[ses-events] persist %s campaign=%s error: %v", eventType, campaignID, err)
-		return
+		return fmt.Errorf("persist %s: %w", eventType, err)
 	}
 	// Only act on a genuinely new row — SNS can redeliver the same
 	// notification, and ON CONFLICT makes those a no-op (RowsAffected == 0).
 	if n, raErr := res.RowsAffected(); raErr != nil || n == 0 {
-		return
+		return nil
 	}
 
 	// Phase 1 event lake (best-effort, no-op unless enabled). Emitted only on a
@@ -559,6 +630,10 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 			ON CONFLICT (summary_date, COALESCE(campaign_id, '00000000-0000-0000-0000-000000000000'::uuid), recipient_isp)
 			DO UPDATE SET ses_delivered = pmta_acct_daily_summary.ses_delivered + 1, last_updated_at = NOW()
 		`, summaryDate, campUUID, ispGroup); derr != nil {
+			// NOT retryable: the tracking-event row is already committed, so a
+			// redelivery would hit ON CONFLICT and never reach this line again.
+			// Counted so the rollup's drift is visible on /health.
+			atomic.AddUint64(&sesRollupFailed, 1)
 			log.Printf("[ses-events] ses_delivered rollup upsert campaign=%s isp=%s error: %v", campaignID, ispGroup, derr)
 		}
 	case "bounced":
@@ -575,6 +650,20 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 	case "complained":
 		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
 	}
+	return nil
+}
+
+// sesExec runs a best-effort engagement side-effect and COUNTS + LOGS a failure
+// instead of discarding it. These writes were previously fire-and-forget with
+// their error values dropped on the floor, which made open_count/click_count/
+// last_open_at drift invisible: under DB pressure they simply did not happen and
+// nothing anywhere recorded that. They stay non-fatal (the authoritative event
+// row is already committed), but they are no longer silent.
+func (h *SESEventsHandler) sesExec(ctx context.Context, what string, query string, args ...interface{}) {
+	if _, err := h.db.ExecContext(ctx, query, args...); err != nil {
+		atomic.AddUint64(&sesEngagementFailed, 1)
+		log.Printf("[ses-events] engagement side-effect %s failed: %v", what, err)
+	}
 }
 
 // applyOpenEngagement mirrors the durable engagement side-effects the internal
@@ -586,13 +675,13 @@ func (h *SESEventsHandler) persistSESEvent(r *http.Request, eventType string, no
 // others or the 200 response back to SNS.
 func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
 	// Campaign-level total opens (parity with mailing_tracking.go:194).
-	h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+	h.sesExec(ctx, "open_count", `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
 
 	if subID != nil {
 		// Unique opener: bump only when the just-inserted row is this
 		// subscriber's FIRST opened event for the campaign (count == 1). Later
 		// opens leave it unchanged, so the column converges on distinct openers.
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "unique_open_count", `
 			UPDATE mailing_campaigns SET unique_open_count = COALESCE(unique_open_count, 0) + 1, updated_at = NOW()
 			WHERE id = $1 AND (
 				SELECT COUNT(*) FROM mailing_tracking_events
@@ -603,7 +692,7 @@ func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID u
 		// standing Welcome saturation segment (prior_sends > 8 AND
 		// last_open_at IS NULL) — without this, SES-route opens never clear a
 		// subscriber out of the "never opened" cohort.
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "subscriber_open", `
 			UPDATE mailing_subscribers SET total_opens = COALESCE(total_opens, 0) + 1, last_open_at = NOW(), updated_at = NOW()
 			WHERE id = $1`, *subID)
 
@@ -617,7 +706,7 @@ func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID u
 
 	if email != "" {
 		eHash := emailHash(email)
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "inbox_profile_open", `
 			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_opens, last_open_at, updated_at)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 			ON CONFLICT (email_hash) DO UPDATE SET total_opens = mailing_inbox_profiles.total_opens + 1, last_open_at = NOW(), updated_at = NOW()
@@ -630,12 +719,12 @@ func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID u
 // human clicks (machine/asset clicks never reach here). Same new-row / best-effort
 // contract as applyOpenEngagement.
 func (h *SESEventsHandler) applyClickEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
-	h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+	h.sesExec(ctx, "click_count", `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
 
 	if subID != nil {
 		// Unique human clicker: only the subscriber's first non-machine click
 		// of the campaign counts (the count filters out machine clicks too).
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "unique_click_count", `
 			UPDATE mailing_campaigns SET unique_click_count = COALESCE(unique_click_count, 0) + 1, updated_at = NOW()
 			WHERE id = $1 AND (
 				SELECT COUNT(*) FROM mailing_tracking_events
@@ -643,7 +732,7 @@ func (h *SESEventsHandler) applyClickEngagement(ctx context.Context, campaignID 
 				  AND NOT COALESCE(is_machine_click, false)
 			) = 1`, campaignID, *subID)
 
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "subscriber_click", `
 			UPDATE mailing_subscribers SET total_clicks = COALESCE(total_clicks, 0) + 1, last_click_at = NOW(), updated_at = NOW()
 			WHERE id = $1`, *subID)
 
@@ -656,7 +745,7 @@ func (h *SESEventsHandler) applyClickEngagement(ctx context.Context, campaignID 
 
 	if email != "" {
 		eHash := emailHash(email)
-		h.db.ExecContext(ctx, `
+		h.sesExec(ctx, "inbox_profile_click", `
 			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_clicks, last_click_at, updated_at)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 			ON CONFLICT (email_hash) DO UPDATE SET total_clicks = mailing_inbox_profiles.total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
@@ -730,7 +819,7 @@ func (h *SESEventsHandler) recomputeInboxProfileScore(ctx context.Context, eHash
 	`, eHash, score)
 }
 
-func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) {
+func (h *SESEventsHandler) handleBounce(ctx context.Context, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) error {
 	campaignID := firstTag(note.Mail.Tags, "campaign_id")
 	subscriberID := firstTag(note.Mail.Tags, "subscriber_id")
 	sendID := firstTag(note.Mail.Tags, "recipient_send_id")
@@ -741,13 +830,15 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 	// accurate.
 	if note.Bounce.BounceType != "Permanent" {
 		for _, rec := range note.Bounce.BouncedRecipients {
-			h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
-				rec.EmailAddress, "soft", rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
+			if err := h.persistSESEvent(ctx, "bounced", note, campaignID, subscriberID, sendID,
+				rec.EmailAddress, "soft", rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp); err != nil {
+				return err
+			}
 			log.Printf("[ses-events] BOUNCE-soft type=%s subtype=%s addr=%s diag=%q config_set=%s tenant=%s",
 				note.Bounce.BounceType, note.Bounce.BounceSubType,
 				logger.RedactEmail(rec.EmailAddress), rec.DiagnosticCode, tagConfig, tagTenant)
 		}
-		return
+		return nil
 	}
 
 	reason := "ses_hard_bounce"
@@ -782,24 +873,29 @@ func (h *SESEventsHandler) handleBounce(r *http.Request, env snsEnvelope, note s
 		if strings.Contains(rec.DiagnosticCode, "due to email validation") {
 			btype = "validation"
 		}
-		h.persistSESEvent(r, "bounced", note, campaignID, subscriberID, sendID,
-			rec.EmailAddress, btype, rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp)
+		if err := h.persistSESEvent(ctx, "bounced", note, campaignID, subscriberID, sendID,
+			rec.EmailAddress, btype, rec.Status, rec.DiagnosticCode, "", "", "", note.Mail.Timestamp); err != nil {
+			return err
+		}
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping bounce for %s", logger.RedactEmail(rec.EmailAddress))
 			continue
 		}
-		ctx := r.Context()
+		// A failed suppression write is RETRYABLE: a permanent bounce that
+		// never reaches mailing_global_suppressions means we keep mailing a
+		// dead address, which is a reputation problem, not just a metrics one.
 		added, err := h.hub.Suppress(ctx, rec.EmailAddress, reason, "ses_webhook", "", rec.Status, rec.DiagnosticCode, "", "")
 		if err != nil {
 			log.Printf("[ses-events] hub.Suppress error for %s: %v", logger.RedactEmail(rec.EmailAddress), err)
-			continue
+			return fmt.Errorf("suppress bounce: %w", err)
 		}
 		log.Printf("[ses-events] BOUNCE-hard added=%v reason=%s addr=%s subtype=%s config_set=%s tenant=%s",
 			added, reason, logger.RedactEmail(rec.EmailAddress), note.Bounce.BounceSubType, tagConfig, tagTenant)
 	}
+	return nil
 }
 
-func (h *SESEventsHandler) handleComplaint(r *http.Request, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) {
+func (h *SESEventsHandler) handleComplaint(ctx context.Context, env snsEnvelope, note sesEventNotification, tagConfig, tagTenant string) error {
 	campaignID := firstTag(note.Mail.Tags, "campaign_id")
 	subscriberID := firstTag(note.Mail.Tags, "subscriber_id")
 	sendID := firstTag(note.Mail.Tags, "recipient_send_id")
@@ -812,21 +908,25 @@ func (h *SESEventsHandler) handleComplaint(r *http.Request, env snsEnvelope, not
 		if rec.EmailAddress == "" {
 			continue
 		}
-		h.persistSESEvent(r, "complained", note, campaignID, subscriberID, sendID,
-			rec.EmailAddress, "", "", note.Complaint.ComplaintFeedbackType, "", "", "", note.Mail.Timestamp)
+		if err := h.persistSESEvent(ctx, "complained", note, campaignID, subscriberID, sendID,
+			rec.EmailAddress, "", "", note.Complaint.ComplaintFeedbackType, "", "", "", note.Mail.Timestamp); err != nil {
+			return err
+		}
 		if h.hub == nil {
 			log.Printf("[ses-events] WARNING: globalHub not wired — dropping complaint for %s", logger.RedactEmail(rec.EmailAddress))
 			continue
 		}
-		ctx := r.Context()
+		// Retryable for the same reason as a hard bounce — a dropped complaint
+		// suppression means we keep mailing someone who hit "spam".
 		added, err := h.hub.Suppress(ctx, rec.EmailAddress, reason, "ses_webhook", "", "", "", "", "")
 		if err != nil {
 			log.Printf("[ses-events] hub.Suppress error for %s: %v", logger.RedactEmail(rec.EmailAddress), err)
-			continue
+			return fmt.Errorf("suppress complaint: %w", err)
 		}
 		log.Printf("[ses-events] COMPLAINT added=%v reason=%s addr=%s config_set=%s tenant=%s",
 			added, reason, logger.RedactEmail(rec.EmailAddress), tagConfig, tagTenant)
 	}
+	return nil
 }
 
 func firstTag(tags map[string][]string, key string) string {

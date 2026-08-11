@@ -28,6 +28,12 @@ func newHandlerForTest(t *testing.T) (*SESEventsHandler, sqlmock.Sqlmock, *sql.D
 	t.Cleanup(func() { _ = db.Close() })
 
 	t.Setenv("SES_WEBHOOK_DISABLE_SIG", "true")
+	// These tests assert sqlmock expectations immediately after ServeHTTP
+	// returns, so they need the persistence to happen inline. The async ingest
+	// queue (the production default) is covered separately in
+	// handlers_ses_events_async_test.go; the per-event persistence logic
+	// exercised here is identical on both paths.
+	t.Setenv("SES_WEBHOOK_ASYNC", "false")
 
 	hub := engine.NewGlobalSuppressionHub(db, "00000000-0000-0000-0000-000000000001", "")
 	h := NewSESEventsHandler(db, hub, "00000000-0000-0000-0000-000000000001")
