@@ -606,4 +606,23 @@ var brandCodeRoot = map[string]string{
 	"MP": "mypersonalfinancial.com",
 	"PD": "paymydebit.com",
 	"TR": "theretirementblog.com",
+	// KUMO ESTATE codes (2026-08-11). These 9 properties are all in
+	// brand.OwnedDomains but had NO brand-code entry, so a creative registered
+	// under its short code failed the proof-send path with
+	//   "could not resolve a sending domain for brand_code 'FTH'"
+	// (creative_proof_send.go:170, via sendingDomainFromBrandCode).
+	// MP/PD/TR above are the legacy 2-letter forms; the 3-letter codes are what
+	// agents/registry/brand_metadata.py and the kumo estate registry use, so
+	// BOTH spellings must resolve.
+	"MPF": "mypersonalfinancial.com",
+	"PMD": "paymydebit.com",
+	"TRB": "theretirementblog.com",
+	"BCC": "bestcreditcare.com",
+	"USF": "us-finance.com",
+	"HLJ": "homeloansbyjaime.com",
+	"HTM": "hometracmortgage.com",
+	"YFB": "yourfinancialblog.com",
+	"FTH": "firsttimebuyerhomeloan.com",
+	"AAD": "aadwd.com",
+	"HFC": "hfcl.net",
 }
