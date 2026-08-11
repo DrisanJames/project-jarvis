@@ -379,10 +379,20 @@ func (ps *PartnerSlicer) readSlice(scanner *bufio.Scanner, sliceSize int) ([]par
 	return out, count
 }
 
+// partnerRawRecord is the SECOND closed struct on the ingest path, and it has
+// the same destroy-on-omission property as api.ingestRecord: the S3 NDJSON is
+// decoded into this and re-marshaled into partner_clean_queue.extra_metadata,
+// so a field missing here is dropped even when the door preserved it.
+//
+// 2026-08-10: the door was fixed to keep `city`, and city STILL vanished —
+// because this struct had no City field. Both structs must be extended
+// together; fixing one and testing the other's output looks like the fix
+// failed. Keep the field list in lockstep with api.ingestRecord.
 type partnerRawRecord struct {
 	Email     string                 `json:"email"`
 	FirstName string                 `json:"first_name,omitempty"`
 	LastName  string                 `json:"last_name,omitempty"`
+	City      string                 `json:"city,omitempty"`
 	Zip       string                 `json:"zip,omitempty"`
 	State     string                 `json:"state,omitempty"`
 	IPAddress string                 `json:"ip_address,omitempty"`
