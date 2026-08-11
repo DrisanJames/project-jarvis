@@ -157,6 +157,38 @@ func (h *CpmPlannerHandlers) refreshOrgEventCounts(orgID string) {
 		h.evMu.Unlock()
 	}()
 
+	// FLEET-WIDE serialization. The guard above (h.evRunning) is an IN-PROCESS
+	// map, and eventCacheLoop is a process-lifetime goroutine started at boot on
+	// EVERY task — so N tasks refresh the same org simultaneously, every
+	// cpmEventCacheRefresh, with no user request involved.
+	//
+	// Measured 2026-08-11: two tasks running this org-wide aggregate for 580s and
+	// 416s, saturating IO (IO/DataFileRead, LWLock/BufferMapping) and starving the
+	// send-day board build — three consecutive fresh-bcast draws died on
+	// statement_timeout behind them. The operator confirmed no CPM Planner tab was
+	// open, which is what ruled out the request path and pointed here.
+	//
+	// TryLock, not Lock: this is a cache warm on a 4-minute cadence, so a task
+	// that loses the race should SKIP this cycle rather than queue up behind a
+	// multi-minute scan and pile on. pg_advisory_unlock releases it explicitly
+	// because this path has no surrounding transaction.
+	var gotLock bool
+	if err := h.db.QueryRow(
+		`SELECT pg_try_advisory_lock(hashtext($1), 0)`, "cpm_event_cache:"+orgID,
+	).Scan(&gotLock); err != nil {
+		log.Printf("[CpmPlanner] event-cache advisory lock for org %s: %v", orgID, err)
+		return
+	}
+	if !gotLock {
+		log.Printf("[CpmPlanner] event cache for org %s already refreshing on another task — skipping this cycle", orgID)
+		return
+	}
+	defer func() {
+		if _, err := h.db.Exec(`SELECT pg_advisory_unlock(hashtext($1), 0)`, "cpm_event_cache:"+orgID); err != nil {
+			log.Printf("[CpmPlanner] event-cache advisory unlock for org %s: %v", orgID, err)
+		}
+	}()
+
 	deals, _, err := h.loadDealsLite(orgID)
 	if err != nil {
 		log.Printf("[CpmPlanner] event-cache deals for org %s: %v", orgID, err)
