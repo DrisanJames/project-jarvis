@@ -2972,6 +2972,18 @@ func (po *PartnerDripOrchestrator) linkSubscriberIDsToQueue(ctx context.Context,
 	}
 }
 
+// safeSegmentNonce renders the short, name-safe uniqueness token appended to a
+// wave campaign's name. Empty/short segment ids degrade to whatever is there
+// rather than panicking — a wave with no segment is already an error path, and
+// losing the nonce must not lose the deploy.
+func safeSegmentNonce(segmentID string) string {
+	s := strings.TrimSpace(segmentID)
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
 // createWaveSegment builds a one-shot static segment named after the wave so
 // the audience finalizer pulls exactly the records we claimed (no more, no
 // less). Returns the segment_id.
@@ -3511,7 +3523,32 @@ func (po *PartnerDripOrchestrator) buildCampaignInput(v verticalState, brand str
 	contentLocked := true
 	scheduledAt := startAt
 	htmlSHA := sha256.Sum256([]byte(creative.htmlBody))
-	name := fmt.Sprintf("[partner-drip] %s %s %s %s", v.vertical, brand, time.Now().UTC().Format("20060102T1504"), hex.EncodeToString(htmlSHA[:4]))
+	// The name MUST be unique per wave group. HandleDeployCampaign has a
+	// by-(org,name) idempotency guard (handlers_pmta_campaign.go:1305) that
+	// converges an id-less deploy onto any live campaign with the same name —
+	// so a colliding name does not mint a second campaign, it RETURNS THE
+	// FIRST ONE, and this wave's records get stamped onto a campaign whose
+	// audience is some other wave's segment.
+	//
+	// The old format used MINUTE precision plus the creative hash, so two wave
+	// groups of the same (vertical, brand, creative) deploying in the same
+	// minute produced a byte-identical name. Measured 2026-08-11 on
+	// internal_auto_insurance: two groups fired at 21:15:01 and 21:15:02, both
+	// got campaign caa1f42d back, and the second group's 349 records were
+	// marked mailed against a campaign that only ever had the first group's 2
+	// recipients — 349 real subscribers terminally burned, their 349-member
+	// segment orphaned with zero campaigns referencing it. ~1,118 records were
+	// lost this way in a single day before it was caught.
+	//
+	// segmentID is minted per wave group (createWaveSegment) and is therefore
+	// the correct uniqueness key; seconds are added so the name stays readable
+	// and sortable. Deterministic within one deploy call, which is what the
+	// idempotency guard legitimately needs for genuine retries.
+	name := fmt.Sprintf("[partner-drip] %s %s %s %s %s",
+		v.vertical, brand,
+		time.Now().UTC().Format("20060102T150405"),
+		hex.EncodeToString(htmlSHA[:4]),
+		safeSegmentNonce(segmentID))
 
 	// Per-touch offer wins: when this touch's creative row carries its own
 	// offer_id, that offer drives the deploy's OfferID (offer-suppression Bloom +
@@ -4581,6 +4618,12 @@ func safeIdent(s string) string {
 
 type deployHandlerSig func(http.ResponseWriter, *http.Request)
 
+// ErrDeployNameReused reports that HandleDeployCampaign's by-(org,name)
+// idempotency guard returned an EXISTING campaign rather than creating one.
+// A wave group that sees this must NOT mark its records mailed — the returned
+// campaign carries a different group's audience.
+var ErrDeployNameReused = errors.New("deploy converged on an existing campaign by name (records NOT mailed)")
+
 // WrapPMTACampaignDeploy adapts an HTTP handler into a typed CampaignDeployFn.
 // The handler is invoked in-process via httptest, so no real network call.
 func WrapPMTACampaignDeploy(h deployHandlerSig) CampaignDeployFn {
@@ -4600,9 +4643,10 @@ func WrapPMTACampaignDeploy(h deployHandlerSig) CampaignDeployFn {
 			return "", fmt.Errorf("HandleDeployCampaign returned %d: %s", rr.Code, string(respBody))
 		}
 		var out struct {
-			CampaignID string `json:"campaign_id"`
-			ID         string `json:"id"`
-			Error      string `json:"error,omitempty"`
+			CampaignID     string `json:"campaign_id"`
+			ID             string `json:"id"`
+			AlreadyExisted bool   `json:"already_existed"`
+			Error          string `json:"error,omitempty"`
 		}
 		respBody, _ := io.ReadAll(rr.Body)
 		if err := json.Unmarshal(respBody, &out); err != nil {
@@ -4610,6 +4654,22 @@ func WrapPMTACampaignDeploy(h deployHandlerSig) CampaignDeployFn {
 		}
 		if out.Error != "" {
 			return "", fmt.Errorf("HandleDeployCampaign error: %s", out.Error)
+		}
+		// already_existed means the by-(org,name) idempotency guard converged
+		// this deploy onto a PRE-EXISTING campaign instead of minting one. For
+		// a partner-drip wave that is never correct: this group's segment was
+		// not the returned campaign's audience, so marking the group mailed
+		// would terminally burn records that no campaign will ever send (the
+		// 2026-08-11 internal_auto_insurance loss — 349 records in one wave,
+		// ~1,118 in a day). Surface it as an error so deployWaveGroups takes
+		// the releaseClaim path and the next tick retries the records under a
+		// freshly-minted, now-unique name.
+		if out.AlreadyExisted {
+			id := out.CampaignID
+			if id == "" {
+				id = out.ID
+			}
+			return "", fmt.Errorf("%w (converged on campaign %s)", ErrDeployNameReused, id)
 		}
 		if out.CampaignID != "" {
 			return out.CampaignID, nil
