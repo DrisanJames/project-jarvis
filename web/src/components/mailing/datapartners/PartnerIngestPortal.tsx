@@ -14,6 +14,7 @@ import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { PreviousActivationsPanel } from './PreviousActivationsPanel';
+import { LaneHealthPanel } from './LaneHealthPanel';
 import { apiFetch } from '../shared/apiFetch';
 import { labelForVertical } from './verticalLabels';
 
@@ -69,7 +70,7 @@ interface DashboardResponse {
   recent_batches: BatchSummary[];
 }
 
-type TabId = 'overview' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
+type TabId = 'overview' | 'lane-health' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
 
 // isRealLandingVertical hides the noise landing cards: a partner_drip_state row
 // that is a governed-pass pointer ("<vertical>:governed") or the internal
@@ -83,8 +84,19 @@ const isRealLandingVertical = (v: VerticalState): boolean => {
 
 export const PartnerIngestPortal: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('overview');
+  // Lane Health selection; defaults to the first real vertical once the dashboard lands.
+  const [laneVertical, setLaneVertical] = useState<string>('');
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
+
+  // Default the Lane Health selection to the first vertical that actually has
+  // volume, once the dashboard arrives. Guarded on empty so an operator's
+  // explicit choice is never overwritten by a later 30s poll.
+  useEffect(() => {
+    if (laneVertical) return;
+    const first = (dashboard?.verticals ?? []).filter(isRealLandingVertical)[0];
+    if (first) setLaneVertical(first.vertical);
+  }, [dashboard, laneVertical]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Pause/resume failures live in their own state so the 30s dashboard poll
@@ -166,6 +178,7 @@ export const PartnerIngestPortal: React.FC = () => {
 
   const tabs: { id: TabId; label: string; icon: typeof faSeedling }[] = [
     { id: 'overview', label: 'Overview', icon: faRoute },
+    { id: 'lane-health', label: 'Lane Health', icon: faGaugeHigh },
     { id: 'warmup', label: 'Warm-Up', icon: faGaugeHigh },
     { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
     { id: 'batches', label: 'Inbound Batches', icon: faSeedling },
@@ -265,6 +278,27 @@ export const PartnerIngestPortal: React.FC = () => {
         </div>
       )}
 
+      {activeTab === 'lane-health' && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-400">Lane</label>
+            <select
+              value={laneVertical}
+              onChange={(e) => setLaneVertical(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200"
+            >
+              {(dashboard?.verticals ?? [])
+                .filter(isRealLandingVertical)
+                .map(v => (
+                  <option key={v.vertical} value={v.vertical}>{labelForVertical(v.vertical)}</option>
+                ))}
+            </select>
+          </div>
+          {laneVertical
+            ? <LaneHealthPanel vertical={laneVertical} />
+            : <div className="text-sm text-gray-500">No lanes with activity yet.</div>}
+        </div>
+      )}
       {activeTab === 'warmup' && <WarmupProgressPanel />}
 
       {activeTab === 'partners' && (

@@ -499,6 +499,7 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/datasets/{id}/offer-performance", partnerAdmin.HandleGetDatasetOfferPerformance)
 				dp.Get("/datasets/{id}/quality-report", partnerAdmin.HandleDatasetQualityReport)
 				dp.Put("/datasets/{id}/isp-distribution", partnerAdmin.HandleUpdateISPDistribution)
+				dp.Get("/lanes/{vertical}/health", partnerAdmin.HandleGetLaneHealth)
 				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
 				dp.Post("/datasets/{id}/resume", partnerAdmin.HandleResumeDataset)
 				dp.Get("/creatives", partnerAdmin.HandleListCreatives)
