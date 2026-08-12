@@ -57,6 +57,24 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	// Health check (no auth required)
 	r.Get("/health", h.HealthCheck)
 
+	// SES event webhook — registered HERE, at construction, not inside the
+	// async SetMailingDB block.
+	//
+	// It used to be registered only once SetMailingDB ran, which happens
+	// asynchronously after boot. Until then a POST from SNS fell through to the
+	// auth-protected router and got 401, so EVERY task start burned SNS
+	// delivery attempts. Measured 2026-08-12 during an unplanned task
+	// replacement: 953 NumberOfNotificationsFailed in a single 5-minute bucket,
+	// all inside the registration window, while the endpoint served 100% 200s
+	// before and after.
+	//
+	// Nothing was lost then — SNS retried and the DLQ stayed empty — but it
+	// spends the subscription's 3-attempt budget on a self-inflicted outage
+	// during exactly the window a task is least healthy. Registering early and
+	// answering 503 makes the "not ready yet" honest and retryable instead of
+	// looking like an auth failure.
+	r.Post("/api/mailing/webhooks/ses-events", serveSESEventsWhenReady)
+
 	// Auth routes (no auth required)
 	if authManager != nil {
 		r.Get("/auth/login", authManager.HandleLogin)

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -323,6 +324,45 @@ func registerSESQueue(q *sesIngestQueue) {
 	sesQueueMu.Lock()
 	globalSESQueue = q
 	sesQueueMu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// boot-time route readiness
+// ---------------------------------------------------------------------------
+
+var (
+	sesHandlerMu    sync.RWMutex
+	globalSESHandler *SESEventsHandler
+	sesNotReadyHits uint64
+)
+
+// registerSESHandler publishes the live handler to the boot-time route.
+func registerSESHandler(h *SESEventsHandler) {
+	sesHandlerMu.Lock()
+	globalSESHandler = h
+	sesHandlerMu.Unlock()
+	log.Printf("[ses-events] webhook handler wired — endpoint is now serving")
+}
+
+// serveSESEventsWhenReady is registered on the public router at construction so
+// the path ALWAYS exists. Before the mailing DB is wired it answers 503, which
+// SNS treats as retryable — rather than 401, which is what the path used to
+// return by falling through to the auth-protected router during every task
+// start (953 SNS delivery failures in one such window, 2026-08-12).
+func serveSESEventsWhenReady(w http.ResponseWriter, r *http.Request) {
+	sesHandlerMu.RLock()
+	h := globalSESHandler
+	sesHandlerMu.RUnlock()
+	if h == nil {
+		n := atomic.AddUint64(&sesNotReadyHits, 1)
+		if n == 1 || n%200 == 0 {
+			log.Printf("[ses-events] endpoint not ready yet (mailing DB still wiring) — 503, SNS will retry (hit #%d)", n)
+		}
+		w.Header().Set("Retry-After", "20")
+		http.Error(w, "ses webhook not ready", http.StatusServiceUnavailable)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // ShutdownSESIngest drains buffered SES events. Safe no-op when async ingest is

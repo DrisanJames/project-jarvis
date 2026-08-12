@@ -401,3 +401,62 @@ func TestSESRetryBudget_SpansABrownout(t *testing.T) {
 		t.Fatalf("retry budget = %s, want <= 5m (workers would stop draining)", total)
 	}
 }
+
+// TestSESWebhook_503sBeforeHandlerIsWired guards the boot-time route.
+//
+// The route used to be registered only inside the async SetMailingDB block, so
+// during every task start a POST from SNS fell through to the auth-protected
+// router and got 401. Measured 2026-08-12 on an unplanned task replacement:
+// 953 NumberOfNotificationsFailed in one 5-minute bucket, entirely inside that
+// window, while the endpoint served 100% 200s before and after.
+//
+// The path must ALWAYS exist and must answer 503 (retryable, honest) until the
+// handler is wired — never 401, which reads as an auth problem.
+func TestSESWebhook_503sBeforeHandlerIsWired(t *testing.T) {
+	sesHandlerMu.Lock()
+	saved := globalSESHandler
+	globalSESHandler = nil
+	sesHandlerMu.Unlock()
+	t.Cleanup(func() {
+		sesHandlerMu.Lock()
+		globalSESHandler = saved
+		sesHandlerMu.Unlock()
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events",
+		bytes.NewReader(openNotification(t, testCampaignID)))
+	serveSESEventsWhenReady(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 so SNS retries (401 reads as auth failure and "+
+			"burns the subscription's 3-attempt budget)", rr.Code)
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Error("missing Retry-After — tell SNS when to come back")
+	}
+}
+
+// TestSESWebhook_DelegatesOnceWired proves the boot-time route hands off to the
+// real handler as soon as SetMailingDB publishes it.
+func TestSESWebhook_DelegatesOnceWired(t *testing.T) {
+	h, _, _ := newAsyncHandlerForTest(t)
+	sesHandlerMu.Lock()
+	saved := globalSESHandler
+	globalSESHandler = h
+	sesHandlerMu.Unlock()
+	t.Cleanup(func() {
+		sesHandlerMu.Lock()
+		globalSESHandler = saved
+		sesHandlerMu.Unlock()
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events",
+		bytes.NewReader(openNotification(t, testCampaignID)))
+	serveSESEventsWhenReady(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 once the handler is wired", rr.Code)
+	}
+}
