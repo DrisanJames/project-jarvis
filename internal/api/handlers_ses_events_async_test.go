@@ -38,6 +38,7 @@ func resetSESCounters() {
 	atomic.StoreUint64(&sesEngagementFailed, 0)
 	atomic.StoreUint64(&sesSyncPersistFailed, 0)
 	atomic.StoreInt64(&sesQueueDepth, 0)
+	atomic.StoreInt64(&sesRetriesPending, 0)
 }
 
 // newAsyncHandlerForTest builds a handler with the async queue ENABLED and a
@@ -226,48 +227,73 @@ func TestSESPersist_ReturnsErrorOnDBFailure(t *testing.T) {
 	}
 }
 
-// TestSESAsync_RetriesThenCountsPermanentLoss proves a failing event is retried
-// and, if it never succeeds, is COUNTED rather than vanishing. Silent loss is
-// what made the original bug invisible for so long.
-func TestSESAsync_RetriesThenCountsPermanentLoss(t *testing.T) {
+// TestSESAsync_RetryDoesNotHoldAWorker proves a failed attempt returns the
+// worker to the pool immediately and schedules a re-queue, rather than sleeping
+// through its backoff.
+//
+// Retrying in place was a capacity bug: during a DB brownout, 12 workers each
+// sleeping up to 30s collapsed throughput exactly when the queue was filling —
+// `enqueued` raced 2,323 -> 3,577 while `processed` crawled 1,636 -> 1,674.
+func TestSESAsync_RetryDoesNotHoldAWorker(t *testing.T) {
 	h, mock, _ := newAsyncHandlerForTest(t)
-	t.Setenv("SES_WEBHOOK_PERSIST_TIMEOUT_SEC", "1")
+	t.Setenv("SES_WEBHOOK_MAX_ATTEMPTS", "6")
 
-	t.Setenv("SES_WEBHOOK_MAX_ATTEMPTS", "3") // keep the test fast
-	boom := errors.New("context deadline exceeded")
-	for i := 0; i < 3; i++ {
-		mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnError(boom)
-	}
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WillReturnError(errors.New("canceling statement due to user request"))
 
+	start := time.Now()
 	h.queue.process(sesQueueItem{
-		env: snsEnvelope{MessageId: "msg-1"},
-		note: sesEventNotification{
-			EventType: "Open",
-			Mail: func() (m struct {
-				MessageId     string              `json:"messageId"`
-				Timestamp     string              `json:"timestamp"`
-				Source        string              `json:"source"`
-				Tags          map[string][]string `json:"tags"`
-				CommonHeaders struct {
-					To   []string `json:"to"`
-					From []string `json:"from"`
-				} `json:"commonHeaders"`
-			}) {
-				m.Tags = map[string][]string{"campaign_id": {testCampaignID}}
-				return m
-			}(),
-		},
+		env:  snsEnvelope{MessageId: "msg-retry"},
+		note: openNote(),
+	})
+	elapsed := time.Since(start)
+
+	// process() must return promptly — the backoff happens on a timer, not here.
+	if elapsed > time.Second {
+		t.Fatalf("process() blocked for %s — the worker slept through its backoff "+
+			"instead of scheduling a re-queue", elapsed)
+	}
+	if got := atomic.LoadUint64(&sesQueueRetried); got != 1 {
+		t.Fatalf("retried = %d, want 1", got)
+	}
+	if got := atomic.LoadUint64(&sesQueueFailed); got != 0 {
+		t.Fatalf("failed_permanent = %d, want 0 — attempts remain", got)
+	}
+	if got := atomic.LoadInt64(&sesRetriesPending); got != 1 {
+		t.Fatalf("retries_pending = %d, want 1 (retry must be scheduled, not dropped)", got)
+	}
+}
+
+// TestSESAsync_CountsPermanentLossOnLastAttempt proves the final attempt gives
+// up loudly and countably rather than silently.
+func TestSESAsync_CountsPermanentLossOnLastAttempt(t *testing.T) {
+	h, mock, _ := newAsyncHandlerForTest(t)
+	t.Setenv("SES_WEBHOOK_MAX_ATTEMPTS", "3")
+
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WillReturnError(errors.New("context deadline exceeded"))
+
+	// attempt=2 means this call is the 3rd and final one.
+	h.queue.process(sesQueueItem{
+		env:     snsEnvelope{MessageId: "msg-last"},
+		note:    openNote(),
+		attempt: 2,
 	})
 
-	if got := atomic.LoadUint64(&sesQueueRetried); got != 2 {
-		t.Fatalf("retried = %d, want 2", got)
-	}
 	if got := atomic.LoadUint64(&sesQueueFailed); got != 1 {
 		t.Fatalf("failed_permanent = %d, want 1 — a lost event MUST be counted", got)
 	}
-	if got := atomic.LoadUint64(&sesQueueProcessed); got != 0 {
-		t.Fatalf("processed = %d, want 0", got)
+	if got := atomic.LoadInt64(&sesRetriesPending); got != 0 {
+		t.Fatalf("retries_pending = %d, want 0 on the final attempt", got)
 	}
+}
+
+// openNote builds a minimal tagged OPEN notification for queue-level tests.
+func openNote() sesEventNotification {
+	var n sesEventNotification
+	n.EventType = "Open"
+	n.Mail.Tags = map[string][]string{"campaign_id": {testCampaignID}}
+	return n
 }
 
 // TestSESEngagementFailure_IsCounted proves the open/click side-effect writes no

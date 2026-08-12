@@ -61,6 +61,7 @@ var (
 	sesQueueRetried      uint64 // individual retry attempts made by a worker
 	sesQueueFailed       uint64 // gave up after all retries — PERMANENT LOSS
 	sesQueueDepth        int64  // current occupancy
+	sesRetriesPending    int64  // items waiting out a backoff (not holding a worker)
 	sesRollupFailed      uint64 // ses_delivered rollup upsert failed (event row is fine)
 	sesEngagementFailed  uint64 // open/click side-effect write failed
 	sesSyncPersistFailed uint64 // sync-fallback dispatch failure (SES_WEBHOOK_ASYNC=false)
@@ -72,6 +73,9 @@ var (
 type sesQueueItem struct {
 	env  snsEnvelope
 	note sesEventNotification
+	// attempt is how many times this item has already been tried. Retries are
+	// re-queued rather than retried in place, so the count has to ride along.
+	attempt int
 }
 
 // sesIngestQueue is a bounded buffer plus a fixed worker pool.
@@ -217,37 +221,80 @@ func sesRetryBackoff(attempt int) time.Duration {
 	return d
 }
 
+// process makes ONE attempt and, on failure, schedules a re-queue instead of
+// sleeping.
+//
+// Retrying in place was a capacity bug: a worker that slept through its backoff
+// was unavailable to drain anything else, so 12 workers x up to 30s of backoff
+// collapsed throughput exactly when the queue was filling. Observed during a DB
+// brownout — `enqueued` raced from 2,323 to 3,577 while `processed` crawled
+// from 1,636 to 1,674.
+//
+// Now a failed attempt returns the worker to the pool immediately and a timer
+// puts the item back on the queue when its backoff expires. The retry BUDGET is
+// unchanged; only the worker occupancy is.
 func (q *sesIngestQueue) process(item sesQueueItem) {
-	var lastErr error
+	attempt := item.attempt + 1
 	maxAttempts := maxSESAttempts()
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), sesPersistTimeout()+5*time.Second)
-		err := q.h.dispatchNotification(ctx, item.env, item.note)
-		cancel()
-		if err == nil {
-			atomic.AddUint64(&sesQueueProcessed, 1)
-			return
-		}
-		lastErr = err
-		if attempt < maxAttempts {
-			atomic.AddUint64(&sesQueueRetried, 1)
-			// The retry is idempotent: the tracking-event id is a deterministic
-			// SHA1 of (campaign, send id, type, timestamp) and the INSERT is
-			// ON CONFLICT DO NOTHING, so a retry after a partial success is a
-			// no-op rather than a double count.
-			select {
-			case <-time.After(sesRetryBackoff(attempt)):
-			case <-q.stop:
-				// Shutting down mid-retry: stop waiting, try once more
-				// immediately so the drain does not silently abandon the event.
-			}
-		}
+
+	ctx, cancel := context.WithTimeout(context.Background(), sesPersistTimeout()+5*time.Second)
+	err := q.h.dispatchNotification(ctx, item.env, item.note)
+	cancel()
+	if err == nil {
+		atomic.AddUint64(&sesQueueProcessed, 1)
+		return
 	}
-	// Exhausted. This is the one place an event is knowingly lost — it is
-	// counted and logged loudly rather than disappearing.
-	atomic.AddUint64(&sesQueueFailed, 1)
-	log.Printf("[ses-events] PERMANENT LOSS after %d attempts MessageId=%s: %v",
-		maxAttempts, item.env.MessageId, lastErr)
+
+	if attempt >= maxAttempts {
+		// Exhausted. This is the one place an event is knowingly lost — it is
+		// counted and logged loudly rather than disappearing.
+		atomic.AddUint64(&sesQueueFailed, 1)
+		log.Printf("[ses-events] PERMANENT LOSS after %d attempts MessageId=%s: %v",
+			maxAttempts, item.env.MessageId, err)
+		return
+	}
+
+	// The retry is idempotent: the tracking-event id is a deterministic SHA1 of
+	// (campaign, send id, type, timestamp) and the INSERT is ON CONFLICT DO
+	// NOTHING, so a retry after a partial success is a no-op, not a double count.
+	atomic.AddUint64(&sesQueueRetried, 1)
+	item.attempt = attempt
+	q.scheduleRetry(item, sesRetryBackoff(attempt))
+}
+
+// scheduleRetry re-queues an item after a delay WITHOUT holding a worker.
+func (q *sesIngestQueue) scheduleRetry(item sesQueueItem, delay time.Duration) {
+	atomic.AddInt64(&sesRetriesPending, 1)
+	t := time.AfterFunc(delay, func() {
+		defer atomic.AddInt64(&sesRetriesPending, -1)
+		select {
+		case <-q.stop:
+			// Shutting down: make one last synchronous attempt so a graceful
+			// drain does not silently abandon the event.
+			ctx, cancel := context.WithTimeout(context.Background(), sesPersistTimeout())
+			if err := q.h.dispatchNotification(ctx, item.env, item.note); err != nil {
+				atomic.AddUint64(&sesQueueFailed, 1)
+				log.Printf("[ses-events] PERMANENT LOSS during shutdown MessageId=%s: %v",
+					item.env.MessageId, err)
+			} else {
+				atomic.AddUint64(&sesQueueProcessed, 1)
+			}
+			cancel()
+			return
+		default:
+		}
+		select {
+		case q.ch <- item:
+			atomic.AddInt64(&sesQueueDepth, 1)
+		default:
+			// Buffer full. Losing the retry is bad, but blocking a timer
+			// goroutine forever is worse; the DLQ covers the overflow path.
+			atomic.AddUint64(&sesQueueFailed, 1)
+			log.Printf("[ses-events] PERMANENT LOSS — retry could not re-queue (buffer full) MessageId=%s",
+				item.env.MessageId)
+		}
+	})
+	_ = t
 }
 
 // shutdown signals the workers and waits, bounded, for the buffer to drain.
@@ -298,6 +345,7 @@ type SESWebhookStatus struct {
 	AsyncEnabled      bool   `json:"async_enabled"`
 	Workers           int    `json:"workers"`
 	QueueDepth        int64  `json:"queue_depth"`
+	RetriesPending    int64  `json:"retries_pending"`
 	Enqueued          uint64 `json:"enqueued"`
 	Processed         uint64 `json:"processed"`
 	Retried           uint64 `json:"retried"`
@@ -324,6 +372,7 @@ func CurrentSESWebhookStatus() SESWebhookStatus {
 		EngagementFailed:  atomic.LoadUint64(&sesEngagementFailed),
 		SyncPersistFailed: atomic.LoadUint64(&sesSyncPersistFailed),
 		QueueDepth:        atomic.LoadInt64(&sesQueueDepth),
+		RetriesPending:    atomic.LoadInt64(&sesRetriesPending),
 	}
 	if q != nil {
 		st.AsyncEnabled = true
