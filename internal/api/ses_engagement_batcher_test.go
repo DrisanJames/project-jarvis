@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,5 +259,74 @@ func TestSendingDomainCache_AvoidsRepeatQueries(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("resolver called %d times, want 1 (cache not effective)", calls)
+	}
+}
+
+// TestBatcher_FlushesRowsInSortedOrder is the regression guard for a REAL
+// production deadlock. A multi-row UPDATE takes row locks in the order the rows
+// are presented, and Go randomizes map iteration — so two tasks flushing
+// overlapping campaigns grabbed the same locks in opposite orders:
+//
+//	[ses-engagement] campaign flush failed (37 rows): pq: deadlock detected
+//
+// Sorting the ids gives every writer one global lock order, which makes a
+// batcher-vs-batcher deadlock impossible rather than merely unlikely.
+//
+// Negative control: drop the sort in sortedCampaignIDs and this goes RED
+// (map order is randomized per-run, so an unsorted build fails reliably).
+func TestBatcher_FlushesRowsInSortedOrder(t *testing.T) {
+	b, mock := newBatcherForTest(t)
+
+	// Many ids so an unsorted build cannot pass by luck.
+	ids := make([]uuid.UUID, 0, 40)
+	for i := 0; i < 40; i++ {
+		id := uuid.New()
+		ids = append(ids, id)
+		b.addCampaign(id, func(d *campaignDelta) { d.opens++ })
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+
+	// Args arrive as (id, 9 counters) per row; assert the ids appear ascending.
+	var wantArgs []driver.Value
+	for _, id := range ids {
+		wantArgs = append(wantArgs, id, int64(1), int64(0), int64(0), int64(0),
+			int64(0), int64(0), int64(0), int64(0), int64(0))
+	}
+	mock.ExpectExec("UPDATE mailing_campaigns").
+		WithArgs(wantArgs...).
+		WillReturnResult(sqlmock.NewResult(0, 40))
+
+	b.flush()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("campaign rows not written in sorted id order (deadlock risk): %v", err)
+	}
+}
+
+// TestBatcher_SubscriberRowsSortedToo mirrors the above for the subscriber
+// statement, which deadlocked the same way.
+func TestBatcher_SubscriberRowsSortedToo(t *testing.T) {
+	b, mock := newBatcherForTest(t)
+	ts := time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)
+
+	ids := make([]uuid.UUID, 0, 30)
+	for i := 0; i < 30; i++ {
+		id := uuid.New()
+		ids = append(ids, id)
+		b.addSubscriber(id, 1, 0, ts)
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+
+	var wantArgs []driver.Value
+	epoch := time.Unix(0, 0).UTC()
+	for _, id := range ids {
+		wantArgs = append(wantArgs, id, int64(1), int64(0), ts, epoch)
+	}
+	mock.ExpectExec("UPDATE mailing_subscribers").
+		WithArgs(wantArgs...).
+		WillReturnResult(sqlmock.NewResult(0, 30))
+
+	b.flush()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("subscriber rows not written in sorted id order (deadlock risk): %v", err)
 	}
 }

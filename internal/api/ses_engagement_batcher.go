@@ -1,10 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -279,30 +281,56 @@ func (b *sesEngagementBatcher) flushCampaigns(ctx context.Context, camps map[uui
 	// flushes. Chunk so the statement size can never depend on tuning.
 	const chunkRows = 500
 
-	batch := make(map[uuid.UUID]*campaignDelta, chunkRows)
-	for id, d := range camps {
-		batch[id] = d
-		if len(batch) >= chunkRows {
-			if err := b.flushCampaignChunk(ctx, batch); err != nil {
-				return err
-			}
-			batch = make(map[uuid.UUID]*campaignDelta, chunkRows)
+	// ORDER MATTERS. A multi-row UPDATE takes row locks in the order the rows
+	// are presented, and Go randomizes map iteration — so two tasks flushing
+	// overlapping campaigns would grab the same locks in opposite orders and
+	// deadlock. Observed in production immediately after this shipped:
+	//   [ses-engagement] campaign flush failed (37 rows): pq: deadlock detected
+	// Sorting the ids gives every writer one global lock order, which makes a
+	// deadlock between batchers impossible rather than merely unlikely.
+	ids := sortedCampaignIDs(camps)
+
+	for start := 0; start < len(ids); start += chunkRows {
+		end := start + chunkRows
+		if end > len(ids) {
+			end = len(ids)
 		}
-	}
-	if len(batch) > 0 {
-		return b.flushCampaignChunk(ctx, batch)
+		if err := b.flushCampaignChunk(ctx, ids[start:end], camps); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (b *sesEngagementBatcher) flushCampaignChunk(ctx context.Context, camps map[uuid.UUID]*campaignDelta) error {
+// sortedCampaignIDs returns the map's keys in a stable, global order.
+func sortedCampaignIDs(m map[uuid.UUID]*campaignDelta) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	return ids
+}
+
+// sortedSubscriberIDs returns the map's keys in a stable, global order.
+func sortedSubscriberIDs(m map[uuid.UUID]*subscriberDelta) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	return ids
+}
+
+func (b *sesEngagementBatcher) flushCampaignChunk(ctx context.Context, ids []uuid.UUID, camps map[uuid.UUID]*campaignDelta) error {
 	var (
 		tuples []string
 		args   []interface{}
 		n      int
 	)
-	for id, d := range camps {
-		if d.isZero() {
+	for _, id := range ids {
+		d := camps[id]
+		if d == nil || d.isZero() {
 			continue
 		}
 		base := n * 10
@@ -354,31 +382,32 @@ func (b *sesEngagementBatcher) flushCampaignChunk(ctx context.Context, camps map
 func (b *sesEngagementBatcher) flushSubscribers(ctx context.Context, subs map[uuid.UUID]*subscriberDelta) error {
 	const chunkRows = 500 // see flushCampaigns — bind-parameter ceiling
 
-	batch := make(map[uuid.UUID]*subscriberDelta, chunkRows)
-	for id, d := range subs {
-		batch[id] = d
-		if len(batch) >= chunkRows {
-			if err := b.flushSubscriberChunk(ctx, batch); err != nil {
-				return err
-			}
-			batch = make(map[uuid.UUID]*subscriberDelta, chunkRows)
+	// Sorted for the same reason as campaigns: a global lock order prevents
+	// deadlocks between concurrent flushes.
+	ids := sortedSubscriberIDs(subs)
+
+	for start := 0; start < len(ids); start += chunkRows {
+		end := start + chunkRows
+		if end > len(ids) {
+			end = len(ids)
 		}
-	}
-	if len(batch) > 0 {
-		return b.flushSubscriberChunk(ctx, batch)
+		if err := b.flushSubscriberChunk(ctx, ids[start:end], subs); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (b *sesEngagementBatcher) flushSubscriberChunk(ctx context.Context, subs map[uuid.UUID]*subscriberDelta) error {
+func (b *sesEngagementBatcher) flushSubscriberChunk(ctx context.Context, ids []uuid.UUID, subs map[uuid.UUID]*subscriberDelta) error {
 	var (
 		tuples []string
 		args   []interface{}
 		n      int
 	)
 	epoch := time.Unix(0, 0).UTC()
-	for id, d := range subs {
-		if d.opens == 0 && d.clicks == 0 {
+	for _, id := range ids {
+		d := subs[id]
+		if d == nil || (d.opens == 0 && d.clicks == 0) {
 			continue
 		}
 		lo, lc := d.lastOpen, d.lastClick
