@@ -233,8 +233,9 @@ func TestSESAsync_RetriesThenCountsPermanentLoss(t *testing.T) {
 	h, mock, _ := newAsyncHandlerForTest(t)
 	t.Setenv("SES_WEBHOOK_PERSIST_TIMEOUT_SEC", "1")
 
+	t.Setenv("SES_WEBHOOK_MAX_ATTEMPTS", "3") // keep the test fast
 	boom := errors.New("context deadline exceeded")
-	for i := 0; i < maxSESAttempts; i++ {
+	for i := 0; i < 3; i++ {
 		mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnError(boom)
 	}
 
@@ -258,8 +259,8 @@ func TestSESAsync_RetriesThenCountsPermanentLoss(t *testing.T) {
 		},
 	})
 
-	if got := atomic.LoadUint64(&sesQueueRetried); got != uint64(maxSESAttempts-1) {
-		t.Fatalf("retried = %d, want %d", got, maxSESAttempts-1)
+	if got := atomic.LoadUint64(&sesQueueRetried); got != 2 {
+		t.Fatalf("retried = %d, want 2", got)
 	}
 	if got := atomic.LoadUint64(&sesQueueFailed); got != 1 {
 		t.Fatalf("failed_permanent = %d, want 1 — a lost event MUST be counted", got)
@@ -349,5 +350,28 @@ func TestSESAsync_KillSwitchRestoresSyncPath(t *testing.T) {
 	// On the sync path the INSERT must have happened INLINE.
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sync path did not persist inline: %v", err)
+	}
+}
+
+// TestSESRetryBudget_SpansABrownout pins the retry window. The original 3
+// attempts with linear backoff covered ~6s, which a 4-minute estate-wide DB
+// brownout blew straight through on 2026-08-12, permanently destroying two
+// OPEN events. The budget must be measured in minutes, not seconds.
+func TestSESRetryBudget_SpansABrownout(t *testing.T) {
+	var total time.Duration
+	n := maxSESAttempts()
+	for i := 1; i < n; i++ {
+		total += sesRetryBackoff(i)
+	}
+	if n < 5 {
+		t.Fatalf("maxSESAttempts = %d, want >= 5", n)
+	}
+	if total < 45*time.Second {
+		t.Fatalf("retry budget = %s across %d attempts, want >= 45s — a DB brownout "+
+			"lasting minutes would exhaust it and destroy events", total, n)
+	}
+	// And it must stay bounded so a worker cannot park forever.
+	if total > 5*time.Minute {
+		t.Fatalf("retry budget = %s, want <= 5m (workers would stop draining)", total)
 	}
 }

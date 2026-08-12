@@ -187,13 +187,40 @@ func (q *sesIngestQueue) worker(id int) {
 	}
 }
 
-// maxSESAttempts bounds retries of one notification. Kept small: the point is
-// to ride out a brief DB hiccup, not to hammer a database that is already sick.
-const maxSESAttempts = 3
+// maxSESAttempts bounds retries of one notification.
+//
+// This was 3 attempts with linear backoff — about 6 seconds of coverage. That
+// is enough for a brief hiccup but NOT for a database brownout, and on
+// 2026-08-12 a 4-minute estate-wide brownout (968 statement-timeout/deadlock
+// errors across 12+ subsystems: ingest-db, AcctSummary, PMTAWaveScheduler,
+// wave_processor…) exhausted it and destroyed two OPEN events outright:
+//
+//	[ses-events] PERMANENT LOSS after 3 attempts ... persist opened: pq: canceling statement
+//
+// Exponential backoff to ~2 minutes rides out a brownout of that shape. The
+// extra wait costs nothing in the common case (attempt 1 succeeds) and does not
+// hammer a sick database, because each worker is SLEEPING, not querying.
+//
+// If a brownout outlasts even this, the design degrades safely rather than
+// losing data: workers stay busy, the queue fills, ServeHTTP starts returning
+// 503, SNS retries, and anything it cannot deliver lands in the dead-letter
+// queue for replay by cmd/ses-dlq-replay. Permanent loss is the last resort.
+func maxSESAttempts() int { return envInt("SES_WEBHOOK_MAX_ATTEMPTS", 6) }
+
+// sesRetryBackoff is exponential and capped, so 6 attempts span roughly
+// 2+4+8+16+30 = 60s of waiting plus the per-attempt DB budget.
+func sesRetryBackoff(attempt int) time.Duration {
+	d := time.Duration(1<<uint(attempt)) * time.Second
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
 
 func (q *sesIngestQueue) process(item sesQueueItem) {
 	var lastErr error
-	for attempt := 1; attempt <= maxSESAttempts; attempt++ {
+	maxAttempts := maxSESAttempts()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), sesPersistTimeout()+5*time.Second)
 		err := q.h.dispatchNotification(ctx, item.env, item.note)
 		cancel()
@@ -202,15 +229,17 @@ func (q *sesIngestQueue) process(item sesQueueItem) {
 			return
 		}
 		lastErr = err
-		if attempt < maxSESAttempts {
+		if attempt < maxAttempts {
 			atomic.AddUint64(&sesQueueRetried, 1)
-			// Linear backoff. The retry is idempotent: the tracking-event id is
-			// a deterministic SHA1 of (campaign, send id, type, timestamp) and
-			// the INSERT is ON CONFLICT DO NOTHING, so a retry after a partial
-			// success is a no-op rather than a double count.
+			// The retry is idempotent: the tracking-event id is a deterministic
+			// SHA1 of (campaign, send id, type, timestamp) and the INSERT is
+			// ON CONFLICT DO NOTHING, so a retry after a partial success is a
+			// no-op rather than a double count.
 			select {
-			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			case <-time.After(sesRetryBackoff(attempt)):
 			case <-q.stop:
+				// Shutting down mid-retry: stop waiting, try once more
+				// immediately so the drain does not silently abandon the event.
 			}
 		}
 	}
@@ -218,7 +247,7 @@ func (q *sesIngestQueue) process(item sesQueueItem) {
 	// counted and logged loudly rather than disappearing.
 	atomic.AddUint64(&sesQueueFailed, 1)
 	log.Printf("[ses-events] PERMANENT LOSS after %d attempts MessageId=%s: %v",
-		maxSESAttempts, item.env.MessageId, lastErr)
+		maxAttempts, item.env.MessageId, lastErr)
 }
 
 // shutdown signals the workers and waits, bounded, for the buffer to drain.
