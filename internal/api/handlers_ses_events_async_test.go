@@ -55,6 +55,7 @@ func newAsyncHandlerForTest(t *testing.T) (*SESEventsHandler, sqlmock.Sqlmock, *
 	t.Setenv("SES_WEBHOOK_ASYNC", "true")
 	t.Setenv("SES_WEBHOOK_WORKERS", "1")
 	resetSESCounters()
+	resetSendingDomainCache()
 
 	hub := engine.NewGlobalSuppressionHub(db, "00000000-0000-0000-0000-000000000001", "")
 	h := NewSESEventsHandler(db, hub, "00000000-0000-0000-0000-000000000001")
@@ -101,11 +102,13 @@ const testCampaignID = "11111111-1111-1111-1111-111111111111"
 func TestSESAsync_PersistsAfterHandlerReturns(t *testing.T) {
 	h, mock, _ := newAsyncHandlerForTest(t)
 
+	// Counters are batched (ses_engagement_batcher.go). This notification has no
+	// subscriber_id tag, so subID stays nil and the subscriber-scoped work
+	// (unique check, sending-domain lookup) is skipped — leaving the
+	// authoritative INSERT plus the inbox profile.
+	mock.MatchExpectationsInOrder(false)
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	// Engagement side-effects follow a genuinely-new open row.
-	mock.MatchExpectationsInOrder(false)
-	mock.ExpectExec("UPDATE mailing_campaigns").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_inbox_profiles").
 		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
@@ -318,6 +321,7 @@ func TestSESAsync_KillSwitchRestoresSyncPath(t *testing.T) {
 	t.Setenv("SES_WEBHOOK_DISABLE_SIG", "true")
 	t.Setenv("SES_WEBHOOK_ASYNC", "false")
 	resetSESCounters()
+	resetSendingDomainCache()
 
 	hub := engine.NewGlobalSuppressionHub(db, "00000000-0000-0000-0000-000000000001", "")
 	h := NewSESEventsHandler(db, hub, "00000000-0000-0000-0000-000000000001")
@@ -328,7 +332,6 @@ func TestSESAsync_KillSwitchRestoresSyncPath(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_inbox_profiles").
 		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).

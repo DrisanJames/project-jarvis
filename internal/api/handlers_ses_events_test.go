@@ -10,8 +10,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
@@ -35,9 +37,51 @@ func newHandlerForTest(t *testing.T) (*SESEventsHandler, sqlmock.Sqlmock, *sql.D
 	// exercised here is identical on both paths.
 	t.Setenv("SES_WEBHOOK_ASYNC", "false")
 
+	// The campaign->sending-domain cache is process-global; without this a test
+	// would inherit a neighbour's entry and skip the lookup it mocks, making
+	// results depend on test ORDER.
+	resetSendingDomainCache()
+
 	hub := engine.NewGlobalSuppressionHub(db, "00000000-0000-0000-0000-000000000001", "")
 	h := NewSESEventsHandler(db, hub, "00000000-0000-0000-0000-000000000001")
+	t.Cleanup(func() {
+		if h.batcher != nil {
+			h.batcher.shutdown(2 * time.Second)
+		}
+	})
 	return h, mock, db
+}
+
+// resetSendingDomainCache clears the global campaign->domain cache.
+func resetSendingDomainCache() {
+	sdCacheMu.Lock()
+	sdCache = map[uuid.UUID]sdCacheEntry{}
+	sdCacheMu.Unlock()
+}
+
+// expectOpenCascade mocks the DB calls one SES OPEN issues under the batched
+// architecture. Campaign and subscriber counters are NO LONGER written per
+// event — they are folded by sesEngagementBatcher — so only these remain:
+//
+//	1. the authoritative tracking-event INSERT
+//	2. the unique-opener check (bounded + LIMIT 2)
+//	3. the campaign->sending-domain lookup (cached after the first call)
+//	4. the inbox-profile upsert + score recompute (not a hot row)
+func expectOpenCascade(mock sqlmock.Sqlmock, firstOpen bool) {
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
+	cnt := 2
+	if firstOpen {
+		cnt = 1
+	}
+	mock.ExpectQuery("FROM mailing_tracking_events").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(cnt))
+	// Empty from_email short-circuits the SDS writes.
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
 }
 
 // snsNotificationBody wraps a SES event-notification in the SNS Notification
@@ -196,26 +240,10 @@ func TestSESEvents_Open_IncrementsOpenCount(t *testing.T) {
 	h, mock, _ := newHandlerForTest(t)
 
 	// Both campaign_id and subscriber_id tags present -> no message_log
-	// fallback lookup; a fresh event row INSERTs, then the full engagement
-	// cascade runs (rollups + unique + subscriber + SDS + inbox + score).
-	// Mocked in the exact order applyOpenEngagement issues them.
-	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET open_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET unique_open_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_subscribers SET total_opens").WillReturnResult(sqlmock.NewResult(0, 1))
-	// ResolveSendingDomainForCampaign: empty from_email short-circuits the SDS writes.
-	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
-	// recomputeSubscriberEngagementScore: SELECT then UPDATE.
-	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
-			AddRow(1, 0, 1, nil, nil))
-	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
-	// inbox upsert + recompute (total_sends=0 -> recompute returns before UPDATE).
-	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
-		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
-			AddRow(0, 0, 0, nil))
+	// fallback lookup. Counters are batched, so the per-event cascade is now
+	// just the INSERT, the unique check, the cached domain lookup and the
+	// inbox profile.
+	expectOpenCascade(mock, true)
 
 	body := snsNotificationBody(t, map[string]interface{}{
 		"eventType": "Open",
@@ -245,15 +273,11 @@ func TestSESEvents_HumanClick_IncrementsClickCount(t *testing.T) {
 	h, mock, _ := newHandlerForTest(t)
 
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET click_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET unique_click_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_subscribers SET total_clicks").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Counters are batched now; the per-event work is the unique-click check.
+	mock.ExpectQuery("FROM mailing_tracking_events").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
-	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
-			AddRow(0, 1, 1, nil, nil))
-	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
 		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
@@ -335,15 +359,11 @@ func TestSESEvents_HumanClick_PersistsIPAndUserAgent(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			false, humanIP, humanUA, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET click_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET unique_click_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_subscribers SET total_clicks").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Counters are batched now; the per-event work is the unique-click check.
+	mock.ExpectQuery("FROM mailing_tracking_events").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
-	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
-			AddRow(0, 1, 1, nil, nil))
-	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
 		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
@@ -472,15 +492,10 @@ func TestSESEvents_Open_PersistsIPAndUserAgent(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			false, openIP, openUA, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET open_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_campaigns SET unique_open_count").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("UPDATE mailing_subscribers SET total_opens").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM mailing_tracking_events").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
 		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
-	mock.ExpectQuery("FROM mailing_subscribers WHERE id").
-		WillReturnRows(sqlmock.NewRows([]string{"total_opens", "total_clicks", "total_emails_received", "last_open_at", "last_click_at"}).
-			AddRow(1, 0, 1, nil, nil))
-	mock.ExpectExec("UPDATE mailing_subscribers SET engagement_score").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
 		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).

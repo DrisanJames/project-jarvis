@@ -41,8 +41,9 @@ type HealthStatus struct {
 	Uptime     string                    `json:"uptime"`
 	Build      buildinfo.Info            `json:"build"`
 	Checks     map[string]ComponentCheck `json:"checks"`
-	EventBus   EventBusStatus            `json:"event_bus"`
-	SESWebhook SESWebhookStatus          `json:"ses_webhook"`
+	EventBus      EventBusStatus       `json:"event_bus"`
+	SESWebhook    SESWebhookStatus     `json:"ses_webhook"`
+	SESEngagement SESEngagementStatus  `json:"ses_engagement"`
 }
 
 // ComponentCheck represents the health of a single component.
@@ -93,6 +94,9 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		// SES webhook ingest health — non-zero failed/rejected/engagement_failed
 		// means SES delivery/open/click telemetry was lost for that window.
 		"ses_webhook": CurrentSESWebhookStatus(),
+		// Counter batching — fold_ratio is how many hot-row lock acquisitions
+		// were collapsed into one write.
+		"ses_engagement": CurrentSESEngagementStatus(),
 		// Send-Day Gate C reads this — see deliveryBuildFlags.
 		"build_contains": deliveryBuildFlags,
 	})
@@ -108,8 +112,9 @@ func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) 
 		Uptime:     formatUptime(time.Since(hc.startTime)),
 		Build:      buildinfo.Current(),
 		Checks:     checks,
-		EventBus:   CurrentEventBusStatus(),
-		SESWebhook: CurrentSESWebhookStatus(),
+		EventBus:      CurrentEventBusStatus(),
+		SESWebhook:    CurrentSESWebhookStatus(),
+		SESEngagement: CurrentSESEngagementStatus(),
 	})
 }
 

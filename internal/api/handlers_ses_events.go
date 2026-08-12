@@ -100,6 +100,11 @@ type SESEventsHandler struct {
 	// queue is the async ingest buffer (ses_events_queue.go). nil means the
 	// SES_WEBHOOK_ASYNC kill switch is off and ServeHTTP processes inline.
 	queue *sesIngestQueue
+
+	// batcher folds per-event campaign/subscriber counter increments into
+	// periodic batched UPDATEs (ses_engagement_batcher.go), removing the
+	// hot-row lock contention that starved engagement writes.
+	batcher *sesEngagementBatcher
 }
 
 // NewSESEventsHandler constructs the handler. The org ID matches the engine
@@ -123,7 +128,24 @@ func NewSESEventsHandler(db *sql.DB, hub *engine.GlobalSuppressionHub, orgID str
 	// ServeHTTP stays synchronous) when SES_WEBHOOK_ASYNC=false.
 	h.queue = startSESIngestQueue(h)
 	registerSESQueue(h.queue)
+
+	// Start the counter batcher unless explicitly disabled. Per-event counter
+	// increments against a single campaign row are what serialized ingest.
+	if db != nil && !strings.EqualFold(os.Getenv("SES_ENGAGEMENT_BATCH"), "false") {
+		h.batcher = newSESEngagementBatcher(db)
+	} else if db != nil {
+		log.Printf("[ses-engagement] BATCHING DISABLED (SES_ENGAGEMENT_BATCH=false) — counters will contend on hot rows")
+	}
+	registerSESBatcher(h.batcher)
 	return h
+}
+
+// sesSideEffectTimeout bounds ONE engagement side-effect. Previously every
+// side-effect shared a single 20s budget sequentially, so a slow early write
+// consumed the whole allowance and the later ones failed by starvation rather
+// than on their own merits. Each now gets its own clock.
+func sesSideEffectTimeout() time.Duration {
+	return time.Duration(envInt("SES_SIDE_EFFECT_TIMEOUT_SEC", 8)) * time.Second
 }
 
 // snsEnvelope mirrors the field set documented at
@@ -608,7 +630,12 @@ func (h *SESEventsHandler) persistSESEvent(ctx context.Context, eventType string
 			h.applyClickEngagement(ctx, campUUID, subPtr, recipientEmail, recipientDomain)
 		}
 	case "delivered":
-		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET delivered_count = COALESCE(delivered_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+		// DELIVERY is the single highest-volume SES event type (18,364 in a
+		// 30-min sample vs 5,252 opens), so this was the worst hot-row offender
+		// of all. Batched.
+		if h.batcher != nil {
+			h.batcher.addCampaign(campUUID, func(d *campaignDelta) { d.delivered++ })
+		}
 
 		// Mirror the SES-confirmed delivery into the PMTA accounting rollup as a
 		// dedicated ses_delivered counter, keyed on the SAME
@@ -639,16 +666,22 @@ func (h *SESEventsHandler) persistSESEvent(ctx context.Context, eventType string
 	case "bounced":
 		switch bounceType {
 		case "hard":
-			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, hard_bounce_count = COALESCE(hard_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+			if h.batcher != nil {
+				h.batcher.addCampaign(campUUID, func(d *campaignDelta) { d.bounces++; d.hard++ })
+			}
 		case "validation":
 			// SES pre-flight validation block: the message never attempted the
 			// remote MX. Counted in NEITHER hard nor soft (mirrors the metric
 			// contract's reputation_block/administrative treatment).
 		default:
-			h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET bounce_count = COALESCE(bounce_count, 0) + 1, soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+			if h.batcher != nil {
+				h.batcher.addCampaign(campUUID, func(d *campaignDelta) { d.bounces++; d.soft++ })
+			}
 		}
 	case "complained":
-		h.db.ExecContext(ctx, `UPDATE mailing_campaigns SET complaint_count = COALESCE(complaint_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campUUID)
+		if h.batcher != nil {
+			h.batcher.addCampaign(campUUID, func(d *campaignDelta) { d.complaints++ })
+		}
 	}
 	return nil
 }
@@ -674,115 +707,138 @@ func (h *SESEventsHandler) sesExec(ctx context.Context, what string, query strin
 // double-count. Every write is best-effort; a failure on one does not block the
 // others or the 200 response back to SNS.
 func (h *SESEventsHandler) applyOpenEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
-	// Campaign-level total opens (parity with mailing_tracking.go:194).
-	h.sesExec(ctx, "open_count", `UPDATE mailing_campaigns SET open_count = COALESCE(open_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+	// Campaign counters are BATCHED (ses_engagement_batcher.go). Incrementing
+	// them per event serialized every open for a campaign on one row lock;
+	// folding them removes the contention rather than racing it.
+	unique := int64(0)
+	if subID != nil && h.isFirstEventForCampaign(ctx, campaignID, *subID, "opened", false) {
+		unique = 1
+	}
+	if h.batcher != nil {
+		h.batcher.addCampaign(campaignID, func(d *campaignDelta) {
+			d.opens++
+			d.uniqueOpens += unique
+		})
+	}
 
 	if subID != nil {
-		// Unique opener: bump only when the just-inserted row is this
-		// subscriber's FIRST opened event for the campaign (count == 1). Later
-		// opens leave it unchanged, so the column converges on distinct openers.
-		h.sesExec(ctx, "unique_open_count", `
-			UPDATE mailing_campaigns SET unique_open_count = COALESCE(unique_open_count, 0) + 1, updated_at = NOW()
-			WHERE id = $1 AND (
-				SELECT COUNT(*) FROM mailing_tracking_events
-				WHERE campaign_id = $1 AND subscriber_id = $2 AND event_type = 'opened'
-			) = 1`, campaignID, *subID)
-
-		// Subscriber denorm columns. last_open_at in particular gates the
-		// standing Welcome saturation segment (prior_sends > 8 AND
+		// Subscriber denorm columns, also batched. last_open_at in particular
+		// gates the standing Welcome saturation segment (prior_sends > 8 AND
 		// last_open_at IS NULL) — without this, SES-route opens never clear a
-		// subscriber out of the "never opened" cohort.
-		h.sesExec(ctx, "subscriber_open", `
-			UPDATE mailing_subscribers SET total_opens = COALESCE(total_opens, 0) + 1, last_open_at = NOW(), updated_at = NOW()
-			WHERE id = $1`, *subID)
+		// subscriber out of the "never opened" cohort. engagement_score is
+		// recomputed inside the batch statement, which also retires the
+		// per-event SELECT+UPDATE pair recomputeSubscriberEngagementScore did.
+		if h.batcher != nil {
+			h.batcher.addSubscriber(*subID, 1, 0, time.Now().UTC())
+		}
 
 		// Master-selection shadow state (parity with mailing_tracking.go:204-206).
-		sd := mailing.ResolveSendingDomainForCampaign(ctx, h.db, campaignID)
+		// The campaign->domain lookup is cached; it was a DB round-trip per event
+		// for a value that never changes.
+		sd := cachedSendingDomain(ctx, h.db, campaignID, mailing.ResolveSendingDomainForCampaign)
 		mailing.UpsertSDSOpen(ctx, h.db, *subID, sd)
 		mailing.RecomputeSDSScoreLocal(ctx, h.db, *subID, sd)
-
-		h.recomputeSubscriberEngagementScore(ctx, *subID)
 	}
 
 	if email != "" {
 		eHash := emailHash(email)
-		h.sesExec(ctx, "inbox_profile_open", `
+		// Inbox profiles are keyed per-email, so they are NOT a hot row and stay
+		// per-event — but on their own budget so they cannot be starved by
+		// anything upstream in this function.
+		ictx, icancel := context.WithTimeout(ctx, sesSideEffectTimeout())
+		defer icancel()
+		h.sesExec(ictx, "inbox_profile_open", `
 			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_opens, last_open_at, updated_at)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 			ON CONFLICT (email_hash) DO UPDATE SET total_opens = mailing_inbox_profiles.total_opens + 1, last_open_at = NOW(), updated_at = NOW()
 		`, eHash, email, domain, extractISP(email))
-		h.recomputeInboxProfileScore(ctx, eHash)
+		h.recomputeInboxProfileScore(ictx, eHash)
 	}
+}
+
+// isFirstEventForCampaign reports whether the just-inserted row is this
+// subscriber's FIRST event of this type for the campaign.
+//
+// The old inline subquery carried no event_at predicate, so it probed ALL 19
+// monthly partitions of mailing_tracking_events for a single-row answer
+// (measured: 23ms planning + 10.5ms execution, per event). Bounding the window
+// prunes the partition list and LIMIT 2 stops the scan as soon as the answer is
+// decided.
+//
+// The window is 180 days, NOT the 60 I first reached for. The bound must exceed
+// the longest realistic gap between a campaign's send and a late open, because
+// if an earlier open falls outside the window this returns "first" a second time
+// and unique_open_count is inflated. Six months is generous enough that the
+// error is negligible while still pruning most partitions — correctness first,
+// then the speed-up.
+func (h *SESEventsHandler) isFirstEventForCampaign(ctx context.Context, campaignID, subID uuid.UUID, eventType string, humanOnly bool) bool {
+	qctx, cancel := context.WithTimeout(ctx, sesSideEffectTimeout())
+	defer cancel()
+
+	q := `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM mailing_tracking_events
+			WHERE campaign_id = $1 AND subscriber_id = $2 AND event_type = $3
+			  AND event_at >= NOW() - INTERVAL '180 days'`
+	if humanOnly {
+		q += ` AND NOT COALESCE(is_machine_click, false)`
+	}
+	q += ` LIMIT 2 ) x`
+
+	var n int
+	if err := h.db.QueryRowContext(qctx, q, campaignID, subID, eventType).Scan(&n); err != nil {
+		// On error do NOT guess "unique" — an over-count is a silent metric lie.
+		atomic.AddUint64(&sesEngagementFailed, 1)
+		log.Printf("[ses-events] unique-check %s failed: %v", eventType, err)
+		return false
+	}
+	return n == 1
 }
 
 // applyClickEngagement mirrors HandleTrackClick's durable side-effects for SES
 // human clicks (machine/asset clicks never reach here). Same new-row / best-effort
 // contract as applyOpenEngagement.
 func (h *SESEventsHandler) applyClickEngagement(ctx context.Context, campaignID uuid.UUID, subID *uuid.UUID, email, domain string) {
-	h.sesExec(ctx, "click_count", `UPDATE mailing_campaigns SET click_count = COALESCE(click_count, 0) + 1, updated_at = NOW() WHERE id = $1`, campaignID)
+	// Batched — see applyOpenEngagement.
+	unique := int64(0)
+	if subID != nil && h.isFirstEventForCampaign(ctx, campaignID, *subID, "clicked", true) {
+		unique = 1
+	}
+	if h.batcher != nil {
+		h.batcher.addCampaign(campaignID, func(d *campaignDelta) {
+			d.clicks++
+			d.uniqueClicks += unique
+		})
+	}
 
 	if subID != nil {
-		// Unique human clicker: only the subscriber's first non-machine click
-		// of the campaign counts (the count filters out machine clicks too).
-		h.sesExec(ctx, "unique_click_count", `
-			UPDATE mailing_campaigns SET unique_click_count = COALESCE(unique_click_count, 0) + 1, updated_at = NOW()
-			WHERE id = $1 AND (
-				SELECT COUNT(*) FROM mailing_tracking_events
-				WHERE campaign_id = $1 AND subscriber_id = $2 AND event_type = 'clicked'
-				  AND NOT COALESCE(is_machine_click, false)
-			) = 1`, campaignID, *subID)
+		if h.batcher != nil {
+			h.batcher.addSubscriber(*subID, 0, 1, time.Now().UTC())
+		}
 
-		h.sesExec(ctx, "subscriber_click", `
-			UPDATE mailing_subscribers SET total_clicks = COALESCE(total_clicks, 0) + 1, last_click_at = NOW(), updated_at = NOW()
-			WHERE id = $1`, *subID)
-
-		sd := mailing.ResolveSendingDomainForCampaign(ctx, h.db, campaignID)
+		sd := cachedSendingDomain(ctx, h.db, campaignID, mailing.ResolveSendingDomainForCampaign)
 		mailing.UpsertSDSClick(ctx, h.db, *subID, sd)
 		mailing.RecomputeSDSScoreLocal(ctx, h.db, *subID, sd)
-
-		h.recomputeSubscriberEngagementScore(ctx, *subID)
 	}
 
 	if email != "" {
 		eHash := emailHash(email)
-		h.sesExec(ctx, "inbox_profile_click", `
+		ictx, icancel := context.WithTimeout(ctx, sesSideEffectTimeout())
+		defer icancel()
+		h.sesExec(ictx, "inbox_profile_click", `
 			INSERT INTO mailing_inbox_profiles (id, email_hash, email, domain, isp, total_clicks, last_click_at, updated_at)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, 1, NOW(), NOW())
 			ON CONFLICT (email_hash) DO UPDATE SET total_clicks = mailing_inbox_profiles.total_clicks + 1, last_click_at = NOW(), updated_at = NOW()
 		`, eHash, email, domain, extractISP(email))
-		h.recomputeInboxProfileScore(ctx, eHash)
+		h.recomputeInboxProfileScore(ictx, eHash)
 	}
 }
 
-// recomputeSubscriberEngagementScore replicates MailingService.updateEngagementScore
-// (mailing_tracking.go) for the SES webhook, which has no MailingService handle.
-// Score is on the 0–100 scale used by mailing_subscribers (thresholds 70/30).
-func (h *SESEventsHandler) recomputeSubscriberEngagementScore(ctx context.Context, subscriberID uuid.UUID) {
-	var totalOpens, totalClicks, totalEmails int
-	var lastOpenAt, lastClickAt *time.Time
-	if err := h.db.QueryRowContext(ctx, `
-		SELECT COALESCE(total_opens, 0), COALESCE(total_clicks, 0), COALESCE(total_emails_received, 1),
-			   last_open_at, last_click_at
-		FROM mailing_subscribers WHERE id = $1
-	`, subscriberID).Scan(&totalOpens, &totalClicks, &totalEmails, &lastOpenAt, &lastClickAt); err != nil {
-		return
-	}
-	if totalEmails <= 0 {
-		totalEmails = 1
-	}
-	openRate := float64(totalOpens) / float64(totalEmails) * 100
-	clickRate := float64(totalClicks) / float64(totalEmails) * 100
-	score := (openRate * 0.4) + (clickRate * 0.6)
-	if lastOpenAt != nil && time.Since(*lastOpenAt) < 7*24*time.Hour {
-		score += 20
-	} else if lastOpenAt != nil && time.Since(*lastOpenAt) < 30*24*time.Hour {
-		score += 10
-	}
-	if score > 100 {
-		score = 100
-	}
-	h.db.ExecContext(ctx, `UPDATE mailing_subscribers SET engagement_score = $2, updated_at = NOW() WHERE id = $1`, subscriberID, score)
-}
+// NOTE: recomputeSubscriberEngagementScore used to live here, running a
+// SELECT + UPDATE round-trip pair on EVERY open and click. Its formula now runs
+// inline inside sesEngagementBatcher.flushSubscribers, so the score is computed
+// once per subscriber per flush from the same inputs instead of twice per event.
+// See ses_engagement_batcher.go for the SQL and the formula it mirrors.
 
 // recomputeInboxProfileScore replicates MailingService.recomputeInboxProfileScore
 // (mailing_tracking.go) for the SES webhook. Score is on the 0–1 scale used by

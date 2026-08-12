@@ -1959,6 +1959,10 @@ func main() {
 	// so anything still in the buffer at exit is unrecoverable.
 	api.ShutdownSESIngest()
 
+	// Then flush pending counter deltas — ingest first so anything it persists
+	// during the drain is folded in before the batcher stops.
+	api.ShutdownSESEngagement()
+
 	// Flush any buffered analytics events to the lake (no-op when disabled).
 	analytics.Shutdown()
 
