@@ -9224,7 +9224,7 @@ END $$`},
 			ON CONFLICT (vertical) DO NOTHING`},
 		{"aug14_seed_internal_auto_v3_v7_rosters", `INSERT INTO partner_drip_vertical_roster
 			(vertical, brand, sort_order, active, updated_by)
-			VALUES ('internal_auto_insurance_v3', 'ci',  0, true, 'aug14_remarketing_feeds'),
+			VALUES ('internal_auto_insurance_v3', 'wfy', 0, true, 'aug14_remarketing_feeds'),
 			       ('internal_auto_insurance_v4', 'rb',  0, true, 'aug14_remarketing_feeds'),
 			       ('internal_auto_insurance_v5', 'fc',  0, true, 'aug14_remarketing_feeds'),
 			       ('internal_auto_insurance_v6', 'yih', 0, true, 'aug14_remarketing_feeds'),
