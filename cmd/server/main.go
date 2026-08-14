@@ -9190,6 +9190,56 @@ END $$`},
 		{"aug09_attribits_internal_car_insurance_express", `UPDATE partner_datasets
 			SET express_dispatch = TRUE
 			WHERE id = '99137b10-969c-4c9b-84a6-28042b779a07'::uuid`},
+		// ---- Auto Insurance Remarketing feeds 2-6 (operator 2026-08-14) ----
+		// Datasets internal-auto-insurance-v3..v7 each get their OWN vertical on
+		// the v1 (internal_auto_insurance) model: per-feed creatives require
+		// per-feed verticals because resolveCreative/roster/state key by vertical.
+		// Structural wiring only lives here (CHECK + state + roster + dataset
+		// vertical); the offers/creatives/pools are content, seeded by
+		// agents/jobs/seed_remarketing_feeds.py, which also applies this same SQL
+		// LIVE — a startup migration is not a prod change until a deploy boots.
+		// The guard literal MUST name the NEWEST vertical (see aug08 note above).
+		{"aug14_partner_datasets_vertical_internal_auto_v3_v7", `DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'partner_datasets_vertical_check'
+				  AND pg_get_constraintdef(oid) LIKE '%internal_auto_insurance_v7%'
+			) THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
+						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
+						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
+						'consumer','internal_auto_insurance',
+						'internal_auto_insurance_v3','internal_auto_insurance_v4',
+						'internal_auto_insurance_v5','internal_auto_insurance_v6',
+						'internal_auto_insurance_v7']));
+			END IF;
+		END $$`},
+		{"aug14_seed_internal_auto_v3_v7_drip_state", `INSERT INTO partner_drip_state (vertical, next_brand_index)
+			VALUES ('internal_auto_insurance_v3', 0), ('internal_auto_insurance_v4', 0),
+			       ('internal_auto_insurance_v5', 0), ('internal_auto_insurance_v6', 0),
+			       ('internal_auto_insurance_v7', 0)
+			ON CONFLICT (vertical) DO NOTHING`},
+		{"aug14_seed_internal_auto_v3_v7_rosters", `INSERT INTO partner_drip_vertical_roster
+			(vertical, brand, sort_order, active, updated_by)
+			VALUES ('internal_auto_insurance_v3', 'ci',  0, true, 'aug14_remarketing_feeds'),
+			       ('internal_auto_insurance_v4', 'rb',  0, true, 'aug14_remarketing_feeds'),
+			       ('internal_auto_insurance_v5', 'fc',  0, true, 'aug14_remarketing_feeds'),
+			       ('internal_auto_insurance_v6', 'yih', 0, true, 'aug14_remarketing_feeds'),
+			       ('internal_auto_insurance_v7', 'cp',  0, true, 'aug14_remarketing_feeds')
+			ON CONFLICT (vertical, brand) DO NOTHING`},
+		// Scoped by slug AND vertical='refi_heloc' (the mistaken creation-form
+		// default): re-running is a no-op and a later operator re-assignment is
+		// never stomped by a redeploy. offer_id binding stays in the seed job —
+		// it must not race the offers' own INSERTs.
+		{"aug14_internal_auto_v3_v7_dataset_verticals", `UPDATE partner_datasets
+			SET vertical = 'internal_auto_insurance_' || RIGHT(slug, 2)
+			WHERE slug IN ('internal-auto-insurance-v3','internal-auto-insurance-v4',
+			               'internal-auto-insurance-v5','internal-auto-insurance-v6',
+			               'internal-auto-insurance-v7')
+			  AND vertical = 'refi_heloc'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy

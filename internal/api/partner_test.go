@@ -86,6 +86,9 @@ func TestIsValidVertical(t *testing.T) {
 		"samsclub_internal", "flooring", "term_life", "senior_care",
 		"auto_insurance", "jarvis_att", "jarvis_apple", "consumer",
 		"internal_auto_insurance",
+		"internal_auto_insurance_v3", "internal_auto_insurance_v4",
+		"internal_auto_insurance_v5", "internal_auto_insurance_v6",
+		"internal_auto_insurance_v7",
 	} {
 		if !isValidVertical(v) {
 			t.Errorf("isValidVertical(%q) should be true", v)

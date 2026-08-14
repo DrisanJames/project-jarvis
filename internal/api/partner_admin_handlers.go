@@ -2072,6 +2072,11 @@ var validVerticals = map[string]bool{
 	"samsclub_internal": true, "flooring": true, "term_life": true, "senior_care": true,
 	"auto_insurance": true, "jarvis_att": true, "jarvis_apple": true, "consumer": true,
 	"internal_auto_insurance": true,
+	// Auto Insurance Remarketing feeds 2-6 (operator 2026-08-14) — one vertical
+	// per dataset so each feed carries its own offer creative + brand roster.
+	"internal_auto_insurance_v3": true, "internal_auto_insurance_v4": true,
+	"internal_auto_insurance_v5": true, "internal_auto_insurance_v6": true,
+	"internal_auto_insurance_v7": true,
 }
 
 func isValidVertical(v string) bool {
