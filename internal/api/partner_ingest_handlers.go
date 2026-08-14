@@ -104,6 +104,9 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 		PostalCode string                 `json:"postal_code"`
 		Data       map[string]interface{} `json:"data"`
 		SignupIP   string                 `json:"signup_ip"`
+		OptInIP    string                 `json:"opt_in_ip"`
+		OptInURL   string                 `json:"opt_in_url"`
+		TID        json.RawMessage        `json:"tid"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -114,6 +117,12 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 	}
 	if strings.TrimSpace(r.IPAddress) == "" {
 		r.IPAddress = v.SignupIP
+	}
+	if strings.TrimSpace(r.IPAddress) == "" {
+		r.IPAddress = v.OptInIP
+	}
+	if strings.TrimSpace(r.SignupURL) == "" {
+		r.SignupURL = v.OptInURL
 	}
 	// "data" is the partner's spelling of "metadata" and it carries `tid` — the
 	// PER-USER money-link token. Dropping it silently ships every recipient the
@@ -130,7 +139,39 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 			}
 		}
 	}
+	// Partners also send `tid` at the ROOT of the record (2026-08-13: the
+	// ratesavings feed did exactly that after being told metadata was
+	// optional, and the token died at this door). Fold a root-level tid into
+	// Metadata — that is the only spot extraMetadataJSON carries through to
+	// partner_clean_queue and the only spot personaFieldsFromExtra reads it
+	// back out. A nested metadata/data tid wins over the root spelling.
+	if tid := scalarToString(v.TID); tid != "" {
+		if r.Metadata == nil {
+			r.Metadata = map[string]interface{}{}
+		}
+		if _, exists := r.Metadata["tid"]; !exists {
+			r.Metadata["tid"] = tid
+		}
+	}
 	return nil
+}
+
+// scalarToString decodes a JSON scalar (string or number) leniently. A partner
+// posting tid as a bare number must not fail the whole record's unmarshal —
+// one bad field type would otherwise drop the record entirely.
+func scalarToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	return ""
 }
 
 type ingestRequest struct {
@@ -376,8 +417,17 @@ func (h *PartnerIngestHandler) HandleGetSchema(w http.ResponseWriter, r *http.Re
 			},
 		},
 		"example_ndjson_line": `{"email":"first.last@example.com","first_name":"First","zip":"83854","opt_in_date":"2026-05-01T14:22:00Z"}`,
-		"required_fields":     []string{"email"},
-		"optional_fields":     []string{"first_name", "last_name", "zip", "state", "ip_address", "opt_in_date", "source", "metadata"},
+		"required_fields": []string{"email"},
+		"optional_fields": []string{
+			"first_name", "last_name", "city", "zip (alias: postal_code)", "state", "address_1",
+			"ip_address (aliases: signup_ip, opt_in_ip)", "opt_in_date", "signup_url (alias: opt_in_url)",
+			"signup_date", "source", "tid (root level, or nested under metadata/data)",
+			"metadata (alias: data — arbitrary key/value object, preserved verbatim)",
+		},
+		"field_notes": map[string]string{
+			"tid":      "Per-user tracking token used in money links. Accepted at the record root or inside metadata/data; if both are present the nested value wins.",
+			"metadata": "The metadata object is OPTIONAL. Documented fields may sit at the root. Undocumented fields are only preserved if placed inside metadata (or data).",
+		},
 		"async_pipeline": map[string]string{
 			"step_1": "POST persists records to S3 and returns 202 immediately",
 			"step_2": "Slicer worker drains in FIFO chunks and applies global suppression",

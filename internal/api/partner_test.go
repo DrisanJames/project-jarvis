@@ -202,6 +202,69 @@ func TestParseIngestPayload(t *testing.T) {
 	})
 }
 
+// TestIngestRecordRootLevelTID pins the 2026-08-13 ratesavings incident: the
+// partner was told the metadata subobject is optional and posted tid,
+// opt_in_ip, and opt_in_url at the record ROOT. The closed ingestRecord struct
+// destroyed all three at the door — the canonical S3 NDJSON is a re-marshal of
+// the struct, so downstream recovery was impossible. Root-level tid must land
+// in Metadata (the only path extraMetadataJSON carries to partner_clean_queue),
+// and the opt_in_* aliases must fold onto the canonical fields.
+func TestIngestRecordRootLevelTID(t *testing.T) {
+	t.Run("exact incident payload survives", func(t *testing.T) {
+		body := []byte(`{
+			"opt_in_url": "https://quotes.ratesavings.org",
+			"state": "NC",
+			"opt_in_ip": "2603:6080:2303:8ef9:9955:5375:39c9:1d1a",
+			"opt_in_date": "Wed, 12 Aug 2026 20:54:03 GMT",
+			"zip": "27217",
+			"last_name": "Solos",
+			"first_name": "Lorena",
+			"tid": "496e49454c785965383241526a33664964522f4b4a673d3d",
+			"city": "Burlington",
+			"address_1": "519 PIEDMONT Way",
+			"email": "lorenasolis1985@icloud.com"
+		}`)
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal(body, &rec))
+		require.Equal(t, "496e49454c785965383241526a33664964522f4b4a673d3d", rec.Metadata["tid"])
+		require.Equal(t, "https://quotes.ratesavings.org", rec.SignupURL)
+		require.Equal(t, "2603:6080:2303:8ef9:9955:5375:39c9:1d1a", rec.IPAddress)
+		require.Equal(t, "Burlington", rec.City)
+		require.Equal(t, "519 PIEDMONT Way", rec.Address1)
+
+		// The door's output is what S3 stores — the re-marshal must carry tid too.
+		out, err := json.Marshal(rec)
+		require.NoError(t, err)
+		require.Contains(t, string(out), "496e49454c785965383241526a33664964522f4b4a673d3d")
+	})
+	t.Run("nested metadata tid wins over root", func(t *testing.T) {
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal([]byte(`{"email":"a@b.com","tid":"root","metadata":{"tid":"nested"}}`), &rec))
+		require.Equal(t, "nested", rec.Metadata["tid"])
+	})
+	t.Run("data tid wins over root", func(t *testing.T) {
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal([]byte(`{"email":"a@b.com","tid":"root","data":{"tid":"nested"}}`), &rec))
+		require.Equal(t, "nested", rec.Metadata["tid"])
+	})
+	t.Run("numeric tid does not kill the record", func(t *testing.T) {
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal([]byte(`{"email":"a@b.com","tid":12345}`), &rec))
+		require.Equal(t, "12345", rec.Metadata["tid"])
+	})
+	t.Run("explicit ip and signup_url beat aliases", func(t *testing.T) {
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal([]byte(`{"email":"a@b.com","ip_address":"1.2.3.4","opt_in_ip":"5.6.7.8","signup_url":"https://a","opt_in_url":"https://b"}`), &rec))
+		require.Equal(t, "1.2.3.4", rec.IPAddress)
+		require.Equal(t, "https://a", rec.SignupURL)
+	})
+	t.Run("no tid leaves metadata nil", func(t *testing.T) {
+		var rec ingestRecord
+		require.NoError(t, json.Unmarshal([]byte(`{"email":"a@b.com"}`), &rec))
+		require.Nil(t, rec.Metadata)
+	})
+}
+
 func TestPartnerS3KeyBuilders(t *testing.T) {
 	c := &PartnerIngestS3Client{bucket: "test-bucket", region: "us-west-2"}
 	ts := mustParseTime(t, "2026-05-12T14:22:00Z")
