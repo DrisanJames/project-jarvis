@@ -464,6 +464,13 @@ type PartnerDripOrchestrator struct {
 	// a no-op rather than an outage. This is what makes a cap change deploy-free.
 	ispCapMu    sync.RWMutex
 	ispCapCache map[string]int
+
+	// brandBudgetCache holds partner_drip_brand_budgets (brand -> isp -> row),
+	// refreshed once per tick by loadBrandBudgets. An absent (brand, isp) cell
+	// means "unconstrained", so an empty cache is byte-identical to the
+	// pre-ledger behavior. Guarded by brandBudgetMu.
+	brandBudgetMu    sync.RWMutex
+	brandBudgetCache map[string]map[string]brandBudgetRow
 }
 
 // propertyGovernor is the in-memory form of a partner_property_governor row.
@@ -736,6 +743,7 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	po.loadISPCaps(po.ctx)
 	po.loadBrandDomains(po.ctx)
 	po.loadVerticalRosters(po.ctx)
+	po.loadBrandBudgets(po.ctx)
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -1372,6 +1380,23 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 		// non-allowed brand waves, those ISPs' caps go to 0 (claim skips any
 		// non-positive cap), so they only ship from db/ht/mh/qf.
 		perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
+		// Per-(sending-domain × ISP) introduction budgets (operator 2026-08-15):
+		// clamp each ISP's cap to the domain's remaining warming budget for
+		// today (partner_drip_brand_budgets, welcome pass only). When the clamp
+		// zeroes a wave that otherwise had capacity, SKIP the brand and advance
+		// the rotation — without the advance, a budget-exhausted brand would be
+		// re-picked every tick (updateDripState only runs after a deploy) and
+		// pin the vertical for the rest of the day.
+		preBudget := perISPCaps
+		perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)
+		if capsAnyPositive(preBudget) && !capsAnyPositive(perISPCaps) {
+			if err := po.advanceBrandRotation(ctx, pc.stateKey, newIdx); err != nil {
+				log.Printf("[PartnerDripOrchestrator] advance rotation past budget-exhausted brand=%s vertical=%s: %v", brand, v.vertical, err)
+			} else {
+				log.Printf("[PartnerDripOrchestrator] brand=%s budget-exhausted for vertical=%s — skipped, rotation advanced", brand, v.vertical)
+			}
+			return nil
+		}
 	}
 	// Apple-banned verticals (operator 2026-06-16): Fidelity term-life is HM08-rejected by Apple
 	// ~85-92% (content policy — no ESP lever). Zero the apple cap so no Apple/iCloud records are
@@ -2295,29 +2320,60 @@ func (po *PartnerDripOrchestrator) loadBrandDomains(ctx context.Context) {
 // sort_order so an operator controls round-robin position. On error the previous
 // overlay stands (same posture as the cap/domain overlays: never fail a lane shut).
 func (po *PartnerDripOrchestrator) loadVerticalRosters(ctx context.Context) {
+	// Weighted rotation (operator 2026-08-15): a brand with weight N appears N
+	// times in the roster slice, so the existing round-robin distributes waves
+	// proportionally with zero changes to pickNextBrand/pickNextFollowupBrand.
+	// Weight is clamped to [1, 20] in SQL. If the weight column is missing
+	// (migration not yet landed), fall back to the legacy unweighted query so
+	// the overlay never freezes — a frozen-empty overlay would send
+	// roster-restricted lanes (e.g. heloc→wcl) across all 16 dripBrands.
 	loaded := map[string][]string{}
-	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `
-			SELECT lower(btrim(vertical)), lower(btrim(brand))
-			FROM partner_drip_vertical_roster
-			WHERE active
-			ORDER BY vertical, sort_order, brand
-		`)
+	scanRoster := func(tx *sql.Tx, query string, weighted bool) error {
+		rows, err := tx.QueryContext(ctx, query)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var v, b string
-			if err := rows.Scan(&v, &b); err != nil {
+			w := 1
+			if weighted {
+				if err := rows.Scan(&v, &b, &w); err != nil {
+					return err
+				}
+			} else if err := rows.Scan(&v, &b); err != nil {
 				return err
 			}
-			if v != "" && b != "" {
+			if v == "" || b == "" {
+				continue
+			}
+			for i := 0; i < w; i++ {
 				loaded[v] = append(loaded[v], b)
 			}
 		}
 		return rows.Err()
+	}
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		return scanRoster(tx, `
+			SELECT lower(btrim(vertical)), lower(btrim(brand)),
+			       GREATEST(1, LEAST(COALESCE(weight, 1), 20))
+			FROM partner_drip_vertical_roster
+			WHERE active
+			ORDER BY vertical, sort_order, brand
+		`, true)
 	})
+	if err != nil {
+		log.Printf("[PartnerDripOrchestrator] weighted roster load failed (%v) — retrying unweighted", err)
+		loaded = map[string][]string{}
+		err = po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			return scanRoster(tx, `
+				SELECT lower(btrim(vertical)), lower(btrim(brand))
+				FROM partner_drip_vertical_roster
+				WHERE active
+				ORDER BY vertical, sort_order, brand
+			`, false)
+		})
+	}
 	if err != nil {
 		log.Printf("[PartnerDripOrchestrator] loadVerticalRosters failed (%v) — keeping previous roster overlay", err)
 		return

@@ -3585,6 +3585,24 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_governed_state_samsclub_internal", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('samsclub_internal:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
 		{"seed_governed_state_direct_offer", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('direct_offer:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
 		{"seed_governed_state_clickers_samsclub", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('clickers_samsclub:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
+		// Per-(sending-domain × ISP) introduction-budget ledger (operator
+		// 2026-08-15): the drip welcome pass clamps each wave's per-ISP caps to
+		// daily_budget minus today's first-touch introductions (Denver day).
+		// No rows = unconstrained (behavior identical to pre-ledger); rows are
+		// operator/ramp-job managed. hold=TRUE zeroes the cell outright.
+		{"create_partner_drip_brand_budgets", `CREATE TABLE IF NOT EXISTS partner_drip_brand_budgets (
+			brand TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			daily_budget INTEGER NOT NULL DEFAULT 0,
+			hold BOOLEAN NOT NULL DEFAULT FALSE,
+			notes TEXT,
+			updated_by TEXT,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (brand, isp)
+		)`},
+		// Weighted domain distribution for drip rosters: brand appears `weight`
+		// times in the rotation slice (clamped 1..20 at load).
+		{"drip_roster_add_weight", `ALTER TABLE partner_drip_vertical_roster ADD COLUMN IF NOT EXISTS weight INTEGER NOT NULL DEFAULT 1`},
 		// Seed em.discountblog.com PMTA profile (mirrors em.quizfiesta.com setup)
 		{"seed_pmta_discountblog_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'DiscountBlog PMTA (em)', 'pmta', 'Jamie @ Discount Blog', 'hello@em.discountblog.com', 'reply@em.discountblog.com', 'em.discountblog.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.discountblog.com', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.discountblog.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 
