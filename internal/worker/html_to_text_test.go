@@ -103,3 +103,34 @@ func TestGenerateTextFromHTML_UnsubscribePreserved(t *testing.T) {
 	text := GenerateTextFromHTML(html)
 	assert.Contains(t, text, "Unsubscribe (https://trk.em.discountblog.com/track/unsubscribe/abc123/sig456)")
 }
+
+// Pins the 2026-08-14 seed-test leak: a comment containing `>` mid-body (the
+// `->` in "Lane: ... -> brand fc") was cut at the first `>` by reTxtAllTags,
+// and the comment's remainder shipped as visible text in the text/plain part.
+func TestGenerateTextFromHTML_CommentWithGTDoesNotLeak(t *testing.T) {
+	html := `<!-- REMARKETING FEED v5 — Auto Policy Bridge (dataset internal-auto-insurance-v5)
+     Lane:      internal_auto_insurance_v5 -> brand fc (em.financialcalculate.com)
+     From-name: Auto Policy Bridge
+     Design:    teal, letter-style -->
+<table role="presentation"><tr><td>Hi Drisan,</td></tr></table>`
+	out := GenerateTextFromHTML(html)
+	for _, leak := range []string{"brand fc", "From-name", "Design:", "-->", "internal_auto_insurance"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("comment content leaked into text part: %q in %q", leak, out)
+		}
+	}
+	if !strings.Contains(out, "Hi Drisan,") {
+		t.Fatalf("real content missing from text part: %q", out)
+	}
+}
+
+// An unterminated comment must be dropped, never leaked.
+func TestGenerateTextFromHTML_UnterminatedCommentDropped(t *testing.T) {
+	out := GenerateTextFromHTML(`<p>Real content</p><!-- internal note -> secret`)
+	if strings.Contains(out, "secret") || strings.Contains(out, "internal note") {
+		t.Fatalf("unterminated comment leaked: %q", out)
+	}
+	if !strings.Contains(out, "Real content") {
+		t.Fatalf("real content missing: %q", out)
+	}
+}

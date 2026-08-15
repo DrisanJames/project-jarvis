@@ -7,6 +7,12 @@ import (
 )
 
 var (
+	// Comments must go FIRST with a proper `-->` terminator: reTxtAllTags'
+	// `<[^>]*>` ends a "tag" at the first `>`, so a comment containing `>`
+	// mid-body (e.g. "Lane: x -> brand fc") was cut short and its remainder
+	// shipped as visible text in the text/plain part (seed test 2026-08-14,
+	// Auto Policy Bridge — the design comment leaked into the inbox).
+	reTxtComment    = regexp.MustCompile(`(?s)<!--.*?-->`)
 	reTxtHiddenDiv  = regexp.MustCompile(`(?is)<div[^>]*display\s*:\s*none[^>]*>.*?</div>`)
 	reTxtAnchor     = regexp.MustCompile(`(?is)<a\s[^>]*href=["']([^"']*)["'][^>]*>(.*?)</a>`)
 	reTxtListItem   = regexp.MustCompile(`(?i)<li[^>]*>`)
@@ -27,6 +33,14 @@ func GenerateTextFromHTML(finalHTML string) string {
 	}
 
 	s := finalHTML
+
+	// Strip HTML comments before anything else — see reTxtComment. An
+	// unterminated comment (no closing -->) is dropped to end-of-input by the
+	// second pass rather than left to leak.
+	s = reTxtComment.ReplaceAllString(s, "")
+	if i := strings.Index(s, "<!--"); i >= 0 {
+		s = s[:i]
+	}
 
 	// Strip hidden divs (preheader, tracking pixel containers)
 	s = reTxtHiddenDiv.ReplaceAllString(s, "")
