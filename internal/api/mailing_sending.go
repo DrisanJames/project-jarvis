@@ -461,6 +461,7 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		HTMLContent      string                 `json:"html_content"`
 		TextContent      string                 `json:"text_content"`
 		SendingProfileID *string                `json:"sending_profile_id"`
+		SendingDomain    string                 `json:"sending_domain"` // resolve profile by domain (is_default wins), e.g. a kumo em.<apex>
 		ListID           *string                `json:"list_id"`
 		Tags             []string               `json:"tags"`
 		MergeData        map[string]interface{} `json:"merge_data"`
@@ -519,13 +520,28 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		"current_weekday": now.Weekday().String(),
 	}
 
-	// Resolve tracking domain from sending profile
+	// Resolve tracking domain from sending profile (by id, or by sending
+	// domain with the same is_default-first order the send-test resolver
+	// uses, so pixel/unsub URLs match the profile that will actually send).
 	trackBase := svc.trackingURL
 	profileID := ""
 	if input.SendingProfileID != nil && *input.SendingProfileID != "" {
 		profileID = *input.SendingProfileID
 		var td, sd sql.NullString
 		svc.db.QueryRowContext(ctx, `SELECT COALESCE(tracking_domain,''), COALESCE(sending_domain,'') FROM mailing_sending_profiles WHERE id = $1`, profileID).Scan(&td, &sd)
+		if td.Valid && td.String != "" {
+			trackBase = "https://" + td.String
+		} else if sd.Valid && sd.String != "" {
+			trackBase = "https://trk." + sd.String
+		}
+	} else if input.SendingDomain != "" {
+		var td, sd sql.NullString
+		svc.db.QueryRowContext(ctx, `
+			SELECT COALESCE(tracking_domain,''), COALESCE(sending_domain,'')
+			FROM mailing_sending_profiles
+			WHERE status = 'active' AND sending_domain = $1
+			ORDER BY is_default DESC, CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END
+			LIMIT 1`, input.SendingDomain).Scan(&td, &sd)
 		if td.Valid && td.String != "" {
 			trackBase = "https://" + td.String
 		} else if sd.Valid && sd.String != "" {
@@ -614,9 +630,10 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	testBody, _ := json.Marshal(map[string]interface{}{
 		"to": email, "subject": subject,
 		"from_name": input.FromName, "from_email": input.FromEmail,
-		"reply_email": input.ReplyEmail,
+		"reply_email":  input.ReplyEmail,
 		"html_content": htmlContent, "text_content": textContent,
 		"sending_profile_id": input.SendingProfileID,
+		"sending_domain":     input.SendingDomain,
 	})
 	rec := &responseRecorder{header: http.Header{}, code: 200}
 	syntheticReq, _ := http.NewRequestWithContext(ctx, "POST", "/api/mailing/send-test", strings.NewReader(string(testBody)))
@@ -664,9 +681,12 @@ type responseRecorder struct {
 	body   []byte
 }
 
-func (r *responseRecorder) Header() http.Header        { return r.header }
-func (r *responseRecorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
-func (r *responseRecorder) WriteHeader(code int)        { r.code = code }
+func (r *responseRecorder) Header() http.Header { return r.header }
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	r.body = append(r.body, b...)
+	return len(b), nil
+}
+func (r *responseRecorder) WriteHeader(code int) { r.code = code }
 
 func (svc *MailingService) sendViaSparkPost(ctx context.Context, to, fromEmail, fromName, subject, htmlContent, textContent string) (map[string]interface{}, error) {
 	return svc.sendViaSparkPostWithKey(ctx, svc.sparkpostKey, to, fromEmail, fromName, "", subject, htmlContent, textContent)
@@ -1155,7 +1175,7 @@ func (svc *MailingService) HandleSendCampaign(w http.ResponseWriter, r *http.Req
 	// Get subscribers - either from segment or list
 	var subscriberQuery string
 	var queryArgs []interface{}
-	
+
 	if segmentID != "" {
 		// Get segment conditions and build dynamic query
 		subscriberQuery, queryArgs = svc.buildSegmentQuery(ctx, segmentID)
@@ -1331,7 +1351,7 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 		           AND complained_at IS NULL
 		           AND is_bot = false`
 	}
-	
+
 	for rows.Next() {
 		var field, operator, value string
 		rows.Scan(&field, &operator, &value)
@@ -1398,7 +1418,7 @@ func (svc *MailingService) buildSegmentQuery(ctx context.Context, segmentID stri
 		}
 		argNum++
 	}
-	
+
 	return query, args
 }
 

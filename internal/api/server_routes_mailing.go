@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -141,6 +144,58 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				return
 			}
 			everflowConversionsSync(w, req)
+		})
+
+		// Admin: single transactional send for the operator's outside/desktop
+		// services (operator request 2026-08-16, "I want it to go through
+		// kumo"). Delegates to the existing HandleSendTransactional pipeline —
+		// Liquid rendering, tracking pixel, link rewriting, unsub/CAN-SPAM
+		// injection, suppression check, and ESP routing via the sending
+		// profile — gated by X-Admin-Key instead of a session (same pattern as
+		// /api/admin/creatives-sync, which the operator's laptop tooling
+		// uses). KUMO-ONLY by operator directive: the resolved sending profile
+		// must carry routing_mode='kumo' (the 11 KumoMTA warmup domains), so a
+		// missing/typo'd sending_domain can never silently fall back to the
+		// platform default profile and leak API traffic onto a legacy lane.
+		s.router.Post("/api/admin/send-transactional", func(w http.ResponseWriter, req *http.Request) {
+			adminKey := os.Getenv("ADMIN_API_KEY")
+			if adminKey == "" || req.Header.Get("X-Admin-Key") != adminKey {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 4<<20))
+			if err != nil {
+				http.Error(w, `{"error":"unreadable body"}`, http.StatusBadRequest)
+				return
+			}
+			var probe struct {
+				SendingProfileID *string `json:"sending_profile_id"`
+				SendingDomain    string  `json:"sending_domain"`
+			}
+			json.Unmarshal(bodyBytes, &probe)
+
+			var routingMode sql.NullString
+			switch {
+			case probe.SendingProfileID != nil && *probe.SendingProfileID != "":
+				db.QueryRowContext(req.Context(),
+					`SELECT routing_mode FROM mailing_sending_profiles WHERE id = $1 AND status = 'active'`,
+					*probe.SendingProfileID).Scan(&routingMode)
+			case probe.SendingDomain != "":
+				db.QueryRowContext(req.Context(), `
+					SELECT routing_mode FROM mailing_sending_profiles
+					WHERE status = 'active' AND sending_domain = $1
+					ORDER BY is_default DESC, CASE vendor_type WHEN 'pmta' THEN 0 WHEN 'smtp' THEN 1 ELSE 2 END
+					LIMIT 1`, probe.SendingDomain).Scan(&routingMode)
+			default:
+				http.Error(w, `{"error":"sending_domain (or sending_profile_id) is required; this endpoint routes via KumoMTA only — use one of the kumo em.<apex> sending domains"}`, http.StatusBadRequest)
+				return
+			}
+			if !routingMode.Valid || routingMode.String != "kumo" {
+				http.Error(w, `{"error":"resolved sending profile is not routing_mode='kumo'; this endpoint sends via KumoMTA only (operator directive 2026-08-16)"}`, http.StatusBadRequest)
+				return
+			}
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			svc.HandleSendTransactional(w, req)
 		})
 
 		// Admin: audience unification Phase 1 backfills (W4c). Both are
