@@ -3784,6 +3784,44 @@ func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
 		if _, dedicated := verticalBrandRoster[strings.ToLower(strings.TrimSpace(v.vertical))]; dedicated {
 			continue
 		}
+		// EXPRESS verticals bypass the blind brand round-robin (operator
+		// 2026-08-16: "this must drain, it is our money maker"). The shared
+		// 16-brand rotation gives a vertical FollowupBrandsPerTick blind picks
+		// per tick, so a lane whose due records live on ONE brand (measured:
+		// internal_auto_insurance, 32,711 due — 100% on db, db-only creative
+		// roster) lands a productive wave ~once per hour while 15/16 picks
+		// resolve no creative and ship nothing. Express records are real-time
+		// form fills whose value decays in minutes — for them, fire a wave for
+		// every brand that actually HOLDS due records, every tick. Cold lanes
+		// keep the rotation (and its reputation pacing) unchanged, and the
+		// shared rotation pointer is not consumed by the express path.
+		if v.datasetID != "" && po.datasetIsExpress(ctx, v.datasetID) {
+			limit := brandsThisTick * 2
+			if limit < 8 {
+				limit = 8
+			}
+			loaded, lerr := po.expressFollowupBrands(ctx, v.vertical, limit)
+			if lerr != nil {
+				log.Printf("[PartnerDripOrchestrator] express followup brands vertical=%s: %v — falling back to rotation", v.vertical, lerr)
+			} else if len(loaded) > 0 {
+				for _, brand := range loaded {
+					if ctx.Err() != nil {
+						return
+					}
+					if err := po.processFollowup(ctx, v, brand); err != nil {
+						log.Printf("[PartnerDripOrchestrator] express followup vertical=%s brand=%s: %v", v.vertical, brand, err)
+					}
+					if po.cfg.YahooNewsletterOnlyDrip {
+						if err := po.processFollowupYahooNewsletter(ctx, v, brand); err != nil {
+							log.Printf("[PartnerDripOrchestrator] express followup-yahoo-nl vertical=%s brand=%s: %v", v.vertical, brand, err)
+						}
+					}
+				}
+				continue
+			}
+			// No loaded brands (or lookup error): fall through to the rotation
+			// so an express vertical is never worse off than a cold one.
+		}
 		// Each vertical is processed independently. The follow-up brand
 		// rotation is shared across verticals — every (vertical, brand)
 		// combination gets a wave at most once per tick.
@@ -3815,6 +3853,50 @@ func (po *PartnerDripOrchestrator) tickFollowups(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// expressFollowupBrands returns the brands that actually hold due follow-up
+// records for an express vertical, heaviest backlog first. This is the express
+// path's replacement for the blind rotation pick: a brand appears here iff a
+// processFollowup wave for it can claim at least one record right now.
+func (po *PartnerDripOrchestrator) expressFollowupBrands(ctx context.Context, vertical string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	var out []string
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT COALESCE(NULLIF(last_touch_brand, ''), mailed_brand) AS brand, COUNT(*) AS due
+			FROM partner_clean_queue
+			WHERE vertical = $1
+			  AND status = 'mailed'
+			  AND engaged_at IS NULL
+			  AND terminal_reason IS NULL
+			  AND next_touch_at IS NOT NULL
+			  AND next_touch_at <= NOW()
+			  AND touch_count BETWEEN 1 AND $2
+			  AND COALESCE(NULLIF(last_touch_brand, ''), mailed_brand) IS NOT NULL
+			GROUP BY 1
+			ORDER BY due DESC
+			LIMIT $3
+		`, vertical, MaxTouchCount-1, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var brand string
+			var due int
+			if err := rows.Scan(&brand, &due); err != nil {
+				continue
+			}
+			if b := strings.ToLower(strings.TrimSpace(brand)); b != "" {
+				out = append(out, b)
+			}
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // followupState is a tiny in-memory mirror of the 'followup' partner_drip_state
