@@ -2515,6 +2515,24 @@ func runStartupMigrations(db *sql.DB) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`},
 		{"idx_worker_runs_name_time", `CREATE INDEX IF NOT EXISTS idx_worker_runs_name_time ON mailing_worker_runs (worker_name, started_at DESC)`},
+		// Drop the per-row "AI send time" trigger from the open/click hot path
+		// (2026-08-15). Shipped 2026-02-05 by migrations/010_send_time_optimization.sql,
+		// update_subscriber_optimal_time_on_open() re-aggregates the subscriber's
+		// ENTIRE mailing_send_time_history (22.7M rows, unbounded — its ON CONFLICT
+		// DO NOTHING has no matching unique constraint) on EVERY open insert:
+		// measured ~1s of random IO per row, ~646k fires/day across the Go tracking
+		// path and the SES lake ingest (whose 500-row pages ran 7-9 minutes), plus
+		// deadlocks via the history FK's FOR KEY SHARE on mailing_campaigns against
+		// engagement-counter UPDATEs (2026-08-15 22:32Z). Its outputs are write-only:
+		// every analytics index on mailing_subscriber_optimal_times /
+		// mailing_audience_optimal_times has 0 lifetime scans and no portal/agent
+		// path reads them. Function and tables stay in place (frozen), so rollback
+		// is re-running the CREATE TRIGGER block from migrations/010 §283.
+		// Placed early: the drop needs a brief ACCESS EXCLUSIVE on the hot
+		// mailing_tracking_events parent within the 5s budget; verify post-deploy
+		// with SELECT count(*) FROM pg_trigger WHERE tgname='trigger_update_optimal_time_on_open'
+		// (expect 0; 12 = parent + 11 partition clones before the drop).
+		{"drop_optimal_time_open_trigger", `DROP TRIGGER IF EXISTS trigger_update_optimal_time_on_open ON mailing_tracking_events`},
 		// Scheduler command bridge — the Copilot (copilot_bridge_tools.go)
 		// enqueues whitelisted scheduling commands here (status='queued');
 		// the operator's LOCAL runner polls, executes the Python pipeline,

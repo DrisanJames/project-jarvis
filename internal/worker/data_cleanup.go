@@ -60,19 +60,50 @@ const (
 	// instead of one WAL-heavy burst on the hot send queue. Steady-state daily
 	// terminal turnover is well under this.
 	terminalPurgeMaxRowsPerCycle = 500000
+
+	// terminalPurgeMaxIOWaitBackends is the purge's OWN load gate. The purge
+	// originally borrowed the slimmer's slimMaxIOWaitBackends (8), but that
+	// threshold was calibrated for the WAL-heavy bulk-UPDATE slimmer on a
+	// quieter baseline: by 2026-08-15 the primary's steady-state IO-wait
+	// backend count sat at 12-21, so the purge's single hourly probe lost
+	// almost every coin flip (~43 of 45 cycles deferred over 48h) while ~1M
+	// rows/day aged across the 14-day boundary and the backlog reached 1.75M.
+	// The purge is far lighter than the slimmer (index-driven 10k-row DELETEs,
+	// 100ms pacing, 60s per-batch timeout), so it gets a higher bar and a
+	// multi-sample gate (see purgeGateBusy) instead of one instantaneous probe.
+	terminalPurgeMaxIOWaitBackends = 32
+
+	// purgeGateSamples / purgeGateSampleGap: purgeGateBusy takes up to this
+	// many pg_stat_activity samples this far apart, deferring only if EVERY
+	// sample is at/above the purge threshold — one transient IO spike no
+	// longer forfeits the whole hour.
+	purgeGateSamples = 3
+
+	// terminalPurgeMaxBatchRetries: a single failed DELETE batch (e.g. one 60s
+	// statement timeout) no longer aborts the cycle; the batch is retried up
+	// to this many consecutive times before the cycle gives up.
+	terminalPurgeMaxBatchRetries = 3
 )
 
 // DataCleanupWorker periodically removes old data from the mailing tables.
 type DataCleanupWorker struct {
 	db       *sql.DB
 	interval time.Duration
+
+	// purgeGateSampleGap is the wait between purgeGateBusy samples;
+	// purgeRetryDelay is the wait before retrying a failed purge batch.
+	// Zero values (as in tests constructing the struct directly) mean no wait.
+	purgeGateSampleGap time.Duration
+	purgeRetryDelay    time.Duration
 }
 
 // NewDataCleanupWorker creates a new cleanup worker with default settings.
 func NewDataCleanupWorker(db *sql.DB) *DataCleanupWorker {
 	return &DataCleanupWorker{
-		db:       db,
-		interval: DefaultCleanupInterval,
+		db:                 db,
+		interval:           DefaultCleanupInterval,
+		purgeGateSampleGap: 2 * time.Second,
+		purgeRetryDelay:    5 * time.Second,
 	}
 }
 
@@ -173,13 +204,14 @@ func (dc *DataCleanupWorker) cleanupQueueItems(ctx context.Context) {
 // heavy IO load, cap rows per cycle so a large backlog drains over a few cycles
 // instead of one WAL burst, and pace between batches.
 func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
-	if dc.primaryBusy(ctx) {
-		log.Printf("[DataCleanup] terminal queue purge deferred — primary under heavy IO load (>=%d backends in IO wait)", slimMaxIOWaitBackends)
+	if dc.purgeGateBusy(ctx) {
+		log.Printf("[DataCleanup] terminal queue purge deferred — primary under sustained heavy IO load (>=%d backends in IO wait across %d samples)", terminalPurgeMaxIOWaitBackends, purgeGateSamples)
 		dc.logTerminalQueueStats(ctx)
 		return
 	}
 
 	var total int64
+	var batchErrs int
 	for total < terminalPurgeMaxRowsPerCycle {
 		if ctx.Err() != nil {
 			break
@@ -208,9 +240,20 @@ func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
 		`, cleanupBatchSize)
 		cancel()
 		if err != nil {
-			log.Printf("[DataCleanup] terminal queue purge failed: %v", err)
-			return
+			// One failed batch (a single 60s statement timeout under momentary
+			// load) used to forfeit the entire hour; retry a few times before
+			// giving up the cycle.
+			batchErrs++
+			if batchErrs >= terminalPurgeMaxBatchRetries {
+				log.Printf("[DataCleanup] terminal queue purge giving up this cycle after %d consecutive batch errors: %v", batchErrs, err)
+				dc.logTerminalQueueStats(ctx)
+				return
+			}
+			log.Printf("[DataCleanup] terminal queue purge batch failed (attempt %d/%d, retrying): %v", batchErrs, terminalPurgeMaxBatchRetries, err)
+			time.Sleep(dc.purgeRetryDelay)
+			continue
 		}
+		batchErrs = 0
 		affected, _ := res.RowsAffected()
 		total += affected
 		if affected < int64(cleanupBatchSize) {
@@ -327,22 +370,59 @@ func (dc *DataCleanupWorker) slimAcceptedQueueHTML(ctx context.Context) {
 // lightweight pg_stat_activity probe cannot complete within 5s (itself a strong
 // signal the primary is saturated), it reports busy so the slim defers.
 func (dc *DataCleanupWorker) primaryBusy(ctx context.Context) bool {
+	ioWait, err := dc.ioWaitBackends(ctx)
+	if err != nil {
+		log.Printf("[DataCleanup] primary load probe failed (%v) — deferring HTML slim", err)
+		return true
+	}
+	return ioWait >= slimMaxIOWaitBackends
+}
+
+// ioWaitBackends counts backends currently blocked in IO wait. Shared probe
+// behind both load gates; callers decide threshold and failure policy.
+func (dc *DataCleanupWorker) ioWaitBackends(ctx context.Context) (int, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var ioWait int
-	if err := dc.db.QueryRowContext(queryCtx, `
+	err := dc.db.QueryRowContext(queryCtx, `
 		SELECT COUNT(*)::int
 		FROM pg_stat_activity
 		WHERE datname = current_database()
 		  AND state = 'active'
 		  AND wait_event_type = 'IO'
 		  AND pid <> pg_backend_pid()
-	`).Scan(&ioWait); err != nil {
-		log.Printf("[DataCleanup] primary load probe failed (%v) — deferring HTML slim", err)
-		return true
+	`).Scan(&ioWait)
+	return ioWait, err
+}
+
+// purgeGateBusy is the terminal purge's load gate: up to purgeGateSamples
+// probes, purgeGateSampleGap apart, deferring only when EVERY sample is
+// at/above terminalPurgeMaxIOWaitBackends (probe errors count as busy — fail
+// closed). The slimmer's single-probe/threshold-8 gate was starving the purge
+// entirely once the primary's steady-state IO-wait count rose past 8 (aug15:
+// baseline 12-21, backlog 1.75M rows); the purge is a light index-driven
+// DELETE, so it defers only for SUSTAINED saturation, not the baseline or a
+// single spike.
+func (dc *DataCleanupWorker) purgeGateBusy(ctx context.Context) bool {
+	for i := 0; i < purgeGateSamples; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return true
+			case <-time.After(dc.purgeGateSampleGap):
+			}
+		}
+		ioWait, err := dc.ioWaitBackends(ctx)
+		if err != nil {
+			log.Printf("[DataCleanup] purge load probe failed (%v) — counting sample as busy", err)
+			continue
+		}
+		if ioWait < terminalPurgeMaxIOWaitBackends {
+			return false
+		}
 	}
-	return ioWait >= slimMaxIOWaitBackends
+	return true
 }
 
 // ---------------------------------------------------------------------------

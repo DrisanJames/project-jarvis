@@ -34,6 +34,7 @@ const (
 	migStmtCreateIndex
 	migStmtAddColumn
 	migStmtDropConstraint
+	migStmtDropTrigger
 )
 
 var (
@@ -42,8 +43,9 @@ var (
 	// Single-action ADD COLUMN only: the tail may contain commas inside
 	// parentheses (e.g. DECIMAL(5,2)) but a top-level comma means a
 	// multi-action ALTER, which we never skip.
-	reMigAddColumn = regexp.MustCompile(`(?is)^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?([a-z0-9_.]+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)(?:[^,()]|\([^)]*\))*$`)
+	reMigAddColumn      = regexp.MustCompile(`(?is)^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?([a-z0-9_.]+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+([a-z0-9_]+)(?:[^,()]|\([^)]*\))*$`)
 	reMigDropConstraint = regexp.MustCompile(`(?is)^\s*ALTER\s+TABLE\s+(?:ONLY\s+)?([a-z0-9_.]+)\s+DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+([a-z0-9_]+)\s*$`)
+	reMigDropTrigger    = regexp.MustCompile(`(?is)^\s*DROP\s+TRIGGER\s+IF\s+EXISTS\s+([a-z0-9_]+)\s+ON\s+([a-z0-9_.]+)\s*$`)
 )
 
 // classifyMigrationStatement recognizes the skippable statement shapes.
@@ -61,6 +63,10 @@ func classifyMigrationStatement(sqlText string) (kind migrationStatementKind, id
 	}
 	if m := reMigDropConstraint.FindStringSubmatch(sqlText); m != nil {
 		return migStmtDropConstraint, stripSchemaQualifier(m[1]), m[2]
+	}
+	if m := reMigDropTrigger.FindStringSubmatch(sqlText); m != nil {
+		// ident1 = table, ident2 = trigger (mirrors the constraint case).
+		return migStmtDropTrigger, stripSchemaQualifier(m[2]), m[1]
 	}
 	return migStmtUnknown, "", ""
 }
@@ -112,6 +118,17 @@ func migrationSkipProbe(db *sql.DB, sqlText string) bool {
 				FROM pg_constraint con
 				JOIN pg_class rel ON rel.oid = con.conrelid
 				WHERE rel.relname = $1 AND con.conname = $2
+			)`, ident1, ident2).Scan(&skip)
+	case migStmtDropTrigger:
+		// Skippable when the trigger is already gone — a DROP TRIGGER still
+		// needs the table lock even when the trigger doesn't exist, so the
+		// probe matters on every boot after the first success.
+		err = db.QueryRowContext(ctx, `
+			SELECT NOT EXISTS(
+				SELECT 1
+				FROM pg_trigger tg
+				JOIN pg_class rel ON rel.oid = tg.tgrelid
+				WHERE rel.relname = $1 AND tg.tgname = $2 AND NOT tg.tgisinternal
 			)`, ident1, ident2).Scan(&skip)
 	}
 	if err != nil {

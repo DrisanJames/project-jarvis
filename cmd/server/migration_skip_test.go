@@ -54,6 +54,16 @@ func TestClassifyMigrationStatement(t *testing.T) {
 			sql:  `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`,
 			kind: migStmtDropConstraint, ident1: "mailing_campaigns", ident2: "mailing_campaigns_status_check",
 		},
+		{
+			name: "drop trigger",
+			sql:  `DROP TRIGGER IF EXISTS trigger_update_optimal_time_on_open ON mailing_tracking_events`,
+			kind: migStmtDropTrigger, ident1: "mailing_tracking_events", ident2: "trigger_update_optimal_time_on_open",
+		},
+		{
+			name: "drop trigger without IF EXISTS is unknown",
+			sql:  `DROP TRIGGER trigger_update_optimal_time_on_open ON mailing_tracking_events`,
+			kind: migStmtUnknown,
+		},
 		// ── shapes that must NEVER be skipped ──
 		{
 			name: "multi-action alter is unknown",
