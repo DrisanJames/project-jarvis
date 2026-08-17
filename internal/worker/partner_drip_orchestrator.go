@@ -300,6 +300,18 @@ func BrandSendingDomain(brand string) (string, bool) {
 	return resolveBrandSendingDomain(brand)
 }
 
+// DripIntroBrands exposes the canonical 16-code drip roster (dripBrands) to
+// other packages — notably the Property Ledger API's brand validation
+// (internal/api/property_ledger.go) and the intro-counter grid — so callers
+// stay in sync with the orchestrator's roster instead of duplicating it.
+// Returns a copy; governed (Kumo) brands are intentionally absent (they are
+// excluded from the intro-budget ledger — see partner_drip_brand_budgets.go).
+func DripIntroBrands() []string {
+	out := make([]string, len(dripBrands))
+	copy(out, dripBrands)
+	return out
+}
+
 // dynamicBrandDomain is the DB overlay on brandSendingDomain, refreshed once
 // per tick from mailing_brand_metadata (brand_code -> sending_domain). It lets
 // an operator add a NEW drip lane/brand with no deploy. Empty = static map only.

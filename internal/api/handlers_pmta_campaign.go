@@ -101,6 +101,16 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/board-export", s.HandleBoardWeekExport)
 		cr.Get("/drip-lanes", s.HandleListDripLanes)
 		cr.Post("/drip-lanes/update", s.HandleUpdateDripLane)
+		// Property Ledger (Vector A plan rev4, Step 19). No per-route admin
+		// gate: the /api middleware already enforces session-or-admin-key and
+		// stamps the trusted actor identity (Step 13).
+		cr.Get("/property-ledger", s.HandleListPropertyLedger)
+		cr.Post("/property-ledger/update", s.HandleUpdatePropertyLedger)
+		cr.Post("/property-ledger/approve-proposal", s.HandleApproveProposal)
+		cr.Post("/property-ledger/approve-proposals", s.HandleApproveProposals)
+		cr.Post("/property-ledger/global-hold", s.HandleGlobalHold)
+		cr.Get("/property-ledger/reconciliation", s.HandleListReconciliation)
+		cr.Get("/property-ledger/coverage", s.HandleListCoverage)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)

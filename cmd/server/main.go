@@ -1045,6 +1045,24 @@ func main() {
 			journeyLaneGovernor.Start(ctx)
 			log.Println("Journey Lane Governor started (hourly click-funnel lane stats + routing recommendations)")
 
+			// Property Ledger P4 (Vector A plan rev4, Steps 14/16/21).
+			// PropertyIntroRollupWorker: 10-min leased counter pass over
+			// partner_clean_queue (index-gated on idx_pcq_intro_rollup) +
+			// pending-budget promotion at the Denver boundary (I-2).
+			// Kill switch: PROPERTY_INTRO_ROLLUP_DISABLED.
+			propertyIntroRollup := worker.NewPropertyIntroRollupWorker(mailingDB, redisClient)
+			propertyIntroRollup.Start(ctx)
+			// SESVDMSnapshotWorker: 6h leased UTC-day VDM identity telemetry
+			// into ses_vdm_daily (default AWS credential chain; region
+			// SES_REGION, default us-west-1). Kill switch:
+			// SES_VDM_SNAPSHOT_DISABLED.
+			sesVDMRegion := os.Getenv("SES_REGION")
+			if sesVDMRegion == "" {
+				sesVDMRegion = "us-west-1"
+			}
+			sesVDMSnapshot := worker.NewSESVDMSnapshotWorker(mailingDB, redisClient, sesVDMRegion)
+			sesVDMSnapshot.Start(ctx)
+
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
 			journeyExecutor.SetClickDripSender(journeyClickDripSender)
@@ -3891,6 +3909,21 @@ func runStartupMigrations(db *sql.DB) {
 			PRIMARY KEY (day, identity, isp, region)
 		)`},
 		// ── end Property Ledger P2 ──────────────────────────────────────────
+
+		// ── Property Ledger P4 (Vector A plan rev4, Step 14) ────────────────
+		// Daily intro-counter materialization: one row per (Denver day, brand,
+		// isp) cell, ZERO cells included (absence of sends is a recorded 0).
+		// Written only by PropertyIntroRollupWorker; read by the ledger list
+		// endpoint (never live pcq aggregation) and later the reconciler.
+		{"create_property_intro_counters", `CREATE TABLE IF NOT EXISTS property_intro_counters (
+			day DATE NOT NULL, brand TEXT NOT NULL, isp TEXT NOT NULL,
+			introduced INTEGER NOT NULL DEFAULT 0,
+			window_start_utc TIMESTAMPTZ NOT NULL, window_end_utc TIMESTAMPTZ NOT NULL,
+			run_id UUID, finalized_at TIMESTAMPTZ,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (day, brand, isp)
+		)`},
+		// ── end Property Ledger P4 ──────────────────────────────────────────
 
 		// Weighted domain distribution for drip rosters: brand appears `weight`
 		// times in the rotation slice (clamped 1..20 at load).

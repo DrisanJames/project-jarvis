@@ -14,6 +14,44 @@ import (
 	"github.com/go-chi/cors"
 )
 
+// apiAuthMiddleware enforces session-or-admin-key on the /api group AND stamps
+// the trusted actor identity (Vector A plan rev4, Step 13).
+//
+// X-User-Email was a browser-spoofable header: every consumer
+// (actorFromRequest, creatives_registry, fresh_broadcast_handlers,
+// stream_broadcast_config) trusted the raw value, so a session-authenticated
+// caller could forge any actor. Now:
+//   - admin-key branch: trusted server-to-server — X-User-Email passes through
+//     unchanged (callers stamp their own service identity).
+//   - session branch: the inbound header is ALWAYS stripped, then re-set from
+//     the server-side session's email — spoof-proof with zero per-handler
+//     changes.
+//
+// Dev mode (middleware skipped in SetupRoutes) keeps today's behavior: the
+// actor falls back to ip:/unknown.
+func apiAuthMiddleware(authManager *auth.AuthManager, adminKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if adminKey != "" && req.Header.Get("X-Admin-Key") == adminKey {
+				next.ServeHTTP(w, req)
+				return
+			}
+			if !authManager.IsAuthenticated(req) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"unauthorized"}`))
+				return
+			}
+			// Session-authenticated: never trust the inbound header.
+			req.Header.Del("X-User-Email")
+			if s := authManager.GetSession(req); s != nil && s.Email != "" {
+				req.Header.Set("X-User-Email", s.Email)
+			}
+			next.ServeHTTP(w, req)
+		})
+	}
+}
+
 // SetupRoutes configures all API routes.
 // Returns the top-level mux AND the /api sub-router so that late-registered
 // route groups (e.g. mailing) can be mounted inside /api and inherit its
@@ -110,21 +148,7 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 		// Apply auth middleware to all API routes (skip in dev mode)
 		adminKey := os.Getenv("ADMIN_API_KEY")
 		if authManager != nil && !devMode {
-			r.Use(func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-					if adminKey != "" && req.Header.Get("X-Admin-Key") == adminKey {
-						next.ServeHTTP(w, req)
-						return
-					}
-					if !authManager.IsAuthenticated(req) {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusUnauthorized)
-						w.Write([]byte(`{"error":"unauthorized"}`))
-						return
-					}
-					next.ServeHTTP(w, req)
-				})
-			})
+			r.Use(apiAuthMiddleware(authManager, adminKey))
 		}
 		// Dashboard - all data in one call
 		r.Get("/dashboard", h.GetDashboard)

@@ -18,8 +18,12 @@ import (
 // Client is an AWS SES v2 API client for VDM metrics
 type Client struct {
 	client *sesv2.Client
-	isps   []string
-	region string
+	// metrics is the BatchGetMetricData seam (vdm_identity.go). Set alongside
+	// client by NewClientForRegion; nil on legacy NewClient instances (the
+	// metricsAPI() accessor falls back to client).
+	metrics MetricsAPI
+	isps    []string
+	region  string
 }
 
 // NewClient creates a new SES API client
