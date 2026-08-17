@@ -214,6 +214,7 @@ export const MailingPortal: React.FC = () => {
       case 'pmta-wizard':
       case 'send-day':
       case 'draft-board':
+      case 'drip-lanes':
       case 'schedule':
       case 'marketing-agent':
       case 'scheduling-copilot':

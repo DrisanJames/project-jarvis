@@ -2351,6 +2351,18 @@ var concurrentIndexSpecs = []struct {
 	// per-subscriber probe seq-scans the heap. Full build scans the 47M-row
 	// heap — far beyond the migration runner's budget.
 	{"idx_segment_members_subscriber", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_segment_members_subscriber ON mailing_segment_members (subscriber_id)`},
+
+	// ---- Property Ledger (Vector A rev4, Step 8) ----
+	// Serves the intro-rollup counter worker's un-branded whole-table
+	// (mailed_at, mailed_brand, isp_family) group-by and the reconciler's
+	// hold-interval intersection scans. idx_pcq_governed_daily_count leads
+	// with mailed_brand so it cannot serve a brandless mailed_at range scan
+	// (partial-index full scan — plan §0). The Step-14 counter worker probes
+	// this index BY NAME (pg_index indisvalid) and refuses to run its heavy
+	// query until it is valid — renaming it breaks that gate. Lives here (not
+	// the 5s slice) because the build scans the >1M-row partner_clean_queue
+	// heap. Partial: only first-touched rows carry a mailed_at.
+	{"idx_pcq_intro_rollup", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_intro_rollup ON partner_clean_queue (mailed_at, mailed_brand, isp_family) WHERE mailed_at IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -3618,6 +3630,177 @@ func runStartupMigrations(db *sql.DB) {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (brand, isp)
 		)`},
+
+		// ── Property Ledger (Vector A, plan rev4 P2 — schema only) ──────────
+		// State-semantics contract: internal/worker/property_ledger_doc.go
+		// (I-1…I-11). All entries additive + idempotent; the ledger table is
+		// EMPTY in prod so every ALTER/CHECK here is trivially within the 5s
+		// budget. The heavy partner_clean_queue rollup index lives in
+		// concurrentIndexSpecs (idx_pcq_intro_rollup), NOT here.
+		{"pdbb_add_approved_by", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS approved_by TEXT NOT NULL DEFAULT ''`},
+		{"pdbb_add_approved_at", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`},
+		{"pdbb_add_min_budget", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS min_budget INTEGER`},
+		{"pdbb_add_max_budget", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS max_budget INTEGER`},
+		// Optimistic concurrency (I-10): integer, not timestamp — timestamp round-tripping
+		// through JSON causes false 409s. Every write path sets lock_version = lock_version + 1.
+		{"pdbb_add_lock_version", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS lock_version BIGINT NOT NULL DEFAULT 0`},
+		// Next-day budget effectiveness (I-2): edits stage here; the counter worker
+		// promotes at the Denver boundary (Step 14).
+		{"pdbb_add_pending_budget", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS pending_budget INTEGER`},
+		{"pdbb_add_pending_day", `ALTER TABLE partner_drip_brand_budgets ADD COLUMN IF NOT EXISTS pending_effective_day DATE`},
+		{"pdbb_budget_nonneg", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_budget_nonneg') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_budget_nonneg CHECK (daily_budget >= 0);
+			END IF;
+		END $$`},
+		{"pdbb_brand_canonical", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_brand_canonical') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_brand_canonical CHECK (brand = lower(btrim(brand)) AND brand <> '');
+			END IF;
+		END $$`},
+		{"pdbb_isp_canonical", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_isp_canonical') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_isp_canonical CHECK (isp = lower(btrim(isp)) AND isp <> '');
+			END IF;
+		END $$`},
+		{"pdbb_minmax", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_minmax') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_minmax CHECK (min_budget IS NULL OR max_budget IS NULL OR min_budget <= max_budget);
+			END IF;
+		END $$`},
+		{"pdbb_pending_pair", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_pending_pair') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_pending_pair CHECK ((pending_budget IS NULL) = (pending_effective_day IS NULL));
+			END IF;
+		END $$`},
+		{"pdbb_pending_nonneg", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='pdbb_pending_nonneg') THEN
+				ALTER TABLE partner_drip_brand_budgets ADD CONSTRAINT pdbb_pending_nonneg CHECK (pending_budget IS NULL OR pending_budget >= 0);
+			END IF;
+		END $$`},
+		// Day-keyed budget version history (I-2). Selection contract for day D:
+		// WHERE brand=$1 AND isp=$2 AND effective_day <= $3
+		// ORDER BY effective_day DESC, version DESC LIMIT 1.
+		{"create_property_budget_versions", `CREATE TABLE IF NOT EXISTS property_budget_versions (
+			brand TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			version INTEGER NOT NULL,               -- monotonic per cell
+			budget INTEGER NOT NULL CHECK (budget >= 0),
+			sending_domain TEXT NOT NULL DEFAULT '',-- stamped at write; historical judgments never use the live map
+			effective_day DATE NOT NULL,            -- Denver day this budget governs FROM (I-2)
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			approved_by TEXT NOT NULL,
+			source TEXT NOT NULL CHECK (source IN ('seed','portal-edit','proposal-approve')),
+			PRIMARY KEY (brand, isp, version)
+		)`},
+		{"idx_pbv_day", `CREATE INDEX IF NOT EXISTS idx_pbv_day ON property_budget_versions (brand, isp, effective_day DESC, version DESC)`},
+		// Hold intervals + global-flag versions (I-3/I-4): half-open [from, to),
+		// one open interval per key enforced by partial unique indexes.
+		{"create_property_hold_intervals", `CREATE TABLE IF NOT EXISTS property_hold_intervals (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			brand TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			held_from TIMESTAMPTZ NOT NULL,
+			held_to TIMESTAMPTZ,                    -- NULL = still held; [from, to)
+			reason TEXT NOT NULL,
+			changed_by TEXT NOT NULL,
+			CHECK (held_to IS NULL OR held_to > held_from)
+		)`},
+		{"uq_phi_one_open", `CREATE UNIQUE INDEX IF NOT EXISTS uq_phi_one_open ON property_hold_intervals (brand, isp) WHERE held_to IS NULL`},
+		{"create_property_ledger_flags", `CREATE TABLE IF NOT EXISTS property_ledger_flags (
+			flag TEXT PRIMARY KEY, value BOOLEAN NOT NULL DEFAULT FALSE, reason TEXT,
+			updated_by TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			lock_version BIGINT NOT NULL DEFAULT 0
+		)`},
+		{"seed_flag_global_hold", `INSERT INTO property_ledger_flags(flag, value) VALUES ('global_hold', FALSE) ON CONFLICT (flag) DO NOTHING`},
+		{"create_property_ledger_flag_versions", `CREATE TABLE IF NOT EXISTS property_ledger_flag_versions (
+			flag TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			value BOOLEAN NOT NULL,
+			reason TEXT,
+			changed_by TEXT NOT NULL,
+			effective_from TIMESTAMPTZ NOT NULL,
+			effective_to TIMESTAMPTZ,               -- NULL = current; [from, to)
+			PRIMARY KEY (flag, version),
+			CHECK (effective_to IS NULL OR effective_to > effective_from)
+		)`},
+		{"uq_plfv_one_open", `CREATE UNIQUE INDEX IF NOT EXISTS uq_plfv_one_open ON property_ledger_flag_versions (flag) WHERE effective_to IS NULL`},
+		// Grader proposals: immutable, base-versioned (staleness key =
+		// base_lock_version), expiring; at most ONE unresolved per cell.
+		{"create_property_budget_proposals", `CREATE TABLE IF NOT EXISTS property_budget_proposals (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			brand TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			proposed_budget INTEGER NOT NULL CHECK (proposed_budget >= 0),
+			base_budget INTEGER NOT NULL,           -- ledger daily_budget when proposed
+			base_lock_version BIGINT NOT NULL,      -- ledger lock_version when proposed (staleness key)
+			basis TEXT NOT NULL,
+			metrics JSONB NOT NULL DEFAULT '{}',
+			algorithm_version TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMPTZ NOT NULL,        -- grader sets created_at + 48h
+			resolved_at TIMESTAMPTZ,
+			resolution TEXT CHECK (resolution IN ('approved','rejected','superseded','expired')),
+			CHECK ((resolved_at IS NULL) = (resolution IS NULL))
+		)`},
+		{"uq_pbp_one_unresolved", `CREATE UNIQUE INDEX IF NOT EXISTS uq_pbp_one_unresolved ON property_budget_proposals (brand, isp) WHERE resolved_at IS NULL`},
+		// Run-state tables (I-8): a day is served/judged only from a COMPLETED run.
+		{"create_property_counter_runs", `CREATE TABLE IF NOT EXISTS property_counter_runs (
+			run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			day DATE NOT NULL, expected_cells INTEGER NOT NULL, completed_cells INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL CHECK (status IN ('running','completed','failed')),
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), finished_at TIMESTAMPTZ, error TEXT
+		)`},
+		{"create_ses_vdm_snapshot_runs", `CREATE TABLE IF NOT EXISTS ses_vdm_snapshot_runs (
+			run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			day DATE NOT NULL, region TEXT NOT NULL,
+			expected_cells INTEGER NOT NULL, completed_cells INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL CHECK (status IN ('running','completed','failed')),
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), finished_at TIMESTAMPTZ, error TEXT
+		)`},
+		{"create_property_reconciliation_runs", `CREATE TABLE IF NOT EXISTS property_reconciliation_runs (
+			run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			day DATE NOT NULL, expected_cells INTEGER NOT NULL, written_cells INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL CHECK (status IN ('running','completed','failed')),
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), finished_at TIMESTAMPTZ, error TEXT
+		)`},
+		// Alert outbox (I-9): at-least-once, deterministic alert_uid dedupe key.
+		{"create_property_alert_outbox", `CREATE TABLE IF NOT EXISTS property_alert_outbox (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			alert_uid TEXT NOT NULL,                 -- deterministic: day|brand|isp|kind|to_status
+			day DATE NOT NULL, brand TEXT NOT NULL, isp TEXT NOT NULL,
+			status_kind TEXT NOT NULL CHECK (status_kind IN ('budget','telemetry','coverage')),
+			from_status TEXT NOT NULL, to_status TEXT NOT NULL,
+			message TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','sending','delivered','failed','suppressed')),
+			attempts INTEGER NOT NULL DEFAULT 0, next_retry_at TIMESTAMPTZ, last_error TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), delivered_at TIMESTAMPTZ,
+			UNIQUE (alert_uid)
+		)`},
+		{"create_property_coverage_daily", `CREATE TABLE IF NOT EXISTS property_coverage_daily (
+			day DATE NOT NULL, brand TEXT NOT NULL, isp TEXT NOT NULL,
+			status TEXT NOT NULL CHECK (status IN ('COMPLETE','MISSING_CELL','UNKNOWN_BRAND','UNKNOWN_ISP','EXTRA_CELL')),
+			observed_sends INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (day, brand, isp)
+		)`},
+		// SES VDM daily snapshots (UTC-day-native; I-7 immutable once finalized).
+		{"create_ses_vdm_daily", `CREATE TABLE IF NOT EXISTS ses_vdm_daily (
+			day DATE NOT NULL,                  -- UTC day (midnight-UTC buckets ONLY — SDK/API verified)
+			identity TEXT NOT NULL, isp TEXT NOT NULL, region TEXT NOT NULL,
+			raw_isps TEXT[] NOT NULL DEFAULT '{}',   -- ALL raw AWS ISP names summed into this canonical row (alias-collision fix)
+			send BIGINT NOT NULL DEFAULT 0, delivery BIGINT NOT NULL DEFAULT 0,
+			permanent_bounce BIGINT NOT NULL DEFAULT 0, transient_bounce BIGINT NOT NULL DEFAULT 0,
+			complaint BIGINT NOT NULL DEFAULT 0, open BIGINT NOT NULL DEFAULT 0, click BIGINT NOT NULL DEFAULT 0,
+			complete BOOLEAN NOT NULL DEFAULT FALSE, missing_metrics TEXT[] NOT NULL DEFAULT '{}',
+			fetch_error TEXT,
+			source_window_start TIMESTAMPTZ NOT NULL, source_window_end TIMESTAMPTZ NOT NULL,
+			fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			finalized_at TIMESTAMPTZ,           -- I-7: set when source_window_end <= now()-48h AND complete; then IMMUTABLE
+			PRIMARY KEY (day, identity, isp, region)
+		)`},
+		// ── end Property Ledger P2 ──────────────────────────────────────────
+
 		// Weighted domain distribution for drip rosters: brand appears `weight`
 		// times in the rotation slice (clamped 1..20 at load).
 		{"drip_roster_add_weight", `ALTER TABLE partner_drip_vertical_roster ADD COLUMN IF NOT EXISTS weight INTEGER NOT NULL DEFAULT 1`},

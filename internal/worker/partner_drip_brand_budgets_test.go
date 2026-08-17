@@ -26,7 +26,28 @@ func budgetPO(t *testing.T, cache map[string]map[string]brandBudgetRow) (*Partne
 	t.Cleanup(func() { db.Close() })
 	po := &PartnerDripOrchestrator{db: db}
 	po.brandBudgetCache = cache
+	// Warm, healthy global-hold mirror (I-5): flag read succeeded, hold off.
+	// Cold-start (nil) fail-closed behavior is pinned by its own fixtures.
+	held := false
+	po.globalHold = &held
 	return po, mock
+}
+
+// expectGlobalHoldRead registers the loadGlobalHold tx that loadBrandBudgets
+// now always issues after the budget query.
+func expectGlobalHoldRead(mock sqlmock.Sqlmock, value bool) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM property_ledger_flags`).WillReturnRows(
+		sqlmock.NewRows([]string{"value"}).AddRow(value))
+	mock.ExpectCommit()
+}
+
+func expectGlobalHoldReadError(mock sqlmock.Sqlmock, err error) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM property_ledger_flags`).WillReturnError(err)
+	mock.ExpectRollback()
 }
 
 func expectBudgetSpend(mock sqlmock.Sqlmock, brand string, rows *sqlmock.Rows) {
@@ -133,6 +154,7 @@ func TestLoadBrandBudgets_PopulatesCacheAndKeepsPreviousOnError(t *testing.T) {
 			AddRow("fc", "aol", 300, true).
 			AddRow("db", "microsoft", 900, false))
 	mock.ExpectCommit()
+	expectGlobalHoldRead(mock, false)
 	po.loadBrandBudgets(context.Background())
 
 	po.brandBudgetMu.RLock()
@@ -146,6 +168,7 @@ func TestLoadBrandBudgets_PopulatesCacheAndKeepsPreviousOnError(t *testing.T) {
 	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`FROM partner_drip_brand_budgets`).WillReturnError(errors.New("relation does not exist"))
 	mock.ExpectRollback()
+	expectGlobalHoldRead(mock, false)
 	po.loadBrandBudgets(context.Background())
 
 	po.brandBudgetMu.RLock()
@@ -193,6 +216,104 @@ func TestLoadVerticalRosters_FallsBackToUnweightedOnError(t *testing.T) {
 	r, ok := dynamicRosterFor("heloc")
 	require.True(t, ok)
 	assert.Equal(t, []string{"wcl"}, r, "fallback keeps the roster overlay alive without weights")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// ── Property Ledger I-5 permanent fixtures (plan rev4 Step 9; I-11: these are
+// committed failing-fixtures, never invert-and-restore) ──────────────────────
+
+func TestBrandIntroBudget_GlobalHoldZeroesCapsEvenWithKillSwitch(t *testing.T) {
+	// The kill switch disables the OVERLAY, never the emergency stop: with
+	// global_hold=TRUE, caps zero EVEN THOUGH the kill switch is set.
+	t.Setenv("PARTNER_DRIP_BRAND_BUDGETS_DISABLED", "1")
+	po, mock := budgetPO(t, map[string]map[string]brandBudgetRow{
+		"fc": {"yahoo": {daily: 500}},
+	})
+	held := true
+	po.globalHold = &held
+
+	out := po.applyBrandIntroBudgets(context.Background(), "fc", map[string]int{"yahoo": 200, "gmail": 50})
+	assert.Equal(t, 0, out["yahoo"], "global hold zeroes budgeted lanes despite the kill switch")
+	assert.Equal(t, 0, out["gmail"], "global hold zeroes unbudgeted lanes too — it is an all-stop")
+	assert.NoError(t, mock.ExpectationsWereMet(), "held estate must not run a spend query")
+}
+
+func TestBrandIntroBudget_GlobalHoldColdStartFailClosed(t *testing.T) {
+	// nil globalHold = the flag has never been readable this process (I-5):
+	// treat as HELD — zero caps, no spend query.
+	t.Setenv("PARTNER_DRIP_BRAND_BUDGETS_DISABLED", "")
+	po, mock := budgetPO(t, map[string]map[string]brandBudgetRow{
+		"fc": {"yahoo": {daily: 500}},
+	})
+	po.globalHold = nil
+
+	out := po.applyBrandIntroBudgets(context.Background(), "fc", map[string]int{"yahoo": 200, "aol": 40})
+	assert.Equal(t, 0, out["yahoo"], "cold-start unreadable flag fails CLOSED")
+	assert.Equal(t, 0, out["aol"], "cold-start unreadable flag zeroes every lane")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGlobalHold_ColdStartReadErrorStaysHeld(t *testing.T) {
+	po, mock := budgetPO(t, nil)
+	po.globalHold = nil // cold start
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_drip_brand_budgets`).WillReturnRows(
+		sqlmock.NewRows([]string{"brand", "isp", "daily_budget", "hold"}))
+	mock.ExpectCommit()
+	expectGlobalHoldReadError(mock, errors.New(`relation "property_ledger_flags" does not exist`))
+	po.loadBrandBudgets(context.Background())
+
+	po.brandBudgetMu.RLock()
+	assert.Nil(t, po.globalHold, "cold-start read error leaves the mirror nil (= held)")
+	po.brandBudgetMu.RUnlock()
+
+	out := po.applyBrandIntroBudgets(context.Background(), "fc", map[string]int{"yahoo": 200})
+	assert.Equal(t, 0, out["yahoo"], "still fail-closed after the failed tick")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGlobalHold_WarmCacheReadErrorKeepsPreviousValue(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_BRAND_BUDGETS_DISABLED", "")
+	po, mock := budgetPO(t, nil) // helper sets a warm globalHold=false
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_drip_brand_budgets`).WillReturnRows(
+		sqlmock.NewRows([]string{"brand", "isp", "daily_budget", "hold"}))
+	mock.ExpectCommit()
+	expectGlobalHoldReadError(mock, errors.New("statement timeout"))
+	po.loadBrandBudgets(context.Background())
+
+	po.brandBudgetMu.RLock()
+	require.NotNil(t, po.globalHold)
+	assert.False(t, *po.globalHold, "warm mirror keeps previous value on read error")
+	po.brandBudgetMu.RUnlock()
+
+	out := po.applyBrandIntroBudgets(context.Background(), "fc", map[string]int{"yahoo": 200})
+	assert.Equal(t, 200, out["yahoo"], "warm hold=false + read error stays open")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestGlobalHold_SuccessfulReadUpdatesMirror(t *testing.T) {
+	po, mock := budgetPO(t, nil) // warm false
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_drip_brand_budgets`).WillReturnRows(
+		sqlmock.NewRows([]string{"brand", "isp", "daily_budget", "hold"}))
+	mock.ExpectCommit()
+	expectGlobalHoldRead(mock, true)
+	po.loadBrandBudgets(context.Background())
+
+	po.brandBudgetMu.RLock()
+	require.NotNil(t, po.globalHold)
+	assert.True(t, *po.globalHold, "flag flip is visible after one tick")
+	po.brandBudgetMu.RUnlock()
+
+	out := po.applyBrandIntroBudgets(context.Background(), "fc", map[string]int{"yahoo": 200})
+	assert.Equal(t, 0, out["yahoo"], "hold engages within one cache tick")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -469,8 +469,15 @@ type PartnerDripOrchestrator struct {
 	// refreshed once per tick by loadBrandBudgets. An absent (brand, isp) cell
 	// means "unconstrained", so an empty cache is byte-identical to the
 	// pre-ledger behavior. Guarded by brandBudgetMu.
+	//
+	// globalHold mirrors the property_ledger_flags 'global_hold' row (I-5,
+	// property_ledger_doc.go), refreshed by the same loadBrandBudgets tick.
+	// nil = never successfully read since process start — FAIL-CLOSED: the
+	// welcome pass treats the estate as HELD until the first successful read.
+	// Once warm, a read error keeps the previous value. Guarded by brandBudgetMu.
 	brandBudgetMu    sync.RWMutex
 	brandBudgetCache map[string]map[string]brandBudgetRow
+	globalHold       *bool
 }
 
 // propertyGovernor is the in-memory form of a partner_property_governor row.
