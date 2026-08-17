@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,21 +34,25 @@ func dripObsDSN() string {
 	return dripObsDefaultDSN
 }
 
-// dripObservatoryP1Tables — the P1 schema shipped in this change. The plan's
-// full §5 DoD names 13 tables; four (partner_drip_link_audit,
-// partner_drip_hygiene_daily, partner_drip_cap_decisions,
-// partner_drip_cap_xray_daily) are DEFERRED because their DDL is defined by
-// reference to plan rev 3, which is not on disk — see the engagement report.
+// dripObservatoryP1Tables — the FOURTEEN logical P1 tables (plan rev 4.1 §5
+// DoD, reconciled count: the rev-4.1 completion increment restored the four
+// STOP-1 tables and moved partner_drip_campaign_meta's DDL into the D2
+// schema wave — its WRITER remains HOLD-CRITICAL at D3b).
 var dripObservatoryP1Tables = []string{
 	"partner_drip_observatory_runs",
 	"partner_drip_observatory_run_scope",
 	"partner_drip_observatory_cursor",
 	"partner_drip_send_cohort_daily",
 	"partner_drip_event_daily",
+	"partner_drip_link_audit",
+	"partner_drip_hygiene_daily",
 	"partner_drip_observatory_quarantine",
 	"mailing_brand_codes",
 	"partner_drip_alert_state",
 	"partner_drip_alert_deliveries",
+	"partner_drip_cap_decisions",
+	"partner_drip_cap_xray_daily",
+	"partner_drip_campaign_meta",
 }
 
 func TestDripObservatoryMigrationsApplyLocal(t *testing.T) {
@@ -84,5 +89,35 @@ func TestDripObservatoryMigrationsApplyLocal(t *testing.T) {
 	}
 	if n != 27 {
 		t.Errorf("mailing_brand_codes must seed exactly 27 registry rows, got %d", n)
+	}
+
+	// §5.8 DoD: the DEFAULT partition exists and is a partition (month
+	// partitions must NOT be created by the migration — §10.6 owns those).
+	var partName string
+	if err := db.QueryRow(`SELECT relname FROM pg_class
+		WHERE relname = 'partner_drip_cap_decisions_default' AND relispartition`).Scan(&partName); err != nil {
+		t.Errorf("partner_drip_cap_decisions_default partition missing: %v", err)
+	}
+	var monthParts int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pg_class
+		WHERE relname LIKE 'partner_drip_cap_decisions_2%' AND relispartition`).Scan(&monthParts); err != nil {
+		t.Fatal(err)
+	}
+	if monthParts != 0 {
+		t.Errorf("migration must not create month partitions (found %d) — §10.6 owns those", monthParts)
+	}
+
+	// §5.0b DoD: both fact-table vocab constraints contain 'other' after the
+	// widening entry runs (regardless of whether this DB was created narrow
+	// by 580f313 or wide by the updated generator).
+	for _, conname := range []string{"dob_cohort_isp_vocab", "dob_event_isp_vocab"} {
+		var def string
+		if err := db.QueryRow(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname=$1`, conname).Scan(&def); err != nil {
+			t.Errorf("constraint %s missing: %v", conname, err)
+			continue
+		}
+		if !strings.Contains(def, "'other'") {
+			t.Errorf("constraint %s not widened — def lacks 'other': %s", conname, def)
+		}
 	}
 }
