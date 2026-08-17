@@ -39,6 +39,8 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brandident"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
@@ -2363,6 +2365,34 @@ var concurrentIndexSpecs = []struct {
 	// the 5s slice) because the build scans the >1M-row partner_clean_queue
 	// heap. Partial: only first-touched rows carry a mailed_at.
 	{"idx_pcq_intro_rollup", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_intro_rollup ON partner_clean_queue (mailed_at, mailed_brand, isp_family) WHERE mailed_at IS NOT NULL`},
+
+	// ---- Drip Observatory D1 (Vector B rev4 §4) — supporting indexes ONLY ----
+	// The rollup worker's discovery scans (plan §6.3/§6.5) and the hygiene/
+	// inactivity queries (§6.7/§9.2) ride these five. Live here (not the 5s
+	// slice) because each build scans the >1M-row partner_clean_queue heap or
+	// the multi-GB mailing_campaigns heap. The worker (later phase) probes
+	// them BY NAME (pg_index indisvalid) and refuses its heavy pass until all
+	// five are valid — renaming any of them breaks that gate. Invalid-leftover
+	// recovery: the validity probe above drops + rebuilds on the next boot
+	// (plan §4 runbook).
+	// Change-discovery over first-touch dispatches (§6.3: pcq mailed_at ∈
+	// window) for the lanes=all form.
+	{"idx_pcq_mailed_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_mailed_at ON partner_clean_queue (mailed_at)`},
+	// Per-lane dispatch/hygiene scans (§6.7: dataset_id = $1 AND mailed_at
+	// range) and the §9.2 inactivity watch (bounded to trailing 48h).
+	{"idx_pcq_dataset_mailed_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_dataset_mailed_at ON partner_clean_queue (dataset_id, mailed_at)`},
+	// Cohort t1 evidence: MIN(mailed_at) WHERE mailed_campaign_id = c (§3.1)
+	// and per-campaign dispatch counts. Partial: only first-touched rows
+	// carry a mailed_campaign_id.
+	{"idx_pcq_mailed_campaign", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_mailed_campaign ON partner_clean_queue (mailed_campaign_id, mailed_at) WHERE mailed_campaign_id IS NOT NULL`},
+	// Validation change-discovery (§6.3: validated_at ∈ window).
+	{"idx_pcq_validated_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_validated_at ON partner_clean_queue (validated_at)`},
+	// Campaign enumeration by schedule — served ONLY via per-dataset
+	// iteration (partner_dataset_id = $1 AND scheduled_at range): IS NOT
+	// NULL matches the partial predicate but pins no leading-column value,
+	// so a global scheduled_at range CANNOT seek this index (plan §2
+	// campaign-enum anchor / §6.5). Partial: only drip-stamped campaigns.
+	{"idx_mc_partner_dataset_sched", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mc_partner_dataset_sched ON mailing_campaigns (partner_dataset_id, scheduled_at) WHERE partner_dataset_id IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2455,6 +2485,31 @@ func ownedDomainsSeedSQL() string {
 	}
 	return "INSERT INTO mailing_owned_domains (domain, source) VALUES " +
 		strings.Join(vals, ", ") + " ON CONFLICT (domain) DO NOTHING"
+}
+
+// observatoryISPVocabSQL generates the Drip Observatory fact tables' isp
+// vocabulary CHECK from isp.AllGroups() plus the empty-string lane-row
+// sentinel — one
+// source of truth, same pattern as ownedDomainsSeedSQL: the DDL can never
+// drift from the platform ISP map because it IS the platform ISP map
+// (Vector B plan rev4 §5.0; parity pinned by
+// TestObservatoryISPCheckMatchesAllGroups and the integration suite's
+// pg_get_constraintdef comparison). Idempotent via the pg_constraint probe
+// (the pdbb_* named-CHECK idiom above). NOTE: isp.Other ("other") is NOT in
+// AllGroups() — the plan's chosen vocabulary; flagged to the eng-manager as
+// a P2-facing gap since GroupFromDomain returns "other" for the long tail.
+func observatoryISPVocabSQL(table, constraint string) string {
+	groups := isp.AllGroups()
+	quoted := make([]string, 0, len(groups)+1)
+	quoted = append(quoted, "''") // dimension_scope='lane' rows carry isp=''
+	for _, g := range groups {
+		quoted = append(quoted, "'"+strings.ReplaceAll(g, "'", "''")+"'")
+	}
+	return `DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='` + constraint + `') THEN
+			ALTER TABLE ` + table + ` ADD CONSTRAINT ` + constraint + ` CHECK (isp IN (` + strings.Join(quoted, ", ") + `));
+		END IF;
+	END $$`
 }
 
 func runStartupMigrations(db *sql.DB) {
@@ -9459,6 +9514,285 @@ END $$`},
 			               'internal-auto-insurance-v5','internal-auto-insurance-v6',
 			               'internal-auto-insurance-v7')
 			  AND vertical = 'refi_heloc'`},
+
+		// ── Drip Observatory (Vector B, plan rev4 P1 — schema ONLY) ─────────
+		// Identity + grain contracts: plan §3 (P0). Placed per plan §5 after
+		// aug09_partner_datasets_express_dispatch. All entries additive +
+		// idempotent; every table is NEW and EMPTY so each statement is
+		// trivially within the 5s budget. The five heavy pcq/campaign indexes
+		// live in concurrentIndexSpecs (D1), NOT here. No worker reads or
+		// writes these tables yet (rollup lands in a later phase, shipped
+		// inert behind DRIP_OBSERVATORY_ROLLUP_DISABLED / _LANES).
+		// DEFERRED — rev-3-referenced DDL not reconstructable (see engagement
+		// report): partner_drip_link_audit, partner_drip_hygiene_daily,
+		// partner_drip_cap_decisions (+ DEFAULT partition, capdec_ keys),
+		// partner_drip_cap_xray_daily.
+		{"dob_create_observatory_runs", `CREATE TABLE IF NOT EXISTS partner_drip_observatory_runs (
+			run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			operational_day DATE NOT NULL,
+			source_pass TEXT NOT NULL CHECK (source_pass IN ('rollup','link_audit','xray_daily','xray_maintenance')),
+			started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			completed_at TIMESTAMPTZ,
+			status TEXT NOT NULL DEFAULT 'running'
+				CHECK (status IN ('running','complete','complete_with_errors','failed')),
+			expected_units INT NOT NULL DEFAULT 0,
+			processed_units INT NOT NULL DEFAULT 0,
+			quarantined_units INT NOT NULL DEFAULT 0,
+			error TEXT
+		)`},
+		{"dob_idx_runs_pass_status", `CREATE INDEX IF NOT EXISTS idx_dob_runs_pass_status
+			ON partner_drip_observatory_runs (source_pass, status, started_at DESC)`},
+		// Scope = EXACT logical keys, recorded SEPARATELY per fact kind —
+		// never a Cartesian product; each pass swaps ONLY its own fact kinds
+		// via a USING join on matching-kind rows (plan §5.2/§6.4).
+		{"dob_create_run_scope", `CREATE TABLE IF NOT EXISTS partner_drip_observatory_run_scope (
+			run_id UUID NOT NULL REFERENCES partner_drip_observatory_runs(run_id) ON DELETE CASCADE,
+			fact_kind TEXT NOT NULL CHECK (fact_kind IN ('cohort','event','hygiene','link_audit','xray_daily')),
+			organization_id UUID NOT NULL,
+			day DATE NOT NULL,
+			dataset_id UUID NOT NULL,
+			PRIMARY KEY (run_id, fact_kind, organization_id, day, dataset_id)
+		)`},
+		// Per-(source_pass × dataset) watermarks: no cursor row ⇒ the lane
+		// gets its own FULL historical backfill before incremental
+		// watermarking begins (plan §5.3/§6.2).
+		{"dob_create_cursor", `CREATE TABLE IF NOT EXISTS partner_drip_observatory_cursor (
+			source_pass TEXT NOT NULL,
+			dataset_id UUID NOT NULL,
+			organization_id UUID NOT NULL,
+			bootstrapped_at TIMESTAMPTZ,           -- NULL until the lane's initial FULL backfill completes
+			watermark_to TIMESTAMPTZ NOT NULL,
+			PRIMARY KEY (source_pass, dataset_id)
+		)`},
+		// Cohort fact table (§5.4) — the ONLY table rates come from. Cohort
+		// day = the campaign's FIRST-dispatch Denver day (§3.1).
+		{"dob_create_send_cohort_daily", `CREATE TABLE IF NOT EXISTS partner_drip_send_cohort_daily (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			run_id UUID NOT NULL REFERENCES partner_drip_observatory_runs(run_id),
+			organization_id UUID NOT NULL,
+			cohort_day DATE NOT NULL,                -- FIRST-dispatch Denver day (§3.1)
+			dataset_id UUID NOT NULL,
+			vertical TEXT NOT NULL,
+			touch_number INT NOT NULL CHECK (touch_number >= 0),
+			brand_code TEXT NOT NULL,                -- via brandident (§5.9); '' only for quarantine-exempt lane rows
+			sending_apex TEXT NOT NULL,
+			dimension_scope TEXT NOT NULL CHECK (dimension_scope IN ('lane_isp','lane')),
+			isp TEXT NOT NULL,                       -- §5.0 generated CHECK (dob_cohort_isp_vocab)
+			recipients_planned INT CHECK (recipients_planned IS NULL OR recipients_planned >= 0),
+			messages_dispatched_actual INT CHECK (messages_dispatched_actual IS NULL OR messages_dispatched_actual >= 0),
+			dispatch_basis TEXT NOT NULL CHECK (dispatch_basis IN ('pcq','message_log','acct_terminal','unavailable')),
+			delivered INT CHECK (delivered IS NULL OR delivered >= 0),
+			hard_bounced INT, soft_bounced INT, reputation_blocked INT,   -- three DISTINCT classes (§2 acct writer), never summed
+			validation_blocked INT, complained INT,
+			opens INT, clicks_wrapper INT, clicks_money INT,
+			click_actions_wrapper_basis INT NOT NULL DEFAULT 0 CHECK (click_actions_wrapper_basis >= 0),
+			click_actions_resolved_basis INT NOT NULL DEFAULT 0 CHECK (click_actions_resolved_basis >= 0),
+			click_actions_total INT NOT NULL DEFAULT 0,
+			human_clicks INT NOT NULL DEFAULT 0,
+			click_basis TEXT NOT NULL CHECK (click_basis IN ('none','wrapper','resolved-only','mixed')),
+			unsubs INT, conversions INT, revenue NUMERIC(12,2),
+			dispatch_status   TEXT NOT NULL CHECK (dispatch_status   IN ('available','unavailable','partial','failed')),
+			delivery_status   TEXT NOT NULL CHECK (delivery_status   IN ('available','unavailable','partial','failed')),
+			bounce_status     TEXT NOT NULL CHECK (bounce_status     IN ('available','unavailable','partial','failed')),
+			engagement_status TEXT NOT NULL CHECK (engagement_status IN ('available','unavailable','partial','failed')),
+			conversion_status TEXT NOT NULL CHECK (conversion_status IN ('available','unavailable','partial','failed')),
+			computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (recipients_planned IS NULL OR dimension_scope = 'lane'),
+			CHECK (click_actions_total = click_actions_wrapper_basis + click_actions_resolved_basis),
+			CHECK ((click_basis = 'none') = (click_actions_total = 0)),
+			CHECK (click_basis <> 'wrapper' OR click_actions_resolved_basis = 0),
+			CHECK (click_basis <> 'resolved-only' OR click_actions_wrapper_basis = 0),
+			CHECK (human_clicks <= click_actions_total),
+			CHECK ((dimension_scope = 'lane' AND isp = '') OR (dimension_scope = 'lane_isp' AND isp <> ''))
+		)`},
+		{"dob_uq_drip_cohort_daily", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_cohort_daily ON partner_drip_send_cohort_daily
+			(organization_id, cohort_day, dataset_id, touch_number, brand_code, isp, run_id)`},
+		{"dob_idx_drip_cohort_dataset", `CREATE INDEX IF NOT EXISTS idx_drip_cohort_dataset ON partner_drip_send_cohort_daily (dataset_id, cohort_day DESC)`},
+		{"dob_idx_drip_cohort_run", `CREATE INDEX IF NOT EXISTS idx_drip_cohort_run ON partner_drip_send_cohort_daily (run_id)`},
+		{"dob_cohort_isp_vocab", observatoryISPVocabSQL("partner_drip_send_cohort_daily", "dob_cohort_isp_vocab")},
+		// §5.0 "nonnegativity on every count" — the counts §5.4's inline
+		// CHECKs do not already cover, as one named additive constraint.
+		{"dob_cohort_counts_nonneg", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dob_cohort_counts_nonneg') THEN
+				ALTER TABLE partner_drip_send_cohort_daily ADD CONSTRAINT dob_cohort_counts_nonneg CHECK (
+					(hard_bounced IS NULL OR hard_bounced >= 0) AND (soft_bounced IS NULL OR soft_bounced >= 0)
+					AND (reputation_blocked IS NULL OR reputation_blocked >= 0)
+					AND (validation_blocked IS NULL OR validation_blocked >= 0)
+					AND (complained IS NULL OR complained >= 0) AND (opens IS NULL OR opens >= 0)
+					AND (clicks_wrapper IS NULL OR clicks_wrapper >= 0) AND (clicks_money IS NULL OR clicks_money >= 0)
+					AND (unsubs IS NULL OR unsubs >= 0) AND (conversions IS NULL OR conversions >= 0)
+					AND click_actions_total >= 0 AND human_clicks >= 0);
+			END IF;
+		END $$`},
+		// Event fact table (§5.5) — every measure on its own actual event
+		// day; volumes + DoD deltas only. No recipients_planned here:
+		// planning is cohort-table-only (§3.2).
+		{"dob_create_event_daily", `CREATE TABLE IF NOT EXISTS partner_drip_event_daily (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			run_id UUID NOT NULL REFERENCES partner_drip_observatory_runs(run_id),
+			organization_id UUID NOT NULL,
+			event_day DATE NOT NULL,                 -- basis varies BY COLUMN and is COMMENT-documented:
+			                                         -- engagement/unsub/validation = event_at Denver day;
+			                                         -- conversions = converted_at Denver day;
+			                                         -- delivery/bounce/complaint = summary_date (UTC receipt day, §3.5);
+			                                         -- dispatch = dispatch Denver day
+			dataset_id UUID NOT NULL,
+			vertical TEXT NOT NULL,
+			touch_number INT NOT NULL CHECK (touch_number >= 0),
+			brand_code TEXT NOT NULL,
+			sending_apex TEXT NOT NULL,
+			dimension_scope TEXT NOT NULL CHECK (dimension_scope IN ('lane_isp','lane')),
+			isp TEXT NOT NULL,
+			messages_dispatched_actual INT CHECK (messages_dispatched_actual IS NULL OR messages_dispatched_actual >= 0),
+			dispatch_basis TEXT NOT NULL CHECK (dispatch_basis IN ('pcq','message_log','acct_terminal','unavailable')),
+			delivered INT CHECK (delivered IS NULL OR delivered >= 0),
+			hard_bounced INT, soft_bounced INT, reputation_blocked INT,
+			validation_blocked INT, complained INT,
+			opens INT, clicks_wrapper INT, clicks_money INT,
+			click_actions_wrapper_basis INT NOT NULL DEFAULT 0 CHECK (click_actions_wrapper_basis >= 0),
+			click_actions_resolved_basis INT NOT NULL DEFAULT 0 CHECK (click_actions_resolved_basis >= 0),
+			click_actions_total INT NOT NULL DEFAULT 0,
+			human_clicks INT NOT NULL DEFAULT 0,
+			click_basis TEXT NOT NULL CHECK (click_basis IN ('none','wrapper','resolved-only','mixed')),
+			unsubs INT, conversions INT, revenue NUMERIC(12,2),
+			dispatch_status   TEXT NOT NULL CHECK (dispatch_status   IN ('available','unavailable','partial','failed')),
+			delivery_status   TEXT NOT NULL CHECK (delivery_status   IN ('available','unavailable','partial','failed')),
+			bounce_status     TEXT NOT NULL CHECK (bounce_status     IN ('available','unavailable','partial','failed')),
+			engagement_status TEXT NOT NULL CHECK (engagement_status IN ('available','unavailable','partial','failed')),
+			conversion_status TEXT NOT NULL CHECK (conversion_status IN ('available','unavailable','partial','failed')),
+			computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CHECK (click_actions_total = click_actions_wrapper_basis + click_actions_resolved_basis),
+			CHECK ((click_basis = 'none') = (click_actions_total = 0)),
+			CHECK (click_basis <> 'wrapper' OR click_actions_resolved_basis = 0),
+			CHECK (click_basis <> 'resolved-only' OR click_actions_wrapper_basis = 0),
+			CHECK (human_clicks <= click_actions_total),
+			CHECK ((dimension_scope = 'lane' AND isp = '') OR (dimension_scope = 'lane_isp' AND isp <> ''))
+		)`},
+		{"dob_uq_drip_event_daily", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_event_daily ON partner_drip_event_daily
+			(organization_id, event_day, dataset_id, touch_number, brand_code, isp, run_id)`},
+		{"dob_idx_drip_event_dataset", `CREATE INDEX IF NOT EXISTS idx_drip_event_dataset ON partner_drip_event_daily (dataset_id, event_day DESC)`},
+		{"dob_idx_drip_event_run", `CREATE INDEX IF NOT EXISTS idx_drip_event_run ON partner_drip_event_daily (run_id)`},
+		{"dob_event_isp_vocab", observatoryISPVocabSQL("partner_drip_event_daily", "dob_event_isp_vocab")},
+		{"dob_event_counts_nonneg", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dob_event_counts_nonneg') THEN
+				ALTER TABLE partner_drip_event_daily ADD CONSTRAINT dob_event_counts_nonneg CHECK (
+					(hard_bounced IS NULL OR hard_bounced >= 0) AND (soft_bounced IS NULL OR soft_bounced >= 0)
+					AND (reputation_blocked IS NULL OR reputation_blocked >= 0)
+					AND (validation_blocked IS NULL OR validation_blocked >= 0)
+					AND (complained IS NULL OR complained >= 0) AND (opens IS NULL OR opens >= 0)
+					AND (clicks_wrapper IS NULL OR clicks_wrapper >= 0) AND (clicks_money IS NULL OR clicks_money >= 0)
+					AND (unsubs IS NULL OR unsubs >= 0) AND (conversions IS NULL OR conversions >= 0)
+					AND click_actions_total >= 0 AND human_clicks >= 0);
+			END IF;
+		END $$`},
+		// Normalized quarantine (§5.8): <=100 sample rows per (run, reason);
+		// overflow increments runs.quarantined_units only. Read via the §8.4
+		// admin surface (later phase).
+		{"dob_create_quarantine", `CREATE TABLE IF NOT EXISTS partner_drip_observatory_quarantine (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			run_id UUID NOT NULL REFERENCES partner_drip_observatory_runs(run_id),
+			source_pass TEXT NOT NULL,
+			reason TEXT NOT NULL,                    -- 'name_parse_error' | 'mapping_error' | 'brand_unknown' | ...
+			quarantine_key TEXT NOT NULL,            -- campaign id / wave_attempt id / dataset id
+			sample TEXT NOT NULL DEFAULT '',         -- REDACTED, truncated to 500 chars
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"dob_idx_quarantine_run", `CREATE INDEX IF NOT EXISTS idx_dob_quarantine_run ON partner_drip_observatory_quarantine (run_id, reason)`},
+		// brand_code↔apex normalizer table (§5.9), seeded from the
+		// internal/pkg/brandident compile-time literal (27-brand registry) —
+		// same one-source-of-truth pattern as ownedDomainsSeedSQL. Parity:
+		// brandident unit tests now; P2 shadow vs the Python registry via
+		// the audience-knowledge MCP.
+		{"dob_create_brand_codes", `CREATE TABLE IF NOT EXISTS mailing_brand_codes (
+			brand_code TEXT PRIMARY KEY,
+			apex TEXT NOT NULL UNIQUE,
+			source TEXT NOT NULL DEFAULT 'seed'
+		)`},
+		{"dob_seed_brand_codes", brandident.SeedSQL()},
+		// Alert condition state + at-least-once delivery queue (§5.10; state
+		// machine semantics §9.3). Tables only — the alert worker is a later
+		// phase (P5) and nothing writes these yet.
+		{"dob_create_alert_state", `CREATE TABLE IF NOT EXISTS partner_drip_alert_state (
+			alert_key TEXT PRIMARY KEY,              -- '<check>:<dataset_id>:<isp>' (isp='' for lane-level checks)
+			state TEXT NOT NULL CHECK (state IN ('pending','active','resolved')),
+			severity TEXT NOT NULL DEFAULT 'warn',
+			first_observed_at TIMESTAMPTZ NOT NULL,
+			last_observed_at TIMESTAMPTZ NOT NULL,
+			last_value JSONB NOT NULL,               -- most recent observation
+			last_notified_value JSONB,               -- observation as of the last SUCCESSFUL delivery (worsening baseline)
+			resolved_at TIMESTAMPTZ,
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb
+		)`},
+		{"dob_create_alert_deliveries", `CREATE TABLE IF NOT EXISTS partner_drip_alert_deliveries (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			alert_key TEXT NOT NULL REFERENCES partner_drip_alert_state(alert_key),
+			notification_kind TEXT NOT NULL CHECK (notification_kind IN ('firing','reminder','resolution')),
+			delivery_state TEXT NOT NULL DEFAULT 'pending'
+				CHECK (delivery_state IN ('pending','sending','delivered','failed')),
+			payload JSONB NOT NULL,
+			attempt_count INT NOT NULL DEFAULT 0,
+			claimed_by TEXT, claim_expires_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			delivered_at TIMESTAMPTZ
+		)`},
+		{"dob_idx_alert_deliveries_pending", `CREATE INDEX IF NOT EXISTS idx_dob_alert_deliveries_pending
+			ON partner_drip_alert_deliveries (delivery_state, created_at) WHERE delivery_state IN ('pending','failed')`},
+		// ── Contract COMMENTs (plan §5 head: "every column gets its contract
+		// COMMENT", content from §3 — the P0 identity/grain contracts). The
+		// rev-3 §3.5 matrix is not on disk; comments below are derived from
+		// rev-4 §3 + the §5 inline annotations. COMMENT is catalog-only and
+		// idempotent; batched per table (simple-protocol multi-statement).
+		{"dob_comments_runs", `COMMENT ON TABLE partner_drip_observatory_runs IS 'Drip Observatory run ledger — one row per pass cycle (plan §5.1). Readers accept complete AND complete_with_errors: row-level metric statuses tell the truth per metric.';
+			COMMENT ON COLUMN partner_drip_observatory_runs.source_pass IS 'Owning pass. Each pass swaps ONLY its own fact kinds (rollup: cohort/event/hygiene; link_audit: link_audit; xray_daily: xray_daily) — §5.2/§6.4.';
+			COMMENT ON COLUMN partner_drip_observatory_runs.status IS 'complete_with_errors = the swap ran but some slices carry failed metric statuses or quarantined units.';
+			COMMENT ON COLUMN partner_drip_observatory_runs.quarantined_units IS 'Total quarantined units incl. overflow beyond the 100-per-(run,reason) sample cap in partner_drip_observatory_quarantine (§5.8).'`},
+		{"dob_comments_run_scope", `COMMENT ON TABLE partner_drip_observatory_run_scope IS 'EXACT logical keys recomputed by a run, recorded SEPARATELY per fact kind (a late open adds an event key for today AND a cohort key for the dispatch day) — never a Cartesian product. The swap deletes via USING join on scope rows of the matching kind ONLY (§5.2/§6.4).';
+			COMMENT ON COLUMN partner_drip_observatory_run_scope.fact_kind IS 'Fact kind this key belongs to; scope sets are per-kind so one pass can never delete another pass''s facts.';
+			COMMENT ON COLUMN partner_drip_observatory_run_scope.organization_id IS 'Org is part of every logical fact key and every swap scope (§3.6). Never NULL; no fallback literal.';
+			COMMENT ON COLUMN partner_drip_observatory_run_scope.day IS 'The fact''s own day for its kind: cohort keys carry the FIRST-dispatch Denver day, event keys the event day (§3.1).'`},
+		{"dob_comments_cursor", `COMMENT ON TABLE partner_drip_observatory_cursor IS 'Per (source_pass x dataset) watermarks (§5.3). A dataset with no cursor row (first seen, re-enabled, or created late) gets its own FULL historical backfill [dataset.created_at, now), day-chunked, before incremental watermarking.';
+			COMMENT ON COLUMN partner_drip_observatory_cursor.bootstrapped_at IS 'NULL until the lane''s initial FULL backfill completes.';
+			COMMENT ON COLUMN partner_drip_observatory_cursor.watermark_to IS 'Discovery watermark; advances only when the run completes. The window finds WHAT changed, never what to count (§6.3 two-stage recompute).'`},
+		{"dob_comments_cohort", `COMMENT ON TABLE partner_drip_send_cohort_daily IS 'Cohort fact table — the ONLY table rates come from (§3.1). Cohort day is DEFINED as the campaign''s FIRST-dispatch Denver day (a chosen, documented semantic, not a claimed invariant): campaigns CAN span Denver midnight and ALL outcomes attribute to the first-dispatch day. Evidence precedence: t1 MIN(pcq.mailed_at); t0 MIN(message_log.sent_at); t>=2 MIN(summary_date) — a UTC receipt day carrying a disclosed <=1-day skew (§3.5); none => no cohort row.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.cohort_day IS 'FIRST-dispatch Denver day (§3.1). For t>=2 campaigns resolved from acct summary_date = UTC receipt day, so it carries a disclosed <=1-day skew — state this in any UI tooltip.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.organization_id IS 'Org ownership (§3.6): part of the logical key and unique index. Unmappable org => quarantine, never a fallback literal, never NULL; no read may include OR organization_id IS NULL.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.brand_code IS 'Vector A ground truth, via internal/pkg/brandident ONLY (§3.7/§5.9); lookup miss => brand_unknown quarantine, no fact row. Empty '''' only for quarantine-exempt lane rows.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.sending_apex IS 'Drip-side ground truth (pcq mailed_brand / campaign-name token), stored alongside brand_code on every row (§3.7). sub2 validation compares against THIS field.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.isp IS 'Generated vocabulary CHECK dob_cohort_isp_vocab from isp.AllGroups() + '''' for lane rows (§5.0) — never a new ISP CASE.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.recipients_planned IS 'mailing_campaigns.total_recipients — NEVER a denominator (§3.2). Stored ONLY on dimension_scope=lane rows (CHECK); the API returns it in a planning sub-object only.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.dispatch_basis IS 'pcq (t1) | message_log (t0) | acct_terminal (t>=2: delivered+relayed_to_ses+hard+reputation_blocked+soft+complained, terminal outcomes only — total_records counts RECORDS not messages and is never a basis) | unavailable (§6.6).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.delivered IS 'Acct SUM(delivered)+SUM(ses_delivered) ("true delivered"). Cohort delivery attribution is by campaign_id (day-independent), so summary_date''s UTC-receipt-day skew does not affect cohort outcomes (§3.5).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.hard_bounced IS 'One of THREE distinct bounce classes (hard/soft/reputation_blocked, acct writer classifyBounce three-way) — NEVER summed with the others (METRIC_CONTRACT).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.reputation_blocked IS 'Third bounce class — neither hard nor soft; never folded into either (rev-4 letter-level correction, §15.3).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.clicks_wrapper IS 'Raw wrapper-row count (SES webhook, link_url = the emailed t.em/o href). Raw counts are stored and never summed with clicks_money (§3.3).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.clicks_money IS 'Raw money-host resolved-row count — attribution diagnostics only, never summed with clicks_wrapper (§3.3).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.click_actions_wrapper_basis IS 'Canonical click actions from wrapper-basis campaigns: per (campaign, day), actions = wrapper count if wrapper > 0 else money count, aggregated to this grain (§3.3).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.click_actions_resolved_basis IS 'Canonical click actions from resolved-only campaigns (no wrapper rows) — §3.3.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.click_actions_total IS 'wrapper_basis + resolved_basis (hard CHECK). The API''s click rate is labeled "click events per delivered message" (§8).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.click_basis IS 'none iff total=0 (never a default) | wrapper | resolved-only | mixed (both bases contribute) — §3.3; writer must establish explicitly (§3.4).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.human_clicks IS 'Verdict-split clicks over the same row population as each campaign''s chosen basis (§3.3); <= click_actions_total (CHECK).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.unsubs IS 'An unsubscribe is a click — human action, healthy signal (signal-grading doctrine).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.dispatch_status IS 'Per-metric availability (§3.4): available|unavailable|partial|failed, NO default — the writer establishes it on every row. Rates only when numerator AND denominator statuses are available.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.delivery_status IS 'Per-metric availability (§3.4). Standing: governed/kumo brands => unavailable until the Vector A VDM path lands.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.bounce_status IS 'Per-metric availability (§3.4). Standing: SES-routed lanes => partial (acct hard/soft/reputation_blocked are PMTA-direct facts).';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.engagement_status IS 'Per-metric availability (§3.4); a failed source query for a slice => failed for that metric family.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.conversion_status IS 'Per-metric availability (§3.4); a failed source query for a slice => failed for that metric family.';
+			COMMENT ON COLUMN partner_drip_send_cohort_daily.run_id IS 'Generation lineage: rows are staged under their run_id and become visible after the per-kind swap; every API row carries run_id + computed_at (§6.4/§8).'`},
+		{"dob_comments_event", `COMMENT ON TABLE partner_drip_event_daily IS 'Event fact table (§3.1/§5.5) — every measure on its own actual event day. Volumes + DoD deltas only; the API refuses rates here except same-row same-basis ratios. No recipients_planned: planning is cohort-table-only (§3.2). Column contracts mirror partner_drip_send_cohort_daily except the day basis.';
+			COMMENT ON COLUMN partner_drip_event_daily.event_day IS 'Basis varies BY COLUMN: engagement/unsub/validation = event_at Denver day; conversions = converted_at Denver day; delivery/bounce/complaint = summary_date = UTC receipt day (§3.5 — never converted by guesswork; label "date basis: UTC receipt day"); dispatch = dispatch Denver day.';
+			COMMENT ON COLUMN partner_drip_event_daily.organization_id IS 'Org ownership (§3.6): part of the logical key and unique index; unmappable => quarantine, never NULL.';
+			COMMENT ON COLUMN partner_drip_event_daily.brand_code IS 'Via internal/pkg/brandident ONLY (§3.7/§5.9); miss => brand_unknown quarantine.';
+			COMMENT ON COLUMN partner_drip_event_daily.sending_apex IS 'Drip-side ground truth stored alongside brand_code (§3.7).';
+			COMMENT ON COLUMN partner_drip_event_daily.isp IS 'Generated vocabulary CHECK dob_event_isp_vocab from isp.AllGroups() + '''' for lane rows (§5.0).';
+			COMMENT ON COLUMN partner_drip_event_daily.dispatch_basis IS 'pcq | message_log | acct_terminal (terminal outcomes, never total_records) | unavailable (§6.6).';
+			COMMENT ON COLUMN partner_drip_event_daily.click_basis IS 'none iff total=0 (never a default) | wrapper | resolved-only | mixed (§3.3); writer must establish explicitly (§3.4).';
+			COMMENT ON COLUMN partner_drip_event_daily.dispatch_status IS 'Per-metric availability (§3.4): NO default; writer-established on every row. Same vocabulary and standing assignments as the cohort table.'`},
+		{"dob_comments_quarantine", `COMMENT ON TABLE partner_drip_observatory_quarantine IS 'Normalized quarantine (§5.8), replaces the runs-JSONB array. Cap: <=100 rows per (run, reason); overflow increments runs.quarantined_units only. Read via the §8.4 admin surface (X-Admin-Key idiom). A quarantined unit produces NO fact row — never a guessed brand/org, never silent.';
+			COMMENT ON COLUMN partner_drip_observatory_quarantine.sample IS 'REDACTED, truncated to 500 chars.'`},
+		{"dob_comments_brand_codes", `COMMENT ON TABLE mailing_brand_codes IS 'brand_code<->apex identity registry (§5.9), the ONE shared normalizer''s backing table — seeded from the internal/pkg/brandident Go literal mirroring the 27-brand Python registry (agents/registry/brand_metadata.py). Parity gates: brandident unit tests; P2 shadow vs the registry via the audience-knowledge MCP quarantines on drift. Neither vector hand-maps.'`},
+		{"dob_comments_alerts", `COMMENT ON TABLE partner_drip_alert_state IS 'Alert condition state (§5.10/§9.3). Observation NEVER touches last_notified_value — that is the worsening baseline, updated only on successful delivery.';
+			COMMENT ON COLUMN partner_drip_alert_state.last_notified_value IS 'Observation as of the last SUCCESSFUL delivery (worsening baseline for "materially worse" re-fires) — §9.3.';
+			COMMENT ON TABLE partner_drip_alert_deliveries IS 'At-least-once alert delivery queue (§5.10/§9.3): Slack duplicates are acceptable, lost alerts are not. Claim via FOR UPDATE SKIP LOCKED; a crashed claimant''s row re-qualifies at claim_expires_at.'`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
