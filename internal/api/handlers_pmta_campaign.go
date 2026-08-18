@@ -13,6 +13,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +50,18 @@ type PMTACampaignService struct {
 	// skipBackgroundDeploy skips the async goroutine in HandleDeployCampaign.
 	// Used in tests so sqlmock connections aren't accessed after test cleanup.
 	skipBackgroundDeploy bool
+
+	// laneSupplyCache: per-dataset TTL cache for the supply anatomy
+	// (Cockpit load-collapse addendum: the aggregate costs ~1.8s / ~550k
+	// shared buffers on a 1.9M-row dataset — concurrent pollers must not
+	// stack scans). sync.Map[dataset_id string]*laneSupplyCacheSlot; misses
+	// for the same dataset collapse on the slot's mutex so at most ONE scan
+	// runs per dataset per TTL. Zero value ready — no constructor wiring.
+	laneSupplyCache sync.Map
+	// laneSupplyIndexOK: once the covering index has been observed valid it
+	// stays valid in-process — the pg_class probe runs until first success,
+	// then never again (same cache posture, per the addendum).
+	laneSupplyIndexOK atomic.Bool
 
 	// gateEvalFn overrides evaluateSendDayGates for testing (the real
 	// evaluation reads live gate sources via SQL). Nil means use the real
@@ -122,6 +136,13 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)
+		// Throttle configuration READ (Pipeline Cockpit P2): current
+		// partner_isp_distribution_overrides per feed + effective posture +
+		// the server-side write flag (PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED)
+		// that gates the cockpit's edit surface. Writes REUSE the existing
+		// PUT /api/mailing/data-partners/datasets/{id}/isp-distribution —
+		// no second writer.
+		cr.Get("/property-ledger/throttle", s.HandleLaneThrottle)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)

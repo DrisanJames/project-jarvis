@@ -312,3 +312,65 @@ func TestLaneSupplyIndexNotValid503(t *testing.T) {
 		t.Fatalf("503 should name the index: %s", rec.Body.String())
 	}
 }
+
+// TestLaneSupplyCacheCollapse — load-collapse addendum: the anatomy
+// aggregate (~1.8s / ~550k shared buffers on the largest live dataset) must
+// run at most ONCE per dataset per TTL. Two immediate consecutive handler
+// calls: sqlmock (ordered) expects exactly one index probe and exactly one
+// anatomy + ready-by-isp pair — the second call re-resolves the cheap feed
+// identities but serves counts from the cache, with the SAME computed_at.
+func TestLaneSupplyCacheCollapse(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	dsID := "66666666-6666-6666-6666-666666666666"
+
+	// Call 1: index probe + resolution + anatomy + ready.
+	expectSupplyIndexValid(mock, true)
+	mock.ExpectQuery(`SELECT vertical`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
+	expectSupplyFeedQueries(mock, "homeimprovement", dsID, true)
+
+	// Call 2: resolution ONLY — no index probe (once-valid-stays-valid), no
+	// anatomy, no ready-by-isp. Ordered sqlmock fails the test if the
+	// handler runs the scan again.
+	mock.ExpectQuery(`SELECT vertical`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency"}).
+			AddRow(dsID, "feed-one", "active", 5000, false))
+	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
+		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db").AddRow("ht").AddRow("mh"))
+
+	rec1 := getSupply(t, s, "em.discountblog.com")
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("call 1 got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	rec2 := getSupply(t, s, "em.discountblog.com")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("call 2 got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var r1, r2 struct {
+		Feeds []laneSupplyFeed `json:"feeds"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &r1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &r2); err != nil {
+		t.Fatal(err)
+	}
+	if len(r1.Feeds) != 1 || len(r2.Feeds) != 1 {
+		t.Fatalf("want 1 feed per call, got %d/%d", len(r1.Feeds), len(r2.Feeds))
+	}
+	if r2.Feeds[0].ReadyTotal != r1.Feeds[0].ReadyTotal || r2.Feeds[0].TrancheTotal != r1.Feeds[0].TrancheTotal {
+		t.Fatalf("cached counts must match the scan: %+v vs %+v", r2.Feeds[0], r1.Feeds[0])
+	}
+	if r1.Feeds[0].ComputedAt.IsZero() || !r2.Feeds[0].ComputedAt.Equal(r1.Feeds[0].ComputedAt) {
+		t.Fatalf("computed_at must be the scan instant on both calls (cache hit): %v vs %v",
+			r1.Feeds[0].ComputedAt, r2.Feeds[0].ComputedAt)
+	}
+	// The decisive assertion: every expectation consumed, none left — the
+	// anatomy query ran exactly once across both calls.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

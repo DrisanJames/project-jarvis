@@ -31,8 +31,11 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
@@ -101,6 +104,32 @@ type laneSupplyFeed struct {
 	DeadLetter     int64           `json:"dead_letter"`
 	MailedLifetime int64           `json:"mailed_lifetime"`
 	MailedToday    int64           `json:"mailed_today"`
+	// ComputedAt: when this dataset's anatomy was actually scanned — counts
+	// are served from a per-dataset TTL cache (laneSupplyCacheTTL), so the
+	// UI shows staleness honestly ("as of HH:MM:SS").
+	ComputedAt time.Time `json:"computed_at"`
+}
+
+// laneSupplyCacheTTL bounds anatomy staleness. The aggregate is ~1.8s /
+// ~550k shared buffers on the largest live dataset (measured 2026-08-17);
+// with 5-minute UI polling plus concurrent viewers, uncached calls stack.
+// Queue-level supply is a slow-moving fact — 2 minutes is honest.
+const laneSupplyCacheTTL = 120 * time.Second
+
+// laneSupplyCacheSlot is one dataset's cached anatomy. Misses collapse on
+// mu: concurrent callers for the same dataset serialize, the first runs the
+// scan, the rest read the fresh cache.
+type laneSupplyCacheSlot struct {
+	mu         sync.Mutex
+	computedAt time.Time
+	counts     laneSupplyCounts
+	ready      []laneSupplyISP
+}
+
+type laneSupplyCounts struct {
+	TrancheTotal, Cleaning, PendingEO, EOInFlight int64
+	ReadyTotal, Held, Suppressed, DeadLetter      int64
+	MailedLifetime, MailedToday                   int64
 }
 
 // laneSupplyDenverDayBoundsUTC computes the current Denver day as UTC
@@ -199,25 +228,132 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 	// anatomy aggregate is a measured 16.7s seq scan on prod WITHOUT
 	// idx_pcq_dataset_status_mailed (covering IOS: 27.7ms). Refuse rather
 	// than tax the heap until the CONCURRENTLY build lands and is valid.
-	var indexValid bool
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(i.indisvalid, false)
-		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-		WHERE c.relname = 'idx_pcq_dataset_status_mailed'
-	`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
-		respondError(w, http.StatusInternalServerError, "index check failed")
-		return
-	}
-	if !indexValid {
-		respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
-		return
+	// Once observed valid it stays valid in-process (indexes don't un-build;
+	// a REINDEX bounce is a redeploy-scale event) — no probe per poll.
+	if !s.laneSupplyIndexOK.Load() {
+		var indexValid bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COALESCE(i.indisvalid, false)
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = 'idx_pcq_dataset_status_mailed'
+		`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
+			respondError(w, http.StatusInternalServerError, "index check failed")
+			return
+		}
+		if !indexValid {
+			respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
+			return
+		}
+		s.laneSupplyIndexOK.Store(true)
 	}
 	dayStart, dayEnd := laneSupplyDenverDayBoundsUTC(time.Now())
 
 	// Every query failure fails the response — a silent partial-200 misleads
 	// the operator (same robustness rule as HandleLaneContent).
 
-	// 1. The brand's feeds: verticals off the roster (as HandleLaneContent).
+	// 1–2. Feed identities + shared rotation (the single resolution path,
+	// shared with the throttle read).
+	feeds, err := s.laneSupplyResolveFeeds(ctx, brand)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 3. The tranche anatomy per dataset — through the per-dataset TTL
+	// cache. A miss runs the scan while HOLDING the slot mutex, so
+	// concurrent pollers for the same dataset collapse to one scan per TTL.
+	for i := range feeds {
+		f := &feeds[i]
+		if err := s.laneSupplyFillAnatomy(ctx, f, dayStart, dayEnd); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"domain":          domain,
+		"brand":           brand,
+		"sending_domain":  sendingDomain,
+		"non_ledger":      nonLedger,
+		"as_of":           time.Now().UTC(),
+		"denver_day":      time.Now().In(propertyLedgerLoc).Format("2006-01-02"),
+		"ready_semantics": laneSupplyReadySemantics,
+		"supply_note":     "Live queue facts (point-in-time). Supply is a DATASET fact shared across the rotation's brands — never domain-owned inventory.",
+		"feeds":           feeds,
+	})
+}
+
+// laneSupplyFillAnatomy fills one feed's counts + ready-by-ISP from the
+// per-dataset TTL cache, scanning only on a cold/expired slot. Errors are
+// operator-facing strings (never a silent partial-200). The Denver-day
+// bounds ride the cache too: up to laneSupplyCacheTTL of staleness across
+// the midnight boundary, surfaced honestly via computed_at.
+func (s *PMTACampaignService) laneSupplyFillAnatomy(ctx context.Context, f *laneSupplyFeed, dayStart, dayEnd time.Time) error {
+	slotI, _ := s.laneSupplyCache.LoadOrStore(f.DatasetID, &laneSupplyCacheSlot{})
+	slot := slotI.(*laneSupplyCacheSlot)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+
+	if slot.computedAt.IsZero() || time.Since(slot.computedAt) >= laneSupplyCacheTTL {
+		var c laneSupplyCounts
+		var dsID string
+		err := s.db.QueryRowContext(ctx, laneSupplyAnatomySQL, f.DatasetID, dayStart, dayEnd).
+			Scan(&dsID, &c.TrancheTotal, &c.Cleaning, &c.PendingEO, &c.EOInFlight,
+				&c.ReadyTotal, &c.Held, &c.Suppressed, &c.DeadLetter,
+				&c.MailedLifetime, &c.MailedToday)
+		if err != nil && err != sql.ErrNoRows {
+			return errors.New("supply anatomy query failed")
+		}
+		// sql.ErrNoRows = a dataset with zero pcq rows: all-zero counts are
+		// the true state of that queue, not an error (and cacheable).
+
+		counts := map[string]int64{}
+		err = func() error {
+			rows, err := s.db.QueryContext(ctx, laneSupplyReadyByISPSQL, f.DatasetID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var isp string
+				var n int64
+				if err := rows.Scan(&isp, &n); err != nil {
+					return err
+				}
+				counts[isp] = n
+			}
+			return rows.Err()
+		}()
+		if err != nil {
+			return errors.New("ready-by-isp query failed")
+		}
+		slot.counts = c
+		slot.ready = laneSupplyOrderReadyByISP(counts)
+		slot.computedAt = time.Now()
+	}
+
+	f.TrancheTotal = slot.counts.TrancheTotal
+	f.Cleaning = slot.counts.Cleaning
+	f.PendingEO = slot.counts.PendingEO
+	f.EOInFlight = slot.counts.EOInFlight
+	f.ReadyTotal = slot.counts.ReadyTotal
+	f.Held = slot.counts.Held
+	f.Suppressed = slot.counts.Suppressed
+	f.DeadLetter = slot.counts.DeadLetter
+	f.MailedLifetime = slot.counts.MailedLifetime
+	f.MailedToday = slot.counts.MailedToday
+	f.ReadyByISP = append([]laneSupplyISP{}, slot.ready...)
+	f.ComputedAt = slot.computedAt
+	return nil
+}
+
+// laneSupplyResolveFeeds resolves a lane brand's feeds — roster verticals →
+// active datasets per vertical, with the vertical's shared-brand rotation
+// attached — the SINGLE resolution path shared by the supply and throttle
+// reads. Identity/budget fields are populated; anatomy counts are the
+// caller's. Error messages are operator-facing (the callers respond them
+// verbatim); every failure is an error — never a silent partial result.
+func (s *PMTACampaignService) laneSupplyResolveFeeds(ctx context.Context, brand string) ([]laneSupplyFeed, error) {
 	verticals := []string{}
 	err := func() error {
 		rows, err := s.db.QueryContext(ctx, `
@@ -239,11 +375,10 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 		return rows.Err()
 	}()
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "roster query failed")
-		return
+		return nil, errors.New("roster query failed")
 	}
 
-	// 2. Shared-brand list per vertical (the rotation the supply is shared
+	// Shared-brand list per vertical (the rotation the supply is shared
 	// across), cached — verticals repeat across feeds.
 	sharedCache := map[string][]string{}
 	sharedBrands := func(vertical string) ([]string, error) {
@@ -273,11 +408,9 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 		return out, nil
 	}
 
-	// 3. Active datasets per vertical, then the tranche anatomy per dataset.
 	feeds := []laneSupplyFeed{}
 	for _, vertical := range verticals {
-		type dsTmp struct{ feed laneSupplyFeed }
-		tmp := []dsTmp{}
+		tmp := []laneSupplyFeed{}
 		err := func() error {
 			rows, err := s.db.QueryContext(ctx, `
 				SELECT id::text, name, COALESCE(status, ''), COALESCE(daily_cap, 0),
@@ -290,75 +423,178 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 			}
 			defer rows.Close()
 			for rows.Next() {
-				d := dsTmp{feed: laneSupplyFeed{Vertical: vertical, ReadyByISP: []laneSupplyISP{}, SharedBrands: []string{}}}
-				if err := rows.Scan(&d.feed.DatasetID, &d.feed.Name, &d.feed.Status,
-					&d.feed.DailyCap, &d.feed.Paused); err != nil {
+				f := laneSupplyFeed{Vertical: vertical, ReadyByISP: []laneSupplyISP{}, SharedBrands: []string{}}
+				if err := rows.Scan(&f.DatasetID, &f.Name, &f.Status,
+					&f.DailyCap, &f.Paused); err != nil {
 					return err
 				}
-				tmp = append(tmp, d)
+				tmp = append(tmp, f)
 			}
 			return rows.Err()
 		}()
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "dataset query failed")
-			return
+			return nil, errors.New("dataset query failed")
 		}
-		for _, d := range tmp {
-			f := d.feed
+		for _, f := range tmp {
 			shared, err := sharedBrands(vertical)
 			if err != nil {
-				respondError(w, http.StatusInternalServerError, "shared-brand query failed")
-				return
+				return nil, errors.New("shared-brand query failed")
 			}
 			f.SharedBrands = shared
-
-			var dsID string
-			err = s.db.QueryRowContext(ctx, laneSupplyAnatomySQL, f.DatasetID, dayStart, dayEnd).
-				Scan(&dsID, &f.TrancheTotal, &f.Cleaning, &f.PendingEO, &f.EOInFlight,
-					&f.ReadyTotal, &f.Held, &f.Suppressed, &f.DeadLetter,
-					&f.MailedLifetime, &f.MailedToday)
-			if err != nil && err != sql.ErrNoRows {
-				respondError(w, http.StatusInternalServerError, "supply anatomy query failed")
-				return
-			}
-			// sql.ErrNoRows = a dataset with zero pcq rows: all-zero counts
-			// are the true state of that queue, not an error.
-
-			counts := map[string]int64{}
-			err = func() error {
-				rows, err := s.db.QueryContext(ctx, laneSupplyReadyByISPSQL, f.DatasetID)
-				if err != nil {
-					return err
-				}
-				defer rows.Close()
-				for rows.Next() {
-					var isp string
-					var n int64
-					if err := rows.Scan(&isp, &n); err != nil {
-						return err
-					}
-					counts[isp] = n
-				}
-				return rows.Err()
-			}()
-			if err != nil {
-				respondError(w, http.StatusInternalServerError, "ready-by-isp query failed")
-				return
-			}
-			f.ReadyByISP = laneSupplyOrderReadyByISP(counts)
 			feeds = append(feeds, f)
 		}
 	}
+	return feeds, nil
+}
 
+// ── Throttle configuration — READ side (Pipeline Cockpit plan P2) ───────────
+//
+// Current partner_isp_distribution_overrides per feed dataset + the effective
+// posture (which ISPs carry an override vs ride the global defaults),
+// rendered beside the supply strip's per-ISP ready counts. The lane's
+// supply-release cap (partner_datasets.daily_cap) is returned beside it,
+// labeled as the DISTINCT system it is — the two cap systems the plan names
+// as the #1 predictable operator confusion:
+//   (1) supply_release_daily_cap — SUPPLY release budget (ready-vs-held,
+//       agents/jobs/drip_lane_release.py);
+//   (2) overrides[] — CLAIM-side per-ISP enforcement, read fresh by the drip
+//       orchestrator (max_per_wave replaces the global per-wave claim cap for
+//       this dataset's waves; daily_cap is the lane-owned per-ISP daily
+//       budget: NULL = global default, 0 = hard-suppressed).
+//
+// WRITE side: the cockpit UI REUSES the existing
+// PUT /api/mailing/data-partners/datasets/{id}/isp-distribution
+// (HandleUpdateISPDistribution, partner_admin_handlers.go — delete-and-
+// replace semantics, updated_by stamped, writeAuditLog'd). No second writer.
+// The edit surface renders ONLY when this response reports
+// write_enabled=true, i.e. the server env
+// PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED=1 (HOLD-CRITICAL posture: ships
+// unset = read-only panel with an honest banner naming the env var; flipping
+// the env is the one-move enable AND the one-move rollback).
+
+// laneThrottleWriteFlagEnv gates the cockpit's throttle EDIT surface. This is
+// a server-reported flag (surfaced in the throttle read), not a UI-local one.
+const laneThrottleWriteFlagEnv = "PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED"
+
+func laneThrottleWriteEnabled() bool {
+	return os.Getenv(laneThrottleWriteFlagEnv) == "1"
+}
+
+// laneThrottleOverridesSQL mirrors the admin read
+// (partner_admin_handlers.go HandleGetFlushStatus overrides block) plus the
+// updated_at/updated_by audit columns the cockpit displays.
+const laneThrottleOverridesSQL = `
+	SELECT isp, pct_override, COALESCE(max_per_wave, 0), daily_cap,
+	       updated_at, COALESCE(updated_by, '')
+	FROM partner_isp_distribution_overrides
+	WHERE dataset_id = $1
+	ORDER BY isp`
+
+type laneThrottleOverride struct {
+	ISP         string  `json:"isp"`
+	PctOverride float64 `json:"pct_override"`
+	MaxPerWave  int     `json:"max_per_wave"`
+	// DailyCap: NULL (omitted) = lane rides the global per-brand default;
+	// 0 = hard-suppressed for this lane (core.md §14 2026-08-06).
+	DailyCap  *int64    `json:"daily_cap,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by,omitempty"`
+}
+
+type laneThrottleFeed struct {
+	DatasetID string `json:"dataset_id"`
+	Name      string `json:"name"`
+	Vertical  string `json:"vertical"`
+	Status    string `json:"status"`
+	Paused    bool   `json:"paused_emergency"`
+	// SupplyReleaseDailyCap is cap system (1) — partner_datasets.daily_cap,
+	// the SUPPLY-side release budget. NOT a claim-side ISP cap.
+	SupplyReleaseDailyCap int      `json:"supply_release_daily_cap"`
+	SharedBrands          []string `json:"shared_brands"`
+	// Overrides is cap system (2) — the live claim-side enforcement rows.
+	Overrides []laneThrottleOverride `json:"overrides"`
+	// DefaultISPs: ledger ISPs with NO override row — they ride the global
+	// defaults (the effective posture's other half).
+	DefaultISPs []string `json:"default_isps"`
+}
+
+// HandleLaneThrottle GET …/property-ledger/throttle?domain=<apex-or-sending-domain>
+func (s *PMTACampaignService) HandleLaneThrottle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	domain := r.URL.Query().Get("domain")
+	brand, sendingDomain, nonLedger, ok := s.laneSupplyBrandForDomain(ctx, domain)
+	if !ok {
+		respondError(w, http.StatusBadRequest, "unknown domain — must be a drip roster sending domain or a registered mailing_brand_metadata domain")
+		return
+	}
+	feeds, err := s.laneSupplyResolveFeeds(ctx, brand)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]laneThrottleFeed, 0, len(feeds))
+	for _, f := range feeds {
+		tf := laneThrottleFeed{
+			DatasetID:             f.DatasetID,
+			Name:                  f.Name,
+			Vertical:              f.Vertical,
+			Status:                f.Status,
+			Paused:                f.Paused,
+			SupplyReleaseDailyCap: f.DailyCap,
+			SharedBrands:          f.SharedBrands,
+			Overrides:             []laneThrottleOverride{},
+			DefaultISPs:           []string{},
+		}
+		overridden := map[string]bool{}
+		err := func() error {
+			rows, err := s.db.QueryContext(ctx, laneThrottleOverridesSQL, f.DatasetID)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var ov laneThrottleOverride
+				var dailyCap sql.NullInt64
+				if err := rows.Scan(&ov.ISP, &ov.PctOverride, &ov.MaxPerWave,
+					&dailyCap, &ov.UpdatedAt, &ov.UpdatedBy); err != nil {
+					return err
+				}
+				if dailyCap.Valid {
+					v := dailyCap.Int64
+					ov.DailyCap = &v
+				}
+				overridden[strings.ToLower(strings.TrimSpace(ov.ISP))] = true
+				tf.Overrides = append(tf.Overrides, ov)
+			}
+			return rows.Err()
+		}()
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "override query failed")
+			return
+		}
+		for _, g := range isppkg.LedgerGroups() {
+			if !overridden[g] {
+				tf.DefaultISPs = append(tf.DefaultISPs, g)
+			}
+		}
+		out = append(out, tf)
+	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"domain":          domain,
-		"brand":           brand,
-		"sending_domain":  sendingDomain,
-		"non_ledger":      nonLedger,
-		"as_of":           time.Now().UTC(),
-		"denver_day":      time.Now().In(propertyLedgerLoc).Format("2006-01-02"),
-		"ready_semantics": laneSupplyReadySemantics,
-		"supply_note":     "Live queue facts (point-in-time). Supply is a DATASET fact shared across the rotation's brands — never domain-owned inventory.",
-		"feeds":           feeds,
+		"domain":         domain,
+		"brand":          brand,
+		"sending_domain": sendingDomain,
+		"non_ledger":     nonLedger,
+		"as_of":          time.Now().UTC(),
+		// The server-side gate for the cockpit's throttle EDIT surface
+		// (HOLD-CRITICAL write path): the UI renders read-only unless this
+		// server reports true. Flipping the env is the one-move rollback.
+		"write_enabled":  laneThrottleWriteEnabled(),
+		"write_flag_env": laneThrottleWriteFlagEnv,
+		// The one writer (REUSED, never duplicated): delete-and-replace.
+		"write_endpoint": "/api/mailing/data-partners/datasets/{id}/isp-distribution",
+		"replacement_note": "Writes REPLACE the lane's override set (delete-and-replace): ISPs omitted from a write fall back to the global defaults, and their lane daily budgets are removed with the row. An ISP included without daily_cap keeps its prior lane budget.",
+		"enforcement_note": "LIVE enforcement input — the drip orchestrator reads these rows fresh each wave: max_per_wave replaces the global per-wave claim cap for this dataset; daily_cap is the lane-owned per-ISP daily budget (NULL = global default, 0 = hard-suppressed). Changes apply on the next wave, no deploy.",
+		"cap_systems_note": "Two distinct cap systems: supply_release_daily_cap = supply release cap (lane, ready-vs-held); overrides[] = claim cap (per ISP, orchestrator).",
+		"feeds":            out,
 	})
 }

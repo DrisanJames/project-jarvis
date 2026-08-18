@@ -23,7 +23,11 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../shared/apiFetch';
-import { usePolling } from '../shared/usePolling';
+import { usePolling, type PollingState } from '../shared/usePolling';
+import {
+  buildThrottleDiff, buildThrottlePayload, validateThrottleRows,
+  type ThrottleRow,
+} from './throttleDiff';
 
 interface Proposal {
   id: string;
@@ -148,12 +152,42 @@ interface SupplyFeed {
   ready_total: number; ready_by_isp: SupplyISP[];
   held: number; suppressed: number; dead_letter: number;
   mailed_lifetime: number; mailed_today: number;
+  computed_at: string;        // when this dataset's anatomy was actually scanned (server TTL cache)
 }
 interface SupplyResponse {
   domain: string; brand: string; sending_domain: string; non_ledger: boolean;
   as_of: string; denver_day: string;
   ready_semantics: string; supply_note: string;
   feeds: SupplyFeed[];
+}
+
+// ── Throttle shapes (property_lane_supply.go HandleLaneThrottle — Cockpit P2)
+
+interface ThrottleOverride {
+  isp: string;
+  pct_override: number;
+  max_per_wave: number;
+  daily_cap?: number;         // absent = lane rides the global default; 0 = hard-suppressed
+  updated_at: string;
+  updated_by?: string;
+}
+interface ThrottleFeed {
+  dataset_id: string; name: string; vertical: string; status: string;
+  paused_emergency: boolean;
+  supply_release_daily_cap: number; // SUPPLY-side release budget — distinct system from the claim caps
+  shared_brands: string[];
+  overrides: ThrottleOverride[];    // CLAIM-side per-ISP enforcement (live orchestrator input)
+  default_isps: string[];           // ledger ISPs with no override — ride global defaults
+}
+interface ThrottleResponse {
+  domain: string; brand: string; sending_domain: string; non_ledger: boolean;
+  write_enabled: boolean;   // server env PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED — gates the edit surface
+  write_flag_env: string;
+  write_endpoint: string;
+  replacement_note: string;
+  enforcement_note: string;
+  cap_systems_note: string;
+  feeds: ThrottleFeed[];
 }
 
 // wcl-heloc is a first-class cockpit domain but NOT a ledger brand (cockpit
@@ -232,6 +266,50 @@ export const PropertyLedgerView: React.FC = () => {
     }
     setDomain(bestSent > 0 ? best : domains[0]);
   }, [data, domain]);
+
+  // Supply poll is hosted HERE (not inside the strip) so the lane table's
+  // Ready column reuses the SAME response — one fetch, two renderings
+  // (operator addendum: hot queue visible beside the caps). Null when the
+  // "All domains" grid is showing (dataset supply is not a grid fact).
+  const supply = usePolling<SupplyResponse | null>(
+    async (signal) => {
+      if (!domain || domain === ALL_DOMAINS) return null;
+      const r = await apiFetch(
+        `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(domain)}`,
+        { signal });
+      if (!r.ok) {
+        // Keep the status in the message: 503 = the covering index is still
+        // building (the strip/column render it as "warming up", not failure).
+        let msg = `HTTP ${r.status}`;
+        try {
+          const j = await r.json();
+          if (j && typeof j.error === 'string') msg = `HTTP ${r.status}: ${j.error}`;
+        } catch { /* non-JSON error body */ }
+        throw new Error(msg);
+      }
+      return r.json() as Promise<SupplyResponse>;
+      // 300s poll (load-collapse addendum): supply is a queue-level fact —
+      // 5-minute freshness is right, and the server's per-dataset TTL cache
+      // (120s) means tighter polling would only re-read the cache anyway.
+    }, 300_000, [domain]);
+  const supplyWarming = !!supply.error && supply.error.startsWith('HTTP 503');
+
+  // Throttle read (Cockpit P2): fetched per domain, refetched after a write.
+  const [throttle, setThrottle] = useState<ThrottleResponse | null>(null);
+  const [throttleErr, setThrottleErr] = useState<string | null>(null);
+  const loadThrottle = useCallback(async () => {
+    if (!domain || domain === ALL_DOMAINS) { setThrottle(null); return; }
+    setThrottleErr(null);
+    try {
+      const r = await apiFetch(
+        `/api/mailing/pmta-campaign/property-ledger/throttle?domain=${encodeURIComponent(domain)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setThrottle(await r.json());
+    } catch (e) {
+      setThrottleErr(e instanceof Error ? e.message : 'load failed');
+    }
+  }, [domain]);
+  useEffect(() => { setThrottle(null); void loadThrottle(); }, [loadThrottle]);
 
   const post = async (path: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> => {
     const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/${path}`, {
@@ -355,6 +433,47 @@ export const PropertyLedgerView: React.FC = () => {
   const runs = data?.runs;
   const vdmMeta = data?.vdm;
 
+  // Ready-by-ISP for the lane table (operator addendum): cleaned records
+  // ready for dispatch, summed across the domain's feeds — supply is a
+  // DATASET fact shared across the rotation, so the tooltip breaks the sum
+  // down per feed and carries the shared caveat.
+  const readyByISP = new Map<string, { total: number; perFeed: Array<{ name: string; n: number }> }>();
+  for (const f of supply.data?.feeds ?? []) {
+    for (const e of f.ready_by_isp) {
+      const entry = readyByISP.get(e.isp) ?? { total: 0, perFeed: [] };
+      entry.total += e.ready;
+      entry.perFeed.push({ name: f.name, n: e.ready });
+      readyByISP.set(e.isp, entry);
+    }
+  }
+  const supplyFeedCount = supply.data?.feeds.length ?? 0;
+  const renderReadyCell = (isp: string): React.ReactNode => {
+    if (supplyWarming) {
+      return <span style={{ color: 'rgba(180,210,240,0.45)' }}
+        title="Supply view warming up — the covering index is still building (CONCURRENTLY); retries automatically on the next poll.">
+        warming up
+      </span>;
+    }
+    if (!supply.data) {
+      return <span style={{ color: 'rgba(180,210,240,0.45)' }}
+        title={supply.error ? `Supply fetch failed (${supply.error})` : 'Loading live supply…'}>
+        {supply.error ? '—' : '…'}
+      </span>;
+    }
+    const e = readyByISP.get(isp);
+    const total = e?.total ?? 0;
+    const breakdown = supplyFeedCount > 1 && e
+      ? e.perFeed.map(p => `${p.name}: ${num(p.n)}`).join(' · ')
+      : '';
+    const tip = `Cleaned records claimable now (live queue).`
+      + (breakdown ? ` Per feed — ${breakdown}.` : '')
+      + ' Supply is dataset-level, shared across the rotation — not owned by this domain.';
+    return <span title={tip}
+      style={{ color: total > 0 ? '#00b894' : 'rgba(180,210,240,0.5)' }}>
+      {num(total)}
+    </span>;
+  };
+
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
@@ -433,7 +552,11 @@ export const PropertyLedgerView: React.FC = () => {
         </div>
       )}
 
-      {!showAll && domain && <SupplyStrip domain={domain} />}
+      {!showAll && domain && (
+        <SupplyStrip domain={domain} supply={supply} throttle={throttle}
+          throttleErr={throttleErr} onThrottleChanged={() => void loadThrottle()}
+          onNotice={setNotice} />
+      )}
 
       <div style={{ overflowX: 'auto' }}>
         <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: showAll ? 1000 : 1250 }}>
@@ -442,6 +565,12 @@ export const PropertyLedgerView: React.FC = () => {
             <th style={th}>ISP</th>
             <th style={thNum}>Drip Intro Daily Cap</th>
             <th style={thNum}>Introductions Today</th>
+            {!showAll && (
+              <th style={thNum}
+                title="Cleaned records ready for dispatch (claimable now) per ISP, from the live supply queue — summed across this domain's feeds. Supply is dataset-level, shared across the rotation.">
+                Ready
+              </th>
+            )}
             <th style={th}>Drip Intro Hold</th>
             {!showAll && (<>
               <th style={thNum} title={`VDM yesterday (UTC ${vdmMeta?.day ?? ''}) — unique-count semantics`}>Sent (yday)</th>
@@ -505,6 +634,9 @@ export const PropertyLedgerView: React.FC = () => {
                           {num(r.introduced_today)}
                         </span>}
                   </td>
+                  {!showAll && (
+                    <td style={tdNum}>{renderReadyCell(r.isp)}</td>
+                  )}
                   <td style={td}>
                     <button
                       onClick={() => void toggleHold(r)}
@@ -556,7 +688,7 @@ export const PropertyLedgerView: React.FC = () => {
               );
             })}
             {rows.length === 0 && !loading && (
-              <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={showAll ? 7 : 12}>
+              <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={showAll ? 7 : 13}>
                 {isNonLedgerDomain
                   ? `${domain} is not in the ledger — budgets N/A. The supply strip above is live; ledger enrollment is a separate operator step.`
                   : 'Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.'}
@@ -582,22 +714,35 @@ export const PropertyLedgerView: React.FC = () => {
   );
 };
 
-// ── Supply strip — live pcq tranche anatomy per feed (Cockpit P1) ───────────
+// ── Supply strip — live pcq tranche anatomy per feed (Cockpit P1+P2) ────────
 //
 // LIVE queue facts (PG, point-in-time, labeled "live queue") — never
 // Observatory fact aggregates. Supply is a DATASET fact shared across the
 // rotation's brands; the shared-pool indicator renders on every card so
 // dataset supply is never presented as domain-owned inventory.
+//
+// The supply poll lives in the PARENT (PropertyLedgerView) so the lane
+// table's Ready column shares the response; this strip is presentational.
+// P2 adds the claim-side throttle beside each feed's ready counts: the
+// current partner_isp_distribution_overrides rows + effective posture, and
+// — ONLY when the server reports write_enabled (env
+// PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED=1) — an edit surface that reuses
+// the existing PUT /api/mailing/data-partners/datasets/{id}/isp-distribution
+// with a full replacement diff preview and a typed-feed-name confirm.
 
-const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
-  const { data, loading, error, secondsSinceUpdate } = usePolling<SupplyResponse>(
-    async (signal) => {
-      const r = await apiFetch(
-        `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(domain)}`,
-        { signal });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json() as Promise<SupplyResponse>;
-    }, 60_000, [domain]);
+export const SupplyStrip: React.FC<{
+  domain: string;
+  supply: PollingState<SupplyResponse | null>;
+  throttle: ThrottleResponse | null;
+  throttleErr: string | null;
+  onThrottleChanged: () => void;
+  onNotice: (s: string) => void;
+}> = ({ domain, supply, throttle, throttleErr, onThrottleChanged, onNotice }) => {
+  const { data, loading, error, secondsSinceUpdate } = supply;
+  const warming = !!error && error.startsWith('HTTP 503');
+  const [editingFeed, setEditingFeed] = useState<string | null>(null);
+  const throttleByDataset = new Map<string, ThrottleFeed>();
+  for (const tf of throttle?.feeds ?? []) throttleByDataset.set(tf.dataset_id, tf);
 
   const label: React.CSSProperties = {
     fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.55)',
@@ -622,19 +767,39 @@ const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
           title={data?.supply_note ?? 'Live queue facts (point-in-time), not Observatory aggregates.'}>
           LIVE QUEUE
         </span>
-        {data && (
+        {data ? (
           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}
             title={data.ready_semantics}>
             {data.sending_domain || data.domain} · {data.brand} · Denver day {data.denver_day}
           </span>
+        ) : (
+          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{domain}</span>
         )}
         <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(180,210,240,0.5)' }}>
-          {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 60s`}
+          {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 5m`}
         </span>
       </div>
-      {error && (
+      {warming && (
+        <div style={{ color: '#facc15', fontSize: 12, marginBottom: 8 }}>
+          Supply view warming up — the covering index is still building (CONCURRENTLY, calm-IO
+          windows); retries automatically on the next poll.
+        </div>
+      )}
+      {error && !warming && (
         <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>
           Supply refresh failed ({error}){data ? ' — showing last good data' : ''}
+        </div>
+      )}
+      {throttleErr && (
+        <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>
+          Throttle read failed ({throttleErr}) — claim-cap posture unavailable.
+        </div>
+      )}
+      {throttle && !throttle.write_enabled && (
+        <div style={{ fontSize: 11, color: '#facc15', marginBottom: 8, fontWeight: 600 }}
+          title={throttle.enforcement_note}>
+          Throttle editing is DISABLED — the server env {throttle.write_flag_env} is not set
+          (HOLD-CRITICAL write path; the operator enables it server-side). Panel is read-only.
         </div>
       )}
       {data && (
@@ -667,6 +832,10 @@ const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
                 <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}
                   title="Supply-release budget (partner_datasets.daily_cap): the release job keeps at most this many rows 'ready' per day, parking the rest 'held'. NOT the claim-side per-ISP cap.">
                   release cap {f.daily_cap > 0 ? `${num(f.daily_cap)}/day` : 'uncapped'}
+                </span>
+                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)' }}
+                  title="Counts come from a server-side per-dataset cache (TTL 120s) — this is when the queue was actually scanned.">
+                  as of {new Date(f.computed_at).toLocaleTimeString()}
                 </span>
                 {f.shared_brands.length > 1 && (
                   <span style={{ marginLeft: 'auto', fontSize: 10, color: '#facc15', fontWeight: 700 }}
@@ -702,6 +871,61 @@ const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
                     <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)' }}>none ready</div>
                   )}
                 </div>
+                {(() => {
+                  // Claim throttle beside the ready counts (Cockpit P2).
+                  const tf = throttleByDataset.get(f.dataset_id);
+                  if (!tf || !throttle) return null;
+                  return (
+                    <div style={{ minWidth: 200, flex: '1 1 200px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={label} title={throttle.cap_systems_note}>
+                          Claim caps (per ISP)
+                        </div>
+                        {throttle.write_enabled ? (
+                          <button
+                            onClick={() => setEditingFeed(editingFeed === f.dataset_id ? null : f.dataset_id)}
+                            title={throttle.enforcement_note}
+                            style={{ background: 'rgba(233,69,96,0.12)', color: '#e94560',
+                                     border: '1px solid rgba(233,69,96,0.4)', borderRadius: 5,
+                                     padding: '1px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
+                            {editingFeed === f.dataset_id ? 'Close editor' : 'Edit throttle'}
+                          </button>
+                        ) : (
+                          <span style={{ fontSize: 9, color: 'rgba(180,210,240,0.45)' }}
+                            title={`Read-only: server env ${throttle.write_flag_env} is not set.`}>
+                            read-only
+                          </span>
+                        )}
+                      </div>
+                      {tf.overrides.length === 0 ? (
+                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}
+                          title={throttle.enforcement_note}>
+                          no overrides — every ISP rides the global defaults
+                        </div>
+                      ) : tf.overrides.map(ov => (
+                        <div key={ov.isp}
+                          style={{ display: 'flex', gap: 6, alignItems: 'baseline', padding: '1px 0' }}
+                          title={`Live enforcement row — updated ${age(ov.updated_at)}${ov.updated_by ? ` by ${ov.updated_by}` : ''}. ${throttle.enforcement_note}`}>
+                          <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', width: 68 }}>{ov.isp}</span>
+                          <span style={{ fontSize: 10, color: '#e6edf5', fontVariantNumeric: 'tabular-nums' }}>
+                            {ov.max_per_wave > 0 ? `wave ≤${num(ov.max_per_wave)}` : 'wave default'}
+                            {' · '}
+                            {ov.daily_cap == null ? 'day default'
+                              : ov.daily_cap === 0 ? 'day SUPPRESSED'
+                              : `day ≤${num(ov.daily_cap)}`}
+                            {` · pct ${(ov.pct_override * 100).toFixed(0)}%`}
+                          </span>
+                        </div>
+                      ))}
+                      {tf.default_isps.length > 0 && (
+                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', marginTop: 2 }}
+                          title={`On global defaults (no override row): ${tf.default_isps.join(', ')}`}>
+                          {tf.default_isps.length} ISP{tf.default_isps.length === 1 ? '' : 's'} on global defaults
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {stat('Held', f.held, {
                   color: '#facc15',
                   tip: "Reservoir parked by the release job (over the day's release cap) — cleaned, waiting for release",
@@ -710,9 +934,200 @@ const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
                 {stat('Dead letter', f.dead_letter, { muted: true, tip: 'dead_letter — EO retries exhausted' })}
                 {stat('Mailed today', f.mailed_today, { tip: `Denver day ${data.denver_day} · lifetime ${num(f.mailed_lifetime)}` })}
               </div>
+              {throttle?.write_enabled && editingFeed === f.dataset_id && (() => {
+                const tf = throttleByDataset.get(f.dataset_id);
+                if (!tf) return null;
+                return (
+                  <ThrottleEditor feed={tf} note={throttle.replacement_note}
+                    onClose={() => setEditingFeed(null)}
+                    onSaved={() => { setEditingFeed(null); onThrottleChanged(); }}
+                    onNotice={onNotice} />
+                );
+              })()}
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+};
+
+// ── Throttle editor (Cockpit P2, HOLD-CRITICAL write path) ──────────────────
+//
+// Writes through the EXISTING PUT
+// /api/mailing/data-partners/datasets/{id}/isp-distribution (delete-and-
+// replace; audit-logged server-side) — never a second writer. Offer-swap-
+// grade ceremony: a rendered current→proposed diff (replacement semantics
+// spelled out per row) and a typed-feed-name confirm; a mismatch NEVER
+// submits. Only reachable when the server reports write_enabled.
+
+interface ThrottleEditRow { isp: string; pct: string; wave: string; day: string; }
+
+const throttleEditRowsFromFeed = (feed: ThrottleFeed): ThrottleEditRow[] =>
+  feed.overrides.map(ov => ({
+    isp: ov.isp,
+    pct: String(ov.pct_override),
+    wave: ov.max_per_wave > 0 ? String(ov.max_per_wave) : '',
+    day: ov.daily_cap == null ? '' : String(ov.daily_cap),
+  }));
+
+const parseThrottleRows = (rows: ThrottleEditRow[]): ThrottleRow[] =>
+  rows.map(r => ({
+    isp: r.isp,
+    pct_override: r.pct.trim() === '' ? NaN : Number(r.pct),
+    max_per_wave: r.wave.trim() === '' ? 0 : Number(r.wave),
+    daily_cap: r.day.trim() === '' ? null : Number(r.day),
+  }));
+
+const currentThrottleRows = (feed: ThrottleFeed): ThrottleRow[] =>
+  feed.overrides.map(ov => ({
+    isp: ov.isp,
+    pct_override: ov.pct_override,
+    max_per_wave: ov.max_per_wave,
+    daily_cap: ov.daily_cap == null ? null : ov.daily_cap,
+  }));
+
+const ThrottleEditor: React.FC<{
+  feed: ThrottleFeed;
+  note: string;
+  onClose: () => void;
+  onSaved: () => void;
+  onNotice: (s: string) => void;
+}> = ({ feed, note, onClose, onSaved, onNotice }) => {
+  const [rows, setRows] = useState<ThrottleEditRow[]>(() => throttleEditRowsFromFeed(feed));
+  const [addISP, setAddISP] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const proposed = parseThrottleRows(rows);
+  const errors = validateThrottleRows(proposed);
+  const diff = errors.length === 0 ? buildThrottleDiff(currentThrottleRows(feed), proposed) : [];
+  const changes = diff.filter(d => d.kind !== 'unchanged');
+
+  const availableISPs = feed.default_isps.filter(g => !rows.some(r => r.isp === g));
+
+  const input: React.CSSProperties = {
+    background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
+    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+    padding: '3px 6px', fontSize: 11, width: 80,
+  };
+  const smallBtn: React.CSSProperties = {
+    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
+    border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+    padding: '2px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
+  };
+  const diffColor: Record<string, string> = {
+    added: '#00b894', removed: '#e94560', changed: '#facc15', unchanged: 'rgba(180,210,240,0.45)',
+  };
+
+  const submit = async () => {
+    if (errors.length > 0 || busy) return;
+    // Same gravity as the offer swap: type the feed name to proceed. A
+    // mismatch NEVER submits (client-side hard stop).
+    const typed = window.prompt(
+      `THROTTLE REPLACE changes LIVE claim routing for this feed on the next orchestrator wave.\n\n${note}\n\nType the feed name exactly to confirm:\n${feed.name}`);
+    if (typed === null) return;
+    if (typed !== feed.name) {
+      onNotice('Throttle write cancelled — feed name did not match.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await apiFetch(
+        `/api/mailing/data-partners/datasets/${feed.dataset_id}/isp-distribution`,
+        { method: 'PUT', body: JSON.stringify(buildThrottlePayload(proposed)) });
+      let json: Record<string, unknown> = {};
+      try { json = await r.json(); } catch { /* non-JSON error body */ }
+      if (!r.ok) {
+        onNotice(`Throttle write failed: ${String(json.error ?? r.status)}`);
+        return;
+      }
+      onNotice(`Throttle replaced for "${feed.name}" — ${String(json.override_count ?? proposed.length)} override row(s) now live (next wave picks them up).`);
+      onSaved();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid rgba(233,69,96,0.25)', paddingTop: 8 }}>
+      <div style={{ fontSize: 10, color: '#facc15', fontWeight: 600, marginBottom: 6 }}>
+        {note}
+      </div>
+      {rows.map((r, i) => (
+        <div key={r.isp} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '2px 0', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, color: '#e6edf5', width: 80, fontWeight: 600 }}>{r.isp}</span>
+          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}>
+            pct (0–1){' '}
+            <input style={input} value={r.pct} placeholder="0.4"
+              onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, pct: e.target.value } : x))} />
+          </label>
+          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}>
+            per-wave cap{' '}
+            <input style={input} value={r.wave} placeholder="default"
+              onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, wave: e.target.value } : x))} />
+          </label>
+          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}
+            title="Empty = keep this ISP's existing lane daily budget (server preserves it). 0 = hard-suppress the ISP for this lane.">
+            daily cap (empty = keep){' '}
+            <input style={input} value={r.day} placeholder="keep"
+              onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, day: e.target.value } : x))} />
+          </label>
+          <button style={{ ...smallBtn, background: 'rgba(233,69,96,0.12)', color: '#e94560',
+                           border: '1px solid rgba(233,69,96,0.4)' }}
+            title="Removes this ISP's row entirely — it falls back to the global defaults and its lane daily budget is deleted."
+            onClick={() => setRows(s => s.filter((_, j) => j !== i))}>
+            Remove
+          </button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
+        <select value={addISP} onChange={e => setAddISP(e.target.value)}
+          style={{ ...input, width: 130 }}>
+          <option value="">add ISP…</option>
+          {availableISPs.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <button style={smallBtn} disabled={addISP === ''}
+          onClick={() => {
+            if (addISP === '') return;
+            setRows(s => [...s, { isp: addISP, pct: '0', wave: '', day: '' }]);
+            setAddISP('');
+          }}>
+          Add override
+        </button>
+      </div>
+      {errors.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          {errors.map((e, i) => (
+            <div key={i} style={{ fontSize: 10, color: '#e94560', fontWeight: 600 }}>{e}</div>
+          ))}
+        </div>
+      )}
+      {errors.length === 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase',
+                        color: 'rgba(180,210,240,0.55)' }}>
+            Change preview (current → proposed)
+          </div>
+          {changes.length === 0 && (
+            <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)' }}>no changes</div>
+          )}
+          {changes.map(d => (
+            <div key={d.isp} style={{ fontSize: 10, color: diffColor[d.kind], padding: '1px 0' }}>
+              <b>{d.isp}</b> — {d.kind}{d.notes.length > 0 ? `: ${d.notes.join('; ')}` : ''}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <button style={{ ...smallBtn, background: 'rgba(233,69,96,0.15)', color: '#e94560',
+                         border: '1px solid rgba(233,69,96,0.4)' }}
+          disabled={busy || errors.length > 0 || changes.length === 0}
+          onClick={() => void submit()}>
+          {busy ? 'Replacing…' : 'Replace throttle…'}
+        </button>
+        <button style={{ ...smallBtn, background: 'transparent', color: 'rgba(180,210,240,0.6)',
+                         border: '1px solid rgba(255,255,255,0.15)' }}
+          disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
       </div>
     </div>
   );
@@ -731,6 +1146,12 @@ const LaneContentPanel: React.FC<{
   const [touchEdit, setTouchEdit] = useState<Record<string, { subject_line: string; preheader: string; from_name: string }>>({});
   const [swapSel, setSwapSel] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<Record<string, boolean>>({});
+  // Creative preview (operator addendum): fetched ONLY on click (the HTML is
+  // ~65KB per creative — never in the list payload), rendered in a sandboxed
+  // iframe (srcdoc, sandbox="" — no scripts), keyed by creative id.
+  const [preview, setPreview] = useState<Record<string, {
+    open: boolean; loading: boolean; html?: string; err?: string;
+  }>>({});
 
   const loadContent = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -887,15 +1308,70 @@ const LaneContentPanel: React.FC<{
     </div>
   );
 
+  const togglePreview = (creative: LaneCreative) => {
+    const cur = preview[creative.id];
+    const opening = !(cur?.open);
+    setPreview(s => ({ ...s, [creative.id]: { ...(s[creative.id] ?? { loading: false }), open: opening } }));
+    // Fetch once, on first open only — the panel list never carries HTML.
+    if (opening && cur?.html === undefined && !cur?.loading) {
+      setPreview(s => ({ ...s, [creative.id]: { open: true, loading: true } }));
+      void (async () => {
+        try {
+          const r = await apiFetch(
+            `/api/mailing/pmta-campaign/property-ledger/lane-content/creative?id=${encodeURIComponent(creative.id)}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const j = await r.json();
+          setPreview(s => ({ ...s, [creative.id]: { open: true, loading: false, html: String(j.html ?? '') } }));
+        } catch (e) {
+          setPreview(s => ({ ...s, [creative.id]: {
+            open: true, loading: false, err: e instanceof Error ? e.message : 'preview fetch failed',
+          } }));
+        }
+      })();
+    }
+  };
+
   const renderCreativeBadge = (offer: LaneOffer) =>
     offer.creative ? (
-      <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
-        title={`${num(offer.creative.html_bytes)} bytes · id ${offer.creative.id}`}>
-        creative v{offer.creative.version} ({offer.creative.status}) · {age(offer.creative.updated_at)}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
+          title={`${num(offer.creative.html_bytes)} bytes · id ${offer.creative.id}`}>
+          creative v{offer.creative.version} ({offer.creative.status}) · {age(offer.creative.updated_at)}
+        </span>
+        <button style={smallBtn}
+          title="Fetches the creative HTML and renders it sandboxed (no scripts). Loaded only when opened."
+          onClick={() => togglePreview(offer.creative!)}>
+          {preview[offer.creative.id]?.open ? '▾ Preview' : '▸ Preview'}
+        </button>
       </span>
     ) : (
       <span style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>NO SERVING CREATIVE</span>
     );
+
+  const renderCreativePreview = (offer: LaneOffer) => {
+    const creative = offer.creative;
+    if (!creative) return null;
+    const p = preview[creative.id];
+    if (!p?.open) return null;
+    return (
+      <div style={{ marginTop: 8 }}>
+        {p.loading && (
+          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Loading preview…</div>
+        )}
+        {p.err && (
+          <div style={{ fontSize: 11, color: '#e94560' }}>Preview failed ({p.err})</div>
+        )}
+        {p.html !== undefined && !p.loading && !p.err && (
+          <iframe
+            title={`Creative preview — ${offer.name || creative.id}`}
+            sandbox=""
+            srcDoc={p.html}
+            style={{ width: '100%', height: 480, border: '1px solid rgba(255,255,255,0.12)',
+                     borderRadius: 8, background: '#ffffff' }} />
+        )}
+      </div>
+    );
+  };
 
   const renderTouchRow = (t: LaneTouchCopy) => {
     const key = touchKey(t);
@@ -908,7 +1384,7 @@ const LaneContentPanel: React.FC<{
           T{t.touch}{t.vertical === '' ? ' (global)' : ''}
         </span>
         <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', minWidth: 110 }}>
-          {t.creative_filename === '' ? 'offer-center creative' : t.creative_filename}
+          {t.creative_filename === '' ? "uses the offer's creative" : t.creative_filename}
         </span>
         {e ? (
           <>
@@ -998,7 +1474,7 @@ const LaneContentPanel: React.FC<{
                           </span>
                         ) : (
                           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
-                            drip-pool path (no direct offer bound)
+                            no dataset-level offer — see touch bindings below
                           </span>
                         )}
                         {ds.offer && renderCreativeBadge(ds.offer)}
@@ -1018,6 +1494,7 @@ const LaneContentPanel: React.FC<{
                         </span>
                       </div>
                       {ds.offer && renderOfferPools(ds.offer, ds.id)}
+                      {ds.offer && renderCreativePreview(ds.offer)}
                     </div>
                   );
                 })}
@@ -1025,10 +1502,10 @@ const LaneContentPanel: React.FC<{
                   <div key={`${feed.vertical}/to/${to.offer.id}`}
                     style={{ padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                      <span title="This offer is bound on the feed's TOUCH rows (per-touch override), not on the dataset — NULL-offer datasets still mail it."
+                      <span title="This offer is set on individual touches of the ladder, not on the feed itself — feeds without a feed-level offer still mail it."
                         style={{ fontSize: 9, color: '#a5b4fc', fontWeight: 700, letterSpacing: 0.5,
                                  border: '1px solid rgba(99,102,241,0.4)', borderRadius: 4, padding: '1px 6px' }}>
-                        TOUCH-LEVEL BINDING · {to.touch_scope.join(', ')}
+                        OFFER SET PER TOUCH · {to.touch_scope.join(', ')}
                       </span>
                       <span style={{ fontSize: 11, color: '#a5b4fc' }}>
                         offer: <b>{to.offer.name || to.offer.id}</b> ({to.offer.status || '?'})
@@ -1036,6 +1513,7 @@ const LaneContentPanel: React.FC<{
                       {renderCreativeBadge(to.offer)}
                     </div>
                     {renderOfferPools(to.offer, `${feed.vertical}/${to.offer.id}`)}
+                    {renderCreativePreview(to.offer)}
                   </div>
                 ) : null)}
                 {(feed.touch1 || feed.followups.length > 0) && (
@@ -1052,7 +1530,10 @@ const LaneContentPanel: React.FC<{
       })}
       {content && content.global_followups.length > 0 && (
         <div style={{ marginTop: 6 }}>
-          <div style={label}>Shared/global follow-up rows (vertical-agnostic fallback chain)</div>
+          <div style={label}
+            title="These rows are shared: any feed on this brand without its own touch-specific copy mails these. Editing them changes every feed that falls back here.">
+            Fallback offers — mailed when this feed has no touch-specific copy (shared across all feeds)
+          </div>
           {content.global_followups.map(renderTouchRow)}
         </div>
       )}
