@@ -237,6 +237,15 @@ func (h *PartnerIngestHandler) HandlePostRecords(w http.ResponseWriter, r *http.
 	batchID := uuid.New().String()
 	receivedAt := time.Now().UTC()
 
+	// Raw-sample capture (contract review): the canonical NDJSON below is a
+	// re-marshal through the CLOSED ingestRecord struct, which silently
+	// destroys any posted field the struct doesn't carry (see the struct
+	// comment — the 2026-08-09 city/postal_code loss). Persist the FIRST
+	// record's ORIGINAL bytes so the partner's actual payload survives for
+	// schema-drift review. Best-effort and per-dataset throttled — it must
+	// never fail or visibly slow the partner-facing request.
+	h.captureRawSample(ctx, batchID, authCtx.DatasetID, bodyBytes, contentType)
+
 	// Reduce parsed records to canonical NDJSON — one JSON object per line in
 	// FIFO order. The slicer reads this NDJSON, applies suppression checks,
 	// then enqueues survivors into partner_clean_queue.
@@ -308,6 +317,104 @@ func (h *PartnerIngestHandler) HandlePostRecords(w http.ResponseWriter, r *http.
 		S3Key:       s3Key,
 		ReceivedAt:  receivedAt.Format(time.RFC3339),
 	})
+}
+
+// ============ raw-sample capture ============
+
+// rawSampleMaxBytes caps the stored sample: 16 KiB comfortably holds any
+// single partner record while bounding row size under the observed
+// 1-record-batch flood pattern (~70k POSTs/day on one dataset).
+const rawSampleMaxBytes = 16 * 1024
+
+// rawSampleInsertSQL writes at most one sample row per dataset per 10
+// minutes (WHERE NOT EXISTS on a recent row for the SAME dataset). Contract
+// review needs per-dataset freshness, not per-batch coverage — an unguarded
+// capture under the 1-record-batch flood would write ~70k rows/day.
+const rawSampleInsertSQL = `
+	INSERT INTO partner_ingest_raw_samples (batch_id, dataset_id, sample, content_type)
+	SELECT $1, $2, $3, $4
+	WHERE NOT EXISTS (
+		SELECT 1 FROM partner_ingest_raw_samples
+		WHERE dataset_id = $2
+		  AND captured_at > NOW() - INTERVAL '10 minutes'
+	)`
+
+// captureRawSample persists the first posted record's raw bytes so the
+// original payload survives the closed-struct re-marshal for contract
+// review. Best-effort by design: every failure is logged and swallowed —
+// the capture must be invisible to the partner.
+func (h *PartnerIngestHandler) captureRawSample(ctx context.Context, batchID, datasetID string, body []byte, contentType string) {
+	sample := extractFirstRawRecord(body, contentType)
+	if len(sample) == 0 {
+		return
+	}
+	if len(sample) > rawSampleMaxBytes {
+		sample = sample[:rawSampleMaxBytes]
+	}
+	// Postgres TEXT rejects NUL bytes and invalid UTF-8 (which the cap
+	// truncation above can create mid-rune); sanitize so a weird payload
+	// degrades to a mangled sample instead of a failed capture.
+	text := strings.ToValidUTF8(strings.ReplaceAll(string(sample), "\x00", ""), "�")
+	if _, err := h.db.ExecContext(ctx, rawSampleInsertSQL, batchID, datasetID, text, contentType); err != nil {
+		log.Printf("[partner-ingest] raw-sample capture failed batch=%s dataset=%s err=%v", batchID, datasetID, err)
+	}
+}
+
+// extractFirstRawRecord returns the raw bytes of the FIRST record in the
+// posted body WITHOUT decoding through ingestRecord, mirroring
+// parseIngestPayload's branching (gzip → content-type → shape). Returns nil
+// when no record can be isolated; the caller skips capture in that case.
+func extractFirstRawRecord(body []byte, contentType string) []byte {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil
+	}
+	if isGzipBody(body) {
+		gzr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil
+		}
+		decoded, err := io.ReadAll(io.LimitReader(gzr, maxIngestBytes*8))
+		gzr.Close()
+		if err != nil {
+			return nil
+		}
+		body = bytes.TrimSpace(decoded)
+		if len(body) == 0 {
+			return nil
+		}
+	}
+	// JSON envelope {"records":[...]}: the first element's raw bytes.
+	if body[0] == '{' && !strings.Contains(contentType, "ndjson") {
+		var env struct {
+			Records []json.RawMessage `json:"records"`
+		}
+		if err := json.Unmarshal(body, &env); err == nil && len(env.Records) > 0 {
+			return bytes.TrimSpace(env.Records[0])
+		}
+		// Bare single object: the body IS the first record.
+		return body
+	}
+	// JSON array (partners post one to the NDJSON path — see parseNDJSON).
+	if body[0] == '[' {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(body, &arr); err == nil && len(arr) > 0 {
+			return bytes.TrimSpace(arr[0])
+		}
+		return nil
+	}
+	// NDJSON: the first non-empty line.
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) > 0 {
+			out := make([]byte, len(line))
+			copy(out, line)
+			return out
+		}
+	}
+	return nil
 }
 
 // ============ GET /api/partner-ingest/v1/batches/{id} ============

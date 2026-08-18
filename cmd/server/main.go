@@ -10053,6 +10053,29 @@ END $$`},
 			COMMENT ON COLUMN partner_drip_cap_decisions.organization_id IS 'Stamped at emission from po.cfg.OrganizationID; empty org or dataset at emission => the row is dropped + quarantine-counted, never NULL (§10.4).'`},
 		{"dob_comments_cap_xray", `COMMENT ON TABLE partner_drip_cap_xray_daily IS 'Daily cap X-ray aggregate (§5.8b), written by the xray_daily pass from partner_drip_cap_decisions under its own run generation and scope kind. The portal reads THIS by default; raw decisions only on drill-down. dataset_id NOT NULL — dataset-less rows cannot exist (NOT NULL upstream at emission).'`},
 		{"dob_comments_campaign_meta", `COMMENT ON TABLE partner_drip_campaign_meta IS 'Typed campaign-meta companion (§5.11/§7.0): dataset/brand/touch/org identity stamped per drip campaign. TABLE ships in the D2 schema wave (schema-before-binary); the stampPartnerAttributionOnCampaign WRITER is HOLD-CRITICAL (D3b, operator-gated). Until the writer ships every row is absent and the rollup uses the name-parse fallback + quarantine path; a missed stamp degrades to name-parse, never blocks the wave.'`},
+
+		// =====================================================================
+		// Aug 18 2026: partner-ingest raw-sample capture. HandlePostRecords
+		// re-marshals every batch through the CLOSED ingestRecord struct
+		// before S3, silently destroying unknown fields (the 2026-08-09
+		// city/postal_code loss). This table keeps the FIRST record of a
+		// batch as the partner's ORIGINAL bytes (capped 16 KiB) so contract
+		// review can diff the actual payload against the struct. Writer:
+		// captureRawSample (internal/api/partner_ingest_handlers.go),
+		// best-effort + throttled to one row per dataset per 10 minutes.
+		// New empty table + one index: trivially inside the 5s budget.
+		// =====================================================================
+		{"pi_create_raw_samples", `CREATE TABLE IF NOT EXISTS partner_ingest_raw_samples (
+			batch_id UUID PRIMARY KEY,
+			dataset_id UUID NOT NULL,
+			sample TEXT NOT NULL,
+			content_type TEXT,
+			captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Backs the throttle's NOT EXISTS probe (dataset_id + captured_at
+		// window) so the guard stays index-fast as samples accumulate.
+		{"pi_idx_raw_samples_dataset_time", `CREATE INDEX IF NOT EXISTS idx_pi_raw_samples_dataset_time
+			ON partner_ingest_raw_samples (dataset_id, captured_at DESC)`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
