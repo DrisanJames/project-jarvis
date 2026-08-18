@@ -1355,9 +1355,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       const quota = audienceBound ? 0 : (ispQuotas[isp] || 0);
 
       let spans: any[] = [];
-      let cadenceMode = 'single';
-      let everyMinutes = 0;
-      let batchSize = quota;
+      // Interval cadence with a server-computed batch on EVERY path. The
+      // planner spreads the actual audience across the window when batch_size
+      // is 0; sizing the batch from the quota puts the whole send in wave 1
+      // whenever the audience and the quota differ (and the server forces
+      // mode='interval' anyway — normalizeISPPlan).
+      let cadenceMode = 'interval';
+      let everyMinutes = DEFAULT_WAVE_INTERVAL_MINUTES;
+      let batchSize = 0;
 
       if (sendMode === 'scheduled') {
         if (useGlobalSchedule) {
@@ -1432,10 +1437,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       };
     });
 
-    const otherQuota = audienceBound
-      ? (selectedISPs.includes('other') ? 0 : -1)
-      : (ispQuotas['other'] || 0);
-    if (otherQuota >= 0 && (audienceBound ? selectedISPs.includes('other') : otherQuota > 0)) {
+    // The long-tail 'other' lane rides a synthetic plan. Audience-bound sends
+    // include it whenever the operator selected it (quota 0 = unlimited);
+    // capped sends include it only when it carries a finite volume.
+    const otherQuota = audienceBound ? 0 : (ispQuotas['other'] || 0);
+    const includeOther = audienceBound ? selectedISPs.includes('other') : otherQuota > 0;
+    if (includeOther) {
       ispPlans.push({
         isp: 'other',
         quota: otherQuota,
@@ -1450,7 +1457,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
 
     const canonicalISPs = selectedISPs.filter(isp => isp !== 'other');
-    const includeOther = audienceBound ? selectedISPs.includes('other') : otherQuota > 0;
     const targetISPs = includeOther ? [...canonicalISPs, 'other'] : canonicalISPs;
 
     const engagementIds = [...selectedClickerIds, ...selectedOpenerIds];
