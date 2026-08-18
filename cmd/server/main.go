@@ -2420,6 +2420,19 @@ var concurrentIndexSpecs = []struct {
 	// so a global scheduled_at range CANNOT seek this index (plan §2
 	// campaign-enum anchor / §6.5). Partial: only drip-stamped campaigns.
 	{"idx_mc_partner_dataset_sched", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mc_partner_dataset_sched ON mailing_campaigns (partner_dataset_id, scheduled_at) WHERE partner_dataset_id IS NOT NULL`},
+	// ---- Pipeline Cockpit P1 (property_lane_supply.go) ----
+	// The supply strip's tranche-anatomy aggregate is a full dataset slice
+	// over (status, mailed_at). Measured on prod 2026-08-17: without this,
+	// the planner PARALLEL SEQ-SCANS the whole ~11.6M-row pcq heap (16.7s,
+	// 509k pages read) for the largest live dataset (2.54M rows), and even
+	// the forced index path via existing (dataset_id, …) indexes stays a
+	// 3.9s heap-bound bitmap scan — the query references mailed_at, so a
+	// bare (dataset_id, status) index cannot go index-only. Covering
+	// (dataset_id, status, mailed_at) turns the whole aggregate into an
+	// Index Only Scan (fixture-validated: chosen naturally by the planner,
+	// Heap Fetches ≈ 0). Lives here because the build scans the full
+	// multi-M-row pcq heap — far beyond the migration runner's 5s budget.
+	{"idx_pcq_dataset_status_mailed", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_dataset_status_mailed ON partner_clean_queue (dataset_id, status, mailed_at)`},
 }
 
 const concurrentIndexIOWaitMax = 8

@@ -119,6 +119,9 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/property-ledger/lane-content/subject", s.HandleLaneSubjectEdit)
 		cr.Post("/property-ledger/lane-content/touch-copy", s.HandleLaneTouchCopyEdit)
 		cr.Post("/property-ledger/lane-content/offer-swap", s.HandleLaneOfferSwap)
+		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
+		// anatomy per feed — total / cleaning / ready-by-ISP / held.
+		cr.Get("/property-ledger/supply", s.HandleLaneSupply)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)

@@ -23,6 +23,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../shared/apiFetch';
+import { usePolling } from '../shared/usePolling';
 
 interface Proposal {
   id: string;
@@ -133,6 +134,32 @@ interface LaneContentResponse {
   active_offers: Array<{ id: string; name: string }>;
   preheader_note: string;
 }
+
+// ── Supply strip shapes (property_lane_supply.go — Pipeline Cockpit P1) ─────
+
+interface SupplyISP { isp: string; ready: number; }
+interface SupplyFeed {
+  dataset_id: string; name: string; vertical: string; status: string;
+  daily_cap: number;          // SUPPLY-RELEASE budget (lane), not the claim-side ISP cap
+  paused_emergency: boolean;
+  shared_brands: string[];    // rotation brands this dataset's supply is shared across
+  tranche_total: number;
+  cleaning: number; pending_eo: number; eo_in_flight: number;
+  ready_total: number; ready_by_isp: SupplyISP[];
+  held: number; suppressed: number; dead_letter: number;
+  mailed_lifetime: number; mailed_today: number;
+}
+interface SupplyResponse {
+  domain: string; brand: string; sending_domain: string; non_ledger: boolean;
+  as_of: string; denver_day: string;
+  ready_semantics: string; supply_note: string;
+  feeds: SupplyFeed[];
+}
+
+// wcl-heloc is a first-class cockpit domain but NOT a ledger brand (cockpit
+// plan §1): it appears in the dropdown, its supply strip is live, and the
+// budget table renders an honest "Not in ledger — budgets N/A" state.
+const NON_LEDGER_DOMAINS = ['wcl-heloc.com'];
 
 const num = (n: number | null | undefined) => (n ?? 0).toLocaleString();
 const pct = (v: number | null | undefined): string =>
@@ -316,7 +343,11 @@ export const PropertyLedgerView: React.FC = () => {
   });
 
   const allRows = data?.rows ?? [];
-  const domains = Array.from(new Set(allRows.map(r => r.sending_domain || r.brand))).sort();
+  const domains = Array.from(new Set([
+    ...allRows.map(r => r.sending_domain || r.brand),
+    ...NON_LEDGER_DOMAINS,
+  ])).sort();
+  const isNonLedgerDomain = domain != null && NON_LEDGER_DOMAINS.includes(domain);
   const showAll = domain === ALL_DOMAINS;
   const rows = showAll ? allRows : allRows.filter(r => (r.sending_domain || r.brand) === domain);
   const selectedBrand = !showAll ? rows[0]?.brand : undefined;
@@ -401,6 +432,8 @@ export const PropertyLedgerView: React.FC = () => {
           }}>Approve all</button>
         </div>
       )}
+
+      {!showAll && domain && <SupplyStrip domain={domain} />}
 
       <div style={{ overflowX: 'auto' }}>
         <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: showAll ? 1000 : 1250 }}>
@@ -524,7 +557,9 @@ export const PropertyLedgerView: React.FC = () => {
             })}
             {rows.length === 0 && !loading && (
               <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={showAll ? 7 : 12}>
-                Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.
+                {isNonLedgerDomain
+                  ? `${domain} is not in the ledger — budgets N/A. The supply strip above is live; ledger enrollment is a separate operator step.`
+                  : 'Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.'}
               </td></tr>
             )}
           </tbody>
@@ -543,6 +578,142 @@ export const PropertyLedgerView: React.FC = () => {
         Sent / Delivered % / Open / Click pull from the SES VDM daily snapshots (complete UTC days
         only, VDM unique-count semantics); a red lane means delivered % under 50 on meaningful volume.
       </p>
+    </div>
+  );
+};
+
+// ── Supply strip — live pcq tranche anatomy per feed (Cockpit P1) ───────────
+//
+// LIVE queue facts (PG, point-in-time, labeled "live queue") — never
+// Observatory fact aggregates. Supply is a DATASET fact shared across the
+// rotation's brands; the shared-pool indicator renders on every card so
+// dataset supply is never presented as domain-owned inventory.
+
+const SupplyStrip: React.FC<{ domain: string }> = ({ domain }) => {
+  const { data, loading, error, secondsSinceUpdate } = usePolling<SupplyResponse>(
+    async (signal) => {
+      const r = await apiFetch(
+        `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(domain)}`,
+        { signal });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json() as Promise<SupplyResponse>;
+    }, 60_000, [domain]);
+
+  const label: React.CSSProperties = {
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.55)',
+  };
+  const stat = (title: string, value: number, opts?: { color?: string; muted?: boolean; tip?: string }) => (
+    <div style={{ minWidth: 84 }} title={opts?.tip}>
+      <div style={label}>{title}</div>
+      <div style={{
+        fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+        color: opts?.color ?? (opts?.muted ? 'rgba(180,210,240,0.45)' : '#e6edf5'),
+      }}>{num(value)}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ marginBottom: 14, border: '1px solid rgba(0,184,148,0.25)', borderRadius: 10,
+                  background: 'rgba(0,184,148,0.04)', padding: '12px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: '#e6edf5' }}>Supply</h3>
+        <span style={{ fontSize: 10, color: '#00b894', fontWeight: 700, letterSpacing: 0.5,
+                       border: '1px solid rgba(0,184,148,0.4)', borderRadius: 4, padding: '1px 6px' }}
+          title={data?.supply_note ?? 'Live queue facts (point-in-time), not Observatory aggregates.'}>
+          LIVE QUEUE
+        </span>
+        {data && (
+          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}
+            title={data.ready_semantics}>
+            {data.sending_domain || data.domain} · {data.brand} · Denver day {data.denver_day}
+          </span>
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(180,210,240,0.5)' }}>
+          {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 60s`}
+        </span>
+      </div>
+      {error && (
+        <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>
+          Supply refresh failed ({error}){data ? ' — showing last good data' : ''}
+        </div>
+      )}
+      {data && (
+        <p style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', margin: '0 0 10px 0' }}>
+          {data.ready_semantics}. Release cap is the SUPPLY-side budget (ready-vs-held) — distinct
+          from the claim-side per-ISP caps.
+        </p>
+      )}
+      {data && data.feeds.length === 0 && !loading && (
+        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+          No active feeds serve this domain (partner_drip_vertical_roster → partner_datasets).
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {data?.feeds.map(f => {
+          const maxReady = Math.max(1, ...f.ready_by_isp.map(e => e.ready));
+          return (
+            <div key={f.dataset_id} style={{ flex: '1 1 420px', maxWidth: 640,
+                border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
+                background: 'rgba(0,0,0,0.15)', padding: '10px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#e6edf5' }}>{f.name}</span>
+                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.55)' }}>{f.vertical}</span>
+                {f.paused_emergency && (
+                  <span style={{ fontSize: 9, color: '#e94560', fontWeight: 700,
+                                 border: '1px solid rgba(233,69,96,0.4)', borderRadius: 4, padding: '1px 6px' }}>
+                    PAUSED
+                  </span>
+                )}
+                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}
+                  title="Supply-release budget (partner_datasets.daily_cap): the release job keeps at most this many rows 'ready' per day, parking the rest 'held'. NOT the claim-side per-ISP cap.">
+                  release cap {f.daily_cap > 0 ? `${num(f.daily_cap)}/day` : 'uncapped'}
+                </span>
+                {f.shared_brands.length > 1 && (
+                  <span style={{ marginLeft: 'auto', fontSize: 10, color: '#facc15', fontWeight: 700 }}
+                    title={`Supply is a DATASET fact — this tranche feeds the whole rotation, not just this domain: ${f.shared_brands.join(', ')}`}>
+                    supply shared across {f.shared_brands.length} rotation brands
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                {stat('Tranche total', f.tranche_total, { tip: 'Every record ever ingested into this feed (all statuses)' })}
+                {stat('Cleaning', f.cleaning, {
+                  color: '#9fd3ff',
+                  tip: `Actively being cleaned: ${num(f.pending_eo)} pending_eo + ${num(f.eo_in_flight)} eo_in_flight`,
+                })}
+                <div style={{ minWidth: 180, flex: '1 1 180px' }}>
+                  <div style={label}>Ready</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: '#00b894', fontVariantNumeric: 'tabular-nums' }}
+                    title={data.ready_semantics}>
+                    {num(f.ready_total)}
+                  </div>
+                  {f.ready_by_isp.map(e => (
+                    <div key={e.isp} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 0' }}>
+                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', width: 68 }}>{e.isp}</span>
+                      <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 3 }}>
+                        <div style={{ width: `${Math.max(2, Math.round((e.ready / maxReady) * 100))}%`,
+                                      height: 6, background: 'rgba(0,184,148,0.55)', borderRadius: 3 }} />
+                      </div>
+                      <span style={{ fontSize: 10, color: '#e6edf5', minWidth: 46, textAlign: 'right',
+                                     fontVariantNumeric: 'tabular-nums' }}>{num(e.ready)}</span>
+                    </div>
+                  ))}
+                  {f.ready_by_isp.length === 0 && (
+                    <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)' }}>none ready</div>
+                  )}
+                </div>
+                {stat('Held', f.held, {
+                  color: '#facc15',
+                  tip: "Reservoir parked by the release job (over the day's release cap) — cleaned, waiting for release",
+                })}
+                {stat('Suppressed', f.suppressed, { muted: true, tip: 'suppressed_eo — EO rejected' })}
+                {stat('Dead letter', f.dead_letter, { muted: true, tip: 'dead_letter — EO retries exhausted' })}
+                {stat('Mailed today', f.mailed_today, { tip: `Denver day ${data.denver_day} · lifetime ${num(f.mailed_lifetime)}` })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 };
