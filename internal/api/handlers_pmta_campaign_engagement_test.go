@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"regexp"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
@@ -174,5 +177,83 @@ func TestBuildBlogCampaignInputIsSegmentBound(t *testing.T) {
 	}
 	if !deployInputIsUncapped(in) {
 		t.Fatal("precondition changed: blog campaigns are expected to be uncapped")
+	}
+}
+
+// The bug this guards: mailing_segments.subscriber_count is a CACHED tally that
+// SegmentRefreshWorker zeroes when its count query times out. Prod 2026-08-18
+// had "DB 30D Clickers" at counter=0 with 1,534 materialized members, and a dry
+// run over that segment planned 4,477 recipients — the picker must never show
+// the operator a 0 for an audience that will actually mail.
+func TestApplyLiveMemberCountsOverridesStaleCounter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	resp := engagementTiersResponse{
+		Clickers: []engagementTier{
+			{SegmentID: "11111111-1111-1111-1111-111111111111", Name: "DB 30D Clickers", Count: 0, CounterCount: 0},
+		},
+		Openers: []engagementTier{
+			{SegmentID: "22222222-2222-2222-2222-222222222222", Name: "DB 7D Openers", Count: 19673, CounterCount: 19673},
+			{SegmentID: "33333333-3333-3333-3333-333333333333", Name: "DB 30D Openers (genuinely empty)", Count: 5, CounterCount: 5},
+		},
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM mailing_segment_members")).
+		WillReturnRows(sqlmock.NewRows([]string{"segment_id", "count"}).
+			AddRow("11111111-1111-1111-1111-111111111111", 1534).
+			AddRow("22222222-2222-2222-2222-222222222222", 19673))
+	// segment 3 is absent from the GROUP BY result = genuinely zero members
+
+	applyLiveMemberCounts(context.Background(), db, &resp)
+
+	clk := resp.Clickers[0]
+	if clk.Count != 1534 {
+		t.Fatalf("stale counter not overridden: count=%d, want 1534", clk.Count)
+	}
+	if !clk.CounterMismatch {
+		t.Error("counter_mismatch must flag the broken tally (0 vs 1534)")
+	}
+	if !clk.CountIsLive {
+		t.Error("count_is_live must be true after a successful read")
+	}
+	if clk.CounterCount != 0 {
+		t.Errorf("the cached counter must be preserved for display: %d", clk.CounterCount)
+	}
+
+	if op := resp.Openers[0]; op.Count != 19673 || op.CounterMismatch {
+		t.Errorf("an agreeing counter must not be flagged: count=%d mismatch=%v", op.Count, op.CounterMismatch)
+	}
+	if empty := resp.Openers[1]; empty.Count != 0 || !empty.CounterMismatch {
+		t.Errorf("a segment with no members must read 0 live and flag the disagreeing counter: count=%d mismatch=%v",
+			empty.Count, empty.CounterMismatch)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet: %v", err)
+	}
+}
+
+// Fail-soft: a DB error must leave the cached counters standing, not blank the panel.
+func TestApplyLiveMemberCountsFallsBackOnError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	resp := engagementTiersResponse{
+		Clickers: []engagementTier{{SegmentID: "11111111-1111-1111-1111-111111111111", Count: 1234, CounterCount: 1234}},
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("FROM mailing_segment_members")).
+		WillReturnError(context.DeadlineExceeded)
+
+	applyLiveMemberCounts(context.Background(), db, &resp)
+
+	if got := resp.Clickers[0]; got.Count != 1234 || got.CountIsLive {
+		t.Fatalf("must fall back to the cached counter and mark it not-live: count=%d live=%v",
+			got.Count, got.CountIsLive)
 	}
 }

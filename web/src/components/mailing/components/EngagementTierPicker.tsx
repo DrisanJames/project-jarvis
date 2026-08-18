@@ -20,7 +20,14 @@ export interface EngagementTier {
   segment_id: string;
   name: string;
   window_days: number;
+  /** Live row count in mailing_segment_members — what will actually mail. */
   count: number;
+  /** The cached mailing_segments.subscriber_count. */
+  counter_count: number;
+  /** True when the cached counter disagrees with live membership. */
+  counter_mismatch: boolean;
+  /** False when the live read failed and `count` fell back to the counter. */
+  count_is_live: boolean;
   last_calculated_at?: string;
   stale: boolean;
 }
@@ -59,9 +66,15 @@ const Chip: React.FC<{
   <button
     type="button"
     onClick={onClick}
-    title={tier.stale
-      ? `${tier.name} — last built ${tier.last_calculated_at || 'never'}. The daily segment refresh has not run; this count is not what would mail.`
-      : `${tier.name} — last built ${tier.last_calculated_at || 'unknown'}`}
+    title={[
+      tier.name,
+      `${tier.count.toLocaleString()} members (live)`,
+      tier.counter_mismatch
+        ? `⚠ the cached segment counter says ${tier.counter_count.toLocaleString()} — the per-segment refresh is failing to write its tally. The LIVE number is what mails.`
+        : '',
+      tier.count_is_live ? '' : '⚠ live membership read failed; showing the cached counter',
+      tier.stale ? `⚠ last built ${tier.last_calculated_at || 'never'} — the daily refresh has not run` : `last built ${tier.last_calculated_at || 'unknown'}`,
+    ].filter(Boolean).join('\n')}
     style={{
       display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
       minWidth: 108, padding: '8px 12px', cursor: 'pointer', textAlign: 'left',
@@ -72,7 +85,9 @@ const Chip: React.FC<{
   >
     <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, color: selected ? color : '#e0e6f0' }}>
       {tier.window_days}D
-      {tier.stale && <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: '#f59e0b' }} />}
+      {(tier.stale || tier.counter_mismatch || !tier.count_is_live) && (
+        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: '#f59e0b' }} />
+      )}
     </span>
     <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{fmt(tier.count)}</span>
   </button>
@@ -171,6 +186,19 @@ export const EngagementTierPicker: React.FC<Props> = ({
           <Row label="Openers" icon={faEnvelopeOpen} color={OPEN_COLOR}
                hint="opened in window" tiers={tiers.openers}
                selected={selectedOpenerIds} onToggle={id => onToggle('openers', id)} />
+
+          {[...tiers.clickers, ...tiers.openers].some(t => t.counter_mismatch) && (
+            <div style={{
+              marginTop: 10, padding: '8px 10px', borderRadius: 8,
+              background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
+              fontSize: 11, color: '#f59e0b',
+            }}>
+              <FontAwesomeIcon icon={faExclamationTriangle} /> Some cached segment counters disagree with
+              live membership. The numbers above are the LIVE counts — what the planner will actually
+              mail. A disagreement means the per-segment refresh is failing to write its tally (usually
+              a query timeout under DB load), not that the audience is missing.
+            </div>
+          )}
 
           <label style={{
             display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10,

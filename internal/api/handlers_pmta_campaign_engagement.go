@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/lib/pq"
 )
 
 // Engagement-tier resolution for the Campaign Manager.
@@ -87,10 +90,26 @@ func parseEngagementConditions(raw []byte) (sendingDomain, kind string, windowDa
 
 // engagementTier is one selectable chip in the wizard's engagement panel.
 type engagementTier struct {
-	SegmentID        string `json:"segment_id"`
-	Name             string `json:"name"`
-	WindowDays       int    `json:"window_days"`
-	Count            int    `json:"count"`
+	SegmentID  string `json:"segment_id"`
+	Name       string `json:"name"`
+	WindowDays int    `json:"window_days"`
+	// Count is what will actually mail: the live row count in
+	// mailing_segment_members, which is the table the audience planner
+	// streams. It is NOT mailing_segments.subscriber_count — see
+	// CounterCount below.
+	Count int `json:"count"`
+	// CounterCount is the cached mailing_segments.subscriber_count. When it
+	// disagrees with Count the per-segment refresh is failing to write its
+	// tally (observed in prod 2026-08-18: "DB 30D Clickers" counter=0 while
+	// 1,534 members were materialized and a dry run planned 4,477 recipients
+	// off it — SegmentRefreshWorker's member-count query was timing out under
+	// load and persisting a zero). Surfaced so a broken counter reads as a
+	// warning instead of an empty audience the operator skips.
+	CounterCount    int  `json:"counter_count"`
+	CounterMismatch bool `json:"counter_mismatch"`
+	// CountIsLive is false when the live membership read could not be done
+	// (timeout / error) and Count fell back to the cached counter.
+	CountIsLive      bool   `json:"count_is_live"`
 	LastCalculatedAt string `json:"last_calculated_at,omitempty"`
 	Stale            bool   `json:"stale"`
 }
@@ -171,11 +190,12 @@ func (s *PMTACampaignService) HandleEngagementTiers(w http.ResponseWriter, r *ht
 			continue
 		}
 		tier := engagementTier{
-			SegmentID:  id,
-			Name:       name,
-			WindowDays: window,
-			Count:      count,
-			Stale:      true,
+			SegmentID:    id,
+			Name:         name,
+			WindowDays:   window,
+			Count:        count,
+			CounterCount: count,
+			Stale:        true,
 		}
 		if lastCalc != nil {
 			tier.LastCalculatedAt = lastCalc.UTC().Format(time.RFC3339)
@@ -206,6 +226,8 @@ func (s *PMTACampaignService) HandleEngagementTiers(w http.ResponseWriter, r *ht
 	sortTiers(resp.Clickers)
 	sortTiers(resp.Openers)
 	sortTiers(resp.Other)
+
+	applyLiveMemberCounts(r.Context(), s.db, &resp)
 
 	respondJSON(w, http.StatusOK, resp)
 }
@@ -246,4 +268,70 @@ func coerceMasterSelectionForSegmentAudience(input *engine.PMTACampaignInput) bo
 		"have had no quota ceiling and streamed the whole sending domain",
 		input.Name, len(input.InclusionSegments), len(input.InclusionLists))
 	return true
+}
+
+// applyLiveMemberCounts replaces each tier's Count with the live row count in
+// mailing_segment_members — the table the audience planner actually streams.
+//
+// mailing_segments.subscriber_count is a cached tally written by
+// SegmentRefreshWorker, and it lies when that worker's count query times out:
+// prod 2026-08-18 had "DB 30D Clickers" at counter=0 with 1,534 members
+// materialized, and a dry run over it planned 4,477 recipients. Showing the
+// counter would have told the operator the audience was empty.
+//
+// Bounded and fail-soft: at most a few dozen segment ids, one grouped read on
+// the segment_id index, 5s ceiling. On any error the cached counters stand and
+// CountIsLive stays false, so the panel degrades to the old numbers instead of
+// failing the request.
+func applyLiveMemberCounts(ctx context.Context, db *sql.DB, resp *engagementTiersResponse) {
+	groups := [][]engagementTier{resp.Clickers, resp.Openers, resp.Other}
+	var ids []string
+	for _, g := range groups {
+		for _, t := range g {
+			ids = append(ids, t.SegmentID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(qctx, `
+		SELECT segment_id::text, COUNT(*)
+		FROM mailing_segment_members
+		WHERE segment_id = ANY($1::uuid[])
+		GROUP BY segment_id
+	`, pq.Array(ids))
+	if err != nil {
+		log.Printf("[engagement-tiers] live member count failed for %d segment(s), "+
+			"falling back to cached subscriber_count: %v", len(ids), err)
+		return
+	}
+	defer rows.Close()
+
+	live := make(map[string]int, len(ids))
+	for rows.Next() {
+		var id string
+		var n int
+		if rows.Scan(&id, &n) == nil {
+			live[id] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[engagement-tiers] live member count read error, falling back to "+
+			"cached subscriber_count: %v", err)
+		return
+	}
+
+	for _, g := range groups {
+		for i := range g {
+			// A segment with zero materialized rows is absent from the GROUP BY
+			// result; that is a genuine 0, not a missing read.
+			n := live[g[i].SegmentID]
+			g[i].Count = n
+			g[i].CountIsLive = true
+			g[i].CounterMismatch = n != g[i].CounterCount
+		}
+	}
 }
