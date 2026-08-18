@@ -103,10 +103,12 @@ interface CoverageRow { brand: string; isp: string; status: string; observed_sen
 
 interface LaneCopyRow { id: string; text: string; status: string; serving: boolean; }
 interface LaneCreative { id: string; version: number; status: string; updated_at: string; html_bytes: number; }
+interface LaneOfferSharing { feeds: number; brands: number; }
 interface LaneOffer {
   id: string; name: string; status: string;
   creative: LaneCreative | null;
   subjects: LaneCopyRow[]; from_names: LaneCopyRow[];
+  sharing?: LaneOfferSharing;
 }
 interface LaneDataset {
   id: string; name: string; status: string; express_dispatch: boolean;
@@ -117,9 +119,13 @@ interface LaneTouchCopy {
   subject_line: string; preheader: string; from_name: string;
   offer_id?: string; active: boolean; updated_at: string; updated_by?: string;
 }
+// Offer bound at the TOUCH level (per-touch override in the orchestrator) —
+// how NULL-offer datasets like db/internal_auto still mail a real offer.
+interface LaneTouchOffer { binding: string; touch_scope: string[]; offer: LaneOffer | null; }
 interface LaneFeed {
   vertical: string; weight: number; datasets: LaneDataset[];
   touch1: LaneTouchCopy | null; followups: LaneTouchCopy[];
+  touch_offers: LaneTouchOffer[];
 }
 interface LaneContentResponse {
   brand: string; sending_domain: string;
@@ -654,6 +660,72 @@ const LaneContentPanel: React.FC<{
     padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
   };
 
+  // Shared pools renderer — used by dataset-bound AND touch-level offers so
+  // both get the identical edit surface. poolKey scopes the add-input state.
+  const renderOfferPools = (offer: LaneOffer, poolKey: string) => (
+    <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 6 }}>
+      <div style={{ flex: '2 1 340px' }}>
+        <div style={label}>Serving subjects (preheader draws from this pool)</div>
+        {offer.sharing && offer.sharing.feeds > 1 && (
+          <div style={{ fontSize: 10, color: '#facc15', fontWeight: 700, margin: '2px 0 4px 0' }}
+            title="Subject/from-name pools live on the OFFER — every feed bound to this offer (dataset- or touch-level) rotates through the same pool.">
+            Pool shared by {offer.sharing.feeds} feeds across {offer.sharing.brands} brand{offer.sharing.brands === 1 ? '' : 's'} — edits here change live rotation on all of them.
+          </div>
+        )}
+        {offer.subjects.filter(sr => sr.serving).map(sr => (
+          <div key={sr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+            <span style={{ fontSize: 12, color: '#e6edf5' }}>{sr.text}</span>
+            <button style={{ ...smallBtn, padding: '1px 7px', fontSize: 9 }}
+              disabled={!!saving[`arch/${sr.id}`]}
+              onClick={() => void archiveSubject(offer, sr)}>
+              {saving[`arch/${sr.id}`] ? '…' : 'Archive'}
+            </button>
+          </div>
+        ))}
+        {offer.subjects.filter(sr => sr.serving).length === 0 && (
+          <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+            EMPTY SUBJECT POOL — the lane fails at send time
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+          <input style={{ ...input, flex: 1 }} placeholder="Add a subject line…"
+            value={newSubject[poolKey] ?? ''}
+            onChange={e => setNewSubject(s => ({ ...s, [poolKey]: e.target.value }))} />
+          <button style={smallBtn} disabled={!!saving[`add/${poolKey}`] || !(newSubject[poolKey] ?? '').trim()}
+            onClick={() => void addSubject(offer, poolKey)}>
+            {saving[`add/${poolKey}`] ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+        {offer.subjects.some(sr => !sr.serving) && (
+          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
+            {offer.subjects.filter(sr => !sr.serving).length} archived
+          </div>
+        )}
+      </div>
+      <div style={{ flex: '1 1 200px' }}>
+        <div style={label}>Serving from-names</div>
+        {offer.from_names.filter(fr => fr.serving).map(fr => (
+          <div key={fr.id} style={{ fontSize: 12, color: '#e6edf5', padding: '2px 0' }}>{fr.text}</div>
+        ))}
+        {offer.from_names.filter(fr => fr.serving).length === 0 && (
+          <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+            EMPTY FROM-NAME POOL — the lane fails at send time
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderCreativeBadge = (offer: LaneOffer) =>
+    offer.creative ? (
+      <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
+        title={`${num(offer.creative.html_bytes)} bytes · id ${offer.creative.id}`}>
+        creative v{offer.creative.version} ({offer.creative.status}) · {age(offer.creative.updated_at)}
+      </span>
+    ) : (
+      <span style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>NO SERVING CREATIVE</span>
+    );
+
   const renderTouchRow = (t: LaneTouchCopy) => {
     const key = touchKey(t);
     const e = touchEdit[key];
@@ -729,7 +801,15 @@ const LaneContentPanel: React.FC<{
               <span style={{ fontSize: 13, fontWeight: 700, color: '#e6edf5' }}>{feed.vertical}</span>
               <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
                 {feed.datasets.length} feed{feed.datasets.length === 1 ? '' : 's'}
-                {feed.datasets[0]?.offer ? ` · offer: ${feed.datasets.map(d => d.offer?.name ?? 'drip pool').filter((v, i, a) => a.indexOf(v) === i).join(', ')}` : ''}
+                {(() => {
+                  // Summary covers BOTH binding paths: dataset offers and
+                  // touch-level offers (NULL-offer datasets, QA SEV-2).
+                  const names = [
+                    ...feed.datasets.filter(d => d.offer).map(d => d.offer!.name || d.offer!.id),
+                    ...feed.touch_offers.filter(t => t.offer).map(t => `${t.offer!.name || t.offer!.id} (touch-level)`),
+                  ].filter((v, i, a) => a.indexOf(v) === i);
+                  return names.length > 0 ? ` · offer: ${names.join(', ')}` : '';
+                })()}
               </span>
             </div>
             {expanded && (
@@ -750,14 +830,7 @@ const LaneContentPanel: React.FC<{
                             drip-pool path (no direct offer bound)
                           </span>
                         )}
-                        {ds.offer?.creative ? (
-                          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
-                            title={`${num(ds.offer.creative.html_bytes)} bytes · id ${ds.offer.creative.id}`}>
-                            creative v{ds.offer.creative.version} ({ds.offer.creative.status}) · {age(ds.offer.creative.updated_at)}
-                          </span>
-                        ) : ds.offer ? (
-                          <span style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>NO SERVING CREATIVE</span>
-                        ) : null}
+                        {ds.offer && renderCreativeBadge(ds.offer)}
                         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
                           <select value={swapSel[ds.id] ?? (ds.offer?.id ?? '')} disabled={isSwapping}
                             onChange={e => setSwapSel(s => ({ ...s, [ds.id]: e.target.value }))}
@@ -773,56 +846,27 @@ const LaneContentPanel: React.FC<{
                           </button>
                         </span>
                       </div>
-                      {ds.offer && (
-                        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 6 }}>
-                          <div style={{ flex: '2 1 340px' }}>
-                            <div style={label}>Serving subjects (preheader draws from this pool)</div>
-                            {ds.offer.subjects.filter(sr => sr.serving).map(sr => (
-                              <div key={sr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
-                                <span style={{ fontSize: 12, color: '#e6edf5' }}>{sr.text}</span>
-                                <button style={{ ...smallBtn, padding: '1px 7px', fontSize: 9 }}
-                                  disabled={!!saving[`arch/${sr.id}`]}
-                                  onClick={() => void archiveSubject(ds.offer!, sr)}>
-                                  {saving[`arch/${sr.id}`] ? '…' : 'Archive'}
-                                </button>
-                              </div>
-                            ))}
-                            {ds.offer.subjects.filter(sr => sr.serving).length === 0 && (
-                              <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
-                                EMPTY SUBJECT POOL — the lane fails at send time
-                              </div>
-                            )}
-                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                              <input style={{ ...input, flex: 1 }} placeholder="Add a subject line…"
-                                value={newSubject[ds.id] ?? ''}
-                                onChange={e => setNewSubject(s => ({ ...s, [ds.id]: e.target.value }))} />
-                              <button style={smallBtn} disabled={!!saving[`add/${ds.id}`] || !(newSubject[ds.id] ?? '').trim()}
-                                onClick={() => void addSubject(ds.offer!, ds.id)}>
-                                {saving[`add/${ds.id}`] ? 'Adding…' : 'Add'}
-                              </button>
-                            </div>
-                            {ds.offer.subjects.some(sr => !sr.serving) && (
-                              <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
-                                {ds.offer.subjects.filter(sr => !sr.serving).length} archived
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ flex: '1 1 200px' }}>
-                            <div style={label}>Serving from-names</div>
-                            {ds.offer.from_names.filter(fr => fr.serving).map(fr => (
-                              <div key={fr.id} style={{ fontSize: 12, color: '#e6edf5', padding: '2px 0' }}>{fr.text}</div>
-                            ))}
-                            {ds.offer.from_names.filter(fr => fr.serving).length === 0 && (
-                              <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
-                                EMPTY FROM-NAME POOL — the lane fails at send time
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
+                      {ds.offer && renderOfferPools(ds.offer, ds.id)}
                     </div>
                   );
                 })}
+                {feed.touch_offers.map(to => to.offer ? (
+                  <div key={`${feed.vertical}/to/${to.offer.id}`}
+                    style={{ padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <span title="This offer is bound on the feed's TOUCH rows (per-touch override), not on the dataset — NULL-offer datasets still mail it."
+                        style={{ fontSize: 9, color: '#a5b4fc', fontWeight: 700, letterSpacing: 0.5,
+                                 border: '1px solid rgba(99,102,241,0.4)', borderRadius: 4, padding: '1px 6px' }}>
+                        TOUCH-LEVEL BINDING · {to.touch_scope.join(', ')}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#a5b4fc' }}>
+                        offer: <b>{to.offer.name || to.offer.id}</b> ({to.offer.status || '?'})
+                      </span>
+                      {renderCreativeBadge(to.offer)}
+                    </div>
+                    {renderOfferPools(to.offer, `${feed.vertical}/${to.offer.id}`)}
+                  </div>
+                ) : null)}
                 {(feed.touch1 || feed.followups.length > 0) && (
                   <div style={{ marginTop: 8 }}>
                     <div style={label}>Touch copy (this brand's ladder rows)</div>

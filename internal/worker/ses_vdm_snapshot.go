@@ -117,15 +117,37 @@ func (w *SESVDMSnapshotWorker) WithInterval(d time.Duration) *SESVDMSnapshotWork
 	return w
 }
 
+// sesVDMExtraIdentities are NON-LEDGER SES identities worth the VDM
+// scoreboard (QA fix increment 2026-08-17). The ledger reverse map only
+// yields the 16 drip-roster domains, so identities outside the roster must be
+// listed here (or via SES_VDM_EXTRA_IDENTITIES, comma-separated env).
+//   - m.wcl-heloc.com — the WCL HELOC funnel's live SES identity (verified
+//     mailing_sending_profiles 2026-08-17: the profile is m.*, there is no
+//     em.wcl profile — the m.* SES identity convention).
+var sesVDMExtraIdentities = []string{"m.wcl-heloc.com"}
+
 // vdmIdentities returns the ledger properties' sending domains (the 16 drip
-// roster brands via the orchestrator's canonical map), sorted.
+// roster brands via the orchestrator's canonical map) plus the explicit
+// non-ledger extras (const above ∪ SES_VDM_EXTRA_IDENTITIES env), deduped and
+// sorted.
 func vdmIdentities() []string {
-	brands := DripIntroBrands()
-	out := make([]string, 0, len(brands))
-	for _, b := range brands {
+	set := map[string]bool{}
+	for _, b := range DripIntroBrands() {
 		if d, ok := BrandSendingDomain(b); ok && d != "" {
-			out = append(out, d)
+			set[d] = true
 		}
+	}
+	for _, d := range sesVDMExtraIdentities {
+		set[d] = true
+	}
+	for _, d := range strings.Split(os.Getenv("SES_VDM_EXTRA_IDENTITIES"), ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			set[d] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for d := range set {
+		out = append(out, d)
 	}
 	sort.Strings(out)
 	return out

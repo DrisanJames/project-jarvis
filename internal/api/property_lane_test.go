@@ -15,6 +15,7 @@ package api
 //     audit log with the stamped actor.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -158,6 +159,88 @@ func TestLaneContentUnknownBrand400(t *testing.T) {
 	}
 }
 
+// TestLaneContentTouchLevelBinding pins the QA SEV-2 fix: a feed whose
+// dataset carries NO offer_id but whose touch rows do (db/internal_auto —
+// the orchestrator's per-touch override) must resolve and render THAT offer
+// with its touch scope, plus the sharing indicator (QA SEV-3).
+func TestLaneContentTouchLevelBinding(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	now := time.Now()
+
+	mock.ExpectQuery(`FROM partner_drip_vertical_roster`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical", "weight"}).
+			AddRow("internal_auto_insurance", 1))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "express_dispatch", "offer_id"}).
+			AddRow(testDatasetID, "Attribits - Internal Car Insurance", "active", false, "")) // NULL offer
+	mock.ExpectQuery(`FROM partner_drip_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical", "creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active", "updated_at", "updated_by"}).
+			AddRow("internal_auto_insurance", "", "T1 subject", "", "Jamie", testOfferID, true, now, ""))
+	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical", "touch_number", "creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active", "updated_at"}).
+			AddRow("internal_auto_insurance", 2, "", "T2 subject", "", "Jamie", testOfferID, true, now))
+	// loadLaneOffer for the touch-bound offer:
+	mock.ExpectQuery(`FROM mailing_offers WHERE id`).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status"}).
+			AddRow("AutoCoveragePoint - Quote Ready", "active"))
+	mock.ExpectQuery(`FROM mailing_offer_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "version", "status", "updated_at", "len"}).
+			AddRow(testRowID, 2, "approved", now, 64924))
+	mock.ExpectQuery(`FROM mailing_offer_subject_lines`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "subject_line", "status", "serving"}).
+			AddRow(testRowID, "Your quote is ready", "active", true))
+	mock.ExpectQuery(`FROM mailing_offer_from_names`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "from_name", "status", "serving"}).
+			AddRow(testRowID, "AutoCoveragePoint", "active", true))
+	mock.ExpectQuery(`WITH bindings`).
+		WillReturnRows(sqlmock.NewRows([]string{"feeds", "brands"}).AddRow(3, 2))
+	mock.ExpectQuery(`FROM mailing_offers`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(testOfferID, "AutoCoveragePoint - Quote Ready"))
+
+	req := httptest.NewRequest("GET", "/x?brand=db", nil)
+	rec := httptest.NewRecorder()
+	s.HandleLaneContent(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"binding":"touch-level"`,
+		`"touch_scope":["T1","T2"]`,
+		`"name":"AutoCoveragePoint - Quote Ready"`,
+		`"version":2`,
+		`"sharing":{"feeds":3,"brands":2}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("touch-level binding must render %s: %s", want, body)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// TestLaneContentScanErrorFails500 pins the QA robustness fix: a row error
+// mid-loop must fail the response, never return a silent partial 200.
+func TestLaneContentScanErrorFails500(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	rows := sqlmock.NewRows([]string{"vertical", "weight"}).
+		AddRow("remodel", 1).
+		RowError(0, fmt.Errorf("boom"))
+	mock.ExpectQuery(`FROM partner_drip_vertical_roster`).WillReturnRows(rows)
+
+	req := httptest.NewRequest("GET", "/x?brand=db", nil)
+	rec := httptest.NewRecorder()
+	s.HandleLaneContent(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("row error must 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 // ── Subject edits ───────────────────────────────────────────────────────────
 
 const testOfferID = "11111111-2222-3333-4444-555555555555"
@@ -202,8 +285,25 @@ func TestLaneSubjectArchiveLastServing422(t *testing.T) {
 	}
 }
 
+func TestLaneSubjectAddOfferNotFound404(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM mailing_offers`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+
+	rec := postJSON(t, s.HandleLaneSubjectEdit, "/x",
+		`{"offer_id":"`+testOfferID+`","action":"add","subject_line":"Fresh subject"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("add to nonexistent offer: got %d, want 404 — never an FK 500 (%s)", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
 func TestLaneSubjectAddWritesAuditLog(t *testing.T) {
 	s, mock := newLedgerServiceWithMock(t)
+	mock.ExpectQuery(`SELECT EXISTS \(SELECT 1 FROM mailing_offers`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectExec(`INSERT INTO mailing_offer_subject_lines`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO partner_admin_audit_log`).

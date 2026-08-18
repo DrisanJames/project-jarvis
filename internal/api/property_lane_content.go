@@ -83,14 +83,44 @@ type laneCreative struct {
 	HTMLBytes int       `json:"html_bytes"`
 }
 
-type laneOffer struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Status    string        `json:"status"`
-	Creative  *laneCreative `json:"creative"`
-	Subjects  []laneCopyRow `json:"subjects"`
-	FromNames []laneCopyRow `json:"from_names"`
+// laneOfferSharing is the pool-sharing scope indicator (QA SEV-3 fix): how
+// many active feed bindings (datasets + touch rows) and distinct brands mail
+// this offer's pools. Feeds > 1 means an edit here mutates LIVE rotation on
+// other lanes, not just the one on screen.
+type laneOfferSharing struct {
+	Feeds  int `json:"feeds"`
+	Brands int `json:"brands"`
 }
+
+type laneOffer struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"`
+	Creative  *laneCreative     `json:"creative"`
+	Subjects  []laneCopyRow     `json:"subjects"`
+	FromNames []laneCopyRow     `json:"from_names"`
+	Sharing   *laneOfferSharing `json:"sharing,omitempty"`
+}
+
+// laneOfferSharingSQL counts one offer's active bindings: every active
+// dataset bound to it + every active touch row (t1 + follow-ups) bound to it,
+// and the distinct brands those bindings reach (dataset verticals fan out to
+// their active roster brands).
+const laneOfferSharingSQL = `
+	WITH bindings AS (
+		SELECT 'ds:' || d.id::text AS k, r.brand
+		FROM partner_datasets d
+		LEFT JOIN partner_drip_vertical_roster r
+		  ON r.vertical = d.vertical AND r.active
+		WHERE d.offer_id = $1::uuid AND d.status = 'active'
+		UNION ALL
+		SELECT 't1:' || vertical || '/' || brand, brand
+		FROM partner_drip_creatives WHERE offer_id = $1::uuid AND active
+		UNION ALL
+		SELECT 'fu:' || COALESCE(vertical, '*') || '/' || brand || '/' || touch_number::text, brand
+		FROM partner_drip_followup_creatives WHERE offer_id = $1::uuid AND active
+	)
+	SELECT COUNT(DISTINCT k), COUNT(DISTINCT brand) FROM bindings`
 
 type laneDataset struct {
 	ID              string     `json:"id"`
@@ -101,8 +131,8 @@ type laneDataset struct {
 }
 
 type laneTouchCopy struct {
-	Vertical         string    `json:"vertical"` // "" = shared/global fallback (followups only)
-	Touch            int       `json:"touch"`    // 1 = partner_drip_creatives, 2+ = followups
+	Vertical         string    `json:"vertical"`          // "" = shared/global fallback (followups only)
+	Touch            int       `json:"touch"`             // 1 = partner_drip_creatives, 2+ = followups
 	CreativeFilename string    `json:"creative_filename"` // "" = offer-center path
 	SubjectLine      string    `json:"subject_line"`
 	Preheader        string    `json:"preheader"`
@@ -113,12 +143,24 @@ type laneTouchCopy struct {
 	UpdatedBy        string    `json:"updated_by,omitempty"`
 }
 
+// laneTouchOffer is an offer bound at the TOUCH level (partner_drip_creatives
+// / partner_drip_followup_creatives offer_id — the orchestrator's per-touch
+// override, partner_drip_orchestrator.go:1654-1660). Rendered whenever a
+// feed's touch rows carry offers its datasets don't (QA SEV-2 fix: NULL-offer
+// datasets like db/internal_auto still mail a real offer through this path).
+type laneTouchOffer struct {
+	Binding    string     `json:"binding"` // always "touch-level"
+	TouchScope []string   `json:"touch_scope"`
+	Offer      *laneOffer `json:"offer"`
+}
+
 type laneFeed struct {
-	Vertical  string          `json:"vertical"`
-	Weight    int             `json:"weight"`
-	Datasets  []laneDataset   `json:"datasets"`
-	Touch1    *laneTouchCopy  `json:"touch1"`
-	Followups []laneTouchCopy `json:"followups"`
+	Vertical    string           `json:"vertical"`
+	Weight      int              `json:"weight"`
+	Datasets    []laneDataset    `json:"datasets"`
+	Touch1      *laneTouchCopy   `json:"touch1"`
+	Followups   []laneTouchCopy  `json:"followups"`
+	TouchOffers []laneTouchOffer `json:"touch_offers"`
 }
 
 // HandleLaneContent GET …/property-ledger/lane-content?brand=<code>
@@ -131,65 +173,87 @@ func (s *PMTACampaignService) HandleLaneContent(w http.ResponseWriter, r *http.R
 	}
 	sendingDomain, _ := worker.BrandSendingDomain(brand)
 
+	// Every loop below fails the response on query/scan/rows errors — a
+	// silent partial-200 misleads the operator (QA robustness fix).
+
 	// 1. Feeds on this brand.
-	rosterRows, err := s.db.QueryContext(ctx, `
-		SELECT vertical, COALESCE(weight, 1)
-		FROM partner_drip_vertical_roster
-		WHERE brand = $1 AND active = true
-		ORDER BY sort_order, vertical`, brand)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "roster query failed")
-		return
-	}
 	feeds := []*laneFeed{}
 	feedByVertical := map[string]*laneFeed{}
-	func() {
-		defer rosterRows.Close()
-		for rosterRows.Next() {
-			f := &laneFeed{Followups: []laneTouchCopy{}, Datasets: []laneDataset{}}
-			if err := rosterRows.Scan(&f.Vertical, &f.Weight); err != nil {
-				return
+	err := func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT vertical, COALESCE(weight, 1)
+			FROM partner_drip_vertical_roster
+			WHERE brand = $1 AND active = true
+			ORDER BY sort_order, vertical`, brand)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			f := &laneFeed{Followups: []laneTouchCopy{}, Datasets: []laneDataset{}, TouchOffers: []laneTouchOffer{}}
+			if err := rows.Scan(&f.Vertical, &f.Weight); err != nil {
+				return err
 			}
 			feeds = append(feeds, f)
 			feedByVertical[f.Vertical] = f
 		}
+		return rows.Err()
 	}()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "roster query failed")
+		return
+	}
 
 	// 2–4. Datasets per feed + the offer each one mails (offer resolution
-	// cached — datasets may share an offer).
+	// cached — datasets and touch rows may share an offer).
 	offerCache := map[string]*laneOffer{}
-	for _, f := range feeds {
-		dsRows, err := s.db.QueryContext(ctx, `
-			SELECT id::text, name, COALESCE(status, ''), COALESCE(express_dispatch, false),
-			       COALESCE(offer_id::text, '')
-			FROM partner_datasets
-			WHERE vertical = $1 AND status = 'active'
-			ORDER BY name`, f.Vertical)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "dataset query failed")
-			return
+	loadOffer := func(offerID string) (*laneOffer, error) {
+		if o, ok := offerCache[offerID]; ok {
+			return o, nil
 		}
+		o, err := s.loadLaneOffer(ctx, offerID)
+		if err != nil {
+			return nil, err
+		}
+		offerCache[offerID] = o
+		return o, nil
+	}
+	for _, f := range feeds {
 		type dsTmp struct {
 			ds      laneDataset
 			offerID string
 		}
 		tmp := []dsTmp{}
-		func() {
-			defer dsRows.Close()
-			for dsRows.Next() {
+		err := func() error {
+			rows, err := s.db.QueryContext(ctx, `
+				SELECT id::text, name, COALESCE(status, ''), COALESCE(express_dispatch, false),
+				       COALESCE(offer_id::text, '')
+				FROM partner_datasets
+				WHERE vertical = $1 AND status = 'active'
+				ORDER BY name`, f.Vertical)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
 				var d dsTmp
-				if err := dsRows.Scan(&d.ds.ID, &d.ds.Name, &d.ds.Status, &d.ds.ExpressDispatch, &d.offerID); err != nil {
-					return
+				if err := rows.Scan(&d.ds.ID, &d.ds.Name, &d.ds.Status, &d.ds.ExpressDispatch, &d.offerID); err != nil {
+					return err
 				}
 				tmp = append(tmp, d)
 			}
+			return rows.Err()
 		}()
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "dataset query failed")
+			return
+		}
 		for _, d := range tmp {
 			if d.offerID != "" {
-				offer, ok := offerCache[d.offerID]
-				if !ok {
-					offer = s.loadLaneOffer(ctx, d.offerID)
-					offerCache[d.offerID] = offer
+				offer, err := loadOffer(d.offerID)
+				if err != nil {
+					respondError(w, http.StatusInternalServerError, "offer resolution failed")
+					return
 				}
 				d.ds.Offer = offer
 			}
@@ -198,70 +262,156 @@ func (s *PMTACampaignService) HandleLaneContent(w http.ResponseWriter, r *http.R
 	}
 
 	// 5. Roster-specific touch copy. t1 (PK vertical+brand):
-	t1Rows, err := s.db.QueryContext(ctx, `
-		SELECT vertical, creative_filename, subject_line, COALESCE(preheader, ''),
-		       from_name, COALESCE(offer_id::text, ''), active, updated_at, COALESCE(updated_by, '')
-		FROM partner_drip_creatives
-		WHERE brand = $1`, brand)
-	if err == nil {
-		func() {
-			defer t1Rows.Close()
-			for t1Rows.Next() {
-				t := laneTouchCopy{Touch: 1}
-				if err := t1Rows.Scan(&t.Vertical, &t.CreativeFilename, &t.SubjectLine, &t.Preheader,
-					&t.FromName, &t.OfferID, &t.Active, &t.UpdatedAt, &t.UpdatedBy); err != nil {
-					return
-				}
-				if f, ok := feedByVertical[t.Vertical]; ok {
-					tt := t
-					f.Touch1 = &tt
-				}
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT vertical, creative_filename, subject_line, COALESCE(preheader, ''),
+			       from_name, COALESCE(offer_id::text, ''), active, updated_at, COALESCE(updated_by, '')
+			FROM partner_drip_creatives
+			WHERE brand = $1`, brand)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			t := laneTouchCopy{Touch: 1}
+			if err := rows.Scan(&t.Vertical, &t.CreativeFilename, &t.SubjectLine, &t.Preheader,
+				&t.FromName, &t.OfferID, &t.Active, &t.UpdatedAt, &t.UpdatedBy); err != nil {
+				return err
 			}
-		}()
+			if f, ok := feedByVertical[t.Vertical]; ok {
+				tt := t
+				f.Touch1 = &tt
+			}
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "touch-copy query failed")
+		return
 	}
 
 	// Follow-ups (t2+); vertical NULL = the shared/global fallback chain.
 	globalFollowups := []laneTouchCopy{}
-	fuRows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(vertical, ''), touch_number, creative_filename, subject_line,
-		       COALESCE(preheader, ''), from_name, COALESCE(offer_id::text, ''), active, updated_at
-		FROM partner_drip_followup_creatives
-		WHERE brand = $1 AND active = true
-		ORDER BY touch_number, vertical NULLS LAST`, brand)
-	if err == nil {
-		func() {
-			defer fuRows.Close()
-			for fuRows.Next() {
-				var t laneTouchCopy
-				if err := fuRows.Scan(&t.Vertical, &t.Touch, &t.CreativeFilename, &t.SubjectLine,
-					&t.Preheader, &t.FromName, &t.OfferID, &t.Active, &t.UpdatedAt); err != nil {
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT COALESCE(vertical, ''), touch_number, creative_filename, subject_line,
+			       COALESCE(preheader, ''), from_name, COALESCE(offer_id::text, ''), active, updated_at
+			FROM partner_drip_followup_creatives
+			WHERE brand = $1 AND active = true
+			ORDER BY touch_number, vertical NULLS LAST`, brand)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var t laneTouchCopy
+			if err := rows.Scan(&t.Vertical, &t.Touch, &t.CreativeFilename, &t.SubjectLine,
+				&t.Preheader, &t.FromName, &t.OfferID, &t.Active, &t.UpdatedAt); err != nil {
+				return err
+			}
+			if f, ok := feedByVertical[t.Vertical]; t.Vertical != "" && ok {
+				f.Followups = append(f.Followups, t)
+			} else {
+				globalFollowups = append(globalFollowups, t)
+			}
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "follow-up query failed")
+		return
+	}
+
+	// 6. Touch-level offer bindings (QA SEV-2): a feed whose datasets carry
+	// no offer_id still mails a real offer when its touch rows do (the
+	// orchestrator's per-touch override). Effective ladder per feed =
+	// t1 + per touch number the vertical-specific row, else the global
+	// fallback (mirrors resolveFollowupCreative's vertical-wins ORDER BY).
+	// Every DISTINCT touch-bound offer renders with its touch scope;
+	// dataset-bound offers are not repeated.
+	for _, f := range feeds {
+		type scoped struct {
+			labels []string
+		}
+		order := []string{}
+		scopes := map[string]*scoped{}
+		addTouch := func(offerID, label string) {
+			if offerID == "" {
+				return
+			}
+			sc, ok := scopes[offerID]
+			if !ok {
+				sc = &scoped{}
+				scopes[offerID] = sc
+				order = append(order, offerID)
+			}
+			for _, l := range sc.labels {
+				if l == label {
 					return
 				}
-				if f, ok := feedByVertical[t.Vertical]; t.Vertical != "" && ok {
-					f.Followups = append(f.Followups, t)
-				} else {
-					globalFollowups = append(globalFollowups, t)
-				}
 			}
-		}()
+			sc.labels = append(sc.labels, label)
+		}
+		if f.Touch1 != nil {
+			addTouch(f.Touch1.OfferID, "T1")
+		}
+		// Vertical-specific rows win their touch number; global rows fill
+		// only touches the feed has no specific row for.
+		specific := map[int]bool{}
+		for _, t := range f.Followups {
+			specific[t.Touch] = true
+			addTouch(t.OfferID, "T"+itoa(t.Touch))
+		}
+		for _, t := range globalFollowups {
+			if !specific[t.Touch] {
+				addTouch(t.OfferID, "T"+itoa(t.Touch))
+			}
+		}
+		dsBound := map[string]bool{}
+		for _, d := range f.Datasets {
+			if d.Offer != nil {
+				dsBound[d.Offer.ID] = true
+			}
+		}
+		for _, offerID := range order {
+			if dsBound[offerID] {
+				continue
+			}
+			offer, err := loadOffer(offerID)
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, "touch-offer resolution failed")
+				return
+			}
+			f.TouchOffers = append(f.TouchOffers, laneTouchOffer{
+				Binding:    "touch-level",
+				TouchScope: scopes[offerID].labels,
+				Offer:      offer,
+			})
+		}
 	}
 
 	// Active offers for the swap dropdown.
 	activeOffers := []map[string]string{}
-	offRows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, name FROM mailing_offers
-		WHERE status = 'active' ORDER BY name`)
-	if err == nil {
-		func() {
-			defer offRows.Close()
-			for offRows.Next() {
-				var id, name string
-				if err := offRows.Scan(&id, &name); err != nil {
-					return
-				}
-				activeOffers = append(activeOffers, map[string]string{"id": id, "name": name})
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id::text, name FROM mailing_offers
+			WHERE status = 'active' ORDER BY name`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err != nil {
+				return err
 			}
-		}()
+			activeOffers = append(activeOffers, map[string]string{"id": id, "name": name})
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "active-offers query failed")
+		return
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -274,58 +424,84 @@ func (s *PMTACampaignService) HandleLaneContent(w http.ResponseWriter, r *http.R
 	})
 }
 
-// loadLaneOffer resolves one offer's name/status, serving creative and copy
-// pools. Lookup failures degrade to partial data (the panel must render even
-// when one offer row is broken) — a missing offer row returns id-only.
-func (s *PMTACampaignService) loadLaneOffer(ctx context.Context, offerID string) *laneOffer {
+// loadLaneOffer resolves one offer's name/status, serving creative, copy
+// pools, and sharing scope. Query/scan/rows errors are returned and fail the
+// response (QA robustness fix — no silent partial-200). Row ABSENCE still
+// degrades: a missing offer row renders id-only, a missing serving creative
+// renders nil (both are real states the operator must see).
+func (s *PMTACampaignService) loadLaneOffer(ctx context.Context, offerID string) (*laneOffer, error) {
 	o := &laneOffer{ID: offerID, Subjects: []laneCopyRow{}, FromNames: []laneCopyRow{}}
-	_ = s.db.QueryRowContext(ctx, `
+	if err := s.db.QueryRowContext(ctx, `
 		SELECT name, COALESCE(status, '') FROM mailing_offers WHERE id = $1::uuid`, offerID).
-		Scan(&o.Name, &o.Status)
+		Scan(&o.Name, &o.Status); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
 
 	var c laneCreative
 	err := s.db.QueryRowContext(ctx, laneServingCreativeSQL, offerID).
 		Scan(&c.ID, &c.Version, &c.Status, &c.UpdatedAt, &c.HTMLBytes)
-	if err == nil {
+	switch err {
+	case nil:
 		o.Creative = &c
+	case sql.ErrNoRows:
+		// no serving creative — rendered as the red NO SERVING CREATIVE state
+	default:
+		return nil, err
 	}
 
-	subjRows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, subject_line, COALESCE(status, ''),
-		       (`+laneServingSubjectPredicate+`)
-		FROM mailing_offer_subject_lines
-		WHERE offer_id = $1 ORDER BY id`, offerID)
-	if err == nil {
-		func() {
-			defer subjRows.Close()
-			for subjRows.Next() {
-				var row laneCopyRow
-				if err := subjRows.Scan(&row.ID, &row.Text, &row.Status, &row.Serving); err != nil {
-					return
-				}
-				o.Subjects = append(o.Subjects, row)
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id::text, subject_line, COALESCE(status, ''),
+			       (`+laneServingSubjectPredicate+`)
+			FROM mailing_offer_subject_lines
+			WHERE offer_id = $1 ORDER BY id`, offerID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row laneCopyRow
+			if err := rows.Scan(&row.ID, &row.Text, &row.Status, &row.Serving); err != nil {
+				return err
 			}
-		}()
+			o.Subjects = append(o.Subjects, row)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		return nil, err
 	}
 
-	fnRows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, from_name, COALESCE(status, ''),
-		       (`+laneServingFromNamePredicate+`)
-		FROM mailing_offer_from_names
-		WHERE offer_id = $1 ORDER BY id`, offerID)
-	if err == nil {
-		func() {
-			defer fnRows.Close()
-			for fnRows.Next() {
-				var row laneCopyRow
-				if err := fnRows.Scan(&row.ID, &row.Text, &row.Status, &row.Serving); err != nil {
-					return
-				}
-				o.FromNames = append(o.FromNames, row)
+	err = func() error {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT id::text, from_name, COALESCE(status, ''),
+			       (`+laneServingFromNamePredicate+`)
+			FROM mailing_offer_from_names
+			WHERE offer_id = $1 ORDER BY id`, offerID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row laneCopyRow
+			if err := rows.Scan(&row.ID, &row.Text, &row.Status, &row.Serving); err != nil {
+				return err
 			}
-		}()
+			o.FromNames = append(o.FromNames, row)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		return nil, err
 	}
-	return o
+
+	var sh laneOfferSharing
+	if err := s.db.QueryRowContext(ctx, laneOfferSharingSQL, offerID).
+		Scan(&sh.Feeds, &sh.Brands); err != nil {
+		return nil, err
+	}
+	o.Sharing = &sh
+	return o, nil
 }
 
 // HandleLaneCreativePreview GET …/property-ledger/lane-content/creative?id=<uuid>
@@ -391,6 +567,18 @@ func (s *PMTACampaignService) HandleLaneSubjectEdit(w http.ResponseWriter, r *ht
 	case "add":
 		if req.SubjectLine == "" {
 			respondError(w, http.StatusBadRequest, "subject_line required for add")
+			return
+		}
+		// Pre-check the offer exists — a 404 beats an FK-violation 500.
+		var offerExists bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT EXISTS (SELECT 1 FROM mailing_offers WHERE id = $1::uuid)`, req.OfferID).
+			Scan(&offerExists); err != nil {
+			respondError(w, http.StatusInternalServerError, "offer lookup failed")
+			return
+		}
+		if !offerExists {
+			respondError(w, http.StatusNotFound, "offer not found")
 			return
 		}
 		id := uuid.New().String()

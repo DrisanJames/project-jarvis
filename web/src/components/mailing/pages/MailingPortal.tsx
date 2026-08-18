@@ -4,7 +4,7 @@ import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faCalculator,
   faListUl, faCrosshairs, faBolt,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
-  /* faArrowLeft, */ faGlobe, faStore,
+  /* faArrowLeft, */ faGlobe, /* faStore (offer-center nav retired 2026-08-17), */
   faSpinner, faSeedling, faWandMagicSparkles,
   faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup, faSliders,
   faRightLeft, faUsers,
@@ -32,7 +32,12 @@ const DomainAgents = lazy(() => import('../components/DomainAgents').then(m => (
 // AnalyticsCenter retired 2026-06-09: the Event Lake Explorer (now labeled
 // "Analytics") is the operator's analytics surface. Component file kept for
 // reference; no longer mounted.
-const OfferManagement = lazy(() => import('../components/OfferManagement').then(m => ({ default: m.OfferManagement })));
+// OfferManagement (Offer Center) nav retired 2026-08-17 (operator ruling:
+// "we should no longer display that screen… its only value is performance and
+// even that is stale"). Component + backend routes kept; only the nav entry is
+// removed. Replacements: Property Ledger lane panel (offer/copy per lane) +
+// Creative Studio (creatives).
+// const OfferManagement = lazy(() => import('../components/OfferManagement').then(m => ({ default: m.OfferManagement })));
 const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(m => ({ default: m.JarvisDashboard })));
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
 const SendDayPlanner = lazy(() => import('../components/SendDayPlanner').then(m => ({ default: m.SendDayPlanner })));
@@ -73,7 +78,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | 'offers' | 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'property-ledger';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'send-day' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'property-ledger';
 
 interface Tab {
   id: TabId;
@@ -100,7 +105,10 @@ const tabs: Tab[] = [
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
   { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'AI send-planning and approval for each sending domain — baselines, recommendations and scorecards.' },
   { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price and plan CPM deals — projected volume, pace, capacity risk and live earnings vs goal.' },
-  { id: 'offers', label: 'Offers', icon: faStore, description: 'Manage your offers end to end — creatives, compliance, scheduling and conversion tracking.' },
+  // Offer Center ('offers') nav entry retired 2026-08-17 — operator ruling:
+  // "we should no longer display that screen… its only value is performance
+  // and even that is stale." Nav removal only (component + routes kept);
+  // replacements: Property Ledger lane panel + Creative Studio.
   { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.' },
   { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
   { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
@@ -248,8 +256,10 @@ export const MailingPortal: React.FC = () => {
         return <TemplatesManager />;
       case 'delivery-servers':
         return <DeliveryServersManager />;
-      case 'offers':
-        return <OfferManagement />;
+      // case 'offers' retired 2026-08-17 (Offer Center nav removal — operator
+      // ruling; see Property Ledger lane panel + Creative Studio). A persisted
+      // localStorage activeTab of 'offers' now falls through to the default
+      // dashboard render.
       case 'smart-links':
         return <Suspense fallback={<ChunkLoader />}><SmartLinkManager /></Suspense>;
       case 'automations':

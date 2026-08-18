@@ -162,12 +162,26 @@ func TestVDMLeaseSizedForCatchup(t *testing.T) {
 	}
 }
 
-// TestVDMIdentitiesAndRaws pins the fetch grid: 16 roster identities and the
-// env-extensible raw set.
+// TestVDMIdentitiesAndRaws pins the fetch grid: 16 roster identities + the
+// explicit non-ledger extras (wcl funnel), and the env-extensible raw set.
 func TestVDMIdentitiesAndRaws(t *testing.T) {
 	ids := vdmIdentities()
-	if len(ids) != 16 {
-		t.Fatalf("vdmIdentities() = %d, want 16 (drip roster sending domains): %v", len(ids), ids)
+	if len(ids) != 17 {
+		t.Fatalf("vdmIdentities() = %d, want 17 (16 drip roster domains + m.wcl-heloc.com): %v", len(ids), ids)
+	}
+	found := false
+	for _, d := range ids {
+		if d == "m.wcl-heloc.com" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("m.wcl-heloc.com (non-ledger extra) missing from identities: %v", ids)
+	}
+	t.Setenv("SES_VDM_EXTRA_IDENTITIES", " m.example.com , m.wcl-heloc.com ")
+	ids = vdmIdentities()
+	if len(ids) != 18 { // env extra added, wcl deduped
+		t.Fatalf("env-extended identities = %d, want 18: %v", len(ids), ids)
 	}
 	t.Setenv("SES_VDM_ISPS", " Outlook , Gmail ,")
 	raws := vdmRawISPs()
