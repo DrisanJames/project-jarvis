@@ -2785,7 +2785,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </p>
         <StepErrorBanner stepNum={4} />
 
-        {sendHistory && sendHistory.total > 0 && sendHistory.cancel_rate >= 0.5 && (
+        {/* Threshold calibrated against measured prod, not guessed: healthy
+            properties sit at 0-1% cancelled over terminal outcomes
+            (m.discountblog.com 6 cancelled / 1,896 sent = 0%), while the held
+            kumo estate sits at 50%. 25% is the empty middle, so the estate
+            still trips as it drifts and no healthy brand ever does. */}
+        {sendHistory && sendHistory.total > 0 && sendHistory.cancel_rate >= 0.25 && (
           <div style={{
             marginBottom: 16, padding: '10px 12px', borderRadius: 10,
             background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)',
