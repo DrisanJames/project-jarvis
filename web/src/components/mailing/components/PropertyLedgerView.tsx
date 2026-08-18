@@ -152,6 +152,7 @@ interface SupplyFeed {
   ready_total: number; ready_by_isp: SupplyISP[];
   held: number; suppressed: number; dead_letter: number;
   mailed_lifetime: number; mailed_today: number;
+  computed_at: string;        // when this dataset's anatomy was actually scanned (server TTL cache)
 }
 interface SupplyResponse {
   domain: string; brand: string; sending_domain: string; non_ledger: boolean;
@@ -287,7 +288,10 @@ export const PropertyLedgerView: React.FC = () => {
         throw new Error(msg);
       }
       return r.json() as Promise<SupplyResponse>;
-    }, 60_000, [domain]);
+      // 300s poll (load-collapse addendum): supply is a queue-level fact —
+      // 5-minute freshness is right, and the server's per-dataset TTL cache
+      // (120s) means tighter polling would only re-read the cache anyway.
+    }, 300_000, [domain]);
   const supplyWarming = !!supply.error && supply.error.startsWith('HTTP 503');
 
   // Throttle read (Cockpit P2): fetched per domain, refetched after a write.
@@ -446,7 +450,7 @@ export const PropertyLedgerView: React.FC = () => {
   const renderReadyCell = (isp: string): React.ReactNode => {
     if (supplyWarming) {
       return <span style={{ color: 'rgba(180,210,240,0.45)' }}
-        title="Supply view warming up — the covering index is still building (CONCURRENTLY); retries automatically every 60s.">
+        title="Supply view warming up — the covering index is still building (CONCURRENTLY); retries automatically on the next poll.">
         warming up
       </span>;
     }
@@ -772,13 +776,13 @@ export const SupplyStrip: React.FC<{
           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{domain}</span>
         )}
         <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(180,210,240,0.5)' }}>
-          {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 60s`}
+          {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 5m`}
         </span>
       </div>
       {warming && (
         <div style={{ color: '#facc15', fontSize: 12, marginBottom: 8 }}>
           Supply view warming up — the covering index is still building (CONCURRENTLY, calm-IO
-          windows); retries automatically every 60s.
+          windows); retries automatically on the next poll.
         </div>
       )}
       {error && !warming && (
@@ -828,6 +832,10 @@ export const SupplyStrip: React.FC<{
                 <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}
                   title="Supply-release budget (partner_datasets.daily_cap): the release job keeps at most this many rows 'ready' per day, parking the rest 'held'. NOT the claim-side per-ISP cap.">
                   release cap {f.daily_cap > 0 ? `${num(f.daily_cap)}/day` : 'uncapped'}
+                </span>
+                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)' }}
+                  title="Counts come from a server-side per-dataset cache (TTL 120s) — this is when the queue was actually scanned.">
+                  as of {new Date(f.computed_at).toLocaleTimeString()}
                 </span>
                 {f.shared_brands.length > 1 && (
                   <span style={{ marginLeft: 'auto', fontSize: 10, color: '#facc15', fontWeight: 700 }}

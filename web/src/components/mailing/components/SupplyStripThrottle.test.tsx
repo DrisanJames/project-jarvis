@@ -20,6 +20,7 @@ const supplyData = {
     tranche_total: 1000, cleaning: 150, pending_eo: 100, eo_in_flight: 50,
     ready_total: 300, ready_by_isp: [{ isp: 'gmail', ready: 150 }],
     held: 200, suppressed: 40, dead_letter: 10, mailed_lifetime: 300, mailed_today: 25,
+    computed_at: '2026-08-17T12:00:00Z',
   }],
 };
 

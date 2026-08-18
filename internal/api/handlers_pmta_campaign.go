@@ -13,6 +13,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +50,18 @@ type PMTACampaignService struct {
 	// skipBackgroundDeploy skips the async goroutine in HandleDeployCampaign.
 	// Used in tests so sqlmock connections aren't accessed after test cleanup.
 	skipBackgroundDeploy bool
+
+	// laneSupplyCache: per-dataset TTL cache for the supply anatomy
+	// (Cockpit load-collapse addendum: the aggregate costs ~1.8s / ~550k
+	// shared buffers on a 1.9M-row dataset — concurrent pollers must not
+	// stack scans). sync.Map[dataset_id string]*laneSupplyCacheSlot; misses
+	// for the same dataset collapse on the slot's mutex so at most ONE scan
+	// runs per dataset per TTL. Zero value ready — no constructor wiring.
+	laneSupplyCache sync.Map
+	// laneSupplyIndexOK: once the covering index has been observed valid it
+	// stays valid in-process — the pg_class probe runs until first success,
+	// then never again (same cache posture, per the addendum).
+	laneSupplyIndexOK atomic.Bool
 
 	// gateEvalFn overrides evaluateSendDayGates for testing (the real
 	// evaluation reads live gate sources via SQL). Nil means use the real

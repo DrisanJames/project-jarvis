@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
@@ -103,6 +104,32 @@ type laneSupplyFeed struct {
 	DeadLetter     int64           `json:"dead_letter"`
 	MailedLifetime int64           `json:"mailed_lifetime"`
 	MailedToday    int64           `json:"mailed_today"`
+	// ComputedAt: when this dataset's anatomy was actually scanned — counts
+	// are served from a per-dataset TTL cache (laneSupplyCacheTTL), so the
+	// UI shows staleness honestly ("as of HH:MM:SS").
+	ComputedAt time.Time `json:"computed_at"`
+}
+
+// laneSupplyCacheTTL bounds anatomy staleness. The aggregate is ~1.8s /
+// ~550k shared buffers on the largest live dataset (measured 2026-08-17);
+// with 5-minute UI polling plus concurrent viewers, uncached calls stack.
+// Queue-level supply is a slow-moving fact — 2 minutes is honest.
+const laneSupplyCacheTTL = 120 * time.Second
+
+// laneSupplyCacheSlot is one dataset's cached anatomy. Misses collapse on
+// mu: concurrent callers for the same dataset serialize, the first runs the
+// scan, the rest read the fresh cache.
+type laneSupplyCacheSlot struct {
+	mu         sync.Mutex
+	computedAt time.Time
+	counts     laneSupplyCounts
+	ready      []laneSupplyISP
+}
+
+type laneSupplyCounts struct {
+	TrancheTotal, Cleaning, PendingEO, EOInFlight int64
+	ReadyTotal, Held, Suppressed, DeadLetter      int64
+	MailedLifetime, MailedToday                   int64
 }
 
 // laneSupplyDenverDayBoundsUTC computes the current Denver day as UTC
@@ -201,18 +228,23 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 	// anatomy aggregate is a measured 16.7s seq scan on prod WITHOUT
 	// idx_pcq_dataset_status_mailed (covering IOS: 27.7ms). Refuse rather
 	// than tax the heap until the CONCURRENTLY build lands and is valid.
-	var indexValid bool
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(i.indisvalid, false)
-		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-		WHERE c.relname = 'idx_pcq_dataset_status_mailed'
-	`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
-		respondError(w, http.StatusInternalServerError, "index check failed")
-		return
-	}
-	if !indexValid {
-		respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
-		return
+	// Once observed valid it stays valid in-process (indexes don't un-build;
+	// a REINDEX bounce is a redeploy-scale event) — no probe per poll.
+	if !s.laneSupplyIndexOK.Load() {
+		var indexValid bool
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COALESCE(i.indisvalid, false)
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = 'idx_pcq_dataset_status_mailed'
+		`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
+			respondError(w, http.StatusInternalServerError, "index check failed")
+			return
+		}
+		if !indexValid {
+			respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
+			return
+		}
+		s.laneSupplyIndexOK.Store(true)
 	}
 	dayStart, dayEnd := laneSupplyDenverDayBoundsUTC(time.Now())
 
@@ -227,20 +259,53 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// 3. The tranche anatomy per dataset.
+	// 3. The tranche anatomy per dataset — through the per-dataset TTL
+	// cache. A miss runs the scan while HOLDING the slot mutex, so
+	// concurrent pollers for the same dataset collapse to one scan per TTL.
 	for i := range feeds {
 		f := &feeds[i]
-		var dsID string
-		err = s.db.QueryRowContext(ctx, laneSupplyAnatomySQL, f.DatasetID, dayStart, dayEnd).
-			Scan(&dsID, &f.TrancheTotal, &f.Cleaning, &f.PendingEO, &f.EOInFlight,
-				&f.ReadyTotal, &f.Held, &f.Suppressed, &f.DeadLetter,
-				&f.MailedLifetime, &f.MailedToday)
-		if err != nil && err != sql.ErrNoRows {
-			respondError(w, http.StatusInternalServerError, "supply anatomy query failed")
+		if err := s.laneSupplyFillAnatomy(ctx, f, dayStart, dayEnd); err != nil {
+			respondError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		// sql.ErrNoRows = a dataset with zero pcq rows: all-zero counts
-		// are the true state of that queue, not an error.
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"domain":          domain,
+		"brand":           brand,
+		"sending_domain":  sendingDomain,
+		"non_ledger":      nonLedger,
+		"as_of":           time.Now().UTC(),
+		"denver_day":      time.Now().In(propertyLedgerLoc).Format("2006-01-02"),
+		"ready_semantics": laneSupplyReadySemantics,
+		"supply_note":     "Live queue facts (point-in-time). Supply is a DATASET fact shared across the rotation's brands — never domain-owned inventory.",
+		"feeds":           feeds,
+	})
+}
+
+// laneSupplyFillAnatomy fills one feed's counts + ready-by-ISP from the
+// per-dataset TTL cache, scanning only on a cold/expired slot. Errors are
+// operator-facing strings (never a silent partial-200). The Denver-day
+// bounds ride the cache too: up to laneSupplyCacheTTL of staleness across
+// the midnight boundary, surfaced honestly via computed_at.
+func (s *PMTACampaignService) laneSupplyFillAnatomy(ctx context.Context, f *laneSupplyFeed, dayStart, dayEnd time.Time) error {
+	slotI, _ := s.laneSupplyCache.LoadOrStore(f.DatasetID, &laneSupplyCacheSlot{})
+	slot := slotI.(*laneSupplyCacheSlot)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+
+	if slot.computedAt.IsZero() || time.Since(slot.computedAt) >= laneSupplyCacheTTL {
+		var c laneSupplyCounts
+		var dsID string
+		err := s.db.QueryRowContext(ctx, laneSupplyAnatomySQL, f.DatasetID, dayStart, dayEnd).
+			Scan(&dsID, &c.TrancheTotal, &c.Cleaning, &c.PendingEO, &c.EOInFlight,
+				&c.ReadyTotal, &c.Held, &c.Suppressed, &c.DeadLetter,
+				&c.MailedLifetime, &c.MailedToday)
+		if err != nil && err != sql.ErrNoRows {
+			return errors.New("supply anatomy query failed")
+		}
+		// sql.ErrNoRows = a dataset with zero pcq rows: all-zero counts are
+		// the true state of that queue, not an error (and cacheable).
 
 		counts := map[string]int64{}
 		err = func() error {
@@ -260,23 +325,26 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 			return rows.Err()
 		}()
 		if err != nil {
-			respondError(w, http.StatusInternalServerError, "ready-by-isp query failed")
-			return
+			return errors.New("ready-by-isp query failed")
 		}
-		f.ReadyByISP = laneSupplyOrderReadyByISP(counts)
+		slot.counts = c
+		slot.ready = laneSupplyOrderReadyByISP(counts)
+		slot.computedAt = time.Now()
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"domain":          domain,
-		"brand":           brand,
-		"sending_domain":  sendingDomain,
-		"non_ledger":      nonLedger,
-		"as_of":           time.Now().UTC(),
-		"denver_day":      time.Now().In(propertyLedgerLoc).Format("2006-01-02"),
-		"ready_semantics": laneSupplyReadySemantics,
-		"supply_note":     "Live queue facts (point-in-time). Supply is a DATASET fact shared across the rotation's brands — never domain-owned inventory.",
-		"feeds":           feeds,
-	})
+	f.TrancheTotal = slot.counts.TrancheTotal
+	f.Cleaning = slot.counts.Cleaning
+	f.PendingEO = slot.counts.PendingEO
+	f.EOInFlight = slot.counts.EOInFlight
+	f.ReadyTotal = slot.counts.ReadyTotal
+	f.Held = slot.counts.Held
+	f.Suppressed = slot.counts.Suppressed
+	f.DeadLetter = slot.counts.DeadLetter
+	f.MailedLifetime = slot.counts.MailedLifetime
+	f.MailedToday = slot.counts.MailedToday
+	f.ReadyByISP = append([]laneSupplyISP{}, slot.ready...)
+	f.ComputedAt = slot.computedAt
+	return nil
 }
 
 // laneSupplyResolveFeeds resolves a lane brand's feeds — roster verticals →
