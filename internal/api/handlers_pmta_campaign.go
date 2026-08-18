@@ -111,6 +111,14 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/property-ledger/global-hold", s.HandleGlobalHold)
 		cr.Get("/property-ledger/reconciliation", s.HandleListReconciliation)
 		cr.Get("/property-ledger/coverage", s.HandleListCoverage)
+		// Lane content panel (operator scope addition 2026-08-17): what a
+		// lane sends (offer / creative / subject / preheader / from-name) +
+		// in-screen edits, audit-logged with the stamped actor.
+		cr.Get("/property-ledger/lane-content", s.HandleLaneContent)
+		cr.Get("/property-ledger/lane-content/creative", s.HandleLaneCreativePreview)
+		cr.Post("/property-ledger/lane-content/subject", s.HandleLaneSubjectEdit)
+		cr.Post("/property-ledger/lane-content/touch-copy", s.HandleLaneTouchCopyEdit)
+		cr.Post("/property-ledger/lane-content/offer-swap", s.HandleLaneOfferSwap)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)

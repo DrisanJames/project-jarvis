@@ -76,6 +76,91 @@ func propertyLedgerValidISP(isp string) bool {
 
 // ── Step 17: reads ──────────────────────────────────────────────────────────
 
+// propertyLedgerVDMSQL — per-lane SES VDM telemetry for the list endpoint
+// (operator enhancement 2026-08-17: "All pulls from the VDM"). One cheap
+// aggregate over ses_vdm_daily (16 identities × ≤14 ISPs × ≤7 days), summed
+// per (identity, canonical isp) across regions. complete=true rows ONLY;
+// $1 = window start (yesterday-6, UTC), $2 = yesterday (UTC). VDM days are
+// UTC-native (Step 16) and NEVER mix into budget judgments (I-1) — this is
+// display telemetry beside the budget columns, not an input to them.
+const propertyLedgerVDMSQL = `
+	SELECT identity, isp,
+	       COALESCE(SUM(send)     FILTER (WHERE day = $2::date), 0),
+	       COALESCE(SUM(delivery) FILTER (WHERE day = $2::date), 0),
+	       COALESCE(SUM(open)     FILTER (WHERE day = $2::date), 0),
+	       COALESCE(SUM(click)    FILTER (WHERE day = $2::date), 0),
+	       COALESCE(SUM(send), 0), COALESCE(SUM(delivery), 0),
+	       COALESCE(SUM(open), 0), COALESCE(SUM(click), 0)
+	FROM ses_vdm_daily
+	WHERE complete AND day BETWEEN $1::date AND $2::date
+	GROUP BY identity, isp`
+
+// propertyLedgerVDM is one lane's VDM block. Rates are computed server-side
+// and are nil (JSON null) when the denominator is zero — never NaN. The
+// *_vdm suffix flags VDM unique-count semantics (VDM OPEN/CLICK are unique
+// recipients per AWS's metric definitions, not event counts — see
+// docs/METRIC_CONTRACT.md): delivered_pct = delivery/send,
+// open_rate_vdm = open/delivery, click_rate_vdm = click/delivery.
+type propertyLedgerVDM struct {
+	Sent           int64    `json:"sent"`
+	Delivered      int64    `json:"delivered"`
+	Opens          int64    `json:"opens"`
+	Clicks         int64    `json:"clicks"`
+	DeliveredPct   *float64 `json:"delivered_pct"`
+	OpenRateVDM    *float64 `json:"open_rate_vdm"`
+	ClickRateVDM   *float64 `json:"click_rate_vdm"`
+	Sent7d         int64    `json:"sent_7d"`
+	Delivered7d    int64    `json:"delivered_7d"`
+	Opens7d        int64    `json:"opens_7d"`
+	Clicks7d       int64    `json:"clicks_7d"`
+	DeliveredPct7d *float64 `json:"delivered_pct_7d"`
+	OpenRateVDM7d  *float64 `json:"open_rate_vdm_7d"`
+	ClickRateVDM7d *float64 `json:"click_rate_vdm_7d"`
+}
+
+// vdmRate is the null-not-NaN division rule for VDM rates.
+func vdmRate(num, den int64) *float64 {
+	if den == 0 {
+		return nil
+	}
+	v := float64(num) / float64(den)
+	return &v
+}
+
+// loadVDMLaneStats returns lane VDM blocks keyed "identity|isp" plus the
+// yesterday-UTC day string. A query failure degrades to nil (the ledger list
+// must never fail because telemetry did).
+func (s *PMTACampaignService) loadVDMLaneStats(ctx context.Context) (map[string]*propertyLedgerVDM, string, string) {
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	windowStart := time.Now().UTC().AddDate(0, 0, -7).Format("2006-01-02")
+	rows, err := s.db.QueryContext(ctx, propertyLedgerVDMSQL, windowStart, yesterday)
+	if err != nil {
+		return nil, yesterday, windowStart
+	}
+	defer rows.Close()
+	out := map[string]*propertyLedgerVDM{}
+	for rows.Next() {
+		var identity, isp string
+		var v propertyLedgerVDM
+		if err := rows.Scan(&identity, &isp,
+			&v.Sent, &v.Delivered, &v.Opens, &v.Clicks,
+			&v.Sent7d, &v.Delivered7d, &v.Opens7d, &v.Clicks7d); err != nil {
+			return nil, yesterday, windowStart
+		}
+		v.DeliveredPct = vdmRate(v.Delivered, v.Sent)
+		v.OpenRateVDM = vdmRate(v.Opens, v.Delivered)
+		v.ClickRateVDM = vdmRate(v.Clicks, v.Delivered)
+		v.DeliveredPct7d = vdmRate(v.Delivered7d, v.Sent7d)
+		v.OpenRateVDM7d = vdmRate(v.Opens7d, v.Delivered7d)
+		v.ClickRateVDM7d = vdmRate(v.Clicks7d, v.Delivered7d)
+		out[identity+"|"+isp] = &v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, yesterday, windowStart
+	}
+	return out, yesterday, windowStart
+}
+
 // propertyLedgerListSQL — counters only (never partner_clean_queue), both
 // counter-join sides normalized. $1 = today (Denver date).
 const propertyLedgerListSQL = `
@@ -132,6 +217,7 @@ type propertyLedgerRow struct {
 	Proposal           *propertyLedgerProposal `json:"proposal,omitempty"`
 	IntroducedToday    *int                    `json:"introduced_today"`
 	IntroducedAsOf     *time.Time              `json:"introduced_as_of,omitempty"`
+	VDM                *propertyLedgerVDM      `json:"vdm,omitempty"`
 }
 
 type propertyLedgerRunInfo struct {
@@ -224,6 +310,17 @@ func (s *PMTACampaignService) HandleListPropertyLedger(w http.ResponseWriter, r 
 		return
 	}
 
+	// Per-lane VDM telemetry (identity = the row's sending domain, isp =
+	// the canonical group — ledger groups without VDM coverage stay nil).
+	vdmStats, vdmDay, vdmWindowStart := s.loadVDMLaneStats(ctx)
+	if vdmStats != nil {
+		for i := range out {
+			if v, ok := vdmStats[out[i].SendingDomain+"|"+out[i].ISP]; ok {
+				out[i].VDM = v
+			}
+		}
+	}
+
 	// Global hold flag.
 	var ghValue bool
 	var ghReason string
@@ -237,6 +334,11 @@ func (s *PMTACampaignService) HandleListPropertyLedger(w http.ResponseWriter, r 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"day":  today,
 		"rows": out,
+		"vdm": map[string]interface{}{
+			"day":          vdmDay,
+			"window_start": vdmWindowStart,
+			"note":         "SES VDM unique-count semantics; complete UTC days only",
+		},
 		"global_hold": map[string]interface{}{
 			"value":        ghValue,
 			"reason":       ghReason,

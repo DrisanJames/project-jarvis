@@ -1,5 +1,6 @@
 // Property Ledger — per (sending domain × ISP) drip-introduction budgets
-// (Vector A plan rev4, Step 19).
+// (Vector A plan rev4, Step 19; per-domain VDM lane view + lane content panel
+// added on operator direction 2026-08-17).
 //
 // Semantics surfaced to the operator (I-2/I-3, property_ledger_doc.go):
 //   - "Budget edits apply from tomorrow (Denver). Hold is immediate."
@@ -11,6 +12,14 @@
 //   - Global hold banner (fail-closed emergency stop, outranks the overlay
 //     kill switch); coverage warnings; run-freshness strip; shadow banner
 //     while alerts are off.
+//   - Default view = ONE sending domain (highest yesterday VDM send volume;
+//     first alphabetically when VDM has no volume yet) with per-lane VDM
+//     stats (yesterday sent / delivered% / open / click + 7-day sent, all
+//     VDM unique-count semantics, complete UTC days only). "All domains"
+//     renders the full grid unchanged.
+//   - Lane content panel (single-domain view): which offer / creative /
+//     subjects / from-names / touch copy each feed on the brand sends, with
+//     in-screen edits (audit-logged server-side).
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../shared/apiFetch';
@@ -22,6 +31,23 @@ interface Proposal {
   basis: string;
   created_at: string;
   expires_at: string;
+}
+
+interface LaneVDM {
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  delivered_pct: number | null;
+  open_rate_vdm: number | null;
+  click_rate_vdm: number | null;
+  sent_7d: number;
+  delivered_7d: number;
+  opens_7d: number;
+  clicks_7d: number;
+  delivered_pct_7d: number | null;
+  open_rate_vdm_7d: number | null;
+  click_rate_vdm_7d: number | null;
 }
 
 interface LedgerRow {
@@ -45,6 +71,7 @@ interface LedgerRow {
   proposal?: Proposal;
   introduced_today: number | null;
   introduced_as_of?: string;
+  vdm?: LaneVDM;
 }
 
 interface RunInfo {
@@ -64,6 +91,7 @@ interface GlobalHold {
 interface LedgerResponse {
   day: string;
   rows: LedgerRow[];
+  vdm?: { day: string; window_start: string; note: string };
   global_hold: GlobalHold;
   runs: { counter: RunInfo | null; vdm: RunInfo | null; reconciliation: RunInfo | null };
   alerts_enabled: boolean;
@@ -71,7 +99,38 @@ interface LedgerResponse {
 
 interface CoverageRow { brand: string; isp: string; status: string; observed_sends: number; }
 
+// ── Lane content panel shapes (property_lane_content.go) ────────────────────
+
+interface LaneCopyRow { id: string; text: string; status: string; serving: boolean; }
+interface LaneCreative { id: string; version: number; status: string; updated_at: string; html_bytes: number; }
+interface LaneOffer {
+  id: string; name: string; status: string;
+  creative: LaneCreative | null;
+  subjects: LaneCopyRow[]; from_names: LaneCopyRow[];
+}
+interface LaneDataset {
+  id: string; name: string; status: string; express_dispatch: boolean;
+  offer: LaneOffer | null;
+}
+interface LaneTouchCopy {
+  vertical: string; touch: number; creative_filename: string;
+  subject_line: string; preheader: string; from_name: string;
+  offer_id?: string; active: boolean; updated_at: string; updated_by?: string;
+}
+interface LaneFeed {
+  vertical: string; weight: number; datasets: LaneDataset[];
+  touch1: LaneTouchCopy | null; followups: LaneTouchCopy[];
+}
+interface LaneContentResponse {
+  brand: string; sending_domain: string;
+  feeds: LaneFeed[]; global_followups: LaneTouchCopy[];
+  active_offers: Array<{ id: string; name: string }>;
+  preheader_note: string;
+}
+
 const num = (n: number | null | undefined) => (n ?? 0).toLocaleString();
+const pct = (v: number | null | undefined): string =>
+  v == null ? '—' : `${(v * 100).toFixed(1)}%`;
 
 const age = (iso?: string): string => {
   if (!iso) return '—';
@@ -86,6 +145,12 @@ const age = (iso?: string): string => {
 
 const cellKey = (r: { brand: string; isp: string }) => `${r.brand}/${r.isp}`;
 
+// Dead-lane rule: delivered% under 50 on meaningful volume (≥100 VDM sends).
+const isDeadLane = (v?: LaneVDM): boolean =>
+  !!v && v.sent >= 100 && v.delivered_pct != null && v.delivered_pct < 0.5;
+
+const ALL_DOMAINS = 'ALL';
+
 export const PropertyLedgerView: React.FC = () => {
   const [data, setData] = useState<LedgerResponse | null>(null);
   const [coverage, setCoverage] = useState<CoverageRow[]>([]);
@@ -95,6 +160,7 @@ export const PropertyLedgerView: React.FC = () => {
   const [edit, setEdit] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [ghBusy, setGhBusy] = useState(false);
+  const [domain, setDomain] = useState<string | null>(null); // null until data picks the default
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -114,6 +180,25 @@ export const PropertyLedgerView: React.FC = () => {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Default domain = highest yesterday VDM send volume; first alphabetically
+  // when VDM shows no volume yet. Picked once, when data first arrives.
+  useEffect(() => {
+    if (domain !== null || !data || data.rows.length === 0) return;
+    const byDomain = new Map<string, number>();
+    for (const r of data.rows) {
+      const d = r.sending_domain || r.brand;
+      byDomain.set(d, (byDomain.get(d) ?? 0) + (r.vdm?.sent ?? 0));
+    }
+    const domains = Array.from(byDomain.keys()).sort();
+    let best = domains[0];
+    let bestSent = -1;
+    for (const d of domains) {
+      const s = byDomain.get(d) ?? 0;
+      if (s > bestSent) { best = d; bestSent = s; }
+    }
+    setDomain(bestSent > 0 ? best : domains[0]);
+  }, [data, domain]);
 
   const post = async (path: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> => {
     const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/${path}`, {
@@ -217,21 +302,38 @@ export const PropertyLedgerView: React.FC = () => {
     padding: '8px 10px', fontSize: 13, color: '#e6edf5',
     borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
   };
+  const thNum: React.CSSProperties = { ...th, textAlign: 'right' };
+  const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
   const banner = (bg: string, border: string, color: string): React.CSSProperties => ({
     background: bg, border: `1px solid ${border}`, color, borderRadius: 8,
     padding: '10px 14px', fontSize: 13, marginBottom: 12, fontWeight: 600,
   });
 
-  const rows = data?.rows ?? [];
-  const proposalCount = rows.filter(r => r.proposal).length;
+  const allRows = data?.rows ?? [];
+  const domains = Array.from(new Set(allRows.map(r => r.sending_domain || r.brand))).sort();
+  const showAll = domain === ALL_DOMAINS;
+  const rows = showAll ? allRows : allRows.filter(r => (r.sending_domain || r.brand) === domain);
+  const selectedBrand = !showAll ? rows[0]?.brand : undefined;
+  const proposalCount = allRows.filter(r => r.proposal).length;
   const runs = data?.runs;
+  const vdmMeta = data?.vdm;
 
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
         <h2 style={{ margin: 0, fontSize: 18, color: '#e6edf5' }}>Property Ledger</h2>
+        <select
+          value={domain ?? ALL_DOMAINS}
+          onChange={e => setDomain(e.target.value)}
+          style={{ background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
+                   border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
+                   padding: '5px 8px', fontSize: 12 }}>
+          {domains.map(d => <option key={d} value={d}>{d}</option>)}
+          <option value={ALL_DOMAINS}>All domains</option>
+        </select>
         <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
-          {rows.length} cells · day {data?.day ?? '—'}
+          {rows.length} {showAll ? 'cells' : 'lanes'} · day {data?.day ?? '—'}
+          {vdmMeta ? ` · VDM day ${vdmMeta.day} (UTC)` : ''}
         </span>
         <button onClick={() => void load()} style={{
           marginLeft: 'auto', background: 'transparent', color: '#9fd3ff',
@@ -295,13 +397,20 @@ export const PropertyLedgerView: React.FC = () => {
       )}
 
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 1000 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: showAll ? 1000 : 1250 }}>
           <thead><tr>
             <th style={th}>Property</th>
             <th style={th}>ISP</th>
-            <th style={{ ...th, textAlign: 'right' }}>Drip Intro Daily Cap</th>
-            <th style={{ ...th, textAlign: 'right' }}>Introductions Today</th>
+            <th style={thNum}>Drip Intro Daily Cap</th>
+            <th style={thNum}>Introductions Today</th>
             <th style={th}>Drip Intro Hold</th>
+            {!showAll && (<>
+              <th style={thNum} title={`VDM yesterday (UTC ${vdmMeta?.day ?? ''}) — unique-count semantics`}>Sent (yday)</th>
+              <th style={thNum} title="delivery / send">Delivered %</th>
+              <th style={thNum} title="unique opens / delivery (VDM unique-count semantics)">Open Rate</th>
+              <th style={thNum} title="unique clicks / delivery (VDM unique-count semantics)">Click Rate</th>
+              <th style={thNum} title={`VDM sends over the trailing 7 complete UTC days (${vdmMeta?.window_start ?? ''} → ${vdmMeta?.day ?? ''})`}>Sent 7d</th>
+            </>)}
             <th style={th}>Proposal</th>
             <th style={th}>Approved</th>
           </tr></thead>
@@ -309,13 +418,25 @@ export const PropertyLedgerView: React.FC = () => {
             {rows.map(r => {
               const key = cellKey(r);
               const isBusy = !!busy[key];
+              const dead = !showAll && isDeadLane(r.vdm);
               return (
-                <tr key={key} style={{ opacity: r.hold || data?.global_hold.value ? 0.55 : 1 }}>
+                <tr key={key} style={{
+                  opacity: r.hold || data?.global_hold.value ? 0.55 : 1,
+                  background: dead ? 'rgba(233,69,96,0.10)' : undefined,
+                }}>
                   <td style={{ ...td, fontWeight: 600 }}>
                     {r.sending_domain || r.brand}
                     <span style={{ color: 'rgba(180,210,240,0.5)', marginLeft: 6, fontWeight: 400 }}>{r.brand}</span>
                   </td>
-                  <td style={{ ...td, color: 'rgba(180,210,240,0.75)' }}>{r.isp}</td>
+                  <td style={{ ...td, color: 'rgba(180,210,240,0.75)' }}>
+                    {r.isp}
+                    {dead && (
+                      <span title={`Dead lane: delivered ${pct(r.vdm?.delivered_pct)} on ${num(r.vdm?.sent)} VDM sends yesterday`}
+                        style={{ marginLeft: 6, color: '#e94560', fontSize: 10, fontWeight: 700 }}>
+                        DEAD LANE
+                      </span>
+                    )}
+                  </td>
                   <td style={{ ...td, textAlign: 'right' }}>
                     <input
                       type="number" min={0} step={100}
@@ -358,6 +479,22 @@ export const PropertyLedgerView: React.FC = () => {
                       {isBusy ? 'Confirming…' : r.hold ? 'HELD' : 'ACTIVE'}
                     </button>
                   </td>
+                  {!showAll && (r.vdm ? (<>
+                    <td style={tdNum}>{num(r.vdm.sent)}</td>
+                    <td style={{ ...tdNum, color: dead ? '#e94560' : undefined, fontWeight: dead ? 700 : undefined }}>
+                      {pct(r.vdm.delivered_pct)}
+                    </td>
+                    <td style={tdNum} title={`${num(r.vdm.opens)} unique opens`}>{pct(r.vdm.open_rate_vdm)}</td>
+                    <td style={tdNum} title={`${num(r.vdm.clicks)} unique clicks`}>{pct(r.vdm.click_rate_vdm)}</td>
+                    <td style={tdNum} title={`7d: delivered ${pct(r.vdm.delivered_pct_7d)} · open ${pct(r.vdm.open_rate_vdm_7d)} · click ${pct(r.vdm.click_rate_vdm_7d)}`}>
+                      {num(r.vdm.sent_7d)}
+                    </td>
+                  </>) : (
+                    <td style={{ ...tdNum, color: 'rgba(180,210,240,0.4)' }} colSpan={5}
+                      title="No complete VDM rows for this lane (VDM covers gmail/yahoo/aol/microsoft/apple/att/cox)">
+                      no VDM data
+                    </td>
+                  ))}
                   <td style={td}>
                     {r.proposal ? (
                       <span>
@@ -380,7 +517,7 @@ export const PropertyLedgerView: React.FC = () => {
               );
             })}
             {rows.length === 0 && !loading && (
-              <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={7}>
+              <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={showAll ? 7 : 12}>
                 Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.
               </td></tr>
             )}
@@ -388,12 +525,322 @@ export const PropertyLedgerView: React.FC = () => {
         </table>
       </div>
 
+      {!showAll && selectedBrand && (
+        <LaneContentPanel brand={selectedBrand} domain={domain ?? ''} onNotice={setNotice} />
+      )}
+
       <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 14, lineHeight: 1.6 }}>
         One row per sending domain × ISP. Drip Intro Daily Cap = first-touch introductions the drip
         may absorb per Denver day (edits are approvals and apply from tomorrow — the counter worker
         promotes them at the boundary). Introductions Today comes from the materialized counters,
         never a live queue scan. Hold zeroes the cell immediately and is interval-tracked.
+        Sent / Delivered % / Open / Click pull from the SES VDM daily snapshots (complete UTC days
+        only, VDM unique-count semantics); a red lane means delivered % under 50 on meaningful volume.
       </p>
+    </div>
+  );
+};
+
+// ── Lane content panel — what this lane sends, editable in-screen ───────────
+
+const LaneContentPanel: React.FC<{
+  brand: string; domain: string; onNotice: (s: string) => void;
+}> = ({ brand, domain, onNotice }) => {
+  const [content, setContent] = useState<LaneContentResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [newSubject, setNewSubject] = useState<Record<string, string>>({});
+  const [touchEdit, setTouchEdit] = useState<Record<string, { subject_line: string; preheader: string; from_name: string }>>({});
+  const [swapSel, setSwapSel] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
+
+  const loadContent = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/lane-content?brand=${encodeURIComponent(brand)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setContent(await r.json());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'load failed');
+    } finally { setLoading(false); }
+  }, [brand]);
+
+  useEffect(() => { setContent(null); setOpen({}); setTouchEdit({}); void loadContent(); }, [loadContent]);
+
+  const post = async (path: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> => {
+    const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/lane-content/${path}`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    let json: Record<string, unknown> = {};
+    try { json = await r.json(); } catch { /* non-JSON error body */ }
+    return { ok: r.ok, status: r.status, json };
+  };
+
+  const withSaving = async (key: string, fn: () => Promise<void>) => {
+    setSaving(s => ({ ...s, [key]: true }));
+    try { await fn(); } finally { setSaving(s => ({ ...s, [key]: false })); }
+  };
+
+  const addSubject = (offer: LaneOffer, dsKey: string) =>
+    withSaving(`add/${dsKey}`, async () => {
+      const text = (newSubject[dsKey] ?? '').trim();
+      if (!text) return;
+      const res = await post('subject', { offer_id: offer.id, action: 'add', subject_line: text });
+      if (!res.ok) { onNotice(`Subject add failed: ${String(res.json.error ?? res.status)}`); return; }
+      setNewSubject(s => ({ ...s, [dsKey]: '' }));
+      await loadContent();
+    });
+
+  const archiveSubject = (offer: LaneOffer, row: LaneCopyRow) =>
+    withSaving(`arch/${row.id}`, async () => {
+      if (!window.confirm(`Archive this subject from "${offer.name}"?\n\n${row.text}`)) return;
+      const res = await post('subject', { offer_id: offer.id, action: 'archive', subject_id: row.id });
+      if (!res.ok) { onNotice(`Subject archive failed: ${String(res.json.error ?? res.status)}`); return; }
+      await loadContent();
+    });
+
+  const touchKey = (t: LaneTouchCopy) => `${t.vertical}/${t.touch}`;
+
+  const saveTouch = (t: LaneTouchCopy) =>
+    withSaving(`touch/${touchKey(t)}`, async () => {
+      const e = touchEdit[touchKey(t)];
+      if (!e) return;
+      const body: Record<string, unknown> = { vertical: t.vertical, brand, touch: t.touch };
+      if (e.subject_line !== t.subject_line) body.subject_line = e.subject_line;
+      if (e.preheader !== t.preheader) body.preheader = e.preheader;
+      if (e.from_name !== t.from_name) body.from_name = e.from_name;
+      if (body.subject_line === undefined && body.preheader === undefined && body.from_name === undefined) {
+        setTouchEdit(s => { const n = { ...s }; delete n[touchKey(t)]; return n; });
+        return;
+      }
+      const res = await post('touch-copy', body);
+      if (!res.ok) { onNotice(`Touch copy update failed: ${String(res.json.error ?? res.status)}`); return; }
+      setTouchEdit(s => { const n = { ...s }; delete n[touchKey(t)]; return n; });
+      await loadContent();
+    });
+
+  const swapOffer = (ds: LaneDataset) =>
+    withSaving(`swap/${ds.id}`, async () => {
+      const offerId = swapSel[ds.id];
+      if (!offerId || offerId === (ds.offer?.id ?? '')) return;
+      // Same gravity as the hold confirm: type the feed name to proceed.
+      const typed = window.prompt(
+        `OFFER SWAP changes what this feed mails.\n\nType the feed name exactly to confirm:\n${ds.name}`);
+      if (typed === null) return;
+      if (typed !== ds.name) { onNotice('Offer swap cancelled — feed name did not match.'); return; }
+      const res = await post('offer-swap', { dataset_id: ds.id, offer_id: offerId, confirm_name: typed });
+      if (!res.ok) { onNotice(`Offer swap failed: ${String(res.json.error ?? res.status)}`); return; }
+      onNotice(`Feed "${ds.name}" now mails ${String(res.json.offer_name ?? offerId)}.`);
+      setSwapSel(s => { const n = { ...s }; delete n[ds.id]; return n; });
+      await loadContent();
+    });
+
+  const panel: React.CSSProperties = {
+    marginTop: 18, border: '1px solid rgba(99,102,241,0.25)', borderRadius: 10,
+    background: 'rgba(99,102,241,0.05)', padding: '14px 16px',
+  };
+  const label: React.CSSProperties = {
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.55)',
+  };
+  const input: React.CSSProperties = {
+    background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
+    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+    padding: '4px 6px', fontSize: 12,
+  };
+  const smallBtn: React.CSSProperties = {
+    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
+    border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+    padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+  };
+
+  const renderTouchRow = (t: LaneTouchCopy) => {
+    const key = touchKey(t);
+    const e = touchEdit[key];
+    const isSaving = !!saving[`touch/${key}`];
+    return (
+      <div key={key} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+                              padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 700, minWidth: 34 }}>
+          T{t.touch}{t.vertical === '' ? ' (global)' : ''}
+        </span>
+        <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', minWidth: 110 }}>
+          {t.creative_filename === '' ? 'offer-center creative' : t.creative_filename}
+        </span>
+        {e ? (
+          <>
+            <input style={{ ...input, flex: '2 1 220px' }} value={e.subject_line} placeholder="subject"
+              onChange={ev => setTouchEdit(s => ({ ...s, [key]: { ...e, subject_line: ev.target.value } }))} />
+            <input style={{ ...input, flex: '2 1 180px' }} value={e.preheader} placeholder="preheader"
+              onChange={ev => setTouchEdit(s => ({ ...s, [key]: { ...e, preheader: ev.target.value } }))} />
+            <input style={{ ...input, flex: '1 1 130px' }} value={e.from_name} placeholder="from name"
+              onChange={ev => setTouchEdit(s => ({ ...s, [key]: { ...e, from_name: ev.target.value } }))} />
+            <button style={smallBtn} disabled={isSaving} onClick={() => void saveTouch(t)}>
+              {isSaving ? 'Saving…' : 'Save'}
+            </button>
+            <button style={{ ...smallBtn, background: 'transparent', color: 'rgba(180,210,240,0.6)',
+                             border: '1px solid rgba(255,255,255,0.15)' }}
+              onClick={() => setTouchEdit(s => { const n = { ...s }; delete n[key]; return n; })}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 12, color: '#e6edf5', flex: '2 1 220px' }} title="subject">{t.subject_line || '—'}</span>
+            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', flex: '2 1 180px' }} title="preheader">{t.preheader || '—'}</span>
+            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.8)', flex: '1 1 130px' }} title="from name">{t.from_name || '—'}</span>
+            <button style={smallBtn}
+              onClick={() => setTouchEdit(s => ({ ...s, [key]: {
+                subject_line: t.subject_line, preheader: t.preheader, from_name: t.from_name } }))}>
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={panel}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+        <h3 style={{ margin: 0, fontSize: 14, color: '#e6edf5' }}>What this lane sends</h3>
+        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{domain} · {brand}</span>
+        {loading && <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Loading…</span>}
+      </div>
+      {err && <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      {content && (
+        <p style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', margin: '0 0 10px 0' }}>
+          {content.preheader_note}
+        </p>
+      )}
+      {content && content.feeds.length === 0 && !loading && (
+        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+          No active feeds on this brand (partner_drip_vertical_roster).
+        </div>
+      )}
+      {content?.feeds.map(feed => {
+        const expanded = !!open[feed.vertical];
+        return (
+          <div key={feed.vertical} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
+                                            marginBottom: 10, background: 'rgba(0,0,0,0.15)' }}>
+            <div onClick={() => setOpen(s => ({ ...s, [feed.vertical]: !expanded }))}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', cursor: 'pointer' }}>
+              <span style={{ fontSize: 12, color: '#9fd3ff' }}>{expanded ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#e6edf5' }}>{feed.vertical}</span>
+              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+                {feed.datasets.length} feed{feed.datasets.length === 1 ? '' : 's'}
+                {feed.datasets[0]?.offer ? ` · offer: ${feed.datasets.map(d => d.offer?.name ?? 'drip pool').filter((v, i, a) => a.indexOf(v) === i).join(', ')}` : ''}
+              </span>
+            </div>
+            {expanded && (
+              <div style={{ padding: '0 12px 10px 34px' }}>
+                {feed.datasets.map(ds => {
+                  const isSwapping = !!saving[`swap/${ds.id}`];
+                  return (
+                    <div key={ds.id} style={{ padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: '#e6edf5' }}>{ds.name}</span>
+                        {ds.express_dispatch && <span style={{ fontSize: 9, color: '#facc15', fontWeight: 700 }}>EXPRESS</span>}
+                        {ds.offer ? (
+                          <span style={{ fontSize: 11, color: '#a5b4fc' }}>
+                            offer: <b>{ds.offer.name || ds.offer.id}</b> ({ds.offer.status || '?'})
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                            drip-pool path (no direct offer bound)
+                          </span>
+                        )}
+                        {ds.offer?.creative ? (
+                          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
+                            title={`${num(ds.offer.creative.html_bytes)} bytes · id ${ds.offer.creative.id}`}>
+                            creative v{ds.offer.creative.version} ({ds.offer.creative.status}) · {age(ds.offer.creative.updated_at)}
+                          </span>
+                        ) : ds.offer ? (
+                          <span style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>NO SERVING CREATIVE</span>
+                        ) : null}
+                        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+                          <select value={swapSel[ds.id] ?? (ds.offer?.id ?? '')} disabled={isSwapping}
+                            onChange={e => setSwapSel(s => ({ ...s, [ds.id]: e.target.value }))}
+                            style={{ ...input, maxWidth: 220 }}>
+                            {!ds.offer && <option value="">(no offer)</option>}
+                            {content.active_offers.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                          </select>
+                          <button style={smallBtn}
+                            disabled={isSwapping || !swapSel[ds.id] || swapSel[ds.id] === (ds.offer?.id ?? '')}
+                            onClick={() => void swapOffer(ds)}
+                            title="Changes what this feed mails — requires typing the feed name to confirm">
+                            {isSwapping ? 'Swapping…' : 'Swap offer'}
+                          </button>
+                        </span>
+                      </div>
+                      {ds.offer && (
+                        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 6 }}>
+                          <div style={{ flex: '2 1 340px' }}>
+                            <div style={label}>Serving subjects (preheader draws from this pool)</div>
+                            {ds.offer.subjects.filter(sr => sr.serving).map(sr => (
+                              <div key={sr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+                                <span style={{ fontSize: 12, color: '#e6edf5' }}>{sr.text}</span>
+                                <button style={{ ...smallBtn, padding: '1px 7px', fontSize: 9 }}
+                                  disabled={!!saving[`arch/${sr.id}`]}
+                                  onClick={() => void archiveSubject(ds.offer!, sr)}>
+                                  {saving[`arch/${sr.id}`] ? '…' : 'Archive'}
+                                </button>
+                              </div>
+                            ))}
+                            {ds.offer.subjects.filter(sr => sr.serving).length === 0 && (
+                              <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+                                EMPTY SUBJECT POOL — the lane fails at send time
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                              <input style={{ ...input, flex: 1 }} placeholder="Add a subject line…"
+                                value={newSubject[ds.id] ?? ''}
+                                onChange={e => setNewSubject(s => ({ ...s, [ds.id]: e.target.value }))} />
+                              <button style={smallBtn} disabled={!!saving[`add/${ds.id}`] || !(newSubject[ds.id] ?? '').trim()}
+                                onClick={() => void addSubject(ds.offer!, ds.id)}>
+                                {saving[`add/${ds.id}`] ? 'Adding…' : 'Add'}
+                              </button>
+                            </div>
+                            {ds.offer.subjects.some(sr => !sr.serving) && (
+                              <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
+                                {ds.offer.subjects.filter(sr => !sr.serving).length} archived
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ flex: '1 1 200px' }}>
+                            <div style={label}>Serving from-names</div>
+                            {ds.offer.from_names.filter(fr => fr.serving).map(fr => (
+                              <div key={fr.id} style={{ fontSize: 12, color: '#e6edf5', padding: '2px 0' }}>{fr.text}</div>
+                            ))}
+                            {ds.offer.from_names.filter(fr => fr.serving).length === 0 && (
+                              <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+                                EMPTY FROM-NAME POOL — the lane fails at send time
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {(feed.touch1 || feed.followups.length > 0) && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={label}>Touch copy (this brand's ladder rows)</div>
+                    {feed.touch1 && renderTouchRow(feed.touch1)}
+                    {feed.followups.map(renderTouchRow)}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {content && content.global_followups.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={label}>Shared/global follow-up rows (vertical-agnostic fallback chain)</div>
+          {content.global_followups.map(renderTouchRow)}
+        </div>
+      )}
     </div>
   );
 };
