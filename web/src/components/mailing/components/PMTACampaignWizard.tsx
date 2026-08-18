@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faArrowLeft, faArrowRight, faArrowUp, faArrowDown, faCheck, faServer, faGlobe,
@@ -6,7 +6,7 @@ import {
   faExclamationTriangle, faCheckCircle, faTimesCircle,
   faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faSave, faGripVertical, faMagic,
-  faCopy, faTrophy, faChevronDown, faChevronUp, faSearch, faLock,
+  faCopy, faTrophy, faChevronDown, faChevronUp, faSearch, faLock, faInfinity,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
@@ -18,7 +18,7 @@ import {
   defaultVisibleCategoriesForPicker,
   type SegmentCategory,
 } from './segCategoryMetadata';
-import { EngagementTierPicker, type EngagementTiers } from './EngagementTierPicker';
+import { EngagementTierPicker, type EngagementTier, type EngagementTiers } from './EngagementTierPicker';
 import { OfferCreativePicker } from './OfferCreativePicker';
 
 const API_BASE = '/api/mailing';
@@ -352,9 +352,13 @@ const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
 // ── Step navigation ──────────────────────────────────────────────────────────
 
+// Step order (operator 2026-08-18): the SENDING DOMAIN comes first. The pinned
+// profile decides the transport, and the transport decides which ISP lanes are
+// even legal (a kumo route is yahoo-family only) — so choosing providers and
+// their quotas before the domain was backwards.
 const STEPS = [
-  { id: 1, label: 'Mailbox Providers',      icon: faServer },
-  { id: 2, label: 'Sending Domain',         icon: faGlobe },
+  { id: 1, label: 'Sending Domain',         icon: faGlobe },
+  { id: 2, label: 'Mailbox Providers',      icon: faServer },
   { id: 3, label: 'Offer + Creative',       icon: faPenFancy },
   { id: 4, label: 'Engagement Audience',    icon: faUsers },
   { id: 5, label: 'Sending Insights',       icon: faBrain },
@@ -382,7 +386,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [estimating, setEstimating] = useState(false);
   const [intelLoading, setIntelLoading] = useState(false);
 
-  // Step 1 state
+  // Mailbox Providers step (step 2 since the 2026-08-18 reorder) state
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
   const [selectedISPs, setSelectedISPs] = useState<string[]>([...ALL_ISPS]);
   const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({ ...DEFAULT_ISP_QUOTAS });
@@ -409,7 +413,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [delivRecsError, setDelivRecsError] = useState('');
   const [delivRecsDomains, setDelivRecsDomains] = useState<{ domain: string }[]>([]);
 
-  // Step 2 state
+  // Sending Domain step (step 1 since the 2026-08-18 reorder) state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
   const [selectedDomain, setSelectedDomain] = useState('');
   // Pinned sending profile. A domain can carry several active profiles
@@ -525,6 +529,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [draftStatus, setDraftStatus] = useState('');
   const [draftError, setDraftError] = useState('');
   const [domainError, setDomainError] = useState('');
+  // Type-to-filter the sending-domain list (operator 2026-08-18) — the estate
+  // is 27+ properties and scrolling for one was the slow part.
+  const [domainSearch, setDomainSearch] = useState('');
 
   // Clone state
   const [showClonePanel, setShowClonePanel] = useState(false);
@@ -563,6 +570,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
     return orgFetch(url, orgId, opts);
   }, [orgId]);
+
+  // Stable org-scoped fetcher handed to child panels. Children key their load
+  // effects off this identity, so it must NOT be an inline arrow.
+  const pickerFetch = useCallback(
+    (url: string, opts?: RequestInit) => orgFetch(url, orgId, opts),
+    [orgId],
+  );
 
   const fetchReadiness = useCallback(async () => {
     setReadinessLoading(true);
@@ -739,6 +753,51 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // The pinned profile decides the transport, and the transport decides which
   // creative library and which ISP lanes are legal.
+  // Domain filter matches the domain itself, its pool, and its profile names /
+  // transports — so "kumo", "ses" or a persona narrows the list too. The
+  // currently selected domain is always kept visible so a stale filter can
+  // never hide what the campaign is actually pinned to.
+  const filteredSendingDomains = useMemo(() => {
+    const q = domainSearch.trim().toLowerCase();
+    if (!q) return sendingDomains;
+    return sendingDomains.filter(d => {
+      if (d.domain === selectedDomain) return true;
+      const haystack = [
+        d.domain,
+        d.pool_name || '',
+        ...(d.profiles || []).flatMap(p => [p.name || '', p.transport || '', p.from_name || '']),
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [sendingDomains, domainSearch, selectedDomain]);
+
+  // The engagement-range selections, in the exact order buildCampaignPayload
+  // puts them into send_priority: clickers, then openers, then the all-time
+  // pools. This order is DOCTRINE (click = gold, open = silver) and is not
+  // operator-reorderable, which is why these rows render locked.
+  const engagementPriorityRows = useMemo(() => {
+    if (!engagementTiers) return [];
+    const kinds: { ids: string[]; tiers: EngagementTier[]; tierLabel: string; color: string }[] = [
+      { ids: selectedClickerIds, tiers: engagementTiers.clickers, tierLabel: 'clickers', color: '#f59e0b' },
+      { ids: selectedOpenerIds, tiers: engagementTiers.openers, tierLabel: 'openers', color: '#94a3b8' },
+      { ids: selectedOtherIds, tiers: engagementTiers.other, tierLabel: 'all-time', color: '#38bdf8' },
+    ];
+    const rows: { id: string; label: string; tierLabel: string; color: string; count: number }[] = [];
+    for (const k of kinds) {
+      for (const id of k.ids) {
+        const t = k.tiers.find(x => x.segment_id === id);
+        rows.push({
+          id,
+          label: t ? t.name : `Segment ${id.slice(0, 8)}…`,
+          tierLabel: k.tierLabel,
+          color: k.color,
+          count: t ? t.count : 0,
+        });
+      }
+    }
+    return rows;
+  }, [engagementTiers, selectedClickerIds, selectedOpenerIds, selectedOtherIds]);
+
   const selectedProfile = sendingDomains
     .find(d => d.domain === selectedDomain)?.profiles
     ?.find(p => p.id === selectedProfileId);
@@ -842,8 +901,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // Load data on step entry
   useEffect(() => {
-    if (step === 1) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
-    if (step === 2) fetchDomains();
+    if (step === 1) fetchDomains();
+    if (step === 2) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
     if (step === 3) fetchOffers();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
@@ -878,10 +937,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     const errors: string[] = [];
     switch (s) {
       case 1:
-        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
+        if (!selectedDomain) errors.push('Select a sending domain');
         break;
       case 2:
-        if (!selectedDomain) errors.push('Select a sending domain');
+        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
         break;
       case 3:
         if (!selectedProofId) errors.push('Select an approved creative from the Creative Studio offers library');
@@ -1484,11 +1543,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       };
     });
 
-    // The long-tail 'other' lane rides a synthetic plan. Audience-bound sends
-    // include it whenever the operator selected it (quota 0 = unlimited);
-    // capped sends include it only when it carries a finite volume.
+    // The long-tail 'other' lane rides a synthetic plan. It is included
+    // whenever the operator SELECTED it — never conditioned on its quota.
+    // 0 means UNLIMITED everywhere else in this payload (normalizePMTACampaign
+    // maps volume<=0 to Quota 0 = audience-bound, pmta_campaign_planner.go:388),
+    // so the old `otherQuota > 0` test silently DROPPED the whole long-tail
+    // lane the moment the operator left its box at 0 — the one place where 0
+    // meant "exclude" instead of "unlimited" (operator 2026-08-18).
     const otherQuota = audienceBound ? 0 : (ispQuotas['other'] || 0);
-    const includeOther = audienceBound ? selectedISPs.includes('other') : otherQuota > 0;
+    const includeOther = selectedISPs.includes('other');
     if (includeOther) {
       ispPlans.push({
         isp: 'other',
@@ -1777,13 +1840,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // ── Step renderers ───────────────────────────────────────────────────────
 
-  const renderStep1 = () => (
+  const renderStepProviders = () => (
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Select Mailbox Providers<RequiredDot /></h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose which mailbox providers to target. Cards show live health from the delivery engine.
       </p>
-      <StepErrorBanner stepNum={1} />
+      <StepErrorBanner stepNum={2} />
 
       {/* ── ISP Sending Health Panel ────────────────────────── */}
       <div style={{
@@ -2217,9 +2280,29 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               <FontAwesomeIcon icon={faBrain} /> Deliverability Recommendations
             </button>
           </div>
-          <p style={{ margin: '0 0 12px', fontSize: 11, color: '#64748b' }}>
-            Set maximum sends per mailbox provider. Leave at 0 for unlimited.
+          <p style={{ margin: '0 0 8px', fontSize: 11, color: '#64748b' }}>
+            Set maximum sends per mailbox provider. <strong>0 means UNLIMITED</strong> — that lane
+            mails everyone who qualifies, it is not skipped.
           </p>
+          {/* Explicit confirmation, not a footnote: an operator typing 0 must
+              see what 0 does BEFORE the review step. */}
+          {(() => {
+            const zeroLanes = [...selectedISPs, 'other'].filter(
+              (isp, i, arr) => arr.indexOf(isp) === i && !(ispQuotas[isp] > 0));
+            if (zeroLanes.length === 0) return null;
+            return (
+              <div style={{
+                marginBottom: 12, padding: '8px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.5,
+                background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.45)', color: '#fbbf24',
+              }}>
+                <FontAwesomeIcon icon={faInfinity} />{' '}
+                <strong>Uncapped:</strong>{' '}
+                {zeroLanes.map(i => ISP_META[i]?.label || i).join(', ')}{' '}
+                {zeroLanes.length === 1 ? 'is' : 'are'} at 0 — {zeroLanes.length === 1 ? 'that lane' : 'those lanes'}{' '}
+                will send to the ENTIRE qualifying audience with no ceiling.
+              </div>
+            );
+          })()}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
             {selectedISPs.map(isp => {
               const meta = ISP_META[isp] || { label: isp, color: '#64748b', emoji: '🌐' };
@@ -2437,13 +2520,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     </div>
   );
 
-  const renderStep2 = () => (
+  const renderStepDomain = () => (
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain<RequiredDot /></h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
         Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
       </p>
-      <StepErrorBanner stepNum={2} />
+      <StepErrorBanner stepNum={1} />
       {domainError && (
         <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 12 }}>
           <p style={{ margin: '0 0 8px' }}>{domainError}</p>
@@ -2457,8 +2540,44 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           No sending domains configured. Add domains in Domain Center first.
         </div>
       )}
+
+      {sendingDomains.length > 0 && (() => {
+        const shown = filteredSendingDomains.length;
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <input
+              type="text"
+              aria-label="Filter sending domains"
+              value={domainSearch}
+              onChange={e => setDomainSearch(e.target.value)}
+              placeholder="Type to filter sending domains…"
+              style={{
+                flex: 1, background: '#0a0f1a', color: '#e0e6f0',
+                border: '1px solid rgba(0,200,255,0.15)', borderRadius: 8,
+                padding: '8px 12px', fontSize: 13,
+              }}
+            />
+            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', whiteSpace: 'nowrap' }}>
+              {shown} of {sendingDomains.length}
+            </span>
+            {domainSearch && (
+              <button type="button" onClick={() => setDomainSearch('')}
+                      style={{ background: 'transparent', border: 'none', color: '#00b0ff', fontSize: 12, cursor: 'pointer' }}>
+                clear
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
+      {sendingDomains.length > 0 && filteredSendingDomains.length === 0 && (
+        <div style={{ padding: 20, color: 'rgba(180,210,240,0.6)', fontSize: 13 }}>
+          No sending domain matches &ldquo;{domainSearch}&rdquo;.
+        </div>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {sendingDomains.map(d => {
+        {filteredSendingDomains.map(d => {
           const domainSelected = selectedDomain === d.domain;
           return (
           <div
@@ -2569,7 +2688,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
         <OfferCreativePicker
           apiBase={API_BASE}
-          orgFetch={(url, opts) => orgFetch(url, orgId, opts)}
+          // Stable identity. An inline arrow here changed on every wizard
+          // render, which re-fired the picker's load effect and overwrote the
+          // selected proof with the LIST row — and the list endpoint omits
+          // html_content, so Preview opened blank (operator 2026-08-18).
+          orgFetch={pickerFetch}
           sendingDomain={selectedDomain}
           brandRoot={engagementTiers?.brand_root || ''}
           offers={offersCatalog}
@@ -2581,6 +2704,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           preheader={v?.preview_text || ''}
           fromName={v?.from_name || ''}
           hasHtml={!!v?.html_content}
+          currentHtml={v?.html_content || ''}
           profileFromName={selectedProfile?.from_name || sendingDomains.find(d => d.domain === selectedDomain)?.from_name}
           isKumoRoute={isKumoRoute}
           onApply={sel => {
@@ -2816,7 +2940,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           }}>
             <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
             <strong>KumoMTA warm-up is yahoo-family only.</strong> Remove{' '}
-            <strong>{kumoIllegalISPs.join(', ')}</strong> on step 1 — the estate registry caps
+            <strong>{kumoIllegalISPs.join(', ')}</strong> on the Mailbox Providers step — the estate registry caps
             yahoo, aol, att, sbcglobal and cox, and nothing else may send.
           </div>
         )}
@@ -2847,9 +2971,32 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.8)' }}>
               <strong style={{ color: '#e0e6f0' }}>Mail the whole selected audience</strong> — no per-ISP
               cap (volume 0 = audience-bound). This is the standing engaged-tier default; the
-              per-provider quotas on step 1 are ignored while it is on.
+              per-provider quotas on the Mailbox Providers step are ignored while it is on.
             </span>
           </label>
+
+          {/* Explicit alignment banner (operator 2026-08-18): "if I select zero
+              for my quota, it will send everything… this should be a
+              confirmation banner that displays just so I am aligned and the
+              system is aligned." Names the number, not just the posture. */}
+          {audienceBound && (
+            <div style={{
+              marginTop: 10, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.55,
+              background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.5)', color: '#fbbf24',
+            }}>
+              <FontAwesomeIcon icon={faInfinity} />{' '}
+              <strong>UNCAPPED — every per-provider quota is 0.</strong>{' '}
+              {audienceEstimate
+                ? <>This send will mail all{' '}
+                    <strong>{(audienceEstimate.after_suppressions ?? audienceEstimate.total_recipients).toLocaleString()}</strong>{' '}
+                    recipients that survive suppression across{' '}
+                    {selectedISPs.length} selected provider{selectedISPs.length === 1 ? '' : 's'} — there is
+                    no ceiling to stop it.</>
+                : <>Every selected provider will mail its entire qualifying audience — there is no ceiling
+                    to stop it. Select an audience below to see the exact recipient count.</>}
+              {' '}Uncheck the box above to impose per-provider caps instead.
+            </div>
+          )}
 
           <label style={{
             display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10,
@@ -2986,7 +3133,31 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                   <div style={{ width: 4, height: 16, borderRadius: 2, background: '#ef4444' }} />
                   <h4 style={{ margin: 0, fontSize: 13, color: '#ef4444', fontWeight: 600 }}>Suppression</h4>
+                  <span style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', marginLeft: 6 }}>
+                    curated lists only
+                  </span>
                   <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>{totalSuppSelected} active</span>
+                </div>
+
+                {/* The single biggest misread of this panel (operator
+                    2026-08-18: "I do not see the globe life suppression"):
+                    these are mailing_suppression_lists rows — curated
+                    advertiser lists you tick. An offer's OWN suppression
+                    ledger (mailing_offer_suppressions: converted subscribers,
+                    advertiser scrubs, Optizmo deltas) is keyed to offer_id and
+                    fires automatically at plan time; it never appears here.
+                    The Offer + Creative step reports its real row count. */}
+                <div style={{
+                  fontSize: 11, lineHeight: 1.5, color: 'rgba(180,210,240,0.6)',
+                  background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)',
+                  borderRadius: 6, padding: '7px 10px', marginBottom: 8,
+                }}>
+                  These are curated advertiser lists — tick the ones this send needs. The selected
+                  offer&apos;s OWN suppression (converted subscribers, advertiser scrubs, Optizmo)
+                  is applied automatically and is <strong>not</strong> listed here;{' '}
+                  {selectedOfferId
+                    ? 'the Offer + Creative step shows how many rows it holds.'
+                    : 'pick an offer on the Offer + Creative step to see how many rows it holds.'}
                 </div>
 
                 {suppressionLists.length === 0 && !audienceDataLoading && (
@@ -3059,16 +3230,63 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               </div>
             </div>
 
-            {/* Unified Send Priority */}
-            {sendPriority.length > 1 && (
+            {/* Unified Send Priority.
+                The engagement-range chips ARE send priority — the payload puts
+                them ahead of everything picked in the advanced panel
+                (buildCampaignPayload's mergedSendPriority). The panel used to
+                render `sendPriority` alone, so a board built from the chips
+                showed an incomplete order ("only openers, not clickers") while
+                the real drain order was clickers → openers → all-time →
+                advanced. Show the whole order, and label the fixed part as
+                fixed: clicks are GOLD, opens silver — that ranking is doctrine,
+                not a preference (JAOS signal grading). */}
+            {(engagementPriorityRows.length > 0 || sendPriority.length > 1) && (
               <div style={{
                 background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 16,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                   <div style={{ width: 4, height: 16, borderRadius: 2, background: '#00e5ff' }} />
                   <h4 style={{ margin: 0, fontSize: 13, color: '#00e5ff', fontWeight: 600 }}>Send Priority</h4>
-                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>Drag or use arrows to reorder — #1 sends first</span>
+                  <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginLeft: 'auto' }}>
+                    Drained top-down — #1 sends first
+                  </span>
                 </div>
+
+                {engagementPriorityRows.length > 0 && (
+                  <div style={{ marginBottom: sendPriority.length > 0 ? 10 : 0 }}>
+                    <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)', marginBottom: 6 }}>
+                      From the engagement ranges above — fixed order (clicks rank above opens).
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {engagementPriorityRows.map((row, i) => (
+                        <div key={`eng-${row.id}`} style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                          background: '#0a0f1a', borderRadius: 6,
+                          border: `1px solid ${row.color}40`,
+                        }}>
+                          <span style={{
+                            width: 20, height: 20, borderRadius: '50%', background: `${row.color}20`,
+                            color: row.color, fontSize: 11, fontWeight: 700,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                          }}>{i + 1}</span>
+                          <FontAwesomeIcon icon={faLock} style={{ fontSize: 10, color: 'rgba(180,210,240,0.3)' }} />
+                          <span style={{ fontSize: 12, color: '#e0e6f0', flex: 1 }}>{row.label}</span>
+                          <span style={{ fontSize: 11, color: row.color, fontWeight: 600 }}>{row.tierLabel}</span>
+                          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                            {row.count.toLocaleString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {sendPriority.length > 0 && engagementPriorityRows.length > 0 && (
+                  <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)', marginBottom: 6 }}>
+                    Then, from the advanced picker — drag or use arrows to reorder.
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {sendPriority.map((item, idx) => {
                     const isListItem = item.type === 'list';
@@ -3111,7 +3329,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                           color: idx === 0 ? accent : 'rgba(180,210,240,0.5)',
                           fontSize: 12, fontWeight: 700,
                         }}>
-                          {idx + 1}
+                          {engagementPriorityRows.length + idx + 1}
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -4073,6 +4291,37 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             </div>
           )}
 
+          {/* Volume posture, stated at the last gate. The operator asked for a
+              confirmation banner so "I am aligned and the system is aligned"
+              (2026-08-18) — the review step is where that has to be
+              unmissable, not a checkbox two steps back. */}
+          {(() => {
+            const capped = selectedISPs.filter(i => !audienceBound && (ispQuotas[i] || 0) > 0);
+            const uncapped = selectedISPs.filter(i => audienceBound || !((ispQuotas[i] || 0) > 0));
+            if (uncapped.length === 0) return null;
+            return (
+              <div style={{
+                marginBottom: 16, padding: '12px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.6,
+                background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.55)', color: '#fbbf24',
+              }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                  <FontAwesomeIcon icon={faInfinity} /> UNCAPPED SEND — confirm before deploying
+                </div>
+                {audienceBound
+                  ? 'This campaign is audience-bound: every per-provider quota is 0, so the selected audience IS the cap.'
+                  : `Quota 0 = unlimited. ${uncapped.map(i => ISP_META[i]?.label || i).join(', ')} ${uncapped.length === 1 ? 'has' : 'have'} no ceiling.`}
+                {' '}
+                {audienceEstimate
+                  ? <>It will send to <strong>{audienceEstimate.after_suppressions.toLocaleString()}</strong>{' '}
+                      recipients after suppression.</>
+                  : 'The audience was not estimated — the recipient count is UNKNOWN.'}
+                {capped.length > 0 && (
+                  <> Capped lanes: {capped.map(i => `${ISP_META[i]?.label || i} ${(ispQuotas[i] || 0).toLocaleString()}`).join(', ')}.</>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Summary cards */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
             <SummaryCard title="Target Providers" value={selectedISPs.map(i => ISP_META[i]?.label || i).join(', ')} />
@@ -4348,8 +4597,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
       {/* Step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
-        {step === 1 && renderStep1()}
-        {step === 2 && renderStep2()}
+        {step === 1 && renderStepDomain()}
+        {step === 2 && renderStepProviders()}
         {step === 3 && renderStep3()}
         {step === 4 && renderStep4()}
         {step === 5 && renderStep5()}

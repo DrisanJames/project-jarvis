@@ -147,6 +147,12 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// openers by recency window for the property behind a sending domain
 		// (handlers_pmta_campaign_engagement.go). Read-only.
 		cr.Get("/engagement-tiers", s.HandleEngagementTiers)
+		// What suppression WILL fire for a chosen offer
+		// (handlers_pmta_campaign_offer_suppression.go). Read-only, advisory:
+		// the offer-level ledger count the planner subtracts, the curated
+		// advertiser list that looks like this offer's, and any sibling offer
+		// row holding the suppressions instead (the duplicate-offer trap).
+		cr.Get("/offer-suppression", s.HandleOfferSuppression)
 		// Recent campaign outcomes for a sending domain — surfaces an
 		// OPERATIONAL hold (staged-then-cancelled) that no registry records.
 		cr.Get("/domain-send-history", s.HandleDomainSendHistory)

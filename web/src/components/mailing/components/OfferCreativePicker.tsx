@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCheckCircle, faExclamationTriangle, faSpinner, faEye } from '@fortawesome/free-solid-svg-icons';
+import { faCheckCircle, faExclamationTriangle, faSpinner, faEye, faShieldAlt } from '@fortawesome/free-solid-svg-icons';
 
 /**
  * Offer + creative selection, bound to the Creative Studio offers library.
@@ -52,6 +52,19 @@ export interface OfferProof {
 
 export interface OfferOption { id: string; key?: string; name: string; status?: string }
 
+/** GET /pmta-campaign/offer-suppression — what suppression actually fires for
+ *  the chosen offer. Advisory: the panel reports, it never auto-applies. */
+export interface OfferSuppressionSummary {
+  offer_id: string;
+  offer_name: string;
+  offer_status: string;
+  suppression_count: number;
+  reasons: { reason: string; count: number }[];
+  suggested_lists: { id: string; name: string; entry_count: number }[];
+  siblings: { id: string; name: string; status: string; suppression_count: number }[];
+  warning?: string;
+}
+
 export interface RegistryCreative {
   id: string;
   brand_code: string;
@@ -77,6 +90,11 @@ interface Props {
   preheader: string;
   fromName: string;
   hasHtml: boolean;
+  /** The HTML the wizard currently holds for variant A — i.e. exactly what will
+   *  ship. The preview renders THIS, never a re-fetched list row: the list
+   *  endpoint omits html_content, so any re-fetch of the proofs list blanks the
+   *  cached body and the preview opened empty (operator 2026-08-18). */
+  currentHtml?: string;
   /** Applies a whole content selection to the wizard's single variant. */
   onApply: (v: { proofId: string; proofName: string; subject: string; preheader: string; fromName: string; html: string }) => void;
   onFieldChange: (v: { subject?: string; preheader?: string; fromName?: string }) => void;
@@ -104,6 +122,7 @@ export function proofMatchesBrand(proof: OfferProof, brandRoot: string): boolean
 export const OfferCreativePicker: React.FC<Props> = ({
   apiBase, orgFetch, sendingDomain, brandRoot, offers, offersError,
   selectedOfferId, onOfferChange, proofId, subject, preheader, fromName, hasHtml,
+  currentHtml = '',
   onApply, onFieldChange, profileFromName, isKumoRoute = false,
 }) => {
   const [proofs, setProofs] = useState<OfferProof[]>([]);
@@ -116,6 +135,9 @@ export const OfferCreativePicker: React.FC<Props> = ({
   const [previewHtml, setPreviewHtml] = useState('');
   // Kumo creatives have no offer-proof row, so the preview keeps its own copy.
   const [kumoPreviewHtml, setKumoPreviewHtml] = useState('');
+  const [offerSupp, setOfferSupp] = useState<OfferSuppressionSummary | null>(null);
+  const [offerSuppLoading, setOfferSuppLoading] = useState(false);
+  const [offerSuppError, setOfferSuppError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -145,6 +167,32 @@ export const OfferCreativePicker: React.FC<Props> = ({
   }, [apiBase, orgFetch, isKumoRoute, brandRoot]);
 
   useEffect(() => { load(); }, [load]);
+
+  // ── Offer suppression (advisory) ───────────────────────────────────────
+  // The audience step's Suppression panel lists mailing_suppression_lists rows
+  // only, which is NOT where offer suppression lives: the planner subtracts
+  // mailing_offer_suppressions by offer_id automatically. Nothing said whether
+  // that ledger held 0 rows or 900k, and mailing_offers carries near-duplicate
+  // rows where only ONE holds the suppressions. Surface the real number.
+  useEffect(() => {
+    if (!selectedOfferId) { setOfferSupp(null); setOfferSuppError(''); return; }
+    let cancelled = false;
+    setOfferSuppLoading(true);
+    setOfferSuppError('');
+    orgFetch(`${apiBase}/pmta-campaign/offer-suppression?offer_id=${encodeURIComponent(selectedOfferId)}`)
+      .then(async res => {
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) { setOfferSuppError(data?.error || `HTTP ${res.status}`); setOfferSupp(null); return; }
+        setOfferSupp(data as OfferSuppressionSummary);
+      })
+      .catch(e => { if (!cancelled) { setOfferSuppError(e?.message || 'network error'); setOfferSupp(null); } })
+      .finally(() => { if (!cancelled) setOfferSuppLoading(false); });
+    return () => { cancelled = true; };
+    // orgFetch is intentionally omitted: callers pass an inline arrow, so
+    // including it re-fires this on every parent render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOfferId, apiBase]);
 
   const matching = useMemo(() => proofs.filter(p => proofMatchesBrand(p, brandRoot)), [proofs, brandRoot]);
   const visible = showAll ? proofs : matching;
@@ -200,9 +248,13 @@ export const OfferCreativePicker: React.FC<Props> = ({
     }
   };
 
+  // Preview the body that will actually ship. `currentHtml` (the wizard's
+  // variant) is the source of truth and survives a proofs-list re-fetch;
+  // the cached proof row and the kumo copy are fallbacks. If all three are
+  // empty there is nothing to show, and saying so beats a blank white iframe.
   const openPreview = async () => {
-    if (!selectedProof && !kumoPreviewHtml) return;
-    setPreviewHtml(selectedProof?.html_content || kumoPreviewHtml || '');
+    const html = currentHtml || selectedProof?.html_content || kumoPreviewHtml || '';
+    setPreviewHtml(html);
     setPreviewOpen(true);
   };
 
@@ -245,8 +297,108 @@ export const OfferCreativePicker: React.FC<Props> = ({
         {offersError && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 6 }}>{offersError}</div>}
         <select value={selectedOfferId} onChange={e => onOfferChange(e.target.value)} style={field}>
           <option value="">— no offer (attribution falls back to name inference) —</option>
-          {offers.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+          {/* Status is on the label because mailing_offers carries sunset
+              duplicates of live advertisers, and the sunset row is often the
+              one holding the suppression ledger. */}
+          {offers.map(o => (
+            <option key={o.id} value={o.id}>
+              {o.name}{o.status && o.status !== 'active' ? ` — ${o.status}` : ''}
+            </option>
+          ))}
         </select>
+
+        {selectedOfferId && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+              <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 11, color: '#ef4444' }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>
+                Offer suppression that will fire
+              </span>
+              {offerSuppLoading && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
+            </div>
+
+            {offerSuppError && (
+              <div style={{ fontSize: 12, color: '#f59e0b' }}>
+                <FontAwesomeIcon icon={faExclamationTriangle} /> Could not read this offer&apos;s
+                suppression ({offerSuppError}). Treat the suppression state as UNKNOWN.
+              </div>
+            )}
+
+            {offerSupp && (
+              <>
+                <div style={{
+                  display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px', borderRadius: 8,
+                  background: offerSupp.suppression_count > 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.10)',
+                  border: `1px solid ${offerSupp.suppression_count > 0 ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.45)'}`,
+                }}>
+                  <span style={{
+                    fontSize: 18, fontWeight: 700,
+                    color: offerSupp.suppression_count > 0 ? '#10b981' : '#ef4444',
+                  }}>
+                    {offerSupp.suppression_count.toLocaleString()}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
+                    subscribers suppressed for this offer (applied automatically at plan time)
+                  </span>
+                </div>
+
+                {offerSupp.reasons.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                    {offerSupp.reasons.map(rn => (
+                      <span key={rn.reason} style={{
+                        fontSize: 10, color: 'rgba(180,210,240,0.65)', background: '#0a0f1a',
+                        border: '1px solid rgba(0,200,255,0.08)', borderRadius: 999, padding: '2px 8px',
+                      }}>
+                        {rn.reason} · {rn.count.toLocaleString()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {offerSupp.warning && (
+                  <div style={{
+                    marginTop: 8, fontSize: 12, lineHeight: 1.5, color: '#fbbf24',
+                    background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)',
+                    borderRadius: 8, padding: '8px 12px',
+                  }}>
+                    <FontAwesomeIcon icon={faExclamationTriangle} /> {offerSupp.warning}
+                  </div>
+                )}
+
+                {offerSupp.siblings.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginBottom: 4 }}>
+                      Other offer rows for what looks like the same advertiser:
+                    </div>
+                    {offerSupp.siblings.map(sib => (
+                      <button key={sib.id} type="button" onClick={() => onOfferChange(sib.id)}
+                              style={{
+                                display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                                background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.12)',
+                                borderRadius: 6, padding: '6px 10px', marginBottom: 4, color: '#e0e6f0', fontSize: 12,
+                              }}>
+                        {sib.name} <span style={{ color: 'rgba(180,210,240,0.5)' }}>({sib.status})</span>
+                        {' — '}
+                        <strong style={{ color: '#10b981' }}>{sib.suppression_count.toLocaleString()}</strong>
+                        {' suppressed · click to use this row instead'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {offerSupp.suggested_lists.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                    Curated advertiser list(s) that look like this offer&apos;s —{' '}
+                    <strong>not applied automatically</strong>, tick them in the audience step:{' '}
+                    {offerSupp.suggested_lists
+                      .map(l => `${l.name} (${l.entry_count.toLocaleString()})`)
+                      .join(', ')}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
       )}
 
@@ -467,7 +619,12 @@ export const OfferCreativePicker: React.FC<Props> = ({
               <span>{selectedProof?.name || 'Newsletter preview'}</span>
               <button onClick={() => setPreviewOpen(false)} style={{ background: 'transparent', border: 'none', color: '#00b0ff', cursor: 'pointer' }}>close</button>
             </div>
-            <iframe title="creative preview" srcDoc={previewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />
+            {previewHtml
+              ? <iframe title="creative preview" srcDoc={previewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />
+              : <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, color: '#b45309', fontSize: 13, textAlign: 'center' }}>
+                  No HTML body is loaded for this creative. Re-select it above — if it stays empty,
+                  the proof carries no html_content and cannot be scheduled.
+                </div>}
           </div>
         </div>
       )}
