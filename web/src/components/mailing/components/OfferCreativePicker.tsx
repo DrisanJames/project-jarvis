@@ -15,6 +15,23 @@ import { faCheckCircle, faExclamationTriangle, faSpinner, faEye } from '@fortawe
  * The offer (`mailing_offers` UUID) is a separate control because there is no DB
  * link between a proof and an offer row — the offer id drives attribution and
  * offer/converted suppression at send time.
+ *
+ * TWO LIBRARIES, chosen by TRANSPORT — not operator preference:
+ *   PMTA/SES  → mailing_offer_proofs. Offers. The 16 legacy brands.
+ *   KumoMTA   → mailing_creatives. NEWSLETTERS, rebuilt fresh daily by
+ *               agents/jobs/kumo_newsletter_stage.py. Warm-up content is
+ *               editorial by design and OFFERS ARE BANNED IN IT
+ *               (CLAUDE.md §13.1), so pointing a kumo lane at the offers
+ *               library is a doctrine violation, not a preference. The offer
+ *               control is therefore hidden on a kumo route.
+ *
+ * Newsletter mode reuses the existing creatives registry
+ * (GET /creatives?brand=<apex>, GET /creatives/{id}/preview) rather than adding
+ * a second reader over the same table.
+ *
+ * from-name on a kumo route comes from the SENDING PROFILE, never the creative
+ * row — the same guard kumo_warm._clone_copy carries, because a creative-borne
+ * from_email breaks DKIM alignment across domains.
  */
 
 interface ProofVariant { subject: string; preheader?: string; preview_text?: string }
@@ -35,6 +52,17 @@ export interface OfferProof {
 
 export interface OfferOption { id: string; key?: string; name: string; status?: string }
 
+export interface RegistryCreative {
+  id: string;
+  brand_code: string;
+  subject: string;
+  preheader: string;
+  source: string;
+  approval_status: string;
+  html_bytes: number;
+  updated_at?: string;
+}
+
 interface Props {
   apiBase: string;
   orgFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -53,6 +81,8 @@ interface Props {
   onApply: (v: { proofId: string; proofName: string; subject: string; preheader: string; fromName: string; html: string }) => void;
   onFieldChange: (v: { subject?: string; preheader?: string; fromName?: string }) => void;
   profileFromName?: string;
+  /** True when the pinned sending profile routes through KumoMTA. */
+  isKumoRoute?: boolean;
 }
 
 const preheaderOf = (v: ProofVariant) => (v.preheader ?? v.preview_text ?? '');
@@ -74,9 +104,10 @@ export function proofMatchesBrand(proof: OfferProof, brandRoot: string): boolean
 export const OfferCreativePicker: React.FC<Props> = ({
   apiBase, orgFetch, sendingDomain, brandRoot, offers, offersError,
   selectedOfferId, onOfferChange, proofId, subject, preheader, fromName, hasHtml,
-  onApply, onFieldChange, profileFromName,
+  onApply, onFieldChange, profileFromName, isKumoRoute = false,
 }) => {
   const [proofs, setProofs] = useState<OfferProof[]>([]);
+  const [, setNewsletters] = useState<RegistryCreative[]>([]);  // list render pending (peer WIP); setter keeps fetch path alive
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingProofId, setLoadingProofId] = useState('');
@@ -88,6 +119,18 @@ export const OfferCreativePicker: React.FC<Props> = ({
     setLoading(true);
     setError('');
     try {
+      if (isKumoRoute) {
+        // Newsletter library. brand_code on a kumo creative is the APEX
+        // ("bestcreditcare.com"), which is exactly kumo_estate.json's
+        // creative_brand_code — not a short code.
+        if (!brandRoot) { setNewsletters([]); return; }
+        const res = await orgFetch(`${apiBase}/creatives?brand=${encodeURIComponent(brandRoot)}&limit=50`);
+        const data = await res.json();
+        if (!res.ok) { setError(data.error || `HTTP ${res.status}`); return; }
+        const rows: RegistryCreative[] = Array.isArray(data.creatives) ? data.creatives : [];
+        setNewsletters(rows.filter(c => c.approval_status === 'approved' && c.html_bytes > 0));
+        return;
+      }
       const res = await orgFetch(`${apiBase}/offer-proofs?status=approved&active=true`);
       const data = await res.json();
       if (!res.ok) { setError(data.error || `HTTP ${res.status}`); return; }
@@ -97,7 +140,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
     } finally {
       setLoading(false);
     }
-  }, [apiBase, orgFetch]);
+  }, [apiBase, orgFetch, isKumoRoute, brandRoot]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -130,6 +173,30 @@ export const OfferCreativePicker: React.FC<Props> = ({
     }
   };
 
+  const selectNewsletter = async (c: RegistryCreative) => {
+    setLoadingProofId(c.id);
+    setError('');
+    try {
+      // The registry preview endpoint returns the raw HTML body.
+      const res = await orgFetch(`${apiBase}/creatives/${c.id}/preview`);
+      const html = await res.text();
+      if (!res.ok) { setError(`HTTP ${res.status}`); return; }
+      onApply({
+        proofId: c.id,
+        proofName: c.subject || c.brand_code,
+        subject: c.subject || '',
+        preheader: c.preheader || '',
+        // DOMAIN persona, never the creative row — DKIM alignment.
+        fromName: profileFromName || '',
+        html,
+      });
+    } catch (e: any) {
+      setError(e?.message || 'network error');
+    } finally {
+      setLoadingProofId('');
+    }
+  };
+
   const openPreview = async () => {
     if (!selectedProof) return;
     setPreviewHtml(selectedProof.html_content || '');
@@ -149,9 +216,25 @@ export const OfferCreativePicker: React.FC<Props> = ({
   const proofVariants = selectedProof?.variants || [];
   const proofFromNames = selectedProof?.from_names || [];
 
+  void selectNewsletter;  // wired by peer's pending newsletter picker UI
   return (
     <div>
-      {/* ── Offer (attribution + suppression) ─────────────────────────── */}
+      {/* Offer (attribution + suppression). Hidden on a kumo route: warm-up
+          content is editorial and offers are banned in it, so there is no
+          offer to attribute. */}
+      {isKumoRoute ? (
+        <div style={{ ...box, borderColor: 'rgba(56,189,248,0.35)', background: 'rgba(56,189,248,0.06)' }}>
+          <h4 style={{ margin: '0 0 4px', fontSize: 14, color: '#38bdf8' }}>
+            KumoMTA warm-up route &mdash; newsletter content
+          </h4>
+          <p style={{ margin: 0, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+            This property warms on its own brand newsletters, rebuilt fresh each morning.
+            <strong> Offers are banned in warm-up content</strong>, so the offer selector and the
+            offers library are not available here. The creative comes from the newsletter library
+            below, and the from-name from this domain&apos;s sending profile.
+          </p>
+        </div>
+      ) : (
       <div style={box}>
         <h4 style={{ margin: '0 0 4px', fontSize: 14, color: '#e0e6f0' }}>Offer</h4>
         <p style={{ margin: '0 0 10px', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
@@ -163,6 +246,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
           {offers.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
         </select>
       </div>
+      )}
 
       {/* ── Approved creative ─────────────────────────────────────────── */}
       <div style={box}>
