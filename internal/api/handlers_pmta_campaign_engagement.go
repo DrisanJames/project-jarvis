@@ -93,10 +93,9 @@ type engagementTier struct {
 	SegmentID  string `json:"segment_id"`
 	Name       string `json:"name"`
 	WindowDays int    `json:"window_days"`
-	// Count is what will actually mail: the live row count in
-	// mailing_segment_members, which is the table the audience planner
-	// streams. It is NOT mailing_segments.subscriber_count — see
-	// CounterCount below.
+	// Count is the authoritative membership from mailing_segment_build_ledger
+	// — the row the segment builder writes when it materializes the segment.
+	// It is NOT mailing_segments.subscriber_count (see CounterCount).
 	Count int `json:"count"`
 	// CounterCount is the cached mailing_segments.subscriber_count. When it
 	// disagrees with Count the per-segment refresh is failing to write its
@@ -107,9 +106,15 @@ type engagementTier struct {
 	// warning instead of an empty audience the operator skips.
 	CounterCount    int  `json:"counter_count"`
 	CounterMismatch bool `json:"counter_mismatch"`
-	// CountIsLive is false when the live membership read could not be done
-	// (timeout / error) and Count fell back to the cached counter.
-	CountIsLive      bool   `json:"count_is_live"`
+	// CountIsLive is false when the ledger could not be read (timeout/error)
+	// or carries no row for this segment, and Count fell back to the counter.
+	CountIsLive bool `json:"count_is_live"`
+	// BuildStatus / BuiltAt come from the ledger: a segment whose last build
+	// is still "running" (or errored) has a count that describes the PREVIOUS
+	// build. Observed 2026-08-18: "DB 30D Clickers" sat at status=running since
+	// the day before while its cached counter read 0.
+	BuildStatus      string `json:"build_status,omitempty"`
+	BuiltAt          string `json:"built_at,omitempty"`
 	LastCalculatedAt string `json:"last_calculated_at,omitempty"`
 	Stale            bool   `json:"stale"`
 }
@@ -227,7 +232,7 @@ func (s *PMTACampaignService) HandleEngagementTiers(w http.ResponseWriter, r *ht
 	sortTiers(resp.Openers)
 	sortTiers(resp.Other)
 
-	applyLiveMemberCounts(r.Context(), s.db, &resp)
+	applyBuildLedgerCounts(r.Context(), s.db, &resp)
 
 	respondJSON(w, http.StatusOK, resp)
 }
@@ -270,20 +275,25 @@ func coerceMasterSelectionForSegmentAudience(input *engine.PMTACampaignInput) bo
 	return true
 }
 
-// applyLiveMemberCounts replaces each tier's Count with the live row count in
-// mailing_segment_members — the table the audience planner actually streams.
+// applyBuildLedgerCounts replaces each tier's Count with the authoritative
+// membership recorded in mailing_segment_build_ledger, and surfaces the last
+// build's status.
 //
-// mailing_segments.subscriber_count is a cached tally written by
-// SegmentRefreshWorker, and it lies when that worker's count query times out:
-// prod 2026-08-18 had "DB 30D Clickers" at counter=0 with 1,534 members
-// materialized, and a dry run over it planned 4,477 recipients. Showing the
-// counter would have told the operator the audience was empty.
+// THREE counts exist for a segment and only one of them is trustworthy:
+//   - mailing_segments.subscriber_count — a CACHED tally SegmentRefreshWorker
+//     zeroes when its count query times out. Measured 2026-08-18: wrong for
+//     46 of the 108 active engagement segments, including "DB 30D Openers" at
+//     0 against a real 47,516.
+//   - COUNT(*) on mailing_segment_members — correct but too slow to serve a
+//     picker: the first cut of this function used it and blew a 5s ceiling on
+//     every request, falling back to the bad counter.
+//   - mailing_segment_build_ledger.subscriber_count — what the builder wrote
+//     when it materialized the segment. One narrow row per segment, keyed by
+//     segment_id, and it carries build status/errors too. That is this one.
 //
-// Bounded and fail-soft: at most a few dozen segment ids, one grouped read on
-// the segment_id index, 5s ceiling. On any error the cached counters stand and
-// CountIsLive stays false, so the panel degrades to the old numbers instead of
-// failing the request.
-func applyLiveMemberCounts(ctx context.Context, db *sql.DB, resp *engagementTiersResponse) {
+// Fail-soft: on any error the cached counters stand and CountIsLive stays
+// false, so the panel degrades to the old numbers instead of failing.
+func applyBuildLedgerCounts(ctx context.Context, db *sql.DB, resp *engagementTiersResponse) {
 	groups := [][]engagementTier{resp.Clickers, resp.Openers, resp.Other}
 	var ids []string
 	for _, g := range groups {
@@ -298,40 +308,55 @@ func applyLiveMemberCounts(ctx context.Context, db *sql.DB, resp *engagementTier
 	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	rows, err := db.QueryContext(qctx, `
-		SELECT segment_id::text, COUNT(*)
-		FROM mailing_segment_members
+		SELECT segment_id::text,
+		       COALESCE(subscriber_count, 0),
+		       COALESCE(last_build_status, ''),
+		       last_built_at
+		FROM mailing_segment_build_ledger
 		WHERE segment_id = ANY($1::uuid[])
-		GROUP BY segment_id
 	`, pq.Array(ids))
 	if err != nil {
-		log.Printf("[engagement-tiers] live member count failed for %d segment(s), "+
+		log.Printf("[engagement-tiers] build-ledger read failed for %d segment(s), "+
 			"falling back to cached subscriber_count: %v", len(ids), err)
 		return
 	}
 	defer rows.Close()
 
-	live := make(map[string]int, len(ids))
+	type ledgerRow struct {
+		count   int
+		status  string
+		builtAt *time.Time
+	}
+	ledger := make(map[string]ledgerRow, len(ids))
 	for rows.Next() {
-		var id string
+		var id, status string
 		var n int
-		if rows.Scan(&id, &n) == nil {
-			live[id] = n
+		var builtAt *time.Time
+		if rows.Scan(&id, &n, &status, &builtAt) == nil {
+			ledger[id] = ledgerRow{count: n, status: status, builtAt: builtAt}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("[engagement-tiers] live member count read error, falling back to "+
+		log.Printf("[engagement-tiers] build-ledger read error, falling back to "+
 			"cached subscriber_count: %v", err)
 		return
 	}
 
 	for _, g := range groups {
 		for i := range g {
-			// A segment with zero materialized rows is absent from the GROUP BY
-			// result; that is a genuine 0, not a missing read.
-			n := live[g[i].SegmentID]
-			g[i].Count = n
+			lr, ok := ledger[g[i].SegmentID]
+			if !ok {
+				// No ledger row (a segment never built through the ledger path).
+				// Keep the cached counter and say so.
+				continue
+			}
+			g[i].Count = lr.count
 			g[i].CountIsLive = true
-			g[i].CounterMismatch = n != g[i].CounterCount
+			g[i].BuildStatus = lr.status
+			if lr.builtAt != nil {
+				g[i].BuiltAt = lr.builtAt.UTC().Format(time.RFC3339)
+			}
+			g[i].CounterMismatch = lr.count != g[i].CounterCount
 		}
 	}
 }

@@ -20,14 +20,17 @@ export interface EngagementTier {
   segment_id: string;
   name: string;
   window_days: number;
-  /** Live row count in mailing_segment_members — what will actually mail. */
+  /** Authoritative membership from mailing_segment_build_ledger. */
   count: number;
   /** The cached mailing_segments.subscriber_count. */
   counter_count: number;
   /** True when the cached counter disagrees with live membership. */
   counter_mismatch: boolean;
-  /** False when the live read failed and `count` fell back to the counter. */
+  /** False when the ledger was unreadable or has no row; `count` fell back to the counter. */
   count_is_live: boolean;
+  /** Last build status from the ledger — 'running' means the count is the PREVIOUS build. */
+  build_status?: string;
+  built_at?: string;
   last_calculated_at?: string;
   stale: boolean;
 }
@@ -70,9 +73,13 @@ const Chip: React.FC<{
       tier.name,
       `${tier.count.toLocaleString()} members (live)`,
       tier.counter_mismatch
-        ? `⚠ the cached segment counter says ${tier.counter_count.toLocaleString()} — the per-segment refresh is failing to write its tally. The LIVE number is what mails.`
+        ? `⚠ the cached segment counter says ${tier.counter_count.toLocaleString()} — the per-segment refresh is failing to write its tally. The ledger number above is what mails.`
         : '',
-      tier.count_is_live ? '' : '⚠ live membership read failed; showing the cached counter',
+      tier.count_is_live ? '' : '⚠ build ledger unreadable; showing the cached counter',
+      tier.build_status && tier.build_status !== 'ok'
+        ? `⚠ last build status "${tier.build_status}" — this count describes the previous build`
+        : '',
+      tier.built_at ? `built ${tier.built_at}` : '',
       tier.stale ? `⚠ last built ${tier.last_calculated_at || 'never'} — the daily refresh has not run` : `last built ${tier.last_calculated_at || 'unknown'}`,
     ].filter(Boolean).join('\n')}
     style={{
@@ -85,7 +92,8 @@ const Chip: React.FC<{
   >
     <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, color: selected ? color : '#e0e6f0' }}>
       {tier.window_days}D
-      {(tier.stale || tier.counter_mismatch || !tier.count_is_live) && (
+      {(tier.stale || tier.counter_mismatch || !tier.count_is_live ||
+        (!!tier.build_status && tier.build_status !== 'ok')) && (
         <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: '#f59e0b' }} />
       )}
     </span>
@@ -193,10 +201,11 @@ export const EngagementTierPicker: React.FC<Props> = ({
               background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
               fontSize: 11, color: '#f59e0b',
             }}>
-              <FontAwesomeIcon icon={faExclamationTriangle} /> Some cached segment counters disagree with
-              live membership. The numbers above are the LIVE counts — what the planner will actually
-              mail. A disagreement means the per-segment refresh is failing to write its tally (usually
-              a query timeout under DB load), not that the audience is missing.
+              <FontAwesomeIcon icon={faExclamationTriangle} /> Some cached segment counters disagree
+              with the segment build ledger. The numbers above come from the LEDGER — what the builder
+              actually materialized, and what the planner will mail. A disagreement means the
+              per-segment refresh failed to write its tally (usually a query timeout under DB load),
+              not that the audience is missing.
             </div>
           )}
 
