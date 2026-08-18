@@ -4,8 +4,8 @@ import {
   faArrowLeft, faArrowRight, faArrowUp, faArrowDown, faCheck, faServer, faGlobe,
   faPenFancy, faUsers, faBrain, faRocket, faSpinner,
   faExclamationTriangle, faCheckCircle, faTimesCircle,
-  faPlus, faTimes, faChartBar, faShieldAlt, faCrosshairs,
-  faMagic, faSave, faEye, faUpload, faCode, faGripVertical,
+  faTimes, faChartBar, faShieldAlt, faCrosshairs,
+  faSave, faGripVertical, faMagic,
   faCopy, faTrophy, faChevronDown, faChevronUp, faSearch, faLock,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -18,6 +18,8 @@ import {
   defaultVisibleCategoriesForPicker,
   type SegmentCategory,
 } from './segCategoryMetadata';
+import { EngagementTierPicker, type EngagementTiers } from './EngagementTierPicker';
+import { OfferCreativePicker } from './OfferCreativePicker';
 
 const API_BASE = '/api/mailing';
 
@@ -46,6 +48,35 @@ const ISP_META: Record<string, { label: string; color: string; emoji: string }> 
 };
 
 const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att', 'sbcglobal', 'cox', 'charter'];
+
+// ── Send-day doctrine ────────────────────────────────────────────────────────
+//
+// The board mails its engaged tiers FIRST so they warm the inbox/IP before
+// anything else arrives (operator doctrine, restated 2026-08-10 — "this is
+// meaningful and is a must"). These presets put the same anchors, windows and
+// pacing in the wizard. Source of truth for the numbers:
+//   anchors  agents/scheduling/board_generator.py ANCHOR_OFFSET_HOURS + start_local
+//   windows  agents/scheduling/data/<date>_structure.json throttle_hours
+//   pacing   agents/scheduling/legacy_lib.build_isp_plans (15 min, gentle, Denver)
+const SEND_DAY_TIMEZONE = 'America/Denver';
+const DEFAULT_WAVE_INTERVAL_MINUTES = 15;
+const DEFAULT_THROTTLE_STRATEGY = 'gentle';
+const THROTTLE_STRATEGIES = ['gentle', 'auto', 'moderate', 'careful'];
+
+interface AnchorPreset {
+  id: string;
+  label: string;
+  localTime: string;      // HH:MM in SEND_DAY_TIMEZONE
+  windowHours: number;
+  hint: string;
+}
+
+const ANCHOR_PRESETS: AnchorPreset[] = [
+  { id: 'clk',    label: 'Clickers (anchor)', localTime: '01:01', windowHours: 8,  hint: 'the day\'s first send — clickers lead' },
+  { id: 'eng',    label: 'Engagers',          localTime: '02:01', windowHours: 10, hint: '+1h behind the clicker anchor' },
+  { id: 'other',  label: 'Everything else',   localTime: '04:01', windowHours: 12, hint: '+3h — after both engaged tiers' },
+  { id: 'pmeng',  label: 'PM Engagers',       localTime: '12:01', windowHours: 6,  hint: 'the afternoon engager pass' },
+];
 
 const DEFAULT_ISP_QUOTAS: Record<string, number> = {
   gmail:     50000,
@@ -84,9 +115,19 @@ interface ISPReadiness {
   warnings: string[];
 }
 
+interface SendingProfileOption {
+  id: string;
+  name: string;
+  from_name?: string;
+  from_email?: string;
+  transport: string;   // "ses" | "kumo" | "pmta"
+  is_default: boolean;
+}
+
 interface SendingDomain {
   domain: string;
   from_name?: string;
+  profiles?: SendingProfileOption[];
   dkim_configured: boolean;
   spf_configured: boolean;
   dmarc_configured: boolean;
@@ -228,6 +269,8 @@ interface PersistedPMTAPlan {
 interface PersistedPMTACampaignInput {
   campaign_id?: string;
   name?: string;
+  timezone?: string;
+  throttle_strategy?: string;
   target_isps?: string[];
   sending_domain?: string;
   variants?: ContentVariant[];
@@ -242,6 +285,10 @@ interface PersistedPMTACampaignInput {
   send_mode?: 'immediate' | 'scheduled';
   scheduled_at?: string;
   content_locked?: boolean;
+  sending_profile_id?: string;
+  use_master_selection?: boolean;
+  min_remail_hours?: number;
+  offer_id?: string;
 }
 
 interface PMTADraftResponse {
@@ -301,10 +348,10 @@ const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 const STEPS = [
   { id: 1, label: 'Mailbox Providers',      icon: faServer },
   { id: 2, label: 'Sending Domain',         icon: faGlobe },
-  { id: 3, label: 'Content + A/B',          icon: faPenFancy },
-  { id: 4, label: 'Audience + Suppression', icon: faUsers },
+  { id: 3, label: 'Offer + Creative',       icon: faPenFancy },
+  { id: 4, label: 'Engagement Audience',    icon: faUsers },
   { id: 5, label: 'Sending Insights',       icon: faBrain },
-  { id: 6, label: 'Review + Deploy',        icon: faRocket },
+  { id: 6, label: 'Schedule + Deploy',      icon: faRocket },
 ];
 
 // ── Main component ───────────────────────────────────────────────────────────
@@ -358,6 +405,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // Step 2 state
   const [sendingDomains, setSendingDomains] = useState<SendingDomain[]>([]);
   const [selectedDomain, setSelectedDomain] = useState('');
+  // Pinned sending profile. A domain can carry several active profiles
+  // (m.discountblog.com has four), and the server's by-domain auto-lookup takes
+  // the most recently created one — so an SES route is only deterministic when
+  // the profile is pinned. Empty = keep the legacy auto-lookup.
+  const [selectedProfileId, setSelectedProfileId] = useState('');
   // Offer selection (audience unification P3): optional; flows into the
   // draft/deploy payload as offer_id so attribution + offer suppression fire.
   const [offersCatalog, setOffersCatalog] = useState<{ id: string; key: string; name: string; status: string }[]>([]);
@@ -368,23 +420,32 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [variants, setVariants] = useState<ContentVariant[]>([
     { variant_name: 'A', from_name: '', subject: '', preview_text: '', html_content: '', split_percent: 100 },
   ]);
-  const [templates, setTemplates] = useState<any[]>([]);
-  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  // Content is sourced exclusively from the Creative Studio offers library
+  // (OfferCreativePicker) — the template / AI-generation / paste-HTML paths were
+  // removed so an unapproved creative cannot be scheduled from this wizard.
 
-  // AI Generation state
-  const [showAIGenerator, setShowAIGenerator] = useState(false);
-  const [aiCampaignType, setAICampaignType] = useState('');
-  const [aiGenerating, setAIGenerating] = useState(false);
-  const [aiVariations, setAIVariations] = useState<any[]>([]);
-  const [aiSelectedIdxs, setAISelectedIdxs] = useState<number[]>([]);
-  const [aiPreviewIdx, setAIPreviewIdx] = useState<number | null>(null);
-  const [aiError, setAIError] = useState('');
-  const [aiSaving, setAISaving] = useState(false);
+  // Engagement ranges (step 4 headline) — the board's audience primitive.
+  const [engagementTiers, setEngagementTiers] = useState<EngagementTiers | null>(null);
+  const [engagementLoading, setEngagementLoading] = useState(false);
+  const [engagementError, setEngagementError] = useState('');
+  const [engagementReloadKey, setEngagementReloadKey] = useState(0);
+  // Inclusion ids restored from a draft, held until the property's engagement
+  // grid loads and can say which are clickers and which are openers.
+  const [restoredInclusionSegments, setRestoredInclusionSegments] = useState<string[]>([]);
+  const [selectedClickerIds, setSelectedClickerIds] = useState<string[]>([]);
+  const [selectedOpenerIds, setSelectedOpenerIds] = useState<string[]>([]);
+  const [excludeClickers, setExcludeClickers] = useState(true);
+  // Audience-bound = the standing uncapped engaged-tier doctrine: quota 0 per
+  // ISP so the segment is the cap. Capping an engaged tier is the EXCEPTION.
+  const [audienceBound, setAudienceBound] = useState(true);
+  // Master-list top-up. The column defaults to TRUE server-side, so the wizard
+  // always sends this explicitly; the server additionally coerces it to false
+  // for uncapped segment audiences (coerceMasterSelectionForSegmentAudience).
+  const [masterTopUp, setMasterTopUp] = useState(false);
 
-  // AI Subject + Preheader suggestion state
-  const [aiSuggestingIdx, setAISuggestingIdx] = useState<number | null>(null);
-  const [aiSuggestions, setAISuggestions] = useState<Array<{ subject: string; plain_subject?: string; preview_text: string; reasoning: string; category: string; subject_length?: number }>>([]);
-  const [aiSuggestError, setAISuggestError] = useState('');
+  // Step 3 (content) — everything comes from the selected Creative Studio proof.
+  const [selectedProofId, setSelectedProofId] = useState('');
+  const [selectedProofName, setSelectedProofName] = useState('');
 
   // Step 4 state
   const [lists, setLists] = useState<{ id: string; name: string; subscriber_count: number }[]>([]);
@@ -428,9 +489,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [globalScheduleDuration, setGlobalScheduleDuration] = useState(8);
   const [globalScheduleInterval, setGlobalScheduleInterval] = useState(15);
   const [globalScheduleStart, setGlobalScheduleStart] = useState('');
-  const [globalScheduleTimezone, setGlobalScheduleTimezone] = useState(
-    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-  );
+  const [globalScheduleTimezone, setGlobalScheduleTimezone] = useState(SEND_DAY_TIMEZONE);
+  const [campaignTimezone, setCampaignTimezone] = useState(SEND_DAY_TIMEZONE);
+  const [throttleStrategy, setThrottleStrategy] = useState(DEFAULT_THROTTLE_STRATEGY);
+  const [activePreset, setActivePreset] = useState('');
+  // Send-day gate failures come back as HTTP 412 with the failed gates and an
+  // override hint. Without a UI for it the Campaign Manager is unusable on any
+  // day Gate A has not been attested, so the operator can re-submit the same
+  // payload with an audit-logged reason.
+  const [gateFailure, setGateFailure] = useState<{ error: string; failed_gates: any[] } | null>(null);
+  const [gateOverrideReason, setGateOverrideReason] = useState('');
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsLoaded, setRecsLoaded] = useState(false);
   const [deploying, setDeploying] = useState(false);
@@ -589,6 +657,63 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
   }, [fetchWithRetry]);
 
+  // Engagement grid for the selected property. One request serves both the
+  // audience step (the chips) and the content step (brand_root, which decides
+  // which approved proofs are cleared for this property).
+  useEffect(() => {
+    if (!selectedDomain) {
+      setEngagementTiers(null);
+      setEngagementError('');
+      return;
+    }
+    let cancelled = false;
+    setEngagementLoading(true);
+    setEngagementError('');
+    orgFetch(`${API_BASE}/pmta-campaign/engagement-tiers?sending_domain=${encodeURIComponent(selectedDomain)}`, orgId)
+      .then(async res => {
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok) { setEngagementError(data.error || `HTTP ${res.status}`); setEngagementTiers(null); return; }
+        setEngagementTiers(data as EngagementTiers);
+      })
+      .catch(err => { if (!cancelled) { setEngagementError(err?.message || 'network error'); setEngagementTiers(null); } })
+      .finally(() => { if (!cancelled) setEngagementLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedDomain, orgId, engagementReloadKey]);
+
+  // Selecting a DIFFERENT property invalidates the property-scoped choices.
+  // Guarded by a ref so it does not fire on the initial mount or on the
+  // domain a restored draft just installed — otherwise it would immediately
+  // wipe the pinned profile that applyCampaignInput restored in the same tick.
+  const prevDomainRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevDomainRef.current;
+    prevDomainRef.current = selectedDomain;
+    if (prev === null || prev === selectedDomain) return;
+    setSelectedClickerIds([]);
+    setSelectedOpenerIds([]);
+    setSelectedProfileId('');
+  }, [selectedDomain]);
+
+  // Re-hydrate the engagement chips from a restored draft once the grid is in.
+  useEffect(() => {
+    if (!engagementTiers || restoredInclusionSegments.length === 0) return;
+    const clickerIds = new Set(engagementTiers.clickers.map(t => t.segment_id));
+    const openerIds = new Set(engagementTiers.openers.map(t => t.segment_id));
+    const restoredClickers = restoredInclusionSegments.filter(id => clickerIds.has(id));
+    const restoredOpeners = restoredInclusionSegments.filter(id => openerIds.has(id));
+    if (restoredClickers.length > 0) setSelectedClickerIds(restoredClickers);
+    if (restoredOpeners.length > 0) setSelectedOpenerIds(restoredOpeners);
+    setRestoredInclusionSegments([]);
+  }, [engagementTiers, restoredInclusionSegments]);
+
+  const toggleEngagementTier = useCallback((kind: 'clickers' | 'openers', segmentId: string) => {
+    const apply = (prev: string[]) =>
+      prev.includes(segmentId) ? prev.filter(x => x !== segmentId) : [...prev, segmentId];
+    if (kind === 'clickers') setSelectedClickerIds(apply);
+    else setSelectedOpenerIds(apply);
+  }, []);
+
   const fetchAudienceData = useCallback(async () => {
     setAudienceError('');
     setAudienceDataLoading(true);
@@ -674,133 +799,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setIntelLoading(false);
   }, [fetchWithRetry, orgId, selectedISPs, audienceEstimate]);
 
-  const fetchTemplates = useCallback(async () => {
-    try {
-      const res = await fetchWithRetry(`${API_BASE}/templates`);
-      const data = await res.json();
-      setTemplates(data.templates || []);
-    } catch (err) {
-      console.warn('[Wizard] templates fetch failed:', err);
-    }
-  }, [fetchWithRetry]);
-
-  const handleAIGenerate = useCallback(async () => {
-    if (!aiCampaignType || !selectedDomain) return;
-    setAIGenerating(true);
-    setAIError('');
-    setAIVariations([]);
-    setAISelectedIdxs([]);
-    setAIPreviewIdx(null);
-    try {
-      const res = await orgFetch(`${API_BASE}/ai/generate-templates`, orgId, {
-        method: 'POST',
-        body: JSON.stringify({ campaign_type: aiCampaignType, sending_domain: selectedDomain }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAIError(data.error || `Generation failed (HTTP ${res.status})`);
-      } else {
-        setAIVariations(data.variations || []);
-      }
-    } catch (err: any) {
-      setAIError(err?.message || 'Generation failed — network error');
-    }
-    setAIGenerating(false);
-  }, [aiCampaignType, selectedDomain, orgId]);
-
-  const handleAIUseSelected = () => {
-    if (aiSelectedIdxs.length === 0) return;
-    const picked = aiSelectedIdxs.map(i => aiVariations[i]).filter(Boolean);
-    const names = ['A', 'B', 'C', 'D'];
-    const domainFromName = sendingDomains.find(d => d.domain === selectedDomain)?.from_name || '';
-    const newVariants: ContentVariant[] = picked.map((v, i) => ({
-      variant_name: names[i] || String.fromCharCode(65 + i),
-      from_name: domainFromName,
-      subject: v.subject || '',
-      preview_text: v.preview_text || '',
-      html_content: v.html_content || '',
-      split_percent: Math.floor(100 / picked.length),
-    }));
-    if (newVariants.length > 0) {
-      const remainder = 100 - newVariants.reduce((s, v) => s + v.split_percent, 0);
-      newVariants[newVariants.length - 1].split_percent += remainder;
-    }
-    setVariants(newVariants);
-    setShowAIGenerator(false);
-  };
-
-  const handleAISaveToLibrary = async () => {
-    if (aiSelectedIdxs.length === 0 || !selectedDomain) return;
-    setAISaving(true);
-    try {
-      const folderRes = await orgFetch(`${API_BASE}/template-folders`, orgId, {
-        method: 'POST',
-        body: JSON.stringify({ path: selectedDomain }),
-      });
-      const folder = await folderRes.json();
-      const folderId = folder?.id;
-
-      for (const idx of aiSelectedIdxs) {
-        const v = aiVariations[idx];
-        if (!v) continue;
-        await orgFetch(`${API_BASE}/templates`, orgId, {
-          method: 'POST',
-          body: JSON.stringify({
-            name: `${aiCampaignType} — Variant ${v.variant_name}`,
-            description: `AI-generated ${aiCampaignType} template for ${selectedDomain}`,
-            subject: v.subject,
-            from_name: v.from_name,
-            html_content: v.html_content,
-            folder_id: folderId || undefined,
-            status: 'active',
-          }),
-        });
-      }
-      fetchTemplates();
-    } catch { /* noop */ }
-    setAISaving(false);
-  };
-
-  const handleAISuggestSubjectPreheader = useCallback(async (variantIdx: number) => {
-    setAISuggestingIdx(variantIdx);
-    setAISuggestions([]);
-    setAISuggestError('');
-    try {
-      const res = await orgFetch(`${API_BASE}/ai/suggest-subject-preheader`, orgId, {
-        method: 'POST',
-        body: JSON.stringify({
-          sending_domain: selectedDomain,
-          html_content: variants[variantIdx]?.html_content || '',
-          campaign_type: aiCampaignType || '',
-          count: 3,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAISuggestError(data.error || `Generation failed (HTTP ${res.status})`);
-      } else {
-        setAISuggestions(data.suggestions || []);
-      }
-    } catch (err: any) {
-      setAISuggestError(err?.message || 'Generation failed — network error');
-    }
-  }, [selectedDomain, variants, aiCampaignType, orgId]);
-
-  const handleApplySuggestion = (variantIdx: number, suggestion: { subject: string; preview_text: string }) => {
-    updateVariant(variantIdx, 'subject', suggestion.subject);
-    updateVariant(variantIdx, 'preview_text', suggestion.preview_text);
-    setAISuggestingIdx(null);
-    setAISuggestions([]);
-  };
-
   // Load data on step entry
   useEffect(() => {
     if (step === 1) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
-    if (step === 2) { fetchDomains(); fetchOffers(); }
-    if (step === 3) fetchTemplates();
+    if (step === 2) fetchDomains();
+    if (step === 3) fetchOffers();
     if (step === 4) fetchAudienceData();
     if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchTemplates, fetchAudienceData, fetchIntel, insightDomainFilter]);
+  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchAudienceData, fetchIntel, insightDomainFilter]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -837,17 +843,22 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         if (!selectedDomain) errors.push('Select a sending domain');
         break;
       case 3:
+        if (!selectedProofId) errors.push('Select an approved creative from the Creative Studio offers library');
         variants.forEach(v => {
-          if (!v.from_name.trim()) errors.push(`Variant ${v.variant_name}: From Name is required`);
-          if (!v.subject.trim()) errors.push(`Variant ${v.variant_name}: Subject Line is required`);
-          if (!v.html_content.trim()) errors.push(`Variant ${v.variant_name}: HTML Content is required`);
+          if (!v.from_name.trim()) errors.push('Select an approved from-name');
+          if (!v.subject.trim()) errors.push('Select an approved subject line');
+          if (!v.html_content.trim()) errors.push('The selected creative has no HTML content');
         });
-        if (Math.abs(variants.reduce((sum, v) => sum + v.split_percent, 0) - 100) >= 1) {
-          errors.push('Split percentages must sum to 100%');
-        }
         break;
       case 4:
-        if (selectedLists.length === 0 && selectedSegments.length === 0) errors.push('Select at least one list or segment');
+        if (selectedClickerIds.length === 0 && selectedOpenerIds.length === 0
+            && selectedLists.length === 0 && selectedSegments.length === 0) {
+          errors.push('Select an engagement range, or a list/segment in the advanced picker');
+        }
+        // Belt for the client side of the coercion the server also enforces.
+        if (audienceBound && masterTopUp) {
+          errors.push('Master-list top-up cannot be combined with an uncapped (audience-bound) send');
+        }
         break;
       case 6:
         if (!campaignName.trim()) errors.push('Campaign name is required');
@@ -923,6 +934,87 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const toDateTimeLocal = (date: Date) => {
     const pad = (n: number) => n.toString().padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+
+  // Offset (minutes) of `tz` at a given instant — DST-correct, no library.
+  const tzOffsetMinutes = (date: Date, tz: string): number => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(date).reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
+    const asUTC = Date.UTC(
+      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+      Number(parts.hour) % 24, Number(parts.minute), Number(parts.second),
+    );
+    return (asUTC - date.getTime()) / 60000;
+  };
+
+  // The instant of `HH:MM` on (today + dayOffset) in the send-day timezone.
+  const sendDayInstant = (dayOffset: number, hh: number, mm: number): Date => {
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: SEND_DAY_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date()).reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
+    const naive = Date.UTC(
+      Number(today.year), Number(today.month) - 1, Number(today.day) + dayOffset, hh, mm, 0,
+    );
+    // Two passes settle the DST edge (the offset depends on the instant we are
+    // still solving for).
+    let guess = naive;
+    for (let i = 0; i < 2; i++) {
+      guess = naive - tzOffsetMinutes(new Date(guess), SEND_DAY_TIMEZONE) * 60000;
+    }
+    return new Date(guess);
+  };
+
+  /**
+   * Apply a send-day anchor preset: start time, window, 15-minute cadence,
+   * gentle throttle, Denver timezone — the shape the board compiles.
+   *
+   * "Today" is only chosen when the anchor is more than 15 minutes out.
+   * normalizePMTACampaignInput silently downgrades anything inside 5 minutes to
+   * an IMMEDIATE send, so a tighter margin would fire the campaign on the spot.
+   */
+  const applyAnchorPreset = (preset: AnchorPreset) => {
+    const [hh, mm] = preset.localTime.split(':').map(Number);
+    let when = sendDayInstant(0, hh, mm);
+    if (when.getTime() <= Date.now() + 15 * 60 * 1000) {
+      when = sendDayInstant(1, hh, mm);
+    }
+    const local = toDateTimeLocal(when);
+    setActivePreset(preset.id);
+    setSendMode('scheduled');
+    setScheduleMode('per-isp');
+    setScheduledAt(local);
+    setCampaignTimezone(SEND_DAY_TIMEZONE);
+    setGlobalScheduleStart(local);
+    setGlobalScheduleDuration(preset.windowHours);
+    setGlobalScheduleInterval(DEFAULT_WAVE_INTERVAL_MINUTES);
+    setGlobalScheduleTimezone(SEND_DAY_TIMEZONE);
+    setISPPlansByKey(prev => {
+      const next: Record<string, ISPPlanFormState> = { ...prev };
+      selectedISPs.forEach(isp => {
+        const base = next[isp] || buildDefaultISPPlan(isp);
+        next[isp] = {
+          ...base,
+          useCustomSchedule: true,
+          cadenceMode: 'interval',
+          everyMinutes: DEFAULT_WAVE_INTERVAL_MINUTES,
+          durationHours: preset.windowHours,
+          startTime: local,
+          timezone: SEND_DAY_TIMEZONE,
+          throttleStrategy,
+          timeSpans: [],
+        };
+      });
+      return next;
+    });
   };
 
   const toLocalInputValue = (raw?: string) => {
@@ -1026,6 +1118,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setScheduleMode(draft.schedule_mode === 'per-isp' ? 'per-isp' : 'quick');
     setScheduledAt(toLocalInputValue(input.scheduled_at));
     setISPPlansByKey(nextPlans);
+    // New round-trip fields. The draft blob is the whole PMTACampaignInput
+    // (mailing_campaigns.pmta_config), so these persist with no server change.
+    setSelectedProfileId(input.sending_profile_id || '');
+    setSelectedOfferId(input.offer_id || '');
+    setCampaignTimezone(input.timezone || SEND_DAY_TIMEZONE);
+    setThrottleStrategy(input.throttle_strategy || DEFAULT_THROTTLE_STRATEGY);
+    if (typeof input.use_master_selection === 'boolean') setMasterTopUp(input.use_master_selection);
+    // A restored draft with any finite per-ISP volume was capped on purpose.
+    const restoredUncapped = (input.isp_quotas || []).every(q => !q.volume)
+      && (input.isp_plans || []).every(pl => !pl.quota);
+    setAudienceBound(restoredUncapped);
+    // Engagement chips are re-derived from the restored inclusion segments once
+    // the property's grid arrives (the grid is the only place that knows which
+    // id is a clicker and which is an opener).
+    setRestoredInclusionSegments(input.inclusion_segments || []);
   }, []);
 
   const fetchCloneCandidates = useCallback(async () => {
@@ -1232,14 +1339,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // ── Deploy ───────────────────────────────────────────────────────────────
 
   const buildCampaignPayload = useCallback(() => {
-    const quotaArray = Object.entries(ispQuotas)
-      .filter(([, v]) => v > 0)
-      .map(([isp, volume]) => ({ isp, volume }));
+    // Audience-bound (the standing uncapped engaged-tier doctrine): volume 0
+    // per ISP means "unlimited — the segment is the cap". Emitting a row per
+    // selected ISP (rather than dropping them) keeps the ISP set explicit in
+    // the persisted quota payload.
+    const quotaArray = audienceBound
+      ? selectedISPs.map(isp => ({ isp, volume: 0 }))
+      : Object.entries(ispQuotas)
+          .filter(([, v]) => v > 0)
+          .map(([isp, volume]) => ({ isp, volume }));
     const globalScheduleISO = scheduledAt ? new Date(scheduledAt).toISOString() : '';
     const ispPlans = selectedISPs.filter(isp => isp !== 'other').map(isp => {
       const plan = ispPlansByKey[isp] || buildDefaultISPPlan(isp);
       const useGlobalSchedule = scheduleMode === 'quick' || !plan.useCustomSchedule;
-      const quota = ispQuotas[isp] || 0;
+      const quota = audienceBound ? 0 : (ispQuotas[isp] || 0);
 
       let spans: any[] = [];
       let cadenceMode = 'single';
@@ -1269,9 +1382,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           }
         } else {
           const dur = plan.durationHours || 8;
-          const interval = plan.everyMinutes || 15;
-          const totalIntervals = Math.max(1, Math.floor(dur * 60 / interval));
-          batchSize = quota > 0 ? Math.ceil(quota / totalIntervals) : plan.batchSize;
+          const interval = plan.everyMinutes || DEFAULT_WAVE_INTERVAL_MINUTES;
+          // batch_size 0 = "spread the ACTUAL audience evenly across the window"
+          // (pmta_campaign_planner.buildPMTAWaveSpecs). Deriving it from the
+          // quota is wrong whenever the audience differs from the quota, and on
+          // an audience-bound plan (quota 0) it previously fell back to the
+          // default ISP quota — 50,000 for gmail — which collapsed the whole
+          // send into a single wave. The board sends 0 for exactly this reason.
+          batchSize = 0;
           cadenceMode = plan.cadenceMode;
           everyMinutes = interval;
 
@@ -1303,8 +1421,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         isp,
         quota,
         randomize_audience: randomizeAudience,
-        throttle_strategy: plan.throttleStrategy || 'auto',
-        timezone: plan.timezone,
+        throttle_strategy: plan.throttleStrategy || throttleStrategy,
+        timezone: plan.timezone || campaignTimezone,
         cadence: {
           mode: cadenceMode,
           every_minutes: everyMinutes,
@@ -1314,21 +1432,37 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       };
     });
 
-    const otherQuota = ispQuotas['other'] || 0;
-    if (otherQuota > 0) {
+    const otherQuota = audienceBound
+      ? (selectedISPs.includes('other') ? 0 : -1)
+      : (ispQuotas['other'] || 0);
+    if (otherQuota >= 0 && (audienceBound ? selectedISPs.includes('other') : otherQuota > 0)) {
       ispPlans.push({
         isp: 'other',
         quota: otherQuota,
         randomize_audience: randomizeAudience,
-        throttle_strategy: 'auto',
-        timezone: globalScheduleTimezone,
-        cadence: { mode: 'single', every_minutes: 0, batch_size: otherQuota },
+        throttle_strategy: throttleStrategy,
+        timezone: globalScheduleTimezone || campaignTimezone,
+        // Mirror the canonical plans: interval cadence with a server-computed
+        // batch, never a single-wave blast sized to the quota.
+        cadence: { mode: 'interval', every_minutes: DEFAULT_WAVE_INTERVAL_MINUTES, batch_size: 0 },
         time_spans: ispPlans.length > 0 ? ispPlans[0].time_spans : [],
       });
     }
 
     const canonicalISPs = selectedISPs.filter(isp => isp !== 'other');
-    const targetISPs = otherQuota > 0 ? [...canonicalISPs, 'other'] : canonicalISPs;
+    const includeOther = audienceBound ? selectedISPs.includes('other') : otherQuota > 0;
+    const targetISPs = includeOther ? [...canonicalISPs, 'other'] : canonicalISPs;
+
+    const engagementIds = [...selectedClickerIds, ...selectedOpenerIds];
+    const advancedSegmentIds = sendPriority.filter(p => p.type === 'segment').map(p => p.id);
+    const mergedSegmentIds = [
+      ...engagementIds,
+      ...advancedSegmentIds.filter(id => !engagementIds.includes(id)),
+    ];
+    const mergedSendPriority = [
+      ...engagementIds.map(id => ({ id, type: 'segment' as const })),
+      ...sendPriority.filter(p => !(p.type === 'segment' && engagementIds.includes(p.id))),
+    ];
 
     const payload: Record<string, any> = {
       name: campaignName,
@@ -1338,18 +1472,43 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       isp_plans: ispPlans,
       isp_quotas: quotaArray,
       randomize_audience: randomizeAudience,
-      inclusion_segments: sendPriority.filter(p => p.type === 'segment').map(p => p.id),
+      // Clickers lead, then openers, then anything picked in the advanced
+      // panel — send_priority is drained in order by the planner, so the
+      // highest-signal audience is selected first (signal grading: click =
+      // gold, open = silver).
+      inclusion_segments: mergedSegmentIds,
       inclusion_lists: sendPriority.filter(p => p.type === 'list').map(p => p.id),
-      send_priority: sendPriority,
+      send_priority: mergedSendPriority,
       exclusion_lists: selectedSuppLists,
-      exclusion_segments: selectedExclusionSegments,
+      // Engager disjointness (board_generator.py OFR-ENG): when both tiers are
+      // selected, the clicker segments are excluded so the same person is not
+      // mailed twice on the same day by the two tiers.
+      exclusion_segments: [
+        ...selectedExclusionSegments,
+        ...(excludeClickers && selectedClickerIds.length > 0 && selectedOpenerIds.length > 0
+          ? selectedClickerIds.filter(id => !selectedExclusionSegments.includes(id))
+          : []),
+      ],
       send_days: [],
       send_hour: new Date().getUTCHours(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      throttle_strategy: 'auto',
+      timezone: campaignTimezone,
+      throttle_strategy: throttleStrategy,
       send_mode: sendMode,
       content_locked: contentLocked,
+      min_remail_hours: 0,
+      // ALWAYS explicit. mailing_campaigns.use_master_selection defaults to
+      // TRUE, so omitting it puts a segment-sourced engagement send on the
+      // master-selection path, where the planner drains the chosen segments and
+      // then tops the audience up from mailing_subscriber_domain_state — with
+      // no finite quota to stop at, that is the entire sending domain.
+      use_master_selection: masterTopUp,
     };
+    if (selectedProfileId) {
+      // Pin the route. Without this the server takes the most recently created
+      // active profile for the domain, which is non-deterministic for any
+      // domain carrying both an SES-tenant and a PMTA profile.
+      payload.sending_profile_id = selectedProfileId;
+    }
 
     if (campaignId) {
       payload.campaign_id = campaignId;
@@ -1377,10 +1536,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     selectedExclusionSegments,
     selectedISPs,
     selectedOfferId,
+    selectedProfileId,
     selectedSuppLists,
     sendMode,
     sendPriority,
     variants,
+    campaignTimezone,
+    throttleStrategy,
+    masterTopUp,
+    excludeClickers,
+    selectedClickerIds,
+    selectedOpenerIds,
+    globalScheduleTimezone,
+    audienceBound,
   ]);
 
   const handleSaveDraft = async () => {
@@ -1408,13 +1576,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
   };
 
-  const handleDeploy = useCallback(async () => {
+  const handleDeploy = useCallback(async (overrideReason?: string) => {
     setDeploying(true);
     setDeployResult(null);
+    setGateFailure(null);
     try {
+      const body: Record<string, any> = buildCampaignPayload();
+      if (overrideReason && overrideReason.trim()) {
+        // Audit-logged server-side (auditGateOverride) — the same payload is
+        // re-POSTed, only the override envelope is added.
+        body.gate_override = { reason: overrideReason.trim() };
+      }
       const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/deploy`, {
         method: 'POST',
-        body: JSON.stringify(buildCampaignPayload()),
+        body: JSON.stringify(body),
       }, 0);
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
@@ -1423,6 +1598,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         return;
       }
       const data = await res.json();
+      if (res.status === 412) {
+        // Send-day gates. Surface which gate failed and let the operator
+        // re-submit with a reason instead of dead-ending the wizard.
+        setGateFailure({ error: data.error || 'send-day gates failed', failed_gates: data.failed_gates || [] });
+        setDeploying(false);
+        return;
+      }
       if (!res.ok) {
         setDeployResult({ error: data.error || `Deploy failed (HTTP ${res.status})` });
       } else if (res.status === 202) {
@@ -1525,74 +1707,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       return updated;
     });
   }, [selectedDomain, sendingDomains]);
-
-  // ── Variant management ───────────────────────────────────────────────────
-
-  const addVariant = () => {
-    const names = ['A', 'B', 'C', 'D'];
-    if (variants.length >= 4) return;
-    const newPercent = Math.floor(100 / (variants.length + 1));
-    const updated = variants.map(v => ({ ...v, split_percent: newPercent }));
-    updated.push({
-      variant_name: names[variants.length],
-      from_name: sendingDomains.find(d => d.domain === selectedDomain)?.from_name || variants[0]?.from_name || '',
-      subject: '', preview_text: '', html_content: '',
-      split_percent: 100 - (newPercent * variants.length),
-    });
-    setVariants(updated);
-  };
-
-  const removeVariant = (idx: number) => {
-    if (variants.length <= 1) return;
-    const updated = variants.filter((_, i) => i !== idx);
-    const each = Math.floor(100 / updated.length);
-    const final = updated.map((v, i) => ({
-      ...v,
-      split_percent: i === updated.length - 1 ? 100 - each * (updated.length - 1) : each,
-    }));
-    setVariants(final);
-  };
-
-  const updateVariant = (idx: number, field: keyof ContentVariant, value: string | number) => {
-    setVariants(prev => prev.map((v, i) => i === idx ? { ...v, [field]: value } : v));
-  };
-
-  // Track which variants have preview open
-  const [variantPreviews, setVariantPreviews] = useState<Record<number, boolean>>({});
-  const toggleVariantPreview = (idx: number) => {
-    setVariantPreviews(prev => ({ ...prev, [idx]: !prev[idx] }));
-  };
-
-  // Refs for textarea cursor tracking (one per variant)
-  const textareaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({});
-
-  const insertTagAtCursor = (idx: number, syntax: string) => {
-    const textarea = textareaRefs.current[idx];
-    const v = variants[idx];
-    if (!v) return;
-    const pos = textarea?.selectionStart ?? v.html_content.length;
-    const before = v.html_content.slice(0, pos);
-    const after = v.html_content.slice(pos);
-    updateVariant(idx, 'html_content', before + syntax + after);
-    setTimeout(() => {
-      if (textarea) {
-        textarea.focus();
-        const newPos = pos + syntax.length;
-        textarea.setSelectionRange(newPos, newPos);
-      }
-    }, 30);
-  };
-
-  const handleHTMLFileUpload = (idx: number, file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const content = e.target?.result;
-      if (typeof content === 'string') {
-        updateVariant(idx, 'html_content', content);
-      }
-    };
-    reader.readAsText(file);
-  };
 
   // ── Render helpers ───────────────────────────────────────────────────────
 
@@ -2332,511 +2446,152 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         })}
       </div>
 
-      {/* Offer selection (audience unification P3) — optional; the chosen
-          mailing_offers UUID rides the draft/deploy payload as offer_id. */}
-      <div style={{ marginTop: 20 }}>
-        <h3 style={{ margin: '0 0 4px' }}>Offer</h3>
-        <p style={{ margin: '0 0 10px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-          Optional. Attributes every send of this campaign to an offer (rollups, converted-suppression, drift-free reporting).
-        </p>
-        {offersError && (
-          <div style={{ padding: '8px 12px', color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 8, fontSize: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span>{offersError}</span>
-            <button onClick={fetchOffers} style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' }}>
-              Retry
-            </button>
-          </div>
-        )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <select
-            aria-label="Select offer"
-            value={selectedOfferId}
-            onChange={e => setSelectedOfferId(e.target.value)}
-            style={{
-              background: '#0d1526', color: '#e0e6f0', border: '2px solid rgba(0,200,255,0.15)',
-              borderRadius: 8, padding: '8px 10px', fontSize: 13, minWidth: 280,
-            }}
-          >
-            <option value="">No offer (unattributed)</option>
-            {offersCatalog.map(o => (
-              <option key={o.id} value={o.id}>
-                {o.name}{o.status !== 'active' ? ` — ${o.status}` : ''}
-              </option>
-            ))}
-          </select>
-          {selectedOfferId && (
-            <span style={{ fontSize: 12, color: '#00e5ff', background: 'rgba(0,200,255,0.08)', border: '1px solid rgba(0,200,255,0.25)', borderRadius: 6, padding: '4px 8px', fontFamily: 'monospace' }}>
-              key: {offersCatalog.find(o => o.id === selectedOfferId)?.key || '(no key)'}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-
-  const loadTemplate = (tpl: any, variantIdx: number) => {
-    updateVariant(variantIdx, 'subject', tpl.subject || '');
-    updateVariant(variantIdx, 'html_content', tpl.html_content || '');
-    if (tpl.preview_text) updateVariant(variantIdx, 'preview_text', tpl.preview_text);
-    setShowTemplatePicker(false);
-  };
-
-  const CAMPAIGN_TYPES = [
-    { id: 'welcome', label: 'Welcome Series', desc: 'New subscriber onboarding' },
-    { id: 'newsletter', label: 'Newsletter', desc: 'Content-driven update' },
-    { id: 'promotional', label: 'Promotional', desc: 'Offers & deals' },
-    { id: 'winback', label: 'Win-Back', desc: 'Re-engage dormant subs' },
-    { id: 're-engagement', label: 'Re-Engagement', desc: 'Gentle nudge campaign' },
-    { id: 'announcement', label: 'Announcement', desc: 'Product or feature reveal' },
-    { id: 'trivia', label: 'Trivia / Interactive', desc: 'Fun engagement campaign' },
-  ];
-
-  const renderAIGenerator = () => (
-    <div style={{ background: '#1a1033', border: '1px solid #00e5ff', borderRadius: 12, padding: 20, marginBottom: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h4 style={{ margin: 0, color: 'rgba(0,200,255,0.7)', fontSize: 15 }}><FontAwesomeIcon icon={faMagic} /> AI Template Generator</h4>
-          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>Select a campaign type. AI will analyze <strong style={{ color: '#00b0ff' }}>{selectedDomain}</strong> for branding and generate 5 production-ready variations.</p>
-        </div>
-        <button onClick={() => setShowAIGenerator(false)} style={{ background: 'none', border: 'none', color: 'rgba(180,210,240,0.65)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
-      </div>
-
-      {/* Campaign type selector */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 8, marginBottom: 16 }}>
-        {CAMPAIGN_TYPES.map(ct => (
-          <div
-            key={ct.id}
-            role="button"
-            tabIndex={0}
-            aria-pressed={aiCampaignType === ct.id}
-            onClick={() => setAICampaignType(ct.id)}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAICampaignType(ct.id); } }}
-            style={{
-              background: aiCampaignType === ct.id ? 'rgba(0,200,255,0.12)' : '#0a0f1a',
-              border: `2px solid ${aiCampaignType === ct.id ? '#00e5ff' : 'rgba(0,200,255,0.08)'}`,
-              borderRadius: 8, padding: '10px 12px', cursor: 'pointer', transition: 'all 0.2s',
-            }}
-          >
-            <div style={{ fontSize: 13, fontWeight: 600, color: aiCampaignType === ct.id ? 'rgba(0,200,255,0.7)' : '#e0e6f0' }}>{ct.label}</div>
-            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 2 }}>{ct.desc}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Generate button */}
-      <button
-        onClick={handleAIGenerate}
-        disabled={!aiCampaignType || aiGenerating}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8, background: aiCampaignType && !aiGenerating ? '#00e5ff' : '#4b5563',
-          color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 600,
-          cursor: aiCampaignType && !aiGenerating ? 'pointer' : 'not-allowed', width: '100%', justifyContent: 'center',
-        }}
-      >
-        {aiGenerating ? <><FontAwesomeIcon icon={faSpinner} spin /> Analyzing {selectedDomain} &amp; generating 5 variations...</> : <><FontAwesomeIcon icon={faMagic} /> Generate 5 Variations</>}
-      </button>
-
-      {aiError && (
-        <div style={{ marginTop: 12, background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', color: '#ff8a80', fontSize: 13 }}>
-          <FontAwesomeIcon icon={faExclamationTriangle} /> {aiError}
-        </div>
-      )}
-
-      {/* Generated variations */}
-      {aiVariations.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ color: 'rgba(0,200,255,0.7)', fontSize: 13, fontWeight: 600 }}>Select variations to use ({aiSelectedIdxs.length} selected)</span>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                onClick={handleAISaveToLibrary}
-                disabled={aiSelectedIdxs.length === 0 || aiSaving}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 && !aiSaving ? '#0d1526' : 'transparent', color: aiSelectedIdxs.length > 0 ? '#10b981' : '#4b5563', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
-              >
-                <FontAwesomeIcon icon={aiSaving ? faSpinner : faSave} spin={aiSaving} /> Save to Library
-              </button>
-              <button
-                onClick={handleAIUseSelected}
-                disabled={aiSelectedIdxs.length === 0}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, background: aiSelectedIdxs.length > 0 ? '#00e5ff' : '#4b5563', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: aiSelectedIdxs.length > 0 ? 'pointer' : 'default' }}
-              >
-                <FontAwesomeIcon icon={faCheck} /> Use Selected
-              </button>
-            </div>
-          </div>
-
-          <div className="ig-scale-in" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 10 }}>
-            {aiVariations.map((v: any, idx: number) => {
-              const isSelected = aiSelectedIdxs.includes(idx);
-              return (
-                <div
-                  key={idx}
-                  onClick={() => setAISelectedIdxs(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx])}
+      {/* Sending profile — the ROUTE. A domain can carry several active
+          profiles (m.discountblog.com has four: SES tenant, SES relay and two
+          legacy rows). The server's by-domain lookup takes the most recently
+          created one, so an SES route is only deterministic when pinned. */}
+      {selectedDomain && (
+        <div style={{ marginTop: 20 }}>
+          <h3 style={{ margin: '0 0 4px' }}>Sending profile (route)</h3>
+          <p style={{ margin: '0 0 10px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+            Pin the profile this campaign sends through. Leave on auto only when the domain has a
+            single active profile.
+          </p>
+          {(() => {
+            const profiles = sendingDomains.find(d => d.domain === selectedDomain)?.profiles || [];
+            const ambiguous = profiles.length > 1 && !selectedProfileId;
+            return (
+              <>
+                <select
+                  aria-label="Select sending profile"
+                  value={selectedProfileId}
+                  onChange={e => setSelectedProfileId(e.target.value)}
                   style={{
-                    background: isSelected ? 'rgba(0,200,255,0.08)' : '#0a0f1a',
-                    border: `2px solid ${isSelected ? '#00e5ff' : 'rgba(0,200,255,0.08)'}`,
-                    borderRadius: 10, padding: 14, cursor: 'pointer', transition: 'all 0.2s', position: 'relative',
+                    background: '#0d1526', color: '#e0e6f0',
+                    border: `2px solid ${ambiguous ? 'rgba(245,158,11,0.5)' : 'rgba(0,200,255,0.15)'}`,
+                    borderRadius: 8, padding: '8px 10px', fontSize: 13, minWidth: 380,
                   }}
                 >
-                  {isSelected && (
-                    <div style={{ position: 'absolute', top: 8, right: 8, background: '#00e5ff', borderRadius: '50%', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <FontAwesomeIcon icon={faCheck} style={{ color: '#fff', fontSize: 11 }} />
-                    </div>
-                  )}
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'rgba(0,200,255,0.7)', marginBottom: 8 }}>Variant {v.variant_name}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 4 }}>From: <span style={{ color: '#e0e6f0' }}>{v.from_name}</span></div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 10 }}>Subject: <span style={{ color: '#e0e6f0' }}>{v.subject}</span></div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setAIPreviewIdx(aiPreviewIdx === idx ? null : idx); }}
-                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: '#0d1526', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '6px 0', fontSize: 11, cursor: 'pointer' }}
-                    >
-                      <FontAwesomeIcon icon={faEye} /> Preview
-                    </button>
+                  <option value="">Auto — most recently created active profile</option>
+                  {profiles.map(pr => (
+                    <option key={pr.id} value={pr.id}>
+                      [{pr.transport.toUpperCase()}] {pr.name}{pr.from_name ? ` — ${pr.from_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+                {profiles.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 8 }}>
+                    <FontAwesomeIcon icon={faExclamationTriangle} /> No active profile is registered for
+                    this domain — the deploy preflight will reject it.
                   </div>
-                  {aiPreviewIdx === idx && (
-                    <div style={{ marginTop: 10, background: '#fff', borderRadius: 8, overflow: 'hidden', maxHeight: 300, overflowY: 'auto' }}>
-                      <iframe
-                        srcDoc={v.html_content}
-                        title={`Preview ${v.variant_name}`}
-                        style={{ width: '100%', height: 280, border: 'none' }}
-                        sandbox="allow-same-origin"
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                )}
+                {ambiguous && (
+                  <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 8 }}>
+                    <FontAwesomeIcon icon={faExclamationTriangle} /> {profiles.length} active profiles
+                    exist for {selectedDomain}. Pin one — auto-resolution is non-deterministic and can
+                    silently pick the wrong transport.
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
   );
 
-  const renderStep3 = () => (
-    <div className="wiz-step-content ig-fade-in">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div>
-          <h3 style={{ margin: 0 }}>Content + A/B Split Testing</h3>
-          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>Configure from-names, subject lines, and content. Add variants for A/B testing.</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="ig-btn-cyber" onClick={() => { setShowAIGenerator(!showAIGenerator); setShowTemplatePicker(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'linear-gradient(135deg, #00e5ff, #00b0ff)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600 }}>
-            <FontAwesomeIcon icon={faMagic} /> Generate
-          </button>
-          <button onClick={() => { setShowTemplatePicker(!showTemplatePicker); setShowAIGenerator(false); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#0d1526', color: '#00b0ff', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
-            <FontAwesomeIcon icon={faPenFancy} /> Load Template
-          </button>
-          {variants.length < 4 && (
-            <button onClick={addVariant} style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 13, cursor: 'pointer' }}>
-              <FontAwesomeIcon icon={faPlus} /> Add Variant
-            </button>
-          )}
-        </div>
-      </div>
-      <StepErrorBanner stepNum={3} />
-
-      <div
-        style={{
-          background: contentLocked ? 'rgba(245, 158, 11, 0.08)' : '#0d1526',
-          border: `1px solid ${contentLocked ? 'rgba(245, 158, 11, 0.5)' : 'rgba(0,200,255,0.08)'}`,
-          borderRadius: 10,
-          padding: 14,
-          marginBottom: 16,
-          display: 'flex',
-          alignItems: 'flex-start',
-          gap: 12,
-        }}
-      >
-        <div style={{ flex: '0 0 auto', paddingTop: 2 }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={contentLocked}
-              onChange={(e) => setContentLocked(e.target.checked)}
-              style={{
-                width: 18,
-                height: 18,
-                cursor: 'pointer',
-                accentColor: '#f59e0b',
-              }}
-            />
-          </label>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <FontAwesomeIcon icon={faLock} style={{ color: contentLocked ? '#f59e0b' : 'rgba(180,210,240,0.5)', fontSize: 13 }} />
-            <strong style={{ color: contentLocked ? '#f59e0b' : '#e0e6f0', fontSize: 14 }}>
-              Lock Creative Content (Strict Advertiser Mode)
-            </strong>
-          </div>
-          <p style={{ margin: 0, color: 'rgba(180,210,240,0.7)', fontSize: 12, lineHeight: 1.5 }}>
-            {contentLocked
-              ? 'LOCKED — every recipient receives the approved subject and HTML exactly as written. Per-recipient content variation is disabled. Link safety and URL cleanup remain on.'
-              : 'Unlocked — small per-recipient variations are applied to the subject and HTML to improve deliverability. Enable this only when the advertiser requires the approved creative to be delivered exactly as written (e.g. brand-compliance partners).'}
+  const renderStep3 = () => {
+    const v = variants[0];
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ margin: 0 }}>Offer + Creative</h3>
+          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+            Creative, subject, preheader and from-name come from the Creative Studio offers library.
+            Nothing outside the approved pools can be scheduled here.
           </p>
         </div>
-      </div>
+        <StepErrorBanner stepNum={3} />
 
-      {showTemplatePicker && (
-        <div style={{ background: '#0d1526', border: '1px solid #00b0ff', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-          <h4 style={{ margin: '0 0 12px', color: '#00b0ff', fontSize: 14 }}>Content Library — Select a Template</h4>
-          {templates.length === 0 ? (
-            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No templates saved yet. Create templates in the Content Library tab.</p>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 10 }}>
-              {templates.map((tpl: any) => (
-                <div key={tpl.id} style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 12, cursor: 'pointer', transition: 'border-color 0.2s' }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#00b0ff')}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(0,200,255,0.08)')}>
-                  <strong style={{ color: '#e0e6f0', fontSize: 13, display: 'block', marginBottom: 4 }}>{tpl.name}</strong>
-                  <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{tpl.subject || tpl.description || 'No subject'}</span>
-                  <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
-                    {variants.map((v, idx) => (
-                      <button key={idx} onClick={() => loadTemplate(tpl, idx)}
-                        style={{ fontSize: 11, background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 8px', cursor: 'pointer' }}>
-                        {String.fromCodePoint(0x2192)} Variant {v.variant_name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+        <OfferCreativePicker
+          apiBase={API_BASE}
+          orgFetch={(url, opts) => orgFetch(url, orgId, opts)}
+          sendingDomain={selectedDomain}
+          brandRoot={engagementTiers?.brand_root || ''}
+          offers={offersCatalog}
+          offersError={offersError}
+          selectedOfferId={selectedOfferId}
+          onOfferChange={setSelectedOfferId}
+          proofId={selectedProofId}
+          subject={v?.subject || ''}
+          preheader={v?.preview_text || ''}
+          fromName={v?.from_name || ''}
+          hasHtml={!!v?.html_content}
+          profileFromName={sendingDomains.find(d => d.domain === selectedDomain)?.from_name}
+          onApply={sel => {
+            setSelectedProofId(sel.proofId);
+            setSelectedProofName(sel.proofName);
+            // Approved creative ships byte-faithful unless the operator opts
+            // out — the same posture the board compiles (content_locked: true).
+            setContentLocked(true);
+            setVariants([{
+              variant_name: 'A',
+              from_name: sel.fromName,
+              subject: sel.subject,
+              preview_text: sel.preheader,
+              html_content: sel.html,
+              split_percent: 100,
+            }]);
+          }}
+          onFieldChange={f => {
+            setVariants(prev => {
+              const base = prev[0] || { variant_name: 'A', from_name: '', subject: '', preview_text: '', html_content: '', split_percent: 100 };
+              return [{
+                ...base,
+                subject: f.subject !== undefined ? f.subject : base.subject,
+                preview_text: f.preheader !== undefined ? f.preheader : base.preview_text,
+                from_name: f.fromName !== undefined ? f.fromName : base.from_name,
+              }];
+            });
+          }}
+        />
 
-      {showAIGenerator && renderAIGenerator()}
-
-      {variants.map((v, idx) => (
-        <div key={idx} className="ig-card-hover" style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 16, marginBottom: 12, position: 'relative' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: '#00b0ff' }}>Variant {v.variant_name}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <label style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                Split:
-                <input
-                  type="number" min={1} max={100} value={v.split_percent}
-                  onChange={e => updateVariant(idx, 'split_percent', Number(e.target.value))}
-                  style={{ width: 50, background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '4px 6px', fontSize: 12, textAlign: 'center' }}
-                />%
-              </label>
-              {variants.length > 1 && (
-                <button onClick={() => removeVariant(idx)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14 }}>
-                  <FontAwesomeIcon icon={faTimes} />
-                </button>
-              )}
-            </div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
-            <div>
-              <label style={{ fontSize: 11, color: showErr(3) && !v.from_name.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>From Name<RequiredDot /></label>
-              <input
-                value={v.from_name} placeholder="e.g. Jarvis Team"
-                onChange={e => updateVariant(idx, 'from_name', e.target.value)}
-                style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.from_name.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
-              />
-              {showErr(3) && !v.from_name.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Required</div>}
-            </div>
-            <div>
-              <label style={{ fontSize: 11, color: showErr(3) && !v.subject.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Subject Line<RequiredDot /> <span style={{ color: '#64748b' }}>({v.subject.length} chars)</span></label>
-              <input
-                value={v.subject} placeholder="e.g. Don't miss this deal"
-                onChange={e => updateVariant(idx, 'subject', e.target.value)}
-                style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.subject.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
-              />
-              {showErr(3) && !v.subject.trim()
-                ? <div style={{ fontSize: 10, color: '#ef4444', marginTop: 2 }}>Required</div>
-                : <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid: {'{{ first_name }}'}, {'{{ last_name }}'}, {'{{ email }}'}</div>
-              }
-            </div>
-          </div>
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Pre-header <span style={{ color: '#64748b' }}>({v.preview_text.length}/150 chars)</span></label>
-            <input
-              value={v.preview_text} placeholder="Preview text shown in inbox before opening"
-              onChange={e => updateVariant(idx, 'preview_text', e.target.value)}
-              maxLength={150}
-              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 13, boxSizing: 'border-box' }}
-            />
-            <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>Supports Liquid tags. Shown as email preview text in inbox.</div>
-          </div>
-
-          {/* AI Subject + Preheader Suggest */}
-          <div style={{ marginBottom: 10 }}>
-            <button
-              onClick={() => {
-                if (aiSuggestingIdx === idx) { setAISuggestingIdx(null); setAISuggestions([]); setAISuggestError(''); }
-                else handleAISuggestSubjectPreheader(idx);
-              }}
-              disabled={!selectedDomain || (aiSuggestingIdx === idx && aiSuggestions.length === 0 && !aiSuggestError)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6,
-                background: aiSuggestingIdx === idx && aiSuggestions.length > 0 ? 'rgba(0,200,255,0.08)' : 'linear-gradient(135deg, rgba(0,229,255,0.10), rgba(0,176,255,0.10))',
-                color: !selectedDomain ? '#4b5563' : '#00e5ff',
-                border: `1px solid ${aiSuggestingIdx === idx && aiSuggestions.length > 0 ? '#00e5ff' : 'rgba(0,200,255,0.15)'}`,
-                borderRadius: 8, padding: '6px 14px', fontSize: 12, fontWeight: 600,
-                cursor: !selectedDomain ? 'not-allowed' : 'pointer', transition: 'all 0.2s',
-              }}
-            >
-              {aiSuggestingIdx === idx && aiSuggestions.length === 0 && !aiSuggestError
-                ? <><FontAwesomeIcon icon={faSpinner} spin /> Generating with Claude...</>
-                : aiSuggestingIdx === idx
-                  ? <><FontAwesomeIcon icon={faTimes} /> Dismiss Suggestions</>
-                  : <><FontAwesomeIcon icon={faMagic} /> AI Suggest Subject + Preview Text</>
-              }
-            </button>
-
-            {aiSuggestError && aiSuggestingIdx === idx && (
-              <div style={{ marginTop: 8, background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '8px 12px', color: '#ff8a80', fontSize: 12 }}>
-                <FontAwesomeIcon icon={faExclamationTriangle} /> {aiSuggestError}
-              </div>
-            )}
-
-            {aiSuggestions.length > 0 && aiSuggestingIdx === idx && (
-              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div style={{ fontSize: 11, color: 'rgba(0,200,255,0.6)', fontWeight: 600, marginBottom: 2 }}>Click a suggestion to apply:</div>
-                {aiSuggestions.map((s, si) => (
-                  <div
-                    key={si}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => handleApplySuggestion(idx, s)}
-                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleApplySuggestion(idx, s); } }}
-                    style={{
-                      background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 8,
-                      padding: '10px 12px', cursor: 'pointer', transition: 'all 0.15s',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = '#00e5ff'; (e.currentTarget as HTMLDivElement).style.background = 'rgba(0,200,255,0.04)'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(0,200,255,0.12)'; (e.currentTarget as HTMLDivElement).style.background = '#0a0f1a'; }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.5px',
-                        color: s.category === 'urgency' ? '#f59e0b' : s.category === 'curiosity' ? '#a78bfa' : s.category === 'benefit' ? '#10b981' : s.category === 'question' ? '#38bdf8' : s.category === 'social_proof' ? '#ec4899' : '#00e5ff',
-                        background: s.category === 'urgency' ? 'rgba(245,158,11,0.1)' : s.category === 'curiosity' ? 'rgba(167,139,250,0.1)' : s.category === 'benefit' ? 'rgba(16,185,129,0.1)' : s.category === 'question' ? 'rgba(56,189,248,0.1)' : s.category === 'social_proof' ? 'rgba(236,72,153,0.1)' : 'rgba(0,229,255,0.1)',
-                        padding: '2px 6px', borderRadius: 4,
-                      }}>{s.category}</span>
-                      {s.subject_length != null && (
-                        <span style={{ fontSize: 10, color: (s.subject_length || 0) > 50 ? '#f59e0b' : '#64748b', fontWeight: 600 }}>
-                          {s.subject_length} chars
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0', marginBottom: 2 }}>{s.subject}</div>
-                    {s.plain_subject && s.plain_subject !== s.subject && (
-                      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.35)', marginBottom: 3, fontStyle: 'italic' }}>Inbox preview: {s.plain_subject}</div>
-                    )}
-                    <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>{s.preview_text}</div>
-                    {s.reasoning && <div style={{ fontSize: 10, color: '#64748b', marginTop: 4, fontStyle: 'italic' }}>{s.reasoning}</div>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* HTML Content with merge tag toolbar, upload, and preview */}
+        {/* content_locked — ship the approved creative byte-faithful. The board
+            sets this on every campaign it compiles; the wizard defaults it on
+            as soon as an approved proof is selected. */}
+        <div style={{
+          background: contentLocked ? 'rgba(245,158,11,0.08)' : '#0d1526',
+          border: `1px solid ${contentLocked ? 'rgba(245,158,11,0.5)' : 'rgba(0,200,255,0.08)'}`,
+          borderRadius: 10, padding: 14, display: 'flex', alignItems: 'flex-start', gap: 12,
+        }}>
+          <input
+            type="checkbox"
+            checked={contentLocked}
+            onChange={e => setContentLocked(e.target.checked)}
+            style={{ width: 18, height: 18, cursor: 'pointer', marginTop: 2, accentColor: '#f59e0b' }}
+          />
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 11, color: showErr(3) && !v.html_content.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)' }}>HTML Content<RequiredDot /></label>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                {/* Upload HTML file */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: 'rgba(180,210,240,0.65)', cursor: 'pointer' }}>
-                  <FontAwesomeIcon icon={faUpload} />
-                  Upload HTML
-                  <input
-                    type="file" accept=".html,.htm" style={{ display: 'none' }}
-                    onChange={e => { const f = e.target.files?.[0]; if (f) handleHTMLFileUpload(idx, f); e.target.value = ''; }}
-                  />
-                </label>
-                {/* Preview toggle */}
-                <button
-                  onClick={() => toggleVariantPreview(idx)}
-                  style={{ display: 'flex', alignItems: 'center', gap: 4, background: variantPreviews[idx] ? 'rgba(0,200,255,0.12)' : '#0a0f1a', color: variantPreviews[idx] ? '#00b0ff' : 'rgba(180,210,240,0.65)', border: `1px solid ${variantPreviews[idx] ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}
-                >
-                  <FontAwesomeIcon icon={faEye} /> {variantPreviews[idx] ? 'Hide Preview' : 'Preview'}
-                </button>
-              </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: contentLocked ? '#f59e0b' : '#e0e6f0' }}>
+              <FontAwesomeIcon icon={faLock} style={{ marginRight: 6, fontSize: 11 }} />
+              Lock content (ship the approved creative byte-faithful)
             </div>
-
-            {/* Merge tag quick-insert toolbar */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600, marginRight: 4 }}>
-                <FontAwesomeIcon icon={faCode} /> Insert Tag:
-              </span>
-              {[
-                { label: 'First Name', syntax: '{{ first_name | default: "there" }}' },
-                { label: 'Email', syntax: '{{ email }}' },
-                { label: 'Company', syntax: '{{ custom.company }}' },
-                { label: 'Unsubscribe', syntax: '{{ system.unsubscribe_url }}' },
-                { label: 'Preferences', syntax: '{{ system.preferences_url }}' },
-              ].map(tag => (
-                <button
-                  key={tag.label}
-                  onClick={() => insertTagAtCursor(idx, tag.syntax)}
-                  title={tag.syntax}
-                  style={{ padding: '3px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500, background: 'rgba(0,200,255,0.08)', color: 'rgba(0,200,255,0.7)', border: '1px solid #3d3e4e', cursor: 'pointer', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,200,255,0.19)'; e.currentTarget.style.borderColor = '#00b0ff'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,200,255,0.08)'; e.currentTarget.style.borderColor = '#3d3e4e'; }}
-                >
-                  {tag.label}
-                </button>
-              ))}
+            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginTop: 3 }}>
+              The wave dispatcher skips its subject and HTML fingerprint mutations. Honeypot
+              injection and URL sanitisation still run. Required by strict advertisers, and the
+              default for anything sourced from an approved proof.
             </div>
-
-            <textarea
-              ref={el => { textareaRefs.current[idx] = el; }}
-              value={v.html_content} rows={12} placeholder="Paste or type HTML content here, or upload an .html file above..."
-              onChange={e => updateVariant(idx, 'html_content', e.target.value)}
-              style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!v.html_content.trim()), borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', minHeight: 150, transition: 'border-color 0.2s' }}
-            />
-            {showErr(3) && !v.html_content.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>HTML content is required</div>}
-
-            {/* Show detected liquid tags */}
-            {v.html_content.match(/\{\{[^}]+\}\}/g) && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>Detected tags:</span>
-                {[...new Set(v.html_content.match(/\{\{[^}]+\}\}/g) || [])].slice(0, 10).map((tag, i) => (
-                  <code key={i} style={{ padding: '2px 6px', borderRadius: 4, fontSize: 10, background: '#10b98115', color: '#10b981', border: '1px solid #10b98130' }}>{tag}</code>
-                ))}
-              </div>
-            )}
-
-            {/* Inline preview */}
-            {variantPreviews[idx] && v.html_content.trim() && (
-              <div style={{ marginTop: 10, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(0,200,255,0.08)' }}>
-                <div style={{ background: 'rgba(0,200,255,0.08)', padding: '6px 10px', fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>HTML Preview</span>
-                  <span style={{ fontSize: 10, color: '#64748b' }}>Liquid tags shown as raw text (resolved at send time)</span>
-                </div>
-                <div style={{ background: '#fff' }}>
-                  <iframe
-                    srcDoc={v.html_content}
-                    title={`Preview Variant ${v.variant_name}`}
-                    style={{ width: '100%', height: 400, border: 'none' }}
-                    sandbox="allow-same-origin"
-                  />
-                </div>
-              </div>
-            )}
           </div>
         </div>
-      ))}
 
-      {/* Split validation */}
-      {(() => {
-        const total = variants.reduce((s, v) => s + v.split_percent, 0);
-        if (Math.abs(total - 100) >= 1) {
-          return (
-            <div style={{ padding: '8px 12px', background: '#ef444415', borderRadius: 8, fontSize: 12, color: '#ef4444' }}>
-              <FontAwesomeIcon icon={faExclamationTriangle} /> Split percentages sum to {total}% — must equal 100%.
-            </div>
-          );
-        }
-        return null;
-      })()}
-    </div>
-  );
+        {selectedProofName && (
+          <div style={{ marginTop: 12, fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+            Shipping <strong style={{ color: '#e0e6f0' }}>{selectedProofName}</strong>
+            {v?.html_content ? ` · ${v.html_content.length.toLocaleString()} bytes of approved HTML` : ''}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderStep4 = () => {
     const totalSelected = selectedLists.length + selectedSegments.length;
@@ -2974,6 +2729,53 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           Build your target audience and apply suppression filters.
         </p>
         <StepErrorBanner stepNum={4} />
+
+        <EngagementTierPicker
+          tiers={engagementTiers}
+          loading={engagementLoading}
+          error={engagementError}
+          selectedClickerIds={selectedClickerIds}
+          selectedOpenerIds={selectedOpenerIds}
+          onToggle={toggleEngagementTier}
+          excludeClickers={excludeClickers}
+          onExcludeClickersChange={setExcludeClickers}
+          onRetry={() => setEngagementReloadKey(k => k + 1)}
+        />
+
+        {/* Volume posture. The engaged tier is UNCAPPED and audience-bound by
+            standing doctrine — capping it is the exception and needs a reason. */}
+        <div style={{
+          background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)',
+          borderRadius: 10, padding: 14, marginBottom: 16,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={audienceBound}
+                   onChange={e => { setAudienceBound(e.target.checked); if (e.target.checked) setMasterTopUp(false); }}
+                   style={{ marginTop: 2, width: 15, height: 15, cursor: 'pointer' }} />
+            <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.8)' }}>
+              <strong style={{ color: '#e0e6f0' }}>Mail the whole selected audience</strong> — no per-ISP
+              cap (volume 0 = audience-bound). This is the standing engaged-tier default; the
+              per-provider quotas on step 1 are ignored while it is on.
+            </span>
+          </label>
+
+          <label style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10,
+            cursor: audienceBound ? 'default' : 'pointer', opacity: audienceBound ? 0.45 : 1,
+          }}>
+            <input type="checkbox" checked={masterTopUp && !audienceBound} disabled={audienceBound}
+                   onChange={e => setMasterTopUp(e.target.checked)}
+                   style={{ marginTop: 2, width: 15, height: 15, cursor: audienceBound ? 'default' : 'pointer' }} />
+            <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
+              Top up from the master list when the selected audience does not fill the per-ISP
+              quotas.{' '}
+              {audienceBound
+                ? <em style={{ color: '#f59e0b' }}>Unavailable while the send is audience-bound — with no
+                    quota to stop at, the top-up would stream the entire sending domain.</em>
+                : 'Sources the remainder from mailing_subscriber_domain_state for this sending domain.'}
+            </span>
+          </label>
+        </div>
 
         {audienceError && (
           <div style={{ background: '#3b1a1a', border: '1px solid #e53935', borderRadius: 8, padding: '10px 14px', marginBottom: 16, color: '#ff8a80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3704,6 +3506,53 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
       <StepErrorBanner stepNum={6} />
+
+      {/* ── Send-day anchors ─────────────────────────────────────────────
+          The engaged tiers mail FIRST so they warm the inbox/IP before
+          anything else arrives. Presets set the anchor, window and pacing the
+          board compiles; every control below stays editable. */}
+      <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+          <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>Send-day anchor</h4>
+          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)' }}>{SEND_DAY_TIMEZONE}</span>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {ANCHOR_PRESETS.map(preset => (
+            <button key={preset.id} type="button" onClick={() => applyAnchorPreset(preset)}
+              title={preset.hint}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                padding: '8px 12px', cursor: 'pointer', borderRadius: 8, textAlign: 'left',
+                background: activePreset === preset.id ? 'rgba(0,176,255,0.14)' : '#0a0f1a',
+                border: `1.5px solid ${activePreset === preset.id ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
+              }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: activePreset === preset.id ? '#00b0ff' : '#e0e6f0' }}>{preset.label}</span>
+              <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.55)' }}>{preset.localTime} MT · {preset.windowHours}h window</span>
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Campaign timezone</label>
+            <input value={campaignTimezone} onChange={e => setCampaignTimezone(e.target.value)}
+              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Throttle profile</label>
+            <select value={throttleStrategy} onChange={e => setThrottleStrategy(e.target.value)}
+              style={{ width: '100%', background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12 }}>
+              {THROTTLE_STRATEGIES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)', marginTop: 6 }}>
+          The throttle profile is recorded on the plan for audit. Actual pacing is
+          window ÷ interval: a {globalScheduleDuration}h window at every{' '}
+          {globalScheduleInterval} min produces about{' '}
+          {Math.max(4, Math.floor((globalScheduleDuration * 60) / Math.max(1, globalScheduleInterval)) + 1)} waves per provider,
+          each sized automatically from the audience that actually qualifies.
+        </div>
+      </div>
       {loadingDraft && (
         <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(0,176,255,0.08)', border: '1px solid rgba(0,176,255,0.18)', borderRadius: 8, fontSize: 12, color: '#7dd3fc' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading saved draft state...
@@ -3726,6 +3575,46 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </div>
       )}
 
+      {gateFailure && (
+        <div style={{ marginBottom: 16, padding: 14, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#f59e0b', marginBottom: 6 }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} /> {gateFailure.error}
+          </div>
+          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', marginBottom: 10 }}>
+            The send-day gates are a board discipline, not a code error. Clear the gate, or deploy
+            anyway with a reason — every override is audit-logged.
+          </div>
+          {gateFailure.failed_gates.map((g: any, i: number) => (
+            <div key={i} style={{ fontSize: 12, color: '#e0e6f0', padding: '4px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(245,158,11,0.15)' }}>
+              <strong>Gate {g.Gate || g.gate}</strong> — {g.Name || g.name}
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{g.Detail || g.detail}</div>
+            </div>
+          ))}
+          <input
+            value={gateOverrideReason}
+            onChange={e => setGateOverrideReason(e.target.value)}
+            placeholder="Why must this deploy proceed? (recorded in the audit log)"
+            style={{ width: '100%', marginTop: 10, background: '#0a0f1a', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, color: '#e0e6f0', padding: '8px 10px', fontSize: 12, boxSizing: 'border-box' }}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              onClick={() => handleDeploy(gateOverrideReason)}
+              disabled={deploying || gateOverrideReason.trim().length < 10}
+              style={{
+                background: gateOverrideReason.trim().length >= 10 ? '#f59e0b' : 'rgba(245,158,11,0.25)',
+                color: '#0a0f1a', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 12,
+                fontWeight: 600, cursor: gateOverrideReason.trim().length >= 10 ? 'pointer' : 'default',
+              }}>
+              {deploying ? 'Deploying…' : 'Deploy with override'}
+            </button>
+            <button onClick={() => { setGateFailure(null); setGateOverrideReason(''); }}
+              style={{ background: 'transparent', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.12)', borderRadius: 6, padding: '7px 16px', fontSize: 12, cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {deployResult ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           {deployResult.error ? (
@@ -3734,7 +3623,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               <h3>Deploy Failed</h3>
               <p>{deployResult.error}</p>
               <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 16 }}>
-                <button onClick={handleDeploy} disabled={deploying}
+                <button onClick={() => handleDeploy()} disabled={deploying}
                   style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
                   {deploying ? 'Retrying…' : 'Retry Deploy'}
                 </button>

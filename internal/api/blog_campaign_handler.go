@@ -22,11 +22,11 @@ type BlogCampaignInput struct {
 }
 
 type blogBrandConfig struct {
-	BrandName    string
-	FromName     string
-	SeedListIDs  []string
-	SegmentIDs   []string // 7D Openers, 14D Clickers
-	TargetISPs   []engine.ISP
+	BrandName   string
+	FromName    string
+	SeedListIDs []string
+	SegmentIDs  []string // 7D Openers, 14D Clickers
+	TargetISPs  []engine.ISP
 }
 
 var blogBrandConfigs = map[string]blogBrandConfig{
@@ -93,6 +93,10 @@ var defaultBlogTargetISPs = []engine.ISP{
 	"comcast", "att", "cox", "charter",
 }
 
+// blogSegmentBoundAudience is the addressable false used for
+// PMTACampaignInput.UseMasterSelection (a *bool).
+var blogSegmentBoundAudience = false
+
 // buildBlogCampaignInput expands a minimal blog payload into a full
 // PMTACampaignInput. Pure function — no DB or HTTP dependency.
 func buildBlogCampaignInput(input BlogCampaignInput) (engine.PMTACampaignInput, error) {
@@ -145,7 +149,16 @@ func buildBlogCampaignInput(input BlogCampaignInput) (engine.PMTACampaignInput, 
 		Timezone:          "America/Boise",
 		ThrottleStrategy:  "auto",
 		RandomizeAudience: false,
-		// ISPQuotas intentionally empty → Quota=0 → unlimited (no truncation)
+		// ISPQuotas intentionally empty → Quota=0 → unlimited (no truncation).
+		//
+		// Because every quota is 0, use_master_selection MUST be explicitly
+		// false: the column defaults to TRUE, and on the master-selection path
+		// the planner drains these segments and then tops the audience up from
+		// mailing_subscriber_domain_state until every ISP quota is met — which,
+		// with no finite quota anywhere, never happens. The result is the whole
+		// sending domain mailed on top of the two engaged segments. This is an
+		// ENGAGED-AUDIENCE campaign; the segments are the audience.
+		UseMasterSelection: &blogSegmentBoundAudience,
 	}, nil
 }
 

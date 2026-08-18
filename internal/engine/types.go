@@ -581,6 +581,22 @@ type CampaignIntelResponse struct {
 	TurbulenceAlerts []TurbulenceAlert `json:"turbulence_alerts"`
 }
 
+// SendingProfileOption is one selectable route for a sending domain. A domain
+// can carry several active profiles (e.g. m.discountblog.com has an SES-tenant
+// profile, an SES relay profile and two legacy rows), which makes the
+// by-domain auto-lookup ambiguous — the caller must pin one via
+// PMTACampaignInput.SendingProfileID to route deterministically.
+type SendingProfileOption struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	FromName  string `json:"from_name,omitempty"`
+	FromEmail string `json:"from_email,omitempty"`
+	// Transport is derived, not stored: "ses" when via_ses is set, "kumo" when
+	// routing_mode='kumo', otherwise "pmta".
+	Transport string `json:"transport"`
+	IsDefault bool   `json:"is_default"`
+}
+
 // SendingDomainInfo describes a PMTA sending domain with its infrastructure.
 type SendingDomainInfo struct {
 	Domain          string   `json:"domain"`
@@ -595,6 +611,9 @@ type SendingDomainInfo struct {
 	WarmupIPs       int      `json:"warmup_ips"`
 	ReputationScore float64  `json:"reputation_score"`
 	Status          string   `json:"status"` // active, degraded, inactive
+	// Profiles lists every active sending profile bound to this domain so the
+	// caller can pin one. Omitted when the domain has none.
+	Profiles []SendingProfileOption `json:"profiles,omitempty"`
 }
 
 // PriorityItem represents a single list or segment in the unified send order.

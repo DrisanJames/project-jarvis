@@ -143,6 +143,10 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// PUT /api/mailing/data-partners/datasets/{id}/isp-distribution —
 		// no second writer.
 		cr.Get("/property-ledger/throttle", s.HandleLaneThrottle)
+		// Engagement grid for the Campaign Manager audience step: clickers /
+		// openers by recency window for the property behind a sending domain
+		// (handlers_pmta_campaign_engagement.go). Read-only.
+		cr.Get("/engagement-tiers", s.HandleEngagementTiers)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)
@@ -210,11 +214,23 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 		poolPrefix string
 	}
 	profileMap := make(map[string]profileInfo)
+	// Every active profile per domain, most recent first. The first row still
+	// supplies the domain-level from_name/pool (byte-identical to the previous
+	// behavior); the full list is returned so the wizard can PIN one, because a
+	// domain with several active profiles (m.discountblog.com has four) has no
+	// deterministic by-domain resolution.
+	profileOptions := make(map[string][]engine.SendingProfileOption)
 	pfRows, pfErr := s.db.QueryContext(ctx, `
 		SELECT sending_domain,
+		       id::text,
+		       COALESCE(name, ''),
 		       COALESCE(from_name, ''),
+		       COALESCE(from_email, ''),
 		       COALESCE(ip_pool, ''),
-		       COALESCE(pool_prefix, '')
+		       COALESCE(pool_prefix, ''),
+		       COALESCE(via_ses, false),
+		       COALESCE(routing_mode, ''),
+		       COALESCE(is_default, false)
 		FROM mailing_sending_profiles
 		WHERE organization_id = $1 AND vendor_type = 'pmta' AND status = 'active'
 		  AND sending_domain IS NOT NULL AND sending_domain != ''
@@ -222,11 +238,27 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 	`, orgID)
 	if pfErr == nil {
 		for pfRows.Next() {
-			var dom, fn, pool, pfx string
-			if pfRows.Scan(&dom, &fn, &pool, &pfx) == nil {
+			var dom, id, nm, fn, fe, pool, pfx, routingMode string
+			var viaSES, isDefault bool
+			if pfRows.Scan(&dom, &id, &nm, &fn, &fe, &pool, &pfx, &viaSES, &routingMode, &isDefault) == nil {
 				if _, exists := profileMap[dom]; !exists {
 					profileMap[dom] = profileInfo{fromName: fn, ipPool: pool, poolPrefix: pfx}
 				}
+				transport := "pmta"
+				switch {
+				case viaSES:
+					transport = "ses"
+				case strings.EqualFold(routingMode, "kumo"):
+					transport = "kumo"
+				}
+				profileOptions[dom] = append(profileOptions[dom], engine.SendingProfileOption{
+					ID:        id,
+					Name:      nm,
+					FromName:  fn,
+					FromEmail: fe,
+					Transport: transport,
+					IsDefault: isDefault,
+				})
 			}
 		}
 		pfRows.Close()
@@ -340,6 +372,7 @@ func (s *PMTACampaignService) HandleSendingDomains(w http.ResponseWriter, r *htt
 			WarmupIPs:       warmupCount,
 			ReputationScore: repScore,
 			Status:          status,
+			Profiles:        profileOptions[domain],
 		})
 	}
 
@@ -1314,6 +1347,14 @@ func (s *PMTACampaignService) deployFromInput(ctx context.Context, orgID string,
 		return "", "", false, &deployInputError{err.Error()}
 	}
 
+	// Audience-bound + segment-sourced payloads must never ride the
+	// master-selection top-up: with every quota 0 it has no stopping condition
+	// and streams the whole sending domain on top of the chosen segments. The
+	// column defaults to TRUE, so an omitted field is the dangerous case.
+	// Coerced BEFORE reserveCampaignForDeploy writes the row, because the
+	// planner reads the flag back off that row.
+	coerceMasterSelectionForSegmentAudience(&input)
+
 	// Segment-ownership gate (REQ-046): part of normalization — every
 	// referenced segment must belong to the deploying org before a campaign
 	// row is reserved. Foreign IDs map to HTTP 400 via deployInputError.
@@ -1622,6 +1663,11 @@ func (s *PMTACampaignService) HandleDryRunCampaign(w http.ResponseWriter, r *htt
 		respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Same coercion as the real deploy so the dry run previews the audience the
+	// deploy would actually build (planPMTAAudience only reads the flag off a
+	// persisted campaign row, which a dry run has not written).
+	coerceMasterSelectionForSegmentAudience(&input)
 
 	var audienceDB dbQuerier = s.db
 	conn, connErr := s.db.Conn(ctx)
@@ -3169,12 +3215,12 @@ func (s *PMTACampaignService) HandleDeliverabilityRecommendations(w http.Respons
 
 	// Query 1: Per-ISP daily volumes from mailing_campaign_isp_plans (3 days)
 	type ispDayVolume struct {
-		ISP      string `json:"isp"`
-		SendDate string `json:"send_date"`
-		Quota    int    `json:"quota"`
-		Sent     int    `json:"sent"`
-		Failed   int    `json:"failed"`
-		Campaigns int   `json:"campaigns"`
+		ISP       string `json:"isp"`
+		SendDate  string `json:"send_date"`
+		Quota     int    `json:"quota"`
+		Sent      int    `json:"sent"`
+		Failed    int    `json:"failed"`
+		Campaigns int    `json:"campaigns"`
 	}
 	var volumes []ispDayVolume
 
@@ -3208,15 +3254,15 @@ func (s *PMTACampaignService) HandleDeliverabilityRecommendations(w http.Respons
 
 	// Query 2: Campaign-level engagement metrics (3 days, same domain)
 	type campaignMetric struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		SendDate     string `json:"send_date"`
-		Sent         int    `json:"sent"`
-		Opens        int    `json:"opens"`
-		Clicks       int    `json:"clicks"`
-		HardBounces  int    `json:"hard_bounces"`
-		SoftBounces  int    `json:"soft_bounces"`
-		Complaints   int    `json:"complaints"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		SendDate    string `json:"send_date"`
+		Sent        int    `json:"sent"`
+		Opens       int    `json:"opens"`
+		Clicks      int    `json:"clicks"`
+		HardBounces int    `json:"hard_bounces"`
+		SoftBounces int    `json:"soft_bounces"`
+		Complaints  int    `json:"complaints"`
 	}
 	var campaigns []campaignMetric
 
@@ -3251,10 +3297,10 @@ func (s *PMTACampaignService) HandleDeliverabilityRecommendations(w http.Respons
 
 	if len(volumes) == 0 && len(campaigns) == 0 {
 		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"recommendations":  []interface{}{},
-			"overall_summary":  "No sending data found for " + req.SendingDomain + " in the last 3 days. Set quotas manually based on your warmup plan.",
-			"cautions":         []string{"No historical data available for AI analysis"},
-			"data_context":     map[string]interface{}{"isp_volumes": []interface{}{}, "campaigns": []interface{}{}},
+			"recommendations": []interface{}{},
+			"overall_summary": "No sending data found for " + req.SendingDomain + " in the last 3 days. Set quotas manually based on your warmup plan.",
+			"cautions":        []string{"No historical data available for AI analysis"},
+			"data_context":    map[string]interface{}{"isp_volumes": []interface{}{}, "campaigns": []interface{}{}},
 		})
 		return
 	}
@@ -3398,18 +3444,18 @@ Provide your recommendations as JSON.`, req.SendingDomain, string(volJSON), stri
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		log.Printf("[deliverability-recs] failed to parse AI JSON: %v (raw: %.500s)", err, raw)
 		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"recommendations":  []interface{}{},
-			"overall_summary":  "AI analysis returned an unparseable response. Raw output: " + raw[:min(len(raw), 300)],
-			"cautions":         []string{"AI response could not be parsed"},
-			"data_context":     map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
+			"recommendations": []interface{}{},
+			"overall_summary": "AI analysis returned an unparseable response. Raw output: " + raw[:min(len(raw), 300)],
+			"cautions":        []string{"AI response could not be parsed"},
+			"data_context":    map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
 		})
 		return
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"recommendations":  parsed.Recommendations,
-		"overall_summary":  parsed.OverallSummary,
-		"cautions":         parsed.Cautions,
-		"data_context":     map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
+		"recommendations": parsed.Recommendations,
+		"overall_summary": parsed.OverallSummary,
+		"cautions":        parsed.Cautions,
+		"data_context":    map[string]interface{}{"isp_volumes": volumes, "campaigns": campaigns},
 	})
 }
