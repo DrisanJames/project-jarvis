@@ -258,3 +258,50 @@ func TestApplyBuildLedgerCountsFallsBackOnError(t *testing.T) {
 			got.Count, got.CountIsLive)
 	}
 }
+
+// cancelRateOf must measure TERMINAL outcomes only. Counting in-flight
+// campaigns would make a domain that is mid-send look held back, which is the
+// opposite of the signal this exists to give.
+func TestCancelRateOf(t *testing.T) {
+	cases := []struct {
+		name   string
+		counts map[string]int
+		want   float64
+	}{
+		{
+			// The kumo estate shape measured 2026-08-18: staged then cancelled.
+			name:   "estate held back",
+			counts: map[string]int{"cancelled": 9, "sent": 1},
+			want:   0.9,
+		},
+		{
+			name:   "healthy domain",
+			counts: map[string]int{"sent": 40, "cancelled": 0},
+			want:   0,
+		},
+		{
+			// In-flight work must not dilute or inflate the rate.
+			name:   "in-flight excluded",
+			counts: map[string]int{"cancelled": 1, "sent": 1, "scheduled": 50, "sending": 20, "draft": 8},
+			want:   0.5,
+		},
+		{
+			name:   "nothing terminal yet",
+			counts: map[string]int{"scheduled": 4, "draft": 2},
+			want:   0,
+		},
+		{name: "empty", counts: map[string]int{}, want: 0},
+		{
+			name:   "completed variants count as terminal",
+			counts: map[string]int{"cancelled": 1, "completed": 2, "completed_with_errors": 1},
+			want:   0.25,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cancelRateOf(tc.counts); got != tc.want {
+				t.Fatalf("cancelRateOf(%v) = %v, want %v", tc.counts, got, tc.want)
+			}
+		})
+	}
+}

@@ -147,6 +147,9 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// openers by recency window for the property behind a sending domain
 		// (handlers_pmta_campaign_engagement.go). Read-only.
 		cr.Get("/engagement-tiers", s.HandleEngagementTiers)
+		// Recent campaign outcomes for a sending domain — surfaces an
+		// OPERATIONAL hold (staged-then-cancelled) that no registry records.
+		cr.Get("/domain-send-history", s.HandleDomainSendHistory)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)

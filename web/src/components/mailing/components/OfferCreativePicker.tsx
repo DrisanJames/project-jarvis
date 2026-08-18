@@ -107,13 +107,15 @@ export const OfferCreativePicker: React.FC<Props> = ({
   onApply, onFieldChange, profileFromName, isKumoRoute = false,
 }) => {
   const [proofs, setProofs] = useState<OfferProof[]>([]);
-  const [, setNewsletters] = useState<RegistryCreative[]>([]);  // list render pending (peer WIP); setter keeps fetch path alive
+  const [newsletters, setNewsletters] = useState<RegistryCreative[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingProofId, setLoadingProofId] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
+  // Kumo creatives have no offer-proof row, so the preview keeps its own copy.
+  const [kumoPreviewHtml, setKumoPreviewHtml] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -190,6 +192,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
         fromName: profileFromName || '',
         html,
       });
+      setKumoPreviewHtml(html);
     } catch (e: any) {
       setError(e?.message || 'network error');
     } finally {
@@ -198,8 +201,8 @@ export const OfferCreativePicker: React.FC<Props> = ({
   };
 
   const openPreview = async () => {
-    if (!selectedProof) return;
-    setPreviewHtml(selectedProof.html_content || '');
+    if (!selectedProof && !kumoPreviewHtml) return;
+    setPreviewHtml(selectedProof?.html_content || kumoPreviewHtml || '');
     setPreviewOpen(true);
   };
 
@@ -216,7 +219,6 @@ export const OfferCreativePicker: React.FC<Props> = ({
   const proofVariants = selectedProof?.variants || [];
   const proofFromNames = selectedProof?.from_names || [];
 
-  void selectNewsletter;  // wired by peer's pending newsletter picker UI
   return (
     <div>
       {/* Offer (attribution + suppression). Hidden on a kumo route: warm-up
@@ -251,15 +253,59 @@ export const OfferCreativePicker: React.FC<Props> = ({
       {/* ── Approved creative ─────────────────────────────────────────── */}
       <div style={box}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
-          <h4 style={{ margin: 0, fontSize: 14, color: '#e0e6f0' }}>Creative — Creative Studio offers library</h4>
+          <h4 style={{ margin: 0, fontSize: 14, color: '#e0e6f0' }}>
+            {isKumoRoute
+              ? 'Creative \u2014 Creative Studio newsletter library'
+              : 'Creative \u2014 Creative Studio offers library'}
+          </h4>
           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
-            {matching.length} approved for {brandRoot || sendingDomain}
+            {isKumoRoute ? newsletters.length : matching.length} approved for {brandRoot || sendingDomain}
           </span>
         </div>
         <p style={{ margin: '0 0 10px', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
-          Approved, active proofs only. Subject, preheader and from-name come from the proof's
-          approved pools — this wizard has no free-form content path.
+          {isKumoRoute
+            ? "Today's approved newsletter for this property. The article payload is rewritten every morning, so the newest row already carries today's editorial."
+            : "Approved, active proofs only. Subject, preheader and from-name come from the proof's approved pools \u2014 this wizard has no free-form content path."}
         </p>
+
+        {isKumoRoute ? (
+          <>
+            {!loading && newsletters.length === 0 && (
+              <div style={{ fontSize: 13, color: '#f59e0b', padding: '8px 0' }}>
+                <FontAwesomeIcon icon={faExclamationTriangle} /> No approved newsletter creative for{' '}
+                <strong>{brandRoot || sendingDomain}</strong>. The daily builder registers and
+                approves one each morning \u2014 if this is empty it has not run today, or this property
+                has no newsletter library (the two Yahoo ramp pilots still clone a past send).
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+              {newsletters.map(c => {
+                const selected = c.id === proofId;
+                return (
+                  <div key={c.id} role="button" tabIndex={0}
+                       onClick={() => selectNewsletter(c)}
+                       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectNewsletter(c); } }}
+                       style={{
+                         padding: '10px 12px', cursor: 'pointer', borderRadius: 8,
+                         background: selected ? 'rgba(56,189,248,0.12)' : '#0a0f1a',
+                         border: `1.5px solid ${selected ? '#38bdf8' : 'rgba(0,200,255,0.06)'}`,
+                       }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: '#38bdf8', fontSize: 12 }} />}
+                      {loadingProofId === c.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>{c.subject || '(no subject)'}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 3 }}>
+                      {c.source} \u00b7 {c.html_bytes.toLocaleString()} bytes
+                      {c.updated_at ? ` \u00b7 built ${new Date(c.updated_at).toLocaleString()}` : ''}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+        <>
 
         {loading && <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading approved creatives…</div>}
         {error && (
@@ -314,10 +360,47 @@ export const OfferCreativePicker: React.FC<Props> = ({
             </span>
           </label>
         )}
+        </>
+        )}
       </div>
 
-      {/* ── Approved copy pools ───────────────────────────────────────── */}
-      {selectedProof && (
+      {/* Kumo: the copy IS the newsletter row. Subject and preheader come from
+          it; the from-name comes from the domain's sending profile, never the
+          creative (a creative-borne from_email breaks DKIM alignment — the same
+          guard kumo_warm._clone_copy carries). Shown read-only so the operator
+          can see exactly what will ship. */}
+      {isKumoRoute && proofId && (
+        <div style={box}>
+          <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#e0e6f0' }}>Copy that will ship</h4>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div>
+              <label style={label}>Subject (from the newsletter)</label>
+              <input value={subject} readOnly style={{ ...field, opacity: 0.85 }} />
+            </div>
+            <div>
+              <label style={label}>Preheader</label>
+              <input value={preheader} readOnly style={{ ...field, opacity: 0.85 }} />
+            </div>
+            <div>
+              <label style={label}>From name (this domain's sending profile)</label>
+              <input value={fromName} readOnly style={{ ...field, opacity: 0.85 }} />
+              {!fromName && (
+                <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 5 }}>
+                  <FontAwesomeIcon icon={faExclamationTriangle} /> This domain's sending profile has no
+                  from_name. Set it on the profile — it must not come from the creative.
+                </div>
+              )}
+            </div>
+          </div>
+          <button onClick={openPreview} disabled={!hasHtml}
+                  style={{ marginTop: 10, background: '#0a0f1a', color: hasHtml ? '#00b0ff' : 'rgba(180,210,240,0.3)', border: '1px solid rgba(0,200,255,0.15)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
+            <FontAwesomeIcon icon={faEye} /> Preview
+          </button>
+        </div>
+      )}
+
+      {/* ── Approved copy pools (offers route) ────────────────────────── */}
+      {!isKumoRoute && selectedProof && (
         <div style={box}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
             <h4 style={{ margin: 0, fontSize: 14, color: '#e0e6f0' }}>Approved copy — {selectedProof.name}</h4>
@@ -381,7 +464,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <div onClick={e => e.stopPropagation()}
                style={{ background: '#fff', borderRadius: 10, width: 'min(760px, 100%)', height: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: '8px 12px', background: '#0d1526', color: '#e0e6f0', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
-              <span>{selectedProof?.name}</span>
+              <span>{selectedProof?.name || 'Newsletter preview'}</span>
               <button onClick={() => setPreviewOpen(false)} style={{ background: 'transparent', border: 'none', color: '#00b0ff', cursor: 'pointer' }}>close</button>
             </div>
             <iframe title="creative preview" srcDoc={previewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />

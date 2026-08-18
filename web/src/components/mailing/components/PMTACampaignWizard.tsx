@@ -59,6 +59,13 @@ const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att
 //   windows  agents/scheduling/data/<date>_structure.json throttle_hours
 //   pacing   agents/scheduling/legacy_lib.build_isp_plans (15 min, gentle, Denver)
 const SEND_DAY_TIMEZONE = 'America/Denver';
+
+// KumoMTA warm-up estate: YAHOO-FAMILY ONLY. Operator 2026-08-11 — "model
+// exactly the aawd and hcfl and prevent any other sending aside from Yahoo
+// family" — and agents/scheduling/data/kumo_estate.json carries isp_caps for
+// exactly these five lanes and no others. Selecting gmail/microsoft/apple/
+// comcast on a kumo route is a doctrine violation, not a tuning choice.
+const KUMO_ALLOWED_ISPS = ['yahoo', 'aol', 'att', 'sbcglobal', 'cox'];
 const DEFAULT_WAVE_INTERVAL_MINUTES = 15;
 const DEFAULT_THROTTLE_STRATEGY = 'gentle';
 const THROTTLE_STRATEGIES = ['gentle', 'auto', 'moderate', 'careful'];
@@ -429,10 +436,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [engagementLoading, setEngagementLoading] = useState(false);
   const [engagementError, setEngagementError] = useState('');
   const [engagementReloadKey, setEngagementReloadKey] = useState(0);
+  // Recent campaign outcomes for the property — the only way to see an
+  // OPERATIONAL hold (staged then cancelled) that no registry records.
+  const [sendHistory, setSendHistory] = useState<{
+    counts: Record<string, number>; total: number; cancel_rate: number;
+    last_sent_at?: string; days: number;
+  } | null>(null);
   // Inclusion ids restored from a draft, held until the property's engagement
   // grid loads and can say which are clickers and which are openers.
   const [restoredInclusionSegments, setRestoredInclusionSegments] = useState<string[]>([]);
   const [selectedClickerIds, setSelectedClickerIds] = useState<string[]>([]);
+  // All-time engaged pools (no recency window). The kumo warm-up estate's real
+  // audience lives here, not in the tiny 30D windows.
+  const [selectedOtherIds, setSelectedOtherIds] = useState<string[]>([]);
   const [selectedOpenerIds, setSelectedOpenerIds] = useState<string[]>([]);
   const [excludeClickers, setExcludeClickers] = useState(true);
   // Audience-bound = the standing uncapped engaged-tier doctrine: quota 0 per
@@ -681,6 +697,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     return () => { cancelled = true; };
   }, [selectedDomain, orgId, engagementReloadKey]);
 
+  useEffect(() => {
+    if (!selectedDomain) { setSendHistory(null); return; }
+    let cancelled = false;
+    orgFetch(`${API_BASE}/pmta-campaign/domain-send-history?sending_domain=${encodeURIComponent(selectedDomain)}&days=7`, orgId)
+      .then(r => r.json())
+      .then(d => { if (!cancelled && d && !d.error) setSendHistory(d); })
+      .catch(() => { /* advisory only — never blocks the flow */ });
+    return () => { cancelled = true; };
+  }, [selectedDomain, orgId]);
+
   // Selecting a DIFFERENT property invalidates the property-scoped choices.
   // Guarded by a ref so it does not fire on the initial mount or on the
   // domain a restored draft just installed — otherwise it would immediately
@@ -692,6 +718,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     if (prev === null || prev === selectedDomain) return;
     setSelectedClickerIds([]);
     setSelectedOpenerIds([]);
+    setSelectedOtherIds([]);
     setSelectedProfileId('');
   }, [selectedDomain]);
 
@@ -702,16 +729,30 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     const openerIds = new Set(engagementTiers.openers.map(t => t.segment_id));
     const restoredClickers = restoredInclusionSegments.filter(id => clickerIds.has(id));
     const restoredOpeners = restoredInclusionSegments.filter(id => openerIds.has(id));
+    const otherIds = new Set(engagementTiers.other.map(t => t.segment_id));
+    const restoredOther = restoredInclusionSegments.filter(id => otherIds.has(id));
     if (restoredClickers.length > 0) setSelectedClickerIds(restoredClickers);
     if (restoredOpeners.length > 0) setSelectedOpenerIds(restoredOpeners);
+    if (restoredOther.length > 0) setSelectedOtherIds(restoredOther);
     setRestoredInclusionSegments([]);
   }, [engagementTiers, restoredInclusionSegments]);
 
-  const toggleEngagementTier = useCallback((kind: 'clickers' | 'openers', segmentId: string) => {
+  // The pinned profile decides the transport, and the transport decides which
+  // creative library and which ISP lanes are legal.
+  const selectedProfile = sendingDomains
+    .find(d => d.domain === selectedDomain)?.profiles
+    ?.find(p => p.id === selectedProfileId);
+  const isKumoRoute = selectedProfile?.transport === 'kumo';
+  const kumoIllegalISPs = isKumoRoute
+    ? selectedISPs.filter(i => !KUMO_ALLOWED_ISPS.includes(i))
+    : [];
+
+  const toggleEngagementTier = useCallback((kind: 'clickers' | 'openers' | 'other', segmentId: string) => {
     const apply = (prev: string[]) =>
       prev.includes(segmentId) ? prev.filter(x => x !== segmentId) : [...prev, segmentId];
     if (kind === 'clickers') setSelectedClickerIds(apply);
-    else setSelectedOpenerIds(apply);
+    else if (kind === 'openers') setSelectedOpenerIds(apply);
+    else setSelectedOtherIds(apply);
   }, []);
 
   const fetchAudienceData = useCallback(async () => {
@@ -852,8 +893,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         break;
       case 4:
         if (selectedClickerIds.length === 0 && selectedOpenerIds.length === 0
+            && selectedOtherIds.length === 0
             && selectedLists.length === 0 && selectedSegments.length === 0) {
           errors.push('Select an engagement range, or a list/segment in the advanced picker');
+        }
+        if (kumoIllegalISPs.length > 0) {
+          errors.push(
+            `KumoMTA warm-up is yahoo-family only — remove ${kumoIllegalISPs.join(', ')} ` +
+            `(allowed: ${KUMO_ALLOWED_ISPS.join(', ')})`);
         }
         // Belt for the client side of the coercion the server also enforces.
         if (audienceBound && masterTopUp) {
@@ -1459,7 +1506,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     const canonicalISPs = selectedISPs.filter(isp => isp !== 'other');
     const targetISPs = includeOther ? [...canonicalISPs, 'other'] : canonicalISPs;
 
-    const engagementIds = [...selectedClickerIds, ...selectedOpenerIds];
+    const engagementIds = [...selectedClickerIds, ...selectedOpenerIds, ...selectedOtherIds];
     const advancedSegmentIds = sendPriority.filter(p => p.type === 'segment').map(p => p.id);
     const mergedSegmentIds = [
       ...engagementIds,
@@ -1553,6 +1600,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     excludeClickers,
     selectedClickerIds,
     selectedOpenerIds,
+    selectedOtherIds,
     globalScheduleTimezone,
     audienceBound,
   ]);
@@ -2533,7 +2581,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           preheader={v?.preview_text || ''}
           fromName={v?.from_name || ''}
           hasHtml={!!v?.html_content}
-          profileFromName={sendingDomains.find(d => d.domain === selectedDomain)?.from_name}
+          profileFromName={selectedProfile?.from_name || sendingDomains.find(d => d.domain === selectedDomain)?.from_name}
+          isKumoRoute={isKumoRoute}
           onApply={sel => {
             setSelectedProofId(sel.proofId);
             setSelectedProofName(sel.proofName);
@@ -2736,12 +2785,44 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </p>
         <StepErrorBanner stepNum={4} />
 
+        {sendHistory && sendHistory.total > 0 && sendHistory.cancel_rate >= 0.5 && (
+          <div style={{
+            marginBottom: 16, padding: '10px 12px', borderRadius: 10,
+            background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)',
+            fontSize: 12, color: '#f59e0b',
+          }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+            <strong>This property looks held back.</strong>{' '}
+            {Math.round(sendHistory.cancel_rate * 100)}% of its campaigns that reached a terminal
+            state in the last {sendHistory.days} days were <strong>cancelled</strong>
+            {' '}({Object.entries(sendHistory.counts).map(([k, v]) => `${v} ${k}`).join(' · ')}).
+            {sendHistory.last_sent_at
+              ? ` Last actually sent ${new Date(sendHistory.last_sent_at).toLocaleString()}.`
+              : ' Nothing has sent in that window.'}
+            {' '}Staged-then-cancelled is how this estate is paused — check before scheduling.
+          </div>
+        )}
+
+        {isKumoRoute && kumoIllegalISPs.length > 0 && (
+          <div style={{
+            marginBottom: 16, padding: '10px 12px', borderRadius: 10,
+            background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.45)',
+            fontSize: 12, color: '#ef4444',
+          }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+            <strong>KumoMTA warm-up is yahoo-family only.</strong> Remove{' '}
+            <strong>{kumoIllegalISPs.join(', ')}</strong> on step 1 — the estate registry caps
+            yahoo, aol, att, sbcglobal and cox, and nothing else may send.
+          </div>
+        )}
+
         <EngagementTierPicker
           tiers={engagementTiers}
           loading={engagementLoading}
           error={engagementError}
           selectedClickerIds={selectedClickerIds}
           selectedOpenerIds={selectedOpenerIds}
+          selectedOtherIds={selectedOtherIds}
           onToggle={toggleEngagementTier}
           excludeClickers={excludeClickers}
           onExcludeClickersChange={setExcludeClickers}

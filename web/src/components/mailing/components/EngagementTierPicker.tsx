@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faExclamationTriangle, faMousePointer, faEnvelopeOpen, faSpinner } from '@fortawesome/free-solid-svg-icons';
+import { faExclamationTriangle, faMousePointer, faEnvelopeOpen, faSpinner, faInfinity } from '@fortawesome/free-solid-svg-icons';
 
 /**
  * Engagement-range picker — the send-day board's audience primitive, in the UI.
@@ -49,7 +49,8 @@ interface Props {
   error: string;
   selectedClickerIds: string[];
   selectedOpenerIds: string[];
-  onToggle: (kind: 'clickers' | 'openers', segmentId: string) => void;
+  selectedOtherIds: string[];
+  onToggle: (kind: 'clickers' | 'openers' | 'other', segmentId: string) => void;
   excludeClickers: boolean;
   onExcludeClickersChange: (v: boolean) => void;
   onRetry: () => void;
@@ -57,6 +58,7 @@ interface Props {
 
 const CLICK_COLOR = '#f59e0b';   // clicks = GOLD (signal-grading doctrine)
 const OPEN_COLOR = '#94a3b8';    // opens  = silver
+const ALLTIME_COLOR = '#38bdf8'; // all-time pools (the kumo warm-up audience)
 
 const fmt = (n: number) => n.toLocaleString();
 
@@ -84,20 +86,22 @@ const Chip: React.FC<{
     ].filter(Boolean).join('\n')}
     style={{
       display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-      minWidth: 108, padding: '8px 12px', cursor: 'pointer', textAlign: 'left',
+      minWidth: tier.window_days > 0 ? 108 : 150, padding: '8px 12px', cursor: 'pointer', textAlign: 'left',
       background: selected ? `${color}18` : '#0a0f1a',
       border: `1.5px solid ${selected ? color : 'rgba(0,200,255,0.08)'}`,
       borderRadius: 8, transition: 'all 0.15s ease',
     }}
   >
     <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 700, color: selected ? color : '#e0e6f0' }}>
-      {tier.window_days}D
+      {tier.window_days > 0 ? `${tier.window_days}D` : 'all-time'}
       {(tier.stale || tier.counter_mismatch || !tier.count_is_live ||
         (!!tier.build_status && tier.build_status !== 'ok')) && (
         <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: '#f59e0b' }} />
       )}
     </span>
-    <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{fmt(tier.count)}</span>
+    <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+      {fmt(tier.count)}{tier.window_days > 0 ? '' : ` · ${tier.name}`}
+    </span>
   </button>
 );
 
@@ -128,7 +132,7 @@ const Row: React.FC<{
 );
 
 export const EngagementTierPicker: React.FC<Props> = ({
-  tiers, loading, error, selectedClickerIds, selectedOpenerIds, onToggle,
+  tiers, loading, error, selectedClickerIds, selectedOpenerIds, selectedOtherIds, onToggle,
   excludeClickers, onExcludeClickersChange, onRetry,
 }) => {
   const box: React.CSSProperties = {
@@ -162,11 +166,11 @@ export const EngagementTierPicker: React.FC<Props> = ({
     );
   }
 
-  const all = [...tiers.clickers, ...tiers.openers];
-  const selectedAll = [...selectedClickerIds, ...selectedOpenerIds];
+  const all = [...tiers.clickers, ...tiers.openers, ...tiers.other];
+  const selectedAll = [...selectedClickerIds, ...selectedOpenerIds, ...selectedOtherIds];
   const selectedTiers = all.filter(t => selectedAll.includes(t.segment_id));
   const rawTotal = selectedTiers.reduce((s, t) => s + t.count, 0);
-  const empty = tiers.clickers.length === 0 && tiers.openers.length === 0;
+  const empty = tiers.clickers.length === 0 && tiers.openers.length === 0 && tiers.other.length === 0;
   const canDisjoin = selectedClickerIds.length > 0 && selectedOpenerIds.length > 0;
 
   return (
@@ -194,6 +198,16 @@ export const EngagementTierPicker: React.FC<Props> = ({
           <Row label="Openers" icon={faEnvelopeOpen} color={OPEN_COLOR}
                hint="opened in window" tiers={tiers.openers}
                selected={selectedOpenerIds} onToggle={id => onToggle('openers', id)} />
+
+          {/* All-time pools (no recency window). For a KumoMTA warm-up property
+              this is the REAL audience: measured 2026-08-18, BCC's 30D clicker
+              pool held 11 people against 796 in KUMO-ALLTIME-BCC-ENG. Leaving
+              these unselectable would have made the panel useless for kumo. */}
+          {tiers.other.length > 0 && (
+            <Row label="All-time" icon={faInfinity} color={ALLTIME_COLOR}
+                 hint="ever engaged, no window" tiers={tiers.other}
+                 selected={selectedOtherIds} onToggle={id => onToggle('other', id)} />
+          )}
 
           {[...tiers.clickers, ...tiers.openers].some(t => t.counter_mismatch) && (
             <div style={{
@@ -237,17 +251,7 @@ export const EngagementTierPicker: React.FC<Props> = ({
         </>
       )}
 
-      {tiers.other.length > 0 && (
-        <details style={{ marginTop: 10 }}>
-          <summary style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', cursor: 'pointer' }}>
-            {tiers.other.length} other engagement segment(s) for this property (no recency window)
-          </summary>
-          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)', marginTop: 6 }}>
-            {tiers.other.map(t => `${t.name} (${fmt(t.count)})`).join(' · ')} — select these from the
-            advanced picker below if you need them.
-          </div>
-        </details>
-      )}
+
     </div>
   );
 };
