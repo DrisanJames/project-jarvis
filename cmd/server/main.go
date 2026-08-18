@@ -766,6 +766,15 @@ func main() {
 			domainAgentScorecard.Start(ctx)
 			log.Println("Domain Agent Scorecard Worker started (first run in 60s, then every 6h, 3-day rollup window)")
 
+			// Drip Observatory rollup (Vector B plan rev 4.2 §6, P1/P2) —
+			// recomputes partner_drip_send_cohort_daily/_event_daily for the
+			// lanes in DRIP_OBSERVATORY_LANES ('' = inert, 'all', or a UUID
+			// list) under the run/scope/cursor/staged-swap protocol. Kill
+			// switch: DRIP_OBSERVATORY_ROLLUP_DISABLED=1.
+			dripObservatory := worker.NewDripObservatoryRollup(mailingDB)
+			go dripObservatory.Start(ctx)
+			log.Println("Drip Observatory rollup started (first run 120s, then every 6h)")
+
 			// Start Engine Signals Archiver. Keeps mailing_engine_signals
 			// at a 14-day hot window; everything older lands in
 			// s3://$ENGINE_S3_BUCKET/engine-signals/dt=YYYY-MM-DD/isp=<isp>/
