@@ -122,6 +122,13 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)
+		// Throttle configuration READ (Pipeline Cockpit P2): current
+		// partner_isp_distribution_overrides per feed + effective posture +
+		// the server-side write flag (PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED)
+		// that gates the cockpit's edit surface. Writes REUSE the existing
+		// PUT /api/mailing/data-partners/datasets/{id}/isp-distribution —
+		// no second writer.
+		cr.Get("/property-ledger/throttle", s.HandleLaneThrottle)
 		cr.Get("/readiness", s.HandleCampaignReadiness)
 		cr.Get("/sending-domains", s.HandleSendingDomains)
 		cr.Get("/draft", s.HandleGetDraftCampaign)
