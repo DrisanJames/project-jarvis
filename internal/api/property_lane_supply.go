@@ -195,6 +195,23 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 		respondError(w, http.StatusBadRequest, "unknown domain — must be a drip roster sending domain or a registered mailing_brand_metadata domain")
 		return
 	}
+	// INDEX GATE (same fail-closed posture as the intro-rollup worker): the
+	// anatomy aggregate is a measured 16.7s seq scan on prod WITHOUT
+	// idx_pcq_dataset_status_mailed (covering IOS: 27.7ms). Refuse rather
+	// than tax the heap until the CONCURRENTLY build lands and is valid.
+	var indexValid bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(i.indisvalid, false)
+		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = 'idx_pcq_dataset_status_mailed'
+	`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
+		respondError(w, http.StatusInternalServerError, "index check failed")
+		return
+	}
+	if !indexValid {
+		respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
+		return
+	}
 	dayStart, dayEnd := laneSupplyDenverDayBoundsUTC(time.Now())
 
 	// Every query failure fails the response — a silent partial-200 misleads

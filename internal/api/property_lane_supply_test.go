@@ -121,6 +121,7 @@ func TestLaneSupplyUnknownDomain400(t *testing.T) {
 func TestLaneSupplyRosterErrorFails(t *testing.T) {
 	// Negative control: a failed query must 500 — never a silent partial-200.
 	s, mock := newLedgerServiceWithMock(t)
+	expectSupplyIndexValid(mock, true)
 	mock.ExpectQuery(`SELECT vertical`).WillReturnError(fmt.Errorf("boom"))
 	rec := getSupply(t, s, "em.discountblog.com") // resolves statically to db
 	if rec.Code != http.StatusInternalServerError {
@@ -154,9 +155,15 @@ func expectSupplyFeedQueries(mock sqlmock.Sqlmock, vertical, dsID string, withAn
 			AddRow("yahoo", 120).AddRow("gmail", 150).AddRow("weirdisp", 5).AddRow("other", 25))
 }
 
+func expectSupplyIndexValid(mock sqlmock.Sqlmock, valid bool) {
+	mock.ExpectQuery(`indisvalid`).
+		WillReturnRows(sqlmock.NewRows([]string{"coalesce"}).AddRow(valid))
+}
+
 func TestLaneSupplyCountsMapping(t *testing.T) {
 	s, mock := newLedgerServiceWithMock(t)
 	dsID := "11111111-1111-1111-1111-111111111111"
+	expectSupplyIndexValid(mock, true)
 
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
@@ -222,6 +229,7 @@ func TestLaneSupplyCountsMapping(t *testing.T) {
 
 func TestLaneSupplyEmptyDatasetIsZerosNotError(t *testing.T) {
 	s, mock := newLedgerServiceWithMock(t)
+	expectSupplyIndexValid(mock, true)
 	dsID := "22222222-2222-2222-2222-222222222222"
 
 	mock.ExpectQuery(`SELECT vertical`).
@@ -268,6 +276,7 @@ func TestLaneSupplyWclNonLedgerDomain(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_brand_metadata`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand_code", "sending_domain"}).
 			AddRow("wcl", "m.wcl-heloc.com"))
+	expectSupplyIndexValid(mock, true)
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("heloc"))
 	expectSupplyFeedQueries(mock, "heloc", dsID, true)
@@ -289,5 +298,17 @@ func TestLaneSupplyWclNonLedgerDomain(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLaneSupplyIndexNotValid503(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	expectSupplyIndexValid(mock, false)
+	rec := getSupply(t, s, "em.discountblog.com")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 while the index is building, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "idx_pcq_dataset_status_mailed") {
+		t.Fatalf("503 should name the index: %s", rec.Body.String())
 	}
 }
