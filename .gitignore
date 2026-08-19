@@ -54,3 +54,6 @@ fix_exclusion_segments
 
 # Operator scratch space (forensics, drafts, audits)
 .scratch/
+
+# Claude Code local session state — never ship
+.claude/
