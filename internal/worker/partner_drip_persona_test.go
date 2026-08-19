@@ -269,3 +269,75 @@ func TestPersonaFieldsFromExtra_NoLoanDetailIsUnchanged(t *testing.T) {
 		t.Fatalf("unexpected extra keys: %#v", got)
 	}
 }
+
+// equity_estimate is DERIVED — no upstream system ships it — so it is pinned
+// hard. Rounding is DOWN so the figure never exceeds what the recipient's own
+// stated numbers support, and the key is ABSENT rather than zero when we
+// cannot stand behind it, which makes the creative drop the clause entirely.
+func TestEquityEstimate(t *testing.T) {
+	cases := []struct {
+		name, pv, lb, want string
+		ok                 bool
+	}{
+		{"rounds down to nearest 10k", "1096031", "487496", "600,000", true},
+		{"exact multiple survives", "500000", "200000", "300,000", true},
+		{"commas tolerated", "1,096,031", "487,496", "600,000", true},
+		{"whitespace tolerated", " 500000 ", " 200000 ", "300,000", true},
+		{"zero balance is full value", "250000", "0", "250,000", true},
+		{"under 10k equity is withheld", "205000", "200000", "", false},
+		{"exactly 10k qualifies", "210000", "200000", "10,000", true},
+		{"underwater is withheld", "200000", "260000", "", false},
+		{"missing property value", "", "200000", "", false},
+		{"missing balance", "500000", "", "", false},
+		{"garbage input", "n/a", "200000", "", false},
+		{"negative property value", "-500000", "1000", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := equityEstimate(c.pv, c.lb)
+			if ok != c.ok || got != c.want {
+				t.Fatalf("equityEstimate(%q,%q) = (%q,%v), want (%q,%v)",
+					c.pv, c.lb, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// The full extraction path: a real feed payload must yield the derived equity
+// and the stated intent alongside the geo fields.
+func TestPersonaFieldsFromExtra_DerivesEquityAndPurpose(t *testing.T) {
+	extra := []byte(`{
+		"city": "Blue Springs", "state": "MO",
+		"metadata": {
+			"property_value": "1096031", "loan_balance": "487496",
+			"loan_purpose": "HELOC", "loan_type": "Conventional",
+			"credit_rating": "good", "phone": "7048959486"
+		}
+	}`)
+	got := personaFieldsFromExtra(extra)
+
+	if got["equity_estimate"] != "600,000" {
+		t.Fatalf("equity_estimate = %#v, want \"600,000\"", got["equity_estimate"])
+	}
+	if got["loan_purpose"] != "HELOC" {
+		t.Fatalf("loan_purpose = %#v", got["loan_purpose"])
+	}
+	// credit_rating and phone must NOT reach custom_fields: a credit tier read
+	// back to a consumer is a compliance exposure, and the phone number has no
+	// business in a template context.
+	for _, k := range []string{"credit_rating", "phone", "property_value", "loan_balance"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("%s must not be emitted into custom_fields: %#v", k, got)
+		}
+	}
+}
+
+// An underwater or thin-equity record emits no key at all, so the creative's
+// guard drops the clause rather than rendering "$0" or an empty slot.
+func TestPersonaFieldsFromExtra_ThinEquityEmitsNoKey(t *testing.T) {
+	got := personaFieldsFromExtra([]byte(
+		`{"metadata":{"property_value":"205000","loan_balance":"200000"}}`))
+	if _, ok := got["equity_estimate"]; ok {
+		t.Fatalf("thin equity must emit no key: %#v", got)
+	}
+}

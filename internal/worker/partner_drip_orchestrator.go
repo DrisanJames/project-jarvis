@@ -3036,6 +3036,25 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 	// Additive and non-empty-only: a feed that carries neither is unchanged.
 	put("loan_type", nested("loan_type"))
 	put("property_type", nested("property_type"))
+	put("loan_purpose", nested("loan_purpose"))
+	// equity_estimate — the single most useful number a HELOC creative can say,
+	// and it is DERIVED, so nothing upstream ships it. Measured on the WCL
+	// Mortgage 08-18-26 drop: property_value and loan_balance are present on
+	// 100% of records and 75.5% clear $10k of equity (median $307,895), while
+	// the creatives said nothing about it.
+	//
+	// Rounded DOWN to the nearest $10k, comma-grouped for display. Two
+	// deliberate choices: down, so the figure is never larger than what the
+	// recipient's own stated numbers support; and coarse, because "$307,895"
+	// reads as an appraisal we did not perform. Copy must frame it as an
+	// estimate from their own form values.
+	//
+	// Emitted only when both inputs parse and the result clears $10k — below
+	// that a HELOC pitch is not credible and the key stays absent, so the
+	// creative's `{% if %}` drops the clause instead of promising nothing.
+	if eq, ok := equityEstimate(nested("property_value"), nested("loan_balance")); ok {
+		out["equity_estimate"] = eq
+	}
 	// tid is the PER-USER money-link token. It must reach custom_fields or the
 	// creative's {{ custom.tid }} renders empty and EVERY recipient gets the
 	// same untracked link — attribution silently dies for the whole feed while
@@ -3043,6 +3062,55 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 	// into metadata at the door) as well as "metadata".
 	put("tid", m.TID, nested("tid"))
 	return out
+}
+
+// equityEstimate derives available home equity from the two values the mortgage
+// feeds carry, rounded DOWN to the nearest $10,000 and returned COMMA-GROUPED
+// and ready to display (e.g. "300,000"). Copy supplies the currency symbol.
+//
+// Formatting happens HERE because the template engine cannot do it: verified
+// 2026-08-19 that `{{ n | number_with_delimiter }}` is not a supported filter
+// and renders the raw digits with NO error — a silent passthrough that would
+// have shipped "$320000" to every recipient and looked like working copy.
+//
+// Returns ok=false — and the caller emits no key — when either input is
+// unparseable, non-positive, or the difference is under $10,000. A missing key
+// makes the creative's guard drop the whole clause, which is the only correct
+// behaviour: an equity figure we cannot stand behind must not be shown at all.
+func equityEstimate(propertyValue, loanBalance string) (string, bool) {
+	pv, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(propertyValue), ",", ""), 64)
+	if err != nil || pv <= 0 {
+		return "", false
+	}
+	lb, err := strconv.ParseFloat(strings.ReplaceAll(strings.TrimSpace(loanBalance), ",", ""), 64)
+	if err != nil || lb < 0 {
+		return "", false
+	}
+	eq := pv - lb
+	if eq < 10000 {
+		return "", false
+	}
+	return groupThousands(strconv.FormatInt(int64(eq/10000)*10000, 10)), true
+}
+
+// groupThousands inserts commas into a non-negative integer string.
+func groupThousands(s string) string {
+	n := len(s)
+	if n <= 3 {
+		return s
+	}
+	var b strings.Builder
+	pre := n % 3
+	if pre > 0 {
+		b.WriteString(s[:pre])
+	}
+	for i := pre; i < n; i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }
 
 // promoteToSubscribers inserts each claimed email into mailing_subscribers
