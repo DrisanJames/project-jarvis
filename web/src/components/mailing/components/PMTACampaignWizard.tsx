@@ -454,7 +454,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // audience lives here, not in the tiny 30D windows.
   const [selectedOtherIds, setSelectedOtherIds] = useState<string[]>([]);
   const [selectedOpenerIds, setSelectedOpenerIds] = useState<string[]>([]);
-  const [excludeClickers, setExcludeClickers] = useState(true);
+  // Engager disjointness. DEFAULT OFF (2026-08-18): it used to default ON, so
+  // selecting a clicker tier AND an opener tier silently pushed the clicker
+  // segments into exclusion_segments while Send Priority still listed them as
+  // locked row #1. The planner denies excluded emails inside qualifyEmail
+  // (pmta_campaign_planner.go:934), so the operator's #1 audience contributed
+  // ZERO and the panel said the opposite — observed on
+  // "Aug18 - DB - OFR-ENG - Globe Life v2": DB 60D Clickers planned 0 of 34,260.
+  // Selecting a tier now means MAILING it; disjointness is an explicit opt-in.
+  const [excludeClickers, setExcludeClickers] = useState(false);
   // Audience-bound = the standing uncapped engaged-tier doctrine: quota 0 per
   // ISP so the segment is the cap. Capping an engaged tier is the EXCEPTION.
   const [audienceBound, setAudienceBound] = useState(true);
@@ -726,14 +734,36 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // domain a restored draft just installed — otherwise it would immediately
   // wipe the pinned profile that applyCampaignInput restored in the same tick.
   const prevDomainRef = useRef<string | null>(null);
+  // The domain a draft/clone restore just installed. hydrateDraft sets it so the
+  // effect below can tell "the restore moved the domain" (keep what it restored)
+  // from "the operator switched property" (clear what belonged to the old one).
+  const hydratedDomainRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevDomainRef.current;
     prevDomainRef.current = selectedDomain;
     if (prev === null || prev === selectedDomain) return;
+    if (hydratedDomainRef.current === selectedDomain) {
+      hydratedDomainRef.current = null;
+      return;
+    }
+    // A restore that did not move the domain leaves the ref set; drop it here so
+    // it can never skip a later, genuine property switch.
+    hydratedDomainRef.current = null;
     setSelectedClickerIds([]);
     setSelectedOpenerIds([]);
     setSelectedOtherIds([]);
     setSelectedProfileId('');
+    // EVERY audience pick is property-scoped, not just the engagement chips.
+    // Clearing only the chips is how a restored YI draft carried seven
+    // SLOT-*-YI-* cohorts into a discountblog send on 2026-08-18: the wizard
+    // kept them in send_priority/inclusion_segments across the property switch
+    // and the planner mailed 5,694 recipients with no DB engagement at all.
+    // Suppression LISTS are estate-wide (and the global list is auto-ticked),
+    // so those stay.
+    setSelectedSegments([]);
+    setSelectedLists([]);
+    setSendPriority([]);
+    setSelectedExclusionSegments([]);
   }, [selectedDomain]);
 
   // Re-hydrate the engagement chips from a restored draft once the grid is in.
@@ -770,6 +800,71 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       return haystack.includes(q);
     });
   }, [sendingDomains, domainSearch, selectedDomain]);
+
+  // Property code parsed out of a segment name (see foreignSegments below).
+  const segmentPropertyCode = (name: string): string => {
+    const slot = /^SLOT-[A-Z0-9]+-([A-Z0-9]{2,4})-/.exec(name);
+    if (slot) return slot[1];
+    const kumo = /^KUMO-ALLTIME-([A-Z0-9]{2,4})-/.exec(name);
+    if (kumo) return kumo[1];
+    const eng = /^([A-Z]{2,4})\s+\d+D\s+(?:Clickers|Openers)\b/.exec(name);
+    if (eng) return eng[1];
+    return '';
+  };
+
+  // One property answers to MORE THAN ONE code in segment names — verified
+  // against all 78,123 active prod segments 2026-08-18: BW/BWP, YI/YIH, HW/HWS,
+  // MP/MPF, TR/TRB, PD/PMD, RR/RRU (prefix pairs) and TT/TOT (thingoftheday,
+  // the one non-prefix pair). Comparing codes literally would flag a property's
+  // own segments as foreign, so compatibility is prefix-or-alias.
+  const codesCompatible = (a: string, b: string): boolean => {
+    if (!a || !b || a === b) return true;
+    if (a.startsWith(b) || b.startsWith(a)) return true;
+    const alias: Record<string, string> = { TT: 'TOT', TOT: 'TT' };
+    return alias[a] === b;
+  };
+
+  // Every code this property answers to, read off its own engagement grid.
+  const propertyCodes = useMemo(() => {
+    const codes = new Set<string>();
+    [
+      ...(engagementTiers?.clickers || []),
+      ...(engagementTiers?.openers || []),
+      ...(engagementTiers?.other || []),
+    ].forEach(t => {
+      const code = segmentPropertyCode(t.name);
+      if (code) codes.add(code);
+    });
+    return codes;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engagementTiers]);
+  const propertyCode = propertyCodes.size > 0 ? Array.from(propertyCodes)[0] : '';
+
+  // ── Cross-property audience guard (2026-08-18) ───────────────────────────
+  // Segment names carry the property they were built for:
+  //   "DB 30D Openers"                    → DB
+  //   "SLOT-MICROSOFT-YI-C_OPEN_REAL_21D" → YI
+  //   "KUMO-ALLTIME-BCC-ENG"              → BCC
+  // The pinned property's own code is read off its engagement grid — the only
+  // property-authoritative list the wizard already holds — so this needs no new
+  // endpoint and no hardcoded brand map. A name whose shape we do not recognise
+  // is left alone: the gate fires only when a name states a DIFFERENT property.
+  // Brands are SEPARATE senders (CLAUDE.md §7), so mailing another property's
+  // cohort from this sending domain is never intentional.
+  const foreignSegments = useMemo(() => {
+    if (propertyCodes.size === 0) return [];
+    const picked = new Set<string>([
+      ...selectedSegments,
+      ...selectedExclusionSegments,
+      ...sendPriority.filter(p => p.type === 'segment').map(p => p.id),
+    ]);
+    return segments
+      .filter(seg => picked.has(seg.id))
+      .map(seg => ({ id: seg.id, name: seg.name, code: segmentPropertyCode(seg.name) }))
+      .filter(x => x.code !== ''
+        && !Array.from(propertyCodes).some(own => codesCompatible(x.code, own)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, selectedSegments, selectedExclusionSegments, sendPriority, propertyCodes]);
 
   // The engagement-range selections, in the exact order buildCampaignPayload
   // puts them into send_priority: clickers, then openers, then the all-time
@@ -964,6 +1059,27 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         // Belt for the client side of the coercion the server also enforces.
         if (audienceBound && masterTopUp) {
           errors.push('Master-list top-up cannot be combined with an uncapped (audience-bound) send');
+        }
+        // Fail-closed on another property's cohorts (2026-08-18 incident).
+        if (foreignSegments.length > 0) {
+          errors.push(
+            `These segments belong to another property (${foreignSegments.map(f => f.code).filter((c, i, a) => a.indexOf(c) === i).join(', ')}), ` +
+            `not ${propertyCode || selectedDomain}: ${foreignSegments.map(f => f.name).join(', ')}. ` +
+            'Remove them — brands are separate senders.');
+        }
+        // A segment that is both a send-priority source AND excluded contributes
+        // ZERO: the planner denies excluded emails inside qualifyEmail. Surface
+        // it rather than letting the plan quietly come back short.
+        {
+          const excludedSet = new Set(selectedExclusionSegments);
+          const contradictions = [...selectedSegments, ...sendPriority.filter(p => p.type === 'segment').map(p => p.id)]
+            .filter(id => excludedSet.has(id));
+          if (contradictions.length > 0) {
+            const names = Array.from(new Set(contradictions))
+              .map(id => segments.find(sg => sg.id === id)?.name || id.slice(0, 8))
+              .join(', ');
+            errors.push(`${names} is in BOTH the send audience and the exclusion list — it would mail 0 recipients. Remove it from one side.`);
+          }
         }
         break;
       case 6:
@@ -1205,6 +1321,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       return acc;
     }, {});
 
+    // Tell the property-change effect that THIS domain move came from a restore,
+    // so it keeps the audience the draft carries instead of clearing it.
+    hydratedDomainRef.current = input.sending_domain || '';
     setCampaignId(draft.campaign_id || input.campaign_id || '');
     setCampaignName(input.name || draft.name || '');
     setSelectedISPs(derivedISPs);
@@ -1219,7 +1338,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setSelectedSegments(input.inclusion_segments || []);
     setSendPriority(nextPriority);
     setSelectedSuppLists(input.exclusion_lists || []);
-    setSelectedExclusionSegments(input.exclusion_segments || []);
+    // A board-shaped draft carries its clicker segments in BOTH inclusion and
+    // exclusion (that is what the disjointness checkbox emits). Restoring it
+    // verbatim would look like a contradiction on screen and trip the step-4
+    // gate, so fold the overlap back into the checkbox it came from.
+    const restoredInclusion = new Set(input.inclusion_segments || []);
+    const restoredExclusion = input.exclusion_segments || [];
+    const overlap = restoredExclusion.filter(id => restoredInclusion.has(id));
+    setSelectedExclusionSegments(restoredExclusion.filter(id => !restoredInclusion.has(id)));
+    setExcludeClickers(overlap.length > 0);
     setSendMode(input.send_mode === 'scheduled' ? 'scheduled' : 'immediate');
     setScheduleMode(draft.schedule_mode === 'per-isp' ? 'per-isp' : 'quick');
     setScheduledAt(toLocalInputValue(input.scheduled_at));
@@ -3230,6 +3357,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               </div>
             </div>
 
+            {/* Another property's cohorts in this send — fail-closed at step 4,
+                and named here so the operator can see WHICH rows to drop. */}
+            {foreignSegments.length > 0 && (
+              <div style={{
+                background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.5)',
+                borderRadius: 10, padding: 14, marginBottom: 16, color: '#fca5a5', fontSize: 12, lineHeight: 1.6,
+              }}>
+                <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+                <strong>These segments belong to another property</strong> — this campaign sends from{' '}
+                <strong>{selectedDomain}</strong>{propertyCode ? ` (${propertyCode})` : ''}, and brands are
+                separate senders. Deselect them before continuing:
+                <ul style={{ margin: '8px 0 0 18px', padding: 0 }}>
+                  {foreignSegments.map(f => (
+                    <li key={f.id}><code>{f.name}</code> — {f.code}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {/* Unified Send Priority.
                 The engagement-range chips ARE send priority — the payload puts
                 them ahead of everything picked in the advanced panel
@@ -3258,11 +3404,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                       From the engagement ranges above — fixed order (clicks rank above opens).
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {engagementPriorityRows.map((row, i) => (
+                      {engagementPriorityRows.map((row, i) => {
+                        // A clicker row is INERT while disjointness is on: the
+                        // payload puts it in exclusion_segments and the planner
+                        // denies every one of its members. The panel used to
+                        // render it as locked #1 regardless — the exact reason
+                        // "DB 60D Clickers" planned 0 of 34,260 on 2026-08-18.
+                        const inert = row.tierLabel === 'clickers'
+                          && excludeClickers && selectedOpenerIds.length > 0;
+                        return (
                         <div key={`eng-${row.id}`} style={{
                           display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
                           background: '#0a0f1a', borderRadius: 6,
-                          border: `1px solid ${row.color}40`,
+                          border: `1px solid ${inert ? 'rgba(239,68,68,0.5)' : `${row.color}40`}`,
+                          opacity: inert ? 0.6 : 1,
                         }}>
                           <span style={{
                             width: 20, height: 20, borderRadius: '50%', background: `${row.color}20`,
@@ -3270,13 +3425,23 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                             display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                           }}>{i + 1}</span>
                           <FontAwesomeIcon icon={faLock} style={{ fontSize: 10, color: 'rgba(180,210,240,0.3)' }} />
-                          <span style={{ fontSize: 12, color: '#e0e6f0', flex: 1 }}>{row.label}</span>
+                          <span style={{
+                            fontSize: 12, color: '#e0e6f0', flex: 1,
+                            textDecoration: inert ? 'line-through' : 'none',
+                          }}>{row.label}</span>
+                          {inert && (
+                            <span style={{
+                              fontSize: 10, fontWeight: 700, color: '#ef4444',
+                              border: '1px solid rgba(239,68,68,0.5)', borderRadius: 4, padding: '1px 6px',
+                            }}>EXCLUDED — MAILS 0</span>
+                          )}
                           <span style={{ fontSize: 11, color: row.color, fontWeight: 600 }}>{row.tierLabel}</span>
                           <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
-                            {row.count.toLocaleString()}
+                            {inert ? '0' : row.count.toLocaleString()}
                           </span>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
