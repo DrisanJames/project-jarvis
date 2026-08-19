@@ -217,3 +217,55 @@ func TestPromoteToSubscribersEmptyPersonaBindsEmptyObject(t *testing.T) {
 	require.Equal(t, []string{"sub-2"}, ids)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+// Regression guard for the 2026-08-19 loan-detail drop.
+//
+// The WCL Mortgage 08-18-26 feed posts loan_type / property_type inside the
+// record's nested metadata, and partner_clean_queue stored both on every row.
+// personaFieldsFromExtra's allow-list did not carry them, so of 6,071 promoted
+// subscribers exactly 2 had loan_type in custom_fields and ZERO had
+// property_type. The v6 HELOC creatives render both, guarded by
+// `{% assign p_loan = custom.loan_type | default: "" %}` + `{% if p_loan != "" %}`
+// — so the branch simply never fired and the mail shipped without the clause,
+// with every render test still green against a synthetic persona.
+func TestPersonaFieldsFromExtra_CarriesLoanDetail(t *testing.T) {
+	extra := []byte(`{
+		"city": "Blue Springs", "state": "MO", "zip": "64015",
+		"metadata": {
+			"loan_type": "Conventional",
+			"property_type": "Condominium",
+			"credit_rating": "good"
+		}
+	}`)
+	got := personaFieldsFromExtra(extra)
+
+	if got["loan_type"] != "Conventional" {
+		t.Fatalf("loan_type not carried: %#v", got["loan_type"])
+	}
+	if got["property_type"] != "Condominium" {
+		t.Fatalf("property_type not carried: %#v", got["property_type"])
+	}
+	// Unchanged fields must still land.
+	if got["city"] != "Blue Springs" || got["state"] != "MO" {
+		t.Fatalf("existing geo fields regressed: %#v", got)
+	}
+	// Keys NOT on the allow-list stay off it — this is an allow-list, not a
+	// passthrough, and widening it silently is how PII leaks into custom_fields.
+	if _, ok := got["credit_rating"]; ok {
+		t.Fatalf("credit_rating must not be emitted: %#v", got)
+	}
+}
+
+// A feed carrying neither key must be byte-identical to before the change.
+func TestPersonaFieldsFromExtra_NoLoanDetailIsUnchanged(t *testing.T) {
+	got := personaFieldsFromExtra([]byte(`{"city":"Boise","state":"ID"}`))
+	if _, ok := got["loan_type"]; ok {
+		t.Fatalf("loan_type must be absent when not supplied: %#v", got)
+	}
+	if _, ok := got["property_type"]; ok {
+		t.Fatalf("property_type must be absent when not supplied: %#v", got)
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexpected extra keys: %#v", got)
+	}
+}

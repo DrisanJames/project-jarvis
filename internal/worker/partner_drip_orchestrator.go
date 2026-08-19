@@ -3025,6 +3025,17 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 	put("address_1", m.Address1, nested("address_1"))
 	put("signup_url", m.SignupURL, nested("signup_url"))
 	put("signup_date", m.SignupAt, nested("signup_date"))
+	// Lead-detail fields the mortgage/HELOC feeds carry. Measured 2026-08-19 on
+	// the WCL Mortgage 08-18-26 drop: partner_clean_queue held loan_type and
+	// property_type on every record, and of 6,071 promoted subscribers exactly
+	// 2 had loan_type in custom_fields and ZERO had property_type — the values
+	// arrived intact at the door and died in this allow-list. The v6 HELOC
+	// creatives render {{ custom.loan_type }} / {{ custom.property_type }}, so
+	// without these two lines that personalization is blank for the whole feed
+	// while every render test still passes on a synthetic persona.
+	// Additive and non-empty-only: a feed that carries neither is unchanged.
+	put("loan_type", nested("loan_type"))
+	put("property_type", nested("property_type"))
 	// tid is the PER-USER money-link token. It must reach custom_fields or the
 	// creative's {{ custom.tid }} renders empty and EVERY recipient gets the
 	// same untracked link — attribution silently dies for the whole feed while
