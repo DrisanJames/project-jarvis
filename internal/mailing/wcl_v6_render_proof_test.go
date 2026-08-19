@@ -18,8 +18,10 @@ package mailing
 //   WCL_V6_DIR=~/Desktop/WCL-HELOC-v6-review/source go test ./internal/mailing/ -run V6 -v
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -353,27 +355,53 @@ func TestWCLV7IsShorterThanV6(t *testing.T) {
 	t.Logf("longest v7 text = %d b, shortest v6 text = %d b", longest, shortestV6)
 }
 
-// Operator ruling 2026-08-19: leading on "No SSN" is too aggressive. It may
-// appear in the trust checklist near the footer — standard reassurance, and
-// part of the already-reviewed chassis — but never in a headline, preheader or
-// CTA line, where it functions as a hook. Preheaders are inbox-visible, so
-// they count as leading.
-func TestWCLV7DoesNotLeadWithNoSSN(t *testing.T) {
-	dir := v7Dir(t)
-	for _, name := range v7Variants {
-		raw, err := os.ReadFile(filepath.Join(dir, name+".html"))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		body := string(raw)
-		// Everything before the trust checklist is "leading" surface.
-		head := body
-		if i := strings.Index(body, "Your information is never sold"); i > 0 {
-			head = body[:i]
-		}
-		for _, phrase := range []string{"No SSN", "No Social Security"} {
-			if strings.Contains(head, phrase) {
-				t.Errorf("%s: %q appears above the trust checklist — that is a lead", name, phrase)
+// Operator ruling 2026-08-19: leading on "No SSN" is too aggressive; it was
+// removed from every LEADING surface and replaced with compliant copy.
+//
+// "Leading" is precise, not "anywhere above the footer": the preheader (which
+// is inbox-visible), the headline, and the CTA sub-line. It is NOT the body.
+// v6a's privacy panel and v6d's step-1 description both still say it, and they
+// should — that sentence IS the angle those creatives exist to make, read
+// after the pitch rather than as a hook. An earlier version of this test used
+// "anything above the trust checklist" and flagged both, which would have
+// gutted the copy to satisfy a bad heuristic.
+func TestNoLeadingSurfaceSaysNoSSN(t *testing.T) {
+	type set struct {
+		dir      string
+		variants []string
+	}
+	sets := []set{{v6Dir(t), v6Variants}, {v7Dir(t), v7Variants}}
+
+	preheaderRe := regexp.MustCompile(`(?s)mso-hide:all;">\s*(.*?)\s*</div>`)
+	// The CTA sub-line is the small print directly under the button.
+	ctaSubRe := regexp.MustCompile(`(?s)(Under 1 minute[^<]*|Takes less than 1 minute[^<]*|About a minute[^<]*|Picks up[^<]*)`)
+
+	for _, sp := range sets {
+		for _, name := range sp.variants {
+			raw, err := os.ReadFile(filepath.Join(sp.dir, name+".html"))
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			body := string(raw)
+
+			surfaces := map[string]string{}
+			if m := preheaderRe.FindStringSubmatch(body); m != nil {
+				surfaces["preheader"] = m[1]
+			}
+			for i, m := range ctaSubRe.FindAllString(body, -1) {
+				surfaces[fmt.Sprintf("cta_sub_%d", i)] = m
+			}
+			// Headline: everything before the opener paragraph.
+			if i := strings.Index(body, "Hi {"); i > 0 {
+				surfaces["headline_region"] = body[:i]
+			}
+
+			for label, text := range surfaces {
+				for _, phrase := range []string{"No SSN", "No Social Security"} {
+					if strings.Contains(text, phrase) {
+						t.Errorf("%s: %q appears in %s — that is a leading surface", name, phrase, label)
+					}
+				}
 			}
 		}
 	}
