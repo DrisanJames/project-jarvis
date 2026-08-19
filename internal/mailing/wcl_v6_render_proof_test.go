@@ -214,7 +214,10 @@ func TestWCLV6LoanClauseIsConditional(t *testing.T) {
 
 // ---------------------------------------------------------------- v7 set ---
 
-var v7Variants = []string{"iwchelocv7", "iwchelocv7a", "iwchelocv7b"}
+// v7b ("One minute. No SSN.") was cut 2026-08-19 — operator: leading on
+// "No SSN" reads too aggressive. The phrase survives only in the shared trust
+// checklist near the footer, never in a subject, preheader or headline.
+var v7Variants = []string{"iwchelocv7", "iwchelocv7a"}
 
 func v7Dir(t *testing.T) string {
 	d := strings.TrimSpace(os.Getenv("WCL_V7_DIR"))
@@ -348,4 +351,30 @@ func TestWCLV7IsShorterThanV6(t *testing.T) {
 			longest, shortestV6)
 	}
 	t.Logf("longest v7 text = %d b, shortest v6 text = %d b", longest, shortestV6)
+}
+
+// Operator ruling 2026-08-19: leading on "No SSN" is too aggressive. It may
+// appear in the trust checklist near the footer — standard reassurance, and
+// part of the already-reviewed chassis — but never in a headline, preheader or
+// CTA line, where it functions as a hook. Preheaders are inbox-visible, so
+// they count as leading.
+func TestWCLV7DoesNotLeadWithNoSSN(t *testing.T) {
+	dir := v7Dir(t)
+	for _, name := range v7Variants {
+		raw, err := os.ReadFile(filepath.Join(dir, name+".html"))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		body := string(raw)
+		// Everything before the trust checklist is "leading" surface.
+		head := body
+		if i := strings.Index(body, "Your information is never sold"); i > 0 {
+			head = body[:i]
+		}
+		for _, phrase := range []string{"No SSN", "No Social Security"} {
+			if strings.Contains(head, phrase) {
+				t.Errorf("%s: %q appears above the trust checklist — that is a lead", name, phrase)
+			}
+		}
+	}
 }
