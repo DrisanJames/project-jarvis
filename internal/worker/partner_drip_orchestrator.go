@@ -1730,23 +1730,131 @@ func (po *PartnerDripOrchestrator) fetchCopyLines(ctx context.Context, vertical,
 	return out, nil
 }
 
+// pairedCreative is one CREATIVE+SUBJECT(+FROM-NAME) pair: a
+// mailing_offer_creatives row whose subject_line_id resolves to a live
+// subject. Only rows that declare that link participate in paired rotation.
+type pairedCreative struct {
+	htmlBody string
+	subject  string
+	fromName string // "" when from_name_id is NULL — falls back to the pool
+}
+
+// fetchPairedCreatives returns the offer's DECLARED creative+subject pairs, in
+// a stable order (id), or an empty slice when the offer declares none.
+//
+// A pair exists only when mailing_offer_creatives.subject_line_id points at a
+// live subject row. That link is the operator's opt-in: with fewer than two
+// pairs the caller keeps the historical single-creative behaviour exactly, so
+// enabling this cannot disturb an offer nobody has paired. As of 2026-08-19
+// ZERO of the 112 live creative rows carry the link, and 13 offers (Fidelity
+// 35 creatives, CarShield 11, Metal Roofing 5, Empire Today 3 …) hold multiple
+// creatives where an operator deliberately chose ONE canonical row — those must
+// keep serving that row until they are paired on purpose.
+func (po *PartnerDripOrchestrator) fetchPairedCreatives(ctx context.Context, offerID string) ([]pairedCreative, error) {
+	rows, err := po.db.QueryContext(ctx, `
+		SELECT c.html_content, s.subject_line, COALESCE(f.from_name, '')
+		FROM mailing_offer_creatives c
+		JOIN mailing_offer_subject_lines s
+		  ON s.id = c.subject_line_id
+		 AND s.offer_id = c.offer_id
+		 AND COALESCE(s.status, '') NOT IN ('archived','rejected')
+		 AND COALESCE(s.subject_line, '') <> ''
+		LEFT JOIN mailing_offer_from_names f
+		  ON f.id = c.from_name_id
+		 AND f.offer_id = c.offer_id
+		 AND COALESCE(f.status, '') NOT IN ('archived','rejected')
+		 AND COALESCE(f.from_name, '') <> ''
+		WHERE c.offer_id = $1
+		  AND c.subject_line_id IS NOT NULL
+		  AND COALESCE(c.status, '') NOT IN ('archived','rejected')
+		  AND COALESCE(c.html_content, '') <> ''
+		ORDER BY c.id
+	`, offerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]pairedCreative, 0, 8)
+	for rows.Next() {
+		var p pairedCreative
+		if err := rows.Scan(&p.htmlBody, &p.subject, &p.fromName); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out, rows.Err()
+}
+
 // resolveOfferCreative pulls a fresh creative+subject+from-name from the
 // offer-center tables for a direct-offer-bound dataset. Selection rules:
 //
-//   - Creative: pick the latest non-archived row. Most direct-offer feeds
-//     ship one approved creative; if there are multiple, prefer status=
-//     'approved' over 'generated'. We do NOT rotate creatives per wave —
-//     the operator decides which creative is canonical.
+//   - PAIRED ROTATION (opt-in, 2026-08-19). When the offer declares two or
+//     more creative+subject pairs — a mailing_offer_creatives row carrying a
+//     subject_line_id — the whole PAIR rotates together on the wave bucket, so
+//     a creative always ships with the subject written for it. Rotating them
+//     independently is what this exists to prevent.
 //
-//   - Subject + from-name: rotate by wave count. We hash (offerID, brand,
-//     5-min wave bucket) into a stable index so successive waves get
-//     different items but a retry of the same wave hits the same row.
+//   - Otherwise (the historical path): pick the latest non-archived creative,
+//     preferring status='approved' over 'generated'. We do NOT rotate
+//     creatives — the operator decides which one is canonical — and the
+//     subject rotates on its own from the offer's pool.
+//
+//   - Subject + from-name rotation hashes (offerID, brand, 5-min wave bucket)
+//     into a stable index so successive waves get different items but a retry
+//     of the same wave hits the same row.
 //
 // All three pools must be non-empty. If any are empty we fail loud — the
 // orchestrator's caller releases the claim and the next tick retries.
 func (po *PartnerDripOrchestrator) resolveOfferCreative(ctx context.Context, offerID, brand string) (creativeRec, error) {
 	var c creativeRec
 	c.filename = "offer:" + offerID
+
+	// Hash bucket for rotation. Granularity 5 minutes — successive waves get
+	// different rows; an immediate retry of the same wave is stable.
+	bucket := time.Now().UTC().Truncate(5 * time.Minute).Unix()
+	rotKey := fmt.Sprintf("%s|%s|%d", offerID, brand, bucket)
+	rotSHA := sha256.Sum256([]byte(rotKey))
+	rotIdx := int(rotSHA[0])<<8 | int(rotSHA[1])
+
+	// Paired rotation first. Two or more declared pairs is the opt-in signal;
+	// a single pair (or none) falls through to the historical path so the
+	// offer behaves exactly as it did before it was paired.
+	pairs, perr := po.fetchPairedCreatives(ctx, offerID)
+	if perr != nil {
+		return c, fmt.Errorf("offer_paired_creatives lookup (offer=%s): %w", offerID, perr)
+	}
+	if len(pairs) > 1 {
+		p := pairs[rotIdx%len(pairs)]
+		c.htmlBody = p.htmlBody
+		c.subject = p.subject
+		// Preheader still rotates off the subject pool — pairing governs the
+		// creative+subject bond, which is what drives inbox consistency.
+		subjects, err := po.fetchOfferSubjects(ctx, offerID)
+		if err != nil {
+			return c, fmt.Errorf("offer_subjects lookup: %w", err)
+		}
+		if len(subjects) > 0 {
+			preIdx := int(rotSHA[2])<<8 | int(rotSHA[3])
+			c.preheader = subjects[preIdx%len(subjects)]
+		}
+		fromNames, err := po.fetchOfferFromNames(ctx, offerID)
+		if err != nil {
+			return c, fmt.Errorf("offer_from_names lookup: %w", err)
+		}
+		if len(fromNames) == 0 {
+			return c, fmt.Errorf("offer %s has no active from-names — operator must seed at least one before deploying", offerID)
+		}
+		switch {
+		case p.fromName != "":
+			c.fromName = p.fromName
+		default:
+			if matched, ok := po.matchBrandOfferFromName(ctx, brand, fromNames); ok {
+				c.fromName = matched
+			} else {
+				c.fromName = fromNames[rotIdx%len(fromNames)]
+			}
+		}
+		return c, nil
+	}
 
 	// Creative HTML — prefer 'approved' over 'generated' over anything else.
 	if err := po.db.QueryRowContext(ctx, `
@@ -1764,13 +1872,6 @@ func (po *PartnerDripOrchestrator) resolveOfferCreative(ctx context.Context, off
 	`, offerID).Scan(&c.htmlBody); err != nil {
 		return c, fmt.Errorf("offer_creative lookup (offer=%s): %w", offerID, err)
 	}
-
-	// Hash bucket for rotation. Granularity 5 minutes — successive waves get
-	// different rows; an immediate retry of the same wave is stable.
-	bucket := time.Now().UTC().Truncate(5 * time.Minute).Unix()
-	rotKey := fmt.Sprintf("%s|%s|%d", offerID, brand, bucket)
-	rotSHA := sha256.Sum256([]byte(rotKey))
-	rotIdx := int(rotSHA[0])<<8 | int(rotSHA[1])
 
 	// Subject pool.
 	subjects, err := po.fetchOfferSubjects(ctx, offerID)
