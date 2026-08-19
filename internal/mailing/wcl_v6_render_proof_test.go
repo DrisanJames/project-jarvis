@@ -211,3 +211,141 @@ func TestWCLV6LoanClauseIsConditional(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- v7 set ---
+
+var v7Variants = []string{"iwchelocv7", "iwchelocv7a", "iwchelocv7b"}
+
+func v7Dir(t *testing.T) string {
+	d := strings.TrimSpace(os.Getenv("WCL_V7_DIR"))
+	if d == "" {
+		t.Skip("WCL_V7_DIR not set — point it at the v7 review folder's source/")
+	}
+	return d
+}
+
+// v7 adds two tokens v6 never used: custom.equity_estimate (derived, present
+// for 75.9% of the mortgage feed) and custom.loan_purpose. Both must render
+// for a record that has them and vanish cleanly for one that does not — the
+// ~24% with no equity figure must still read a complete sentence.
+func v7Personas() []v6Persona {
+	full := map[string]interface{}{
+		"city": "Cleveland", "state": "OH",
+		"equity_estimate": "320,000", "loan_purpose": "HELOC",
+		"loan_type": "Conventional", "property_type": "SFR",
+	}
+	return []v6Persona{
+		{label: "full (name+city+equity+purpose)", firstName: "Jessica", custom: full},
+		{label: "equity but no name", firstName: "", custom: map[string]interface{}{
+			"city": "Boise", "equity_estimate": "80,000"}},
+		{label: "name but NO equity (the 24%)", firstName: "Jessica",
+			custom: map[string]interface{}{"city": "Cleveland"}},
+		{label: "NOTHING", firstName: "", custom: map[string]interface{}{}},
+	}
+}
+
+func TestWCLV7RendersCleanForEveryPersona(t *testing.T) {
+	dir := v7Dir(t)
+	ts := NewTemplateService()
+	for _, name := range v7Variants {
+		for _, ext := range []string{".html", ".txt"} {
+			raw, err := os.ReadFile(filepath.Join(dir, name+ext))
+			if err != nil {
+				t.Fatalf("read %s%s: %v", name, ext, err)
+			}
+			for _, p := range v7Personas() {
+				t.Run(name+ext+"/"+p.label, func(t *testing.T) {
+					out, err := ts.Render("", string(raw), p.ctx())
+					if err != nil {
+						t.Fatalf("render error: %v", err)
+					}
+					for _, frag := range []string{"{{", "}}", "{%", "%}"} {
+						if strings.Contains(out, frag) {
+							t.Errorf("unresolved %q survives", frag)
+						}
+					}
+					for _, bad := range []string{"Hi ,", "Hi  ", "estimated  in", "$ in", "your  home"} {
+						if strings.Contains(out, bad) {
+							t.Errorf("empty-slot artifact %q rendered", bad)
+						}
+					}
+					if !strings.Contains(out, "e.wcl-heloc.com/GZHPZ/91Z47C/") {
+						t.Errorf("money link missing")
+					}
+					if !strings.Contains(out, "sub1=SUBID-123") {
+						t.Errorf("sub1 attribution not carried")
+					}
+					if !strings.Contains(out, "https://t.wcl-heloc.com/u?c=CID&s=SID") {
+						t.Errorf("unsubscribe url missing")
+					}
+				})
+			}
+		}
+	}
+}
+
+// The equity figure is the whole point of v7, and it is the one number we must
+// never show when we cannot stand behind it.
+func TestWCLV7EquityClauseIsConditional(t *testing.T) {
+	dir := v7Dir(t)
+	ts := NewTemplateService()
+	ps := v7Personas()
+	withEq, noEq := ps[0], ps[2]
+
+	for _, name := range v7Variants {
+		raw, err := os.ReadFile(filepath.Join(dir, name+".html"))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		got, err := ts.Render("", string(raw), withEq.ctx())
+		if err != nil {
+			t.Fatalf("%s render(with): %v", name, err)
+		}
+		none, err := ts.Render("", string(raw), noEq.ctx())
+		if err != nil {
+			t.Fatalf("%s render(without): %v", name, err)
+		}
+		if !strings.Contains(got, "$320,000") {
+			t.Errorf("%s: equity figure did not render", name)
+		}
+		if strings.Contains(none, "320,000") || strings.Contains(none, "estimated $") {
+			t.Errorf("%s: equity language leaked into a no-equity render", name)
+		}
+		// A dollar sign with nothing after it is the visible failure mode.
+		if strings.Contains(none, "$<") || strings.Contains(none, "$ ") {
+			t.Errorf("%s: bare currency symbol rendered with no figure", name)
+		}
+	}
+}
+
+// v7 must actually be a SHORTER read than v6 — that is the operator's ask, so
+// it is asserted rather than eyeballed. Compared on the text part, which is
+// the message without chassis markup.
+func TestWCLV7IsShorterThanV6(t *testing.T) {
+	v6d, v7d := v6Dir(t), v7Dir(t)
+	longest := 0
+	for _, n := range v7Variants {
+		b, err := os.ReadFile(filepath.Join(v7d, n+".txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) > longest {
+			longest = len(b)
+		}
+	}
+	shortestV6 := 1 << 30
+	for _, n := range v6Variants {
+		b, err := os.ReadFile(filepath.Join(v6d, n+".txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) < shortestV6 {
+			shortestV6 = len(b)
+		}
+	}
+	if longest >= shortestV6 {
+		t.Errorf("longest v7 text (%d b) is not shorter than the shortest v6 (%d b)",
+			longest, shortestV6)
+	}
+	t.Logf("longest v7 text = %d b, shortest v6 text = %d b", longest, shortestV6)
+}
