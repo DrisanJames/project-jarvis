@@ -173,6 +173,20 @@ def main() -> int:
     upsert_env(env_list, "DISABLE_ISP_RATE_LIMITING", "true")
     # Partner drip phase 2: follow-ups on; bypass stale ISP throttle deferrals.
     upsert_env(env_list, "PARTNER_DRIP_THROTTLE_THRESHOLD", "0")
+    # 2026-08-19 (operator: "I should be able to manage, view, and control the
+    # drips from this body of work"). Both surfaces shipped read-only behind a
+    # flag; these two lines are what actually hand the operator the levers.
+    #   THROTTLE -> edit per-ISP pct_override / max_per_wave / daily_cap on a
+    #     lane (property_lane_supply.go:479). Writes reuse the existing
+    #     data-partners isp-distribution PUT; there is no second writer.
+    #   ROSTER   -> assign/unassign a sending domain to a drip
+    #     (property_lane_roster.go). partner_drip_vertical_roster is reloaded by
+    #     the orchestrator EVERY TICK, so a row write changes live sending with
+    #     no deploy. Unassign soft-disables (active=false); it never deletes.
+    # Reversible: remove either line (or set to "0") and redeploy — the panels
+    # fall back to read-only with a banner naming the env var. Only "1" enables.
+    upsert_env(env_list, "PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED", "1")
+    upsert_env(env_list, "PROPERTY_LEDGER_ROSTER_WRITE_ENABLED", "1")
     upsert_env(env_list, "PARTNER_DRIP_CREATIVES_DIR", "docs/emails")
     # Yahoo newsletter-only drip lane: OFF (operator 2026-08-06, Empire flooring
     # diagnosis). The 2026-07-14 newsletter-only ruling suppressed every Yahoo
