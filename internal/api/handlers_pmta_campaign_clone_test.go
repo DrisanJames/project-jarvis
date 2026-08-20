@@ -55,7 +55,7 @@ func TestHandleCloneCandidates_RecencyOrder(t *testing.T) {
 			0.10, 0.02, 0.01, 0.005, 0.005, 0.0005,
 			false)
 
-	mock.ExpectQuery("SELECT id::text, name, status").WillReturnRows(rows)
+	mock.ExpectQuery("SELECT c.id::text, c.name, c.status").WillReturnRows(rows)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mailing/pmta-campaign/clone-candidates", nil)
 	req.Header.Set("X-Organization-ID", defaultOrgID)
@@ -567,4 +567,122 @@ func makeCloneDataRequest(t *testing.T, campaignID string) *http.Request {
 	rctx.URLParams.Add("campaignId", campaignID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	return req
+}
+
+// ---------------------------------------------------------------------------
+// Apex scoping (operator 2026-08-19): the picker is reached by selecting a
+// SENDING DOMAIN, but candidates must be scoped to that domain's BRAND ROOT.
+// 16 of 28 apexes send from more than one domain (em.* and m.*), so an
+// exact-domain filter would hide most of a brand's own history.
+// ---------------------------------------------------------------------------
+
+func cloneCandidateRows() *sqlmock.Rows {
+	cols := []string{
+		"id", "name", "status", "sent_count", "open_count", "click_count",
+		"bounce_count", "hard_bounce_count", "soft_bounce_count", "complaint_count",
+		"campaign_date", "open_rate", "click_rate", "bounce_rate",
+		"hard_bounce_rate", "soft_bounce_rate", "complaint_rate", "has_config",
+	}
+	return sqlmock.NewRows(cols).AddRow(
+		"c-1", "08192026 - HT - Globe", "sent", 100, 10, 2, 1, 1, 0, 0,
+		time.Now().UTC(), 0.10, 0.02, 0.01, 0.01, 0.0, 0.0, false)
+}
+
+func TestHandleCloneCandidates_ApexScoped_MatchesBothSendingDomains(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	svc := newTestPMTAService(db, defaultOrgID)
+
+	// em.historythinking.com must resolve to the APEX historythinking.com, and the
+	// apex must be the bound parameter — that is what lets m.historythinking.com
+	// campaigns appear alongside em.* ones.
+	mock.ExpectQuery("JOIN mailing_sending_profiles").
+		WithArgs(defaultOrgID, "historythinking.com").
+		WillReturnRows(cloneCandidateRows())
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/mailing/pmta-campaign/clone-candidates?domain=em.historythinking.com", nil)
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	svc.HandleCloneCandidates(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	var resp struct {
+		Campaigns []struct{ ID string `json:"id"` } `json:"campaigns"`
+		Apex      string                            `json:"apex"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "historythinking.com", resp.Apex,
+		"response must echo the apex it scoped to, not the sending domain")
+	require.Len(t, resp.Campaigns, 1)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleCloneCandidates_NoDomain_StaysOrgWide(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	svc := newTestPMTAService(db, defaultOrgID)
+
+	// NEGATIVE PATH: with no domain the picker must NOT join profiles and must
+	// bind only the org — i.e. the pre-existing org-wide behaviour is preserved.
+	mock.ExpectQuery("FROM mailing_campaigns c").
+		WithArgs(defaultOrgID).
+		WillReturnRows(cloneCandidateRows())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mailing/pmta-campaign/clone-candidates", nil)
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+
+	svc.HandleCloneCandidates(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+
+	var resp struct {
+		Apex string `json:"apex"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Empty(t, resp.Apex, "unfiltered list must not claim an apex")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleCloneCandidates_BroadcastOnly_AndLimit10(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	svc := newTestPMTAService(db, defaultOrgID)
+
+	// Operator 2026-08-19: last 10 only, broadcast only. Assert the SQL carries a
+	// POSITIVE campaign_type allowlist — the previous "<> 'click_drip'" form let a
+	// journey_node campaign through, and would let any future type through too.
+	mock.ExpectQuery("c.campaign_type = 'regular'").
+		WithArgs(defaultOrgID).
+		WillReturnRows(cloneCandidateRows())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mailing/pmta-campaign/clone-candidates", nil)
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+	svc.HandleCloneCandidates(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleCloneCandidates_LimitIsTen(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	svc := newTestPMTAService(db, defaultOrgID)
+
+	mock.ExpectQuery("LIMIT 10").
+		WithArgs(defaultOrgID, "discountblog.com").
+		WillReturnRows(cloneCandidateRows())
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/mailing/pmta-campaign/clone-candidates?domain=m.discountblog.com", nil)
+	req.Header.Set("X-Organization-ID", defaultOrgID)
+	rr := httptest.NewRecorder()
+	svc.HandleCloneCandidates(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	assert.NoError(t, mock.ExpectationsWereMet())
 }

@@ -2198,12 +2198,12 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 
 	var campaigns []campaignInfo
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, name, status, COALESCE(sent_count,0), COALESCE(total_recipients,0),
+		SELECT c.id::text, c.name, c.status, COALESCE(c.sent_count,0), COALESCE(total_recipients,0),
 		       COALESCE(sending_profile_id::text,''), COALESCE(from_email,''),
 		       COALESCE(list_ids::text,'[]')
 		FROM mailing_campaigns
 		WHERE organization_id = $1 AND status IN ('scheduled','preparing','sending')
-		ORDER BY created_at DESC LIMIT 10
+		ORDER BY c.created_at DESC LIMIT 10
 	`, orgID)
 	if err == nil {
 		defer rows.Close()
@@ -2216,7 +2216,7 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 
 	// Resolve the recent-campaign ids first, then aggregate the queue with an
 	// explicit = ANY(array) predicate. The previous IN-(subquery on
-	// created_at > NOW()-6h) form let the planner misestimate and fall back
+	// c.created_at > NOW()-6h) form let the planner misestimate and fall back
 	// to a full heap scan of the multi-GB queue table — one of the uncached
 	// "on-demand twins" called out in CAMPAIGN_QUEUE_STORAGE_REDESIGN.md
 	// §4.2. With explicit ids the (campaign_id, ...) indexes always drive a
@@ -2225,7 +2225,7 @@ func (s *PMTACampaignService) HandlePMTADiag(w http.ResponseWriter, r *http.Requ
 	var recentCampaignIDs []string
 	idRows, err := s.db.QueryContext(ctx, `
 		SELECT id::text FROM mailing_campaigns
-		WHERE organization_id = $1 AND created_at > NOW() - INTERVAL '6 hours'
+		WHERE organization_id = $1 AND c.created_at > NOW() - INTERVAL '6 hours'
 	`, orgID)
 	if err == nil {
 		defer idRows.Close()
@@ -2550,37 +2550,62 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 
 	configSelect := "false AS has_config"
 	if s.colCache.has("pmta_config") {
-		configSelect = "(pmta_config IS NOT NULL AND pmta_config::text != '{}') AS has_config"
+		configSelect = "(c.pmta_config IS NOT NULL AND c.pmta_config::text != '{}') AS has_config"
 	}
 
-	query := fmt.Sprintf(`
-		SELECT id::text, name, status,
-		       COALESCE(sent_count, 0), COALESCE(open_count, 0), COALESCE(click_count, 0),
-		       COALESCE(bounce_count, 0),
-		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END,
-		       CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END,
-		       COALESCE(complaint_count, 0),
-		       COALESCE(completed_at, started_at, created_at) AS campaign_date,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(open_count, 0)::float / sent_count ELSE 0 END AS open_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(click_count, 0)::float / sent_count ELSE 0 END AS click_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(bounce_count, 0)::float / sent_count ELSE 0 END AS bounce_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN (CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(hard_bounce_count,0) ELSE COALESCE(bounce_count,0) END)::float / sent_count ELSE 0 END AS hard_bounce_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN (CASE WHEN COALESCE(hard_bounce_count,0)+COALESCE(soft_bounce_count,0)>0 THEN COALESCE(soft_bounce_count,0) ELSE 0 END)::float / sent_count ELSE 0 END AS soft_bounce_rate,
-		       CASE WHEN COALESCE(sent_count, 0) > 0 THEN COALESCE(complaint_count, 0)::float / sent_count ELSE 0 END AS complaint_rate,
-		       %s
-		FROM mailing_campaigns
-		WHERE organization_id = $1
-		  AND status IN ('completed', 'sent', 'cancelled', 'completed_with_errors', 'sending', 'draft')
-		  -- BROADCAST campaigns only (operator 2026-07-02): the clone picker must
-		  -- not offer partner-drip / click-drip mini-campaigns (hundreds/day) —
-		  -- you clone an operator broadcast, never a drip wave.
-		  AND partner_drip_tag IS NULL
-		  AND COALESCE(campaign_type, '') <> 'click_drip'
-		ORDER BY COALESCE(completed_at, started_at, created_at) DESC
-		LIMIT 20
-	`, configSelect)
+	// APEX SCOPING (operator 2026-08-19). The picker is reached by selecting a
+	// sending domain, and clone candidates must be scoped to that domain's BRAND
+	// ROOT, not the exact domain: 16 of 28 apexes send from more than one domain
+	// (historythinking.com runs em.=24 and m.=225 campaigns), so an exact-domain
+	// filter hides ~90% of a brand's own history. brand.Root maps both variants
+	// to the apex; the SQL suffix test mirrors it (brand.Root is Go-side only).
+	// Unfiltered the picker is org-wide, which is the pre-existing behaviour.
+	apex := brand.Root(strings.TrimSpace(r.URL.Query().Get("domain")))
+	domainJoin, domainWhere := "", ""
+	args := []interface{}{orgID}
+	if apex != "" {
+		domainJoin = "JOIN mailing_sending_profiles p ON p.id = c.sending_profile_id"
+		domainWhere = "AND (p.sending_domain = $2 OR p.sending_domain LIKE ('%.' || $2))"
+		args = append(args, apex)
+	}
+	// Operator 2026-08-19: clone the last 10 only. The flow is select-domain-then-clone,
+	// so this is 10 PER APEX (~5-10 days for a brand mailing 1-2/day), not 10 org-wide.
+	limit := 10
 
-	rows, err := s.db.QueryContext(ctx, query, orgID)
+	query := fmt.Sprintf(`
+		SELECT c.id::text, c.name, c.status,
+		       COALESCE(c.sent_count, 0), COALESCE(c.open_count, 0), COALESCE(c.click_count, 0),
+		       COALESCE(c.bounce_count, 0),
+		       CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.hard_bounce_count,0) ELSE COALESCE(c.bounce_count,0) END,
+		       CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.soft_bounce_count,0) ELSE 0 END,
+		       COALESCE(c.complaint_count, 0),
+		       COALESCE(c.completed_at, c.started_at, c.created_at) AS campaign_date,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN COALESCE(c.open_count, 0)::float / c.sent_count ELSE 0 END AS open_rate,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN COALESCE(c.click_count, 0)::float / c.sent_count ELSE 0 END AS click_rate,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN COALESCE(c.bounce_count, 0)::float / c.sent_count ELSE 0 END AS bounce_rate,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN (CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.hard_bounce_count,0) ELSE COALESCE(c.bounce_count,0) END)::float / c.sent_count ELSE 0 END AS hard_bounce_rate,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN (CASE WHEN COALESCE(c.hard_bounce_count,0)+COALESCE(c.soft_bounce_count,0)>0 THEN COALESCE(c.soft_bounce_count,0) ELSE 0 END)::float / c.sent_count ELSE 0 END AS soft_bounce_rate,
+		       CASE WHEN COALESCE(c.sent_count, 0) > 0 THEN COALESCE(c.complaint_count, 0)::float / c.sent_count ELSE 0 END AS complaint_rate,
+		       %s
+		FROM mailing_campaigns c
+		%s
+		WHERE c.organization_id = $1
+		  AND c.status IN ('completed', 'sent', 'cancelled', 'completed_with_errors', 'sending', 'draft')
+		  -- BROADCAST campaigns only (operator 2026-07-02, tightened 2026-08-19): the
+		  -- picker must not offer partner-drip / click-drip / journey mini-campaigns —
+		  -- you clone an operator broadcast, never a drip wave.
+		  -- POSITIVE allowlist, not "<> 'click_drip'": the negative form let any new
+		  -- campaign_type leak in silently, and a journey_node campaign was in fact
+		  -- passing it. Measured: 29,801 of 29,877 eligible rows are 'regular', with
+		  -- zero NULL/empty, so this excludes exactly click_drip (75) + journey_node (1).
+		  AND c.partner_drip_tag IS NULL
+		  AND c.campaign_type = 'regular'
+		  %s
+		ORDER BY COALESCE(c.completed_at, c.started_at, c.created_at) DESC
+		LIMIT %d
+	`, configSelect, domainJoin, domainWhere, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		log.Printf("[CloneCandidates] query error: %v", err)
 		http.Error(w, fmt.Sprintf(`{"error":"failed to query campaigns: %s"}`, err.Error()), http.StatusInternalServerError)
@@ -2654,6 +2679,9 @@ func (s *PMTACampaignService) HandleCloneCandidates(w http.ResponseWriter, r *ht
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"campaigns": candidates,
+		// Echo the resolved apex so the UI can show WHAT it scoped to. An empty
+		// apex means the list is org-wide, which must not look like a filtered one.
+		"apex": apex,
 	})
 }
 

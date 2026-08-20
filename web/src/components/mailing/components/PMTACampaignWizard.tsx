@@ -544,6 +544,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // Clone state
   const [showClonePanel, setShowClonePanel] = useState(false);
   const [cloneCandidates, setCloneCandidates] = useState<CloneCandidate[]>([]);
+  const [cloneError, setCloneError] = useState('');
+  const [cloneApex, setCloneApex] = useState('');
   const [cloneLoading, setCloneLoading] = useState(false);
   const [cloneApplying, setCloneApplying] = useState('');
   const clonePanelRef = useRef<HTMLDivElement>(null);
@@ -1370,17 +1372,31 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   const fetchCloneCandidates = useCallback(async () => {
     setCloneLoading(true);
+    setCloneError('');
     try {
-      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/clone-candidates`);
+      // Scope candidates to the selected domain's APEX. The server resolves the
+      // brand root, so em.<apex> and m.<apex> campaigns are offered together.
+      const qs = selectedDomain ? `?domain=${encodeURIComponent(selectedDomain)}` : '';
+      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/clone-candidates${qs}`);
       if (res.ok) {
         const data = await res.json();
         setCloneCandidates(data.campaigns || []);
+        setCloneApex(data.apex || '');
+      } else {
+        // A failed load previously fell through here silently and rendered the
+        // empty state, which is indistinguishable from "this brand has nothing
+        // to clone" — that is the "it just doesn't load" report. Say so instead.
+        const body = await res.json().catch(() => null);
+        setCloneError(body?.error || `Could not load campaigns (HTTP ${res.status}). Try again.`);
+        setCloneCandidates([]);
       }
     } catch (err) {
       console.warn('[Wizard] clone candidates fetch failed:', err);
+      setCloneError('Could not reach the server. Try again.');
+      setCloneCandidates([]);
     }
     setCloneLoading(false);
-  }, [fetchWithRetry]);
+  }, [fetchWithRetry, selectedDomain]);
 
   const applyClone = useCallback(async (candidateId: string) => {
     setCloneApplying(candidateId);
@@ -4625,7 +4641,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             <button
               onClick={() => {
                 if (loadingDraft) return;
-                if (!showClonePanel && cloneCandidates.length === 0) fetchCloneCandidates();
+                // Refetch when opening if we have nothing, if the last attempt
+                // failed, or if the operator changed domain since we loaded —
+                // otherwise the list silently belongs to the previous apex.
+                const staleApex = !!selectedDomain && !!cloneApex
+                  && !selectedDomain.endsWith(cloneApex);
+                if (!showClonePanel && (cloneCandidates.length === 0 || cloneError || staleApex)) {
+                  fetchCloneCandidates();
+                }
                 setShowClonePanel(!showClonePanel);
               }}
               disabled={loadingDraft}
@@ -4667,9 +4690,34 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   </div>
                 )}
 
-                {!cloneLoading && cloneCandidates.length === 0 && (
+                {!cloneLoading && cloneError && (
+                  <div style={{ padding: 16, textAlign: 'center', fontSize: 12, color: '#f87171' }}>
+                    {cloneError}
+                    <button
+                      onClick={fetchCloneCandidates}
+                      style={{
+                        display: 'block', margin: '8px auto 0', padding: '4px 12px',
+                        borderRadius: 5, border: '1px solid rgba(248,113,113,0.35)',
+                        background: 'rgba(248,113,113,0.08)', color: '#fca5a5',
+                        fontSize: 11, cursor: 'pointer',
+                      }}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                {!cloneLoading && !cloneError && cloneCandidates.length === 0 && (
                   <div style={{ padding: 20, textAlign: 'center', color: '#64748b', fontSize: 12 }}>
-                    No campaigns available to clone.
+                    No campaigns available to clone
+                    {cloneApex ? ` for ${cloneApex}.` : '.'}
+                  </div>
+                )}
+
+                {!cloneLoading && !cloneError && cloneApex && cloneCandidates.length > 0 && (
+                  <div style={{ padding: '6px 12px', fontSize: 10.5, color: '#64748b',
+                                borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    Showing campaigns across all sending domains for <b>{cloneApex}</b>
                   </div>
                 )}
 
