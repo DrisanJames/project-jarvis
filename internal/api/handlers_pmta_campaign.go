@@ -163,6 +163,14 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// prod Postgres, so it cannot contend with sending the way the PG rollup
 		// did. No snapshot yet returns an explicit empty STATE, never zero rows.
 		cr.Get("/property-ledger/snapshot", s.HandleLaneSnapshotStats)
+		// Campaign Manager WARM-UP flow (operator 2026-08-20). Records intent
+		// only — the Python builder creates the campaign. These endpoints never
+		// send, and the API is refused the builder-owned statuses.
+		cr.Get("/warmup/domains", s.HandleWarmupDomains)
+		cr.Get("/warmup/creative", s.HandleWarmupCreative)
+		cr.Get("/warmup/segments", s.HandleWarmupSegments)
+		cr.Post("/warmup/request", s.HandleWarmupRequestUpsert)
+		cr.Get("/warmup/requests", s.HandleWarmupRequestList)
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)

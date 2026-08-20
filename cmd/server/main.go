@@ -2662,6 +2662,15 @@ func runStartupMigrations(db *sql.DB) {
 		// probe skips the whole entry, so the index would never land, silently,
 		// forever. Small DDL only; the fill is the worker's job, never a migration
 		// (the 5s statement budget would drop a backfill and log it as "skipped").
+		// Kumo warm-up requests (2026-08-20): the Campaign Manager warm-up flow
+		// records operator intent here; the PYTHON builder consumes it. The two
+		// live on different machines, so this table IS the contract. THREE
+		// SEPARATE ENTRIES: migrationSkipProbe classifies by leading keywords
+		// (migration_skip.go:41), so a combined CREATE TABLE + CREATE INDEX is
+		// probed as CREATE TABLE and the indexes silently never land.
+		{"aug20_kumo_warmup_requests", api.KumoWarmupRequestsDDL},
+		{"aug20_kumo_warmup_requests_idx", api.KumoWarmupRequestsIndexDDL},
+		{"aug20_kumo_warmup_requests_live_slot", api.KumoWarmupRequestsLiveSlotDDL},
 		{"aug19_mailing_lane_stats_daily", worker.LaneStatsRollupDDL},
 		{"aug19_mailing_lane_stats_daily_idx", worker.LaneStatsRollupIndexDDL},
 		// Worker heartbeat table — backs WorkerHealthMonitor stall detection

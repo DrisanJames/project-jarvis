@@ -7,8 +7,11 @@ import {
   faTimes, faChartBar, faShieldAlt, faCrosshairs,
   faSave, faGripVertical, faMagic,
   faCopy, faTrophy, faChevronDown, faChevronUp, faSearch, faLock, faInfinity,
+  faEye, faNewspaper, faSnowflake, faRotate, faClock, faTemperatureHalf,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../../contexts/AuthContext';
+import { apiFetch } from '../shared/apiFetch';
+import { SectionError, EmptyState } from '../shared/ui';
 import { AnimatedCounter } from '../shared/AnimatedCounter';
 import { useToast } from '../shared/ToastSystem';
 import { JarvisCompleteModal } from '../shared/JarvisCompleteModal';
@@ -350,6 +353,114 @@ const RECOMMENDATION_COLORS: Record<string, string> = {
 
 const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 
+// ── Warm-up branch (KumoMTA newsletter warm-up) ──────────────────────────────
+//
+// The wizard is ONE wizard with two content/audience branches. Steps 1, 2, 5
+// and 6 are shared; only steps 3 and 4 differ. The OFFER branch is the live
+// send path and is left byte-identical — every warm-up code path below is
+// gated on `warmupActive`, and the offer renderers/validators/payload builder
+// are never re-entered from here.
+//
+// Warm-up content is EDITORIAL by design: offers are banned in it (CLAUDE.md
+// §13.1), so this branch has no offer picker at all.
+
+interface WarmupDomainRow {
+  domain: string;
+  brand_slug?: string;
+  brand_code?: string;
+  // Optional: if the estate endpoint knows the cold feeds for a property it can
+  // return them and the cold-source field upgrades from free text to a picker.
+  cold_sources?: string[];
+}
+
+interface WarmupCreative {
+  id: string;
+  subject: string;
+  preheader: string;
+  // FRESHNESS IS `updated_at`. `generated_at` is frozen at first insert and
+  // reads days stale on a creative that was refreshed this morning — reading it
+  // as freshness is what made two domains look current while they re-sent the
+  // same bytes for 15 days. `generated_at` is rendered ONLY as "first created".
+  updated_at: string;
+  generated_at?: string;
+  html_bytes?: number;
+  sha256?: string;
+  // Not part of the documented response shape; read opportunistically so the
+  // Preview can render a real body when the endpoint carries one.
+  html?: string;
+  html_content?: string;
+}
+
+interface WarmupSegment {
+  id: string;
+  name: string;
+  // ⚠️ ZEROED when a segment refresh times out — a healthy segment can read 0.
+  // Never rendered as a confident zero; see warmupSegmentCount().
+  subscriber_count?: number | null;
+}
+
+interface WarmupRequestRow {
+  id?: string;
+  sending_domain?: string;
+  brand_slug?: string;
+  status?: string;              // requested | building | built | failed
+  scheduled_at?: string;
+  cold_source?: string;
+  cold_quota?: number;
+  build_note?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// A creative older than this has almost certainly not been re-registered today.
+const WARMUP_STALE_MS = 24 * 3600 * 1000;
+
+const WARMUP_STATUS_COLORS: Record<string, string> = {
+  requested: '#38bdf8',
+  building:  '#f59e0b',
+  built:     '#10b981',
+  failed:    '#ef4444',
+};
+
+// `subscriber_count` is zeroed on a refresh timeout, so 0 is UNKNOWN, not zero.
+const warmupSegmentCount = (seg: WarmupSegment): { known: boolean; value: number } => {
+  const n = seg.subscriber_count;
+  if (n === null || n === undefined || n === 0) return { known: false, value: 0 };
+  return { known: true, value: n };
+};
+
+// Property slug for the creative/segment lookups. Prefer what the estate
+// endpoint states; only fall back to deriving it from the sending domain, and
+// the resolved value is always shown in the UI so a wrong guess is visible
+// rather than silently querying the wrong brand.
+const deriveBrandSlug = (row: WarmupDomainRow | undefined, domain: string): string => {
+  if (row?.brand_slug) return row.brand_slug;
+  if (row?.brand_code) return row.brand_code.toLowerCase();
+  const apex = domain.replace(/^em\./i, '').replace(/^m\./i, '');
+  const label = apex.split('.')[0] || '';
+  return label.toLowerCase();
+};
+
+const fmtBytes = (n?: number): string =>
+  n === undefined || n === null ? '—' : `${n.toLocaleString()} bytes`;
+
+// "registered 04:45 today" / "registered Aug 14, 04:45" + an explicit age.
+const fmtFreshness = (iso?: string): { text: string; ageMs: number | null } => {
+  if (!iso) return { text: 'never registered', ageMs: null };
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return { text: 'unreadable timestamp', ageMs: null };
+  const ageMs = Date.now() - t;
+  const d = new Date(t);
+  const hhmm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const hours = Math.floor(ageMs / 3600000);
+  const rel = hours < 1 ? 'under an hour ago' : hours < 48 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+  return {
+    text: sameDay ? `registered ${hhmm} today (${rel})` : `registered ${d.toLocaleDateString()} ${hhmm} (${rel})`,
+    ageMs,
+  };
+};
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 // Step order (operator 2026-08-18): the SENDING DOMAIN comes first. The pinned
@@ -364,6 +475,14 @@ const STEPS = [
   { id: 5, label: 'Sending Insights',       icon: faBrain },
   { id: 6, label: 'Schedule + Deploy',      icon: faRocket },
 ];
+
+// Warm-up relabels ONLY steps 3 and 4. Same six steps, same ids, same order —
+// the branch never adds or removes a step, so nothing downstream of the step
+// index changes.
+const WARMUP_STEP_OVERRIDES: Record<number, { label: string; icon: typeof faNewspaper }> = {
+  3: { label: 'Newsletter',            icon: faNewspaper },
+  4: { label: 'Audience + Cold Source', icon: faSnowflake },
+};
 
 // ── Main component ───────────────────────────────────────────────────────────
 
@@ -549,6 +668,51 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [cloneLoading, setCloneLoading] = useState(false);
   const [cloneApplying, setCloneApplying] = useState('');
   const clonePanelRef = useRef<HTMLDivElement>(null);
+
+  // ── Warm-up branch state ─────────────────────────────────────────────────
+  // Nothing here is read by the offer flow. `warmupActive` is the single gate.
+  const [warmupDomains, setWarmupDomains] = useState<WarmupDomainRow[]>([]);
+  const [warmupDomainsLoading, setWarmupDomainsLoading] = useState(false);
+  const [warmupDomainsError, setWarmupDomainsError] = useState('');
+  const [warmupDomainsKey, setWarmupDomainsKey] = useState(0);
+  const [warmupMode, setWarmupMode] = useState(false);
+  // Which domain the ON-by-default rule has already been applied for, so a
+  // deliberate toggle-off is never stomped by a late-arriving domain list.
+  const [warmupDefaultAppliedFor, setWarmupDefaultAppliedFor] = useState('');
+
+  // Step 3 (warm-up): the daily-registered newsletter + the operator's overrides.
+  const [warmupCreative, setWarmupCreative] = useState<WarmupCreative | null>(null);
+  const [warmupCreativeLoading, setWarmupCreativeLoading] = useState(false);
+  const [warmupCreativeError, setWarmupCreativeError] = useState('');
+  const [warmupCreativeKey, setWarmupCreativeKey] = useState(0);
+  const [warmupSubject, setWarmupSubject] = useState('');
+  const [warmupPreheader, setWarmupPreheader] = useState('');
+  // Empty until the operator edits — so the payload can carry the creative's
+  // own copy unchanged and an override is always a deliberate act.
+  const [warmupCopyTouched, setWarmupCopyTouched] = useState(false);
+  const [warmupPreviewOpen, setWarmupPreviewOpen] = useState(false);
+  const [warmupPreviewHtml, setWarmupPreviewHtml] = useState('');
+  const [warmupPreviewLoading, setWarmupPreviewLoading] = useState(false);
+  const [warmupPreviewError, setWarmupPreviewError] = useState('');
+
+  // Step 4 (warm-up): engaged anchors + the cold pad.
+  const [warmupSegments, setWarmupSegments] = useState<WarmupSegment[]>([]);
+  const [warmupSegmentsLoading, setWarmupSegmentsLoading] = useState(false);
+  const [warmupSegmentsError, setWarmupSegmentsError] = useState('');
+  const [warmupSegmentsKey, setWarmupSegmentsKey] = useState(0);
+  const [warmupSelectedSegmentIds, setWarmupSelectedSegmentIds] = useState<string[]>([]);
+  const [coldSource, setColdSource] = useState('');
+  // String, not number: an empty box must stay empty rather than render as 0.
+  const [coldQuota, setColdQuota] = useState('');
+
+  // Step 6 (warm-up): the build REQUEST and its status ledger.
+  const [warmupSubmitting, setWarmupSubmitting] = useState(false);
+  const [warmupResult, setWarmupResult] = useState<{ error?: string; request?: WarmupRequestRow } | null>(null);
+  const [warmupRequests, setWarmupRequests] = useState<WarmupRequestRow[] | null>(null);
+  const [warmupRequestsLoading, setWarmupRequestsLoading] = useState(false);
+  const [warmupRequestsError, setWarmupRequestsError] = useState('');
+  const [warmupRequestsKey, setWarmupRequestsKey] = useState(0);
+  const [warmupRequestsFetchedAt, setWarmupRequestsFetchedAt] = useState('');
 
   // ── Validation state ─────────────────────────────────────────────────────
   const [stepAttempted, setStepAttempted] = useState<Record<number, boolean>>({});
@@ -903,6 +1067,253 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     ? selectedISPs.filter(i => !KUMO_ALLOWED_ISPS.includes(i))
     : [];
 
+  // ── Warm-up branch: derived ──────────────────────────────────────────────
+
+  const warmupDomainRow = useMemo(
+    () => warmupDomains.find(d => d.domain === selectedDomain),
+    [warmupDomains, selectedDomain],
+  );
+  // The eligible set is the SERVER's (mailing_sending_profiles.routing_mode =
+  // 'kumo'); the 11 are never hardcoded here.
+  const isWarmupDomain = !!selectedDomain && !!warmupDomainRow;
+  const warmupActive = isWarmupDomain && warmupMode;
+  const warmupBrandSlug = useMemo(
+    () => (isWarmupDomain ? deriveBrandSlug(warmupDomainRow, selectedDomain) : ''),
+    [isWarmupDomain, warmupDomainRow, selectedDomain],
+  );
+  // Was the slug stated by the estate endpoint, or guessed from the domain?
+  const warmupSlugIsDerived = isWarmupDomain && !warmupDomainRow?.brand_slug && !warmupDomainRow?.brand_code;
+
+  // Offer-flow work the operator has already done. Toggling never discards it —
+  // it stays in state and comes back intact — but the operator is told.
+  const offerStateEntered = !!selectedProofId || !!selectedOfferId
+    || !!(variants[0]?.subject || '').trim() || !!(variants[0]?.html_content || '').trim();
+
+  const warmupFreshness = useMemo(
+    () => fmtFreshness(warmupCreative?.updated_at),
+    [warmupCreative],
+  );
+  const warmupCreativeStale =
+    warmupFreshness.ageMs !== null && warmupFreshness.ageMs > WARMUP_STALE_MS;
+
+  const coldQuotaNum = useMemo(() => {
+    const t = coldQuota.trim();
+    if (t === '') return null;
+    const n = Number(t);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  }, [coldQuota]);
+
+  // Engaged side of the mix. Counts that came back 0 are UNKNOWN (a refresh
+  // timeout zeroes subscriber_count), so they are counted separately and never
+  // folded into the total as zeros.
+  const warmupEngagedMix = useMemo(() => {
+    const picked = warmupSegments.filter(sg => warmupSelectedSegmentIds.includes(sg.id));
+    let known = 0;
+    let unknownSegments = 0;
+    for (const sg of picked) {
+      const c = warmupSegmentCount(sg);
+      if (c.known) known += c.value; else unknownSegments += 1;
+    }
+    return { selected: picked.length, known, unknownSegments };
+  }, [warmupSegments, warmupSelectedSegmentIds]);
+
+  const denverDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: SEND_DAY_TIMEZONE });
+
+  // One scheduled instant for the request, resolved from whichever schedule
+  // control the operator actually used (quick field, or the earliest per-ISP
+  // plan start). Returns '' when nothing is set — never "now".
+  const warmupScheduledAtISO = useMemo(() => {
+    if (scheduleMode === 'quick' || !Object.keys(ispPlansByKey).length) {
+      return scheduledAt ? new Date(scheduledAt).toISOString() : '';
+    }
+    const starts: number[] = [];
+    if (scheduledAt) starts.push(new Date(scheduledAt).getTime());
+    for (const isp of selectedISPs) {
+      const plan = ispPlansByKey[isp];
+      if (!plan?.useCustomSchedule) continue;
+      if (plan.startTime) starts.push(new Date(plan.startTime).getTime());
+      (plan.timeSpans || []).forEach(sp => { if (sp.startAt) starts.push(new Date(sp.startAt).getTime()); });
+    }
+    const valid = starts.filter(t => Number.isFinite(t));
+    return valid.length ? new Date(Math.min(...valid)).toISOString() : '';
+  }, [scheduleMode, scheduledAt, ispPlansByKey, selectedISPs]);
+
+  // Same six steps; warm-up only relabels 3 and 4.
+  const activeSteps = useMemo(
+    () => (warmupActive
+      ? STEPS.map(st => (WARMUP_STEP_OVERRIDES[st.id] ? { ...st, ...WARMUP_STEP_OVERRIDES[st.id] } : st))
+      : STEPS),
+    [warmupActive],
+  );
+
+  const warmupRequestsDate = useMemo(
+    () => denverDay(warmupScheduledAtISO ? new Date(warmupScheduledAtISO) : new Date()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [warmupScheduledAtISO],
+  );
+
+  // ── Warm-up branch: fetches ──────────────────────────────────────────────
+
+  // The eligible-domain list. Loaded once per wizard (and on Retry) — it is
+  // what decides whether the toggle is even offered.
+  useEffect(() => {
+    let cancelled = false;
+    setWarmupDomainsLoading(true);
+    setWarmupDomainsError('');
+    apiFetch(`${API_BASE}/pmta-campaign/warmup/domains`)
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setWarmupDomainsError(data?.error || `HTTP ${res.status}`);
+          setWarmupDomains([]);
+          return;
+        }
+        const rows: WarmupDomainRow[] = (data?.domains || data || [])
+          .map((d: any) => (typeof d === 'string' ? { domain: d } : d))
+          .filter((d: any) => d && d.domain);
+        setWarmupDomains(rows);
+      })
+      .catch(err => { if (!cancelled) { setWarmupDomainsError(err?.message || 'network error'); setWarmupDomains([]); } })
+      .finally(() => { if (!cancelled) setWarmupDomainsLoading(false); });
+    return () => { cancelled = true; };
+  }, [warmupDomainsKey]);
+
+  // Default ON for a warm-up property, OFF for everything else — applied once
+  // per domain so an explicit toggle-off survives.
+  //
+  // The stamp is taken ONLY once eligibility is actually known (isWarmupDomain
+  // true). Stamping on the not-yet-loaded state would mark the domain
+  // "defaulted" while the estate list was still in flight, and the default
+  // would then never apply when it arrived.
+  useEffect(() => {
+    if (!selectedDomain || !isWarmupDomain) {
+      setWarmupMode(false);
+      setWarmupDefaultAppliedFor('');
+      return;
+    }
+    if (warmupDefaultAppliedFor !== selectedDomain) {
+      setWarmupMode(true);
+      setWarmupDefaultAppliedFor(selectedDomain);
+    }
+  }, [selectedDomain, isWarmupDomain, warmupDefaultAppliedFor]);
+
+  // Property changed ⇒ its newsletter, its anchors and its cold pad are all
+  // property-scoped. Clear them rather than carrying another brand's picks
+  // across (the campaign-manager carry-over incident, 2026-08-18).
+  useEffect(() => {
+    setWarmupCreative(null);
+    setWarmupCreativeError('');
+    setWarmupSubject('');
+    setWarmupPreheader('');
+    setWarmupCopyTouched(false);
+    setWarmupPreviewHtml('');
+    setWarmupPreviewError('');
+    setWarmupSegments([]);
+    setWarmupSegmentsError('');
+    setWarmupSelectedSegmentIds([]);
+    setColdSource('');
+    setColdQuota('');
+    setWarmupResult(null);
+  }, [selectedDomain]);
+
+  // The daily-registered newsletter for this property.
+  useEffect(() => {
+    if (!warmupActive || !warmupBrandSlug) return;
+    let cancelled = false;
+    setWarmupCreativeLoading(true);
+    setWarmupCreativeError('');
+    apiFetch(`${API_BASE}/pmta-campaign/warmup/creative?brand_slug=${encodeURIComponent(warmupBrandSlug)}`)
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setWarmupCreativeError(data?.error || `HTTP ${res.status}`);
+          setWarmupCreative(null);
+          return;
+        }
+        const c: WarmupCreative | null = data?.creative || (data?.id ? data : null);
+        setWarmupCreative(c);
+        // Prefill the overrides from the creative's own copy, but only while
+        // the operator has not edited them — a refetch must never silently
+        // overwrite what they typed.
+        if (c && !warmupCopyTouched) {
+          setWarmupSubject(c.subject || '');
+          setWarmupPreheader(c.preheader || '');
+        }
+      })
+      .catch(err => { if (!cancelled) { setWarmupCreativeError(err?.message || 'network error'); setWarmupCreative(null); } })
+      .finally(() => { if (!cancelled) setWarmupCreativeLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warmupActive, warmupBrandSlug, warmupCreativeKey]);
+
+  // The property's engaged-anchor segments.
+  useEffect(() => {
+    if (!warmupActive || !warmupBrandSlug) return;
+    let cancelled = false;
+    setWarmupSegmentsLoading(true);
+    setWarmupSegmentsError('');
+    apiFetch(`${API_BASE}/pmta-campaign/warmup/segments?brand_slug=${encodeURIComponent(warmupBrandSlug)}`)
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setWarmupSegmentsError(data?.error || `HTTP ${res.status}`);
+          setWarmupSegments([]);
+          return;
+        }
+        setWarmupSegments(Array.isArray(data) ? data : (data?.segments || []));
+      })
+      .catch(err => { if (!cancelled) { setWarmupSegmentsError(err?.message || 'network error'); setWarmupSegments([]); } })
+      .finally(() => { if (!cancelled) setWarmupSegmentsLoading(false); });
+    return () => { cancelled = true; };
+  }, [warmupActive, warmupBrandSlug, warmupSegmentsKey]);
+
+  // The build-request ledger for the scheduled day. Polled while any request is
+  // still non-terminal — the builder takes ~40 minutes.
+  const fetchWarmupRequests = useCallback(async (signal?: AbortSignal) => {
+    setWarmupRequestsLoading(true);
+    setWarmupRequestsError('');
+    try {
+      const res = await apiFetch(
+        `${API_BASE}/pmta-campaign/warmup/requests?date=${encodeURIComponent(warmupRequestsDate)}`,
+        signal ? { signal } : undefined,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWarmupRequestsError(data?.error || `HTTP ${res.status}`);
+        setWarmupRequests(null);
+        return;
+      }
+      setWarmupRequests(Array.isArray(data) ? data : (data?.requests || []));
+      setWarmupRequestsFetchedAt(new Date().toLocaleTimeString());
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      setWarmupRequestsError(err?.message || 'network error');
+      setWarmupRequests(null);
+    } finally {
+      setWarmupRequestsLoading(false);
+    }
+  }, [warmupRequestsDate]);
+
+  useEffect(() => {
+    if (!warmupActive || step !== 6) return;
+    const ctrl = new AbortController();
+    fetchWarmupRequests(ctrl.signal);
+    return () => ctrl.abort();
+  }, [warmupActive, step, warmupRequestsKey, fetchWarmupRequests]);
+
+  useEffect(() => {
+    if (!warmupActive || step !== 6) return;
+    const pending = (warmupRequests || []).some(
+      r => (r.status || '').toLowerCase() === 'requested' || (r.status || '').toLowerCase() === 'building',
+    );
+    if (!pending) return;
+    const t = setInterval(() => { fetchWarmupRequests(); }, 30000);
+    return () => clearInterval(t);
+  }, [warmupActive, step, warmupRequests, fetchWarmupRequests]);
+
   const toggleEngagementTier = useCallback((kind: 'clickers' | 'openers' | 'other', segmentId: string) => {
     const apply = (prev: string[]) =>
       prev.includes(segmentId) ? prev.filter(x => x !== segmentId) : [...prev, segmentId];
@@ -1040,6 +1451,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
         break;
       case 3:
+        if (warmupActive) {
+          // Warm-up content is the daily-registered newsletter. No offer, no
+          // proof — offers are BANNED in warm-up content.
+          if (warmupCreativeError) errors.push(`Newsletter could not be loaded (${warmupCreativeError}) — retry before scheduling`);
+          else if (!warmupCreativeLoading && !warmupCreative) errors.push('No newsletter is registered for this property today — register one in Creative Studio first');
+          if (warmupCreative && !warmupSubject.trim()) errors.push('Subject line is required');
+          if (warmupCreative && !warmupPreheader.trim()) errors.push('Preheader is required');
+          break;
+        }
         if (!selectedProofId) errors.push('Select an approved creative from the Creative Studio offers library');
         variants.forEach(v => {
           if (!v.from_name.trim()) errors.push('Select an approved from-name');
@@ -1048,6 +1468,27 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         });
         break;
       case 4:
+        if (warmupActive) {
+          const cold = coldQuotaNum ?? 0;
+          if (warmupSelectedSegmentIds.length === 0 && cold <= 0) {
+            errors.push('Select at least one engaged-anchor segment, or set a cold quota above 0');
+          }
+          if (coldQuota.trim() !== '' && coldQuotaNum === null) {
+            errors.push('Cold quota must be a whole number of records (0 or more)');
+          }
+          if (cold > 0 && !coldSource.trim()) {
+            errors.push('Choose the cold source the builder should pull those records from');
+          }
+          if (coldSource.trim() && cold <= 0) {
+            errors.push('A cold source is selected but the cold quota is 0 — set a quota or clear the source');
+          }
+          if (kumoIllegalISPs.length > 0) {
+            errors.push(
+              `KumoMTA warm-up is yahoo-family only — remove ${kumoIllegalISPs.join(', ')} ` +
+              `(allowed: ${KUMO_ALLOWED_ISPS.join(', ')})`);
+          }
+          break;
+        }
         if (selectedClickerIds.length === 0 && selectedOpenerIds.length === 0
             && selectedOtherIds.length === 0
             && selectedLists.length === 0 && selectedSegments.length === 0) {
@@ -1085,6 +1526,17 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         }
         break;
       case 6:
+        if (warmupActive) {
+          // The warm-up request carries no campaign name — the builder names
+          // what it builds. It DOES need one resolvable scheduled instant.
+          if (!warmupScheduledAtISO) {
+            errors.push('Set the send date and time — the build request needs one scheduled instant');
+          } else if (new Date(warmupScheduledAtISO).getTime() <= Date.now()) {
+            errors.push('Scheduled date and time must be in the future');
+          }
+          if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
+          break;
+        }
         if (!campaignName.trim()) errors.push('Campaign name is required');
         if (sendMode === 'scheduled' && scheduleMode === 'quick') {
           if (!scheduledAt) {
@@ -1888,6 +2340,95 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
     setDeploying(false);
   }, [buildCampaignPayload, campaignComplete, campaignId, campaignName, fetchWithRetry, onCampaignPreparing, onEditComplete]);
+
+  // ── Warm-up branch: preview + submit ─────────────────────────────────────
+
+  // The documented creative response carries sha256/html_bytes but not
+  // necessarily the body. If it did, preview from what we already hold;
+  // otherwise ask for the body explicitly and say so plainly when there is
+  // none, rather than opening a blank white iframe.
+  const openWarmupPreview = useCallback(async () => {
+    setWarmupPreviewOpen(true);
+    setWarmupPreviewError('');
+    const inline = warmupCreative?.html || warmupCreative?.html_content || '';
+    if (inline) { setWarmupPreviewHtml(inline); return; }
+    if (!warmupBrandSlug) { setWarmupPreviewHtml(''); return; }
+    setWarmupPreviewLoading(true);
+    try {
+      const res = await apiFetch(
+        `${API_BASE}/pmta-campaign/warmup/creative?brand_slug=${encodeURIComponent(warmupBrandSlug)}&include_html=1`,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWarmupPreviewError(data?.error || `HTTP ${res.status}`);
+        setWarmupPreviewHtml('');
+        return;
+      }
+      const c = data?.creative || data || {};
+      setWarmupPreviewHtml(c.html || c.html_content || '');
+    } catch (err: any) {
+      setWarmupPreviewError(err?.message || 'network error');
+      setWarmupPreviewHtml('');
+    } finally {
+      setWarmupPreviewLoading(false);
+    }
+  }, [warmupCreative, warmupBrandSlug]);
+
+  // Records INTENT. It does not send, and it does not create a campaign — a
+  // separate builder consumes the request (~40 min, disk-bound). Every string
+  // this UI shows about the outcome says "queued for build", never "deployed".
+  const handleWarmupRequest = useCallback(async () => {
+    setWarmupSubmitting(true);
+    setWarmupResult(null);
+    try {
+      // Same quota shape the offer payload emits: volume 0 per selected ISP on
+      // an audience-bound send, else the finite per-ISP quotas. Written out
+      // here rather than reusing buildCampaignPayload so the offer path is not
+      // re-entered on this branch.
+      const ispQuotaArray = audienceBound
+        ? selectedISPs.map(isp => ({ isp, volume: 0 }))
+        : Object.entries(ispQuotas).filter(([, v]) => v > 0).map(([isp, volume]) => ({ isp, volume }));
+
+      const body = {
+        sending_domain: selectedDomain,
+        brand_slug: warmupBrandSlug,
+        creative_id: warmupCreative?.id || '',
+        subject: warmupSubject,
+        preheader: warmupPreheader,
+        audience_segment_ids: warmupSelectedSegmentIds,
+        cold_source: coldSource.trim(),
+        cold_quota: coldQuotaNum ?? 0,
+        isp_quotas: ispQuotaArray,
+        scheduled_at: warmupScheduledAtISO,
+        status: 'requested',
+      };
+
+      const res = await apiFetch(`${API_BASE}/pmta-campaign/warmup/request`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setWarmupResult({ error: `The request endpoint returned a non-JSON response (HTTP ${res.status}). Nothing was queued — check the build ledger below before retrying.` });
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWarmupResult({ error: data?.error || `Request failed (HTTP ${res.status})` });
+        return;
+      }
+      setWarmupResult({ request: data?.request || data || {} });
+      setWarmupRequestsKey(k => k + 1);
+    } catch (err: any) {
+      setWarmupResult({ error: err?.message || 'Request failed — network error. Nothing was queued; click Queue for build to retry.' });
+    } finally {
+      setWarmupSubmitting(false);
+    }
+  }, [
+    audienceBound, coldQuotaNum, coldSource, ispQuotas, selectedDomain, selectedISPs,
+    warmupBrandSlug, warmupCreative, warmupPreheader, warmupScheduledAtISO,
+    warmupSelectedSegmentIds, warmupSubject,
+  ]);
 
   // ── Toggle helpers ───────────────────────────────────────────────────────
 
@@ -2813,6 +3354,89 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           })()}
         </div>
       )}
+
+      {/* ── Warm-up toggle ────────────────────────────────────────────────
+          Offered ONLY for a KumoMTA warm-up property. Eligibility is the
+          server's (mailing_sending_profiles.routing_mode='kumo') — the 11
+          domains are never hardcoded in this file. */}
+      {selectedDomain && warmupDomainsLoading && (
+        <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Checking whether {selectedDomain} is a warm-up property…
+        </div>
+      )}
+
+      {selectedDomain && !warmupDomainsLoading && warmupDomainsError && (
+        <div style={{ marginTop: 16 }}>
+          <SectionError
+            label="Warm-up eligibility"
+            error={`${warmupDomainsError} — the warm-up toggle is hidden because we could not confirm whether this property is a warm-up domain. This is NOT a statement that it is not one.`}
+            onRetry={() => setWarmupDomainsKey(k => k + 1)}
+          />
+        </div>
+      )}
+
+      {selectedDomain && !warmupDomainsLoading && !warmupDomainsError && isWarmupDomain && (
+        <div style={{
+          marginTop: 20, borderRadius: 10, padding: 14,
+          background: warmupActive ? 'rgba(56,189,248,0.08)' : '#0d1526',
+          border: `1.5px solid ${warmupActive ? '#38bdf8' : 'rgba(0,200,255,0.08)'}`,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={warmupMode}
+              onChange={e => setWarmupMode(e.target.checked)}
+              aria-label="Warm-up newsletter mode"
+              style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer', accentColor: '#38bdf8' }}
+            />
+            <span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: warmupActive ? '#38bdf8' : '#e0e6f0' }}>
+                <FontAwesomeIcon icon={faTemperatureHalf} style={{ marginRight: 6, fontSize: 11 }} />
+                Warm-up newsletter
+              </span>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4, lineHeight: 1.55 }}>
+                {selectedDomain} is a KumoMTA warm-up property. Warm-up swaps two steps and leaves
+                the rest of the wizard alone: step&nbsp;3 becomes the daily-registered
+                <strong> newsletter</strong> (there is no offer — offers are banned in warm-up
+                content) and step&nbsp;4 adds a <strong>cold source and quota</strong> alongside the
+                engaged anchors. Steps 1, 2, 5 and 6 are identical either way.
+              </div>
+            </span>
+          </label>
+
+          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 10 }}>
+            Property slug for the newsletter and anchor lookups:{' '}
+            <strong style={{ color: '#e0e6f0', fontFamily: 'monospace' }}>{warmupBrandSlug || '—'}</strong>
+            {warmupSlugIsDerived && (
+              <span style={{ color: '#f59e0b' }}>
+                {' '}· derived from the sending domain (the estate list did not state one) — check it
+                matches the property before scheduling
+              </span>
+            )}
+          </div>
+
+          {/* Toggling NEVER discards offer-flow work: this branch only reads
+              its own state, so switching back restores the offer step exactly
+              as it was. Say so rather than leaving the operator guessing. */}
+          {warmupActive && offerStateEntered && (
+            <div style={{
+              marginTop: 10, padding: '9px 11px', borderRadius: 8, fontSize: 11.5, lineHeight: 1.55,
+              background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.45)', color: '#fbbf24',
+            }}>
+              <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+              You already picked offer content{selectedProofName ? ` (${selectedProofName})` : ''}. It is
+              <strong> kept, not discarded</strong> — but it is NOT part of a warm-up request. Switch
+              this toggle off to go back to the offer flow with that selection intact.
+            </div>
+          )}
+
+          {!warmupActive && (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: 'rgba(180,210,240,0.6)' }}>
+              Warm-up is off — this property will be scheduled through the normal offer flow.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 
@@ -3691,6 +4315,425 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     );
   };
 
+  // ── Warm-up step 3: Newsletter ───────────────────────────────────────────
+  // Replaces Offer + Creative. There is deliberately NO offer picker: offers
+  // are banned in warm-up content.
+  const renderWarmupStep3 = () => {
+    const c = warmupCreative;
+    const subjectOverridden = !!c && warmupSubject.trim() !== (c.subject || '').trim();
+    const preheaderOverridden = !!c && warmupPreheader.trim() !== (c.preheader || '').trim();
+
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ margin: 0 }}>
+            <FontAwesomeIcon icon={faNewspaper} style={{ marginRight: 8, color: '#38bdf8' }} />
+            Newsletter<RequiredDot />
+          </h3>
+          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+            The warm-up creative registered for <strong>{warmupBrandSlug || selectedDomain}</strong> today.
+            Warm-up content is editorial — there is no offer to pick, and none may be introduced here.
+            Subject and preheader are prefilled from the creative; editing either sends an override
+            with the build request.
+          </p>
+        </div>
+        <StepErrorBanner stepNum={3} />
+
+        {/* Four distinct states — a failed fetch must never read as "nothing
+            registered", so the error is checked BEFORE emptiness. */}
+        {warmupCreativeLoading && (
+          <div style={{ padding: '18px 14px', background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, fontSize: 13, color: '#7dd3fc' }}>
+            <FontAwesomeIcon icon={faSpinner} spin /> Loading today&rsquo;s registered newsletter…
+          </div>
+        )}
+
+        {!warmupCreativeLoading && warmupCreativeError && (
+          <SectionError
+            label="Registered newsletter"
+            error={warmupCreativeError}
+            onRetry={() => setWarmupCreativeKey(k => k + 1)}
+          />
+        )}
+
+        {!warmupCreativeLoading && !warmupCreativeError && !c && (
+          <div style={{ background: '#0d1526', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 10, padding: 4 }}>
+            <EmptyState
+              icon={faNewspaper}
+              title="No newsletter is registered for this property"
+              hint={`Nothing has been registered in Creative Studio for "${warmupBrandSlug || selectedDomain}". This is not an empty creative — there is no row at all. Stage one (agents.jobs.kumo_newsletter_stage) before scheduling; a warm-up request with no creative has nothing to build.`}
+            />
+          </div>
+        )}
+
+        {!warmupCreativeLoading && !warmupCreativeError && c && (
+          <>
+            {/* FRESHNESS. `updated_at` is the registration time and the only
+                honest freshness signal. `generated_at` is frozen at first
+                insert — it is shown, but labelled "first created" so it can
+                never be misread as "this is today's content". */}
+            <div style={{
+              background: warmupCreativeStale ? 'rgba(245,158,11,0.10)' : '#0d1526',
+              border: `1.5px solid ${warmupCreativeStale ? '#f59e0b' : 'rgba(0,200,255,0.08)'}`,
+              borderRadius: 10, padding: 14, marginBottom: 16,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: warmupCreativeStale ? '#f59e0b' : '#10b981' }}>
+                  <FontAwesomeIcon icon={faClock} style={{ marginRight: 6, fontSize: 11 }} />
+                  Freshness — {warmupFreshness.text}
+                </div>
+                <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)' }}>
+                  from <span style={{ fontFamily: 'monospace' }}>updated_at</span>
+                </div>
+              </div>
+
+              {warmupCreativeStale && (
+                <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 8, lineHeight: 1.55 }}>
+                  <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+                  <strong>This creative has not been re-registered in over 24 hours.</strong> A stale
+                  warm-up creative mails byte-identically forever with no error — that is exactly how
+                  two properties re-sent the same articles for 15 days. Re-run the daily registration
+                  for this property before queueing a build.
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+                <span title="Frozen at first insert. NOT a freshness signal.">
+                  First created:{' '}
+                  <strong style={{ color: '#e0e6f0' }}>
+                    {c.generated_at ? new Date(c.generated_at).toLocaleString() : '—'}
+                  </strong>
+                </span>
+                <span>Body: <strong style={{ color: '#e0e6f0' }}>{fmtBytes(c.html_bytes)}</strong></span>
+                <span title={c.sha256 || ''}>
+                  sha256:{' '}
+                  <strong style={{ color: '#e0e6f0', fontFamily: 'monospace' }}>
+                    {c.sha256 ? `${c.sha256.slice(0, 12)}…` : '—'}
+                  </strong>
+                </span>
+                <span title={c.id}>
+                  creative_id:{' '}
+                  <strong style={{ color: '#e0e6f0', fontFamily: 'monospace' }}>
+                    {c.id ? `${c.id.slice(0, 8)}…` : '—'}
+                  </strong>
+                </span>
+                <button type="button" onClick={openWarmupPreview}
+                  style={{ background: 'transparent', border: '1px solid rgba(0,200,255,0.18)', color: '#00b0ff', borderRadius: 6, padding: '3px 12px', fontSize: 11, cursor: 'pointer' }}>
+                  <FontAwesomeIcon icon={faEye} /> Preview
+                </button>
+              </div>
+            </div>
+
+            {/* Editable copy — editable exactly where the operator acts. */}
+            <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+              <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>Subject + preheader</h4>
+
+              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>
+                Subject<RequiredDot />
+              </label>
+              <input
+                value={warmupSubject}
+                onChange={e => { setWarmupCopyTouched(true); setWarmupSubject(e.target.value); }}
+                placeholder="Subject line for this send"
+                style={{
+                  width: '100%', boxSizing: 'border-box', background: '#0a0f1a', color: '#e0e6f0',
+                  border: fieldBorder(!warmupSubject.trim()), borderRadius: 6, padding: '9px 11px', fontSize: 13,
+                }}
+              />
+              <div style={{ fontSize: 10.5, color: subjectOverridden ? '#38bdf8' : 'rgba(180,210,240,0.45)', marginTop: 4, minHeight: 14 }}>
+                {subjectOverridden
+                  ? <>Override — the registered subject is &ldquo;{c.subject || '(none)'}&rdquo;.{' '}
+                      <button type="button" onClick={() => setWarmupSubject(c.subject || '')}
+                        style={{ background: 'transparent', border: 'none', color: '#00b0ff', fontSize: 10.5, cursor: 'pointer', padding: 0 }}>revert</button></>
+                  : 'Matches the registered creative.'}
+              </div>
+
+              <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', margin: '12px 0 4px' }}>
+                Preheader<RequiredDot />
+              </label>
+              <input
+                value={warmupPreheader}
+                onChange={e => { setWarmupCopyTouched(true); setWarmupPreheader(e.target.value); }}
+                placeholder="Preview text shown after the subject in the inbox"
+                style={{
+                  width: '100%', boxSizing: 'border-box', background: '#0a0f1a', color: '#e0e6f0',
+                  border: fieldBorder(!warmupPreheader.trim()), borderRadius: 6, padding: '9px 11px', fontSize: 13,
+                }}
+              />
+              <div style={{ fontSize: 10.5, color: preheaderOverridden ? '#38bdf8' : 'rgba(180,210,240,0.45)', marginTop: 4, minHeight: 14 }}>
+                {preheaderOverridden
+                  ? <>Override — the registered preheader is &ldquo;{c.preheader || '(none)'}&rdquo;.{' '}
+                      <button type="button" onClick={() => setWarmupPreheader(c.preheader || '')}
+                        style={{ background: 'transparent', border: 'none', color: '#00b0ff', fontSize: 10.5, cursor: 'pointer', padding: 0 }}>revert</button></>
+                  : 'Matches the registered creative.'}
+              </div>
+            </div>
+          </>
+        )}
+
+        {warmupPreviewOpen && (
+          <div onClick={() => setWarmupPreviewOpen(false)}
+               style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ background: '#fff', borderRadius: 10, width: 'min(760px, 100%)', height: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '8px 12px', background: '#0d1526', color: '#e0e6f0', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
+                <span>{warmupBrandSlug || selectedDomain} newsletter — {warmupFreshness.text}</span>
+                <button onClick={() => setWarmupPreviewOpen(false)} style={{ background: 'transparent', border: 'none', color: '#00b0ff', cursor: 'pointer' }}>close</button>
+              </div>
+              {warmupPreviewLoading ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0f172a', fontSize: 13 }}>
+                  <FontAwesomeIcon icon={faSpinner} spin /> &nbsp;Loading the newsletter body…
+                </div>
+              ) : warmupPreviewError ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, color: '#b91c1c', fontSize: 13, textAlign: 'center' }}>
+                  Could not load the body: {warmupPreviewError}
+                </div>
+              ) : warmupPreviewHtml ? (
+                <iframe title="warm-up newsletter preview" srcDoc={warmupPreviewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, color: '#b45309', fontSize: 13, textAlign: 'center' }}>
+                  The creative endpoint returned metadata for this newsletter
+                  ({fmtBytes(warmupCreative?.html_bytes)}, sha256 {warmupCreative?.sha256?.slice(0, 12) || '—'}…)
+                  but no HTML body, so there is nothing to render here. This is a blank preview, not a
+                  blank creative.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Warm-up step 4: Audience + Cold Source ───────────────────────────────
+  // The engaged anchors stay the primary audience; the cold pad is ADDITIVE and
+  // is always shown as its own number so the operator sees the MIX, never one
+  // blended figure.
+  const renderWarmupStep4 = () => {
+    const cold = coldQuotaNum ?? 0;
+    const mix = warmupEngagedMix;
+    const totalKnown = mix.known + cold;
+
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <h3 style={{ margin: '0 0 4px' }}>
+          <FontAwesomeIcon icon={faSnowflake} style={{ marginRight: 8, color: '#38bdf8' }} />
+          Audience + Cold Source<RequiredDot />
+        </h3>
+        <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
+          Pick the engaged anchors this warm-up send leads with, then set how many cold records the
+          builder pads with and where they come from.
+        </p>
+        <StepErrorBanner stepNum={4} />
+
+        {kumoIllegalISPs.length > 0 && (
+          <div style={{
+            marginBottom: 16, padding: '10px 12px', borderRadius: 10,
+            background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.45)',
+            fontSize: 12, color: '#ef4444',
+          }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+            <strong>KumoMTA warm-up is yahoo-family only.</strong> Remove{' '}
+            <strong>{kumoIllegalISPs.join(', ')}</strong> on the Mailbox Providers step — the estate
+            registry caps yahoo, aol, att, sbcglobal and cox, and nothing else may send.
+          </div>
+        )}
+
+        {/* ── Engaged anchors ──────────────────────────────────────────── */}
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10, gap: 10 }}>
+            <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>
+              <FontAwesomeIcon icon={faUsers} style={{ marginRight: 6, fontSize: 11, color: '#f59e0b' }} />
+              Engaged anchor segments
+            </h4>
+            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)' }}>
+              {warmupSelectedSegmentIds.length} selected
+            </span>
+          </div>
+
+          {warmupSegmentsLoading && (
+            <div style={{ fontSize: 12, color: '#7dd3fc', padding: '10px 0' }}>
+              <FontAwesomeIcon icon={faSpinner} spin /> Loading anchor segments for {warmupBrandSlug}…
+            </div>
+          )}
+
+          {!warmupSegmentsLoading && warmupSegmentsError && (
+            <SectionError
+              label="Anchor segments"
+              error={warmupSegmentsError}
+              onRetry={() => setWarmupSegmentsKey(k => k + 1)}
+            />
+          )}
+
+          {!warmupSegmentsLoading && !warmupSegmentsError && warmupSegments.length === 0 && (
+            <EmptyState
+              icon={faUsers}
+              title="No anchor segments exist for this property"
+              hint={`The segment list for "${warmupBrandSlug}" came back empty. A warm-up send can still run on a cold pad alone — but if you expected anchors here, build them before scheduling.`}
+            />
+          )}
+
+          {!warmupSegmentsLoading && !warmupSegmentsError && warmupSegments.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {warmupSegments.map(sg => {
+                const picked = warmupSelectedSegmentIds.includes(sg.id);
+                const cnt = warmupSegmentCount(sg);
+                return (
+                  <div
+                    key={sg.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={picked}
+                    onClick={() => setWarmupSelectedSegmentIds(prev =>
+                      prev.includes(sg.id) ? prev.filter(x => x !== sg.id) : [...prev, sg.id])}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setWarmupSelectedSegmentIds(prev => prev.includes(sg.id) ? prev.filter(x => x !== sg.id) : [...prev, sg.id]); } }}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+                      background: picked ? 'rgba(0,200,255,0.08)' : '#0a0f1a',
+                      border: `1.5px solid ${picked ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
+                      borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ fontSize: 12.5, color: '#e0e6f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sg.name}>
+                      {picked && <FontAwesomeIcon icon={faCheck} style={{ color: '#00b0ff', marginRight: 6, fontSize: 11 }} />}
+                      {sg.name}
+                    </span>
+                    {/* subscriber_count is ZEROED on a refresh timeout, so 0 is
+                        UNKNOWN. Never render it as a confident zero. */}
+                    {cnt.known ? (
+                      <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                        {cnt.value.toLocaleString()} <span style={{ color: 'rgba(180,210,240,0.4)' }}>subscribers</span>
+                      </span>
+                    ) : (
+                      <span
+                        title="subscriber_count is zeroed when a segment refresh times out — a healthy segment can read 0. Verify the build ledger before deploying."
+                        style={{ fontSize: 11, color: '#f59e0b', whiteSpace: 'nowrap' }}
+                      >
+                        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} /> count unavailable — verify before deploying
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ── Cold source + quota ──────────────────────────────────────── */}
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 4px', fontSize: 13, color: '#e0e6f0' }}>
+            <FontAwesomeIcon icon={faSnowflake} style={{ marginRight: 6, fontSize: 11, color: '#38bdf8' }} />
+            Cold pad
+          </h4>
+          <p style={{ margin: '0 0 12px', fontSize: 11.5, color: 'rgba(180,210,240,0.6)', lineHeight: 1.55 }}>
+            How many cold records to pad this send with, and which source the builder pulls them from.
+            Leave the quota empty or 0 to send to the engaged anchors only.
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
+            <div>
+              <label htmlFor="warmup-cold-source" style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>
+                Cold source
+              </label>
+              <input
+                id="warmup-cold-source"
+                list={(warmupDomainRow?.cold_sources || []).length > 0 ? 'warmup-cold-sources' : undefined}
+                value={coldSource}
+                onChange={e => setColdSource(e.target.value)}
+                placeholder="feed / dataset the builder pulls cold records from"
+                style={{
+                  width: '100%', boxSizing: 'border-box', background: '#0a0f1a', color: '#e0e6f0',
+                  border: fieldBorder(cold > 0 && !coldSource.trim()), borderRadius: 6, padding: '9px 11px', fontSize: 13,
+                }}
+              />
+              {(warmupDomainRow?.cold_sources || []).length > 0 && (
+                <datalist id="warmup-cold-sources">
+                  {(warmupDomainRow?.cold_sources || []).map(src => <option key={src} value={src} />)}
+                </datalist>
+              )}
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 4 }}>
+                {(warmupDomainRow?.cold_sources || []).length > 0
+                  ? `${(warmupDomainRow?.cold_sources || []).length} known source${(warmupDomainRow?.cold_sources || []).length === 1 ? '' : 's'} for this property — type to filter.`
+                  : 'No source list is published for this property, so this is free text — it is passed to the builder verbatim.'}
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="warmup-cold-quota" style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>
+                Cold quota (records)
+              </label>
+              <input
+                id="warmup-cold-quota"
+                type="number"
+                min={0}
+                step={100}
+                value={coldQuota}
+                onChange={e => setColdQuota(e.target.value)}
+                placeholder="0"
+                style={{
+                  width: '100%', boxSizing: 'border-box', background: '#0a0f1a', color: '#e0e6f0',
+                  border: fieldBorder(coldQuota.trim() !== '' && coldQuotaNum === null),
+                  borderRadius: 6, padding: '9px 11px', fontSize: 13, fontVariantNumeric: 'tabular-nums',
+                }}
+              />
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 4 }}>
+                {coldQuota.trim() === ''
+                  ? 'Empty — no cold pad requested.'
+                  : coldQuotaNum === null
+                    ? 'Not a whole number of records.'
+                    : `${coldQuotaNum.toLocaleString()} cold record${coldQuotaNum === 1 ? '' : 's'}.`}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── The MIX. Engaged and cold are never blended into one number. ── */}
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>Audience mix</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <div style={{ background: '#0a0f1a', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>
+                Engaged ({mix.selected} segment{mix.selected === 1 ? '' : 's'})
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: '#f59e0b', fontVariantNumeric: 'tabular-nums' }}>
+                {mix.known.toLocaleString()}{mix.unknownSegments > 0 ? '+' : ''}
+              </div>
+              <div style={{ fontSize: 10.5, color: mix.unknownSegments > 0 ? '#f59e0b' : 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                {mix.unknownSegments > 0
+                  ? `${mix.unknownSegments} selected segment${mix.unknownSegments === 1 ? '' : 's'} report no count — the real figure is higher than this`
+                  : 'sum of the selected anchor segments'}
+              </div>
+            </div>
+
+            <div style={{ background: '#0a0f1a', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>Cold quota</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: '#38bdf8', fontVariantNumeric: 'tabular-nums' }}>
+                {cold.toLocaleString()}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                {coldSource.trim() ? `from ${coldSource.trim()}` : 'no source set'}
+              </div>
+            </div>
+
+            <div style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.18)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>Combined target</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: '#e0e6f0', fontVariantNumeric: 'tabular-nums' }}>
+                {mix.unknownSegments > 0 ? '≥ ' : ''}{totalKnown.toLocaleString()}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                engaged + cold, before suppression
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)', marginTop: 10, lineHeight: 1.5 }}>
+            These are PLANNED figures the builder works from — the engaged number is the segments&rsquo;
+            own counts and the cold number is the quota you set, neither is a post-suppression
+            estimate.
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderStep5 = () => {
     const MiniGauge: React.FC<{ value: number; max: number; color: string; label: string; size?: number }> = ({ value, max, color, label, size = 44 }) => {
       const pct = max > 0 ? Math.min(value / max, 1) : 0;
@@ -3993,6 +5036,99 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     );
   };
 
+  // ── Warm-up step 6 companion: the build-request ledger ───────────────────
+  // This branch RECORDS INTENT. It does not send. The builder consumes the
+  // request separately (~40 min, disk-bound), so every word here says "queued
+  // for build" — never "deployed", never "sending".
+  const renderWarmupRequestPanel = () => {
+    const rows = warmupRequests || [];
+    return (
+      <div style={{ background: '#0d1526', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>
+            <FontAwesomeIcon icon={faClock} style={{ marginRight: 6, fontSize: 11, color: '#38bdf8' }} />
+            Warm-up build requests — {warmupRequestsDate} ({SEND_DAY_TIMEZONE})
+          </h4>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)' }}>
+              {warmupRequestsLoading ? 'fetching…' : warmupRequestsFetchedAt ? `fetched ${warmupRequestsFetchedAt}` : ''}
+            </span>
+            <button type="button" onClick={() => setWarmupRequestsKey(k => k + 1)} disabled={warmupRequestsLoading}
+              style={{ background: 'transparent', border: '1px solid rgba(0,200,255,0.18)', color: '#00b0ff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: warmupRequestsLoading ? 'default' : 'pointer' }}>
+              <FontAwesomeIcon icon={faRotate} spin={warmupRequestsLoading} /> Refresh
+            </button>
+          </span>
+        </div>
+
+        <div style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)', lineHeight: 1.55, marginBottom: 10 }}>
+          Queueing a warm-up request does <strong style={{ color: '#e0e6f0' }}>not</strong> send mail and
+          does not create a campaign. It records the intent; a separate builder picks it up and takes
+          roughly 40 minutes. Watch this ledger for
+          {' '}<span style={{ color: WARMUP_STATUS_COLORS.requested }}>requested</span> →
+          {' '}<span style={{ color: WARMUP_STATUS_COLORS.building }}>building</span> →
+          {' '}<span style={{ color: WARMUP_STATUS_COLORS.built }}>built</span> /
+          {' '}<span style={{ color: WARMUP_STATUS_COLORS.failed }}>failed</span>.
+        </div>
+
+        {/* error is checked BEFORE emptiness — a failed fetch must never read
+            as "no requests for today". */}
+        {warmupRequestsError ? (
+          <SectionError
+            label="Build-request ledger"
+            error={`${warmupRequestsError} — the status of today's requests is UNKNOWN, not empty.`}
+            onRetry={() => setWarmupRequestsKey(k => k + 1)}
+          />
+        ) : warmupRequestsLoading && warmupRequests === null ? (
+          <div style={{ fontSize: 12, color: '#7dd3fc', padding: '8px 0' }}>
+            <FontAwesomeIcon icon={faSpinner} spin /> Loading the build ledger…
+          </div>
+        ) : rows.length === 0 ? (
+          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)', padding: '8px 0' }}>
+            No warm-up build requests recorded for {warmupRequestsDate}.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {rows.map((r, i) => {
+              const st = (r.status || 'unknown').toLowerCase();
+              const col = WARMUP_STATUS_COLORS[st] || '#94a3b8';
+              return (
+                <div key={r.id || i} style={{ background: '#0a0f1a', border: `1px solid ${col}44`, borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12.5, color: '#e0e6f0' }}>
+                      {r.sending_domain || r.brand_slug || '—'}
+                      {r.scheduled_at && (
+                        <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11 }}>
+                          {' '}· scheduled {new Date(r.scheduled_at).toLocaleString()}
+                        </span>
+                      )}
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: col, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                      {st}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                    cold {r.cold_quota === undefined || r.cold_quota === null ? '—' : r.cold_quota.toLocaleString()}
+                    {r.cold_source ? ` from ${r.cold_source}` : ''}
+                    {r.updated_at ? ` · updated ${new Date(r.updated_at).toLocaleTimeString()}` : ''}
+                  </div>
+                  {st === 'failed' && (
+                    <div style={{ fontSize: 11.5, color: '#fca5a5', marginTop: 6, lineHeight: 1.5 }}>
+                      <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} />{' '}
+                      {r.build_note || 'The builder reported a failure but returned no build_note.'}
+                    </div>
+                  )}
+                  {st !== 'failed' && r.build_note && (
+                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 6 }}>{r.build_note}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderStep6 = () => (
     <div className="wiz-step-content ig-fade-in">
       <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
@@ -4106,7 +5242,44 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </div>
       )}
 
-      {deployResult ? (
+      {/* Warm-up branch: the build ledger sits above the form and stays
+          visible whether or not a request has just been queued. */}
+      {warmupActive && renderWarmupRequestPanel()}
+
+      {warmupActive && warmupResult && !warmupResult.error ? (
+        <div style={{ textAlign: 'center', padding: 40 }}>
+          <div style={{ color: '#38bdf8' }}>
+            <FontAwesomeIcon icon={faClock} size="3x" style={{ marginBottom: 12 }} />
+            {/* NOT "deployed", NOT "sending" — nothing has been sent. */}
+            <h3 style={{ margin: '0 0 6px' }}>Queued for build</h3>
+            <p style={{ margin: '0 0 4px', fontSize: 13, color: 'rgba(180,210,240,0.75)', lineHeight: 1.6 }}>
+              The warm-up request for <strong style={{ color: '#e0e6f0' }}>{selectedDomain}</strong> is
+              recorded. <strong style={{ color: '#e0e6f0' }}>No mail has been sent and no campaign
+              exists yet.</strong> A separate builder consumes this request and takes roughly
+              40 minutes; the ledger above moves requested → building → built when it does.
+            </p>
+            {warmupResult.request?.id && (
+              <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)', fontFamily: 'monospace' }}>
+                request {warmupResult.request.id}
+              </p>
+            )}
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 16 }}>
+              <button onClick={() => setWarmupRequestsKey(k => k + 1)}
+                style={{ background: 'transparent', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.18)', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                <FontAwesomeIcon icon={faRotate} /> Refresh status
+              </button>
+              <button onClick={() => setWarmupResult(null)}
+                style={{ background: 'transparent', color: '#e0e6f0', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                Edit request
+              </button>
+              <button onClick={onClose}
+                style={{ background: '#00b0ff', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 24px', fontSize: 14, cursor: 'pointer' }}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : deployResult ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           {deployResult.error ? (
             <div style={{ color: '#ef4444' }}>
@@ -4558,7 +5731,19 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             </div>
           )}
 
+          {/* A failed warm-up request queues nothing — say so, and let the
+              operator retry from here rather than dead-ending. */}
+          {warmupActive && warmupResult?.error && (
+            <div style={{ marginBottom: 12, padding: '10px 12px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 8, fontSize: 12, color: '#fca5a5' }}>
+              <FontAwesomeIcon icon={faTimesCircle} /> {warmupResult.error}
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: 12 }}>
+            {/* Save Draft persists an OFFER-flow campaign_input. A warm-up
+                request is not a campaign draft, so the control is not offered
+                on this branch rather than saving a misleading half-payload. */}
+            {!warmupActive && (
             <button
               onClick={() => {
                 const errors = getStepErrors(6);
@@ -4582,6 +5767,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 : <><FontAwesomeIcon icon={faSave} /> Save Draft</>
               }
             </button>
+            )}
             <button
               className="ig-btn-glow ig-ripple"
               onClick={() => {
@@ -4590,25 +5776,39 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   setStepAttempted(prev => ({ ...prev, 6: true }));
                   return;
                 }
+                if (warmupActive) { handleWarmupRequest(); return; }
                 handleDeploy();
               }}
-              disabled={deploying || savingDraft}
+              disabled={deploying || savingDraft || warmupSubmitting}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 flex: 1.4, padding: '14px 0',
-                background: deploying ? '#4b5563' : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
+                background: (deploying || warmupSubmitting) ? '#4b5563'
+                  : warmupActive ? '#38bdf8'
+                  : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
                 color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
-                cursor: deploying || savingDraft ? 'not-allowed' : 'pointer',
+                cursor: deploying || savingDraft || warmupSubmitting ? 'not-allowed' : 'pointer',
               }}
             >
-              {deploying
-                ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
-                : sendMode === 'scheduled'
-                  ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
-                  : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
+              {warmupActive
+                ? (warmupSubmitting
+                    ? <><FontAwesomeIcon icon={faSpinner} spin /> Queueing…</>
+                    // Deliberately NOT "Deploy" / "Send": this records intent.
+                    : <><FontAwesomeIcon icon={faClock} /> Queue for build</>)
+                : deploying
+                  ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
+                  : sendMode === 'scheduled'
+                    ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
+                    : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
               }
             </button>
           </div>
+          {warmupActive && (
+            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+              Queueing records the request only — it does not send mail, and it does not create a
+              campaign. The builder runs separately and takes about 40 minutes.
+            </div>
+          )}
         </>
       )}
     </div>
@@ -4776,7 +5976,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
       {/* Step indicator */}
       <div className="ig-stagger" style={{ display: 'flex', padding: '12px 20px', gap: 4, borderBottom: '1px solid rgba(0,200,255,0.08)', background: '#0a1628', overflowX: 'auto' }}>
-        {STEPS.map((s) => {
+        {activeSteps.map((s) => {
           const isActive = s.id === step;
           const isComplete = s.id < step;
           const hasErrors = stepAttempted[s.id] && getStepErrors(s.id).length > 0;
@@ -4812,8 +6012,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
         {step === 1 && renderStepDomain()}
         {step === 2 && renderStepProviders()}
-        {step === 3 && renderStep3()}
-        {step === 4 && renderStep4()}
+        {/* The BRANCH. Steps 1, 2, 5 and 6 are shared; only 3 and 4 fork, and
+            the offer renderers are never entered while warm-up is active. */}
+        {step === 3 && (warmupActive ? renderWarmupStep3() : renderStep3())}
+        {step === 4 && (warmupActive ? renderWarmupStep4() : renderStep4())}
         {step === 5 && renderStep5()}
         {step === 6 && renderStep6()}
       </div>
