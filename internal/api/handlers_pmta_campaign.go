@@ -125,6 +125,10 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/property-ledger/global-hold", s.HandleGlobalHold)
 		cr.Get("/property-ledger/reconciliation", s.HandleListReconciliation)
 		cr.Get("/property-ledger/coverage", s.HandleListCoverage)
+		// Cold-ingestion trend per sending domain (operator 2026-08-20): what each
+		// feed already delivers day over day, so a growth ask nets down to its
+		// true shortfall instead of being sized gross.
+		cr.Get("/property-ledger/ingestion", s.HandleLedgerIngestion)
 		// Lane content panel (operator scope addition 2026-08-17): what a
 		// lane sends (offer / creative / subject / preheader / from-name) +
 		// in-screen edits, audit-logged with the stamped actor.

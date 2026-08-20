@@ -2299,6 +2299,17 @@ var concurrentIndexSpecs = []struct {
 	// Without this expression index each lookup is a ~13M-row seq scan
 	// (~17s under load) — the dominant read amplifier in the 2026-06-09
 	// IO-saturation incident.
+	// Property Ledger → cold-ingestion trend (operator ask 2026-08-20: "a report
+	// that captures day over day our ingestion totals by sending domain", so a
+	// feed already injecting 10k/day nets down the day's clean-ask). The handler
+	// buckets partner_clean_queue by Denver ingest-day × dataset over a rolling
+	// window; partner_clean_queue is ~11.2M rows / 10 GB with NO index on
+	// ingested_at (only a partial one gated on status='pending_eo'), so the
+	// grouping was a full heap scan on every screen load. Composite
+	// (ingested_at, dataset_id) turns it into a bounded range scan that carries
+	// the grouping key. Concurrent slice, not the 5s migration slice: the build
+	// scans the whole 10 GB heap.
+	{"idx_pcq_ingested_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ingested_dataset ON partner_clean_queue (ingested_at, dataset_id)`},
 	{"idx_message_log_lower_email_sent", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_lower_email_sent ON mailing_message_log (LOWER(email), sent_at DESC)`},
 	// Partial index over snapshot-bearing queue rows: drives the snapshot
 	// retention NOT EXISTS probe in data_cleanup.go without a queue scan.

@@ -702,6 +702,8 @@ export const PropertyLedgerView: React.FC = () => {
         <LaneContentPanel brand={selectedBrand} domain={domain ?? ''} onNotice={setNotice} />
       )}
 
+      <IngestionTrendPanel />
+
       <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 14, lineHeight: 1.6 }}>
         One row per sending domain × ISP. Drip Intro Daily Cap = first-touch introductions the drip
         may absorb per Denver day (edits are approvals and apply from tomorrow — the counter worker
@@ -710,6 +712,199 @@ export const PropertyLedgerView: React.FC = () => {
         Sent / Delivered % / Open / Click pull from the SES VDM daily snapshots (complete UTC days
         only, VDM unique-count semantics); a red lane means delivered % under 50 on meaningful volume.
       </p>
+    </div>
+  );
+};
+
+// ── Cold-ingestion trend — what each feed already delivers, day over day ────
+//
+// Operator 2026-08-20: "if a feed is already injecting 10k day over day of cold
+// data then the 50k injection number becomes 40k." A growth ask is only ever
+// the SHORTFALL against standing intake, so this sits next to the caps it
+// qualifies. Two lanes read very differently here and both matter: a domain
+// with a live feed needs a smaller clean-ask than its headline number, and a
+// domain with NO feed needs every record from cleaning — which is invisible
+// until you look at intake per domain.
+//
+// Server splits multi-home verticals by roster weight, so rows sum to true
+// intake. Per-day rate excludes today (still filling) — see the handler.
+
+interface IngestionRow {
+  brand: string;
+  sending_domain: string;
+  by_day: Record<string, number>;
+  window_total: number;
+  per_day: number;
+}
+interface IngestionResponse {
+  from: string;
+  to: string;
+  days: string[];
+  rate_days: number;
+  rows: IngestionRow[];
+  unmapped: { vertical: string; records: number }[];
+  estate_total: number;
+}
+
+const IngestionTrendPanel: React.FC = () => {
+  const [data, setData] = useState<IngestionResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [days, setDays] = useState(14);
+
+  const load = useCallback(async (n: number) => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/ingestion?days=${n}`);
+      if (!r.ok) throw new Error(`ingestion ${r.status}`);
+      setData(await r.json());
+    } catch (e: any) {
+      setErr(e?.message || 'failed to load ingestion trend');
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(days); }, [load, days]);
+
+  const th: React.CSSProperties = {
+    textAlign: 'left', padding: '7px 9px', fontSize: 10.5, letterSpacing: 0.6,
+    color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+  };
+  const td: React.CSSProperties = {
+    padding: '7px 9px', fontSize: 12.5, color: '#e6edf5',
+    borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
+  };
+  const thNum: React.CSSProperties = { ...th, textAlign: 'right' };
+  const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
+
+  // Rows sorted by standing rate: the feeds actually carrying supply first,
+  // the zero-feed domains last where they read as the exception they are.
+  const rows = (data?.rows ?? []).slice().sort((a, b) => b.per_day - a.per_day);
+  const today = data?.days?.[data.days.length - 1];
+
+  return (
+    <div style={{
+      marginTop: 18, background: 'rgba(10,20,35,0.5)',
+      border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '14px 16px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
+        <h3 style={{ margin: 0, fontSize: 15, color: '#e6edf5', fontWeight: 600 }}>
+          Cold intake by sending domain
+        </h3>
+        <span style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)' }}>
+          {data ? `${data.from} → ${data.to} · Denver days` : ''}
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {[7, 14, 30].map(n => (
+            <button
+              key={n}
+              onClick={() => setDays(n)}
+              style={{
+                background: n === days ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${n === days ? 'rgba(129,140,248,0.6)' : 'rgba(255,255,255,0.12)'}`,
+                color: n === days ? '#c7d2fe' : 'rgba(180,210,240,0.75)',
+                borderRadius: 6, padding: '3px 10px', fontSize: 11.5, cursor: 'pointer',
+              }}
+            >{n}d</button>
+          ))}
+        </div>
+      </div>
+      <p style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.55)', margin: '0 0 12px', lineHeight: 1.6 }}>
+        What each lane's feed already delivers on its own. Subtract the standing rate from a growth
+        target to get the real clean-ask — a domain taking 10k/day only needs 40k cleaned to reach 50k.
+        A domain with no feed needs every record from cleaning.
+      </p>
+
+      {err && (
+        <div style={{
+          background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(248,113,113,0.4)',
+          color: '#fca5a5', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, marginBottom: 10,
+        }}>{err}</div>
+      )}
+      {loading && !data && (
+        <div style={{ fontSize: 12.5, color: 'rgba(180,210,240,0.6)', padding: '8px 0' }}>Loading…</div>
+      )}
+
+      {data && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={th}>Sending domain</th>
+                <th style={thNum}>Per day</th>
+                <th style={thNum}>Window</th>
+                {data.days.map(d => (
+                  <th key={d} style={{ ...thNum, opacity: d === today ? 0.55 : 1 }}>
+                    {d.slice(5)}{d === today ? '*' : ''}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const dead = r.per_day < 1;
+                return (
+                  <tr key={r.brand}>
+                    <td style={td}>
+                      <span style={{ color: '#e6edf5' }}>{r.sending_domain || r.brand}</span>
+                      {dead && (
+                        <span style={{
+                          marginLeft: 8, fontSize: 10, letterSpacing: 0.5, padding: '1px 6px',
+                          borderRadius: 4, background: 'rgba(220,38,38,0.15)',
+                          border: '1px solid rgba(248,113,113,0.35)', color: '#fca5a5',
+                        }}>NO FEED</span>
+                      )}
+                    </td>
+                    <td style={{ ...tdNum, color: dead ? '#fca5a5' : '#86efac', fontWeight: 600 }}>
+                      {Math.round(r.per_day).toLocaleString()}
+                    </td>
+                    <td style={tdNum}>{r.window_total.toLocaleString()}</td>
+                    {data.days.map(d => (
+                      <td key={d} style={{
+                        ...tdNum,
+                        color: r.by_day[d] ? '#e6edf5' : 'rgba(180,210,240,0.28)',
+                        opacity: d === today ? 0.6 : 1,
+                      }}>
+                        {r.by_day[d] ? r.by_day[d].toLocaleString() : '–'}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && !loading && (
+                <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={3 + data.days.length}>
+                  No cold intake recorded in this window.
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data && data.unmapped.length > 0 && (
+        <div style={{
+          marginTop: 12, background: 'rgba(234,179,8,0.08)',
+          border: '1px solid rgba(250,204,21,0.35)', borderRadius: 8, padding: '9px 12px',
+          fontSize: 12, color: '#fde68a', lineHeight: 1.6,
+        }}>
+          <strong>Intake with no lane:</strong>{' '}
+          {data.unmapped.map(u => `${u.vertical} (${u.records.toLocaleString()})`).join(' · ')}
+          {' '}— these verticals have no active roster home, so their records land in no sending
+          domain's total above. Give them a home in the roster or they stay invisible.
+        </div>
+      )}
+
+      {data && (
+        <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 12, lineHeight: 1.6 }}>
+          Per day = mean of the last {data.rate_days} completed Denver day{data.rate_days === 1 ? '' : 's'};
+          today (*) is excluded because it is still filling and would understate every feed.
+          Verticals homed on several domains (consumer → tot/bwp/mrd) split by roster weight, so
+          rows sum to true intake without double counting.
+        </p>
+      )}
     </div>
   );
 };
