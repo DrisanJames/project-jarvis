@@ -53,15 +53,86 @@ import {
 const PAGE_VERSION = 'drip-journey-canvas v1 — 2026-08-19';
 
 // ── API shapes ──────────────────────────────────────────────────────────────
-// Property Ledger read (existing, property_ledger.go) — used ONLY to enumerate
-// the drip roster's brand ⇄ sending-domain pairs for the selector.
+// Property Ledger read (existing, property_ledger.go). This ONE response carries
+// both the brand ⇄ sending-domain pairs for the selector AND the introduction
+// ledger itself — the per-(brand × ISP) daily_budget/hold rows the drip
+// orchestrator actually enforces (internal/worker/partner_drip_brand_budgets.go),
+// plus SES VDM telemetry and the global emergency hold. Nothing extra is
+// fetched to render the ledger panel; this payload was already on the wire and
+// was being discarded.
 
-interface LedgerRowLite {
+// SES Virtual Deliverability Manager telemetry for one (sending domain × ISP)
+// lane. UNIQUE-count semantics over COMPLETE UTC days — it is NOT the same
+// population as the Denver-day lake snapshot and the two never arbitrate.
+interface LedgerVDM {
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  delivered_pct: number | null;
+  open_rate_vdm: number | null;
+  click_rate_vdm: number | null;
+  sent_7d: number;
+  delivered_7d: number;
+  opens_7d: number;
+  clicks_7d: number;
+  delivered_pct_7d: number | null;
+  open_rate_vdm_7d: number | null;
+  click_rate_vdm_7d: number | null;
+}
+
+// A pending budget proposal awaiting operator approval. Approving is a LIVE
+// WRITE and stays on the Property Ledger screen — this panel only surfaces that
+// one is waiting, so a pending decision cannot hide.
+interface LedgerProposal {
+  id: string;
+  proposed_budget: number;
+  base_budget: number;
+  basis: string;
+  created_at: string;
+  expires_at: string;
+}
+
+interface LedgerRow {
   brand: string;
   sending_domain: string;
+  isp: string;
+  daily_budget: number;
+  hold: boolean;
+  hold_reason?: string;
+  held_since?: string;
+  notes?: string;
+  updated_by?: string;
+  updated_at: string;
+  approved_by?: string;
+  approved_at?: string;
+  min_budget?: number;
+  max_budget?: number;
+  lock_version: number;
+  pending_budget?: number;
+  pending_effective_day?: string;
+  proposal?: LedgerProposal;
+  // null = the counter rollup has not materialised a cell for this lane today.
+  // That is ABSENT, never 0 — a 0 would read as "nothing introduced yet".
+  introduced_today: number | null;
+  introduced_as_of?: string;
+  vdm?: LedgerVDM;
 }
-interface LedgerResponseLite {
-  rows: LedgerRowLite[];
+
+interface LedgerRunInfo {
+  day: string;
+  status: string;
+  started_at: string;
+  finished_at?: string;
+}
+
+interface LedgerResponse {
+  day: string;
+  rows: LedgerRow[];
+  vdm?: { day: string; window_start: string; note: string };
+  global_hold: { value: boolean; reason: string; since: string; lock_version: number };
+  runs: { counter: LedgerRunInfo | null; vdm: LedgerRunInfo | null; reconciliation: LedgerRunInfo | null };
+  alerts_enabled: boolean;
 }
 
 // Roster (…/property-ledger/roster) — which verticals (drips) a brand rides.
@@ -189,6 +260,52 @@ interface SnapshotResponse {
   generated_at: string;
 }
 
+// Supply (…/property-ledger/supply?domain=…) — VERIFIED against
+// internal/api/property_lane_supply.go HandleLaneSupply. The AVAILABLE-DATA
+// read: what is physically sitting in partner_clean_queue for this sending
+// domain's feeds right now, and where in the cleaning pipeline it is.
+//
+// Two contract facts that must survive into the UI:
+//   * `ready` means EO Verified (1) + Complainer (7) — the validator's
+//     markReady path. It is NOT "everything not yet mailed".
+//   * supply is a DATASET fact SHARED across the rotation's brands
+//     (shared_brands). It is never domain-owned inventory, so a domain cannot
+//     plan against ready_total as if it owned it.
+// The endpoint 503s while idx_pcq_dataset_status_mailed is still building —
+// that is a warming state, surfaced as the server's message, never as zero.
+interface SupplyISP { isp: string; ready: number }
+interface SupplyFeed {
+  dataset_id: string;
+  name: string;
+  vertical: string;
+  status: string;
+  daily_cap: number;
+  paused_emergency: boolean;
+  shared_brands: string[];
+  tranche_total: number;
+  cleaning: number;
+  pending_eo: number;
+  eo_in_flight: number;
+  ready_total: number;
+  ready_by_isp: SupplyISP[];
+  held: number;
+  suppressed: number;
+  dead_letter: number;
+  mailed_lifetime: number;
+  mailed_today: number;
+}
+interface SupplyResponse {
+  domain: string;
+  brand: string;
+  sending_domain: string;
+  non_ledger: boolean;
+  as_of: string;
+  denver_day: string;
+  ready_semantics: string;
+  supply_note: string;
+  feeds: SupplyFeed[];
+}
+
 // Throttle (…/property-ledger/throttle?domain=…) — VERIFIED against
 // internal/api/property_lane_supply.go HandleLaneThrottle (the query param is
 // `domain`, NOT dataset_id; the response is per-BRAND with a feeds[] array,
@@ -238,6 +355,23 @@ const ratePct = (r: number | null | undefined): string =>
 
 const derive = (n: number, d: number): number | null =>
   Number.isFinite(n) && Number.isFinite(d) && d > 0 ? n / d : null;
+
+/**
+ * deriveN — `derive` for nullable numerators. A NULL numerator is an absent
+ * measurement, so the rate is null (renders as "—"), never 0%.
+ */
+const deriveN = (n: number | null | undefined, d: number | null | undefined): number | null =>
+  typeof n === 'number' && typeof d === 'number' ? derive(n, d) : null;
+
+/**
+ * shareSub — the "· 12.34% of <what>" tail appended to a Stat's sub line.
+ * Returns '' when the denominator cannot support a rate, so a missing
+ * denominator prints nothing rather than a fabricated 0%.
+ */
+const shareSub = (n: number | null | undefined, d: number | null | undefined, ofWhat: string): string => {
+  const r = deriveN(n, d);
+  return r == null ? '' : ` · ${ratePct(r)} of ${ofWhat}`;
+};
 
 const shortTime = (iso: string | null | undefined): string => {
   if (!iso) return UNKNOWN;
@@ -939,6 +1073,9 @@ export const DripJourneyCanvas: React.FC = () => {
   const [openEdge, setOpenEdge] = useState<number | null>(null);
   const [days, setDays] = useState(7);
   const [snapScope, setSnapScope] = useState<'domain' | 'drip'>('domain');
+  // '' = every sending domain in the snapshot. Client-side filter over the
+  // snapshot rows; it never refetches, so it cannot change the measurement.
+  const [snapBrand, setSnapBrand] = useState<string>('');
   const [editingFeed, setEditingFeed] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
@@ -949,9 +1086,9 @@ export const DripJourneyCanvas: React.FC = () => {
   }, [toast]);
 
   // 1. Brand ⇄ sending-domain pairs, from the existing Property Ledger read.
-  const ledger = useResource<LedgerResponseLite>(
+  const ledger = useResource<LedgerResponse>(
     'ledger',
-    (signal) => getJSON<LedgerResponseLite>('/api/mailing/pmta-campaign/property-ledger', signal),
+    (signal) => getJSON<LedgerResponse>('/api/mailing/pmta-campaign/property-ledger', signal),
   );
 
   const domains = useMemo(() => {
@@ -976,6 +1113,35 @@ export const DripJourneyCanvas: React.FC = () => {
     () => domains.find((d) => d.code === brand)?.domain ?? null,
     [domains, brand],
   );
+
+  // 1b. The INTRODUCTION LEDGER rows for the selected domain — the per-ISP
+  // daily_budget/hold cells the drip orchestrator enforces every wave
+  // (internal/worker/partner_drip_brand_budgets.go). Same payload as `domains`;
+  // no extra fetch. Sorted by spend so the lanes actually moving sit on top,
+  // then by cap, so a fully-held domain reads as a wall of holds.
+  const ledgerRows = useMemo(() => {
+    const rows = (ledger.data?.rows ?? []).filter((r) => r.brand === brand);
+    return rows.slice().sort((a, b) => {
+      const ai = a.introduced_today ?? -1;
+      const bi = b.introduced_today ?? -1;
+      if (ai !== bi) return bi - ai;
+      if (a.daily_budget !== b.daily_budget) return b.daily_budget - a.daily_budget;
+      return a.isp.localeCompare(b.isp);
+    });
+  }, [ledger.data, brand]);
+
+  // Domain-level roll-up of the ledger. `introduced` is a FLOOR when any cell
+  // has no counter row yet — that is surfaced, never silently summed as 0.
+  const ledgerTotals = useMemo(() => {
+    let budget = 0, introduced = 0, held = 0, uncounted = 0;
+    for (const r of ledgerRows) {
+      budget += Number.isFinite(r.daily_budget) ? r.daily_budget : 0;
+      if (typeof r.introduced_today === 'number') introduced += r.introduced_today;
+      else uncounted += 1;
+      if (r.hold) held += 1;
+    }
+    return { budget, introduced, held, uncounted, cells: ledgerRows.length };
+  }, [ledgerRows]);
 
   // 2. This domain's drips.
   const roster = useResource<RosterResponse>(
@@ -1049,6 +1215,46 @@ export const DripJourneyCanvas: React.FC = () => {
       signal,
     ),
   );
+
+  // 5b. AVAILABLE DATA — the live queue behind those levers, per sending
+  // domain. Keyed by `domain` like the throttle read; scoped to the selected
+  // drip below so the numbers answer "what can THIS lane still introduce".
+  const supply = useResource<SupplyResponse>(
+    sendingDomain ? `supply:${sendingDomain}` : null,
+    (signal) => getJSON<SupplyResponse>(
+      `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(sendingDomain ?? '')}`,
+      signal,
+    ),
+  );
+
+  const supplyFeeds = useMemo(
+    () => (supply.data?.feeds ?? []).filter((f) => !vertical || f.vertical === vertical),
+    [supply.data, vertical],
+  );
+
+  // Domain-level roll-up of the queue, plus the per-ISP ready split summed
+  // across this drip's feeds — the breakdown of what is actually claimable.
+  const supplyTotals = useMemo(() => {
+    let tranche = 0, cleaning = 0, pendingEO = 0, inFlight = 0, ready = 0;
+    let held = 0, suppressed = 0, deadLetter = 0, mailedToday = 0, cap = 0;
+    const byISP = new Map<string, number>();
+    const shared = new Set<string>();
+    for (const f of supplyFeeds) {
+      tranche += f.tranche_total; cleaning += f.cleaning; pendingEO += f.pending_eo;
+      inFlight += f.eo_in_flight; ready += f.ready_total; held += f.held;
+      suppressed += f.suppressed; deadLetter += f.dead_letter;
+      mailedToday += f.mailed_today; cap += f.daily_cap;
+      for (const i of f.ready_by_isp ?? []) byISP.set(i.isp, (byISP.get(i.isp) ?? 0) + i.ready);
+      for (const b of f.shared_brands ?? []) shared.add(b);
+    }
+    const isps = Array.from(byISP.entries())
+      .map(([isp, r]) => ({ isp, ready: r }))
+      .sort((a, b) => b.ready - a.ready);
+    return {
+      tranche, cleaning, pendingEO, inFlight, ready, held, suppressed, deadLetter,
+      mailedToday, cap, isps, shared: Array.from(shared).sort(), feeds: supplyFeeds.length,
+    };
+  }, [supplyFeeds]);
 
   const feeds = useMemo(
     () => (throttle.data?.feeds ?? []).filter((f) => !vertical || f.vertical === vertical),
@@ -1132,11 +1338,71 @@ export const DripJourneyCanvas: React.FC = () => {
   // Snapshot sub-states. rows===null (no snapshot captured) and rows===[] (a
   // snapshot exists and this lane did nothing today) are DIFFERENT displays.
   const snap = snapshot.data;
+
+  // Every sending domain present in THIS snapshot, for the in-panel filter.
+  // Built from the rows themselves so the filter can only ever offer a value
+  // that exists in the data — an empty list means the snapshot is single-brand
+  // and the filter is hidden rather than shown with one dead option.
+  const snapBrands = useMemo(() => {
+    const seen = new Set<string>();
+    for (const r of snap?.rows ?? []) if (r.brand) seen.add(r.brand);
+    return Array.from(seen).sort();
+  }, [snap]);
+
+  // Reset the filter whenever the underlying selection changes, so a domain
+  // filter can never silently persist onto a different drip's snapshot.
+  useEffect(() => { setSnapBrand(''); }, [vertical, brand, snapScope]);
+
   const snapRows = useMemo(
-    () => (snap?.rows ?? []).slice().sort((a, b) => b.delivered - a.delivered),
-    [snap],
+    () => (snap?.rows ?? [])
+      .filter((r) => !snapBrand || r.brand === snapBrand)
+      .slice()
+      .sort((a, b) => b.delivered - a.delivered),
+    [snap, snapBrand],
   );
+
+  /**
+   * snapTotals — the per-source aggregate for the rows CURRENTLY SHOWN.
+   *
+   * This is a faithful client-side replay of the server's
+   * laneSnapshotSourceTotals (internal/api/property_lane_snapshot.go:185), so
+   * that the aggregate always describes the filtered selection rather than the
+   * unfiltered scope. Two rules are copied verbatim and matter:
+   *   - there is NO cross-source total (source='app' mirrors ses/pmta);
+   *   - a nullable engagement total stays null until a row actually reports it,
+   *     so "absent" never collapses into 0.
+   */
+  const snapTotals = useMemo((): SnapshotSourceTotal[] => {
+    const order: string[] = [];
+    const by = new Map<string, SnapshotSourceTotal>();
+    const add = (cur: number | null, v: number | null | undefined): number | null =>
+      typeof v === 'number' ? (cur ?? 0) + v : cur;
+    for (const row of snapRows) {
+      let t = by.get(row.source);
+      if (!t) {
+        t = {
+          source: row.source, attempted: 0, delivered: 0, bounced: 0,
+          open_uniq: null, click_uniq: null, open_events: null, click_events: null,
+          engagement_available: false,
+        };
+        by.set(row.source, t);
+        order.push(row.source);
+      }
+      t.attempted += row.attempted;
+      t.delivered += row.delivered;
+      t.bounced += row.bounced;
+      if (!row.engagement_available) continue;
+      t.engagement_available = true;
+      t.open_uniq = add(t.open_uniq, row.open_uniq);
+      t.click_uniq = add(t.click_uniq, row.click_uniq);
+      t.open_events = add(t.open_events, row.open_events);
+      t.click_events = add(t.click_events, row.click_events);
+    }
+    return order.map((k) => by.get(k)!);
+  }, [snapRows]);
+
   const snapScopeLabel = snapScope === 'domain' ? (sendingDomain ?? brand ?? 'this domain') : 'the whole drip (all brands)';
+  const snapFilterLabel = snapBrand ? `${snapBrand} only` : snapScopeLabel;
 
   // ── Stats derivation (client-side day-over-day, pinned totals) ────────────
   const statRows = useMemo(() => (stats.data?.rows ?? []).slice(), [stats.data]);
@@ -1298,18 +1564,19 @@ export const DripJourneyCanvas: React.FC = () => {
                 <Stat
                   label="Due now"
                   value={num(j.totals?.due_now)}
-                  sub="next_touch_at already passed"
+                  sub={`next_touch_at already passed${shareSub(j.totals?.due_now, j.totals?.in_flight, 'in flight')}`}
                   color={(j.totals?.due_now ?? 0) > 0 ? colors.warningText : colors.text}
-                  title="Rows whose next touch is already due — the backlog the orchestrator will claim from on its next wave."
+                  title="Rows whose next touch is already due — the backlog the orchestrator will claim from on its next wave. The percentage is of IN FLIGHT: a rising share means the ladder is claiming slower than it enrols."
                 />
                 <Stat
                   label="Waiting on connectors"
                   value={num(waitingSum)}
-                  sub={edgesReported === expectedEdges
+                  sub={(edgesReported === expectedEdges
                     ? `sum of all ${edgesReported} reported edges`
-                    : `sum of ${edgesReported} of ${expectedEdges} edges — ${expectedEdges - edgesReported} not reported`}
+                    : `sum of ${edgesReported} of ${expectedEdges} edges — ${expectedEdges - edgesReported} not reported`)
+                    + shareSub(waitingSum, j.totals?.in_flight, 'in flight')}
                   color={edgesReported === expectedEdges ? colors.text : colors.warningText}
-                  title="Sum of the per-edge waiting counts drawn on the canvas. When edges are missing this is a FLOOR, not the total."
+                  title="Sum of the per-edge waiting counts drawn on the canvas. When edges are missing this is a FLOOR, not the total — and so is its percentage of in-flight."
                 />
                 <Stat
                   label="Inter-touch delay"
@@ -1400,6 +1667,16 @@ export const DripJourneyCanvas: React.FC = () => {
                   <option value="drip">Whole drip (all brands)</option>
                 </select>
               </label>
+              {snapBrands.length > 1 && (
+                <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}
+                  title="Filters the captured snapshot CLIENT-SIDE. It never refetches, so it cannot change the measurement — the cards and the table below both narrow to the domain picked here, and the coverage caveat still describes the whole capture.">
+                  Sending domain
+                  <select style={selectStyle} value={snapBrand} onChange={(e) => setSnapBrand(e.target.value)}>
+                    <option value="">All ({snapBrands.length})</option>
+                    {snapBrands.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </select>
+                </label>
+              )}
               {snap?.available && (
                 <span
                   style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
@@ -1463,11 +1740,24 @@ export const DripJourneyCanvas: React.FC = () => {
             />
           )}
 
+          {/* The capture HAS rows but the domain filter excludes them all. That is
+              a filter result, not an empty measurement, and must not read as one. */}
+          {snap?.available && (snap.rows ?? []).length > 0 && snapRows.length === 0 && (
+            <EmptyState
+              title={`No rows for ${snapBrand} in this capture`}
+              hint={`The snapshot holds ${(snap.rows ?? []).length} row(s) for other sending domains but none for ${snapBrand}. Clear the sending-domain filter to see them — this is the filter excluding data, not the lane being quiet.`}
+            />
+          )}
+
           {snap?.available && snapRows.length > 0 && (
             <>
-              {/* Per-source totals. There is deliberately NO cross-source total. */}
+              {/* Per-source totals for the ROWS SHOWN. There is deliberately NO
+                  cross-source total: source='app' mirrors ses/pmta. */}
+              <div style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>
+                TODAY, AGGREGATED — {snapFilterLabel.toUpperCase()}
+              </div>
               <div style={{ ...cardGrid(230), marginBottom: 12 }}>
-                {(snap.source_totals ?? []).map((t) => {
+                {snapTotals.map((t) => {
                   const den = derivedAttempted(t.delivered, t.bounced);
                   const isMirror = t.source === 'app';
                   return (
@@ -1506,20 +1796,39 @@ export const DripJourneyCanvas: React.FC = () => {
                         <Stat
                           label="Opens (uniq*)"
                           value={eng(t.open_uniq, t.engagement_available)}
-                          sub={t.engagement_available ? `${num(t.open_events)} events` : 'absent, not zero'}
-                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count."
+                          sub={t.engagement_available
+                            ? `${num(t.open_events)} events${shareSub(t.open_uniq, t.delivered, 'delivered*')}`
+                            : 'absent, not zero'}
+                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count. The percentage divides by THIS SOURCE'S delivered; a source that carries no delivery rows (app) shows no percentage rather than borrowing another source's denominator."
                         />
                         <Stat
                           label="Clicks (uniq*)"
                           value={eng(t.click_uniq, t.engagement_available)}
-                          sub={t.engagement_available ? `${num(t.click_events)} events` : 'absent, not zero'}
-                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count."
+                          sub={t.engagement_available
+                            ? `${num(t.click_events)} events${shareSub(t.click_uniq, t.delivered, 'delivered*')}`
+                            : 'absent, not zero'}
+                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count. The percentage divides by THIS SOURCE'S delivered."
+                        />
+                        <Stat
+                          label="Click-to-open"
+                          value={t.engagement_available ? ratePct(deriveN(t.click_uniq, t.open_uniq)) : eng(null, false)}
+                          sub="clicks ÷ opens"
+                          title="The one engagement rate that needs NO delivery denominator, so it is comparable across every source on this row — including the app mirror, which carries no delivery rows at all. Both sides are per-campaign distinct subscribers (uniq*), and both include machine traffic."
                         />
                       </div>
                       {isMirror && (
                         <div style={{ fontSize: 10, color: colors.warningText, marginTop: 6, lineHeight: 1.5 }}>
-                          PG→lake mirror — these deliveries DOUBLE-COUNT ses/pmta. Never add this
-                          card to another one.
+                          <b>PG→lake mirror of our OWN pixel/redirect layer</b> (<code>mailing_tracking_events</code>,
+                          pushed every 10 min by the <code>pg_to_lake</code> job). Read it as first-party
+                          engagement — it is the ONLY open/click view for pmta- and kumo-routed mail,
+                          which emit none into the lake.
+                          {' '}<b>Delivered and Bounced read 0 here by construction, not by measurement:</b> the
+                          current-day mirror emits only <code>opened/clicked/unsubscribed</code>
+                          {' '}(agents/jobs/pg_to_lake.py — bounces and deliveries are the accounting pipe's).
+                          {' '}<b>Its opens and clicks DO overlap <code>ses</code></b> — measured over the
+                          drip lanes' own 3,951 campaigns on 2026-08-19/20, <b>78% of open and 94% of click
+                          (campaign × subscriber) pairs appear in BOTH sources</b>. Never add this card to
+                          another one, and never read app + ses as separate audiences.
                         </div>
                       )}
                     </div>
@@ -1529,11 +1838,14 @@ export const DripJourneyCanvas: React.FC = () => {
               <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 12 }}>
                 Totals are shown <b>per source</b> and there is deliberately no combined figure:
                 <code> source='app'</code> mirrors ses/pmta, so one summed number would be wrong by
-                construction. Pick the source you mean.
+                construction. Pick the source you mean. These cards aggregate exactly the rows in the
+                table below — {snapBrand
+                  ? <>filtered to <b>{snapBrand}</b>, {snapRows.length} of {(snap.rows ?? []).length} captured rows</>
+                  : <>all {snapRows.length} captured rows across {snapBrands.length} sending domain(s)</>}.
               </div>
 
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ ...tableStyle, minWidth: 940 }}>
+                <table style={{ ...tableStyle, minWidth: 1180 }}>
                   <thead>
                     <tr>
                       <th style={thStyle}>Brand</th>
@@ -1553,8 +1865,17 @@ export const DripJourneyCanvas: React.FC = () => {
                       <th style={numTh} title="Sum of per-campaign distinct subscribers — not a lane-level distinct. 'n/a' means the transport emits no opens into the lake.">
                         Opens (uniq*)
                       </th>
+                      <th style={numTh} title="Opens (uniq*) ÷ this row's OWN delivered. Blank where the source carries no delivery rows (app) — never borrowed from another source.">
+                        Open %*
+                      </th>
                       <th style={numTh} title="Sum of per-campaign distinct subscribers — not a lane-level distinct. 'n/a' means the transport emits no clicks into the lake.">
                         Clicks (uniq*)
+                      </th>
+                      <th style={numTh} title="Clicks (uniq*) ÷ this row's OWN delivered. Blank where the source carries no delivery rows (app).">
+                        Click %*
+                      </th>
+                      <th style={numTh} title="Clicks ÷ opens — the only engagement rate that needs no delivery denominator, so it is comparable across every source including the app mirror.">
+                        Click-to-open
                       </th>
                     </tr>
                   </thead>
@@ -1580,8 +1901,17 @@ export const DripJourneyCanvas: React.FC = () => {
                           <td style={numTd} title={r.engagement_available ? `${num(r.open_events)} open events` : undefined}>
                             {eng(r.open_uniq, r.engagement_available)}
                           </td>
+                          <td style={numTd} title={`opens ${num(r.open_uniq)} / this row's delivered ${num(r.delivered)}`}>
+                            {ratePct(deriveN(r.open_uniq, r.delivered))}
+                          </td>
                           <td style={numTd} title={r.engagement_available ? `${num(r.click_events)} click events` : undefined}>
                             {eng(r.click_uniq, r.engagement_available)}
+                          </td>
+                          <td style={numTd} title={`clicks ${num(r.click_uniq)} / this row's delivered ${num(r.delivered)}`}>
+                            {ratePct(deriveN(r.click_uniq, r.delivered))}
+                          </td>
+                          <td style={numTd} title={`clicks ${num(r.click_uniq)} / opens ${num(r.open_uniq)}`}>
+                            {ratePct(deriveN(r.click_uniq, r.open_uniq))}
                           </td>
                         </tr>
                       );
@@ -1609,6 +1939,201 @@ export const DripJourneyCanvas: React.FC = () => {
         </AsyncPanel>
       </Panel>
 
+      {/* ── 2b. THE ENFORCED CAP — the introduction ledger ────────────────── */}
+      {/*
+        Ported from the Property Ledger screen. This is the ONE thing on that
+        screen the drip orchestrator actually reads every wave: per (sending
+        domain × ISP), how many NEW-RECORD introductions this domain may absorb
+        today, whether the lane is held, and how much of the cap is already
+        spent — plus the SES VDM lane scoreboard that justifies moving it.
+        Read-only here: every budget/hold/proposal write is a LIVE WRITE and
+        stays on the Property Ledger screen behind its own confirmations.
+      */}
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader
+          title="Introduction ledger — the cap the orchestrator enforces"
+          icon={faHourglassHalf}
+          right={ledger.data ? (
+            <span style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
+              title={`Ledger day is America/Denver. VDM columns cover ${ledger.data.vdm?.window_start || UNKNOWN} → ${ledger.data.vdm?.day || UNKNOWN} (complete UTC days only) and are a DIFFERENT window from the ledger day.`}>
+              ledger day {ledger.data.day}
+              {ledger.data.vdm?.day ? ` · VDM day ${ledger.data.vdm.day}` : ''}
+            </span>
+          ) : undefined}
+        />
+        <AsyncPanel
+          label="the introduction ledger"
+          res={ledger}
+          isEmpty={ledgerRows.length === 0}
+          emptyTitle="No ledger row for this sending domain"
+          emptyHint="partner_drip_brand_budgets has no (brand × ISP) cell for this domain. That is UNGOVERNED, not zero: with no row the overlay leaves the existing welcome-pass cap chain untouched — this domain's drip intro volume is bounded by the other cap systems only."
+        >
+          {ledger.data?.global_hold?.value && (
+            <div style={{
+              fontSize: 12, color: colors.dangerText,
+              background: alpha(colors.danger, '14'),
+              border: `1px solid ${alpha(colors.danger, '44')}`,
+              borderRadius: 6, padding: '10px 12px', marginBottom: 12,
+            }}>
+              <div style={{ fontWeight: 700, letterSpacing: 0.5, marginBottom: 4 }}>
+                GLOBAL HOLD IS ON — every cap below is forced to 0
+              </div>
+              <div style={{ lineHeight: 1.6 }}>
+                {ledger.data.global_hold.reason || 'No reason recorded on the flag.'}
+                {' '}Set {shortTime(ledger.data.global_hold.since)}. This is the fail-CLOSED emergency
+                stop and it outranks the ledger's own kill switch — the per-ISP numbers below are
+                what WOULD apply, not what is applying.
+              </div>
+            </div>
+          )}
+
+          <div style={{ ...cardGrid(170), marginBottom: 12 }}>
+            <Stat
+              label="Cap today"
+              value={num(ledgerTotals.budget)}
+              sub={`${ledgerTotals.cells} ISP cells`}
+              title="Sum of daily_budget across this domain's ISP cells — new-record INTRODUCTIONS (first touches) only. Follow-up touches are not governed by this ledger."
+            />
+            <Stat
+              label="Introduced today"
+              value={num(ledgerTotals.introduced)}
+              sub={`${ratePct(derive(ledgerTotals.introduced, ledgerTotals.budget))} of cap${ledgerTotals.uncounted > 0 ? ` · FLOOR, ${ledgerTotals.uncounted} cell(s) uncounted` : ''}`}
+              color={ledgerTotals.uncounted > 0 ? colors.warningText : colors.text}
+              title="Spend counted from partner_clean_queue (mailed_brand, isp_family, mailed_at), materialised by the counter rollup. A cell with no counter row yet is ABSENT, not zero — when any exist this total is a floor and says so."
+            />
+            <Stat
+              label="Headroom"
+              value={num(Math.max(0, ledgerTotals.budget - ledgerTotals.introduced))}
+              sub="cap − introduced"
+              title="What this domain could still introduce today if nothing else binds. Other cap systems (per-wave claim cap, supply release) can bind first — this is a ceiling, not a forecast."
+            />
+            <Stat
+              label="ISP lanes held"
+              value={`${ledgerTotals.held} / ${ledgerTotals.cells}`}
+              sub={ledgerTotals.held === 0 ? 'none held' : ledgerTotals.held === ledgerTotals.cells ? 'DOMAIN FULLY STOPPED' : 'partially held'}
+              color={ledgerTotals.held === 0 ? colors.successText : ledgerTotals.held === ledgerTotals.cells ? colors.dangerText : colors.warningText}
+              title="hold = TRUE forces this lane's per-wave cap to 0 with no count query. Every cell held means this domain introduces nothing at all today."
+            />
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ ...tableStyle, minWidth: 1120 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>ISP</th>
+                  <th style={numTh} title="daily_budget — new-record introductions this (domain × ISP) may absorb per Denver day.">Cap</th>
+                  <th style={numTh} title="Introductions counted so far today. Blank = the counter rollup has no cell yet (ABSENT, not zero).">Introduced</th>
+                  <th style={numTh} title="Introduced ÷ Cap. Over 100% is possible and real: the cap is applied per wave against the count at that moment, so a large wave can overshoot.">% of cap</th>
+                  <th style={numTh} title="Cap − Introduced, floored at 0.">Headroom</th>
+                  <th style={thStyle}>Hold</th>
+                  <th style={numTh} title="SES VDM sends for this lane yesterday — UNIQUE-count semantics over complete UTC days. A different window and a different population from the Denver-day panels above; the two never arbitrate.">VDM sent (yday)</th>
+                  <th style={numTh} title="VDM delivery ÷ send.">Delivered %</th>
+                  <th style={numTh} title="VDM unique opens ÷ delivery.">Open %</th>
+                  <th style={numTh} title="VDM unique clicks ÷ delivery.">Click %</th>
+                  <th style={numTh} title="VDM sends over the trailing 7 complete UTC days. Hover a cell for its 7-day rates.">Sent 7d</th>
+                  <th style={thStyle} title="A staged next-day budget change, or a proposal waiting on operator approval. Approving is a LIVE WRITE and stays on the Property Ledger screen.">Pending</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ledgerRows.map((r) => {
+                  const spent = r.introduced_today;
+                  const pctOfCap = deriveN(spent, r.daily_budget);
+                  const over = pctOfCap != null && pctOfCap > 1;
+                  const stopped = r.hold || r.daily_budget <= 0;
+                  return (
+                    <tr key={`${r.brand}|${r.isp}`} style={stopped ? { opacity: 0.7 } : undefined}>
+                      <td style={tdStyle}>{r.isp}</td>
+                      <td style={numTd} title={r.daily_budget <= 0 ? 'Cap 0 — this lane introduces nothing, identical in effect to a hold.' : undefined}>
+                        {r.daily_budget <= 0
+                          ? <span style={{ color: colors.dangerText, fontWeight: 700 }}>0</span>
+                          : num(r.daily_budget)}
+                      </td>
+                      <td style={numTd} title={r.introduced_as_of ? `counter as of ${shortTime(r.introduced_as_of)}` : 'No counter row for this lane today — the rollup materialises cells periodically. ABSENT, not zero.'}>
+                        {spent == null
+                          ? <span style={{ color: colors.textFaint }}>no counter yet</span>
+                          : num(spent)}
+                      </td>
+                      <td style={numTd} title={`introduced ${num(spent)} / cap ${num(r.daily_budget)}`}>
+                        <span style={over ? { color: colors.warningText, fontWeight: 700 } : undefined}>
+                          {ratePct(pctOfCap)}
+                        </span>
+                      </td>
+                      <td style={numTd}>
+                        {spent == null ? UNKNOWN : num(Math.max(0, r.daily_budget - spent))}
+                      </td>
+                      <td style={tdStyle}>
+                        {r.hold
+                          ? <span title={`${r.hold_reason || 'No reason recorded'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}`}>
+                              <Pill color={colors.danger} style={{ fontSize: 9 }}>held</Pill>
+                            </span>
+                          : <span style={{ fontSize: 11, color: colors.textFaint }}>—</span>}
+                      </td>
+                      {r.vdm ? (
+                        <>
+                          <td style={numTd}>{num(r.vdm.sent)}</td>
+                          <td style={numTd} title={`7d: ${ratePct(r.vdm.delivered_pct_7d)} over ${num(r.vdm.sent_7d)} sends`}>{ratePct(r.vdm.delivered_pct)}</td>
+                          <td style={numTd} title={`${num(r.vdm.opens)} unique opens · 7d ${ratePct(r.vdm.open_rate_vdm_7d)}`}>{ratePct(r.vdm.open_rate_vdm)}</td>
+                          <td style={numTd} title={`${num(r.vdm.clicks)} unique clicks · 7d ${ratePct(r.vdm.click_rate_vdm_7d)}`}>{ratePct(r.vdm.click_rate_vdm)}</td>
+                          <td style={numTd} title={`7d: delivered ${ratePct(r.vdm.delivered_pct_7d)} · open ${ratePct(r.vdm.open_rate_vdm_7d)} · click ${ratePct(r.vdm.click_rate_vdm_7d)}`}>{num(r.vdm.sent_7d)}</td>
+                        </>
+                      ) : (
+                        <td style={{ ...tdStyle, color: colors.textFaint, fontSize: 11 }} colSpan={5}
+                          title="No complete VDM rows for this lane. VDM covers the ISPs AWS reports on (gmail/yahoo/aol/microsoft/apple/att/cox) — absent coverage, not zero engagement.">
+                          no VDM coverage for this lane
+                        </td>
+                      )}
+                      <td style={tdStyle}>
+                        {r.pending_budget != null ? (
+                          <span style={{ fontSize: 11, color: colors.warningText }}
+                            title={`Staged edit — promotes at the Denver day boundary (${r.pending_effective_day || UNKNOWN})`}>
+                            → {num(r.pending_budget)} on {r.pending_effective_day || UNKNOWN}
+                          </span>
+                        ) : r.proposal ? (
+                          <span style={{ fontSize: 11, color: colors.indigo200 }}
+                            title={`${r.proposal.basis} · proposed ${shortTime(r.proposal.created_at)} · expires ${shortTime(r.proposal.expires_at)}. Approve on the Property Ledger screen — that is a live write.`}>
+                            proposal {num(r.proposal.base_budget)} → {num(r.proposal.proposed_budget)}
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 11, color: colors.textFaint }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10, color: colors.textFaint, marginTop: 8 }}>
+            {(['counter', 'vdm', 'reconciliation'] as const).map((k) => {
+              const run = ledger.data?.runs?.[k] ?? null;
+              return (
+                <span key={k} title={run
+                  ? `Last ${k} run — day ${run.day}, status ${run.status}, started ${shortTime(run.started_at)}${run.finished_at ? `, finished ${shortTime(run.finished_at)}` : ', not finished'}`
+                  : `No ${k} run row was returned. The numbers this job feeds are of UNKNOWN freshness — treat them as unverified, not as current.`}>
+                  {k}: {run ? `${run.status} · ${shortTime(run.started_at)}` : <b>no run reported</b>}
+                </span>
+              );
+            })}
+          </div>
+
+          <p style={noteStyle}>
+            This is the <b>introduction</b> budget — NEW-RECORD first touches only. Follow-up touches
+            on the ladder are not governed by it, so a held lane still mails its existing ladder.
+            A lane with <b>no row at all</b> does not appear here and is <b>ungoverned</b> by this
+            overlay, which is not the same as capped at 0. The cap is applied per wave as
+            <code> min(cap, daily_budget − introduced today)</code>, so <b>% of cap can legitimately
+            exceed 100%</b> when a wave overshoots the remaining headroom.
+          </p>
+          <p style={noteStyle}>
+            <b>Read-only here.</b> Budget edits, holds, and proposal approvals are live writes that
+            change what mails on the next wave — they stay on the Property Ledger screen behind its
+            confirmations. Governed (Kumo) brands are excluded from this ledger entirely;
+            <code> partner_property_governor</code> is their single ceiling.
+          </p>
+        </AsyncPanel>
+      </Panel>
+
       {/* ── 3. PLAN AHEAD — the quota levers ──────────────────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
@@ -1616,6 +2141,121 @@ export const DripJourneyCanvas: React.FC = () => {
           icon={faSlidersH}
           right={throttle.data ? <span style={{ fontSize: 11, color: colors.textFaint }}>as of {shortTime(throttle.data.as_of)}</span> : undefined}
         />
+
+        {/* ── AVAILABLE DATA — the queue the levers act on ──────────────────
+            Operator gap, 2026-08-20: the levers were shown with no view of what
+            is actually available to spend them on. This is the live
+            partner_clean_queue anatomy for THIS sending domain's feeds on THIS
+            drip, joined to the introduction ledger so "claimable" and
+            "permitted" sit on the same row. */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>
+            AVAILABLE DATA — {(sendingDomain ?? brand ?? 'this domain').toUpperCase()}
+            {vertical ? ` · ${vertical}` : ''}
+          </div>
+          <AsyncPanel
+            label="the live supply queue"
+            res={supply}
+            isEmpty={supplyFeeds.length === 0}
+            emptyTitle={supply.data ? 'No feed on this domain belongs to this drip' : 'No supply data'}
+            emptyHint="The supply read succeeded but returned no feed whose vertical matches the selected drip. That is a routing fact — this domain has no dataset feeding this drip — not an empty queue."
+          >
+            <div style={{ ...cardGrid(160), marginBottom: 12 }}>
+              <Stat
+                label="Ready now"
+                value={num(supplyTotals.ready)}
+                sub={`claimable${shareSub(supplyTotals.ready, supplyTotals.tranche, 'tranche')}`}
+                color={supplyTotals.ready > 0 ? colors.successText : colors.warningText}
+                title={supply.data?.ready_semantics ?? 'ready = EO Verified (1) + Complainer (7) — the validator markReady path. NOT "everything unmailed".'}
+              />
+              <Stat
+                label="Due now (ladder)"
+                value={num(journey.data?.totals?.due_now)}
+                sub="follow-up backlog"
+                color={(journey.data?.totals?.due_now ?? 0) > 0 ? colors.warningText : colors.text}
+                title="Enrolled rows whose next_touch_at has already passed — the FOLLOW-UP backlog. It is a different population from Ready now: follow-ups are not governed by the introduction ledger and do not consume ready supply."
+              />
+              <Stat
+                label="In cleaning"
+                value={num(supplyTotals.cleaning)}
+                sub={`pending EO ${num(supplyTotals.pendingEO)} · in flight ${num(supplyTotals.inFlight)}`}
+                title="Records inside the EmailOversight validation pipeline. These are NOT claimable and cannot be mailed — a large number here with a small Ready is a validator throughput problem, not a data-supply problem."
+              />
+              <Stat
+                label="Mailed today"
+                value={num(supplyTotals.mailedToday)}
+                sub={supplyTotals.cap > 0
+                  ? `${ratePct(derive(supplyTotals.mailedToday, supplyTotals.cap))} of release cap ${num(supplyTotals.cap)}`
+                  : 'no release cap set on these feeds'}
+                title="First touches stamped today across this drip's feeds. The percentage is of the SUPPLY-RELEASE daily cap (partner_datasets.daily_cap), which is a different cap system from the per-ISP claim caps below and from the introduction ledger."
+              />
+              <Stat
+                label="Tranche total"
+                value={num(supplyTotals.tranche)}
+                sub={`held ${num(supplyTotals.held)} · suppressed ${num(supplyTotals.suppressed)} · dead ${num(supplyTotals.deadLetter)}`}
+                title="Every record in this drip's datasets, whatever its state. Held rows are parked by the release cap and become ready on later days; suppressed and dead-letter rows never will."
+              />
+            </div>
+
+            {supplyTotals.isps.length > 0 && (
+              <div style={{ overflowX: 'auto', marginBottom: 10 }}>
+                <table style={{ ...tableStyle, minWidth: 720 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>ISP</th>
+                      <th style={numTh} title="Claimable records sitting in the queue for this ISP right now, summed across this drip's feeds.">Ready (in queue)</th>
+                      <th style={numTh} title="Share of this drip's total ready supply.">% of ready</th>
+                      <th style={numTh} title="Today's remaining introduction allowance for this (sending domain × ISP) from the ledger above. '—' means no ledger row: UNGOVERNED by that overlay, not capped at 0.">Ledger headroom</th>
+                      <th style={thStyle} title="What actually binds this ISP first — the smaller of supply and permission.">Binding constraint</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {supplyTotals.isps.map((row) => {
+                      const led = ledgerRows.find((l) => l.isp === row.isp) ?? null;
+                      const headroom = led && typeof led.introduced_today === 'number'
+                        ? Math.max(0, led.daily_budget - led.introduced_today)
+                        : null;
+                      const stopped = !!led && (led.hold || led.daily_budget <= 0);
+                      let binding: React.ReactNode = <span style={{ color: colors.textFaint }}>unknown</span>;
+                      if (stopped) binding = <span style={{ color: colors.dangerText, fontWeight: 700 }}>ledger STOP</span>;
+                      else if (!led) binding = <span style={{ color: colors.textMuted }}>supply (ungoverned)</span>;
+                      else if (headroom == null) binding = <span style={{ color: colors.textFaint }}>counter not in yet</span>;
+                      else if (headroom < row.ready) binding = <span style={{ color: colors.warningText }}>ledger cap</span>;
+                      else binding = <span style={{ color: colors.textMuted }}>supply</span>;
+                      return (
+                        <tr key={row.isp} style={stopped ? { opacity: 0.7 } : undefined}>
+                          <td style={tdStyle}>{row.isp}</td>
+                          <td style={numTd}>{num(row.ready)}</td>
+                          <td style={numTd}>{ratePct(derive(row.ready, supplyTotals.ready))}</td>
+                          <td style={numTd} title={led
+                            ? `cap ${num(led.daily_budget)} − introduced ${num(led.introduced_today)}`
+                            : 'No partner_drip_brand_budgets row for this (domain × ISP).'}>
+                            {stopped
+                              ? <span style={{ color: colors.dangerText, fontWeight: 700 }}>0 (held)</span>
+                              : headroom == null ? UNKNOWN : num(headroom)}
+                          </td>
+                          <td style={tdStyle}>{binding}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <p style={noteStyle}>
+              {supply.data?.supply_note}
+              {supplyTotals.shared.length > 1 && (
+                <> This drip's supply is shared with <b>{supplyTotals.shared.join(', ')}</b> — a ready
+                record counted here can be claimed by any of them, so it is not this domain's to plan against.</>
+              )}
+              {' '}<b>Ready and Due now are different populations</b>: Ready is unmailed NEW data awaiting a
+              first touch and is governed by the introduction ledger; Due now is already-enrolled
+              subscribers awaiting a FOLLOW-UP touch, which the ledger does not govern.
+            </p>
+          </AsyncPanel>
+        </div>
+
         <AsyncPanel
           label="the throttle configuration"
           res={throttle}
@@ -1785,6 +2425,9 @@ export const DripJourneyCanvas: React.FC = () => {
                   <th style={numTh} title="PG tracking-event delivered count — the per-campaign delivery proxy (METRIC_CONTRACT §1). PG confirmation lags and under-counts (Microsoft ~30%); lake delivery truth may read higher.">
                     Delivered* (PG)
                   </th>
+                  <th style={numTh} title="Delivered* ÷ Sent on this row. This is a CONFIRMATION rate, not a delivery rate: PG records a delivery only when the confirmation is ingested, so it is a floor and reads ~30% low at Microsoft. A number here below the ISP's usual band is a reason to check the lake, never on its own proof of a delivery problem.">
+                    Confirmed % (of sent)
+                  </th>
                   <th style={numTh} title="Raw opens — machine/MPP traffic included (METRIC_CONTRACT §6). Not 'people opened'.">
                     Opens (raw)
                   </th>
@@ -1813,6 +2456,9 @@ export const DripJourneyCanvas: React.FC = () => {
                       <td style={tdStyle}>{r.isp}</td>
                       <td style={numTd}>{num(r.sent)}</td>
                       <td style={numTd}>{num(r.delivered_pg)}</td>
+                      <td style={numTd} title={`delivered ${num(r.delivered_pg)} / sent ${num(r.sent)}`}>
+                        {ratePct(derive(r.delivered_pg, r.sent))}
+                      </td>
                       <td style={numTd}>{num(r.opens)}</td>
                       <td style={numTd} title={openMismatch ? `Server open_rate ${ratePct(r.open_rate)} does not reconcile with opens/delivered shown here (${ratePct(openDerived)}) — the server used a different denominator.` : `opens ${num(r.opens)} / delivered ${num(r.delivered_pg)}`}>
                         {ratePct(r.open_rate)}{openMismatch && <span style={{ color: colors.warningText }}>*</span>}
@@ -1842,6 +2488,9 @@ export const DripJourneyCanvas: React.FC = () => {
                   </td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.sent)}</td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.delivered)}</td>
+                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total Delivered* / total Sent across the rows shown.">
+                    {ratePct(derive(statTotals.delivered, statTotals.sent))}
+                  </td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.opens)}</td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total opens / total Delivered* (PG) across the rows shown.">
                     {ratePct(derive(statTotals.opens, statTotals.delivered))}
