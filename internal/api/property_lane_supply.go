@@ -593,7 +593,7 @@ func (s *PMTACampaignService) HandleLaneThrottle(w http.ResponseWriter, r *http.
 		// The one writer (REUSED, never duplicated): delete-and-replace.
 		"write_endpoint": "/api/mailing/data-partners/datasets/{id}/isp-distribution",
 		"replacement_note": "Writes REPLACE the lane's override set (delete-and-replace): ISPs omitted from a write fall back to the global defaults, and their lane daily budgets are removed with the row. An ISP included without daily_cap keeps its prior lane budget.",
-		"enforcement_note": "LIVE enforcement input — the drip orchestrator reads these rows fresh each wave: max_per_wave replaces the global per-wave claim cap for this dataset; daily_cap is the lane-owned per-ISP daily budget (NULL = global default, 0 = hard-suppressed). Changes apply on the next wave, no deploy.",
+		"enforcement_note": "LIVE enforcement input — the drip orchestrator reads these rows fresh each wave: max_per_wave replaces the global per-wave claim cap for this dataset; daily_cap is the lane-owned per-ISP daily budget for NEW RECORDS ONLY (first touch \u2014 counted per (dataset, ISP) across all of the lane\u0027s brands; NULL = global default, 0 = hard-suppresses new intake for that ISP). It does NOT bound follow-up touches: mailed_at is stamped once at first touch, so a ladder already in motion keeps flowing at daily_cap=0 \u2014 use max_per_wave to pace follow-ups. The brand-allow gate still applies on top and a lane override cannot bypass it. Changes apply on the next wave, no deploy.",
 		"cap_systems_note": "Two distinct cap systems: supply_release_daily_cap = supply release cap (lane, ready-vs-held); overrides[] = claim cap (per ISP, orchestrator).",
 		"feeds":            out,
 	})
