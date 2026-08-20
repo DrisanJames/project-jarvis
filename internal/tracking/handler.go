@@ -194,6 +194,34 @@ func carryAttribution(target, originalURL string) string {
 // a 500.
 var hashPattern = regexp.MustCompile(`^[A-Za-z0-9]{6,20}$`)
 
+// offerTokenMaxLen bounds the ?t= passthrough. 256 is far above any real
+// partner id and keeps a hostile 10KB query from reaching the regexp or the
+// outbound URL at all.
+const offerTokenMaxLen = 256
+
+// offerTokenPattern is the RFC 3986 UNRESERVED set (ALPHA / DIGIT / "-" / "."
+// / "_" / "~") and nothing else. Deliberately NOT a percent-encode-and-hope
+// filter: every character that could alter the STRUCTURE of the outbound URL
+// — "&" "=" "?" "#" "/" ":" "%" "+" whitespace, control chars, anything
+// non-ASCII — is absent from this set, so a value that passes is inert
+// wherever it lands in the destination (query value, path segment, fragment).
+var offerTokenPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+
+// sanitizeOfferToken is REJECT-not-escape: a token that is not wholly within
+// the unreserved set (or is over-long) becomes the empty string, which renders
+// {{token}} empty and still yields a valid destination. There is no partial
+// acceptance and no stripping — a hostile value never reaches the outbound URL
+// in any form.
+func sanitizeOfferToken(s string) string {
+	if s == "" || len(s) > offerTokenMaxLen {
+		return ""
+	}
+	if !offerTokenPattern.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
 // HandleOfferRedirect resolves the scanner-safe path contract
 //
 //	/o/<subscriber_id>/<hash>/<campaign_id>
@@ -234,6 +262,14 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	subscriber := chi.URLParam(r, "subscriber")
 	hash := chi.URLParam(r, "hash")
 	campaign := chi.URLParam(r, "campaign")
+
+	// Opaque per-recipient passthrough for {{token}} — read from the QUERY
+	// string, identically on both route shapes (4- and 5-segment), and
+	// sanitized to the unreserved set. NO DB LOOKUP: the token rides the URL
+	// precisely so this hot path stays lookup-free (same trade-off documented
+	// for deltaSinceSend below). Absent/hostile -> "" -> {{token}} renders
+	// empty and the offer is still reachable.
+	token := sanitizeOfferToken(r.URL.Query().Get("t"))
 
 	// Hash gates the lookup; a malformed hash is a dead link -> brand root.
 	if !hashPattern.MatchString(hash) {
@@ -282,7 +318,7 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 			attrBrand = entry.BrandRoot
 		}
 	}
-	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign)
+	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign, token)
 
 	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
 	// but has ZERO influence on what is served below. deltaSinceSend is 0 here

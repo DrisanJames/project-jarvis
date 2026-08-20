@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func mustQuery(t *testing.T, raw string) url.Values {
 }
 
 func TestRenderOfferDestination_AppendsAttributionWhenAbsent(t *testing.T) {
-	got := renderOfferDestination("https://cratoolpro.com/ABC/DEF", "sub-1", "discountblog.com", "camp-9")
+	got := renderOfferDestination("https://cratoolpro.com/ABC/DEF", "sub-1", "discountblog.com", "camp-9", "")
 	q := mustQuery(t, got)
 	if q.Get("source_id") != "email" {
 		t.Errorf("source_id = %q, want email", q.Get("source_id"))
@@ -40,7 +41,7 @@ func TestRenderOfferDestination_AppendsAttributionWhenAbsent(t *testing.T) {
 
 func TestRenderOfferDestination_SubstitutesMustache(t *testing.T) {
 	tmpl := "https://ex.com/go?u={{subscriber.id}}&b={{brand.domain}}&c={{campaign}}"
-	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9")
+	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "")
 	q := mustQuery(t, got)
 	if q.Get("u") != "sub-1" {
 		t.Errorf("{{subscriber.id}} -> u = %q, want sub-1", q.Get("u"))
@@ -57,7 +58,7 @@ func TestRenderOfferDestination_DoesNotDuplicateExisting(t *testing.T) {
 	// Template already carries sub1 and source_id — operator's values must win
 	// and must not be duplicated.
 	tmpl := "https://ex.com/go?source_id=push&sub1=preset"
-	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9")
+	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "")
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -77,7 +78,7 @@ func TestRenderOfferDestination_DoesNotDuplicateExisting(t *testing.T) {
 
 func TestRenderOfferDestination_PreservesOtherParamsAndEncodes(t *testing.T) {
 	tmpl := "https://ex.com/go?keep=1&other=a%20b"
-	got := renderOfferDestination(tmpl, "sub id/1", "discountblog.com", "camp-9")
+	got := renderOfferDestination(tmpl, "sub id/1", "discountblog.com", "camp-9", "")
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -100,13 +101,154 @@ func TestRenderOfferDestination_MustacheValuesEncoded(t *testing.T) {
 	// A value with characters that MUST be percent-encoded when placed in the
 	// query string.
 	tmpl := "https://ex.com/go?u={{subscriber.id}}"
-	got := renderOfferDestination(tmpl, "a&b=c", "discountblog.com", "camp-9")
+	got := renderOfferDestination(tmpl, "a&b=c", "discountblog.com", "camp-9", "")
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("parse %q: %v", got, err)
 	}
 	if u.Query().Get("u") != "a&b=c" {
 		t.Errorf("mustache value not safely encoded, decoded to %q", u.Query().Get("u"))
+	}
+}
+
+// --- {{token}} opaque passthrough ------------------------------------------
+
+// The whole point: an advertiser's per-recipient id survives the gateway.
+func TestRenderOfferDestination_TokenPassthrough(t *testing.T) {
+	tmpl := "https://autocoveragepoint.com/coverage-match?id=ff2007&s4=7552&channel=Rev&tokenid={{token}}"
+	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "abc123XYZ_-.~")
+	q := mustQuery(t, got)
+	if q.Get("tokenid") != "abc123XYZ_-.~" {
+		t.Errorf("tokenid = %q, want abc123XYZ_-.~ (full URL: %s)", q.Get("tokenid"), got)
+	}
+	// The advertiser's own params must be untouched.
+	if q.Get("id") != "ff2007" || q.Get("s4") != "7552" || q.Get("channel") != "Rev" {
+		t.Errorf("advertiser params mangled: %v", q)
+	}
+}
+
+// renderOfferDestination escapes the token itself, independently of the
+// handler-side sanitizer — defense in depth for any future caller.
+func TestRenderOfferDestination_TokenIsURLEscaped(t *testing.T) {
+	tmpl := "https://ex.com/go?tokenid={{token}}"
+	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "a&b=c#d /e")
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse %q: %v", got, err)
+	}
+	if u.Host != "ex.com" {
+		t.Errorf("host altered by token: %q", u.Host)
+	}
+	if u.Query().Get("tokenid") != "a&b=c#d /e" {
+		t.Errorf("token not safely encoded, decoded to %q (full URL: %s)", u.Query().Get("tokenid"), got)
+	}
+	if _, injected := u.Query()["b"]; injected {
+		t.Errorf("token injected a parameter: %v", u.Query())
+	}
+}
+
+// A recipient with no tid must still reach the offer: {{token}} renders empty
+// and the URL stays valid and structurally intact.
+func TestRenderOfferDestination_EmptyTokenStillValidURL(t *testing.T) {
+	tmpl := "https://autocoveragepoint.com/coverage-match?id=ff2007&tokenid={{token}}"
+	got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "")
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("empty token produced an unparseable URL %q: %v", got, err)
+	}
+	if u.Scheme != "https" || u.Host != "autocoveragepoint.com" || u.Path != "/coverage-match" {
+		t.Errorf("empty token altered the destination structure: %q", got)
+	}
+	if _, ok := u.Query()["tokenid"]; !ok {
+		t.Errorf("tokenid key should survive as empty, got %q", got)
+	}
+	if u.Query().Get("tokenid") != "" {
+		t.Errorf("tokenid should be empty, got %q", u.Query().Get("tokenid"))
+	}
+	// Attribution still applied.
+	if u.Query().Get("sub1") != "sub-1" || u.Query().Get("sub2") != "discountblog.com" {
+		t.Errorf("attribution lost on the empty-token path: %q", got)
+	}
+}
+
+// liveCratoolproTemplates are the DISTINCT active offer_url_template values
+// carrying cratoolpro money links, read from prod mailing_smart_links
+// (status='active') on 2026-08-20: 59 active links, 32 cratoolpro, 21 distinct
+// shapes, and ZERO of them contain {{token}}. This is the backward-compat
+// contract: adding the token parameter must not move a single byte for any
+// link already in an inbox.
+var liveCratoolproTemplates = []string{
+	"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/",
+	"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/?creative_id=547301&source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/BXPFT55/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/CL38PFR/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/CMHJBRD/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/CTCDKM2/",
+	"https://www.cratoolpro.com/BJB4Q5BF/J876SLX/",
+	"https://www.cratoolpro.com/BJB4Q5BF/J876SLX/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/JGCDCW7/",
+	"https://www.cratoolpro.com/BJB4Q5BF/JJRFMXZ/",
+	"https://www.cratoolpro.com/BJB4Q5BF/K3TL7NJ/",
+	"https://www.cratoolpro.com/BJB4Q5BF/K435QLZ/",
+	"https://www.cratoolpro.com/BJB4Q5BF/K5C8PQQ/",
+	"https://www.cratoolpro.com/BJB4Q5BF/K5C8PQQ/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/K62P438/?creative_id=153833&source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/K86F3PC/",
+	"https://www.cratoolpro.com/BJB4Q5BF/KFSPRLK/",
+	"https://www.cratoolpro.com/BJB4Q5BF/KFSPRLK/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/KG53427/",
+	"https://www.cratoolpro.com/BJB4Q5BF/KM15N5P/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+	"https://www.cratoolpro.com/BJB4Q5BF/KQ4MBHZ/",
+}
+
+// REGRESSION GUARD: for every live template (none of which has {{token}}), the
+// rendered destination must be INDEPENDENT of the token argument — including a
+// hostile one. If this ever fails, a link already sitting in someone's inbox
+// changed.
+func TestRenderOfferDestination_NoTokenPlaceholder_UnaffectedByToken(t *testing.T) {
+	tokens := []string{"", "abc123", "x&foo=bar", "../", "\r\nX: y", strings.Repeat("A", 10240)}
+	for _, tmpl := range liveCratoolproTemplates {
+		base := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", "")
+		for _, tok := range tokens {
+			got := renderOfferDestination(tmpl, "sub-1", "discountblog.com", "camp-9", tok)
+			if got != base {
+				t.Errorf("template %q moved with token %q:\n got  %q\n want %q", tmpl, tok, got, base)
+			}
+		}
+	}
+}
+
+// Byte-for-byte goldens for the three live template SHAPES, derived from the
+// pre-token behavior (mustache substitution + setIfAbsent + url.Values.Encode,
+// which sorts keys). Pins the exact output string, not just its stability.
+func TestRenderOfferDestination_LiveTemplateGoldens(t *testing.T) {
+	const sub = "11111111-1111-1111-1111-111111111111"
+	const camp = "22222222-2222-2222-2222-222222222222"
+	cases := []struct{ tmpl, want string }{
+		{
+			// bare path, no query at all
+			"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/",
+			"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/?source_id=email&sub1=" + sub + "&sub2=discountblog.com&sub3=" + camp,
+		},
+		{
+			// the standard minted shape
+			"https://www.cratoolpro.com/BJB4Q5BF/KFSPRLK/?source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+			"https://www.cratoolpro.com/BJB4Q5BF/KFSPRLK/?source_id=email&sub1=" + sub + "&sub2=discountblog.com&sub3=" + camp,
+		},
+		{
+			// with a baked-in creative_id
+			"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/?creative_id=547301&source_id=email&sub1={{subscriber.id}}&sub2={{brand.domain}}",
+			"https://www.cratoolpro.com/BJB4Q5BF/93W8N2N/?creative_id=547301&source_id=email&sub1=" + sub + "&sub2=discountblog.com&sub3=" + camp,
+		},
+	}
+	for _, c := range cases {
+		if got := renderOfferDestination(c.tmpl, sub, "discountblog.com", camp, ""); got != c.want {
+			t.Errorf("golden mismatch for %q:\n got  %q\n want %q", c.tmpl, got, c.want)
+		}
+		// And with a token present, since none of these carry {{token}}.
+		if got := renderOfferDestination(c.tmpl, sub, "discountblog.com", camp, "tok999"); got != c.want {
+			t.Errorf("token leaked into a no-{{token}} template %q: %q", c.tmpl, got)
+		}
 	}
 }
 

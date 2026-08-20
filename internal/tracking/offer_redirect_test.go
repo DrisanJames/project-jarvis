@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -210,7 +211,7 @@ func TestOffer_HitHighRisk_200BridgeNoCloaking(t *testing.T) {
 		t.Fatal("high-risk bridge differs by UA — that would be cloaking")
 	}
 	// The bridge must carry a Continue anchor to the rendered dest.
-	dest := renderOfferDestination(entry.Destination, subUUID, entry.BrandRoot, campUUID)
+	dest := renderOfferDestination(entry.Destination, subUUID, entry.BrandRoot, campUUID, "")
 	wantHref := `href="` + html.EscapeString(dest) + `"`
 	if !strings.Contains(recBrowser.Body.String(), wantHref) {
 		t.Errorf("bridge missing Continue href; want %q in body:\n%s", wantHref, recBrowser.Body.String())
@@ -378,5 +379,261 @@ func TestBrandRootFromHost(t *testing.T) {
 		if got := brandRootFromHost(in); got != want {
 			t.Errorf("brandRootFromHost(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// --- ?t= opaque token passthrough -------------------------------------------
+
+// acpTemplate is the shape this feature exists for: an advertiser landing URL
+// carrying its OWN per-recipient id. Before {{token}} existed, routing this
+// link through the gateway would have dropped tokenid and destroyed partner
+// attribution on every click.
+const acpTemplate = "https://autocoveragepoint.com/coverage-match?id=ff2007&s4=7552&channel=Rev&tokenid={{token}}"
+
+func doOfferT(h *Handler, host, sub, hash, camp, ua, rawQuery string) *httptest.ResponseRecorder {
+	target := "/o/" + sub + "/" + hash + "/" + camp
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Host = host
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func doOffer5T(h *Handler, host, brand, sub, hash, camp, ua, rawQuery string) *httptest.ResponseRecorder {
+	target := "/o/" + brand + "/" + sub + "/" + hash + "/" + camp
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Host = host
+	if ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	rec := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func acpHandler(risk string) *Handler {
+	return NewHandler(&capturePublisher{}, stubDict(map[string]smartLinkEntry{
+		"abc123": {Destination: acpTemplate, RiskProfile: risk, BrandRoot: "discountblog.com"},
+	}))
+}
+
+func TestSanitizeOfferToken(t *testing.T) {
+	// The ACCEPTED charset is exactly the RFC 3986 unreserved set.
+	good := []string{
+		"a", "0", "abc123", "A-B_C.D~E",
+		"7552-ff2007", "tok.ID_9~x", strings.Repeat("z", 256),
+	}
+	for _, s := range good {
+		if got := sanitizeOfferToken(s); got != s {
+			t.Errorf("sanitizeOfferToken(%q) = %q, want it accepted verbatim", s, got)
+		}
+	}
+	bad := []string{
+		"", "x&foo=bar", "x=y", "../", "a/b", "a:b", "a?b", "a#b", "a%20b", "a+b",
+		"a b", "a\tb", "a\rb", "a\nb", "x\r\nSet-Cookie: a=b", "a\x00b",
+		"héllo", "a,b", "a;b", "a'b", "a\"b", "<script>", "{{token}}",
+		strings.Repeat("z", 257), strings.Repeat("A", 10240),
+	}
+	for _, s := range bad {
+		if got := sanitizeOfferToken(s); got != "" {
+			t.Errorf("sanitizeOfferToken(%q) = %q, want \"\" (reject, never escape)", s, got)
+		}
+	}
+}
+
+// 1. The token rides the query string into {{token}}.
+func TestOffer_TokenPassthrough(t *testing.T) {
+	rec := doOfferT(acpHandler("low"), "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "t=7552-ff2007~x.y_z")
+	if rec.Code != http.StatusFound {
+		t.Fatalf("code = %d, want 302", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse Location %q: %v", loc, err)
+	}
+	if u.Query().Get("tokenid") != "7552-ff2007~x.y_z" {
+		t.Errorf("tokenid = %q, want 7552-ff2007~x.y_z (Location %q)", u.Query().Get("tokenid"), loc)
+	}
+	if u.Host != "autocoveragepoint.com" {
+		t.Errorf("host = %q, want autocoveragepoint.com", u.Host)
+	}
+}
+
+// 2. No ?t= at all (and an invalid one) must still reach the offer.
+func TestOffer_TokenAbsentOrInvalid_OfferStillReachable(t *testing.T) {
+	for _, rawQuery := range []string{"", "t=", "t=x%26foo%3Dbar", "other=1"} {
+		rec := doOfferT(acpHandler("low"), "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, rawQuery)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("query %q: code = %d, want 302", rawQuery, rec.Code)
+		}
+		loc := rec.Header().Get("Location")
+		u, err := url.Parse(loc)
+		if err != nil {
+			t.Fatalf("query %q: Location %q unparseable: %v", rawQuery, loc, err)
+		}
+		if u.Scheme != "https" || u.Host != "autocoveragepoint.com" || u.Path != "/coverage-match" {
+			t.Errorf("query %q: destination structure broken: %q", rawQuery, loc)
+		}
+		if u.Query().Get("tokenid") != "" {
+			t.Errorf("query %q: tokenid should be empty, got %q", rawQuery, u.Query().Get("tokenid"))
+		}
+		// The advertiser's own params and our attribution both survive.
+		if u.Query().Get("id") != "ff2007" || u.Query().Get("sub1") != subUUID {
+			t.Errorf("query %q: params lost: %q", rawQuery, loc)
+		}
+	}
+}
+
+// 3. A hostile ?t= must not inject a param, change the host, escape the query,
+// or alter the destination in ANY way — the served bytes must equal the
+// no-token render.
+func TestOffer_HostileToken_CannotInject(t *testing.T) {
+	baseline := doOfferT(acpHandler("low"), "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "")
+	want := baseline.Header().Get("Location")
+
+	// Every vector is percent-encoded as it would arrive in a real request
+	// query. Each decodes to a value that is NOT in the unreserved set, so
+	// sanitizeOfferToken must reject it wholesale.
+	vectors := map[string]string{
+		"param injection": "x%26foo%3Dbar",
+		"path traversal":  "..%2F..%2Fetc",
+		"dot dot slash":   "../",
+		"scheme breakout": "https%3A%2F%2Fevil.com",
+		"host breakout":   "%2F%2Fevil.com%2F",
+		"fragment":        "x%23frag",
+		"crlf header":     "x%0D%0ASet-Cookie%3A%20a%3Db",
+		"newline":         "x%0Ay",
+		"null byte":       "x%00y",
+		"space":           "x%20y",
+		"percent":         "%2541",
+		"quote":           "x%22onmouseover%3D%22alert(1)",
+		"angle brackets":  "%3Cscript%3E",
+		"mustache":        "%7B%7Btoken%7D%7D",
+		"huge":            strings.Repeat("A", 10240),
+		"over limit by 1": strings.Repeat("z", 257),
+	}
+	for name, tok := range vectors {
+		rec := doOfferT(acpHandler("low"), "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "t="+tok)
+		if rec.Code != http.StatusFound {
+			t.Errorf("%s: code = %d, want 302", name, rec.Code)
+			continue
+		}
+		loc := rec.Header().Get("Location")
+		if loc != want {
+			t.Errorf("%s: hostile token altered the destination:\n got  %q\n want %q", name, loc, want)
+		}
+		u, err := url.Parse(loc)
+		if err != nil {
+			t.Errorf("%s: Location unparseable: %v", name, err)
+			continue
+		}
+		if u.Host != "autocoveragepoint.com" {
+			t.Errorf("%s: host changed to %q", name, u.Host)
+		}
+		if _, ok := u.Query()["foo"]; ok {
+			t.Errorf("%s: injected a parameter: %q", name, loc)
+		}
+		if u.Fragment != "" {
+			t.Errorf("%s: broke out into a fragment: %q", name, u.Fragment)
+		}
+		if strings.ContainsAny(loc, "\r\n") {
+			t.Errorf("%s: CRLF reached the Location header: %q", name, loc)
+		}
+	}
+	// A RAW "&" in the request query is ordinary query parsing, not injection:
+	// ?t=x&foo=bar means t="x" (a legal token) and a separate foo param that is
+	// none of our business. Assert the extra param cannot reach the destination.
+	rec := doOfferT(acpHandler("low"), "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "t=x&foo=bar")
+	loc := rec.Header().Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse %q: %v", loc, err)
+	}
+	if u.Query().Get("tokenid") != "x" {
+		t.Errorf("raw-& case: tokenid = %q, want x", u.Query().Get("tokenid"))
+	}
+	if _, ok := u.Query()["foo"]; ok {
+		t.Errorf("raw-& case: an unrelated request param reached the destination: %q", loc)
+	}
+	if u.Host != "autocoveragepoint.com" {
+		t.Errorf("raw-& case: host = %q", u.Host)
+	}
+}
+
+// 4. REGRESSION GUARD over the real live templates: none of them carries
+// {{token}}, so a ?t= on the request must be a complete no-op end to end.
+func TestOffer_LiveTemplates_ByteIdenticalWithAndWithoutToken(t *testing.T) {
+	for _, tmpl := range liveCratoolproTemplates {
+		h := NewHandler(&capturePublisher{}, stubDict(map[string]smartLinkEntry{
+			"abc123": {Destination: tmpl, RiskProfile: "low", BrandRoot: "discountblog.com"},
+		}))
+		base := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "")
+		for _, tok := range []string{"t=abc123", "t=x%26foo%3Dbar", "t=" + strings.Repeat("A", 10240)} {
+			got := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, tok)
+			if got.Header().Get("Location") != base.Header().Get("Location") {
+				t.Errorf("template %q moved with %q:\n got  %q\n want %q",
+					tmpl, tok, got.Header().Get("Location"), base.Header().Get("Location"))
+			}
+		}
+	}
+}
+
+// 5. Both route shapes carry the token.
+func TestOffer_TokenOnBothRouteShapes(t *testing.T) {
+	const tok = "7552-ff2007"
+	rec4 := doOfferT(acpHandler("low"), "t.em.consumerpro.net", subUUID, "abc123", campUUID, uaBrowser, "t="+tok)
+	rec5 := doOffer5T(acpHandler("low"), "t.em.consumerpro.net", "consumerpro.net", subUUID, "abc123", campUUID, uaBrowser, "t="+tok)
+	if rec4.Code != http.StatusFound || rec5.Code != http.StatusFound {
+		t.Fatalf("codes: legacy=%d brand-in-path=%d, want 302/302", rec4.Code, rec5.Code)
+	}
+	loc4, loc5 := rec4.Header().Get("Location"), rec5.Header().Get("Location")
+	for _, loc := range []string{loc4, loc5} {
+		u, err := url.Parse(loc)
+		if err != nil {
+			t.Fatalf("parse %q: %v", loc, err)
+		}
+		if u.Query().Get("tokenid") != tok {
+			t.Errorf("tokenid = %q, want %q (Location %q)", u.Query().Get("tokenid"), tok, loc)
+		}
+	}
+	// Both shapes agree here (path brand == host brand), so they must be equal.
+	if loc4 != loc5 {
+		t.Errorf("route shapes diverged:\n 4-seg %q\n 5-seg %q", loc4, loc5)
+	}
+}
+
+// 6. The high-risk bridge — the reason this feature exists — still serves for a
+// high-risk LINK (never keyed off the visitor), and its Continue href carries
+// the rendered token.
+func TestOffer_HighRiskBridge_CarriesTokenAndStaysNonCloaking(t *testing.T) {
+	const tok = "7552-ff2007"
+	h := acpHandler("high")
+	recScanner := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaScanner, "t="+tok)
+	recBrowser := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "t="+tok)
+
+	if recScanner.Code != http.StatusOK || recBrowser.Code != http.StatusOK {
+		t.Fatalf("high-risk codes: scanner=%d browser=%d, want 200/200", recScanner.Code, recBrowser.Code)
+	}
+	// NO CLOAKING: identical bytes for scanner and human, token included.
+	if recScanner.Body.String() != recBrowser.Body.String() {
+		t.Fatal("high-risk bridge differs by UA — that would be cloaking")
+	}
+	dest := renderOfferDestination(acpTemplate, subUUID, "discountblog.com", campUUID, tok)
+	if !strings.Contains(dest, "tokenid="+tok) {
+		t.Fatalf("test precondition: rendered dest lost the token: %q", dest)
+	}
+	wantHref := `href="` + html.EscapeString(dest) + `"`
+	if !strings.Contains(recBrowser.Body.String(), wantHref) {
+		t.Errorf("bridge Continue href missing the rendered token; want %q in body:\n%s", wantHref, recBrowser.Body.String())
 	}
 }

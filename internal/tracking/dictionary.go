@@ -198,11 +198,23 @@ func (d *SmartLinkDictionary) Close() {
 //
 // This is the server-side attribution that makes Everflow work from the
 // scanner-safe path (the mustache render + sub-tags the email HTML used to carry).
-func renderOfferDestination(template, subscriberID, brandRoot, campaignID string) string {
+//
+// token is the OPAQUE per-recipient passthrough ({{token}}). It exists so an
+// advertiser whose landing URL carries its own per-recipient id (e.g.
+// AutoCoveragePoint's ?tokenid=<tid>) can be routed through this gateway — and
+// therefore through the high-risk bridge — WITHOUT losing partner attribution.
+// The gateway never interprets it and never looks it up: it arrives on the
+// request URL (?t=), is sanitized to the RFC 3986 unreserved set by
+// sanitizeOfferToken, and is substituted verbatim. An EMPTY token is a
+// first-class case: {{token}} renders empty, the destination stays a valid URL,
+// and a recipient with no id still reaches the offer. A template WITHOUT
+// {{token}} is byte-identical to the pre-token output.
+func renderOfferDestination(template, subscriberID, brandRoot, campaignID, token string) string {
 	rendered := template
 	rendered = strings.ReplaceAll(rendered, "{{subscriber.id}}", url.QueryEscape(subscriberID))
 	rendered = strings.ReplaceAll(rendered, "{{brand.domain}}", url.QueryEscape(brandRoot))
 	rendered = strings.ReplaceAll(rendered, "{{campaign}}", url.QueryEscape(campaignID))
+	rendered = strings.ReplaceAll(rendered, "{{token}}", url.QueryEscape(token))
 
 	u, err := url.Parse(rendered)
 	if err != nil {
