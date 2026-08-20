@@ -1071,6 +1071,16 @@ func main() {
 			// Kill switch: LANE_STATS_ROLLUP_DISABLED.
 			laneStatsRollup := worker.NewLaneStatsRollupWorker(mailingDB, redisClient)
 			laneStatsRollup.Start(ctx)
+			// LaneSnapshotWorker (2026-08-19): every 5 min, ONE Athena query for
+			// today's Denver day across the whole estate (measured 3.7s / 10.7 MB
+			// / 2,379 campaigns), joined to a single small mailing_campaigns read
+			// for campaign->lane, written as one JSON snapshot to S3. This is the
+			// replacement for the PG rollup, which is switched off because its
+			// backfill ran on the same RDS as the request path and starved it.
+			// In-process on purpose: this repo has a history of cron jobs that
+			// were documented and never armed. Kill switch: LANE_SNAPSHOT_DISABLED.
+			laneSnapshot := worker.NewLaneSnapshotWorker(mailingDB, redisClient)
+			laneSnapshot.Start(ctx)
 			// SESVDMSnapshotWorker: 6h leased UTC-day VDM identity telemetry
 			// into ses_vdm_daily (default AWS credential chain; region
 			// SES_REGION, default us-west-1). Kill switch:

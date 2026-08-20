@@ -153,6 +153,12 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// report cannot disagree. Day-chunked + TTL-cached; a day that misses
 		// the budget is a NAMED GAP with partial:true, never a zero row.
 		cr.Get("/property-ledger/stats", s.HandleLaneStats)
+		// Lane snapshot (operator 2026-08-19: "a snapshot from athena that is ran
+		// on a per 5 min basis and builds the snapshot as a json file"). Reads a
+		// precomputed JSON snapshot of TODAY — the scan happens on the LAKE, not
+		// prod Postgres, so it cannot contend with sending the way the PG rollup
+		// did. No snapshot yet returns an explicit empty STATE, never zero rows.
+		cr.Get("/property-ledger/snapshot", s.HandleLaneSnapshotStats)
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)
