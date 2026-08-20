@@ -133,6 +133,20 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Post("/property-ledger/lane-content/subject", s.HandleLaneSubjectEdit)
 		cr.Post("/property-ledger/lane-content/touch-copy", s.HandleLaneTouchCopyEdit)
 		cr.Post("/property-ledger/lane-content/offer-swap", s.HandleLaneOfferSwap)
+		// Drip journey canvas (operator scope 2026-08-19: "canvas style ...
+		// rectangle for the touch, conditional shape for delay, connected by a
+		// line, that line should have numbers calling out how many audience
+		// members are awaiting the next touch"). Read-only: the ladder's touch
+		// content + per-edge waiting census from partner_clean_queue.
+		cr.Get("/property-ledger/lane-journey", s.HandleLaneJourney)
+		// Domain <-> drip binding (partner_drip_vertical_roster). The
+		// orchestrator reloads this table every tick, so an assign/unassign is a
+		// LIVE sending change with no deploy — hence the dedicated write gate
+		// PROPERTY_LEDGER_ROSTER_WRITE_ENABLED. Unassign SOFT-DISABLES
+		// (active=false) and never deletes.
+		cr.Get("/property-ledger/lane-roster", s.HandleLaneRosterList)
+		cr.Post("/property-ledger/lane-roster/assign", s.HandleLaneRosterAssign)
+		cr.Post("/property-ledger/lane-roster/unassign", s.HandleLaneRosterUnassign)
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)

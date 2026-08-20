@@ -179,7 +179,7 @@ func (s *PMTACampaignService) HandleLaneJourney(w http.ResponseWriter, r *http.R
 	brand := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("brand")))
 	vertical := strings.TrimSpace(r.URL.Query().Get("vertical"))
 
-	if !propertyLedgerValidBrand(brand) {
+	if !propertyLedgerValidLaneBrand(r.Context(), s.db, brand) {
 		respondError(w, http.StatusBadRequest, "unknown brand (must be one of the 16 drip roster codes)")
 		return
 	}
