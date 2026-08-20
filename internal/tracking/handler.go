@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"html"
 	"log"
 	"net/http"
 	"net/url"
@@ -341,14 +340,19 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	})
 	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
 
-	// HANDOFF — identical for EVERYONE regardless of the label above. High-risk
-	// links get a lightweight branded bridge page (a real interstitial shown to
-	// scanner and human alike); everything else a 302. This branch keys off the
-	// link's RiskProfile, NOT the visitor — that is the no-cloaking guarantee.
-	if entry.RiskProfile == "high" {
-		serveOfferBridge(w, attrBrand, dest)
-		return
-	}
+	// HANDOFF — one 302 for EVERYONE, every hash, no exceptions.
+	//
+	// This used to branch on RiskProfile: a "high" link served a bridge page
+	// with a Continue button. Removed 2026-08-20 on operator ruling ("I do not
+	// want this hop. I do not care about bots. This is a bad experience for the
+	// human."). On a CPC offer the interstitial taxes the only event that pays —
+	// the reader already clicked, and the bridge asked them to click again.
+	//
+	// No cloaking risk is introduced by removing it: the guarantee was never the
+	// bridge itself, it was that the handoff does not vary by VISITOR. A single
+	// unconditional redirect satisfies that more simply than a per-hash branch —
+	// scanner and human get byte-identical treatment. ClassifyClickAsMachine
+	// stays exactly where it was, labelling telemetry and changing nothing served.
 	http.Redirect(w, r, dest, http.StatusFound)
 }
 
@@ -389,31 +393,6 @@ func brandRootFromHost(host string) string {
 		return "projectjarvis.io"
 	}
 	return h
-}
-
-// serveOfferBridge renders the high-risk interstitial. It is deliberately
-// minimal and contains a single Continue anchor to dest. Shown to EVERY visitor
-// for a high-risk hash — this is not cloaking, it is the link's handoff mode.
-// dest is HTML-escaped into the href to prevent attribute breakout.
-func serveOfferBridge(w http.ResponseWriter, brandRoot, dest string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	title := brandRoot
-	if title == "" {
-		title = "Continue"
-	}
-	page := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
-		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
-		`<meta name="robots" content="noindex,nofollow">` +
-		`<title>` + html.EscapeString(title) + `</title></head>` +
-		`<body style="font-family:Arial,Helvetica,sans-serif;text-align:center;padding:60px 20px;">` +
-		`<h1 style="font-size:20px;">You're being redirected</h1>` +
-		`<p style="color:#555;">Click below to continue to your offer.</p>` +
-		`<p style="margin-top:28px;"><a href="` + html.EscapeString(dest) + `" rel="nofollow noopener" ` +
-		`style="display:inline-block;padding:12px 28px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">Continue</a></p>` +
-		`</body></html>`
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(page))
 }
 
 func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,6 @@ package tracking
 
 import (
 	"context"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -194,30 +193,36 @@ func TestOffer_HitLowRisk_302WithAttribution(t *testing.T) {
 	}
 }
 
-func TestOffer_HitHighRisk_200BridgeNoCloaking(t *testing.T) {
+// A high-risk hash gets the SAME unconditional 302 as any other. The bridge
+// page it used to serve was removed 2026-08-20 (operator: the hop is a bad
+// human experience and taxes the click a CPC offer is paid for). The
+// no-cloaking property is unchanged and in fact simpler: the handoff never
+// varies by VISITOR, which this pins by driving the same hash with a scanner UA
+// and a browser UA and demanding byte-identical treatment.
+func TestOffer_HighRisk_302sIdenticallyForScannerAndHuman(t *testing.T) {
 	pub := &capturePublisher{}
 	entry := smartLinkEntry{Destination: "https://ex.com/pay", RiskProfile: "high", BrandRoot: "discountblog.com"}
 	h := NewHandler(pub, stubDict(map[string]smartLinkEntry{"abc123": entry}))
 
-	// Same hash requested by a scanner UA and a browser UA.
 	recScanner := doOffer(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaScanner)
 	recBrowser := doOffer(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser)
 
-	if recScanner.Code != http.StatusOK || recBrowser.Code != http.StatusOK {
-		t.Fatalf("high-risk codes: scanner=%d browser=%d, want 200/200", recScanner.Code, recBrowser.Code)
+	if recScanner.Code != http.StatusFound || recBrowser.Code != http.StatusFound {
+		t.Fatalf("high-risk codes: scanner=%d browser=%d, want 302/302 (no interstitial)", recScanner.Code, recBrowser.Code)
 	}
-	// NO CLOAKING: byte-identical output regardless of UA.
-	if recScanner.Body.String() != recBrowser.Body.String() {
-		t.Fatal("high-risk bridge differs by UA — that would be cloaking")
-	}
-	// The bridge must carry a Continue anchor to the rendered dest.
 	dest := renderOfferDestination(entry.Destination, subUUID, entry.BrandRoot, campUUID, "")
-	wantHref := `href="` + html.EscapeString(dest) + `"`
-	if !strings.Contains(recBrowser.Body.String(), wantHref) {
-		t.Errorf("bridge missing Continue href; want %q in body:\n%s", wantHref, recBrowser.Body.String())
+	for name, rec := range map[string]*httptest.ResponseRecorder{"scanner": recScanner, "browser": recBrowser} {
+		if got := rec.Header().Get("Location"); got != dest {
+			t.Errorf("%s Location = %q, want %q", name, got, dest)
+		}
 	}
-	if ct := recBrowser.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
-		t.Errorf("bridge Content-Type = %q, want text/html", ct)
+	// NO CLOAKING: same status, same Location, no body divergence.
+	if recScanner.Header().Get("Location") != recBrowser.Header().Get("Location") {
+		t.Fatal("handoff differs by UA — that would be cloaking")
+	}
+	// And no interstitial may creep back in.
+	if strings.Contains(recBrowser.Body.String(), "Continue") {
+		t.Errorf("bridge page came back: %s", recBrowser.Body.String())
 	}
 }
 
@@ -612,28 +617,26 @@ func TestOffer_TokenOnBothRouteShapes(t *testing.T) {
 	}
 }
 
-// 6. The high-risk bridge — the reason this feature exists — still serves for a
-// high-risk LINK (never keyed off the visitor), and its Continue href carries
-// the rendered token.
-func TestOffer_HighRiskBridge_CarriesTokenAndStaysNonCloaking(t *testing.T) {
+// 6. A high-risk link still carries the rendered token through to its
+// destination — the token must survive the removal of the bridge, and the
+// redirect must not vary by visitor.
+func TestOffer_HighRisk_TokenSurvivesAndStaysNonCloaking(t *testing.T) {
 	const tok = "7552-ff2007"
 	h := acpHandler("high")
 	recScanner := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaScanner, "t="+tok)
 	recBrowser := doOfferT(h, "t.em.discountblog.com", subUUID, "abc123", campUUID, uaBrowser, "t="+tok)
 
-	if recScanner.Code != http.StatusOK || recBrowser.Code != http.StatusOK {
-		t.Fatalf("high-risk codes: scanner=%d browser=%d, want 200/200", recScanner.Code, recBrowser.Code)
-	}
-	// NO CLOAKING: identical bytes for scanner and human, token included.
-	if recScanner.Body.String() != recBrowser.Body.String() {
-		t.Fatal("high-risk bridge differs by UA — that would be cloaking")
+	if recScanner.Code != http.StatusFound || recBrowser.Code != http.StatusFound {
+		t.Fatalf("high-risk codes: scanner=%d browser=%d, want 302/302", recScanner.Code, recBrowser.Code)
 	}
 	dest := renderOfferDestination(acpTemplate, subUUID, "discountblog.com", campUUID, tok)
 	if !strings.Contains(dest, "tokenid="+tok) {
 		t.Fatalf("test precondition: rendered dest lost the token: %q", dest)
 	}
-	wantHref := `href="` + html.EscapeString(dest) + `"`
-	if !strings.Contains(recBrowser.Body.String(), wantHref) {
-		t.Errorf("bridge Continue href missing the rendered token; want %q in body:\n%s", wantHref, recBrowser.Body.String())
+	if got := recBrowser.Header().Get("Location"); got != dest {
+		t.Errorf("Location lost the rendered token; got %q want %q", got, dest)
+	}
+	if recScanner.Header().Get("Location") != recBrowser.Header().Get("Location") {
+		t.Fatal("handoff differs by UA — that would be cloaking")
 	}
 }
