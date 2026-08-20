@@ -2859,6 +2859,42 @@ func runStartupMigrations(db *sql.DB) {
 			)
 		`},
 		// AUDIENCE UNIFICATION Phase 2 (docs/AUDIENCE_UNIFICATION.md §Phases):
+		// ENGAGED GRID (operator 2026-08-20: "I would expect opener segments
+		// from 7, 14, 30, 60D and the same for clickers"). The jul26 sweep
+		// registered only '% 7D Openers' and '% 30D Clickers' (and a later
+		// out-of-band '% 30D Openers' row), so the 14D/60D Openers and every
+		// Clicker window other than 30D were protected by NOTHING. On
+		// 2026-08-15/16 autoArchiveUnreferencedSegments duly archived the whole
+		// 16-brand 14D/60D Openers family — 30d with no campaign reference,
+		// keep_active=FALSE, no matching protect row. These five rows close
+		// that hole so the grid cannot be pruned for want of a registration.
+		// Same per-row NOT EXISTS guard, so operator CRUD edits survive.
+		// NOTE: the rows were also inserted directly when the grid was
+		// provisioned, so this seed is reproducibility for a fresh boot — it
+		// does NOT need a deploy to take effect on the current estate.
+		{"seed_segment_registry_engaged_grid_aug20", `
+			INSERT INTO mailing_segment_registry (
+				organization_id, family_key, family_pattern, definition_source,
+				owner, cadence, sla_hours, keep_policy, heartbeat_worker, notes
+			)
+			SELECT o.organization_id, 'brand_engagement', f.family_pattern, 'conditions',
+			       'lake-standard daily build (refresh_engagement_segments_from_lake.py)',
+			       'daily ~06:35Z', 30, 'protect', '',
+			       'per-sending-domain engaged grid (<CODE> <N>D Openers/Clickers); registered 2026-08-20 after the unregistered 14D/60D Openers family was auto-archived on 2026-08-15/16 purely for want of a protect row'
+			FROM (SELECT DISTINCT organization_id FROM mailing_segments) o
+			CROSS JOIN (VALUES
+				('% 7D Clickers'),
+				('% 14D Openers'),
+				('% 14D Clickers'),
+				('% 60D Openers'),
+				('% 60D Clickers')
+			) AS f(family_pattern)
+			WHERE NOT EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = o.organization_id
+				  AND r.family_pattern = f.family_pattern
+			)
+		`},
 		// registry rows for the per-transid carve-out families the journey
 		// engine will replace in Phase 4. keep_policy='purgeable' is the
 		// REGISTRY CONSENT GROUNDWORK ONLY — today every row in these
