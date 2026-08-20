@@ -62,7 +62,7 @@ func TestSegmentPerfDaysNeedingCompute_GapFillPlusTrailing(t *testing.T) {
 	for i := 5; i >= 3; i-- {
 		rows.AddRow(today.AddDate(0, 0, -i))
 	}
-	mock.ExpectQuery(`SELECT DISTINCT day FROM mailing_segment_perf_daily`).
+	mock.ExpectQuery(`SELECT day FROM mailing_segment_perf_daily`).
 		WithArgs(today.AddDate(0, 0, -5).Format("2006-01-02")).
 		WillReturnRows(rows)
 
@@ -127,6 +127,79 @@ func TestSegmentPerfComputeDay_ErrorRollsBack(t *testing.T) {
 
 	if err := w.computeDay(context.Background(), day); err == nil {
 		t.Fatal("computeDay must surface the statement error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestSegmentPerfDaysNeedingCompute_MembersStampIsNotCoverage pins the fix for
+// the 2026-08-20 permanent-zero bug.
+//
+// Every pass unconditionally stamps TODAY's membership snapshot
+// (segmentPerfMembersSQL), which INSERTs a row whose event columns default to 0.
+// daysNeedingCompute used to treat ROW PRESENCE as coverage, so that day counted
+// as done before its events had ever been computed. A day whose heavy events join
+// timed out on both of its trailingDays=2 retries then aged out of the trailing
+// window and stayed at delivered=0 forever — measured on 08-12, 08-13, 08-16 and
+// 08-18, each reading 0 delivered while the lake showed 1.2M-2.0M delivered.
+//
+// Coverage must therefore key off events_computed_at (written ONLY by the event
+// statement), so an events-less day keeps being retried.
+func TestSegmentPerfDaysNeedingCompute_MembersStampIsNotCoverage(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	w := NewSegmentPerfRollupWorker(db, nil)
+	w.backfillDays = 6
+	w.trailingDays = 2
+
+	today, _, _ := denverDayBounds(time.Now(), w.loc)
+
+	// The coverage query MUST filter on events_computed_at. A members-stamped
+	// row with NULL events_computed_at is simply not returned by it — that is
+	// the whole fix — so day -4 below is absent from the result set even though
+	// a row for it exists in the table.
+	rows := sqlmock.NewRows([]string{"day"})
+	for _, i := range []int{6, 5, 3} { // -4 deliberately missing: events never landed
+		rows.AddRow(today.AddDate(0, 0, -i))
+	}
+	mock.ExpectQuery(`HAVING bool_or\(events_computed_at IS NOT NULL\)`).
+		WithArgs(today.AddDate(0, 0, -6).Format("2006-01-02")).
+		WillReturnRows(rows)
+
+	days, err := w.daysNeedingCompute(context.Background())
+	if err != nil {
+		t.Fatalf("daysNeedingCompute: %v", err)
+	}
+
+	got := make(map[string]bool, len(days))
+	for _, d := range days {
+		got[d.Format("2006-01-02")] = true
+	}
+
+	// THE REGRESSION: -4 is outside the trailing window and HAS a row, but its
+	// events never computed. Before the fix it was skipped forever.
+	stuck := today.AddDate(0, 0, -4).Format("2006-01-02")
+	if !got[stuck] {
+		t.Errorf("day %s (members-stamped, events never computed) was not scheduled for recompute — the permanent-zero bug is back; got %v", stuck, days)
+	}
+	// Trailing window is still always recomputed for late events.
+	for _, i := range []int{2, 1} {
+		d := today.AddDate(0, 0, -i).Format("2006-01-02")
+		if !got[d] {
+			t.Errorf("trailing day %s missing from %v", d, days)
+		}
+	}
+	// A day with events genuinely computed and outside the trailing window is
+	// still skipped — the fix must not turn every pass into a 35-day rebuild.
+	for _, i := range []int{6, 5, 3} {
+		d := today.AddDate(0, 0, -i).Format("2006-01-02")
+		if got[d] {
+			t.Errorf("day %s has events_computed_at and is outside trailing — must not be recomputed; got %v", d, days)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

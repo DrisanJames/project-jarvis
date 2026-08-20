@@ -3145,6 +3145,22 @@ func runStartupMigrations(db *sql.DB) {
 			PRIMARY KEY (segment_id, day)
 		)`},
 		{"idx_segment_perf_daily_day", `CREATE INDEX IF NOT EXISTS idx_segment_perf_daily_day ON mailing_segment_perf_daily (day)`},
+		// events_computed_at — the RESUME MARKER for SegmentPerfRollupWorker,
+		// written ONLY by the event-aggregate statement (segmentPerfDaySQL).
+		//
+		// The bug it fixes (2026-08-20): daysNeedingCompute treated ROW PRESENCE
+		// as "this day is done", but every pass unconditionally stamps TODAY's
+		// membership snapshot (segmentPerfMembersSQL), which INSERTs a row whose
+		// event columns default to 0. That marked the day covered before its
+		// events had ever been computed, so a day whose heavy events join timed
+		// out on both of its trailingDays=2 retries stayed at delivered=0
+		// FOREVER. Measured: 08-12, 08-13, 08-16 and 08-18 all read 0 delivered
+		// while the lake showed 1.2M–2.0M delivered on each of those days.
+		// Nullable with no default so the ADD COLUMN is metadata-only (instant)
+		// and every pre-existing row reads NULL = "events never computed" —
+		// which is exactly right, and lets the worker self-heal the backlog.
+		{"segment_perf_daily_events_computed_at", `ALTER TABLE mailing_segment_perf_daily
+			ADD COLUMN IF NOT EXISTS events_computed_at TIMESTAMPTZ`},
 		// ── Daily growth fact table (Reporting → Growth) ──────────────────
 		// One row per (Denver day × sending-domain apex × ISP), written by
 		// GrowthRollupWorker (internal/worker/growth_rollup.go) and read by

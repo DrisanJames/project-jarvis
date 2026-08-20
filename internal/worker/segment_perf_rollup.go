@@ -101,7 +101,8 @@ const segmentPerfClickAction = `(e.event_type = 'clicked'
 // $1 = day (date), $2 = day start (timestamptz), $3 = day end (timestamptz).
 var segmentPerfDaySQL = fmt.Sprintf(`
 	INSERT INTO mailing_segment_perf_daily
-		(segment_id, day, delivered, opens, clicks_action, complaints, unsubs, hard, soft)
+		(segment_id, day, delivered, opens, clicks_action, complaints, unsubs, hard, soft,
+		 events_computed_at)
 	SELECT m.segment_id, $1::date,
 	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'delivered'),
 	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'opened'),
@@ -109,7 +110,8 @@ var segmentPerfDaySQL = fmt.Sprintf(`
 	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type IN ('complained','complaint')),
 	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'unsubscribed'),
 	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'bounced' AND e.bounce_type = 'hard'),
-	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'bounced' AND e.bounce_type = 'soft')
+	       COUNT(DISTINCT e.subscriber_id) FILTER (WHERE e.event_type = 'bounced' AND e.bounce_type = 'soft'),
+	       NOW()
 	FROM mailing_tracking_events e
 	JOIN mailing_segment_members m ON m.subscriber_id = e.subscriber_id
 	JOIN mailing_segments s ON s.id = m.segment_id AND s.archived_at IS NULL
@@ -124,7 +126,8 @@ var segmentPerfDaySQL = fmt.Sprintf(`
 		unsubs        = EXCLUDED.unsubs,
 		hard          = EXCLUDED.hard,
 		soft          = EXCLUDED.soft,
-		computed_at   = NOW()
+		computed_at   = NOW(),
+		events_computed_at = NOW()
 `, segmentPerfClickAction)
 
 // segmentPerfMembersSQL stamps the CURRENT membership snapshot (+ rows
@@ -316,10 +319,46 @@ func (w *SegmentPerfRollupWorker) daysNeedingCompute(ctx context.Context) ([]tim
 		candidates = append(candidates, today.AddDate(0, 0, -i))
 	}
 
+	// COVERED = "the EVENT aggregates for this day actually landed", not "a row
+	// exists". Row presence is NOT a resume marker: every pass unconditionally
+	// stamps today's membership snapshot (segmentPerfMembersSQL below), which
+	// INSERTs a row whose event columns default to 0. Keying off presence
+	// therefore marked a day done before its events were ever computed — so a
+	// day whose heavy events join timed out on both of its trailingDays retries
+	// stayed at delivered=0 permanently. Measured 2026-08-20: 08-12, 08-13,
+	// 08-16 and 08-18 all read 0 delivered while the lake showed 1.2M-2.0M
+	// delivered on each. events_computed_at is written ONLY by segmentPerfDaySQL,
+	// so an events-less day stays uncovered and is retried until it succeeds
+	// (bounded by the backfillDays window).
+	// COVERED = "the EVENT aggregates for this day actually landed", not "a row
+	// exists". Row presence is NOT a resume marker: every pass unconditionally
+	// stamps today's membership snapshot (segmentPerfMembersSQL below), which
+	// INSERTs a row whose event columns default to 0. Keying off presence
+	// therefore marked a day done before its events were ever computed — so a
+	// day whose heavy events join timed out on both of its trailingDays retries
+	// stayed at delivered=0 permanently. Measured 2026-08-20: 08-12, 08-13,
+	// 08-16 and 08-18 all read 0 delivered while the lake showed 1.2M-2.0M
+	// delivered on each.
+	//
+	// Two-armed on purpose, so no backfill is needed:
+	//   bool_or(events_computed_at IS NOT NULL) — the explicit marker, written
+	//     ONLY by segmentPerfDaySQL, authoritative for every row written from
+	//     2026-08-20 on.
+	//   sum(events) > 0 — the legacy arm. ~598k pre-existing rows predate the
+	//     column and would all read NULL; without this arm the first pass after
+	//     deploy would treat all 35 candidate days as uncovered and fire 35
+	//     heavy joins in one night. A day that recorded ANY event plainly had
+	//     its events computed.
+	// A day with neither stays uncovered and is retried until it succeeds
+	// (bounded by the backfillDays window).
 	covered := make(map[string]bool)
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT DISTINCT day FROM mailing_segment_perf_daily
+		SELECT day FROM mailing_segment_perf_daily
 		WHERE day >= $1::date
+		GROUP BY day
+		HAVING bool_or(events_computed_at IS NOT NULL)
+		    OR COALESCE(SUM(delivered + opens + clicks_action
+		                  + complaints + unsubs + hard + soft), 0) > 0
 	`, candidates[0].Format("2006-01-02"))
 	if err != nil {
 		return nil, err
