@@ -159,49 +159,6 @@ interface ContentVariant {
   split_percent: number;
 }
 
-interface ISPIntel {
-  isp: string;
-  display_name: string;
-  throughput: {
-    max_msg_rate: number;
-    active_ips: number;
-    max_daily_capacity: number;
-    max_hourly_rate: number;
-    audience_size: number;
-    can_send_in_one_pass: boolean;
-    estimated_hours: number;
-    status: string;
-  };
-  warmup_summary: {
-    total_ips: number;
-    warmed_ips: number;
-    warming_ips: number;
-    paused_ips: number;
-    avg_warmup_day: number;
-    daily_limit: number;
-    status: string;
-  };
-  conviction_summary: {
-    dominant_verdict: string;
-    confidence: number;
-    will_count: number;
-    wont_count: number;
-    key_observations: string[];
-    risk_factors: string[];
-  };
-  active_warnings: string[];
-  strategy: string;
-}
-
-interface TurbulenceAlert {
-  isp: string;
-  ip?: string;
-  action: string;
-  agent_type: string;
-  reasoning: string;
-  occurred_at: string;
-}
-
 interface AudienceEstimate {
   total_recipients: number;
   after_suppressions: number;
@@ -472,7 +429,11 @@ const STEPS = [
   { id: 2, label: 'Mailbox Providers',      icon: faServer },
   { id: 3, label: 'Offer + Creative',       icon: faPenFancy },
   { id: 4, label: 'Engagement Audience',    icon: faUsers },
-  { id: 5, label: 'Sending Insights',       icon: faBrain },
+  // Step 5 ("Sending Insights") was retired 2026-08-20 (operator: "Remove Step
+  // 5 for both of the flows. It is no longer needed."). The remaining ids are
+  // deliberately NOT renumbered — `step === 6`, the getStepErrors cases and the
+  // stepAttempted keys all key off these numbers. Only the ORDER matters, and
+  // navigation walks this list rather than doing ±1 arithmetic.
   { id: 6, label: 'Schedule + Deploy',      icon: faRocket },
 ];
 
@@ -503,12 +464,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [readinessLoading, setReadinessLoading] = useState(false);
   const [audienceDataLoading, setAudienceDataLoading] = useState(false);
   const [estimating, setEstimating] = useState(false);
-  const [intelLoading, setIntelLoading] = useState(false);
 
   // Mailbox Providers step (step 2 since the 2026-08-18 reorder) state
   const [ispReadiness, setISPReadiness] = useState<ISPReadiness[]>([]);
   const [selectedISPs, setSelectedISPs] = useState<string[]>([...ALL_ISPS]);
   const [ispQuotas, setISPQuotas] = useState<Record<string, number>>({ ...DEFAULT_ISP_QUOTAS });
+  // "No quota / no caps" is a BULK FORM ACTION, not a mode flag and not a
+  // payload field. Turning it on writes 0 into every per-ISP quota input;
+  // nothing about what the app READS changes (per-ISP caps are still fetched
+  // and still displayed), and the payload carries the same per-ISP numbers it
+  // always did — they just happen to be zeros. This holds the pre-zero values
+  // so toggling off restores them instead of stranding zeros.
+  const [quotaSnapshot, setQuotaSnapshot] = useState<Record<string, number> | null>(null);
   const [randomizeAudience, setRandomizeAudience] = useState(false);
   // content_locked: when on, the PMTA wave dispatcher skips subject/HTML
   // fingerprint mutations at send time. Required for strict advertisers
@@ -620,11 +587,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [showArchived, setShowArchived] = useState(false);
   const [audienceEstimate, setAudienceEstimate] = useState<AudienceEstimate | null>(null);
   const [audienceError, setAudienceError] = useState('');
-
-  // Step 5 state
-  const [ispIntel, setISPIntel] = useState<ISPIntel[]>([]);
-  const [turbulenceAlerts, setTurbulenceAlerts] = useState<TurbulenceAlert[]>([]);
-  const [turbulenceDismissed, setTurbulenceDismissed] = useState(false);
 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
@@ -1146,6 +1108,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     [warmupActive],
   );
 
+  // Navigation is LIST-AWARE, not arithmetic. Step ids are sparse (5 is
+  // retired), so ±1 would land on an id that renders nothing. These walk
+  // activeSteps, and `nextStepId === null` on the last entry is what hides the
+  // Next button — never a hardcoded `step < 6`.
+  const stepIndex = activeSteps.findIndex(st => st.id === step);
+  const prevStepId = stepIndex > 0 ? activeSteps[stepIndex - 1].id : null;
+  const nextStepId = stepIndex >= 0 && stepIndex < activeSteps.length - 1
+    ? activeSteps[stepIndex + 1].id
+    : null;
+
   const warmupRequestsDate = useMemo(
     () => denverDay(warmupScheduledAtISO ? new Date(warmupScheduledAtISO) : new Date()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1379,42 +1351,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setEstimating(false);
   }, [fetchWithRetry, selectedLists, selectedSegments, selectedSuppLists, selectedExclusionSegments, selectedISPs]);
 
-  const fetchIntel = useCallback(async () => {
-    setIntelLoading(true);
-    try {
-      const audiencePerISP: Record<string, number> = {};
-      if (audienceEstimate?.isp_breakdown) {
-        for (const [k, v] of Object.entries(audienceEstimate.isp_breakdown)) {
-          audiencePerISP[k] = v;
-        }
-      }
-      const res = await fetchWithRetry(`${API_BASE}/pmta-campaign/intel`, {
-        method: 'POST',
-        body: JSON.stringify({
-          target_isps: selectedISPs,
-          audience_per_isp: audiencePerISP,
-          send_day: new Date().toLocaleDateString('en-US', { weekday: 'long' }),
-          send_hour: new Date().getUTCHours(),
-        }),
-      });
-      const data = await res.json();
-      setISPIntel(data.isps || []);
-      setTurbulenceAlerts(data.turbulence_alerts || []);
-      setTurbulenceDismissed(false);
-    } catch (err) {
-      console.warn('[Wizard] intel fetch failed:', err);
-    }
-    setIntelLoading(false);
-  }, [fetchWithRetry, orgId, selectedISPs, audienceEstimate]);
-
   // Load data on step entry
   useEffect(() => {
     if (step === 1) fetchDomains();
     if (step === 2) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
     if (step === 3) fetchOffers();
     if (step === 4) fetchAudienceData();
-    if (step === 5) fetchIntel();
-  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchAudienceData, fetchIntel, insightDomainFilter]);
+  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchAudienceData, insightDomainFilter]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
@@ -1873,9 +1816,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       setStepAttempted({});
       setAudienceEstimate(null);
       setAudienceError('');
-      setISPIntel([]);
-      setTurbulenceAlerts([]);
-      setTurbulenceDismissed(false);
       setRecommendations([]);
       setRecsLoaded(false);
       setDeployResult(null);
@@ -2432,6 +2372,29 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // ── Toggle helpers ───────────────────────────────────────────────────────
 
+  // The toggle REFLECTS REALITY: it reads as on only while every lane in the
+  // form is actually 0. Edit one field back to a real cap and it un-checks
+  // itself rather than continuing to claim "no quota".
+  const quotaLanesInForm = useMemo(
+    () => Array.from(new Set([...selectedISPs, 'other', ...Object.keys(ispQuotas)])),
+    [selectedISPs, ispQuotas],
+  );
+  const allQuotaLanesZero = quotaLanesInForm.every(isp => !(ispQuotas[isp] > 0));
+  const noQuotaOn = quotaSnapshot !== null && allQuotaLanesZero;
+
+  const toggleNoQuota = useCallback((on: boolean) => {
+    if (on) {
+      // Capture the CURRENT values (not any stale snapshot) so restore is exact.
+      setQuotaSnapshot({ ...ispQuotas });
+      const zeroed: Record<string, number> = { ...ispQuotas };
+      for (const isp of [...selectedISPs, 'other', ...Object.keys(ispQuotas)]) zeroed[isp] = 0;
+      setISPQuotas(zeroed);
+      return;
+    }
+    if (quotaSnapshot) setISPQuotas({ ...quotaSnapshot });
+    setQuotaSnapshot(null);
+  }, [ispQuotas, quotaSnapshot, selectedISPs]);
+
   const toggleISP = (isp: string) => {
     setSelectedISPs(prev => {
       if (prev.includes(isp)) {
@@ -2968,6 +2931,60 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             Set maximum sends per mailbox provider. <strong>0 means UNLIMITED</strong> — that lane
             mails everyone who qualifies, it is not skipped.
           </p>
+
+          {/* Bulk form action. It rewrites the inputs below and nothing else:
+              no new payload field, no change to what is read or displayed. */}
+          <div style={{
+            marginBottom: 12, borderRadius: 8, padding: '10px 12px',
+            background: noQuotaOn ? 'rgba(0,176,255,0.08)' : '#0a0f1a',
+            border: `1px solid ${noQuotaOn ? 'rgba(0,176,255,0.45)' : 'rgba(0,200,255,0.10)'}`,
+          }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={noQuotaOn}
+                onChange={e => toggleNoQuota(e.target.checked)}
+                aria-label="No quota or caps — set every mailbox provider to 0"
+                style={{ marginTop: 2, width: 15, height: 15, cursor: 'pointer', accentColor: '#00b0ff' }}
+              />
+              <span>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: noQuotaOn ? '#38bdf8' : '#e0e6f0' }}>
+                  <FontAwesomeIcon icon={faInfinity} style={{ marginRight: 6, fontSize: 11 }} />
+                  No quota or caps — send the full audience (sets every provider to 0)
+                </span>
+                <span style={{ display: 'block', fontSize: 11, color: 'rgba(180,210,240,0.6)', marginTop: 4, lineHeight: 1.55 }}>
+                  On this platform a per-provider volume of <strong>0 means AUDIENCE-BOUND</strong>:
+                  that lane mails <strong>everyone who qualifies</strong>. It does <strong>not</strong> mean
+                  zero sends. The caps themselves are still read and still shown — this only rewrites
+                  the numbers in the boxes below, and they stay editable.
+                </span>
+              </span>
+            </label>
+
+            {quotaSnapshot !== null && (
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.5)', marginTop: 8, paddingLeft: 24 }}>
+                {noQuotaOn
+                  ? 'Turning this off restores the caps that were in the form before it was switched on.'
+                  : 'A provider has been edited back to a real cap, so this is no longer "no quota". '
+                    + 'Re-check it to zero the form again from the values showing now.'}
+              </div>
+            )}
+
+            {audienceBound && (
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.5)', marginTop: 6, paddingLeft: 24 }}>
+                &ldquo;Mail the whole selected audience&rdquo; is already on at the Audience step, which
+                sends 0 for every lane regardless of these boxes — this toggle just makes the form
+                agree with it.
+              </div>
+            )}
+
+            {warmupActive && (
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.5)', marginTop: 6, paddingLeft: 24 }}>
+                Warm-up: this does not touch the cold pad quota on the Audience step — that number is
+                a count of records to pull, not a cap, so 0 there means &ldquo;no cold pad&rdquo;.
+              </div>
+            )}
+          </div>
           {/* Explicit confirmation, not a footnote: an operator typing 0 must
               see what 0 does BEFORE the review step. */}
           {(() => {
@@ -4734,312 +4751,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     );
   };
 
-  const renderStep5 = () => {
-    const MiniGauge: React.FC<{ value: number; max: number; color: string; label: string; size?: number }> = ({ value, max, color, label, size = 44 }) => {
-      const pct = max > 0 ? Math.min(value / max, 1) : 0;
-      const r = (size - 6) / 2;
-      const c = 2 * Math.PI * r;
-      const offset = c * (1 - pct);
-      return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-          <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(0,200,255,0.06)" strokeWidth={4} />
-            <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={4}
-              strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
-              style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
-          </svg>
-          <div style={{ fontSize: 11, fontWeight: 600, color, marginTop: -size / 2 - 6, lineHeight: `${size}px`, textAlign: 'center' }}>{value}</div>
-          <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', marginTop: 2, textAlign: 'center' }}>{label}</div>
-        </div>
-      );
-    };
-
-    return (
-      <div className="wiz-step-content ig-fade-in">
-        <h3 style={{ margin: '0 0 4px' }}>Sending Insights</h3>
-        <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-          Live state of the targeted providers — throughput, warm-up, delivery insights, and active warnings.
-        </p>
-
-        {turbulenceAlerts.length > 0 && !turbulenceDismissed && (
-          <div style={{
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.3)',
-            borderRadius: 10,
-            padding: '14px 16px',
-            marginBottom: 16,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 18 }}>&#9888;</span>
-                <span style={{ fontWeight: 700, fontSize: 14, color: '#f59e0b' }}>
-                  Turbulence Detected
-                </span>
-                <span style={{ fontSize: 11, color: 'rgba(245,158,11,0.6)', fontWeight: 500, marginLeft: 4 }}>
-                  Advisory only — does not block deployment
-                </span>
-              </div>
-              <button
-                onClick={() => setTurbulenceDismissed(true)}
-                style={{
-                  background: 'transparent', border: 'none', color: 'rgba(245,158,11,0.5)',
-                  cursor: 'pointer', fontSize: 18, padding: '0 4px', lineHeight: 1,
-                }}
-                title="Dismiss"
-              >&times;</button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {turbulenceAlerts.slice(0, 10).map((alert, i) => (
-                <div key={i} style={{
-                  display: 'flex', alignItems: 'baseline', gap: 8,
-                  fontSize: 12, color: 'rgba(245,158,11,0.85)',
-                }}>
-                  <span style={{
-                    background: 'rgba(245,158,11,0.15)', borderRadius: 4,
-                    padding: '1px 6px', fontSize: 10, fontWeight: 600,
-                    textTransform: 'uppercase', whiteSpace: 'nowrap',
-                  }}>
-                    {alert.isp}
-                  </span>
-                  <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11 }}>
-                    {alert.action.replace(/_/g, ' ')}{alert.ip ? ` on ${alert.ip}` : ''}
-                  </span>
-                  <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 11, flex: 1 }}>
-                    {alert.reasoning}
-                  </span>
-                  <span style={{ color: 'rgba(180,210,240,0.25)', fontSize: 10, whiteSpace: 'nowrap' }}>
-                    {new Date(alert.occurred_at).toLocaleTimeString()}
-                  </span>
-                </div>
-              ))}
-              {turbulenceAlerts.length > 10 && (
-                <div style={{ fontSize: 11, color: 'rgba(245,158,11,0.5)', paddingTop: 4 }}>
-                  +{turbulenceAlerts.length - 10} more alerts in the last 24h
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Skeleton loading */}
-        {intelLoading && ispIntel.length === 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {selectedISPs.slice(0, 3).map((_, i) => (
-              <div key={i} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.06)', borderRadius: 10, padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: '50%', background: 'rgba(0,200,255,0.06)', animation: 'igShimmer 1.5s ease infinite' }} />
-                  <div>
-                    <div style={{ height: 16, width: 100, background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 6, animation: 'igShimmer 1.5s ease infinite' }} />
-                    <div style={{ height: 10, width: 60, background: 'rgba(0,200,255,0.04)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite' }} />
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                  {[1, 2, 3].map(j => (
-                    <div key={j} style={{ height: 100, background: 'rgba(0,200,255,0.03)', borderRadius: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${j * 0.2}s` }} />
-                  ))}
-                </div>
-              </div>
-            ))}
-            <div style={{ textAlign: 'center', padding: 10, color: 'rgba(0,200,255,0.4)', fontSize: 12 }}>
-              <FontAwesomeIcon icon={faSpinner} spin /> Querying delivery engine...
-            </div>
-          </div>
-        )}
-
-        {(!intelLoading || ispIntel.length > 0) && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {ispIntel.map((intel, idx) => {
-              const meta = ISP_META[intel.isp] || { label: intel.display_name, color: '#64748b', emoji: '🌐' };
-              const warmupPct = intel.warmup_summary.total_ips > 0
-                ? (intel.warmup_summary.warmed_ips / intel.warmup_summary.total_ips) * 100 : 0;
-              const confidencePct = (intel.conviction_summary.confidence * 100);
-              const isPositive = intel.conviction_summary.dominant_verdict === 'will';
-              const totalVotes = intel.conviction_summary.will_count + intel.conviction_summary.wont_count;
-              const willPct = totalVotes > 0 ? (intel.conviction_summary.will_count / totalVotes) * 100 : 50;
-
-              return (
-                <div key={intel.isp} style={{
-                  background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 12, padding: 0,
-                  overflow: 'hidden', animation: `igFadeSlide 0.4s ease ${idx * 0.1}s both`,
-                }}>
-                  {/* ISP header bar */}
-                  <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    padding: '12px 16px', borderBottom: '1px solid rgba(0,200,255,0.06)',
-                    background: `linear-gradient(90deg, ${meta.color}08, transparent)`,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{
-                        width: 36, height: 36, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        background: `${meta.color}15`, fontSize: 18,
-                      }}>{meta.emoji}</div>
-                      <div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: meta.color }}>{meta.label}</div>
-                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)' }}>
-                          {intel.throughput.active_ips} active IPs · {(intel.throughput.max_daily_capacity / 1000).toFixed(0)}k/day capacity
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      {statusBadge(intel.throughput.status)}
-                      {statusBadge(intel.warmup_summary.status)}
-                    </div>
-                  </div>
-
-                  <div style={{ padding: 16 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
-                      {/* Throughput panel */}
-                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                          <FontAwesomeIcon icon={faServer} /> Throughput
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 10 }}>
-                          <MiniGauge value={intel.throughput.active_ips} max={Math.max(intel.throughput.active_ips, 4)} color="#00b0ff" label="IPs" />
-                          <MiniGauge value={Math.round(intel.throughput.max_hourly_rate / 1000)} max={Math.max(Math.round(intel.throughput.max_daily_capacity / 1000 / 24), 1)} color="#10b981" label="k/hr" />
-                        </div>
-                        <div style={{ fontSize: 11, color: '#e0e6f0', lineHeight: 1.8 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span style={{ color: 'rgba(180,210,240,0.5)' }}>Audience</span>
-                            <strong>{intel.throughput.audience_size.toLocaleString()}</strong>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ color: 'rgba(180,210,240,0.5)' }}>Status</span>
-                            {intel.throughput.can_send_in_one_pass
-                              ? <span style={{ fontSize: 10, color: '#10b981', fontWeight: 600 }}>1-PASS ✓</span>
-                              : <span style={{ fontSize: 10, color: '#f59e0b', fontWeight: 600 }}>~{intel.throughput.estimated_hours}h</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Warmup panel */}
-                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                          <FontAwesomeIcon icon={faChartBar} /> Warmup
-                        </div>
-                        {/* Warmup progress bar */}
-                        <div style={{ marginBottom: 10 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, marginBottom: 4 }}>
-                            <span style={{ color: 'rgba(180,210,240,0.4)' }}>{warmupPct.toFixed(0)}% warmed</span>
-                            <span style={{ color: 'rgba(180,210,240,0.4)' }}>{intel.warmup_summary.warmed_ips}/{intel.warmup_summary.total_ips}</span>
-                          </div>
-                          <div style={{ height: 6, background: 'rgba(0,200,255,0.06)', borderRadius: 3, overflow: 'hidden' }}>
-                            <div style={{
-                              height: '100%', borderRadius: 3,
-                              background: warmupPct >= 80 ? '#10b981' : warmupPct >= 50 ? '#f59e0b' : '#ef4444',
-                              width: `${warmupPct}%`, transition: 'width 0.6s ease',
-                            }} />
-                          </div>
-                        </div>
-                        {/* IP breakdown */}
-                        <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-                          {[
-                            { label: 'Warmed', count: intel.warmup_summary.warmed_ips, color: '#10b981' },
-                            { label: 'Warming', count: intel.warmup_summary.warming_ips, color: '#f59e0b' },
-                            { label: 'Paused', count: intel.warmup_summary.paused_ips, color: '#64748b' },
-                          ].filter(s => s.count > 0).map(s => (
-                            <span key={s.label} style={{
-                              display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 6px',
-                              borderRadius: 4, fontSize: 9, background: `${s.color}15`, color: s.color,
-                            }}>
-                              <span style={{ width: 4, height: 4, borderRadius: '50%', background: s.color }} />
-                              {s.count} {s.label.toLowerCase()}
-                            </span>
-                          ))}
-                        </div>
-                        <div style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', color: 'rgba(180,210,240,0.5)' }}>
-                          <span>Daily limit</span>
-                          <strong style={{ color: '#e0e6f0' }}>{(intel.warmup_summary.daily_limit / 1000).toFixed(0)}k</strong>
-                        </div>
-                      </div>
-
-                      {/* Conviction panel */}
-                      <div style={{ background: '#0a0f1a', borderRadius: 10, padding: 12, border: '1px solid rgba(0,200,255,0.04)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'rgba(180,210,240,0.5)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                          <FontAwesomeIcon icon={faBrain} /> Conviction
-                        </div>
-                        {/* Verdict display */}
-                        <div style={{ textAlign: 'center', marginBottom: 8 }}>
-                          <div style={{
-                            display: 'inline-block', padding: '4px 14px', borderRadius: 6,
-                            background: isPositive ? '#10b98118' : '#ef444418',
-                            border: `1px solid ${isPositive ? '#10b98130' : '#ef444430'}`,
-                            fontSize: 13, fontWeight: 700,
-                            color: isPositive ? '#10b981' : '#ef4444',
-                          }}>
-                            {intel.conviction_summary.dominant_verdict.toUpperCase()}
-                          </div>
-                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
-                            {confidencePct.toFixed(0)}% confidence
-                          </div>
-                        </div>
-                        {/* Will vs Wont bar */}
-                        <div style={{ marginBottom: 6 }}>
-                          <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: '#ef444425' }}>
-                            <div style={{
-                              height: '100%', background: '#10b981', borderRadius: '4px 0 0 4px',
-                              width: `${willPct}%`, transition: 'width 0.5s ease',
-                            }} />
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginTop: 3 }}>
-                            <span style={{ color: '#10b981' }}>WILL {intel.conviction_summary.will_count}</span>
-                            <span style={{ color: '#ef4444' }}>WONT {intel.conviction_summary.wont_count}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Risk factors */}
-                    {intel.conviction_summary.risk_factors && intel.conviction_summary.risk_factors.length > 0 && (
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-                        {intel.conviction_summary.risk_factors.map((rf, i) => (
-                          <span key={i} style={{
-                            display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px',
-                            borderRadius: 6, fontSize: 10, background: '#f59e0b10', color: '#f59e0b',
-                            border: '1px solid #f59e0b20',
-                          }}>
-                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9 }} /> {rf}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Active warnings */}
-                    {intel.active_warnings && intel.active_warnings.length > 0 && (
-                      <div style={{ padding: '8px 10px', background: '#ef444410', borderRadius: 8, marginBottom: 8, border: '1px solid #ef444415' }}>
-                        {intel.active_warnings.map((w, i) => (
-                          <div key={i} style={{ fontSize: 11, color: '#ef4444', padding: '2px 0', display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9 }} /> {w}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Strategy */}
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '10px 14px', background: 'rgba(0,200,255,0.04)', borderRadius: 8,
-                      borderLeft: `3px solid ${meta.color}`,
-                    }}>
-                      <FontAwesomeIcon icon={faShieldAlt} style={{ color: meta.color, fontSize: 12 }} />
-                      <div>
-                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 1 }}>Recommended Strategy</div>
-                        <div style={{ fontSize: 12, color: '#e0e6f0' }}>{intel.strategy}</div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // ── Warm-up step 6 companion: the build-request ledger ───────────────────
-  // This branch RECORDS INTENT. It does not send. The builder consumes the
-  // request separately (~40 min, disk-bound), so every word here says "queued
-  // for build" — never "deployed", never "sending".
   const renderWarmupRequestPanel = () => {
     const rows = warmupRequests || [];
     return (
@@ -5970,7 +5681,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               </div>
             )}
           </div>
-          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Step {step} of {STEPS.length}</div>
+          {/* POSITION, not id. Ids are sparse since step 5 was retired, so
+              `step` would read "Step 6 of 5". */}
+          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
+            Step {Math.max(1, stepIndex + 1)} of {activeSteps.length}
+          </div>
         </div>
       </div>
 
@@ -6012,11 +5727,10 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
         {step === 1 && renderStepDomain()}
         {step === 2 && renderStepProviders()}
-        {/* The BRANCH. Steps 1, 2, 5 and 6 are shared; only 3 and 4 fork, and
-            the offer renderers are never entered while warm-up is active. */}
+        {/* The BRANCH. Steps 1, 2 and 6 are shared; only 3 and 4 fork, and the
+            offer renderers are never entered while warm-up is active. */}
         {step === 3 && (warmupActive ? renderWarmupStep3() : renderStep3())}
         {step === 4 && (warmupActive ? renderWarmupStep4() : renderStep4())}
-        {step === 5 && renderStep5()}
         {step === 6 && renderStep6()}
       </div>
 
@@ -6024,24 +5738,24 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       {!deployResult && (
         <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 20px', borderTop: '1px solid rgba(0,200,255,0.08)', background: '#0a1628' }}>
           <button
-            onClick={() => setStep(Math.max(1, step - 1))}
-            disabled={step === 1}
+            onClick={() => { if (prevStepId !== null) setStep(prevStepId); }}
+            disabled={prevStepId === null}
             style={{
               display: 'flex', alignItems: 'center', gap: 6,
               padding: '8px 18px', borderRadius: 8, border: '1px solid rgba(0,200,255,0.08)',
-              background: 'transparent', color: step === 1 ? '#4b5563' : '#e0e6f0',
-              fontSize: 13, cursor: step === 1 ? 'default' : 'pointer',
+              background: 'transparent', color: prevStepId === null ? '#4b5563' : '#e0e6f0',
+              fontSize: 13, cursor: prevStepId === null ? 'default' : 'pointer',
             }}
           >
             <FontAwesomeIcon icon={faArrowLeft} /> Back
           </button>
-          {step < 6 && (
+          {nextStepId !== null && (
             <button
               className="ig-btn-glow ig-ripple"
               onClick={() => {
                 if (canProceed()) {
                   setStepAttempted(prev => ({ ...prev, [step]: false }));
-                  setStep(Math.min(6, step + 1));
+                  setStep(nextStepId);
                 } else {
                   setStepAttempted(prev => ({ ...prev, [step]: true }));
                 }
