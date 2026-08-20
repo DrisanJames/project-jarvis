@@ -13,7 +13,9 @@ package api
 //     and a day whose query fails is a GAP in missing_days, never zeros.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -406,5 +408,97 @@ func TestLaneStatsNamePatternIsAnchoredAndExact(t *testing.T) {
 	}
 	if got := laneStatsNamePattern("internal_auto_insurance", "db"); got != `^\[partner-drip\] internal_auto_insurance db ` {
 		t.Fatalf("brand pattern wrong, got %q", got)
+	}
+}
+
+// Campaign resolution is a single query that must finish before ANY day can be
+// scanned. Uncached, it competed with the day scans for the same budget: on prod
+// 2026-08-19 the first call resolved 922 campaigns and three consecutive calls
+// then failed with "canceling statement due to user request". These tests pin
+// the fix — memoize, and serve the previous answer rather than 500.
+
+func TestLaneStatsCampaignsServesStaleRatherThan500(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := &PMTACampaignService{db: db}
+	key := "org|stale_vertical|b|2026-08-10|7"
+	floor := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).
+			AddRow("c1", floor).AddRow("c2", floor))
+
+	got, stale, err := s.laneStatsCampaigns(context.Background(), key, "org", floor, "^x")
+	if err != nil || stale || len(got) != 2 {
+		t.Fatalf("priming: got=%d stale=%v err=%v", len(got), stale, err)
+	}
+
+	// Force the TTL to have elapsed, then make the refresh fail.
+	slotI, _ := laneStatsCampaignCache.Load(key)
+	slotI.(*laneStatsCampaignSlot).computedAt = time.Now().Add(-2 * laneStatsCampaignTTL)
+	mock.ExpectQuery("FROM mailing_campaigns").
+		WillReturnError(errors.New("pq: canceling statement due to user request"))
+
+	got, stale, err = s.laneStatsCampaigns(context.Background(), key, "org", floor, "^x")
+	if err != nil {
+		t.Fatalf("a failed REFRESH must not error when a prior list exists: %v", err)
+	}
+	if !stale {
+		t.Fatal("stale must be reported so the screen can label it — never passed off as fresh")
+	}
+	if len(got) != 2 {
+		t.Fatalf("stale list must still carry the previous campaigns, got %d", len(got))
+	}
+}
+
+// The other half: with NO prior answer there is nothing honest to serve, so it
+// must fail loudly rather than return an empty list that reads as "no campaigns".
+func TestLaneStatsCampaignsFailsWhenNoPriorAnswer(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := &PMTACampaignService{db: db}
+	floor := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("FROM mailing_campaigns").
+		WillReturnError(errors.New("pq: canceling statement due to user request"))
+
+	got, stale, err := s.laneStatsCampaigns(context.Background(),
+		"org|cold_vertical|b|2026-08-10|7", "org", floor, "^x")
+	if err == nil {
+		t.Fatal("a cold failure must ERROR — an empty list would render as 'no campaigns', a silent zero")
+	}
+	if stale || got != nil {
+		t.Fatalf("cold failure must not claim staleness or return rows: stale=%v got=%v", stale, got)
+	}
+}
+
+// A second call inside the TTL must not re-query at all.
+func TestLaneStatsCampaignsMemoizes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := &PMTACampaignService{db: db}
+	key := "org|memo_vertical|b|2026-08-10|7"
+	floor := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery("FROM mailing_campaigns").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow("c1", floor))
+	if _, _, err := s.laneStatsCampaigns(context.Background(), key, "org", floor, "^x"); err != nil {
+		t.Fatal(err)
+	}
+	// No second ExpectQuery queued: a re-query here fails on an unexpected call.
+	got, stale, err := s.laneStatsCampaigns(context.Background(), key, "org", floor, "^x")
+	if err != nil || stale || len(got) != 1 {
+		t.Fatalf("cached read should be free and fresh: got=%d stale=%v err=%v", len(got), stale, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
 }

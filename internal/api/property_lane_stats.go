@@ -103,6 +103,11 @@ const (
 	laneStatsCacheMaxAge = 2 * time.Hour
 	laneStatsSweepEvery  = 10 * time.Minute
 
+	// The campaign set for a window changes only as new campaigns are created;
+	// a few minutes of drift moves a rate in the 4th decimal. Kept short enough
+	// that a lane deployed mid-session appears without a restart.
+	laneStatsCampaignTTL = 10 * time.Minute
+
 	laneStatsSource = "pg_tracking_events"
 	laneStatsNote   = "delivered_pg is a PG confirmation-INGESTION count and undercounts Microsoft by ~30%; per-ISP delivery TRUTH is the Athena lake. Rates are unique subscribers / delivered_pg (lane_performance_ledger)."
 )
@@ -217,18 +222,21 @@ type laneStatsTotals struct {
 }
 
 type laneStatsResponse struct {
-	Vertical      string          `json:"vertical"`
-	Brand         string          `json:"brand,omitempty"`
-	Days          int             `json:"days"`
-	DayList       []string        `json:"day_list"`
-	Rows          []laneStatsRow  `json:"rows"`
-	Totals        laneStatsTotals `json:"totals"`
-	MissingDays   []string        `json:"missing_days"`
-	Partial       bool            `json:"partial"`
-	Campaigns     int             `json:"campaigns"`
-	Source        string          `json:"source"`
-	DeliveredNote string          `json:"delivered_note"`
-	GeneratedAt   string          `json:"generated_at"`
+	Vertical    string          `json:"vertical"`
+	Brand       string          `json:"brand,omitempty"`
+	Days        int             `json:"days"`
+	DayList     []string        `json:"day_list"`
+	Rows        []laneStatsRow  `json:"rows"`
+	Totals      laneStatsTotals `json:"totals"`
+	MissingDays []string        `json:"missing_days"`
+	Partial     bool            `json:"partial"`
+	Campaigns   int             `json:"campaigns"`
+	// CampaignsStale: the campaign resolve failed and a PREVIOUS list was served
+	// rather than 500-ing. Rates are computed over a slightly older campaign set.
+	CampaignsStale bool   `json:"campaigns_stale,omitempty"`
+	Source         string `json:"source"`
+	DeliveredNote  string `json:"delivered_note"`
+	GeneratedAt    string `json:"generated_at"`
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -363,6 +371,80 @@ func laneStatsTTLFor(day, today string) time.Duration {
 	return laneStatsClosedTTL
 }
 
+// ── campaign-resolution cache ───────────────────────────────────────────────
+//
+// WHY: campaign resolution is a SINGLE query that must finish before any day
+// can be scanned, and it was originally uncached — so it competed with the day
+// scans for the same 25s budget. Measured on prod 2026-08-19 immediately after
+// deploy: the first call resolved 922 campaigns and returned, then three
+// consecutive calls ALL failed with
+//
+//	campaign resolution failed: pq: canceling statement due to user request
+//
+// i.e. the resolve alone exhausted the budget under RDS I/O contention. An
+// endpoint whose whole purpose is to end manual stat-pulling cannot 500 on most
+// calls.
+//
+// Two changes: memoize the resolve, and — when the refresh fails but a previous
+// answer exists — SERVE THE STALE LIST and say so, rather than 500. A campaign
+// list minutes out of date changes a rate in the 4th decimal; a 500 gives the
+// operator nothing. Staleness is surfaced as campaigns_stale so the screen can
+// label it; it is never silently passed off as fresh.
+type laneStatsCampaign struct {
+	id      string
+	created time.Time
+}
+
+type laneStatsCampaignSlot struct {
+	mu         sync.Mutex
+	computedAt time.Time
+	campaigns  []laneStatsCampaign
+}
+
+var laneStatsCampaignCache sync.Map // key -> *laneStatsCampaignSlot
+
+// laneStatsCampaigns returns the resolved campaign list, whether it was served
+// stale, and any error. It only errors when there is NO usable prior answer.
+func (s *PMTACampaignService) laneStatsCampaigns(ctx context.Context, key string,
+	orgID string, floor time.Time, pattern string) ([]laneStatsCampaign, bool, error) {
+
+	slotI, _ := laneStatsCampaignCache.LoadOrStore(key, &laneStatsCampaignSlot{})
+	slot := slotI.(*laneStatsCampaignSlot)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+
+	if !slot.computedAt.IsZero() && time.Since(slot.computedAt) < laneStatsCampaignTTL {
+		return append([]laneStatsCampaign{}, slot.campaigns...), false, nil
+	}
+
+	out := []laneStatsCampaign{}
+	err := func() error {
+		rows, qerr := s.db.QueryContext(ctx, laneStatsCampaignSQL, orgID, floor, pattern)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c laneStatsCampaign
+			if serr := rows.Scan(&c.id, &c.created); serr != nil {
+				return serr
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	}()
+	if err != nil {
+		// Stale-serve: a previous answer beats a 500. Only fail when we have none.
+		if !slot.computedAt.IsZero() {
+			return append([]laneStatsCampaign{}, slot.campaigns...), true, nil
+		}
+		return nil, false, err
+	}
+	slot.campaigns = out
+	slot.computedAt = time.Now()
+	return append([]laneStatsCampaign{}, out...), false, nil
+}
+
 // ── query ───────────────────────────────────────────────────────────────────
 
 // laneStatsQueryDay runs laneStatsDaySQL for one day. Callers hand it only the
@@ -454,27 +536,9 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 	oldestStart, _ := laneStatsDayBoundsUTC(now.In(propertyLedgerLoc).AddDate(0, 0, -(days - 1)))
 	floor := oldestStart.AddDate(0, 0, -laneStatsCampaignCushionDays)
 
-	type campaign struct {
-		id      string
-		created time.Time
-	}
-	campaigns := []campaign{}
-	err := func() error {
-		rows, qerr := s.db.QueryContext(ctx, laneStatsCampaignSQL, orgID, floor,
-			laneStatsNamePattern(vertical, brand))
-		if qerr != nil {
-			return qerr
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var c campaign
-			if serr := rows.Scan(&c.id, &c.created); serr != nil {
-				return serr
-			}
-			campaigns = append(campaigns, c)
-		}
-		return rows.Err()
-	}()
+	campaigns, campaignsStale, err := s.laneStatsCampaigns(ctx,
+		fmt.Sprintf("%s|%s|%s|%s|%d", orgID, vertical, brand, floor.Format("2006-01-02"), days),
+		orgID, floor, laneStatsNamePattern(vertical, brand))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "campaign resolution failed: "+err.Error())
 		return
@@ -588,17 +652,18 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 	t.ClickRate = laneStatsRate(t.Clickers, t.DeliveredPG)
 
 	respondJSON(w, http.StatusOK, laneStatsResponse{
-		Vertical:      vertical,
-		Brand:         brand,
-		Days:          days,
-		DayList:       dayList,
-		Rows:          rowsOut,
-		Totals:        t,
-		MissingDays:   missing,
-		Partial:       len(missing) > 0,
-		Campaigns:     len(campaigns),
-		Source:        laneStatsSource,
-		DeliveredNote: laneStatsNote,
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
+		Vertical:       vertical,
+		Brand:          brand,
+		Days:           days,
+		DayList:        dayList,
+		Rows:           rowsOut,
+		Totals:         t,
+		MissingDays:    missing,
+		Partial:        len(missing) > 0,
+		Campaigns:      len(campaigns),
+		CampaignsStale: campaignsStale,
+		Source:         laneStatsSource,
+		DeliveredNote:  laneStatsNote,
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
 	})
 }
