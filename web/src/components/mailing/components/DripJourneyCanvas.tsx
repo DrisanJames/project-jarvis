@@ -34,7 +34,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faDiagramProject, faSlidersH, faChartLine, faSitemap, faHourglassHalf,
+  faDiagramProject, faSlidersH, faChartLine, faSitemap, faHourglassHalf, faClock,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
@@ -132,6 +132,63 @@ interface StatsResponse {
   rows: StatsRow[];
 }
 
+// Snapshot (…/property-ledger/snapshot?vertical=&brand=) — VERIFIED against
+// internal/api/property_lane_snapshot.go + internal/worker/lane_snapshot.go.
+// The lake path for TODAY only, served from a 5-minute Athena→JSON snapshot
+// (it reads a file, so it answers in ~0s). It does NOT arbitrate with /stats
+// and never falls back to it: /stats is the Postgres past-tense path over
+// mailing_tracking_events, this is present-tense lake truth for the day so far.
+//
+// Nullability is load-bearing here, so every nullable field is typed nullable:
+//   rows: null   → NO snapshot has been captured (property_lane_snapshot.go:143)
+//   rows: []     → a snapshot exists and this lane had no activity today
+//   open_uniq: null + engagement_available:false → the transport emits no
+//                  open/click into the lake at all (kumo). ABSENT, never 0.
+interface SnapshotRow {
+  organization_id: string;
+  vertical: string;
+  brand: string;
+  isp: string;
+  source: string;
+  attempted: number;
+  delivered: number;
+  bounced: number;
+  open_uniq: number | null;
+  click_uniq: number | null;
+  open_events: number | null;
+  click_events: number | null;
+  engagement_available: boolean;
+  campaigns: number;
+}
+interface SnapshotSourceTotal {
+  source: string;
+  attempted: number;
+  delivered: number;
+  bounced: number;
+  open_uniq: number | null;
+  click_uniq: number | null;
+  open_events: number | null;
+  click_events: number | null;
+  engagement_available: boolean;
+}
+interface SnapshotResponse {
+  available: boolean;
+  state: string;              // 'ready' | 'no_snapshot_yet' — there is no third
+  message?: string;
+  day: string;
+  captured_at: string;        // '' in the not-ready state
+  age_seconds: number | null;
+  vertical: string;
+  brand?: string;
+  rows: SnapshotRow[] | null;
+  source_totals: SnapshotSourceTotal[] | null;
+  unmapped: { campaigns: number; events: number };
+  source: string;
+  storage?: string;
+  notes: string[] | null;
+  generated_at: string;
+}
+
 // Throttle (…/property-ledger/throttle?domain=…) — VERIFIED against
 // internal/api/property_lane_supply.go HandleLaneThrottle (the query param is
 // `domain`, NOT dataset_id; the response is per-BRAND with a feeds[] array,
@@ -202,6 +259,37 @@ const durationUntil = (iso: string | null | undefined): string => {
   if (h < 48) return `in ${h}h ${mins % 60}m`;
   return `in ${Math.floor(h / 24)}d ${h % 24}h`;
 };
+
+/** "3m ago" for a snapshot age. A null age is UNKNOWN, never "just now". */
+const ageLabel = (seconds: number | null | undefined): string => {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return UNKNOWN;
+  if (seconds < 90) return `${Math.round(seconds)}s ago`;
+  const m = Math.round(seconds / 60);
+  if (m < 90) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ago`;
+};
+
+/**
+ * eng — an engagement cell. When the transport reports no engagement into the
+ * lake at all (kumo: engagement_available=false, fields null) this renders
+ * "n/a", never 0. A source that CAN report and genuinely saw nothing comes back
+ * engagement_available=true with a real 0, and that 0 is shown as 0.
+ */
+const eng = (v: number | null | undefined, available: boolean): React.ReactNode =>
+  available
+    ? <span>{num(v)}</span>
+    : <span style={{ color: colors.textFaint }} title="This transport emits no open/click rows into the lake (kumo). The value is ABSENT, not zero.">n/a</span>;
+
+/**
+ * Derived attempted for the snapshot's delivery rate. The snapshot's raw
+ * `attempted` is the lake's raw attempted event, which exists on the SES pipe
+ * ONLY (METRIC_CONTRACT §2) — dividing delivered by it produces the >100%
+ * rates that contract was written to stop. So the rate divides by
+ * delivered + bounced instead, and is labelled and starred as derived.
+ */
+const derivedAttempted = (delivered: number, bounced: number): number =>
+  (Number.isFinite(delivered) ? delivered : 0) + (Number.isFinite(bounced) ? bounced : 0);
 
 // ── Fetch plumbing ──────────────────────────────────────────────────────────
 
@@ -850,6 +938,7 @@ export const DripJourneyCanvas: React.FC = () => {
   const [vertical, setVertical] = useState<string | null>(null);
   const [openEdge, setOpenEdge] = useState<number | null>(null);
   const [days, setDays] = useState(7);
+  const [snapScope, setSnapScope] = useState<'domain' | 'drip'>('domain');
   const [editingFeed, setEditingFeed] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
@@ -925,7 +1014,23 @@ export const DripJourneyCanvas: React.FC = () => {
   );
   useEffect(() => { setOpenEdge(null); }, [journeyKey]);
 
-  // 4. The scoreboard.
+  // 4a. TODAY — the lake snapshot. Its own resource, so the slow Postgres
+  // /stats read below can never delay or blank this panel. `brand` is optional
+  // on the endpoint (property_lane_snapshot.go:107): passing it scopes the
+  // server-side per-source rollup to this domain, omitting it rolls up the
+  // whole drip. The rollup is always the SERVER's — never recomputed here,
+  // because its nullable-engagement accumulation is part of the contract.
+  const snapshot = useResource<SnapshotResponse>(
+    vertical ? `snapshot:${vertical}:${snapScope === 'domain' ? brand ?? '' : '*'}` : null,
+    (signal) => getJSON<SnapshotResponse>(
+      `/api/mailing/pmta-campaign/property-ledger/snapshot?vertical=${encodeURIComponent(vertical ?? '')}`
+      + (snapScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
+      signal,
+    ),
+  );
+
+  // 4b. HISTORY — the scoreboard. SLOW (Postgres, ~10s warm / 25s cold), so it
+  // is deliberately a separate resource rendered in a separate panel.
   const stats = useResource<StatsResponse>(
     vertical ? `stats:${vertical}:${days}` : null,
     (signal) => getJSON<StatsResponse>(
@@ -1023,6 +1128,15 @@ export const DripJourneyCanvas: React.FC = () => {
   const expectedEdges = j ? Math.max(0, (j.max_touches || (j.touches?.length ?? 0)) - 1) : 0;
   const waitingSum = (j?.edges ?? []).reduce((a, e) => a + (Number.isFinite(e.waiting) ? e.waiting : 0), 0);
   const openEdgeRow = openEdge != null ? (j?.edges ?? []).find((e) => e.from_touch === openEdge) ?? null : null;
+
+  // Snapshot sub-states. rows===null (no snapshot captured) and rows===[] (a
+  // snapshot exists and this lane did nothing today) are DIFFERENT displays.
+  const snap = snapshot.data;
+  const snapRows = useMemo(
+    () => (snap?.rows ?? []).slice().sort((a, b) => b.delivered - a.delivered),
+    [snap],
+  );
+  const snapScopeLabel = snapScope === 'domain' ? (sendingDomain ?? brand ?? 'this domain') : 'the whole drip (all brands)';
 
   // ── Stats derivation (client-side day-over-day, pinned totals) ────────────
   const statRows = useMemo(() => (stats.data?.rows ?? []).slice(), [stats.data]);
@@ -1270,7 +1384,232 @@ export const DripJourneyCanvas: React.FC = () => {
         </AsyncPanel>
       </Panel>
 
-      {/* ── 2. PLAN AHEAD — the quota levers ──────────────────────────────── */}
+      {/* ── 2. TODAY — the lake snapshot (answers in ~0s) ─────────────────── */}
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader
+          title="Today so far — lake snapshot"
+          icon={faClock}
+          right={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}
+                title="Scopes the server-side per-source rollup. 'This domain' passes brand= to the endpoint; 'Whole drip' omits it and rolls up every brand on the vertical.">
+                Scope
+                <select style={selectStyle} value={snapScope}
+                  onChange={(e) => setSnapScope(e.target.value === 'drip' ? 'drip' : 'domain')}>
+                  <option value="domain">This domain</option>
+                  <option value="drip">Whole drip (all brands)</option>
+                </select>
+              </label>
+              {snap?.available && (
+                <span
+                  style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
+                  title={`Snapshot captured ${snap.captured_at || UNKNOWN} (UTC), covering Denver day ${snap.day}. The worker re-captures every 5 minutes; this is a SNAPSHOT, not a live read.`}
+                >
+                  as of {ageLabel(snap.age_seconds)} · captured {shortTime(snap.captured_at)} · day {snap.day}
+                  {snap.storage ? ` · ${snap.storage}` : ''}
+                </span>
+              )}
+            </div>
+          }
+        />
+        <AsyncPanel
+          label="today's lake snapshot"
+          res={snapshot}
+          isEmpty={!snap}
+          emptyTitle="No response from the snapshot endpoint"
+          emptyHint="The request resolved without a payload — treat this as unverified, not as a quiet day."
+        >
+          {snap && !snap.available && (
+            <div
+              style={{
+                fontSize: 12, color: colors.warningText,
+                background: alpha(colors.warning, '14'),
+                border: `1px solid ${alpha(colors.warning, '44')}`,
+                borderRadius: 6, padding: '10px 12px',
+              }}
+            >
+              <div style={{ fontWeight: 700, letterSpacing: 0.5, marginBottom: 4 }}>
+                NO SNAPSHOT CAPTURED YET — state: {snap.state || UNKNOWN}
+              </div>
+              <div style={{ lineHeight: 1.6 }}>
+                {snap.message || 'The server reported no snapshot and supplied no message.'}
+              </div>
+              <div style={{ marginTop: 6, color: colors.textMuted }}>
+                No numbers are shown for today. This is an absence of measurement — <b>not</b> a day
+                with zero activity.
+              </div>
+            </div>
+          )}
+
+          {snap?.available && snap.rows === null && (
+            <div
+              style={{
+                fontSize: 12, color: colors.warningText,
+                background: alpha(colors.warning, '14'),
+                border: `1px solid ${alpha(colors.warning, '44')}`,
+                borderRadius: 6, padding: '10px 12px',
+              }}
+            >
+              The snapshot reports <b>ready</b> but carries a null row set — the server contract says
+              a captured snapshot always returns an array. Treat today as UNMEASURED and check the
+              lane_snapshot heartbeat.
+            </div>
+          )}
+
+          {snap?.available && snap.rows !== null && snap.rows.length === 0 && (
+            <EmptyState
+              title="No activity for this lane today"
+              hint={`The snapshot captured ${shortTime(snap.captured_at)} covers Denver day ${snap.day} and contains no rows for ${snapScopeLabel}. This lane has not mailed today as of that capture — measured, not missing.`}
+            />
+          )}
+
+          {snap?.available && snapRows.length > 0 && (
+            <>
+              {/* Per-source totals. There is deliberately NO cross-source total. */}
+              <div style={{ ...cardGrid(230), marginBottom: 12 }}>
+                {(snap.source_totals ?? []).map((t) => {
+                  const den = derivedAttempted(t.delivered, t.bounced);
+                  const isMirror = t.source === 'app';
+                  return (
+                    <div
+                      key={t.source}
+                      style={{
+                        border: `1px solid ${isMirror ? alpha(colors.warning, '44') : colors.hairline}`,
+                        borderRadius: 8, padding: '9px 11px',
+                        background: isMirror ? alpha(colors.warning, '0d') : 'transparent',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <Pill color={isMirror ? colors.warning : colors.indigo400} style={{ fontSize: 9 }}>
+                          {t.source}
+                        </Pill>
+                        {!t.engagement_available && (
+                          <span style={{ fontSize: 9, color: colors.textFaint }} title="This transport emits no open/click rows into the lake.">
+                            no engagement in lake
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                        <Stat
+                          label="Delivered"
+                          value={num(t.delivered)}
+                          sub={`${ratePct(derive(t.delivered, den))} of delivered+bounced*`}
+                          title="Delivery rate denominator is DERIVED (delivered + bounced) — the snapshot's raw attempted exists on the SES pipe only, so dividing by it produces >100% rates (METRIC_CONTRACT §2)."
+                        />
+                        <Stat
+                          label="Bounced (raw)"
+                          value={num(t.bounced)}
+                          sub="not split H/S"
+                          color={colors.textMuted}
+                          title="This snapshot carries a single raw 'bounced' event count with NO hard/soft taxonomy (lane_snapshot.go:740). Hard and soft are never summed by this platform — so this number is shown uncoloured and must NOT be read as a hard-bounce figure. Use the Reporting screen for the reclassified split."
+                        />
+                        <Stat
+                          label="Opens (uniq*)"
+                          value={eng(t.open_uniq, t.engagement_available)}
+                          sub={t.engagement_available ? `${num(t.open_events)} events` : 'absent, not zero'}
+                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count."
+                        />
+                        <Stat
+                          label="Clicks (uniq*)"
+                          value={eng(t.click_uniq, t.engagement_available)}
+                          sub={t.engagement_available ? `${num(t.click_events)} events` : 'absent, not zero'}
+                          title="Sum of PER-CAMPAIGN distinct subscribers — not a lane-level distinct count."
+                        />
+                      </div>
+                      {isMirror && (
+                        <div style={{ fontSize: 10, color: colors.warningText, marginTop: 6, lineHeight: 1.5 }}>
+                          PG→lake mirror — these deliveries DOUBLE-COUNT ses/pmta. Never add this
+                          card to another one.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 12 }}>
+                Totals are shown <b>per source</b> and there is deliberately no combined figure:
+                <code> source='app'</code> mirrors ses/pmta, so one summed number would be wrong by
+                construction. Pick the source you mean.
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ ...tableStyle, minWidth: 940 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Brand</th>
+                      <th style={thStyle}>ISP</th>
+                      <th style={thStyle}>Source</th>
+                      <th style={numTh} title="Distinct campaigns contributing to this cell today.">Campaigns</th>
+                      <th style={numTh} title="RAW lake attempted events. These exist on the SES pipe ONLY — PMTA emits none (METRIC_CONTRACT §2), so a pmta row reads near zero here. Never use it as a delivery denominator.">
+                        Attempted (raw, SES-only)
+                      </th>
+                      <th style={numTh}>Delivered</th>
+                      <th style={numTh} title="Denominator = DERIVED attempted (delivered + bounced) for this row.">
+                        Delivered %* (of delivered+bounced)
+                      </th>
+                      <th style={numTh} title="Raw 'bounced' events — this snapshot carries no hard/soft taxonomy, so the two are NOT split here and this must not be read as a hard-bounce number.">
+                        Bounced (raw, not split)
+                      </th>
+                      <th style={numTh} title="Sum of per-campaign distinct subscribers — not a lane-level distinct. 'n/a' means the transport emits no opens into the lake.">
+                        Opens (uniq*)
+                      </th>
+                      <th style={numTh} title="Sum of per-campaign distinct subscribers — not a lane-level distinct. 'n/a' means the transport emits no clicks into the lake.">
+                        Clicks (uniq*)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapRows.map((r) => {
+                      const den = derivedAttempted(r.delivered, r.bounced);
+                      return (
+                        <tr key={`${r.brand}|${r.isp}|${r.source}`}>
+                          <td style={tdStyle}>{r.brand}</td>
+                          <td style={tdStyle}>{r.isp}</td>
+                          <td style={tdStyle}>
+                            <Pill color={r.source === 'app' ? colors.warning : colors.indigo400} style={{ fontSize: 9 }}>
+                              {r.source}
+                            </Pill>
+                          </td>
+                          <td style={numTd}>{num(r.campaigns)}</td>
+                          <td style={numTd}>{num(r.attempted)}</td>
+                          <td style={numTd}>{num(r.delivered)}</td>
+                          <td style={numTd} title={`delivered ${num(r.delivered)} / (delivered + bounced) ${num(den)}`}>
+                            {ratePct(derive(r.delivered, den))}
+                          </td>
+                          <td style={{ ...numTd, color: colors.textMuted }}>{num(r.bounced)}</td>
+                          <td style={numTd} title={r.engagement_available ? `${num(r.open_events)} open events` : undefined}>
+                            {eng(r.open_uniq, r.engagement_available)}
+                          </td>
+                          <td style={numTd} title={r.engagement_available ? `${num(r.click_events)} click events` : undefined}>
+                            {eng(r.click_uniq, r.engagement_available)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div
+                style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}
+                title="Lake activity from campaigns the mapping query could not resolve to a lane. It is DROPPED from every number above rather than attributed to a lane it may not belong to — a coverage caveat, not noise."
+              >
+                Coverage caveat: {num(snap.unmapped?.campaigns)} campaign(s) ·
+                {' '}{num(snap.unmapped?.events)} lake event(s) today did not resolve to any lane and
+                are excluded from every number above.
+              </div>
+
+              {(snap.notes ?? []).map((n, i) => (
+                <div key={i} style={{ fontSize: 10, color: colors.textFaint, marginTop: 4, lineHeight: 1.5 }}>
+                  {n}
+                </div>
+              ))}
+            </>
+          )}
+        </AsyncPanel>
+      </Panel>
+
+      {/* ── 3. PLAN AHEAD — the quota levers ──────────────────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
           title="Quota levers — per-ISP caps for this drip"
@@ -1413,10 +1752,10 @@ export const DripJourneyCanvas: React.FC = () => {
         </AsyncPanel>
       </Panel>
 
-      {/* ── 3. HISTORY — the scoreboard ───────────────────────────────────── */}
+      {/* ── 4. HISTORY — the scoreboard (SLOW: Postgres) ──────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
-          title="Scoreboard — lane × ISP × day"
+          title="History — lane × ISP × day (Postgres)"
           icon={faChartLine}
           right={
             <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1430,7 +1769,7 @@ export const DripJourneyCanvas: React.FC = () => {
           }
         />
         <AsyncPanel
-          label="the scoreboard"
+          label="the history scoreboard (Postgres — 10-25s)"
           res={stats}
           isEmpty={statRows.length === 0}
           emptyTitle="No sends recorded for this drip in the window"
@@ -1525,10 +1864,18 @@ export const DripJourneyCanvas: React.FC = () => {
             so no bounce number is shown here at all rather than a misleading combined one; hard and
             soft bounces are never summed (§3).
           </p>
+          <p style={noteStyle}>
+            <b>This panel and “Today so far” are two different stores and do not arbitrate.</b> This
+            one is Postgres (<code>mailing_tracking_events</code>, past-tense event types, delivery
+            <i>ingestion</i> counts); the snapshot above is the Athena lake (present-tense event
+            types, lake delivery truth, day-so-far only). They will not tie out exactly, and neither
+            falls back to the other. This read is the slow one — 10–25s — which is why it loads
+            independently and never gates the snapshot panel.
+          </p>
         </AsyncPanel>
       </Panel>
 
-      {/* ── 4. STRUCTURE — roster membership ──────────────────────────────── */}
+      {/* ── 5. STRUCTURE — roster membership ──────────────────────────────── */}
       <Panel>
         <SectionHeader
           title="Roster — which domains ride this drip"
