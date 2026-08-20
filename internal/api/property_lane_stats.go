@@ -57,6 +57,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -185,6 +186,44 @@ const laneStatsDaySQL = `
 	GROUP BY 1
 	ORDER BY 2 DESC`
 
+// laneStatsRollupReadSQL is the READ-THROUGH: the precomputed cells for this
+// lane's window, written by worker.LaneStatsRollupWorker
+// (internal/worker/lane_stats_rollup.go) using a COPY of laneStatsDaySQL —
+// this file stays the source of truth for the counting rules.
+//
+// WHY: a cold 7-day live pass measured ~230-255s on prod with ~10x run-to-run
+// variance, so a poller converged over three 25s polls instead of answering.
+// This is a PK-prefix range scan on
+// (organization_id, vertical, brand, day, isp) — the whole window in one cheap
+// read.
+//
+// SAFETY POSTURE — this is a pure ACCELERATOR, never a source of truth:
+//   - every day the table does not cover is computed by the untouched live
+//     path, so an empty table (or a worker that never ran) is behaviourally
+//     today's endpoint;
+//   - a READ FAILURE here (missing table on a binary that shipped ahead of its
+//     DDL, timeout, anything) is logged and treated as "no rollup days" — it
+//     can never fail the request or zero a number;
+//   - freshness is enforced HERE, not trusted from the writer:
+//     laneStatsRollupUsable rejects a closed-day row computed before the day
+//     closed (it would be partial) and a today row older than the endpoint's
+//     own today TTL. A stale rollup degrades to the live path.
+//
+// $1 organization_id · $2 vertical · $3 brand · $4 first day · $5 last day.
+const laneStatsRollupReadSQL = `
+	SELECT to_char(day, 'YYYY-MM-DD'), isp, sent, delivered_pg, openers,
+	       clickers, human_clickers, open_events, click_events, computed_at
+	FROM mailing_lane_stats_daily
+	WHERE organization_id = $1::uuid
+	  AND vertical = $2 AND brand = $3
+	  AND day >= $4::date AND day <= $5::date`
+
+// laneStatsRollupEmptyISP is the writer's "computed, no cells" sentinel — it
+// is how the table distinguishes an empty day from a never-computed one. It is
+// filtered out on read and NEVER reaches the payload. Kept identical to
+// worker.LaneStatsRollupEmptyISP.
+const laneStatsRollupEmptyISP = "__none__"
+
 // ── payload ─────────────────────────────────────────────────────────────────
 
 // laneStatsCell is one ISP's counts for one Denver day.
@@ -230,7 +269,19 @@ type laneStatsResponse struct {
 	Totals      laneStatsTotals `json:"totals"`
 	MissingDays []string        `json:"missing_days"`
 	Partial     bool            `json:"partial"`
-	Campaigns   int             `json:"campaigns"`
+	// RollupDays / LiveDays name the PROVENANCE of every resolved day, so a
+	// stale or half-filled rollup is visible on the payload instead of silently
+	// changing what the operator is looking at. Invariant:
+	// rollup_days ∪ live_days ∪ missing_days == day_list, disjoint.
+	// With an empty mailing_lane_stats_daily, rollup_days is [] and live_days
+	// is the whole window — i.e. today's behaviour, labelled.
+	RollupDays []string `json:"rollup_days"`
+	LiveDays   []string `json:"live_days"`
+	// RollupOldestComputedAt is the oldest computed_at among the rollup-served
+	// days (RFC3339, empty when none) — the one number that says "how stale is
+	// the fast path".
+	RollupOldestComputedAt string `json:"rollup_oldest_computed_at,omitempty"`
+	Campaigns              int    `json:"campaigns"`
 	// CampaignsStale: the campaign resolve failed and a PREVIOUS list was served
 	// rather than 500-ing. Rates are computed over a slightly older campaign set.
 	CampaignsStale bool   `json:"campaigns_stale,omitempty"`
@@ -472,6 +523,79 @@ func (s *PMTACampaignService) laneStatsQueryDay(ctx context.Context, cids []stri
 	return out, rows.Err()
 }
 
+// laneStatsRollupDay carries one precomputed day out of the table.
+type laneStatsRollupDay struct {
+	cells      []laneStatsCell
+	computedAt time.Time
+	campaigns  int
+}
+
+// laneStatsReadRollup loads whatever the rollup table holds for this lane's
+// window. It NEVER returns an error to the caller: a failure (table absent,
+// timeout, scan error) is logged and answers "nothing precomputed", which puts
+// every day back on the live path — the degradation property.
+func (s *PMTACampaignService) laneStatsReadRollup(ctx context.Context,
+	orgID, vertical, brand string, dayList []string) map[string]laneStatsRollupDay {
+
+	out := map[string]laneStatsRollupDay{}
+	if len(dayList) == 0 {
+		return out
+	}
+	rows, err := s.db.QueryContext(ctx, laneStatsRollupReadSQL,
+		orgID, vertical, brand, dayList[0], dayList[len(dayList)-1])
+	if err != nil {
+		log.Printf("[LaneStats] rollup read unavailable (%v) — every day falls back to the live path", err)
+		return map[string]laneStatsRollupDay{}
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var day string
+		var c laneStatsCell
+		var at time.Time
+		if serr := rows.Scan(&day, &c.ISP, &c.Sent, &c.DeliveredPG, &c.Openers,
+			&c.Clickers, &c.HumanClickers, &c.OpenEvents, &c.ClickEvents, &at); serr != nil {
+			log.Printf("[LaneStats] rollup scan failed (%v) — falling back to the live path", serr)
+			return map[string]laneStatsRollupDay{}
+		}
+		d := out[day]
+		// The writer's freshness for a day is the OLDEST row in it: a newer
+		// ISP appearing later must not make an older cell look fresh.
+		if d.computedAt.IsZero() || at.Before(d.computedAt) {
+			d.computedAt = at
+		}
+		// The sentinel marks "computed, no cells" — it establishes the day, it
+		// is never a cell.
+		if c.ISP != laneStatsRollupEmptyISP {
+			d.cells = append(d.cells, c)
+		}
+		out[day] = d
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[LaneStats] rollup read incomplete (%v) — falling back to the live path", err)
+		return map[string]laneStatsRollupDay{}
+	}
+	return out
+}
+
+// laneStatsRollupUsable decides whether a precomputed day may be served.
+// Freshness is enforced on READ so a wedged or half-finished writer degrades to
+// the live path instead of quietly changing the numbers.
+//
+//   - TODAY is usable only while it is younger than the endpoint's own today
+//     TTL — the same freshness contract the live path already offers.
+//   - a CLOSED day is usable only if it was computed AT OR AFTER that day's
+//     Denver end instant. A row written while the day was still open is a
+//     PARTIAL day and must not be served as a complete one.
+func laneStatsRollupUsable(d laneStatsRollupDay, isToday bool, dayEnd, now time.Time) bool {
+	if d.computedAt.IsZero() {
+		return false
+	}
+	if isToday {
+		return now.Sub(d.computedAt) < laneStatsTodayTTL
+	}
+	return !d.computedAt.Before(dayEnd)
+}
+
 // laneStatsDay serves one day through the TTL cache, scanning only on a
 // cold/expired slot (the scan runs while HOLDING the slot mutex so concurrent
 // pollers for the same day collapse to one scan per TTL).
@@ -544,14 +668,24 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// READ-THROUGH: whatever the daily rollup already holds for this window.
+	// Never fatal — a failure here yields an empty map and every day goes back
+	// on the live path below, which is exactly today's behaviour.
+	rollup := s.laneStatsReadRollup(ctx, orgID, vertical, brand, dayList)
+
 	// Per-day fan-out, bounded. Each day gets only the campaigns that existed
 	// before it ended (exact: no events precede their campaign row).
+	// A day the rollup can serve is filled in place and NEVER queried — that is
+	// the whole latency win, and it is what the tests assert via unmet/
+	// unexpected sqlmock expectations.
 	type dayResult struct {
-		idx   int
-		cells []laneStatsCell
-		err   error
+		idx    int
+		cells  []laneStatsCell
+		err    error
+		rolled bool
 	}
 	results := make([]dayResult, len(dayList))
+	rollupOldest := time.Time{}
 	sem := make(chan struct{}, laneStatsConcurrency)
 	var wg sync.WaitGroup
 
@@ -562,6 +696,15 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 			continue
 		}
 		start, end := laneStatsDayBoundsUTC(d)
+
+		if rd, ok := rollup[day]; ok && laneStatsRollupUsable(rd, day == today, end, now) {
+			results[i] = dayResult{idx: i, cells: rd.cells, rolled: true}
+			if rollupOldest.IsZero() || rd.computedAt.Before(rollupOldest) {
+				rollupOldest = rd.computedAt
+			}
+			continue
+		}
+
 		cids := make([]string, 0, len(campaigns))
 		for _, c := range campaigns {
 			if c.created.Before(end) {
@@ -589,12 +732,19 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 	// Assemble. A failed day is a GAP (named in missing_days), never zeros.
 	byDay := map[string][]laneStatsCell{}
 	missing := []string{}
+	rollupDays := []string{}
+	liveDays := []string{}
 	ispTotalSent := map[string]int64{}
 	ispSeen := map[string]bool{}
 	for i, day := range dayList {
 		if results[i].err != nil {
 			missing = append(missing, day)
 			continue
+		}
+		if results[i].rolled {
+			rollupDays = append(rollupDays, day)
+		} else {
+			liveDays = append(liveDays, day)
 		}
 		byDay[day] = results[i].cells
 		for _, c := range results[i].cells {
@@ -652,14 +802,22 @@ func (s *PMTACampaignService) HandleLaneStats(w http.ResponseWriter, r *http.Req
 	t.ClickRate = laneStatsRate(t.Clickers, t.DeliveredPG)
 
 	respondJSON(w, http.StatusOK, laneStatsResponse{
-		Vertical:       vertical,
-		Brand:          brand,
-		Days:           days,
-		DayList:        dayList,
-		Rows:           rowsOut,
-		Totals:         t,
-		MissingDays:    missing,
-		Partial:        len(missing) > 0,
+		Vertical:    vertical,
+		Brand:       brand,
+		Days:        days,
+		DayList:     dayList,
+		Rows:        rowsOut,
+		Totals:      t,
+		MissingDays: missing,
+		Partial:     len(missing) > 0,
+		RollupDays:  rollupDays,
+		LiveDays:    liveDays,
+		RollupOldestComputedAt: func() string {
+			if rollupOldest.IsZero() {
+				return ""
+			}
+			return rollupOldest.UTC().Format(time.RFC3339)
+		}(),
 		Campaigns:      len(campaigns),
 		CampaignsStale: campaignsStale,
 		Source:         laneStatsSource,

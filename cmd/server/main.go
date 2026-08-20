@@ -1061,6 +1061,16 @@ func main() {
 			// Kill switch: PROPERTY_INTRO_ROLLUP_DISABLED.
 			propertyIntroRollup := worker.NewPropertyIntroRollupWorker(mailingDB, redisClient)
 			propertyIntroRollup.Start(ctx)
+			// LaneStatsRollupWorker (2026-08-19): precomputes the Property Ledger
+			// lane scoreboard per (org, vertical, brand, day, isp) so
+			// GET /property-ledger/stats serves instantly instead of converging
+			// over three 25s polls. Leased (distlock), upsert-only, never deletes.
+			// The endpoint reads the table per day and falls back to the live
+			// query for any day it lacks — so if this worker never runs, or the
+			// table is missing entirely, /stats behaves exactly as it does today.
+			// Kill switch: LANE_STATS_ROLLUP_DISABLED.
+			laneStatsRollup := worker.NewLaneStatsRollupWorker(mailingDB, redisClient)
+			laneStatsRollup.Start(ctx)
 			// SESVDMSnapshotWorker: 6h leased UTC-day VDM identity telemetry
 			// into ses_vdm_daily (default AWS credential chain; region
 			// SES_REGION, default us-west-1). Kill switch:
@@ -2622,6 +2632,17 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// Lane-stats daily rollup (2026-08-19). Precomputes the Property Ledger
+		// lane scoreboard so the screen is instant instead of converging over
+		// three 25s polls. REGISTERED AS TWO ENTRIES ON PURPOSE: migrationSkipProbe
+		// classifies an entry by its LEADING keywords (reMigCreateTable,
+		// migration_skip.go:41), so a single string holding CREATE TABLE then
+		// CREATE INDEX is probed as CREATE TABLE — and once the table exists the
+		// probe skips the whole entry, so the index would never land, silently,
+		// forever. Small DDL only; the fill is the worker's job, never a migration
+		// (the 5s statement budget would drop a backfill and log it as "skipped").
+		{"aug19_mailing_lane_stats_daily", worker.LaneStatsRollupDDL},
+		{"aug19_mailing_lane_stats_daily_idx", worker.LaneStatsRollupIndexDDL},
 		// Worker heartbeat table — backs WorkerHealthMonitor stall detection
 		// and the /api/worker-health UI. Placed first (new table, no deps,
 		// fast) so heartbeats can land on the first cycle after boot.
