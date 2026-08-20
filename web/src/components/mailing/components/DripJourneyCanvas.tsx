@@ -1072,6 +1072,11 @@ export const DripJourneyCanvas: React.FC = () => {
   const [vertical, setVertical] = useState<string | null>(null);
   const [openEdge, setOpenEdge] = useState<number | null>(null);
   const [days, setDays] = useState(7);
+  // History scope. 'domain' passes brand= to the stats endpoint (server-side —
+  // the response has no brand column so it cannot be filtered client-side).
+  const [statsScope, setStatsScope] = useState<'domain' | 'drip'>('domain');
+  // Which aggregated day row is expanded to its per-ISP breakdown.
+  const [openStatDay, setOpenStatDay] = useState<string | null>(null);
   const [snapScope, setSnapScope] = useState<'domain' | 'drip'>('domain');
   // '' = every sending domain in the snapshot. Client-side filter over the
   // snapshot rows; it never refetches, so it cannot change the measurement.
@@ -1197,10 +1202,16 @@ export const DripJourneyCanvas: React.FC = () => {
 
   // 4b. HISTORY — the scoreboard. SLOW (Postgres, ~10s warm / 25s cold), so it
   // is deliberately a separate resource rendered in a separate panel.
+  // 4. History. HandleLaneStats accepts an optional `brand` (property_lane_stats.go:637)
+  // and the response carries NO brand column, so scoping MUST happen server-side —
+  // the panel cannot filter a whole-drip payload down to one domain after the fact.
+  // Default is this domain: the unscoped whole-drip read is the "dump" the operator
+  // could not use, and is now an explicit opt-in.
   const stats = useResource<StatsResponse>(
-    vertical ? `stats:${vertical}:${days}` : null,
+    vertical ? `stats:${vertical}:${days}:${statsScope === 'domain' ? (brand ?? '') : 'all'}` : null,
     (signal) => getJSON<StatsResponse>(
-      `/api/mailing/pmta-campaign/property-ledger/stats?vertical=${encodeURIComponent(vertical ?? '')}&days=${days}`,
+      `/api/mailing/pmta-campaign/property-ledger/stats?vertical=${encodeURIComponent(vertical ?? '')}&days=${days}`
+      + (statsScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
       signal,
     ),
   );
@@ -1423,10 +1434,41 @@ export const DripJourneyCanvas: React.FC = () => {
     return prev;
   }, [statRows]);
 
-  const sortedStats = useMemo(
-    () => statRows.slice().sort((a, b) => (a.day === b.day ? a.isp.localeCompare(b.isp) : b.day.localeCompare(a.day))),
-    [statRows],
-  );
+  /**
+   * statsByDay — one row per Denver day, ISPs folded in, newest first.
+   *
+   * Rates are DERIVED FROM THE SUMMED COUNTS (opens ÷ delivered for the whole
+   * day), never averaged across the per-ISP rates the server sent. Averaging
+   * rates would weight a 12-recipient ISP the same as a 400k one; every
+   * roll-up on this screen divides totals instead.
+   */
+  const statsByDay = useMemo(() => {
+    const by = new Map<string, { day: string; sent: number; delivered: number; opens: number; clicks: number; isps: StatsRow[] }>();
+    for (const r of statRows) {
+      let d = by.get(r.day);
+      if (!d) { d = { day: r.day, sent: 0, delivered: 0, opens: 0, clicks: 0, isps: [] }; by.set(r.day, d); }
+      d.sent += Number.isFinite(r.sent) ? r.sent : 0;
+      d.delivered += Number.isFinite(r.delivered_pg) ? r.delivered_pg : 0;
+      d.opens += Number.isFinite(r.opens) ? r.opens : 0;
+      d.clicks += Number.isFinite(r.clicks) ? r.clicks : 0;
+      d.isps.push(r);
+    }
+    for (const d of by.values()) d.isps.sort((a, b) => b.sent - a.sent);
+    return Array.from(by.values()).sort((a, b) => b.day.localeCompare(a.day));
+  }, [statRows]);
+
+  // Each day's immediately older day, for the aggregated direction arrows.
+  const prevByDay = useMemo(() => {
+    const asc = statsByDay.slice().reverse();
+    const m = new Map<string, typeof asc[number]>();
+    for (let i = 1; i < asc.length; i++) m.set(asc[i].day, asc[i - 1]);
+    return m;
+  }, [statsByDay]);
+
+  // A day that vanishes from a re-scoped window must not stay "expanded".
+  useEffect(() => {
+    if (openStatDay && !statsByDay.some((d) => d.day === openStatDay)) setOpenStatDay(null);
+  }, [statsByDay, openStatDay]);
 
   const statTotals = useMemo(() => {
     const t = { sent: 0, delivered: 0, opens: 0, clicks: 0 };
@@ -1441,7 +1483,7 @@ export const DripJourneyCanvas: React.FC = () => {
 
   const Direction: React.FC<{ cur: number; prev: number | null; unit: 'pp' | 'n' }> = ({ cur, prev, unit }) => {
     if (prev == null || !Number.isFinite(prev) || !Number.isFinite(cur)) {
-      return <span style={{ fontSize: 9, color: colors.textFaint }} title="No prior day for this ISP in the window — direction unknown, not flat.">{UNKNOWN}</span>;
+      return <span style={{ fontSize: 9, color: colors.textFaint }} title="No prior period in the window, or the current rate has no denominator — direction UNKNOWN, not flat.">{UNKNOWN}</span>;
     }
     const d = cur - prev;
     if (Math.abs(d) < 1e-9) return <span style={{ fontSize: 9, color: colors.textFaint }}>flat</span>;
@@ -2395,17 +2437,28 @@ export const DripJourneyCanvas: React.FC = () => {
       {/* ── 4. HISTORY — the scoreboard (SLOW: Postgres) ──────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
-          title="History — lane × ISP × day (Postgres)"
+          title="History — by day, expandable to ISP (Postgres)"
           icon={faChartLine}
           right={
-            <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}>
-              Window
-              <select style={selectStyle} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                <option value={7}>7 days</option>
-                <option value={14}>14 days</option>
-                <option value={30}>30 days</option>
-              </select>
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}
+                title="Scoped SERVER-SIDE: 'This domain' passes brand= to the stats endpoint. The response carries no brand column, so a whole-drip read cannot be narrowed afterwards — changing this refetches.">
+                Scope
+                <select style={selectStyle} value={statsScope}
+                  onChange={(e) => setStatsScope(e.target.value === 'drip' ? 'drip' : 'domain')}>
+                  <option value="domain">This domain</option>
+                  <option value="drip">Whole drip (all brands)</option>
+                </select>
+              </label>
+              <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}>
+                Window
+                <select style={selectStyle} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+                  <option value={7}>7 days</option>
+                  <option value={14}>14 days</option>
+                  <option value={30}>30 days</option>
+                </select>
+              </label>
+            </div>
           }
         />
         <AsyncPanel
@@ -2413,90 +2466,140 @@ export const DripJourneyCanvas: React.FC = () => {
           res={stats}
           isEmpty={statRows.length === 0}
           emptyTitle="No sends recorded for this drip in the window"
-          emptyHint={`The stats read succeeded and returned zero rows for the last ${days} days — built empty, not failed. Widen the window or check the lane is releasing supply.`}
+          emptyHint={`The stats read succeeded and returned zero rows for the last ${days} days${statsScope === 'domain' ? ` scoped to ${sendingDomain ?? brand ?? 'this domain'}` : ' across the whole drip'} — built empty, not failed. Widen the window, or switch Scope to the whole drip to see whether another domain carried this lane.`}
         >
+          <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
+            One row per Denver day{statsScope === 'domain' ? <> for <b>{sendingDomain ?? brand}</b></> : <> across <b>every domain on this drip</b></>}.
+            {' '}Click a day to expand its per-ISP breakdown. Day rates are derived from that day's
+            summed counts, never averaged across the ISP rates.
+          </div>
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ ...tableStyle, minWidth: 940 }}>
+            <table style={{ ...tableStyle, minWidth: 1000 }}>
               <thead>
                 <tr>
                   <th style={thStyle}>Day (Denver)</th>
-                  <th style={thStyle}>ISP</th>
-                  <th style={numTh} title="Send events recorded for this lane × ISP × day.">Sent</th>
+                  <th style={numTh} title="Distinct ISP lanes that recorded a send that day. Click the day to see them.">ISPs</th>
+                  <th style={numTh} title="Send events recorded across every ISP that day.">Sent</th>
                   <th style={numTh} title="PG tracking-event delivered count — the per-campaign delivery proxy (METRIC_CONTRACT §1). PG confirmation lags and under-counts (Microsoft ~30%); lake delivery truth may read higher.">
                     Delivered* (PG)
                   </th>
-                  <th style={numTh} title="Delivered* ÷ Sent on this row. This is a CONFIRMATION rate, not a delivery rate: PG records a delivery only when the confirmation is ingested, so it is a floor and reads ~30% low at Microsoft. A number here below the ISP's usual band is a reason to check the lake, never on its own proof of a delivery problem.">
+                  <th style={numTh} title="Delivered* ÷ Sent for the whole day. A CONFIRMATION rate, not a delivery rate: it is a floor and reads ~30% low at Microsoft.">
                     Confirmed % (of sent)
                   </th>
                   <th style={numTh} title="Raw opens — machine/MPP traffic included (METRIC_CONTRACT §6). Not 'people opened'.">
                     Opens (raw)
                   </th>
-                  <th style={numTh} title="Open rate — denominator = Delivered* (PG) on this row.">
+                  <th style={numTh} title="The day's total opens ÷ the day's total Delivered*. NOT an average of the per-ISP rates.">
                     Open % (of delivered)
                   </th>
                   <th style={numTh} title="Raw clicks — machine clicks included.">Clicks (raw)</th>
-                  <th style={numTh} title="Click rate — denominator = Delivered* (PG) on this row.">
+                  <th style={numTh} title="The day's total clicks ÷ the day's total Delivered*. NOT an average of the per-ISP rates.">
                     Click % (of delivered)
                   </th>
-                  <th style={thStyle} title="Change vs this ISP's previous day in the window. '—' means there is no prior day, which is not the same as flat.">
+                  <th style={thStyle} title="Change vs the previous day in the window. '—' means there is no prior day, which is not the same as flat.">
                     vs prior day
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {sortedStats.map((r) => {
-                  const prev = prevByIspDay.get(`${r.isp}|${r.day}`) ?? null;
-                  const openDerived = derive(r.opens, r.delivered_pg);
-                  const clickDerived = derive(r.clicks, r.delivered_pg);
-                  const openMismatch = openDerived != null && Number.isFinite(r.open_rate) && Math.abs(openDerived - r.open_rate) > 0.005;
-                  const clickMismatch = clickDerived != null && Number.isFinite(r.click_rate) && Math.abs(clickDerived - r.click_rate) > 0.005;
+                {statsByDay.map((d) => {
+                  const prev = prevByDay.get(d.day) ?? null;
+                  const openRate = derive(d.opens, d.delivered);
+                  const clickRate = derive(d.clicks, d.delivered);
+                  const expanded = openStatDay === d.day;
                   return (
-                    <tr key={`${r.day}|${r.isp}`}>
-                      <td style={tdStyle}>{r.day}</td>
-                      <td style={tdStyle}>{r.isp}</td>
-                      <td style={numTd}>{num(r.sent)}</td>
-                      <td style={numTd}>{num(r.delivered_pg)}</td>
-                      <td style={numTd} title={`delivered ${num(r.delivered_pg)} / sent ${num(r.sent)}`}>
-                        {ratePct(derive(r.delivered_pg, r.sent))}
-                      </td>
-                      <td style={numTd}>{num(r.opens)}</td>
-                      <td style={numTd} title={openMismatch ? `Server open_rate ${ratePct(r.open_rate)} does not reconcile with opens/delivered shown here (${ratePct(openDerived)}) — the server used a different denominator.` : `opens ${num(r.opens)} / delivered ${num(r.delivered_pg)}`}>
-                        {ratePct(r.open_rate)}{openMismatch && <span style={{ color: colors.warningText }}>*</span>}
-                      </td>
-                      <td style={numTd}>{num(r.clicks)}</td>
-                      <td style={numTd} title={clickMismatch ? `Server click_rate ${ratePct(r.click_rate)} does not reconcile with clicks/delivered shown here (${ratePct(clickDerived)}) — the server used a different denominator.` : `clicks ${num(r.clicks)} / delivered ${num(r.delivered_pg)}`}>
-                        {ratePct(r.click_rate)}{clickMismatch && <span style={{ color: colors.warningText }}>*</span>}
-                      </td>
-                      <td style={tdStyle}>
-                        <span style={{ display: 'inline-flex', gap: 8 }}>
-                          <span title="Click-rate direction vs this ISP's prior day.">
-                            clk <Direction cur={r.click_rate} prev={prev ? prev.click_rate : null} unit="pp" />
+                    <React.Fragment key={d.day}>
+                      <tr
+                        onClick={() => setOpenStatDay(expanded ? null : d.day)}
+                        style={{ cursor: 'pointer', background: expanded ? alpha(colors.indigo400, '14') : undefined }}
+                        title={expanded ? 'Collapse the per-ISP breakdown' : 'Expand this day to its per-ISP rows'}
+                      >
+                        <td style={{ ...tdStyle, fontWeight: 700 }}>
+                          <span style={{ color: colors.indigo200, marginRight: 6, display: 'inline-block', width: 10 }}>
+                            {expanded ? '▾' : '▸'}
                           </span>
-                          <span title="Delivered direction vs this ISP's prior day.">
-                            dlv <Direction cur={r.delivered_pg} prev={prev ? prev.delivered_pg : null} unit="n" />
+                          {d.day}
+                        </td>
+                        <td style={numTd}>{num(d.isps.length)}</td>
+                        <td style={numTd}>{num(d.sent)}</td>
+                        <td style={numTd}>{num(d.delivered)}</td>
+                        <td style={numTd} title={`delivered ${num(d.delivered)} / sent ${num(d.sent)}`}>
+                          {ratePct(derive(d.delivered, d.sent))}
+                        </td>
+                        <td style={numTd}>{num(d.opens)}</td>
+                        <td style={numTd} title={`opens ${num(d.opens)} / delivered ${num(d.delivered)}`}>{ratePct(openRate)}</td>
+                        <td style={numTd}>{num(d.clicks)}</td>
+                        <td style={numTd} title={`clicks ${num(d.clicks)} / delivered ${num(d.delivered)}`}>{ratePct(clickRate)}</td>
+                        <td style={tdStyle}>
+                          <span style={{ display: 'inline-flex', gap: 8 }}>
+                            <span title="Day click-rate direction vs the previous day.">
+                              clk <Direction cur={clickRate ?? NaN} prev={prev ? derive(prev.clicks, prev.delivered) : null} unit="pp" />
+                            </span>
+                            <span title="Day Delivered* direction vs the previous day.">
+                              dlv <Direction cur={d.delivered} prev={prev ? prev.delivered : null} unit="n" />
+                            </span>
                           </span>
-                        </span>
-                      </td>
-                    </tr>
+                        </td>
+                      </tr>
+
+                      {expanded && d.isps.map((r) => {
+                        const ispPrev = prevByIspDay.get(`${r.isp}|${r.day}`) ?? null;
+                        const openDerived = derive(r.opens, r.delivered_pg);
+                        const clickDerived = derive(r.clicks, r.delivered_pg);
+                        const openMismatch = openDerived != null && Number.isFinite(r.open_rate) && Math.abs(openDerived - r.open_rate) > 0.005;
+                        const clickMismatch = clickDerived != null && Number.isFinite(r.click_rate) && Math.abs(clickDerived - r.click_rate) > 0.005;
+                        return (
+                          <tr key={`${r.day}|${r.isp}`} style={{ background: alpha(colors.indigo400, '0d') }}>
+                            <td style={{ ...tdStyle, paddingLeft: 26, color: colors.textMuted }}>{r.isp}</td>
+                            <td style={numTd} title="Share of this day's sends that went to this ISP.">
+                              {ratePct(derive(r.sent, d.sent))}
+                            </td>
+                            <td style={numTd}>{num(r.sent)}</td>
+                            <td style={numTd}>{num(r.delivered_pg)}</td>
+                            <td style={numTd} title={`delivered ${num(r.delivered_pg)} / sent ${num(r.sent)}`}>
+                              {ratePct(derive(r.delivered_pg, r.sent))}
+                            </td>
+                            <td style={numTd}>{num(r.opens)}</td>
+                            <td style={numTd} title={openMismatch ? `Server open_rate ${ratePct(r.open_rate)} does not reconcile with opens/delivered shown here (${ratePct(openDerived)}) — the server used a different denominator.` : `opens ${num(r.opens)} / delivered ${num(r.delivered_pg)}`}>
+                              {ratePct(r.open_rate)}{openMismatch && <span style={{ color: colors.warningText }}>*</span>}
+                            </td>
+                            <td style={numTd}>{num(r.clicks)}</td>
+                            <td style={numTd} title={clickMismatch ? `Server click_rate ${ratePct(r.click_rate)} does not reconcile with clicks/delivered shown here (${ratePct(clickDerived)}) — the server used a different denominator.` : `clicks ${num(r.clicks)} / delivered ${num(r.delivered_pg)}`}>
+                              {ratePct(r.click_rate)}{clickMismatch && <span style={{ color: colors.warningText }}>*</span>}
+                            </td>
+                            <td style={tdStyle}>
+                              <span style={{ display: 'inline-flex', gap: 8, fontSize: 10 }}>
+                                <span title="This ISP's click-rate direction vs its own prior day.">
+                                  clk <Direction cur={r.click_rate} prev={ispPrev ? ispPrev.click_rate : null} unit="pp" />
+                                </span>
+                                <span title="This ISP's Delivered* direction vs its own prior day.">
+                                  dlv <Direction cur={r.delivered_pg} prev={ispPrev ? ispPrev.delivered_pg : null} unit="n" />
+                                </span>
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
               <tfoot>
                 <tr>
                   <td style={{ ...tdStyle, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} colSpan={2}>
-                    Total ({days}d, all ISPs shown)
+                    Total ({days}d, {statsByDay.length} day(s))
                   </td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.sent)}</td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.delivered)}</td>
-                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total Delivered* / total Sent across the rows shown.">
+                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total Delivered* / total Sent across the window.">
                     {ratePct(derive(statTotals.delivered, statTotals.sent))}
                   </td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.opens)}</td>
-                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total opens / total Delivered* (PG) across the rows shown.">
+                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total opens / total Delivered* across the window.">
                     {ratePct(derive(statTotals.opens, statTotals.delivered))}
                   </td>
                   <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }}>{num(statTotals.clicks)}</td>
-                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total clicks / total Delivered* (PG) across the rows shown.">
+                  <td style={{ ...numTd, fontWeight: 700, borderTop: `1px solid ${colors.panelBorderStrong}` }} title="Total clicks / total Delivered* across the window.">
                     {ratePct(derive(statTotals.clicks, statTotals.delivered))}
                   </td>
                   <td style={{ ...tdStyle, borderTop: `1px solid ${colors.panelBorderStrong}` }} />
