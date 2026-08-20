@@ -97,15 +97,26 @@ const (
 	// laneSnapshotCampaignDays bounds the campaign-mapping query. The drip
 	// reminder ladder is ~72h, so a campaign created several days ago can still
 	// emit events today; 10 days is generous cover at 254 ms.
-	laneSnapshotCampaignDays = 10
+	// 10 -> 4 days. The snapshot only covers TODAY, and a campaign can only emit
+	// events today if it mailed recently; 4 days keeps the ladder's ~72h tail.
+	// Measured: 10d = 27,835 campaigns, 4d = 12,619 — less than half the rows to
+	// transfer on every tick, for the same answer.
+	laneSnapshotCampaignDays = 4
 
 	// laneSnapshotLakeBudget / laneSnapshotPGBudget bound the two queries.
 	// The lake query measured 9.6s for a full Denver day; the PG query 254 ms.
 	// Both sit well inside their budgets, and the PG one sits under the prod
 	// 30s statement_timeout by construction.
 	laneSnapshotLakeBudget = 5 * time.Minute
-	laneSnapshotPGBudget   = 25 * time.Second
-	laneSnapshotPutBudget  = 60 * time.Second
+	// RAISED 25s -> 120s (2026-08-19, measured on prod). The mapping query runs
+	// in ~1.1s standalone, but it failed on TWO consecutive live ticks with
+	// "canceling statement due to user request" — a CONTEXT cancellation, not a
+	// statement timeout. The tick ctx has no deadline, so the 25s was genuinely
+	// elapsing: w.db is the pool shared by the server's ~60 workers, and the
+	// budget was being spent WAITING FOR A CONNECTION before the query even ran.
+	// This worker is off the request path, so waiting is free; failing is not.
+	laneSnapshotPGBudget  = 120 * time.Second
+	laneSnapshotPutBudget = 60 * time.Second
 
 	// laneSnapshotDefaultPrefix is the S3 key prefix. Key =
 	// <prefix><denver-day>.json, overwritten every tick.
