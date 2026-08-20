@@ -306,6 +306,33 @@ interface SupplyResponse {
   feeds: SupplyFeed[];
 }
 
+// Ingestion (…/property-ledger/ingestion?days=N) — VERIFIED against
+// internal/api/property_ledger_ingestion.go. Cold-intake TREND: how many new
+// records each sending domain actually took per Denver day. Estate-wide by
+// design — sizing a growth ask means comparing domains and spotting the ones
+// with no feed at all, so this is NOT scoped to the selection.
+//
+// `per_day` deliberately excludes TODAY (today is still filling and would drag
+// every rate down). `rate_days` is how many complete days it averaged over.
+// This is a different question from the supply queue above: intake RATE over
+// time vs what is claimable right now.
+interface IngestionRow {
+  brand: string;
+  sending_domain: string;
+  by_day: Record<string, number>;
+  window_total: number;
+  per_day: number;
+}
+interface IngestionResponse {
+  from: string;
+  to: string;
+  days: string[];
+  rate_days: number;
+  rows: IngestionRow[];
+  unmapped: { vertical: string; records: number }[];
+  estate_total: number;
+}
+
 // Throttle (…/property-ledger/throttle?domain=…) — VERIFIED against
 // internal/api/property_lane_supply.go HandleLaneThrottle (the query param is
 // `domain`, NOT dataset_id; the response is per-BRAND with a feeds[] array,
@@ -1236,6 +1263,19 @@ export const DripJourneyCanvas: React.FC = () => {
       `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(sendingDomain ?? '')}`,
       signal,
     ),
+  );
+
+  // 5c. Cold-intake TREND, estate-wide (see the type note: sizing an ask means
+  // comparing domains, so this is deliberately not scoped to the selection).
+  const ingestion = useResource<IngestionResponse>(
+    `ingestion:${days}`,
+    (signal) => getJSON<IngestionResponse>(
+      `/api/mailing/pmta-campaign/property-ledger/ingestion?days=${days}`, signal),
+  );
+
+  const ingestionRows = useMemo(
+    () => (ingestion.data?.rows ?? []).slice().sort((a, b) => b.per_day - a.per_day),
+    [ingestion.data],
   );
 
   const supplyFeeds = useMemo(
@@ -2295,6 +2335,109 @@ export const DripJourneyCanvas: React.FC = () => {
               first touch and is governed by the introduction ledger; Due now is already-enrolled
               subscribers awaiting a FOLLOW-UP touch, which the ledger does not govern.
             </p>
+          </AsyncPanel>
+        </div>
+
+        {/* ── COLD INTAKE TREND — the denominator for any growth ask ────────
+            docs/JAOS/drip-lanes.md §5: net every ask against standing intake.
+            A lane already taking 10k/day needs 40k cleaned to reach 50k, not 50k.
+            Ported here 2026-08-20 when the Property Ledger tab was retired. */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>
+            COLD INTAKE — NEW RECORDS PER DAY, BY SENDING DOMAIN (ESTATE-WIDE)
+          </div>
+          <AsyncPanel
+            label="the cold-intake trend"
+            res={ingestion}
+            isEmpty={ingestionRows.length === 0}
+            emptyTitle="No cold intake recorded in this window"
+            emptyHint="The ingestion read succeeded and returned no rows — no sending domain took a new record in the window. Measured, not missing."
+          >
+            {ingestion.data && (
+              <>
+                <div style={{ ...cardGrid(180), marginBottom: 10 }}>
+                  <Stat
+                    label="This domain's rate"
+                    value={num(ingestionRows.find((r) => r.brand === brand)?.per_day)}
+                    sub={`new records/day${ingestionRows.some((r) => r.brand === brand) ? '' : ' — NO FEED'}`}
+                    color={ingestionRows.some((r) => r.brand === brand) ? colors.successText : colors.warningText}
+                    title="Standing intake for the selected sending domain, averaged over COMPLETE days only. Subtract this from any growth ask before requesting cleaned records — the lane is already taking this much unaided. A domain absent from the table has NO feed delivering to it."
+                  />
+                  <Stat
+                    label="Estate total"
+                    value={num(ingestion.data.estate_total)}
+                    sub={`over ${ingestion.data.from} → ${ingestion.data.to}`}
+                    title="Every new record taken across the estate in the window."
+                  />
+                  <Stat
+                    label="Rate basis"
+                    value={`${num(ingestion.data.rate_days)} days`}
+                    sub="today EXCLUDED"
+                    title="Per-day rates average over COMPLETE Denver days only. Today is still filling and would drag every rate down, so it is excluded from the divisor while still appearing in the by-day columns."
+                  />
+                  <Stat
+                    label="Domains with a feed"
+                    value={`${ingestionRows.length} / ${domains.length}`}
+                    sub={ingestionRows.length < domains.length ? `${domains.length - ingestionRows.length} taking nothing` : 'all fed'}
+                    color={ingestionRows.length < domains.length ? colors.warningText : colors.successText}
+                    title="Roster domains that took at least one new record in the window. A domain absent here is not slow — it has no feed at all, which no cap change will fix."
+                  />
+                </div>
+
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ ...tableStyle, minWidth: 720 }}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>Sending domain</th>
+                        <th style={numTh} title="New records per COMPLETE day. This is the number to net a growth ask against.">Per day</th>
+                        <th style={numTh} title="Total new records across the whole window.">Window</th>
+                        {(ingestion.data.days ?? []).map((d) => (
+                          <th key={d} style={{ ...numTh, opacity: d === denverToday() ? 0.55 : 1 }}
+                            title={d === denverToday() ? `${d} — TODAY, still filling; excluded from the per-day rate` : d}>
+                            {d.slice(5)}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ingestionRows.map((r) => {
+                        const isSel = r.brand === brand;
+                        return (
+                          <tr key={r.brand} style={isSel ? { background: alpha(colors.indigo400, '14') } : undefined}>
+                            <td style={{ ...tdStyle, fontWeight: isSel ? 700 : 400 }}>
+                              {r.sending_domain || r.brand}
+                            </td>
+                            <td style={{ ...numTd, fontWeight: 700 }}>{num(r.per_day)}</td>
+                            <td style={numTd}>{num(r.window_total)}</td>
+                            {(ingestion.data?.days ?? []).map((d) => (
+                              <td key={d} style={{ ...numTd, opacity: d === denverToday() ? 0.55 : 1 }}>
+                                {num(r.by_day?.[d] ?? 0)}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {(ingestion.data.unmapped ?? []).length > 0 && (
+                  <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}
+                    title="Ingested records whose vertical does not resolve to a roster sending domain. They are real intake that no domain is credited with — a routing gap, not noise.">
+                    Unmapped intake:{' '}
+                    {(ingestion.data.unmapped ?? []).map((u) => `${u.vertical} ${num(u.records)}`).join(' · ')}
+                  </div>
+                )}
+
+                <p style={noteStyle}>
+                  <b>Net every growth ask against these rates</b> (drip-lanes doctrine §5): a lane
+                  already taking 10k/day needs 40k cleaned to reach 50k, not 50k. A domain missing
+                  from this table has <b>no feed</b> — no cap change will move it, it needs a feed
+                  assigned on the roster. This is intake RATE over time; the block above is what is
+                  claimable right now. Different questions, different denominators.
+                </p>
+              </>
+            )}
           </AsyncPanel>
         </div>
 
