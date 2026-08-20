@@ -187,6 +187,15 @@ def main() -> int:
     # fall back to read-only with a banner naming the env var. Only "1" enables.
     upsert_env(env_list, "PROPERTY_LEDGER_THROTTLE_WRITE_ENABLED", "1")
     upsert_env(env_list, "PROPERTY_LEDGER_ROSTER_WRITE_ENABLED", "1")
+    # 2026-08-19: PG rollup worker DISABLED. Its 30-day backfill contended with
+    # the request path on the same RDS instance and starved it — /property-ledger
+    # /stats began returning "campaign resolution failed: canceling statement due
+    # to user request" on every call. Replacement is an Athena snapshot written to
+    # S3 (operator call: "It can take a snapshot from athena on a per 5 min basis
+    # and builds the snapshot as a json file"), which puts the scan on the lake
+    # instead of prod PG. Endpoint falls back to its live path, i.e. pre-rollup
+    # behaviour. Remove this line to re-enable.
+    upsert_env(env_list, "LANE_STATS_ROLLUP_DISABLED", "1")
     upsert_env(env_list, "PARTNER_DRIP_CREATIVES_DIR", "docs/emails")
     # Yahoo newsletter-only drip lane: OFF (operator 2026-08-06, Empire flooring
     # diagnosis). The 2026-07-14 newsletter-only ruling suppressed every Yahoo
