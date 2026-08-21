@@ -490,6 +490,16 @@ type PartnerDripOrchestrator struct {
 	brandBudgetMu    sync.RWMutex
 	brandBudgetCache map[string]map[string]brandBudgetRow
 	globalHold       *bool
+
+	// stamp counts markMailed / recovery outcomes since process start. Before
+	// this existed the ONLY evidence of a dropped ladder advance was a single
+	// log line (2026-08-20). Snapshot it with StampStats(); the durable,
+	// operator-queryable form is the partner_drip_stamp_failures table.
+	stamp stampCounters
+
+	// lastStampRecovery is the wall clock of the last recovery pass, so the
+	// opt-in sweep runs on its own cadence rather than every tick.
+	lastStampRecovery time.Time
 }
 
 // propertyGovernor is the in-memory form of a partner_property_governor row.
@@ -775,6 +785,17 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	} else if n > 0 {
 		log.Printf("[PartnerDripOrchestrator] reconciled %d claimed rows to mailed (post-deploy markMailed miss)", n)
 	}
+	// Opt-in ladder-stamp recovery (partner_drip_stamp_recovery.go). Inert unless
+	// PARTNER_DRIP_STAMP_RECOVERY is set, and rate-limited to its own cadence, so
+	// a re-fired scheduler on every ECS bounce cannot turn it into a per-tick sweep.
+	// NOTE: reconcileShippedClaims above only flips status; it does NOT advance
+	// touch_count / next_touch_at, which is why a lost stamp still needs this pass.
+	po.maybeRunStampRecovery(po.ctx)
+	// Always-on health surface for the ladder stamp (mailing_worker_heartbeats
+	// row 'partner_drip_ladder_stamp'). Flips to last_status='error' the moment a
+	// stamp is dropped, so the loss is visible in the portal's worker-health view
+	// instead of only in one log line.
+	po.emitStampHeartbeat(po.ctx)
 	// A gateway-query failure (e.g. statement_timeout under heavy RDS IO) must
 	// NOT abort the whole tick — the follow-up pass below is an independent
 	// path with its own gateway and should still get a chance to ship. Log and
@@ -3914,6 +3935,21 @@ func (po *PartnerDripOrchestrator) stampPartnerAttributionOnCampaign(ctx context
 // On the FIRST touch (touch_count was 0) we also stamp mailed_at +
 // mailed_campaign_id + mailed_brand so the legacy fields stay populated
 // for backwards-compatible dashboards.
+//
+// DURABILITY (2026-08-20 incident, campaign ff01ad90-e3fc-4d0e-bc55-239e8ce35d69):
+// this used to be ONE unbounded `WHERE id = ANY($1::uuid[])` on the app pool at
+// the global 30s statement_timeout. A wave carries up to cfg.MaxWaveSize (5000)
+// ids; that array against an 11.8M-row / 10GB partner_clean_queue under IO load
+// hit `canceling statement due to statement timeout`, and because the caller only
+// LOGS the error the ladder advance was lost permanently: 314 people were mailed
+// with touch_count still 1, next_touch_at still in the past, and status stuck at
+// 'claimed' — exactly the shape that re-mailed 4,104 people three times on
+// 2026-08-17. The stamp is now chunked, retried, and its loss is recorded.
+//
+// Re-application is safe: the WHERE clause carries
+// `last_touch_campaign_id IS DISTINCT FROM $2::uuid`, so a chunk that already
+// landed is a zero-row no-op on retry (one campaign == one touch, so this can
+// never suppress a legitimate second advance).
 func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claimedRecord, campaignID, brand string) error {
 	if len(recs) == 0 {
 		return nil
@@ -3923,27 +3959,46 @@ func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claime
 		ids[i] = r.id
 	}
 	gap := time.Duration(followupTouchGapHours) * time.Hour
+	// Computed ONCE for the whole wave so a retried chunk writes the same
+	// next_touch_at as its first attempt — the stamp stays deterministic.
 	nextTouchAt := time.Now().UTC().Add(gap)
-	_, err := po.db.ExecContext(ctx, `
-		UPDATE partner_clean_queue
-		SET status = 'mailed',
-		    mailed_campaign_id = COALESCE(mailed_campaign_id, $2::uuid),
-		    mailed_brand = COALESCE(mailed_brand, $3),
-		    mailed_at = COALESCE(mailed_at, NOW()),
-		    touch_count = LEAST(COALESCE(touch_count, 0) + 1, $4),
-		    last_touch_brand = $3,
-		    last_touch_campaign_id = $2::uuid,
-		    next_touch_at = CASE
-		        WHEN COALESCE(touch_count, 0) + 1 < $4 THEN $5::timestamptz
-		        ELSE NULL
-		    END,
-		    terminal_reason = CASE
-		        WHEN COALESCE(touch_count, 0) + 1 >= $4 THEN 'completed'
-		        ELSE terminal_reason
-		    END
-		WHERE id = ANY($1::uuid[])
-	`, "{"+strings.Join(ids, ",")+"}", campaignID, brand, MaxTouchCount, nextTouchAt)
-	return err
+
+	var stamped, lost int64
+	var firstErr error
+	for start := 0; start < len(ids); start += markMailedChunkSize {
+		end := start + markMailedChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		n, err := po.stampMailedChunk(ctx, chunk, campaignID, brand, nextTouchAt)
+		stamped += n
+		if err != nil {
+			lost += int64(len(chunk))
+			if firstErr == nil {
+				firstErr = err
+			}
+			if ctx.Err() != nil {
+				// Shutdown / cancelled tick: every remaining chunk would fail the
+				// same way. Stop grinding, but still account for what was lost so
+				// the recovery pass can pick it up.
+				lost += int64(len(ids) - end)
+				break
+			}
+		}
+	}
+
+	po.stamp.rowsStamped.Add(stamped)
+	if lost == 0 {
+		return nil
+	}
+	po.stamp.rowsLost.Add(lost)
+	po.stamp.wavesFailed.Add(1)
+	po.stamp.lastFailureUnix.Store(time.Now().UTC().Unix())
+	po.recordStampFailure(ctx, campaignID, brand, lost, firstErr)
+	log.Printf("[PartnerDripOrchestrator] ALERT stamp_lost campaign=%s brand=%s rows_lost=%d rows_stamped=%d — ladder NOT advanced; recover with PARTNER_DRIP_STAMP_RECOVERY=apply (see partner_drip_stamp_failures): %v",
+		campaignID, brand, lost, stamped, firstErr)
+	return fmt.Errorf("mark_mailed: %d/%d rows unstamped: %w", lost, len(ids), firstErr)
 }
 
 // tickFollowups runs the follow-up touch loop across all verticals
