@@ -133,6 +133,16 @@ interface LedgerResponse {
   global_hold: { value: boolean; reason: string; since: string; lock_version: number };
   runs: { counter: LedgerRunInfo | null; vdm: LedgerRunInfo | null; reconciliation: LedgerRunInfo | null };
   alerts_enabled: boolean;
+  // Cap-breach detector + automatic shutoff (operator 2026-08-20). Surfaced so
+  // a disabled / detect-only detector is VISIBLE rather than silently inert.
+  cap_breach?: {
+    enabled: boolean;
+    detect_only: boolean;
+    threshold_pct: number;
+    min_excess: number;
+    actor: string;
+    note: string;
+  };
 }
 
 // Roster (…/property-ledger/roster) — which verticals (drips) a brand rides.
@@ -2036,10 +2046,35 @@ export const DripJourneyCanvas: React.FC = () => {
           title="Introduction ledger — the cap the orchestrator enforces"
           icon={faHourglassHalf}
           right={ledger.data ? (
-            <span style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
-              title={`Ledger day is America/Denver. VDM columns cover ${ledger.data.vdm?.window_start || UNKNOWN} → ${ledger.data.vdm?.day || UNKNOWN} (complete UTC days only) and are a DIFFERENT window from the ledger day.`}>
-              ledger day {ledger.data.day}
-              {ledger.data.vdm?.day ? ` · VDM day ${ledger.data.vdm.day}` : ''}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              {(() => {
+                const cb = ledger.data.cap_breach;
+                if (!cb) return null;
+                if (!cb.enabled) {
+                  return (
+                    <span title="PROPERTY_CAP_BREACH_SHUTOFF_DISABLED is set. Lanes that run away past their cap will NOT be shut off automatically.">
+                      <Pill color={colors.warning} style={{ fontSize: 9 }}>auto-shutoff OFF</Pill>
+                    </span>
+                  );
+                }
+                if (cb.detect_only) {
+                  return (
+                    <span title={`PROPERTY_CAP_BREACH_DETECT_ONLY is set — breaches above ${cb.threshold_pct}% of cap are logged but NOTHING is held.`}>
+                      <Pill color={colors.warning} style={{ fontSize: 9 }}>auto-shutoff detect-only</Pill>
+                    </span>
+                  );
+                }
+                return (
+                  <span title={`${cb.note} Threshold ${cb.threshold_pct}% of cap, with an absolute tolerance of ${cb.min_excess} records for normal per-wave overshoot. At most one automatic hold per lane per Denver day, so un-holding is never fought.`}>
+                    <Pill color={colors.success} style={{ fontSize: 9 }}>auto-shutoff &gt;{cb.threshold_pct}%</Pill>
+                  </span>
+                );
+              })()}
+              <span style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
+                title={`Ledger day is America/Denver. VDM columns cover ${ledger.data.vdm?.window_start || UNKNOWN} → ${ledger.data.vdm?.day || UNKNOWN} (complete UTC days only) and are a DIFFERENT window from the ledger day.`}>
+                ledger day {ledger.data.day}
+                {ledger.data.vdm?.day ? ` · VDM day ${ledger.data.vdm.day}` : ''}
+              </span>
             </span>
           ) : undefined}
         />
@@ -2122,6 +2157,16 @@ export const DripJourneyCanvas: React.FC = () => {
                   const pctOfCap = deriveN(spent, r.daily_budget);
                   const over = pctOfCap != null && pctOfCap > 1;
                   const stopped = r.hold || r.daily_budget <= 0;
+                  // Breach = past the detector's threshold. Mirrors
+                  // evalCapBreach (internal/worker/property_cap_breach.go):
+                  // ratio AND absolute floor, and only for a POSITIVE declared
+                  // budget — a 0/absent cap is never a breach.
+                  const cb = ledger.data?.cap_breach;
+                  const breached = cb != null && pctOfCap != null && spent != null
+                    && r.daily_budget > 0
+                    && spent * 100 > r.daily_budget * cb.threshold_pct
+                    && spent - r.daily_budget > cb.min_excess;
+                  const autoHeld = r.hold && r.updated_by === (cb?.actor || 'cap-breach-detector');
                   return (
                     <tr key={`${r.brand}|${r.isp}`} style={stopped ? { opacity: 0.7 } : undefined}>
                       <td style={tdStyle}>{r.isp}</td>
@@ -2135,8 +2180,13 @@ export const DripJourneyCanvas: React.FC = () => {
                           ? <span style={{ color: colors.textFaint }}>no counter yet</span>
                           : num(spent)}
                       </td>
-                      <td style={numTd} title={`introduced ${num(spent)} / cap ${num(r.daily_budget)}`}>
-                        <span style={over ? { color: colors.warningText, fontWeight: 700 } : undefined}>
+                      <td style={numTd}
+                        title={breached
+                          ? `BREACH — introduced ${num(spent)} / cap ${num(r.daily_budget)}, past the ${cb?.threshold_pct}% auto-shutoff threshold and the ${cb?.min_excess}-record per-wave tolerance.`
+                          : `introduced ${num(spent)} / cap ${num(r.daily_budget)}`}>
+                        <span style={breached
+                          ? { color: colors.dangerText, fontWeight: 700 }
+                          : over ? { color: colors.warningText, fontWeight: 700 } : undefined}>
                           {ratePct(pctOfCap)}
                         </span>
                       </td>
@@ -2145,8 +2195,13 @@ export const DripJourneyCanvas: React.FC = () => {
                       </td>
                       <td style={tdStyle}>
                         {r.hold
-                          ? <span title={`${r.hold_reason || 'No reason recorded'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}`}>
-                              <Pill color={colors.danger} style={{ fontSize: 9 }}>held</Pill>
+                          ? <span title={`${r.hold_reason || 'No reason recorded'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}${autoHeld ? ' · Un-hold on the Property Ledger screen; daily_budget was never modified.' : ''}`}>
+                              <Pill color={colors.danger} style={{ fontSize: 9 }}>{autoHeld ? 'auto-held' : 'held'}</Pill>
+                              {autoHeld && r.hold_reason && (
+                                <div style={{ fontSize: 10, color: colors.dangerText, marginTop: 3, maxWidth: 260, lineHeight: 1.35 }}>
+                                  {r.hold_reason}
+                                </div>
+                              )}
                             </span>
                           : <span style={{ fontSize: 11, color: colors.textFaint }}>—</span>}
                       </td>

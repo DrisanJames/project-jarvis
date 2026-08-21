@@ -351,6 +351,21 @@ func (s *PMTACampaignService) HandleListPropertyLedger(w http.ResponseWriter, r 
 			"reconciliation": s.latestRun(ctx, "property_reconciliation_runs", false),
 		},
 		"alerts_enabled": propertyAlertsEnabled(),
+		// Cap-breach detector + automatic shutoff (operator 2026-08-20, the
+		// narrow authorised exception to JAOS core §1.8 — see
+		// internal/worker/property_cap_breach.go). Surfaced so a DISABLED or
+		// DETECT-ONLY detector is visible on the screen instead of silently
+		// inert: a documented gate that no-ops is worse than none.
+		"cap_breach": map[string]interface{}{
+			"enabled":       !worker.CapBreachDisabled(),
+			"detect_only":   worker.CapBreachDetectOnly(),
+			"threshold_pct": worker.CapBreachThresholdPct(),
+			"min_excess":    worker.CapBreachMinExcess(),
+			"actor":         worker.CapBreachActor,
+			"note": "Auto-holds ONE (brand × ISP) cell whose introductions exceed its declared daily_budget " +
+				"by more than the threshold. daily_budget is never modified; un-hold restores it exactly. " +
+				"Cells with no ledger row are UNGOVERNED and are never tripped.",
+		},
 	})
 }
 

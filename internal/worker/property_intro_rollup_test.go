@@ -58,6 +58,11 @@ func TestPropertyIntroRollupBlockedWithoutIndex(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
 		WithArgs(propertyIntroRollupWorkerName, "blocked", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// The cap-breach detector rides these counters: a blocked counter pass MUST
+	// surface as a blocked detector, never as "no breaches found".
+	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
+		WithArgs(capBreachWorkerName, "blocked", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w.RunOnce(context.Background())
 
@@ -74,6 +79,9 @@ func TestPropertyIntroRollupBlockedWhenIndexAbsent(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"indisvalid"}))
 	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
 		WithArgs(propertyIntroRollupWorkerName, "blocked", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
+		WithArgs(capBreachWorkerName, "blocked", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w.RunOnce(context.Background())
@@ -117,6 +125,15 @@ func TestPropertyIntroRollupFullPassShape(t *testing.T) {
 
 	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
 		WithArgs(propertyIntroRollupWorkerName, "ok", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// (5) The cap-breach detector runs LAST, in the same lease, on the counters
+	// this pass just wrote — wired here, not at boot, so it can never be dead
+	// code. Empty ledger => it governs nothing and says so.
+	mock.ExpectQuery(`FROM partner_drip_brand_budgets b`).
+		WillReturnRows(sqlmock.NewRows([]string{"brand", "isp", "daily_budget", "hold", "lock_version", "introduced", "auto_tripped_today"}))
+	mock.ExpectExec(`INSERT INTO mailing_worker_heartbeats`).
+		WithArgs(capBreachWorkerName, "ok", sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	w.RunOnce(context.Background())

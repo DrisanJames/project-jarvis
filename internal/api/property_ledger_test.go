@@ -160,3 +160,67 @@ func TestPropertyLedgerGlobalHoldRequiresReasonAndValue(t *testing.T) {
 		t.Fatalf("validation must reject before any DB access: %v", err)
 	}
 }
+
+// TestPropertyLedgerListExposesCapBreachConfig pins the OBSERVABILITY half of
+// the cap-breach shutoff (operator 2026-08-20). The screen must be able to tell
+// the operator whether the automatic shutoff is armed, detect-only, or off —
+// a gate the operator cannot see is the "documented gate that no-ops" failure
+// this repo has shipped before.
+func TestPropertyLedgerListExposesCapBreachConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     map[string]string
+		expects []string
+	}{
+		{
+			"armed by default",
+			nil,
+			[]string{`"enabled":true`, `"detect_only":false`, `"threshold_pct":150`, `"min_excess":100`, `"actor":"cap-breach-detector"`},
+		},
+		{
+			"kill switch is visible, not silent",
+			map[string]string{"PROPERTY_CAP_BREACH_SHUTOFF_DISABLED": "1"},
+			[]string{`"enabled":false`},
+		},
+		{
+			"detect-only is visible, not silent",
+			map[string]string{"PROPERTY_CAP_BREACH_DETECT_ONLY": "1"},
+			[]string{`"enabled":true`, `"detect_only":true`},
+		},
+		{
+			"threshold override is reported",
+			map[string]string{"PROPERTY_CAP_BREACH_PCT": "200", "PROPERTY_CAP_BREACH_MIN_EXCESS": "250"},
+			[]string{`"threshold_pct":200`, `"min_excess":250`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			s, mock := newLedgerServiceWithMock(t)
+			mock.ExpectQuery(`FROM partner_drip_brand_budgets b`).
+				WillReturnRows(sqlmock.NewRows(ledgerListCols()))
+			mock.ExpectQuery(`FROM ses_vdm_daily`).
+				WillReturnRows(sqlmock.NewRows([]string{"identity", "isp",
+					"sent", "delivered", "opens", "clicks",
+					"sent_7d", "delivered_7d", "opens_7d", "clicks_7d"}))
+
+			req := httptest.NewRequest("GET", "/api/mailing/pmta-campaign/property-ledger", nil)
+			rec := httptest.NewRecorder()
+			s.HandleListPropertyLedger(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `"cap_breach":`) {
+				t.Fatalf("list response must carry the cap_breach block: %s", body)
+			}
+			for _, want := range tc.expects {
+				if !strings.Contains(body, want) {
+					t.Errorf("cap_breach block missing %s in: %s", want, body)
+				}
+			}
+		})
+	}
+}

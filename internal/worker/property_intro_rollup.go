@@ -158,6 +158,10 @@ func (w *PropertyIntroRollupWorker) RunOnce(ctx context.Context) {
 		}
 		log.Printf("[PropertyIntroRollup] BLOCKED — %s. Refusing the heavy pass (index-first, plan Step 8/14); pending promotion also deferred this tick.", detail)
 		EmitHeartbeat(ctx, w.db, propertyIntroRollupWorkerName, int(w.interval.Seconds()), "blocked", detail)
+		// The cap-breach detector rides THIS pass's counters. Without them it
+		// must report BLOCKED — it may never present "no counters" as "no
+		// breaches" (property_cap_breach.go §2).
+		w.capBreachReportBlocked(ctx, "counter pass blocked: "+detail)
 		return
 	}
 
@@ -174,11 +178,15 @@ func (w *PropertyIntroRollupWorker) RunOnce(ctx context.Context) {
 
 	// (3) Counter runs: today + prior two Denver days.
 	hbStatus, hbErr := "ok", ""
+	todayCountersFresh := true
 	for i := 0; i <= propertyIntroRollupRecomputeDays; i++ {
 		day := today.AddDate(0, 0, -i)
 		if err := w.runOneDay(ctx, day); err != nil {
 			log.Printf("[PropertyIntroRollup] day %s failed: %v", day.Format("2006-01-02"), err)
 			hbStatus, hbErr = "error", err.Error()
+			if i == 0 {
+				todayCountersFresh = false
+			}
 		}
 	}
 
@@ -194,6 +202,17 @@ func (w *PropertyIntroRollupWorker) RunOnce(ctx context.Context) {
 	}
 
 	EmitHeartbeat(ctx, w.db, propertyIntroRollupWorkerName, int(w.interval.Seconds()), hbStatus, hbErr)
+
+	// (5) Cap-breach detector + automatic shutoff (property_cap_breach.go).
+	// Runs LAST, inside the same lease, on counters this pass just wrote — so
+	// its input is fresh by construction and its single autonomous write can
+	// never double-fire across ECS tasks. A failed TODAY run means the counters
+	// are stale, and a stale counter must never be judged.
+	if !todayCountersFresh {
+		w.capBreachReportBlocked(ctx, "today's counter run failed: "+hbErr)
+		return
+	}
+	w.RunCapBreachDetector(ctx, today)
 }
 
 // rollupIndexValid checks idx_pcq_intro_rollup exists AND indisvalid.
