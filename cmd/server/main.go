@@ -2359,6 +2359,28 @@ var concurrentIndexSpecs = []struct {
 	// the grouping key. Concurrent slice, not the 5s migration slice: the build
 	// scans the whole 10 GB heap.
 	{"idx_pcq_ingested_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ingested_dataset ON partner_clean_queue (ingested_at, dataset_id)`},
+	// Partner ingest work-queue selectivity (2026-08-21 incident). The original
+	// idx_pib_status_received was partial over
+	// ('received','slicing','slicing_complete','validating') — but
+	// slicing_complete is a TERMINAL state that is never claimed and never aged
+	// out, so it grew to 7,825,043 rows against 77,285 live 'received' rows.
+	// A "partial" index covering 99% of the table gives the slicer's poll no
+	// selectivity at all: every scan walks the full 5.3 GB / 7.9M-row heap.
+	// Measured: RDS CPU pinned 99.1-99.4% (EBS healthy — IOBalance 71-78%,
+	// sub-ms latency, so this is CPU, NOT the burst-exhaustion pattern), the
+	// drip orchestrator's wave rate collapsing 98 -> 9 -> 1 per 30-min window,
+	// and the welcome (touch-1) pass frozen estate-wide.
+	//
+	// Dropping the terminal state from the predicate takes the index from 7.9M
+	// rows to ~77k (99% reduction). New NAME because the old entry in
+	// runStartupMigrations is CREATE INDEX IF NOT EXISTS — editing that
+	// predicate in place is a silent no-op once the name exists.
+	// CONCURRENTLY + this slice (never the 5s migration slice): DDL on this hot
+	// table without a lock_timeout is exactly the 2026-08-20 barricade that
+	// queued 216s and lost 100% of SES events.
+	// The old index is left in place; drop it only after this one is verified
+	// live and the slicer's plan has flipped to it.
+	{"idx_pib_active_status_received", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pib_active_status_received ON partner_inbound_batches (status, received_at) WHERE status IN ('received','slicing','validating')`},
 	{"idx_message_log_lower_email_sent", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_log_lower_email_sent ON mailing_message_log (LOWER(email), sent_at DESC)`},
 	// Partial index over snapshot-bearing queue rows: drives the snapshot
 	// retention NOT EXISTS probe in data_cleanup.go without a queue scan.
@@ -8289,7 +8311,13 @@ END $$`},
 			ingest_metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 		)`},
 		{"dp_idx_pib_dataset_status", `CREATE INDEX IF NOT EXISTS idx_pib_dataset_status ON partner_inbound_batches(dataset_id, status, received_at)`},
-		{"dp_idx_pib_status_received", `CREATE INDEX IF NOT EXISTS idx_pib_status_received ON partner_inbound_batches(status, received_at) WHERE status IN ('received','slicing','slicing_complete','validating')`},
+		// NOTE: slicing_complete is deliberately NOT in this predicate. It is a
+		// terminal state that is never claimed and grows without bound (7.8M rows
+		// by 2026-08-21), which destroys the index's selectivity for the slicer's
+		// poll. Existing installs are migrated by idx_pib_active_status_received
+		// in concurrentIndexSpecs — this entry is IF NOT EXISTS, so editing the
+		// predicate here only affects FRESH installs.
+		{"dp_idx_pib_status_received", `CREATE INDEX IF NOT EXISTS idx_pib_status_received ON partner_inbound_batches(status, received_at) WHERE status IN ('received','slicing','validating')`},
 		{"dp_create_partner_clean_queue", `CREATE TABLE IF NOT EXISTS partner_clean_queue (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			batch_id UUID NOT NULL REFERENCES partner_inbound_batches(id) ON DELETE CASCADE,
