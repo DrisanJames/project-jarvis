@@ -3863,6 +3863,13 @@ func runStartupMigrations(db *sql.DB) {
 		{"seed_governed_state_samsclub_internal", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('samsclub_internal:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
 		{"seed_governed_state_direct_offer", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('direct_offer:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
 		{"seed_governed_state_clickers_samsclub", `INSERT INTO partner_drip_state (vertical, next_brand_index) VALUES ('clickers_samsclub:governed', 0) ON CONFLICT (vertical) DO NOTHING`},
+		// Durable signal for a DROPPED partner-drip ladder stamp (2026-08-20:
+		// campaign ff01ad90… mailed 314 people, markMailed timed out, the ladder
+		// never advanced and the ONLY evidence was one log line). A row here with
+		// recovered_at IS NULL means mail went out whose touch was never recorded —
+		// those records stay claimable and WILL be re-mailed. DDL lives next to its
+		// writer in internal/worker/partner_drip_stamp_recovery.go.
+		{"create_partner_drip_stamp_failures", worker.PartnerDripStampFailuresDDL},
 		// Per-(sending-domain × ISP) introduction-budget ledger (operator
 		// 2026-08-15): the drip welcome pass clamps each wave's per-ISP caps to
 		// daily_budget minus today's first-touch introductions (Denver day).

@@ -2857,9 +2857,25 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         const res = await apiFetch(`${API_BASE}/pmta-campaign/warmup/request`, {
           method: 'POST',
           body: JSON.stringify({
+            // KIND IS LOAD-BEARING — never omit it. The endpoint defaults a
+            // missing kind to 'kumo_warmup' (warmup_requests.go:649), and
+            // kumo_warmup is restricted to routing_mode='kumo' (:747-752). So
+            // an omitted kind makes this whole mode fail two different ways:
+            // the 16 PMTA/SES legacy domains are rejected 400, and the 11 kumo
+            // domains are accepted but filed as WARM-UP — which then collides
+            // with a genuine warm-up request for the same domain+day on the
+            // kind-aware live-slot index, the exact unique violation `kind` was
+            // introduced to prevent.
+            kind: 'newsletter',
             sending_domain: r.sending_domain,
             brand_slug: slug,
             creative_id: (r.creative_id || '').trim(),
+            // The BYTE PIN, not decoration. The server recomputes the sha from
+            // the live row and 409s on drift, so a creative refreshed between
+            // this audit and the build is refused rather than silently mailed
+            // under an approved subject. Omitting it is a 400 for a newsletter
+            // request (warmup_requests.go:789) — audited bytes are the contract.
+            creative_sha256: (r.creative_sha256 || '').trim(),
             subject: r.subject || '',
             preheader: r.preheader || '',
             audience_segment_ids: segIds,
