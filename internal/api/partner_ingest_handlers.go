@@ -125,6 +125,7 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 		Gender       string          `json:"gender"`
 		HomeOwner    json.RawMessage `json:"home_owner"`
 		PartnerUUID  string          `json:"uuid"`
+		EMD5         string          `json:"emd5"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -222,6 +223,11 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 	putMeta("gender", v.Gender)
 	putMeta("home_owner", scalarToString(v.HomeOwner))
 	putMeta("partner_uuid", v.PartnerUUID)
+	// The SimpleInsure wall wants s11 = the record's emd5. It equals
+	// md5(lower(email)) (verified against 3 live rows), so it is derivable —
+	// but carry the partner's own value so the token we send is byte-identical
+	// to the one they issued rather than one we recomputed.
+	putMeta("emd5", v.EMD5)
 	return nil
 }
 

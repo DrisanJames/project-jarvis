@@ -57,6 +57,7 @@ func TestAttribitsGmailPayloadSurvivesTheDoor(t *testing.T) {
 		{"gender", "f"},
 		{"home_owner", "0"},
 		{"partner_uuid", "c6dfa518-d462-4d6d-b451-6a4f11a3e125"},
+		{"emd5", "c69189bb7ceff577e51db5ed211e1d11"},
 	} {
 		got, _ := rec.Metadata[c.key].(string)
 		if got != c.want {
