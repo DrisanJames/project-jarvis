@@ -10,6 +10,7 @@ import {
   thStyle, tdStyle, numTd, numTh,
 } from '../shared/theme';
 import { SectionHeader, Stat, Pill, SectionError, EmptyState } from '../shared/ui';
+import { SegmentFreshnessBoard } from './SegmentFreshnessBoard';
 
 // =============================================================================
 // SEGMENTATION COMMAND — the life-blood screen
@@ -33,6 +34,13 @@ import { SectionHeader, Stat, Pill, SectionError, EmptyState } from '../shared/u
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
+// PAGE_VERSION 1.3 — Segment Freshness board (SegmentFreshnessBoard.tsx):
+// the per-sending-domain 7/14/30/60d Openers/Clickers grid with per-cell
+// freshness verdicts + refresh actions, against GET/POST
+// /api/mailing/segments/{freshness,refresh} (operator mandate 2026-08-20:
+// "visually see if the segments are stale and how I can get them refreshed").
+// Mounted above the family table; it has its own endpoint, states and polling
+// so a failure in either surface never blanks the other.
 // PAGE_VERSION 1.2 — EO Clean actions on family + drilldown rows: POSTs a
 // segment-sourced job to /api/mailing/eo-clean/jobs (EO CLEANING SERVICE,
 // operator ask 2026-07-26 — "clean a particular list or segment from the
@@ -41,7 +49,7 @@ import { SectionHeader, Stat, Pill, SectionError, EmptyState } from '../shared/u
 // (delivered/opens/action-clicks/complaints/unsubs/hard/soft, engagement
 // rate) + 14d churn timeline sparkline, from the nightly
 // mailing_segment_perf_daily rollup (operator enrichment ask, 2026-07-26).
-const PAGE_VERSION = '1.2';
+const PAGE_VERSION = '1.3';
 
 // EO_CLEAN_COST_NOTE is quoted in every Clean confirm — cleaning is billed
 // per record; already-Verified emails are skipped at enqueue (never re-billed).
@@ -587,6 +595,13 @@ export const SegmentationCommand: React.FC = () => {
           }}>
           <FontAwesomeIcon icon={faRotate} /> Refresh
         </button>
+      </div>
+
+      {/* ── Segment Freshness board — the primary per-sending-domain grid.
+           Own endpoint + polling + states; independent of the health fetch
+           below so neither surface can blank the other. ── */}
+      <div style={{ marginBottom: 16 }}>
+        <SegmentFreshnessBoard />
       </div>
 
       {state.loading && (
