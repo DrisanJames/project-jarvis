@@ -321,17 +321,31 @@ const fmtK = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 // Warm-up content is EDITORIAL by design: offers are banned in it (CLAUDE.md
 // §13.1), so this branch has no offer picker at all.
 
+// GET /pmta-campaign/warmup/domains rows. The wire field is `sending_domain`
+// (warmup_requests.go warmupDomain.SendingDomain) — reading `domain` filtered
+// EVERY row out, which is why the whole warm-up branch was unreachable in the
+// UI. `domain` below is a LOCAL normalized alias assigned at the fetch
+// boundary; nothing here is read straight off the wire.
 interface WarmupDomainRow {
-  domain: string;
+  domain: string;                 // local alias for the wire `sending_domain`
   brand_slug?: string;
+  brand_slug_source?: string;     // "creative-filename" (authoritative) | "apex-fallback"
   brand_code?: string;
+  apex?: string;
+  // from_name/from_email come from the DOMAIN's sending profile, never from a
+  // creative row — DKIM alignment drifts otherwise.
+  from_name?: string;
+  from_email?: string;
   // Optional: if the estate endpoint knows the cold feeds for a property it can
   // return them and the cold-source field upgrades from free text to a picker.
   cold_sources?: string[];
 }
 
+// GET /pmta-campaign/warmup/creative. Wire fields are `creative_id` and
+// `html_length`; `id`/`html_bytes` below are LOCAL aliases assigned at the
+// fetch boundary (warmup_requests.go warmupCreativeResp).
 interface WarmupCreative {
-  id: string;
+  id: string;                     // local alias for the wire `creative_id`
   subject: string;
   preheader: string;
   // FRESHNESS IS `updated_at`. `generated_at` is frozen at first insert and
@@ -340,7 +354,7 @@ interface WarmupCreative {
   // same bytes for 15 days. `generated_at` is rendered ONLY as "first created".
   updated_at: string;
   generated_at?: string;
-  html_bytes?: number;
+  html_bytes?: number;            // local alias for the wire `html_length`
   sha256?: string;
   // Not part of the documented response shape; read opportunistically so the
   // Preview can render a real body when the endpoint carries one.
@@ -348,8 +362,10 @@ interface WarmupCreative {
   html_content?: string;
 }
 
+// GET /pmta-campaign/warmup/segments. Wire field is `segment_id`; `id` is a
+// LOCAL alias assigned at the fetch boundary.
 interface WarmupSegment {
-  id: string;
+  id: string;                     // local alias for the wire `segment_id`
   name: string;
   // ⚠️ ZEROED when a segment refresh times out — a healthy segment can read 0.
   // Never rendered as a confident zero; see warmupSegmentCount().
@@ -418,6 +434,111 @@ const fmtFreshness = (iso?: string): { text: string; ageMs: number | null } => {
   };
 };
 
+// ── Newsletters branch (estate-wide daily-fresh newsletters) ─────────────────
+//
+// The third campaign mode. Content is AUTOMATIC: the daily pipeline registers
+// one newsletter per sending domain in Creative Studio, so this mode never
+// picks a creative — it AUDITS what will mail (subject, preheader, friendly
+// from, freshness, readiness) across every eligible domain at once, takes ONE
+// scheduled instant for all of them, and still makes the operator choose the
+// audience.
+//
+// Contract (fixed):
+//   GET /pmta-campaign/newsletter/preview?include_html=0|1[&sending_domain=…]
+//   -> { day, domains: [ { sending_domain, apex, brand_slug, from_name,
+//        from_email, creative_id, creative_sha256, filename, subject,
+//        preheader, updated_at, approval_status, html?, status, reason } ] }
+// Omitting sending_domain returns ALL eligible domains — the default here.
+
+type NewsletterStatus = 'ready' | 'stale' | 'missing';
+
+interface NewsletterDomainRow {
+  sending_domain: string;
+  apex?: string;
+  brand_slug?: string;
+  from_name?: string;
+  from_email?: string;
+  creative_id?: string;
+  creative_sha256?: string;
+  filename?: string;
+  subject?: string;
+  preheader?: string;
+  updated_at?: string;
+  approval_status?: string;
+  html?: string;                 // only when include_html=1
+  status?: string;               // ready | missing | stale
+  reason?: string;               // a sentence whenever status is not ready
+}
+
+const NEWSLETTER_STATUS_COLORS: Record<NewsletterStatus, string> = {
+  ready:   '#10b981',
+  stale:   '#f59e0b',
+  missing: '#ef4444',
+};
+
+// The server states `status`. When it does not, the status is DERIVED here and
+// flagged as derived — a missing status must never render as "ready".
+const newsletterStatusOf = (r: NewsletterDomainRow): { status: NewsletterStatus; stated: boolean } => {
+  const s = (r.status || '').trim().toLowerCase();
+  if (s === 'ready' || s === 'stale' || s === 'missing') return { status: s, stated: true };
+  if (!r.creative_id) return { status: 'missing', stated: false };
+  const f = fmtFreshness(r.updated_at);
+  if (f.ageMs === null || f.ageMs > WARMUP_STALE_MS) return { status: 'stale', stated: false };
+  return { status: 'ready', stated: false };
+};
+
+// Why a domain is not ready, always as a sentence. Absence of a creative is the
+// single most important thing this screen can tell the operator, so it is never
+// rendered as an empty cell.
+const newsletterReasonOf = (r: NewsletterDomainRow, st: NewsletterStatus): string => {
+  const stated = (r.reason || '').trim();
+  if (stated) return stated;
+  if (st === 'missing') {
+    return `No newsletter is registered for ${r.sending_domain} today — there is no creative row at all, `
+      + 'so this domain has nothing to build. Register one (agents.jobs.kumo_newsletter_stage) before queueing.';
+  }
+  if (st === 'stale') {
+    return 'The registered creative has not been re-registered in over 24 hours. A stale newsletter mails '
+      + 'byte-identically with no error — re-run the daily registration for this property before queueing.';
+  }
+  return '';
+};
+
+// Engagement posture for the newsletters audience step. ONE choice applied to
+// every selected domain; "all engagement" is the typical choice, never an
+// automatic one.
+type NewsletterAudiencePosture = 'all' | 'clickers' | 'openers';
+
+const NEWSLETTER_POSTURES: { id: NewsletterAudiencePosture; label: string; hint: string }[] = [
+  { id: 'all',      label: 'All engagement', hint: 'Every engaged-anchor segment the property resolves — clickers, openers and all-time engaged pools.' },
+  { id: 'clickers', label: 'Clickers only',  hint: 'Only anchor segments whose name identifies them as clickers (click = GOLD in the signal grading).' },
+  { id: 'openers',  label: 'Openers only',   hint: 'Only anchor segments whose name identifies them as openers (open = silver).' },
+];
+
+// Segment kind, read from the NAME. The engaged grid names segments
+// "<BRAND> 30D Clickers" / "<BRAND> 7D Openers", so the name is the only
+// classifier available on this endpoint. Anything that matches neither is
+// counted and shown separately rather than silently dropped.
+const newsletterSegmentKind = (name: string): 'clickers' | 'openers' | 'other' => {
+  const n = (name || '').toLowerCase();
+  if (n.includes('clicker') || n.includes('click')) return 'clickers';
+  if (n.includes('opener') || n.includes('open')) return 'openers';
+  return 'other';
+};
+
+// ── Campaign mode — a THREE-VALUE discriminant, never two booleans ──────────
+//
+// `warmupActive` used to be a boolean, so a third mode would have taken the
+// OFFERS path at every branch point — including the step-6 submit fork, which
+// POSTs to /pmta-campaign/deploy. Every fork below switches on this union and
+// ends in assertUnreachableMode(), so a fourth mode is a COMPILE error rather
+// than a silent offer deploy.
+type CampaignMode = 'offers' | 'warmup' | 'newsletter';
+
+function assertUnreachableMode(mode: never): never {
+  throw new Error(`Unhandled campaign mode: ${String(mode)}`);
+}
+
 // ── Step navigation ──────────────────────────────────────────────────────────
 
 // Step order (operator 2026-08-18): the SENDING DOMAIN comes first. The pinned
@@ -437,12 +558,23 @@ const STEPS = [
   { id: 6, label: 'Schedule + Deploy',      icon: faRocket },
 ];
 
-// Warm-up relabels ONLY steps 3 and 4. Same six steps, same ids, same order —
-// the branch never adds or removes a step, so nothing downstream of the step
-// index changes.
-const WARMUP_STEP_OVERRIDES: Record<number, { label: string; icon: typeof faNewspaper }> = {
-  3: { label: 'Newsletter',            icon: faNewspaper },
-  4: { label: 'Audience + Cold Source', icon: faSnowflake },
+// Every mode runs the SAME step ids in the SAME order and only relabels — no
+// mode adds, removes or renumbers a step. That matters twice: the header
+// counter renders POSITION (correct for the sparse ids), and the indicator
+// strip's `s.id < step` completeness test stays valid only while id order and
+// list position agree.
+const MODE_STEP_OVERRIDES: Record<CampaignMode, Record<number, { label: string; icon: typeof faNewspaper }>> = {
+  offers: {},
+  warmup: {
+    3: { label: 'Newsletter',             icon: faNewspaper },
+    4: { label: 'Audience + Cold Source', icon: faSnowflake },
+  },
+  newsletter: {
+    1: { label: 'Mode + Sending Domains', icon: faGlobe },
+    3: { label: 'Newsletter Audit',       icon: faNewspaper },
+    4: { label: 'Engagement Audience',    icon: faUsers },
+    6: { label: 'Schedule + Queue',       icon: faRocket },
+  },
 };
 
 // ── Main component ───────────────────────────────────────────────────────────
@@ -637,9 +769,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [warmupDomainsLoading, setWarmupDomainsLoading] = useState(false);
   const [warmupDomainsError, setWarmupDomainsError] = useState('');
   const [warmupDomainsKey, setWarmupDomainsKey] = useState(0);
-  const [warmupMode, setWarmupMode] = useState(false);
-  // Which domain the ON-by-default rule has already been applied for, so a
-  // deliberate toggle-off is never stomped by a late-arriving domain list.
+  // THE MODE. One three-value discriminant, not two booleans — two booleans
+  // give four states, two of which are nonsense.
+  const [campaignMode, setCampaignMode] = useState<CampaignMode>('offers');
+  // Which domain the warm-up default has already been applied for, so a
+  // deliberate mode change is never stomped by a late-arriving domain list.
   const [warmupDefaultAppliedFor, setWarmupDefaultAppliedFor] = useState('');
 
   // Step 3 (warm-up): the daily-registered newsletter + the operator's overrides.
@@ -675,6 +809,40 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   const [warmupRequestsError, setWarmupRequestsError] = useState('');
   const [warmupRequestsKey, setWarmupRequestsKey] = useState(0);
   const [warmupRequestsFetchedAt, setWarmupRequestsFetchedAt] = useState('');
+
+  // ── Newsletters branch state ─────────────────────────────────────────────
+  // Estate-wide, not per-`selectedDomain`: one roster, one scheduled instant,
+  // one audience posture, N build requests.
+  const [newsletterRows, setNewsletterRows] = useState<NewsletterDomainRow[] | null>(null);
+  const [newsletterDay, setNewsletterDay] = useState('');
+  const [newsletterLoading, setNewsletterLoading] = useState(false);
+  const [newsletterError, setNewsletterError] = useState('');
+  const [newsletterKey, setNewsletterKey] = useState(0);
+  const [newsletterFetchedAt, setNewsletterFetchedAt] = useState('');
+  // ALL eligible domains are included by default (the mode's whole point), so
+  // this holds the operator's DESELECTIONS. A domain that appears tomorrow is
+  // therefore included automatically rather than silently dropped.
+  const [newsletterExcluded, setNewsletterExcluded] = useState<Set<string>>(new Set());
+  // A stale creative re-mails identical bytes with no error, so stale domains
+  // are excluded by default and must be opted back in one at a time.
+  const [newsletterStaleOptIn, setNewsletterStaleOptIn] = useState<Set<string>>(new Set());
+  // Per-domain body preview, on demand (include_html=1 for ONE domain).
+  const [newsletterPreviewDomain, setNewsletterPreviewDomain] = useState('');
+  const [newsletterPreviewHtml, setNewsletterPreviewHtml] = useState('');
+  const [newsletterPreviewLoading, setNewsletterPreviewLoading] = useState(false);
+  const [newsletterPreviewError, setNewsletterPreviewError] = useState('');
+  // Audience: ONE posture for all domains, resolved to each domain's own
+  // anchor segments so the operator sees what each property will actually mail.
+  const [newsletterPosture, setNewsletterPosture] = useState<NewsletterAudiencePosture>('all');
+  const [newsletterAnchors, setNewsletterAnchors] = useState<Record<string, WarmupSegment[]>>({});
+  const [newsletterAnchorErrors, setNewsletterAnchorErrors] = useState<Record<string, string>>({});
+  const [newsletterAnchorsLoading, setNewsletterAnchorsLoading] = useState(false);
+  const [newsletterAnchorsKey, setNewsletterAnchorsKey] = useState(0);
+  // Fan-out submit: one result row per domain, never a single blended verdict.
+  const [newsletterSubmitting, setNewsletterSubmitting] = useState(false);
+  const [newsletterResults, setNewsletterResults] = useState<
+    { sending_domain: string; ok: boolean; error?: string; request_id?: string }[] | null
+  >(null);
 
   // ── Validation state ─────────────────────────────────────────────────────
   const [stepAttempted, setStepAttempted] = useState<Record<number, boolean>>({});
@@ -1038,7 +1206,16 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // The eligible set is the SERVER's (mailing_sending_profiles.routing_mode =
   // 'kumo'); the 11 are never hardcoded here.
   const isWarmupDomain = !!selectedDomain && !!warmupDomainRow;
-  const warmupActive = isWarmupDomain && warmupMode;
+
+  // ── THE MODE DISCRIMINANT ────────────────────────────────────────────────
+  // `activeMode` is the only thing any branch below is allowed to read.
+  // 'warmup' collapses to 'offers' when the pinned domain is not a warm-up
+  // property, so an impossible (mode, domain) pair can never reach a renderer.
+  // 'newsletter' is ESTATE-WIDE and deliberately not domain-gated.
+  const activeMode: CampaignMode =
+    campaignMode === 'warmup' ? (isWarmupDomain ? 'warmup' : 'offers') : campaignMode;
+  const warmupActive = activeMode === 'warmup';
+  const newsletterActive = activeMode === 'newsletter';
   const warmupBrandSlug = useMemo(
     () => (isWarmupDomain ? deriveBrandSlug(warmupDomainRow, selectedDomain) : ''),
     [isWarmupDomain, warmupDomainRow, selectedDomain],
@@ -1079,12 +1256,71 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     return { selected: picked.length, known, unknownSegments };
   }, [warmupSegments, warmupSelectedSegmentIds]);
 
+  // ── Newsletters branch: derived ──────────────────────────────────────────
+
+  // One pass that resolves, per domain: readiness, why-not, and whether it is
+  // actually going to be requested. `missing` is BLOCKED (never selectable);
+  // `stale` is excluded by default and needs an explicit opt-in.
+  const newsletterView = useMemo(() => (newsletterRows || []).map(r => {
+    const { status, stated } = newsletterStatusOf(r);
+    const reason = newsletterReasonOf(r, status);
+    const blocked = status === 'missing';
+    const excluded = newsletterExcluded.has(r.sending_domain);
+    const staleOptIn = newsletterStaleOptIn.has(r.sending_domain);
+    const included = !blocked && !excluded && (status !== 'stale' || staleOptIn);
+    return { row: r, status, statusStated: stated, reason, blocked, excluded, staleOptIn, included };
+  }), [newsletterRows, newsletterExcluded, newsletterStaleOptIn]);
+
+  const newsletterIncluded = useMemo(
+    () => newsletterView.filter(v => v.included),
+    [newsletterView],
+  );
+
+  const newsletterTally = useMemo(() => ({
+    total:    newsletterView.length,
+    ready:    newsletterView.filter(v => v.status === 'ready').length,
+    stale:    newsletterView.filter(v => v.status === 'stale').length,
+    missing:  newsletterView.filter(v => v.status === 'missing').length,
+    included: newsletterIncluded.length,
+    derived:  newsletterView.filter(v => !v.statusStated).length,
+  }), [newsletterView, newsletterIncluded]);
+
+  // Anchor segments per INCLUDED domain, filtered by the one posture. The
+  // unfiltered kind breakdown is kept so posture filtering is visible rather
+  // than silently dropping segments the name classifier did not recognise.
+  const newsletterAudience = useMemo(() => {
+    const out: Record<string, {
+      picked: WarmupSegment[]; total: number;
+      kinds: { clickers: number; openers: number; other: number };
+    }> = {};
+    for (const v of newsletterIncluded) {
+      const segs = newsletterAnchors[v.row.sending_domain] || [];
+      const kinds = { clickers: 0, openers: 0, other: 0 };
+      segs.forEach(sg => { kinds[newsletterSegmentKind(sg.name)] += 1; });
+      const picked = newsletterPosture === 'all'
+        ? segs
+        : segs.filter(sg => newsletterSegmentKind(sg.name) === newsletterPosture);
+      out[v.row.sending_domain] = { picked, total: segs.length, kinds };
+    }
+    return out;
+  }, [newsletterIncluded, newsletterAnchors, newsletterPosture]);
+
+  // Included domains that resolve NO segment under the chosen posture. These
+  // would queue a request with an empty audience — surfaced, never shipped
+  // quietly.
+  const newsletterAudienceGaps = useMemo(
+    () => newsletterIncluded
+      .map(v => v.row.sending_domain)
+      .filter(d => (newsletterAudience[d]?.picked.length || 0) === 0),
+    [newsletterIncluded, newsletterAudience],
+  );
+
   const denverDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: SEND_DAY_TIMEZONE });
 
   // One scheduled instant for the request, resolved from whichever schedule
   // control the operator actually used (quick field, or the earliest per-ISP
   // plan start). Returns '' when nothing is set — never "now".
-  const warmupScheduledAtISO = useMemo(() => {
+  const intentScheduledAtISO = useMemo(() => {
     if (scheduleMode === 'quick' || !Object.keys(ispPlansByKey).length) {
       return scheduledAt ? new Date(scheduledAt).toISOString() : '';
     }
@@ -1100,13 +1336,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     return valid.length ? new Date(Math.min(...valid)).toISOString() : '';
   }, [scheduleMode, scheduledAt, ispPlansByKey, selectedISPs]);
 
-  // Same six steps; warm-up only relabels 3 and 4.
-  const activeSteps = useMemo(
-    () => (warmupActive
-      ? STEPS.map(st => (WARMUP_STEP_OVERRIDES[st.id] ? { ...st, ...WARMUP_STEP_OVERRIDES[st.id] } : st))
-      : STEPS),
-    [warmupActive],
-  );
+  // Same steps, same ids, same order in every mode — modes only relabel.
+  const activeSteps = useMemo(() => {
+    const ov = MODE_STEP_OVERRIDES[activeMode];
+    return STEPS.map(st => (ov[st.id] ? { ...st, ...ov[st.id] } : st));
+  }, [activeMode]);
 
   // Navigation is LIST-AWARE, not arithmetic. Step ids are sparse (5 is
   // retired), so ±1 would land on an id that renders nothing. These walk
@@ -1119,9 +1353,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     : null;
 
   const warmupRequestsDate = useMemo(
-    () => denverDay(warmupScheduledAtISO ? new Date(warmupScheduledAtISO) : new Date()),
+    () => denverDay(intentScheduledAtISO ? new Date(intentScheduledAtISO) : new Date()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [warmupScheduledAtISO],
+    [intentScheduledAtISO],
   );
 
   // ── Warm-up branch: fetches ──────────────────────────────────────────────
@@ -1141,9 +1375,18 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           setWarmupDomains([]);
           return;
         }
+        // ⚠️ The wire field is `sending_domain`. Filtering on `d.domain`
+        // dropped every row, so warmupDomains was always [] and the toggle
+        // never rendered — the whole branch was dead in the UI. Normalize
+        // ONCE here; everything downstream reads the local `domain` alias.
         const rows: WarmupDomainRow[] = (data?.domains || data || [])
-          .map((d: any) => (typeof d === 'string' ? { domain: d } : d))
-          .filter((d: any) => d && d.domain);
+          .map((d: any) => {
+            if (typeof d === 'string') return { domain: d } as WarmupDomainRow;
+            if (!d) return null;
+            const domain = d.sending_domain ?? d.domain;
+            return domain ? ({ ...d, domain } as WarmupDomainRow) : null;
+          })
+          .filter((d: WarmupDomainRow | null): d is WarmupDomainRow => !!d);
         setWarmupDomains(rows);
       })
       .catch(err => { if (!cancelled) { setWarmupDomainsError(err?.message || 'network error'); setWarmupDomains([]); } })
@@ -1159,16 +1402,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   // "defaulted" while the estate list was still in flight, and the default
   // would then never apply when it arrived.
   useEffect(() => {
+    // NEWSLETTERS is an ESTATE-WIDE mode. Selecting (or clearing) a single
+    // sending domain must never knock the operator out of it — that is the
+    // one thing a naive port of the old boolean default would do.
+    if (campaignMode === 'newsletter') return;
+    setNewsletterResults(null);
     if (!selectedDomain || !isWarmupDomain) {
-      setWarmupMode(false);
+      setCampaignMode(m => (m === 'warmup' ? 'offers' : m));
       setWarmupDefaultAppliedFor('');
       return;
     }
     if (warmupDefaultAppliedFor !== selectedDomain) {
-      setWarmupMode(true);
+      setCampaignMode('warmup');
       setWarmupDefaultAppliedFor(selectedDomain);
     }
-  }, [selectedDomain, isWarmupDomain, warmupDefaultAppliedFor]);
+  }, [campaignMode, selectedDomain, isWarmupDomain, warmupDefaultAppliedFor]);
 
   // Property changed ⇒ its newsletter, its anchors and its cold pad are all
   // property-scoped. Clear them rather than carrying another brand's picks
@@ -1204,7 +1452,17 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           setWarmupCreative(null);
           return;
         }
-        const c: WarmupCreative | null = data?.creative || (data?.id ? data : null);
+        // ⚠️ The wire fields are `creative_id` and `html_length`. Reading
+        // `id`/`html_bytes` produced a null creative for a brand whose
+        // creative exists, and step 3 then said "no newsletter is registered".
+        const raw: any = data?.creative || data || null;
+        const c: WarmupCreative | null = raw && (raw.creative_id || raw.id)
+          ? {
+              ...raw,
+              id: raw.creative_id ?? raw.id,
+              html_bytes: raw.html_length ?? raw.html_bytes,
+            }
+          : null;
         setWarmupCreative(c);
         // Prefill the overrides from the creative's own copy, but only while
         // the operator has not edited them — a refetch must never silently
@@ -1235,7 +1493,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           setWarmupSegments([]);
           return;
         }
-        setWarmupSegments(Array.isArray(data) ? data : (data?.segments || []));
+        // ⚠️ The wire field is `segment_id`; reading `id` made every
+        // selection an `undefined`.
+        const segRows: any[] = Array.isArray(data) ? data : (data?.segments || []);
+        setWarmupSegments(segRows
+          .map(sg => ({ ...sg, id: sg.segment_id ?? sg.id }))
+          .filter((sg: WarmupSegment) => !!sg.id));
       })
       .catch(err => { if (!cancelled) { setWarmupSegmentsError(err?.message || 'network error'); setWarmupSegments([]); } })
       .finally(() => { if (!cancelled) setWarmupSegmentsLoading(false); });
@@ -1270,21 +1533,121 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   }, [warmupRequestsDate]);
 
   useEffect(() => {
-    if (!warmupActive || step !== 6) return;
+    if (!(warmupActive || newsletterActive) || step !== 6) return;
     const ctrl = new AbortController();
     fetchWarmupRequests(ctrl.signal);
     return () => ctrl.abort();
-  }, [warmupActive, step, warmupRequestsKey, fetchWarmupRequests]);
+  }, [warmupActive, newsletterActive, step, warmupRequestsKey, fetchWarmupRequests]);
 
   useEffect(() => {
-    if (!warmupActive || step !== 6) return;
+    if (!(warmupActive || newsletterActive) || step !== 6) return;
     const pending = (warmupRequests || []).some(
       r => (r.status || '').toLowerCase() === 'requested' || (r.status || '').toLowerCase() === 'building',
     );
     if (!pending) return;
     const t = setInterval(() => { fetchWarmupRequests(); }, 30000);
     return () => clearInterval(t);
-  }, [warmupActive, step, warmupRequests, fetchWarmupRequests]);
+  }, [warmupActive, newsletterActive, step, warmupRequests, fetchWarmupRequests]);
+
+  // ── Newsletters branch: fetches ──────────────────────────────────────────
+
+  // The estate roster. include_html=0 — bodies are pulled one domain at a time
+  // from the Preview button, never 27 at once.
+  useEffect(() => {
+    if (!newsletterActive) return;
+    let cancelled = false;
+    setNewsletterLoading(true);
+    setNewsletterError('');
+    apiFetch(`${API_BASE}/pmta-campaign/newsletter/preview?include_html=0`)
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setNewsletterError(data?.error || `HTTP ${res.status}`);
+          // null, not [] — a failed fetch is UNKNOWN, never "no domains".
+          setNewsletterRows(null);
+          return;
+        }
+        const rows: NewsletterDomainRow[] = (data?.domains || [])
+          .filter((r: any) => r && r.sending_domain);
+        setNewsletterRows(rows);
+        setNewsletterDay(data?.day || '');
+        setNewsletterFetchedAt(new Date().toLocaleTimeString());
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setNewsletterError(err?.message || 'network error');
+        setNewsletterRows(null);
+      })
+      .finally(() => { if (!cancelled) setNewsletterLoading(false); });
+    return () => { cancelled = true; };
+  }, [newsletterActive, newsletterKey]);
+
+  // Per-domain engaged anchors, so the audience step is REAL for N domains
+  // rather than a posture with nothing behind it. Bounded fan-out: one request
+  // per INCLUDED domain, only on the audience step.
+  const newsletterIncludedKey = useMemo(
+    () => newsletterIncluded.map(v => v.row.sending_domain).sort().join(','),
+    [newsletterIncluded],
+  );
+
+  useEffect(() => {
+    if (!newsletterActive || step !== 4) return;
+    const domains = newsletterIncludedKey ? newsletterIncludedKey.split(',') : [];
+    if (domains.length === 0) { setNewsletterAnchors({}); setNewsletterAnchorErrors({}); return; }
+    let cancelled = false;
+    setNewsletterAnchorsLoading(true);
+    const slugFor = (d: string) => {
+      const row = (newsletterRows || []).find(r => r.sending_domain === d);
+      return (row?.brand_slug || '').trim() || deriveBrandSlug(undefined, d);
+    };
+    Promise.all(domains.map(async d => {
+      try {
+        const res = await apiFetch(
+          `${API_BASE}/pmta-campaign/warmup/segments?brand_slug=${encodeURIComponent(slugFor(d))}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return { d, err: data?.error || `HTTP ${res.status}`, segs: [] as WarmupSegment[] };
+        const rows: any[] = Array.isArray(data) ? data : (data?.segments || []);
+        return {
+          d, err: '',
+          segs: rows.map(sg => ({ ...sg, id: sg.segment_id ?? sg.id }))
+                    .filter((sg: WarmupSegment) => !!sg.id) as WarmupSegment[],
+        };
+      } catch (err: any) {
+        return { d, err: err?.message || 'network error', segs: [] as WarmupSegment[] };
+      }
+    })).then(results => {
+      if (cancelled) return;
+      const segs: Record<string, WarmupSegment[]> = {};
+      const errs: Record<string, string> = {};
+      results.forEach(r => { segs[r.d] = r.segs; if (r.err) errs[r.d] = r.err; });
+      setNewsletterAnchors(segs);
+      setNewsletterAnchorErrors(errs);
+    }).finally(() => { if (!cancelled) setNewsletterAnchorsLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newsletterActive, step, newsletterIncludedKey, newsletterAnchorsKey]);
+
+  // One domain's body, on demand.
+  const openNewsletterPreview = useCallback(async (domain: string) => {
+    setNewsletterPreviewDomain(domain);
+    setNewsletterPreviewError('');
+    setNewsletterPreviewHtml('');
+    setNewsletterPreviewLoading(true);
+    try {
+      const res = await apiFetch(
+        `${API_BASE}/pmta-campaign/newsletter/preview?include_html=1&sending_domain=${encodeURIComponent(domain)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setNewsletterPreviewError(data?.error || `HTTP ${res.status}`); return; }
+      const row: NewsletterDomainRow | undefined = (data?.domains || [])
+        .find((r: NewsletterDomainRow) => r?.sending_domain === domain) || (data?.domains || [])[0];
+      setNewsletterPreviewHtml(row?.html || '');
+    } catch (err: any) {
+      setNewsletterPreviewError(err?.message || 'network error');
+    } finally {
+      setNewsletterPreviewLoading(false);
+    }
+  }, []);
 
   const toggleEngagementTier = useCallback((kind: 'clickers' | 'openers' | 'other', segmentId: string) => {
     const apply = (prev: string[]) =>
@@ -1355,14 +1718,17 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
   useEffect(() => {
     if (step === 1) fetchDomains();
     if (step === 2) { fetchReadiness(); fetchInsights(insightDomainFilter || undefined); }
-    if (step === 3) fetchOffers();
-    if (step === 4) fetchAudienceData();
-  }, [step, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchAudienceData, insightDomainFilter]);
+    // Offer-flow data, for the OFFER flow only. Un-gated these fired on every
+    // mode and any failure painted an audienceError banner on a step that does
+    // not read that data.
+    if (step === 3 && activeMode === 'offers') fetchOffers();
+    if (step === 4 && activeMode === 'offers') fetchAudienceData();
+  }, [step, activeMode, fetchReadiness, fetchInsights, fetchDomains, fetchOffers, fetchAudienceData, insightDomainFilter]);
 
   // Re-estimate audience when selections change
   useEffect(() => {
-    if (step === 4) fetchAudienceEstimate();
-  }, [step, selectedLists, selectedSegments, selectedSuppLists, selectedExclusionSegments, fetchAudienceEstimate]);
+    if (step === 4 && activeMode === 'offers') fetchAudienceEstimate();
+  }, [step, activeMode, selectedLists, selectedSegments, selectedSuppLists, selectedExclusionSegments, fetchAudienceEstimate]);
 
   // Fetch send-time recommendations when user switches to scheduled mode
   useEffect(() => {
@@ -1384,25 +1750,21 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // ── Step validation ──────────────────────────────────────────────────────
 
-  const getStepErrors = (s: number): string[] => {
+  // ── Mode-dispatched validators ───────────────────────────────────────────
+  //
+  // Steps 3, 4 and 6 used to fork on a BOOLEAN, so a third mode silently ran
+  // the OFFER validators — "Select an approved creative from the Creative
+  // Studio offers library" would have blocked a newsletters send forever.
+  // Each mode now owns a function and the dispatcher at the bottom is
+  // exhaustive over CampaignMode.
+
+  const offerStepErrors = (s: number): string[] => {
     const errors: string[] = [];
     switch (s) {
       case 1:
         if (!selectedDomain) errors.push('Select a sending domain');
         break;
-      case 2:
-        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
-        break;
       case 3:
-        if (warmupActive) {
-          // Warm-up content is the daily-registered newsletter. No offer, no
-          // proof — offers are BANNED in warm-up content.
-          if (warmupCreativeError) errors.push(`Newsletter could not be loaded (${warmupCreativeError}) — retry before scheduling`);
-          else if (!warmupCreativeLoading && !warmupCreative) errors.push('No newsletter is registered for this property today — register one in Creative Studio first');
-          if (warmupCreative && !warmupSubject.trim()) errors.push('Subject line is required');
-          if (warmupCreative && !warmupPreheader.trim()) errors.push('Preheader is required');
-          break;
-        }
         if (!selectedProofId) errors.push('Select an approved creative from the Creative Studio offers library');
         variants.forEach(v => {
           if (!v.from_name.trim()) errors.push('Select an approved from-name');
@@ -1411,27 +1773,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         });
         break;
       case 4:
-        if (warmupActive) {
-          const cold = coldQuotaNum ?? 0;
-          if (warmupSelectedSegmentIds.length === 0 && cold <= 0) {
-            errors.push('Select at least one engaged-anchor segment, or set a cold quota above 0');
-          }
-          if (coldQuota.trim() !== '' && coldQuotaNum === null) {
-            errors.push('Cold quota must be a whole number of records (0 or more)');
-          }
-          if (cold > 0 && !coldSource.trim()) {
-            errors.push('Choose the cold source the builder should pull those records from');
-          }
-          if (coldSource.trim() && cold <= 0) {
-            errors.push('A cold source is selected but the cold quota is 0 — set a quota or clear the source');
-          }
-          if (kumoIllegalISPs.length > 0) {
-            errors.push(
-              `KumoMTA warm-up is yahoo-family only — remove ${kumoIllegalISPs.join(', ')} ` +
-              `(allowed: ${KUMO_ALLOWED_ISPS.join(', ')})`);
-          }
-          break;
-        }
         if (selectedClickerIds.length === 0 && selectedOpenerIds.length === 0
             && selectedOtherIds.length === 0
             && selectedLists.length === 0 && selectedSegments.length === 0) {
@@ -1469,17 +1810,6 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         }
         break;
       case 6:
-        if (warmupActive) {
-          // The warm-up request carries no campaign name — the builder names
-          // what it builds. It DOES need one resolvable scheduled instant.
-          if (!warmupScheduledAtISO) {
-            errors.push('Set the send date and time — the build request needs one scheduled instant');
-          } else if (new Date(warmupScheduledAtISO).getTime() <= Date.now()) {
-            errors.push('Scheduled date and time must be in the future');
-          }
-          if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
-          break;
-        }
         if (!campaignName.trim()) errors.push('Campaign name is required');
         if (sendMode === 'scheduled' && scheduleMode === 'quick') {
           if (!scheduledAt) {
@@ -1517,6 +1847,133 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         break;
     }
     return errors;
+  };
+
+  const warmupStepErrors = (s: number): string[] => {
+    const errors: string[] = [];
+    switch (s) {
+      case 1:
+        if (!selectedDomain) errors.push('Select a sending domain');
+        break;
+      case 3:
+        // Warm-up content is the daily-registered newsletter. No offer, no
+        // proof — offers are BANNED in warm-up content.
+        if (warmupCreativeError) errors.push(`Newsletter could not be loaded (${warmupCreativeError}) — retry before scheduling`);
+        else if (!warmupCreativeLoading && !warmupCreative) errors.push('No newsletter is registered for this property today — register one in Creative Studio first');
+        if (warmupCreative && !warmupSubject.trim()) errors.push('Subject line is required');
+        if (warmupCreative && !warmupPreheader.trim()) errors.push('Preheader is required');
+        break;
+      case 4: {
+        const cold = coldQuotaNum ?? 0;
+        if (warmupSelectedSegmentIds.length === 0 && cold <= 0) {
+          errors.push('Select at least one engaged-anchor segment, or set a cold quota above 0');
+        }
+        if (coldQuota.trim() !== '' && coldQuotaNum === null) {
+          errors.push('Cold quota must be a whole number of records (0 or more)');
+        }
+        if (cold > 0 && !coldSource.trim()) {
+          errors.push('Choose the cold source the builder should pull those records from');
+        }
+        if (coldSource.trim() && cold <= 0) {
+          errors.push('A cold source is selected but the cold quota is 0 — set a quota or clear the source');
+        }
+        if (kumoIllegalISPs.length > 0) {
+          errors.push(
+            `KumoMTA warm-up is yahoo-family only — remove ${kumoIllegalISPs.join(', ')} ` +
+            `(allowed: ${KUMO_ALLOWED_ISPS.join(', ')})`);
+        }
+        break;
+      }
+      case 6:
+        // The warm-up request carries no campaign name — the builder names
+        // what it builds. It DOES need one resolvable scheduled instant.
+        if (!intentScheduledAtISO) {
+          errors.push('Set the send date and time — the build request needs one scheduled instant');
+        } else if (new Date(intentScheduledAtISO).getTime() <= Date.now()) {
+          errors.push('Scheduled date and time must be in the future');
+        }
+        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
+        break;
+    }
+    return errors;
+  };
+
+  // NEWSLETTERS. Content is automatic, so nothing here validates a creative
+  // CHOICE — it validates that what the daily pipeline registered is actually
+  // mailable, per domain, and that the operator made the audience decision.
+  const newsletterStepErrors = (s: number): string[] => {
+    const errors: string[] = [];
+    const names = (rows: { row: NewsletterDomainRow }[]) =>
+      rows.map(v => v.row.sending_domain).join(', ');
+    switch (s) {
+      case 1:
+        if (newsletterError) {
+          errors.push(`The newsletter roster could not be loaded (${newsletterError}) — retry before scheduling. This is NOT a statement that there are no newsletters today.`);
+        } else if (newsletterLoading || newsletterRows === null) {
+          errors.push('Still loading today’s newsletter roster');
+        } else if (newsletterRows.length === 0) {
+          errors.push('The roster returned no eligible sending domains for today — there is nothing to schedule');
+        } else if (newsletterIncluded.length === 0) {
+          errors.push('Every sending domain is excluded, missing a creative, or stale — include at least one');
+        }
+        break;
+      case 3: {
+        if (newsletterIncluded.length === 0) {
+          errors.push('No sending domain is included — nothing would be queued');
+          break;
+        }
+        const noCreative = newsletterIncluded.filter(v => !(v.row.creative_id || '').trim());
+        if (noCreative.length) errors.push(`No creative is registered for ${names(noCreative)} — exclude ${noCreative.length === 1 ? 'it' : 'them'} or register the newsletter first`);
+        const noSubject = newsletterIncluded.filter(v => !(v.row.subject || '').trim());
+        if (noSubject.length) errors.push(`No subject line for ${names(noSubject)} — a send with an empty subject is not auditable`);
+        const noPreheader = newsletterIncluded.filter(v => !(v.row.preheader || '').trim());
+        if (noPreheader.length) errors.push(`No preheader for ${names(noPreheader)}`);
+        const noFrom = newsletterIncluded.filter(v => !(v.row.from_name || '').trim());
+        if (noFrom.length) errors.push(`No friendly-from name resolved for ${names(noFrom)} — the from-name comes from the domain’s sending profile, so this means the profile is missing one`);
+        break;
+      }
+      case 4: {
+        if (newsletterIncluded.length === 0) {
+          errors.push('No sending domain is included — nothing would be queued');
+          break;
+        }
+        if (newsletterAnchorsLoading) {
+          errors.push('Still resolving each domain’s engaged anchors — wait for the audience table to finish');
+          break;
+        }
+        const failed = Object.keys(newsletterAnchorErrors);
+        if (failed.length) errors.push(`Engaged anchors could not be loaded for ${failed.join(', ')} — their audience is UNKNOWN, not empty. Retry, or exclude them.`);
+        if (newsletterAudienceGaps.length) {
+          const label = NEWSLETTER_POSTURES.find(x => x.id === newsletterPosture)?.label || newsletterPosture;
+          errors.push(`${newsletterAudienceGaps.join(', ')} resolve no engaged-anchor segment under "${label}" — those requests would carry an EMPTY audience. Change the posture or exclude them.`);
+        }
+        break;
+      }
+      case 6:
+        if (newsletterIncluded.length === 0) errors.push('No sending domain is included — nothing would be queued');
+        if (!intentScheduledAtISO) {
+          errors.push('Set the ONE send date and time that applies to every selected sending domain');
+        } else if (new Date(intentScheduledAtISO).getTime() <= Date.now()) {
+          errors.push('Scheduled date and time must be in the future');
+        }
+        if (selectedISPs.length === 0) errors.push('Select at least one mailbox provider');
+        break;
+    }
+    return errors;
+  };
+
+  // THE dispatcher. `default: assertUnreachableMode(activeMode)` makes a
+  // fourth CampaignMode a COMPILE error here rather than a silent fall-through
+  // into the offer validators.
+  const getStepErrors = (s: number): string[] => {
+    // Step 2 is mode-neutral: every mode picks mailbox providers.
+    if (s === 2) return selectedISPs.length === 0 ? ['Select at least one mailbox provider'] : [];
+    switch (activeMode) {
+      case 'offers':     return offerStepErrors(s);
+      case 'warmup':     return warmupStepErrors(s);
+      case 'newsletter': return newsletterStepErrors(s);
+      default:           return assertUnreachableMode(activeMode);
+    }
   };
 
   const canProceed = (): boolean => getStepErrors(step).length === 0;
@@ -2295,8 +2752,11 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     if (!warmupBrandSlug) { setWarmupPreviewHtml(''); return; }
     setWarmupPreviewLoading(true);
     try {
+      // The BODY lives on the newsletter preview endpoint — warmup/creative
+      // returns metadata only (it has no include_html handling), which is why
+      // this modal could never render anything but the "no body" state.
       const res = await apiFetch(
-        `${API_BASE}/pmta-campaign/warmup/creative?brand_slug=${encodeURIComponent(warmupBrandSlug)}&include_html=1`,
+        `${API_BASE}/pmta-campaign/newsletter/preview?include_html=1&sending_domain=${encodeURIComponent(selectedDomain)}`,
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2304,15 +2764,15 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         setWarmupPreviewHtml('');
         return;
       }
-      const c = data?.creative || data || {};
-      setWarmupPreviewHtml(c.html || c.html_content || '');
+      const row: NewsletterDomainRow | undefined = (data?.domains || [])[0];
+      setWarmupPreviewHtml(row?.html || '');
     } catch (err: any) {
       setWarmupPreviewError(err?.message || 'network error');
       setWarmupPreviewHtml('');
     } finally {
       setWarmupPreviewLoading(false);
     }
-  }, [warmupCreative, warmupBrandSlug]);
+  }, [warmupCreative, warmupBrandSlug, selectedDomain]);
 
   // Records INTENT. It does not send, and it does not create a campaign — a
   // separate builder consumes the request (~40 min, disk-bound). Every string
@@ -2325,9 +2785,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       // an audience-bound send, else the finite per-ISP quotas. Written out
       // here rather than reusing buildCampaignPayload so the offer path is not
       // re-entered on this branch.
-      const ispQuotaArray = audienceBound
-        ? selectedISPs.map(isp => ({ isp, volume: 0 }))
-        : Object.entries(ispQuotas).filter(([, v]) => v > 0).map(([isp, volume]) => ({ isp, volume }));
+      // ⚠️ MAP, not array: warmupRequestUpsertReq.ISPQuotas is
+      // map[string]int, so an array body failed json.Decode and the endpoint
+      // answered 400 "invalid JSON body" — nothing was ever queued.
+      const ispQuotaMap: Record<string, number> = audienceBound
+        ? Object.fromEntries(selectedISPs.map(isp => [isp, 0]))
+        : Object.fromEntries(Object.entries(ispQuotas).filter(([, v]) => v > 0));
 
       const body = {
         sending_domain: selectedDomain,
@@ -2338,8 +2801,8 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         audience_segment_ids: warmupSelectedSegmentIds,
         cold_source: coldSource.trim(),
         cold_quota: coldQuotaNum ?? 0,
-        isp_quotas: ispQuotaArray,
-        scheduled_at: warmupScheduledAtISO,
+        isp_quotas: ispQuotaMap,
+        scheduled_at: intentScheduledAtISO,
         status: 'requested',
       };
 
@@ -2366,8 +2829,67 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
   }, [
     audienceBound, coldQuotaNum, coldSource, ispQuotas, selectedDomain, selectedISPs,
-    warmupBrandSlug, warmupCreative, warmupPreheader, warmupScheduledAtISO,
+    warmupBrandSlug, warmupCreative, warmupPreheader, intentScheduledAtISO,
     warmupSelectedSegmentIds, warmupSubject,
+  ]);
+
+  // NEWSLETTERS submit: an N-DOMAIN FAN-OUT of the same intent record the
+  // warm-up branch writes. It records intent ONLY — no campaign, no mail — and
+  // it deliberately never touches buildCampaignPayload or
+  // POST /pmta-campaign/deploy. One request per included domain, ONE shared
+  // scheduled instant, and one result row per domain so a partial failure can
+  // never read as "all queued".
+  const handleNewsletterRequest = useCallback(async () => {
+    setNewsletterSubmitting(true);
+    setNewsletterResults(null);
+    // Audience-bound by doctrine: volume 0 per selected ISP means the segment
+    // is the cap. MAP, not array — the endpoint decodes map[string]int.
+    const ispQuotaMap: Record<string, number> = audienceBound
+      ? Object.fromEntries(selectedISPs.map(isp => [isp, 0]))
+      : Object.fromEntries(Object.entries(ispQuotas).filter(([, v]) => v > 0));
+
+    const out: { sending_domain: string; ok: boolean; error?: string; request_id?: string }[] = [];
+    for (const v of newsletterIncluded) {
+      const r = v.row;
+      const slug = (r.brand_slug || '').trim() || deriveBrandSlug(undefined, r.sending_domain);
+      const segIds = (newsletterAudience[r.sending_domain]?.picked || []).map(sg => sg.id);
+      try {
+        const res = await apiFetch(`${API_BASE}/pmta-campaign/warmup/request`, {
+          method: 'POST',
+          body: JSON.stringify({
+            sending_domain: r.sending_domain,
+            brand_slug: slug,
+            creative_id: (r.creative_id || '').trim(),
+            subject: r.subject || '',
+            preheader: r.preheader || '',
+            audience_segment_ids: segIds,
+            isp_quotas: ispQuotaMap,
+            scheduled_at: intentScheduledAtISO,
+            status: 'requested',
+          }),
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+          out.push({ sending_domain: r.sending_domain, ok: false,
+            error: `non-JSON response (HTTP ${res.status}) — nothing was queued for this domain` });
+          continue;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          out.push({ sending_domain: r.sending_domain, ok: false, error: data?.error || `HTTP ${res.status}` });
+          continue;
+        }
+        out.push({ sending_domain: r.sending_domain, ok: true, request_id: (data?.request || data || {}).id });
+      } catch (err: any) {
+        out.push({ sending_domain: r.sending_domain, ok: false, error: err?.message || 'network error' });
+      }
+    }
+    setNewsletterResults(out);
+    setNewsletterSubmitting(false);
+    setWarmupRequestsKey(k => k + 1);
+  }, [
+    audienceBound, ispQuotas, selectedISPs, newsletterIncluded,
+    newsletterAudience, intentScheduledAtISO,
   ]);
 
   // ── Toggle helpers ───────────────────────────────────────────────────────
@@ -3221,13 +3743,642 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     </div>
   );
 
+  // ── Newsletters branch: shared bits ──────────────────────────────────────
+
+  // Readiness is never a colour alone: the word is always present, and a
+  // status the server did not state is labelled as locally derived.
+  const NewsletterReadiness: React.FC<{ status: NewsletterStatus; stated: boolean }> = ({ status, stated }) => (
+    <span
+      title={stated ? 'Readiness stated by the preview endpoint' : 'The endpoint did not state a status — derived from creative_id and updated_at'}
+      style={{
+        display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+        fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+        color: NEWSLETTER_STATUS_COLORS[status],
+        background: `${NEWSLETTER_STATUS_COLORS[status]}1f`,
+        border: `1px solid ${NEWSLETTER_STATUS_COLORS[status]}66`,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {status}{stated ? '' : '*'}
+    </span>
+  );
+
+  const newsletterRosterHeader = (extra?: React.ReactNode) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+      <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>
+        <FontAwesomeIcon icon={faNewspaper} style={{ marginRight: 6, fontSize: 11, color: '#38bdf8' }} />
+        Today’s newsletters{newsletterDay ? ` — ${newsletterDay}` : ''}
+      </h4>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {extra}
+        <span style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)' }}>
+          {newsletterLoading ? 'fetching…' : newsletterFetchedAt ? `fetched ${newsletterFetchedAt}` : ''}
+        </span>
+        <button type="button" onClick={() => setNewsletterKey(k => k + 1)} disabled={newsletterLoading}
+          style={{ background: 'transparent', border: '1px solid rgba(0,200,255,0.18)', color: '#00b0ff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: newsletterLoading ? 'default' : 'pointer' }}>
+          <FontAwesomeIcon icon={faRotate} spin={newsletterLoading} /> Refresh
+        </button>
+      </span>
+    </div>
+  );
+
+  // Four distinct displays. A failed fetch must never read as "no newsletters
+  // today" and a domain with no creative must never read as an empty row.
+  const renderNewsletterRosterState = (): React.ReactNode => {
+    if (newsletterError) {
+      return (
+        <SectionError
+          label="Newsletter roster"
+          error={`${newsletterError} — today’s newsletters are UNKNOWN, not absent. Nothing can be audited or queued until this loads.`}
+          onRetry={() => setNewsletterKey(k => k + 1)}
+        />
+      );
+    }
+    if (newsletterLoading && newsletterRows === null) {
+      return (
+        <div style={{ fontSize: 12, color: '#7dd3fc', padding: '10px 0' }}>
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading today’s newsletter per sending domain…
+        </div>
+      );
+    }
+    if (newsletterRows !== null && newsletterRows.length === 0) {
+      return (
+        <div style={{ background: '#0d1526', border: '1px solid rgba(245,158,11,0.4)', borderRadius: 10, padding: 4 }}>
+          <EmptyState
+            icon={faNewspaper}
+            title="The roster returned no eligible sending domains"
+            hint="The endpoint answered successfully with an empty domain list — that is 'built empty', not 'never built'. No newsletter can be scheduled today until the daily registration has run."
+          />
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // Step 1: the compact PICK list. Readiness is visible here so the operator
+  // never carries a not-ready domain forward without seeing it.
+  const renderNewsletterRoster = () => {
+    const state = renderNewsletterRosterState();
+    return (
+      <div style={{ background: '#0d1526', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 10, padding: 14, marginBottom: 18 }}>
+        {newsletterRosterHeader(
+          newsletterView.length > 0 ? (
+            <>
+              <button type="button"
+                onClick={() => { setNewsletterExcluded(new Set()); setNewsletterStaleOptIn(new Set()); }}
+                style={{ background: 'transparent', border: 'none', color: '#00b0ff', fontSize: 11, cursor: 'pointer' }}>
+                include all ready
+              </button>
+              <button type="button"
+                onClick={() => setNewsletterExcluded(new Set(newsletterView.map(v => v.row.sending_domain)))}
+                style={{ background: 'transparent', border: 'none', color: '#00b0ff', fontSize: 11, cursor: 'pointer' }}>
+                clear
+              </button>
+            </>
+          ) : null,
+        )}
+
+        <div style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)', lineHeight: 1.55, marginBottom: 10 }}>
+          Content is <strong style={{ color: '#e0e6f0' }}>automatic</strong> — one newsletter is generated and
+          registered per sending domain each day. This mode never picks a creative; it audits what the
+          pipeline produced. Full subject / preheader / from-name / body audit is the next step.
+        </div>
+
+        {state || (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {newsletterView.map(v => {
+              const col = NEWSLETTER_STATUS_COLORS[v.status];
+              return (
+                <div key={v.row.sending_domain}
+                  style={{
+                    background: '#0a0f1a', border: `1px solid ${v.included ? 'rgba(0,200,255,0.18)' : `${col}44`}`,
+                    borderRadius: 8, padding: '9px 11px',
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Include ${v.row.sending_domain}`}
+                      checked={v.included}
+                      disabled={v.blocked}
+                      onChange={e => {
+                        const on = e.target.checked;
+                        setNewsletterExcluded(prev => {
+                          const next = new Set(prev);
+                          if (on) next.delete(v.row.sending_domain); else next.add(v.row.sending_domain);
+                          return next;
+                        });
+                        if (v.status === 'stale') {
+                          setNewsletterStaleOptIn(prev => {
+                            const next = new Set(prev);
+                            if (on) next.add(v.row.sending_domain); else next.delete(v.row.sending_domain);
+                            return next;
+                          });
+                        }
+                      }}
+                      style={{ width: 15, height: 15, cursor: v.blocked ? 'not-allowed' : 'pointer' }}
+                    />
+                    <span style={{ fontSize: 12.5, color: '#e0e6f0', fontFamily: 'monospace' }}>{v.row.sending_domain}</span>
+                    <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+                      {v.row.from_name || <span style={{ color: '#f59e0b' }}>no from-name</span>}
+                    </span>
+                    <span style={{ marginLeft: 'auto' }}><NewsletterReadiness status={v.status} stated={v.statusStated} /></span>
+                  </div>
+                  {v.status !== 'ready' && (
+                    <div style={{ fontSize: 11, color: col, marginTop: 6, lineHeight: 1.5, paddingLeft: 25 }}>
+                      <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} /> {v.reason}
+                      {v.status === 'stale' && !v.staleOptIn && ' Tick the box to queue it anyway.'}
+                      {v.blocked && ' It cannot be included.'}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {newsletterView.length > 0 && (
+          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>
+            {newsletterTally.included} included of {newsletterTally.total} ·{' '}
+            <span style={{ color: NEWSLETTER_STATUS_COLORS.ready }}>{newsletterTally.ready} ready</span> ·{' '}
+            <span style={{ color: NEWSLETTER_STATUS_COLORS.stale }}>{newsletterTally.stale} stale</span> ·{' '}
+            <span style={{ color: NEWSLETTER_STATUS_COLORS.missing }}>{newsletterTally.missing} missing</span>
+            {newsletterTally.derived > 0 && (
+              <span style={{ color: '#f59e0b' }}> · {newsletterTally.derived} marked * (status derived here, not stated by the endpoint)</span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Step 3: the AUDIT. Everything that will actually reach an inbox, per
+  // domain, in one table — this is the screen the operator signs off on.
+  const renderNewsletterStep3 = () => {
+    const state = renderNewsletterRosterState();
+    const th: React.CSSProperties = {
+      textAlign: 'left', padding: '7px 10px', fontSize: 10.5, textTransform: 'uppercase',
+      letterSpacing: 0.5, color: 'rgba(180,210,240,0.5)', borderBottom: '1px solid rgba(0,200,255,0.10)',
+      whiteSpace: 'nowrap',
+    };
+    const td: React.CSSProperties = {
+      padding: '9px 10px', fontSize: 12, color: '#e0e6f0', verticalAlign: 'top',
+      borderBottom: '1px solid rgba(0,200,255,0.06)',
+    };
+    return (
+      <div className="wiz-step-content ig-fade-in">
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ margin: 0 }}>
+            <FontAwesomeIcon icon={faNewspaper} style={{ marginRight: 8, color: '#38bdf8' }} />
+            Newsletter audit
+          </h3>
+          <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13, lineHeight: 1.6 }}>
+            Exactly what will mail from each sending domain: friendly-from, subject, preheader, and the
+            registered body. Nothing here is editable — content is generated per domain daily and this
+            screen exists so it can be <strong>audited</strong> before it goes out.
+          </p>
+        </div>
+        <StepErrorBanner stepNum={3} />
+
+        {/* Readiness first. Absence of a creative is the most important thing
+            this screen can say, so it leads. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+          {([
+            { label: 'Included in this run', value: newsletterTally.included, color: '#00b0ff', sub: `of ${newsletterTally.total} eligible domains` },
+            { label: 'Ready', value: newsletterTally.ready, color: NEWSLETTER_STATUS_COLORS.ready, sub: 'creative registered and fresh' },
+            { label: 'Stale', value: newsletterTally.stale, color: NEWSLETTER_STATUS_COLORS.stale, sub: 'not re-registered in 24h — excluded unless opted in' },
+            { label: 'Missing', value: newsletterTally.missing, color: NEWSLETTER_STATUS_COLORS.missing, sub: 'no creative row at all — cannot be included' },
+          ]).map(t => (
+            <div key={t.label} style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>{t.label}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: t.color, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3, lineHeight: 1.4 }}>{t.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+          {newsletterRosterHeader()}
+          {state || (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Sending domain</th>
+                    <th style={th}>Friendly from</th>
+                    <th style={th}>Subject</th>
+                    <th style={th}>Preheader</th>
+                    <th style={th}>Freshness (updated_at)</th>
+                    <th style={th}>Readiness</th>
+                    <th style={th}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {newsletterView.map(v => {
+                    const r = v.row;
+                    const fresh = fmtFreshness(r.updated_at);
+                    const col = NEWSLETTER_STATUS_COLORS[v.status];
+                    const dim = v.included ? 1 : 0.55;
+                    return (
+                      <React.Fragment key={r.sending_domain}>
+                        <tr style={{ opacity: dim }}>
+                          <td style={{ ...td, fontFamily: 'monospace', fontSize: 11.5 }}>
+                            {r.sending_domain}
+                            <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 3 }}>
+                              {r.filename || '—'}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.35)' }} title={r.creative_sha256 || ''}>
+                              sha256 {r.creative_sha256 ? `${r.creative_sha256.slice(0, 12)}…` : '—'}
+                            </div>
+                          </td>
+                          <td style={td}>
+                            {r.from_name
+                              ? <strong>{r.from_name}</strong>
+                              : <span style={{ color: '#f59e0b' }}>no from-name on the sending profile</span>}
+                            <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3, fontFamily: 'monospace' }}>
+                              {r.from_email || '—'}
+                            </div>
+                          </td>
+                          <td style={{ ...td, maxWidth: 240 }} title={r.subject || ''}>
+                            {r.subject || <span style={{ color: '#f59e0b' }}>no subject</span>}
+                          </td>
+                          <td style={{ ...td, maxWidth: 240, color: 'rgba(180,210,240,0.75)' }} title={r.preheader || ''}>
+                            {r.preheader || <span style={{ color: '#f59e0b' }}>no preheader</span>}
+                          </td>
+                          <td style={{ ...td, fontSize: 11, color: v.status === 'stale' ? '#f59e0b' : 'rgba(180,210,240,0.7)' }}>
+                            {fresh.text}
+                            {r.approval_status && (
+                              <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 3 }}>
+                                approval: {r.approval_status}
+                              </div>
+                            )}
+                          </td>
+                          <td style={td}><NewsletterReadiness status={v.status} stated={v.statusStated} /></td>
+                          <td style={td}>
+                            <button type="button"
+                              onClick={() => openNewsletterPreview(r.sending_domain)}
+                              disabled={!r.creative_id}
+                              title={r.creative_id ? 'Render the registered body' : 'There is no creative to preview'}
+                              style={{
+                                background: 'transparent', border: '1px solid rgba(0,200,255,0.18)',
+                                color: r.creative_id ? '#00b0ff' : '#475569', borderRadius: 6,
+                                padding: '3px 10px', fontSize: 11, cursor: r.creative_id ? 'pointer' : 'not-allowed',
+                                whiteSpace: 'nowrap',
+                              }}>
+                              <FontAwesomeIcon icon={faEye} /> Preview
+                            </button>
+                          </td>
+                        </tr>
+                        {v.status !== 'ready' && (
+                          <tr>
+                            <td colSpan={7} style={{ padding: '0 10px 9px', borderBottom: '1px solid rgba(0,200,255,0.06)' }}>
+                              <div style={{
+                                fontSize: 11, color: col, lineHeight: 1.5,
+                                background: `${col}12`, border: `1px solid ${col}44`, borderRadius: 6, padding: '7px 9px',
+                              }}>
+                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} />{' '}
+                                <strong>{v.included ? 'Included anyway' : 'Not in this run'}</strong> — {v.reason}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {newsletterPreviewDomain && (
+          <div onClick={() => setNewsletterPreviewDomain('')}
+               style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ background: '#fff', borderRadius: 10, width: 'min(760px, 100%)', height: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '8px 12px', background: '#0d1526', color: '#e0e6f0', fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                <span>{newsletterPreviewDomain} — {fmtFreshness((newsletterRows || []).find(r => r.sending_domain === newsletterPreviewDomain)?.updated_at).text}</span>
+                <button onClick={() => setNewsletterPreviewDomain('')} style={{ background: 'transparent', border: 'none', color: '#00b0ff', cursor: 'pointer' }}>close</button>
+              </div>
+              {newsletterPreviewLoading ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#0f172a', fontSize: 13 }}>
+                  <FontAwesomeIcon icon={faSpinner} spin /> &nbsp;Loading the newsletter body…
+                </div>
+              ) : newsletterPreviewError ? (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, color: '#b91c1c', fontSize: 13, textAlign: 'center' }}>
+                  Could not load the body: {newsletterPreviewError}
+                </div>
+              ) : newsletterPreviewHtml ? (
+                <iframe title={`${newsletterPreviewDomain} newsletter preview`} srcDoc={newsletterPreviewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />
+              ) : (
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, color: '#b45309', fontSize: 13, textAlign: 'center' }}>
+                  The preview endpoint returned this newsletter’s metadata but no HTML body, so there is
+                  nothing to render. This is a blank preview, not a blank creative.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Step 4: the AUDIENCE. Preserved deliberately — "all engagement" is the
+  // typical choice, never an automatic one.
+  const renderNewsletterStep4 = () => (
+    <div className="wiz-step-content ig-fade-in">
+      <div style={{ marginBottom: 16 }}>
+        <h3 style={{ margin: 0 }}>
+          <FontAwesomeIcon icon={faUsers} style={{ marginRight: 8, color: '#38bdf8' }} />
+          Engagement audience<RequiredDot />
+        </h3>
+        <p style={{ margin: '4px 0 0', color: 'rgba(180,210,240,0.65)', fontSize: 13, lineHeight: 1.6 }}>
+          One posture, applied to every included sending domain and resolved to that domain’s own
+          engaged-anchor segments. Brands are separate senders — no segment ever crosses a property.
+        </p>
+      </div>
+      <StepErrorBanner stepNum={4} />
+
+      <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>Engagement posture</h4>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {NEWSLETTER_POSTURES.map(pt => {
+            const on = newsletterPosture === pt.id;
+            return (
+              <button key={pt.id} type="button" onClick={() => setNewsletterPosture(pt.id)} title={pt.hint}
+                style={{
+                  flex: 1, minWidth: 200, textAlign: 'left', padding: '10px 12px', borderRadius: 8,
+                  cursor: 'pointer', color: '#e0e6f0',
+                  background: on ? 'rgba(0,176,255,0.12)' : '#0a0f1a',
+                  border: `1.5px solid ${on ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
+                }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: on ? '#00b0ff' : '#e0e6f0' }}>{pt.label}</div>
+                <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.55)', marginTop: 4, lineHeight: 1.45 }}>{pt.hint}</div>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 10, lineHeight: 1.5 }}>
+          Clicker / opener is read from the SEGMENT NAME (the engaged grid names them
+          “&lt;BRAND&gt; 30D Clickers” / “&lt;BRAND&gt; 7D Openers”) — it is the only classifier this
+          endpoint carries. Anything the name does not identify is counted in the “other engaged”
+          column below rather than dropped silently, and “All engagement” includes it.
+        </div>
+      </div>
+
+      {/* Volume posture. Same doctrine, same controls, same words as the offer
+          flow — capping an engaged tier is the exception. */}
+      <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={audienceBound}
+                 onChange={e => { setAudienceBound(e.target.checked); if (e.target.checked) setMasterTopUp(false); }}
+                 style={{ marginTop: 2, width: 15, height: 15, cursor: 'pointer' }} />
+          <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.8)' }}>
+            <strong style={{ color: '#e0e6f0' }}>Mail the whole selected audience</strong> — no per-ISP cap
+            (volume 0 = audience-bound). Segment-sourced sends are audience-bound by standing doctrine;
+            the per-provider quotas on the Mailbox Providers step are ignored while it is on.
+          </span>
+        </label>
+        {audienceBound && (
+          <div style={{
+            marginTop: 10, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.55,
+            background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.5)', color: '#fbbf24',
+          }}>
+            <FontAwesomeIcon icon={faInfinity} />{' '}
+            <strong>UNCAPPED — every per-provider quota is 0, for every included domain.</strong>{' '}
+            Each of the {newsletterIncluded.length} included sending domain
+            {newsletterIncluded.length === 1 ? '' : 's'} will mail its entire qualifying engaged audience
+            across {selectedISPs.length} selected provider{selectedISPs.length === 1 ? '' : 's'} — there is
+            no ceiling to stop it.
+          </div>
+        )}
+        {/* use_master_selection is NOT a field on the build-request ledger.
+            Saying so is the honest display: the operator must know this wizard
+            cannot set it here, rather than assuming the offer flow's control
+            applied. */}
+        <div style={{ marginTop: 10, fontSize: 11.5, color: 'rgba(180,210,240,0.6)', lineHeight: 1.55 }}>
+          <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 10, color: '#38bdf8' }} />{' '}
+          <strong style={{ color: '#e0e6f0' }}>Master-list top-up is not part of a build request.</strong>{' '}
+          The <span style={{ fontFamily: 'monospace' }}>use_master_selection</span> column defaults TRUE in
+          the database and, combined with an uncapped segment audience, tops up from the whole sending
+          domain. This request carries the anchor segments listed below and nothing else — if a build ever
+          comes back larger than these numbers, that column is why.
+        </div>
+      </div>
+
+      <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 10, padding: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>Resolved audience per sending domain</h4>
+          <button type="button" onClick={() => setNewsletterAnchorsKey(k => k + 1)} disabled={newsletterAnchorsLoading}
+            style={{ background: 'transparent', border: '1px solid rgba(0,200,255,0.18)', color: '#00b0ff', borderRadius: 6, padding: '3px 10px', fontSize: 11, cursor: newsletterAnchorsLoading ? 'default' : 'pointer' }}>
+            <FontAwesomeIcon icon={faRotate} spin={newsletterAnchorsLoading} /> Re-resolve
+          </button>
+        </div>
+
+        {newsletterIncluded.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#f59e0b', padding: '8px 0' }}>
+            No sending domain is included — go back to step 1 and include at least one.
+          </div>
+        ) : newsletterAnchorsLoading ? (
+          <div style={{ fontSize: 12, color: '#7dd3fc', padding: '8px 0' }}>
+            <FontAwesomeIcon icon={faSpinner} spin /> Resolving engaged anchors for {newsletterIncluded.length} domains…
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+              <thead>
+                <tr>
+                  {['Sending domain', 'Segments in posture', 'Clickers', 'Openers', 'Other engaged', 'Known subscribers', 'State'].map(h => (
+                    <th key={h} style={{
+                      textAlign: h === 'Sending domain' || h === 'State' ? 'left' : 'right',
+                      padding: '7px 10px', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5,
+                      color: 'rgba(180,210,240,0.5)', borderBottom: '1px solid rgba(0,200,255,0.10)', whiteSpace: 'nowrap',
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {newsletterIncluded.map(v => {
+                  const d = v.row.sending_domain;
+                  const a = newsletterAudience[d];
+                  const err = newsletterAnchorErrors[d];
+                  const picked = a?.picked || [];
+                  let known = 0; let unknown = 0;
+                  picked.forEach(sg => { const c = warmupSegmentCount(sg); if (c.known) known += c.value; else unknown += 1; });
+                  const numTd: React.CSSProperties = {
+                    padding: '9px 10px', fontSize: 12, textAlign: 'right', color: '#e0e6f0',
+                    fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid rgba(0,200,255,0.06)',
+                  };
+                  return (
+                    <tr key={d}>
+                      <td style={{ padding: '9px 10px', fontSize: 11.5, fontFamily: 'monospace', color: '#e0e6f0', borderBottom: '1px solid rgba(0,200,255,0.06)' }}>
+                        {d}
+                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 3, maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                             title={picked.map(sg => sg.name).join(', ')}>
+                          {picked.map(sg => sg.name).join(', ') || '—'}
+                        </div>
+                      </td>
+                      <td style={numTd}>{picked.length} of {a?.total ?? 0}</td>
+                      <td style={numTd}>{a?.kinds.clickers ?? 0}</td>
+                      <td style={numTd}>{a?.kinds.openers ?? 0}</td>
+                      <td style={numTd}>{a?.kinds.other ?? 0}</td>
+                      <td style={numTd}>
+                        {known.toLocaleString()}{unknown > 0 ? '+' : ''}
+                        {unknown > 0 && (
+                          <div style={{ fontSize: 10, color: '#f59e0b' }} title="subscriber_count is zeroed when a segment refresh times out — 0 is UNKNOWN, not zero">
+                            {unknown} report no count
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '9px 10px', fontSize: 11, borderBottom: '1px solid rgba(0,200,255,0.06)' }}>
+                        {err
+                          ? <span style={{ color: '#ef4444' }}>UNKNOWN — {err}</span>
+                          : picked.length === 0
+                            ? <span style={{ color: '#ef4444' }}>NO AUDIENCE under this posture</span>
+                            : <span style={{ color: '#10b981' }}>resolved</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)', marginTop: 10, lineHeight: 1.5 }}>
+          These are the segments each request will carry. “Known subscribers” sums only the segments that
+          report a count — a segment refresh that timed out writes 0, so a 0 there is UNKNOWN, never a
+          confident zero, and is counted separately rather than folded in.
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Mode selector (step 1) ────────────────────────────────────
+  // THREE cards, one discriminant. Not two checkboxes: two booleans give four
+  // states and two of them are nonsense.
+  const MODE_CARDS: { id: CampaignMode; label: string; icon: typeof faNewspaper; blurb: string }[] = [
+    { id: 'offers', label: 'Offers', icon: faPenFancy,
+      blurb: 'Pick an approved offer creative from the Creative Studio offers library and deploy a campaign.' },
+    { id: 'warmup', label: 'Warm-up newsletter', icon: faTemperatureHalf,
+      blurb: 'One KumoMTA warm-up property: today’s registered newsletter plus a cold pad. Records a build request.' },
+    { id: 'newsletter', label: 'Newsletters', icon: faNewspaper,
+      blurb: 'Every eligible sending domain at once. Content is automatic — generated per domain daily — so this mode AUDITS what will mail and takes one send time for all of them.' },
+  ];
+
+  const renderModeSelector = () => (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.55)', marginBottom: 8 }}>
+        Campaign mode
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+        {MODE_CARDS.map(card => {
+          const on = activeMode === card.id;
+          // Warm-up is the ONLY mode with an eligibility precondition, and
+          // the reason it is unavailable is always STATED — an absent panel is
+          // indistinguishable from "not eligible", which is how the dead
+          // warm-up branch hid.
+          const warmupBlocked = card.id === 'warmup' && !isWarmupDomain;
+          const disabled = warmupBlocked;
+          let why = '';
+          if (warmupBlocked) {
+            why = !selectedDomain ? 'Select a sending domain first.'
+              : warmupDomainsLoading ? 'Checking warm-up eligibility…'
+              : warmupDomainsError ? `Eligibility UNKNOWN (${warmupDomainsError}) — this is NOT a statement that the property is ineligible.`
+              : `${selectedDomain} is not a KumoMTA warm-up property.`;
+          }
+          return (
+            <button
+              key={card.id}
+              type="button"
+              aria-pressed={on}
+              disabled={disabled}
+              onClick={() => { if (!disabled) setCampaignMode(card.id); }}
+              style={{
+                textAlign: 'left', padding: 12, borderRadius: 10, cursor: disabled ? 'default' : 'pointer',
+                background: on ? 'rgba(0,176,255,0.10)' : '#0d1526',
+                border: `1.5px solid ${on ? '#00b0ff' : 'rgba(0,200,255,0.08)'}`,
+                opacity: disabled ? 0.5 : 1, color: '#e0e6f0',
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: on ? '#00b0ff' : '#e0e6f0' }}>
+                <FontAwesomeIcon icon={card.icon} style={{ marginRight: 6, fontSize: 11 }} />
+                {card.label}
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginTop: 5, lineHeight: 1.5 }}>
+                {card.blurb}
+              </div>
+              {why && (
+                <div style={{ fontSize: 10.5, color: '#f59e0b', marginTop: 6, lineHeight: 1.45 }}>{why}</div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* An unconfirmable eligibility check must be RETRYABLE and must never
+          read as "not a warm-up property". */}
+      {warmupDomainsError && (
+        <div style={{ marginTop: 10 }}>
+          <SectionError
+            label="Warm-up eligibility"
+            error={`${warmupDomainsError} — Warm-up mode is unavailable because we could not confirm whether this property is a warm-up domain. This is NOT a statement that it is not one.`}
+            onRetry={() => setWarmupDomainsKey(k => k + 1)}
+          />
+        </div>
+      )}
+
+      {activeMode !== 'offers' && offerStateEntered && (
+        <div style={{
+          marginTop: 10, padding: '9px 11px', borderRadius: 8, fontSize: 11.5, lineHeight: 1.55,
+          background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.45)', color: '#fbbf24',
+        }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
+          You already picked offer content{selectedProofName ? ` (${selectedProofName})` : ''}. It is
+          <strong> kept, not discarded</strong> — switch back to Offers and the selection is intact.
+        </div>
+      )}
+
+      {activeMode === 'warmup' && (
+        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 10 }}>
+          Property slug for the newsletter and anchor lookups:{' '}
+          <strong style={{ color: '#e0e6f0', fontFamily: 'monospace' }}>{warmupBrandSlug || '—'}</strong>
+          {warmupSlugIsDerived && (
+            <span style={{ color: '#f59e0b' }}>
+              {' '}· derived from the sending domain (the estate list did not state one) — check it
+              matches the property before scheduling
+            </span>
+          )}
+        </div>
+      )}
+
+      {activeMode === 'newsletter' && (
+        <div style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)', marginTop: 10, lineHeight: 1.55 }}>
+          Newsletters is <strong style={{ color: '#e0e6f0' }}>estate-wide</strong> — the single sending-domain
+          picker does not apply. Choose which domains are in today’s run below; every eligible domain is
+          included until you deselect it.
+        </div>
+      )}
+    </div>
+  );
+
   const renderStepDomain = () => (
     <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 4px' }}>Select Sending Domain<RequiredDot /></h3>
+      <h3 style={{ margin: '0 0 4px' }}>
+        {newsletterActive ? 'Campaign mode + sending domains' : 'Select Sending Domain'}
+        {!newsletterActive && <RequiredDot />}
+      </h3>
       <p style={{ margin: '0 0 16px', color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-        Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.
+        {newsletterActive
+          ? 'Newsletters mails every eligible sending domain. Content is generated per domain daily and is not chosen here — deselect any domain you do not want in today’s run.'
+          : 'Choose the domain that will appear in the "From" address. Each domain shows DNS and IP pool info.'}
       </p>
       <StepErrorBanner stepNum={1} />
+
+      {renderModeSelector()}
+
+      {newsletterActive && renderNewsletterRoster()}
+
+      {!newsletterActive && (<>
       {domainError && (
         <div style={{ textAlign: 'center', padding: 20, color: '#ef4444', background: '#1c1c2e', borderRadius: 8, marginBottom: 12 }}>
           <p style={{ margin: '0 0 8px' }}>{domainError}</p>
@@ -3372,88 +4523,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </div>
       )}
 
-      {/* ── Warm-up toggle ────────────────────────────────────────────────
-          Offered ONLY for a KumoMTA warm-up property. Eligibility is the
-          server's (mailing_sending_profiles.routing_mode='kumo') — the 11
-          domains are never hardcoded in this file. */}
-      {selectedDomain && warmupDomainsLoading && (
-        <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
-          <FontAwesomeIcon icon={faSpinner} spin /> Checking whether {selectedDomain} is a warm-up property…
-        </div>
-      )}
-
-      {selectedDomain && !warmupDomainsLoading && warmupDomainsError && (
-        <div style={{ marginTop: 16 }}>
-          <SectionError
-            label="Warm-up eligibility"
-            error={`${warmupDomainsError} — the warm-up toggle is hidden because we could not confirm whether this property is a warm-up domain. This is NOT a statement that it is not one.`}
-            onRetry={() => setWarmupDomainsKey(k => k + 1)}
-          />
-        </div>
-      )}
-
-      {selectedDomain && !warmupDomainsLoading && !warmupDomainsError && isWarmupDomain && (
-        <div style={{
-          marginTop: 20, borderRadius: 10, padding: 14,
-          background: warmupActive ? 'rgba(56,189,248,0.08)' : '#0d1526',
-          border: `1.5px solid ${warmupActive ? '#38bdf8' : 'rgba(0,200,255,0.08)'}`,
-        }}>
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={warmupMode}
-              onChange={e => setWarmupMode(e.target.checked)}
-              aria-label="Warm-up newsletter mode"
-              style={{ marginTop: 2, width: 16, height: 16, cursor: 'pointer', accentColor: '#38bdf8' }}
-            />
-            <span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: warmupActive ? '#38bdf8' : '#e0e6f0' }}>
-                <FontAwesomeIcon icon={faTemperatureHalf} style={{ marginRight: 6, fontSize: 11 }} />
-                Warm-up newsletter
-              </span>
-              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4, lineHeight: 1.55 }}>
-                {selectedDomain} is a KumoMTA warm-up property. Warm-up swaps two steps and leaves
-                the rest of the wizard alone: step&nbsp;3 becomes the daily-registered
-                <strong> newsletter</strong> (there is no offer — offers are banned in warm-up
-                content) and step&nbsp;4 adds a <strong>cold source and quota</strong> alongside the
-                engaged anchors. Steps 1, 2, 5 and 6 are identical either way.
-              </div>
-            </span>
-          </label>
-
-          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 10 }}>
-            Property slug for the newsletter and anchor lookups:{' '}
-            <strong style={{ color: '#e0e6f0', fontFamily: 'monospace' }}>{warmupBrandSlug || '—'}</strong>
-            {warmupSlugIsDerived && (
-              <span style={{ color: '#f59e0b' }}>
-                {' '}· derived from the sending domain (the estate list did not state one) — check it
-                matches the property before scheduling
-              </span>
-            )}
-          </div>
-
-          {/* Toggling NEVER discards offer-flow work: this branch only reads
-              its own state, so switching back restores the offer step exactly
-              as it was. Say so rather than leaving the operator guessing. */}
-          {warmupActive && offerStateEntered && (
-            <div style={{
-              marginTop: 10, padding: '9px 11px', borderRadius: 8, fontSize: 11.5, lineHeight: 1.55,
-              background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.45)', color: '#fbbf24',
-            }}>
-              <FontAwesomeIcon icon={faExclamationTriangle} />{' '}
-              You already picked offer content{selectedProofName ? ` (${selectedProofName})` : ''}. It is
-              <strong> kept, not discarded</strong> — but it is NOT part of a warm-up request. Switch
-              this toggle off to go back to the offer flow with that selection intact.
-            </div>
-          )}
-
-          {!warmupActive && (
-            <div style={{ marginTop: 10, fontSize: 11.5, color: 'rgba(180,210,240,0.6)' }}>
-              Warm-up is off — this property will be scheduled through the normal offer flow.
-            </div>
-          )}
-        </div>
-      )}
+      </>)}
     </div>
   );
 
@@ -4751,6 +5821,20 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     );
   };
 
+  // ── The submit fork ──────────────────────────────────────────────────────
+  // The single highest-blast-radius branch in this file: before, a third mode
+  // fell through to handleDeploy() and POSTed an OFFER payload to
+  // /pmta-campaign/deploy. It is now an exhaustive switch whose default is a
+  // `never` check, so an unhandled mode cannot compile.
+  const submitForActiveMode = useCallback(() => {
+    switch (activeMode) {
+      case 'offers':     handleDeploy(); return;
+      case 'warmup':     handleWarmupRequest(); return;
+      case 'newsletter': handleNewsletterRequest(); return;
+      default:           assertUnreachableMode(activeMode);
+    }
+  }, [activeMode, handleDeploy, handleWarmupRequest, handleNewsletterRequest]);
+
   const renderWarmupRequestPanel = () => {
     const rows = warmupRequests || [];
     return (
@@ -4758,7 +5842,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
           <h4 style={{ margin: 0, fontSize: 13, color: '#e0e6f0' }}>
             <FontAwesomeIcon icon={faClock} style={{ marginRight: 6, fontSize: 11, color: '#38bdf8' }} />
-            Warm-up build requests — {warmupRequestsDate} ({SEND_DAY_TIMEZONE})
+            Build requests — {warmupRequestsDate} ({SEND_DAY_TIMEZONE})
           </h4>
           <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.4)' }}>
@@ -4772,7 +5856,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
         </div>
 
         <div style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)', lineHeight: 1.55, marginBottom: 10 }}>
-          Queueing a warm-up request does <strong style={{ color: '#e0e6f0' }}>not</strong> send mail and
+          Queueing a build request does <strong style={{ color: '#e0e6f0' }}>not</strong> send mail and
           does not create a campaign. It records the intent; a separate builder picks it up and takes
           roughly 40 minutes. Watch this ledger for
           {' '}<span style={{ color: WARMUP_STATUS_COLORS.requested }}>requested</span> →
@@ -4795,7 +5879,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           </div>
         ) : rows.length === 0 ? (
           <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)', padding: '8px 0' }}>
-            No warm-up build requests recorded for {warmupRequestsDate}.
+            No build requests recorded for {warmupRequestsDate}.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -4842,7 +5926,9 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   const renderStep6 = () => (
     <div className="wiz-step-content ig-fade-in">
-      <h3 style={{ margin: '0 0 16px' }}>Review + Deploy</h3>
+      <h3 style={{ margin: '0 0 16px' }}>
+        {activeMode === 'offers' ? 'Review + Deploy' : 'Review + Queue for build'}
+      </h3>
       <StepErrorBanner stepNum={6} />
 
       {/* ── Send-day anchors ─────────────────────────────────────────────
@@ -4955,9 +6041,117 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
       {/* Warm-up branch: the build ledger sits above the form and stays
           visible whether or not a request has just been queued. */}
-      {warmupActive && renderWarmupRequestPanel()}
+      {(warmupActive || newsletterActive) && renderWarmupRequestPanel()}
 
-      {warmupActive && warmupResult && !warmupResult.error ? (
+      {/* NEWSLETTERS: ONE scheduled instant, N sending domains. The single
+          time and the exact fan-out are stated together so the operator can
+          see what "one time for all domains" resolves to before submitting. */}
+      {newsletterActive && (
+        <div style={{ background: '#0d1526', border: '1px solid rgba(56,189,248,0.25)', borderRadius: 10, padding: 14, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#e0e6f0' }}>
+            <FontAwesomeIcon icon={faNewspaper} style={{ marginRight: 6, fontSize: 11, color: '#38bdf8' }} />
+            This run
+          </h4>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            <div style={{ background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.18)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>Sending domains</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: '#e0e6f0', fontVariantNumeric: 'tabular-nums' }}>
+                {newsletterIncluded.length}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                one build request each — {newsletterTally.total - newsletterTally.included} excluded
+              </div>
+            </div>
+            <div style={{ background: '#0a0f1a', border: `1px solid ${intentScheduledAtISO ? 'rgba(56,189,248,0.35)' : 'rgba(239,68,68,0.45)'}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>
+                Scheduled time — applies to ALL of them
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: intentScheduledAtISO ? '#38bdf8' : '#ef4444', lineHeight: 1.4 }}>
+                {intentScheduledAtISO ? new Date(intentScheduledAtISO).toLocaleString() : 'not set'}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                {intentScheduledAtISO
+                  ? 'the earliest instant set in the schedule controls below'
+                  : 'set it in the schedule controls below'}
+              </div>
+            </div>
+            <div style={{ background: '#0a0f1a', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 }}>Per-provider quota</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: audienceBound ? '#f59e0b' : '#e0e6f0', fontVariantNumeric: 'tabular-nums' }}>
+                {audienceBound ? '0' : 'capped'}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 3 }}>
+                {audienceBound
+                  ? `audience-bound across ${selectedISPs.length} provider${selectedISPs.length === 1 ? '' : 's'}`
+                  : 'finite per-ISP caps from the providers step'}
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 10, lineHeight: 1.55 }}>
+            <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} />{' '}
+            The selected mailbox providers apply to <strong>every</strong> included domain. This screen
+            does not know each domain&rsquo;s transport, so it cannot tell you that a KumoMTA-routed
+            property is yahoo-family only — the builder enforces that per domain.
+          </div>
+          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 8, lineHeight: 1.55 }}>
+            Queueing records <strong style={{ color: '#e0e6f0' }}>{newsletterIncluded.length}</strong> build
+            request{newsletterIncluded.length === 1 ? '' : 's'}:{' '}
+            <span style={{ fontFamily: 'monospace', fontSize: 10.5 }}>
+              {newsletterIncluded.map(v => v.row.sending_domain).join(', ') || '—'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {newsletterActive && newsletterResults ? (
+        <div style={{ padding: '24px 0' }}>
+          <div style={{ textAlign: 'center', color: '#38bdf8', marginBottom: 16 }}>
+            <FontAwesomeIcon icon={faClock} size="3x" style={{ marginBottom: 12 }} />
+            {/* NOT "deployed", NOT "sending" — nothing has been sent. */}
+            <h3 style={{ margin: '0 0 6px' }}>
+              Queued for build — {newsletterResults.filter(r => r.ok).length} of {newsletterResults.length}
+            </h3>
+            <p style={{ margin: 0, fontSize: 13, color: 'rgba(180,210,240,0.75)', lineHeight: 1.6 }}>
+              <strong style={{ color: '#e0e6f0' }}>No mail has been sent and no campaign exists yet.</strong>{' '}
+              A separate builder consumes these requests; the ledger above moves requested → building →
+              built as it does. Every domain is listed individually — a partial failure is never reported
+              as success.
+            </p>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {newsletterResults.map(r => (
+              <div key={r.sending_domain} style={{
+                background: '#0a0f1a', borderRadius: 8, padding: '9px 11px',
+                border: `1px solid ${r.ok ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.45)'}`,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12.5, color: '#e0e6f0', fontFamily: 'monospace' }}>{r.sending_domain}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: r.ok ? '#10b981' : '#ef4444' }}>
+                    {r.ok ? 'queued' : 'not queued'}
+                  </span>
+                </div>
+                {r.ok
+                  ? r.request_id && (
+                      <div style={{ fontSize: 10.5, color: 'rgba(180,210,240,0.45)', marginTop: 4, fontFamily: 'monospace' }}>
+                        request {r.request_id}
+                      </div>
+                    )
+                  : (
+                    <div style={{ fontSize: 11.5, color: '#fca5a5', marginTop: 5, lineHeight: 1.5 }}>
+                      <FontAwesomeIcon icon={faTimesCircle} style={{ fontSize: 10 }} /> {r.error || 'unknown error'} — nothing was queued for this domain.
+                    </div>
+                  )}
+              </div>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 16 }}>
+            <button type="button" onClick={() => setNewsletterResults(null)}
+              style={{ background: 'transparent', border: '1px solid rgba(0,200,255,0.18)', color: '#00b0ff', borderRadius: 8, padding: '8px 18px', fontSize: 12.5, cursor: 'pointer' }}>
+              Back to the form
+            </button>
+          </div>
+        </div>
+      ) : warmupActive && warmupResult && !warmupResult.error ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <div style={{ color: '#38bdf8' }}>
             <FontAwesomeIcon icon={faClock} size="3x" style={{ marginBottom: 12 }} />
@@ -5454,7 +6648,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             {/* Save Draft persists an OFFER-flow campaign_input. A warm-up
                 request is not a campaign draft, so the control is not offered
                 on this branch rather than saving a misleading half-payload. */}
-            {!warmupActive && (
+            {activeMode === 'offers' && (
             <button
               onClick={() => {
                 const errors = getStepErrors(6);
@@ -5487,43 +6681,59 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   setStepAttempted(prev => ({ ...prev, 6: true }));
                   return;
                 }
-                if (warmupActive) { handleWarmupRequest(); return; }
-                handleDeploy();
+                // EXHAUSTIVE. A mode with no case cannot compile, so a third
+                // (or fourth) mode can never fall through to an offer deploy.
+                submitForActiveMode();
               }}
-              disabled={deploying || savingDraft || warmupSubmitting}
+              disabled={deploying || savingDraft || warmupSubmitting || newsletterSubmitting}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 flex: 1.4, padding: '14px 0',
-                background: (deploying || warmupSubmitting) ? '#4b5563'
-                  : warmupActive ? '#38bdf8'
-                  : (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff'),
+                background: (deploying || warmupSubmitting || newsletterSubmitting) ? '#4b5563'
+                  : activeMode === 'offers' ? (sendMode === 'scheduled' ? '#f59e0b' : '#00b0ff')
+                  : '#38bdf8',
                 color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600,
-                cursor: deploying || savingDraft || warmupSubmitting ? 'not-allowed' : 'pointer',
+                cursor: deploying || savingDraft || warmupSubmitting || newsletterSubmitting ? 'not-allowed' : 'pointer',
               }}
             >
-              {warmupActive
+              {/* The two intent-recording modes deliberately never say
+                  "Deploy" or "Send" — nothing is sent by this button. */}
+              {activeMode === 'warmup'
                 ? (warmupSubmitting
                     ? <><FontAwesomeIcon icon={faSpinner} spin /> Queueing…</>
-                    // Deliberately NOT "Deploy" / "Send": this records intent.
                     : <><FontAwesomeIcon icon={faClock} /> Queue for build</>)
-                : deploying
-                  ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
-                  : sendMode === 'scheduled'
-                    ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
-                    : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
+                : activeMode === 'newsletter'
+                  ? (newsletterSubmitting
+                      ? <><FontAwesomeIcon icon={faSpinner} spin /> Queueing {newsletterIncluded.length} domains…</>
+                      : <><FontAwesomeIcon icon={faClock} /> Queue {newsletterIncluded.length} newsletter{newsletterIncluded.length === 1 ? '' : 's'} for build</>)
+                  : deploying
+                    ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</>
+                    : sendMode === 'scheduled'
+                      ? <><FontAwesomeIcon icon={faRocket} /> Schedule Campaign</>
+                      : <><FontAwesomeIcon icon={faRocket} /> Deploy Now</>
               }
             </button>
           </div>
-          {warmupActive && (
+          {(warmupActive || newsletterActive) && (
             <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
-              Queueing records the request only — it does not send mail, and it does not create a
-              campaign. The builder runs separately and takes about 40 minutes.
+              Queueing records the request{newsletterActive ? 's' : ''} only — it does not send mail, and it
+              does not create a campaign. The builder runs separately and takes about 40 minutes.
             </div>
           )}
         </>
       )}
     </div>
   );
+
+  // Mode-dispatched step content. Exhaustive over CampaignMode.
+  const renderStepForMode = (s: 3 | 4): React.ReactNode => {
+    switch (activeMode) {
+      case 'offers':     return s === 3 ? renderStep3() : renderStep4();
+      case 'warmup':     return s === 3 ? renderWarmupStep3() : renderWarmupStep4();
+      case 'newsletter': return s === 3 ? renderNewsletterStep3() : renderNewsletterStep4();
+      default:           return assertUnreachableMode(activeMode);
+    }
+  };
 
   const SummaryCard: React.FC<{ title: string; value: string }> = ({ title, value }) => (
     <div style={{ background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: 12 }}>
@@ -5727,10 +6937,13 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
       <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
         {step === 1 && renderStepDomain()}
         {step === 2 && renderStepProviders()}
-        {/* The BRANCH. Steps 1, 2 and 6 are shared; only 3 and 4 fork, and the
-            offer renderers are never entered while warm-up is active. */}
-        {step === 3 && (warmupActive ? renderWarmupStep3() : renderStep3())}
-        {step === 4 && (warmupActive ? renderWarmupStep4() : renderStep4())}
+        {/* THE BRANCH. Steps 1, 2 and 6 are shared shells; 3 and 4 fork by
+            MODE through an exhaustive switch whose default is a `never` check,
+            so an unhandled mode is a compile error rather than a blank page
+            (`tsc` cannot see a missing `{step === N && …}` line, but it can see
+            a missing switch case). */}
+        {step === 3 && renderStepForMode(3)}
+        {step === 4 && renderStepForMode(4)}
         {step === 6 && renderStep6()}
       </div>
 
