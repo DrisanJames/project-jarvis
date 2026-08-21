@@ -33,9 +33,18 @@ type BrandSuppressor interface {
 }
 
 type Consumer struct {
-	sqsClient       *sqs.Client
-	queueURL        string
-	db              *sql.DB
+	sqsClient *sqs.Client
+	queueURL  string
+	db        *sql.DB
+	// brandSuppressor is wired from main.go. Guarded by wiringMu because the
+	// hub is constructed inside SetMailingDB, which main.go runs in a
+	// GOROUTINE (route registration is heavy) — so on every boot the hub is
+	// still nil when this consumer starts, and the wiring must be applied
+	// LATE, after Start, from that goroutine. A plain field here was the
+	// 2026-08-21 defect: the boot-time type assertion saw nil, logged
+	// "hub NOT wired", and every SQS unsubscribe skipped the enforced set
+	// for the life of the process.
+	wiringMu        sync.RWMutex
 	brandSuppressor BrandSuppressor
 	done            chan struct{}
 }
@@ -55,8 +64,18 @@ func NewConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *Consumer {
 // mailing_suppressions table. Without this, a t.em-routed unsubscribe flips
 // ONE subscriber row and sibling rows for the same email IN THE SAME BRAND
 // stay mailable (CAN-SPAM exposure).
+// Safe to call before OR after Start — late wiring is the NORMAL path (see
+// the wiringMu comment above).
 func (c *Consumer) SetBrandSuppressor(s BrandSuppressor) {
+	c.wiringMu.Lock()
 	c.brandSuppressor = s
+	c.wiringMu.Unlock()
+}
+
+func (c *Consumer) getBrandSuppressor() BrandSuppressor {
+	c.wiringMu.RLock()
+	defer c.wiringMu.RUnlock()
+	return c.brandSuppressor
 }
 
 // pollWorkers controls how many concurrent SQS receive loops run per task.
@@ -412,8 +431,9 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 	sdsDomain := mailing.ResolveSendingDomainForCampaign(ctx, c.db, campaignID)
 	if email != "" {
 		brandRoot := brand.Root(sdsDomain)
+		suppressor := c.getBrandSuppressor()
 		switch {
-		case c.brandSuppressor == nil:
+		case suppressor == nil:
 			// Should never happen in production — main.go wires the hub
 			// right after constructing the consumer. Loud so a wiring
 			// regression is visible; the legacy writes below still run.
@@ -427,7 +447,7 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 			log.Printf("ERROR: PROCESS UNSUB brand root unresolved (campaign=%s) — unsubscribe enforced on subscriber row only, NOT at email level: subscriber=%s md5=%s",
 				campaignID, subscriberID, hashEmail(strings.ToLower(strings.TrimSpace(email))))
 		default:
-			if err := c.brandSuppressor.SuppressScoped(ctx, email, brandRoot, "user_unsubscribe", "sqs_tracking", "", evt.IPAddress, evt.CampaignID); err != nil {
+			if err := suppressor.SuppressScoped(ctx, email, brandRoot, "user_unsubscribe", "sqs_tracking", "", evt.IPAddress, evt.CampaignID); err != nil {
 				log.Printf("ERROR: PROCESS UNSUB brand suppression write failed (message will be retried): campaign=%s subscriber=%s brand=%s md5=%s err=%v",
 					campaignID, subscriberID, brandRoot, hashEmail(strings.ToLower(strings.TrimSpace(email))), err)
 				return err // do NOT delete the SQS message — redelivery retries the suppression

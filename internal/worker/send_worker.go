@@ -106,8 +106,11 @@ type SendWorkerPool struct {
 	pmtaSender      ESPSender
 
 	// Global suppression hub (single source of truth)
-	globalHub        GlobalSuppressionChecker
-	globalSuppressor GlobalSuppressionSuppressor
+	// suppressionWiringMu guards globalHub/globalSuppressor: they are wired
+	// LATE, after Start, once SetMailingDB's goroutine has built the hub.
+	suppressionWiringMu sync.RWMutex
+	globalHub           GlobalSuppressionChecker
+	globalSuppressor    GlobalSuppressionSuppressor
 
 	// Offer-level suppression (Bloom filter O(1) with DB fallback)
 	offerSuppChecker OfferSuppressionChecker
@@ -404,14 +407,36 @@ func (p *SendWorkerPool) SetOfferSuppressionChecker(checker OfferSuppressionChec
 
 // SetGlobalSuppressionHub connects the worker pool to the global
 // suppression single source of truth for pre-send checking.
+// Safe to call before OR after Start. The hub is built inside SetMailingDB,
+// which main.go runs in a goroutine — so on a normal boot this wiring arrives
+// LATE, after the pool's workers are already claiming. Guarded accordingly
+// (2026-08-21: the boot-time assertion read a nil hub and both suppression
+// wirings were silently skipped for the life of the process).
 func (p *SendWorkerPool) SetGlobalSuppressionHub(hub GlobalSuppressionChecker) {
+	p.suppressionWiringMu.Lock()
 	p.globalHub = hub
+	p.suppressionWiringMu.Unlock()
+}
+
+func (p *SendWorkerPool) getGlobalSuppressionHub() GlobalSuppressionChecker {
+	p.suppressionWiringMu.RLock()
+	defer p.suppressionWiringMu.RUnlock()
+	return p.globalHub
 }
 
 // SetGlobalSuppressionWriter connects the worker pool to the global
 // suppression hub for writing bounces/complaints during send failures.
+// Safe to call before OR after Start — see SetGlobalSuppressionHub.
 func (p *SendWorkerPool) SetGlobalSuppressionWriter(w GlobalSuppressionSuppressor) {
+	p.suppressionWiringMu.Lock()
 	p.globalSuppressor = w
+	p.suppressionWiringMu.Unlock()
+}
+
+func (p *SendWorkerPool) getGlobalSuppressionWriter() GlobalSuppressionSuppressor {
+	p.suppressionWiringMu.RLock()
+	defer p.suppressionWiringMu.RUnlock()
+	return p.globalSuppressor
 }
 
 // SetESPSenders sets the ESP sender implementations
@@ -1745,7 +1770,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// Global + brand-scoped suppression — single source of truth, single
 	// read lock covers both axes. When item.BrandRoot is empty (unknown
 	// sending domain), this falls back to a pure global check.
-	if p.globalHub != nil && p.globalHub.IsSuppressedForBrand(item.Email, item.BrandRoot) {
+	if hub := p.getGlobalSuppressionHub(); hub != nil && hub.IsSuppressedForBrand(item.Email, item.BrandRoot) {
 		atomic.AddInt64(&p.totalSkipped, 1)
 		if item.BrandRoot != "" {
 			return p.markSkipped(ctx, item.ID, "brand_suppressed")
@@ -2699,9 +2724,9 @@ func (p *SendWorkerPool) recordBounce(ctx context.Context, item QueueItem, errMs
 		p.db.ExecContext(ctx, `UPDATE mailing_campaigns SET soft_bounce_count = COALESCE(soft_bounce_count, 0) + 1 WHERE id = $1`, item.CampaignID)
 	}
 
-	if bounceType == "hard" && p.globalSuppressor != nil {
+	if suppressor := p.getGlobalSuppressionWriter(); bounceType == "hard" && suppressor != nil {
 		ispGroup := recipientDomain
-		if _, suppressErr := p.globalSuppressor.Suppress(
+		if _, suppressErr := suppressor.Suppress(
 			ctx, item.Email, "hard_bounce", "send_worker",
 			ispGroup, "", errMsg, "", item.CampaignID.String(),
 		); suppressErr != nil {

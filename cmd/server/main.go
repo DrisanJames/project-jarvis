@@ -85,6 +85,14 @@ func extractHost(dsn string) string {
 var besmedSuppressionSQL string
 
 func main() {
+	// mailingRoutesReady closes once SetMailingDB (run in a goroutine — route
+	// registration takes ~100s) has constructed the mailing services,
+	// server.GlobalHub included. Reading GlobalHub before this closes is a
+	// race the synchronous boot path LOSES on every boot — the 2026-08-21
+	// unsubscribe-enforcement outage. Nil until the mailing-DB path runs; a
+	// receive from nil blocks forever, which the late-wiring pass converts to
+	// a loud 20-minute timeout instead of wiring nothing silently.
+	var mailingRoutesReady chan struct{}
 	log.Println("╔════════════════════════════════════════════════════════════╗")
 	log.Println("║  Project Jarvis Production Server (cmd/server/main.go)            ║")
 	log.Println("║  Real database-backed API with full ESP integrations      ║")
@@ -363,9 +371,19 @@ func main() {
 		// Route registration is heavy (many handlers + synchronous service
 		// init). Do not block send-worker startup on it — workers only need
 		// the *sql.DB handle, which is already open above.
+		//
+		// mailingRoutesReady closes when SetMailingDB returns. Anything that
+		// needs objects CONSTRUCTED INSIDE route registration (server.GlobalHub
+		// above all) must wait on this channel — reading those fields from the
+		// synchronous boot path is a race the boot LOSES on every boot, because
+		// registration takes ~100s. That race is how the suppression hub ran
+		// unwired: unsubscribes skipped the enforced set for the life of every
+		// process until 2026-08-21.
+		mailingRoutesReady = make(chan struct{})
 		go func() {
 			server.SetMailingDB(mailingDB)
 			log.Println("Mailing Platform routes registered")
+			close(mailingRoutesReady)
 		}()
 	}
 
@@ -596,24 +614,55 @@ func main() {
 					// (REQ-001; legacy mailing_suppressions is not read by the
 					// PMTA send path). Brands are separate senders: unsubs are
 					// scoped to the originating brand, never written globally.
-					if suppressor, ok := server.GlobalHub.(tracking.BrandSuppressor); ok {
-						trackingConsumer.SetBrandSuppressor(suppressor)
-						log.Printf("Brand-scoped suppression hub wired to SQS tracking consumer")
-					} else {
-						log.Printf("ERROR: suppression hub NOT wired to SQS tracking consumer — SQS unsubscribes will not reach the enforced set")
-					}
+					// The hub does not exist yet — SetMailingDB is still
+					// running in its goroutine. Wiring happens in the late
+					// pass below, gated on mailingRoutesReady. Asserting
+					// server.GlobalHub here was the 2026-08-21 defect: nil on
+					// every boot, so every SQS unsubscribe skipped the
+					// enforced set for the life of the process.
+					log.Printf("SQS tracking consumer starting UNWIRED — suppression hub attaches after route registration (late pass)")
 					trackingConsumer.Start(ctx)
 					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
 				}
 			}
 
-			// Wire global suppression hub to send worker pool for bounce recording
-			if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
-				sendWorkerPool.SetGlobalSuppressionHub(hub)
-			}
-			if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
-				sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
-			}
+			// LATE SUPPRESSION WIRING — the fix for the 2026-08-21 unsubscribe
+			// outage. server.GlobalHub is constructed inside SetMailingDB,
+			// which runs in a goroutine and takes ~100s; the synchronous
+			// assertions that used to live here therefore saw nil on EVERY
+			// boot. The consumer logged it; the two pool wirings were skipped
+			// SILENTLY — so the send path ran with no brand-suppression check
+			// and no hard-bounce suppression writer, process-lifetime long.
+			// All three setters are now mutex-guarded and safe post-Start.
+			// The channel close gives the happens-before edge on GlobalHub.
+			go func() {
+				select {
+				case <-mailingRoutesReady:
+				case <-time.After(20 * time.Minute):
+					log.Printf("ERROR: suppression late-wiring TIMED OUT waiting for mailing route registration — unsubscribes and hard-bounce suppression remain UNENFORCED until next boot")
+					return
+				}
+				if trackingConsumer != nil {
+					if suppressor, ok := server.GlobalHub.(tracking.BrandSuppressor); ok {
+						trackingConsumer.SetBrandSuppressor(suppressor)
+						log.Printf("Brand-scoped suppression hub wired to SQS tracking consumer (late pass, post route registration)")
+					} else {
+						log.Printf("ERROR: suppression hub STILL not wired to SQS tracking consumer after route registration — SQS unsubscribes NOT enforced")
+					}
+				}
+				if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
+					sendWorkerPool.SetGlobalSuppressionHub(hub)
+					log.Printf("Global suppression hub wired to send worker pool (late pass)")
+				} else {
+					log.Printf("ERROR: global suppression hub NOT wired to send worker pool — brand suppression check OFF on send path")
+				}
+				if suppressor, ok := server.GlobalHub.(worker.GlobalSuppressionSuppressor); ok {
+					sendWorkerPool.SetGlobalSuppressionWriter(suppressor)
+					log.Printf("Global suppression writer wired to send worker pool (late pass)")
+				} else {
+					log.Printf("ERROR: global suppression writer NOT wired to send worker pool — hard bounces will not suppress")
+				}
+			}()
 
 			if rr := server.GetRateRegistry(); rr != nil {
 				sendWorkerPool.SetRateRegistry(rr)
