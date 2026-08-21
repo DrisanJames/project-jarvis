@@ -1085,6 +1085,20 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			growthSvc := NewGrowthService(db)
 			growthSvc.RegisterRoutes(r)
 
+			// === DRIP LANE ONBOARDING (operator ask 2026-08-21) ===
+			// Turn an INGESTED lead file into a lane that actually mails:
+			// GET /api/mailing/drip-lane/options|verify and POST /onboard.
+			//
+			// Obeys cold-data-drip-pipeline-only-LAW — it configures the drip
+			// ORCHESTRATOR's tables (roster, welcome/follow-up creatives, budget
+			// cells) and never creates a campaign, writes partner_clean_queue, or
+			// touches a segment. The write path ships INERT behind
+			// DRIP_LANE_ONBOARD_ENABLED and additionally refuses to bypass the
+			// existing PROPERTY_LEDGER_ROSTER_WRITE_ENABLED gate. See
+			// internal/api/drip_lane_onboarding.go for the seven gates.
+			dripLaneOnboardSvc := NewDripLaneOnboardingService(db)
+			dripLaneOnboardSvc.RegisterRoutes(r)
+
 			// === EO CLEANING SERVICE (operator ask 2026-07-26) ===
 			// Ad-hoc EmailOversight cleaning jobs — upload / segment / list
 			// sources; already-Verified emails skipped at enqueue (never pay

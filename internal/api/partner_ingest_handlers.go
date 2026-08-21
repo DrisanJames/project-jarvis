@@ -107,6 +107,24 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 		OptInIP    string                 `json:"opt_in_ip"`
 		OptInURL   string                 `json:"opt_in_url"`
 		TID        json.RawMessage        `json:"tid"`
+
+		// Attribits gmail_v1/v2 spellings (2026-08-21). This feed posts a
+		// 34-field record and only three names lined up with ours, so ZIP,
+		// state, the per-user token and the whole vehicle block were being
+		// destroyed at this door while the send looked healthy — the exact
+		// failure class as the 2026-08-09 city loss and the 2026-08-13 tid loss.
+		ZipCode      string          `json:"zip_code"`
+		StateUpper   string          `json:"state_upper"`
+		LongState    string          `json:"long_state"`
+		County       string          `json:"county"`
+		Var1         json.RawMessage `json:"var1"`
+		VehicleMake  string          `json:"vehicle_make__title"`
+		VehicleModel string          `json:"vehicle_model__title"`
+		VehicleYear  json.RawMessage `json:"vehicle_year"`
+		DOB          string          `json:"dob"`
+		Gender       string          `json:"gender"`
+		HomeOwner    json.RawMessage `json:"home_owner"`
+		PartnerUUID  string          `json:"uuid"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -114,6 +132,16 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 	*r = ingestRecord(v.raw)
 	if strings.TrimSpace(r.Zip) == "" {
 		r.Zip = v.PostalCode
+	}
+	if strings.TrimSpace(r.Zip) == "" {
+		r.Zip = v.ZipCode
+	}
+	// Prefer the 2-letter form; fall back to the spelled-out state.
+	if strings.TrimSpace(r.State) == "" {
+		r.State = v.StateUpper
+	}
+	if strings.TrimSpace(r.State) == "" {
+		r.State = v.LongState
 	}
 	if strings.TrimSpace(r.IPAddress) == "" {
 		r.IPAddress = v.SignupIP
@@ -153,6 +181,47 @@ func (r *ingestRecord) UnmarshalJSON(b []byte) error {
 			r.Metadata["tid"] = tid
 		}
 	}
+	// `var1` is the Attribits gmail_v1/v2 spelling of the per-user money-link
+	// token — same hex-encoded 16-byte shape as the tid the other auto feeds
+	// send. Lower precedence than an explicit tid so a payload carrying both
+	// keeps the canonical one.
+	if tid := scalarToString(v.Var1); tid != "" {
+		if r.Metadata == nil {
+			r.Metadata = map[string]interface{}{}
+		}
+		if _, exists := r.Metadata["tid"]; !exists {
+			r.Metadata["tid"] = tid
+		}
+	}
+	// Everything else this feed sends that has no column of its own. Metadata
+	// is the ONLY map that survives partnerRawRecord and extraMetadataJSON
+	// intact, so folding here needs no change to the other two closed lists.
+	// `vehicle` is composed because that is the form a creative actually uses
+	// ("2004 Toyota Camry"); the parts are kept alongside it.
+	putMeta := func(k, val string) {
+		if strings.TrimSpace(val) == "" {
+			return
+		}
+		if r.Metadata == nil {
+			r.Metadata = map[string]interface{}{}
+		}
+		if _, exists := r.Metadata[k]; !exists {
+			r.Metadata[k] = val
+		}
+	}
+	year := scalarToString(v.VehicleYear)
+	vehicle := strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(year), strings.TrimSpace(v.VehicleMake), strings.TrimSpace(v.VehicleModel),
+	}, " "))
+	putMeta("vehicle", strings.Join(strings.Fields(vehicle), " "))
+	putMeta("vehicle_make", v.VehicleMake)
+	putMeta("vehicle_model", v.VehicleModel)
+	putMeta("vehicle_year", year)
+	putMeta("county", v.County)
+	putMeta("dob", v.DOB)
+	putMeta("gender", v.Gender)
+	putMeta("home_owner", scalarToString(v.HomeOwner))
+	putMeta("partner_uuid", v.PartnerUUID)
 	return nil
 }
 
