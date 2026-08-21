@@ -2670,7 +2670,21 @@ func runStartupMigrations(db *sql.DB) {
 		// probed as CREATE TABLE and the indexes silently never land.
 		{"aug20_kumo_warmup_requests", api.KumoWarmupRequestsDDL},
 		{"aug20_kumo_warmup_requests_idx", api.KumoWarmupRequestsIndexDDL},
+		// Newsletters mode (2026-08-20) — internal/api/newsletter_requests.go.
+		// ORDER IS THE CONTRACT and these sit between the index entries on
+		// purpose: `kind` must exist before the live-slot index below keys on
+		// it, and the kind-BLIND slot must be dropped before the kind-aware
+		// one is created (CREATE UNIQUE INDEX IF NOT EXISTS under a NEW name,
+		// so the old one would otherwise survive forever).
+		// lock_timeout is SET here and RESET immediately after: the runner
+		// holds ONE dedicated connection for this whole slice, so an un-reset
+		// SET would silently re-scope every later migration.
+		{"aug20_campaign_requests_lock_timeout", api.CampaignRequestLockTimeoutDDL},
+		{"aug20_campaign_requests_kind", api.CampaignRequestKindDDL},
+		{"aug20_campaign_requests_creative_sha", api.CampaignRequestCreativeShaDDL},
+		{"aug20_campaign_requests_drop_kindblind_slot", api.CampaignRequestDropKindBlindSlotDDL},
 		{"aug20_kumo_warmup_requests_live_slot", api.KumoWarmupRequestsLiveSlotDDL},
+		{"aug20_campaign_requests_lock_timeout_reset", api.CampaignRequestLockTimeoutResetDDL},
 		{"aug19_mailing_lane_stats_daily", worker.LaneStatsRollupDDL},
 		{"aug19_mailing_lane_stats_daily_idx", worker.LaneStatsRollupIndexDDL},
 		// Worker heartbeat table — backs WorkerHealthMonitor stall detection

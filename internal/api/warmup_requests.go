@@ -31,6 +31,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -115,10 +116,27 @@ CREATE INDEX IF NOT EXISTS idx_kumo_warmup_requests_org_sched
 // live rows exist. On a brand-new table that cannot happen; if the table is
 // ever backfilled before this lands, the migration will log a failure and
 // retry next boot (fail-safe, never fatal). Register it as its own entry.
+//
+// ⚠️ RE-CUT 2026-08-20 — `kind` IS PART OF THE KEY NOW.
+// The original slot was (organization_id, sending_domain, denver_day) with NO
+// discriminator. The 11 kumo domains are simultaneously warm-up domains AND
+// newsletter domains, so the SECOND request for a domain+day — whichever mode
+// wrote first — failed the INSERT with a unique violation that surfaced as a
+// bare 500 with no explanation. The index NAME changes with the definition
+// (…_live_slot -> idx_campaign_requests_live_slot_v2) because CREATE UNIQUE
+// INDEX IF NOT EXISTS is a no-op when the OLD name already exists: reusing the
+// name would silently keep the kind-blind key forever. The old index is
+// retired by api.CampaignRequestDropKindBlindSlotDDL, which is registered
+// BEFORE this entry (see cmd/server/main.go); `kind` is added before that.
+//
+// Re-cut now because the table is EMPTY (0 rows / 32 kB, verified on the prod
+// primary 2026-08-20). That makes the build microseconds and the lock
+// uncontended — the only free moment this will ever have.
 const KumoWarmupRequestsLiveSlotDDL = `
-CREATE UNIQUE INDEX IF NOT EXISTS idx_kumo_warmup_requests_live_slot
+CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_requests_live_slot_v2
 	ON mailing_kumo_warmup_requests (
 		organization_id,
+		kind,
 		sending_domain,
 		((scheduled_at AT TIME ZONE 'America/Denver')::date)
 	)
@@ -206,8 +224,16 @@ func warmupBadUUID(v string) bool { return !reWarmupUUID.MatchString(v) }
 
 type warmupDomain struct {
 	SendingDomain string `json:"sending_domain"`
-	Apex          string `json:"apex"`
-	BrandSlug     string `json:"brand_slug"`
+	// Domain is a TRANSITIONAL ALIAS of sending_domain. The wizard's
+	// WarmupDomainRow interface keys on `domain`, so `warmupDomains.find(d =>
+	// d.domain === selectedDomain)` matched NOTHING against the documented
+	// response and the warm-up branch never activated. sending_domain is the
+	// canonical name (it is what the request row, the newsletter contract and
+	// every other handler use); this alias keeps the current client working
+	// while the frontend converges, and should be deleted once it has.
+	Domain    string `json:"domain"`
+	Apex      string `json:"apex"`
+	BrandSlug string `json:"brand_slug"`
 	// BrandSlugSource: "creative-filename" when the slug was read out of the
 	// brand's registered nl-<slug>-kumo-digest.html row (authoritative), or
 	// "apex-fallback" when no such creative exists yet. There is NO mechanical
@@ -246,6 +272,7 @@ func (s *PMTACampaignService) HandleWarmupDomains(w http.ResponseWriter, r *http
 			return
 		}
 		d.Apex = kumoApexFromSendingDomain(d.SendingDomain)
+		d.Domain = d.SendingDomain
 		domains = append(domains, d)
 	}
 	if err := rows.Err(); err != nil {
@@ -296,11 +323,19 @@ func (s *PMTACampaignService) HandleWarmupDomains(w http.ResponseWriter, r *http
 
 type warmupCreativeResp struct {
 	CreativeID string `json:"creative_id"`
-	BrandCode  string `json:"brand_code"` // the APEX domain, e.g. "bestcreditcare.com"
-	BrandSlug  string `json:"brand_slug"`
-	Filename   string `json:"filename"`
-	Subject    string `json:"subject"`
-	Preheader  string `json:"preheader"`
+	// ID is a TRANSITIONAL ALIAS of creative_id. The wizard's WarmupCreative
+	// interface reads `id` (PMTACampaignWizard.tsx), the server has always
+	// emitted `creative_id`, and neither side noticed because the value is
+	// only ever posted straight back. creative_id is the canonical name (it is
+	// what the newsletter contract and the request row use); this alias exists
+	// so the client keeps working while the frontend converges, and should be
+	// deleted once it has.
+	ID        string `json:"id"`
+	BrandCode string `json:"brand_code"` // the APEX domain, e.g. "bestcreditcare.com"
+	BrandSlug string `json:"brand_slug"`
+	Filename  string `json:"filename"`
+	Subject   string `json:"subject"`
+	Preheader string `json:"preheader"`
 	// UpdatedAt IS THE FRESHNESS FIELD. The daily refresher
 	// (agents/content/refresh.py) rewrites the creative in place and touches
 	// updated_at; generated_at is frozen at FIRST INSERT and never moves. On
@@ -313,15 +348,34 @@ type warmupCreativeResp struct {
 	GeneratedAt    time.Time `json:"generated_at"`
 	FreshnessField string    `json:"freshness_field"`
 	HTMLLength     int64     `json:"html_length"`
+	// HTMLBytes is a TRANSITIONAL ALIAS of html_length — same story as ID.
+	HTMLBytes int64 `json:"html_bytes"`
 	// SHA256 is computed LIVE from html_content, not read from the stored
 	// mailing_creatives.sha256 column, so it can never disagree with the bytes
 	// that would actually mail.
-	SHA256         string `json:"sha256"`
+	SHA256 string `json:"sha256"`
+	// CreativeSHA256 is the same value under the name the request contract
+	// uses, so the client can post back exactly the field it approved.
+	CreativeSHA256 string `json:"creative_sha256"`
 	ApprovalStatus string `json:"approval_status"`
+	// ApprovedBy is the PRODUCER STAMP that selected this row. Surfaced so an
+	// operator can see WHY this creative and not another one.
+	ApprovedBy string `json:"approved_by"`
+	// HTML is populated only when include_html=1. Without it the wizard's
+	// preview iframe rendered an empty white pane with no error — the operator
+	// approved blind, which removed the only human check on what ships.
+	HTML string `json:"html,omitempty"`
 }
 
-// HandleWarmupCreative returns the newest APPROVED kumo-digest creative for a
-// brand. Accepts sending_domain (preferred — resolves via apex) or brand_slug.
+// HandleWarmupCreative returns the newest APPROVED newsletter creative for a
+// brand, through THE CANONICAL SELECTION (newsletter_requests.go) — the same
+// predicate and the same total order the newsletter preview and (once it
+// converges) the Python sender use. It no longer discriminates on
+// `filename ~ 'kumo-digest'`: a filename convention with no constraint behind
+// it is what let the preview and the sender resolve different rows.
+//
+// Accepts sending_domain (preferred — resolves via apex) or brand_slug, and
+// include_html=1 to carry the body for the preview iframe.
 func (s *PMTACampaignService) HandleWarmupCreative(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := getOrgID(r)
@@ -333,57 +387,58 @@ func (s *PMTACampaignService) HandleWarmupCreative(w http.ResponseWriter, r *htt
 		return
 	}
 
-	var (
-		where string
-		key   string
-	)
+	// brandKey is the apex (what mailing_creatives.brand_code carries for
+	// newsletter rows). filenameRe is the LEGACY brand_slug path only: there is
+	// no apex for a bare slug, so the filename is the sole DB-resident mapping.
+	// It narrows WITHIN the producer-stamped set — it never replaces the
+	// producer gate the way the old query's filename filter did.
+	var brandKey, filenameRe string
 	if sendingDomain != "" {
-		// brand_code on mailing_creatives is the APEX domain (verified prod).
-		where = "brand_code = $2"
-		key = kumoApexFromSendingDomain(sendingDomain)
+		brandKey = kumoApexFromSendingDomain(sendingDomain)
 	} else {
 		if !reWarmupSlug.MatchString(brandSlug) {
 			respondError(w, http.StatusBadRequest, "brand_slug must be 2-12 lowercase alphanumerics")
 			return
 		}
-		where = "filename ~ $2"
-		key = warmupKumoDigestSlugRe(brandSlug)
+		filenameRe = `^nl-` + brandSlug + `-`
 	}
 
-	var (
-		resp     warmupCreativeResp
-		filename string
-	)
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, brand_code, filename, COALESCE(subject,''), COALESCE(preheader,''),
-		       updated_at, generated_at,
-		       length(html_content)::bigint,
-		       encode(sha256(convert_to(html_content, 'UTF8')), 'hex'),
-		       approval_status
-		FROM mailing_creatives
-		WHERE organization_id = $1
-		  AND `+where+`
-		  AND filename ~ 'kumo-digest'
-		  AND approval_status = 'approved'
-		ORDER BY updated_at DESC
-		LIMIT 1`, orgID, key).
-		Scan(&resp.CreativeID, &resp.BrandCode, &filename, &resp.Subject, &resp.Preheader,
-			&resp.UpdatedAt, &resp.GeneratedAt, &resp.HTMLLength, &resp.SHA256, &resp.ApprovalStatus)
-	if err == sql.ErrNoRows {
-		respondError(w, http.StatusNotFound, "no approved kumo-digest creative for that brand")
-		return
-	}
+	c, err := SelectNewsletterCreative(ctx, s.db, orgID, brandKey, filenameRe)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "creative lookup failed")
 		return
 	}
+	if c == nil {
+		respondError(w, http.StatusNotFound,
+			"no approved newsletter creative for that brand (needs approval_status='approved' and a "+
+				"producer stamp in approved_by: "+strings.Join(NewsletterProducerStamps, ", ")+")")
+		return
+	}
 
-	resp.Filename = filename
-	resp.FreshnessField = "updated_at"
+	resp := warmupCreativeResp{
+		CreativeID:     c.CreativeID,
+		ID:             c.CreativeID,
+		BrandCode:      c.BrandCode,
+		Filename:       c.Filename,
+		Subject:        c.Subject,
+		Preheader:      c.Preheader,
+		UpdatedAt:      c.UpdatedAt,
+		GeneratedAt:    c.GeneratedAt,
+		FreshnessField: "updated_at",
+		HTMLLength:     c.HTMLLength,
+		HTMLBytes:      c.HTMLLength,
+		SHA256:         c.SHA256,
+		CreativeSHA256: c.SHA256,
+		ApprovalStatus: c.ApprovalStatus,
+		ApprovedBy:     c.ApprovedBy,
+	}
+	if newsletterTruthy(r.URL.Query().Get("include_html")) {
+		resp.HTML = c.HTML
+	}
 	if brandSlug != "" {
 		resp.BrandSlug = brandSlug
-	} else if parts := strings.Split(filename, "-"); len(parts) >= 2 {
-		resp.BrandSlug = parts[1]
+	} else {
+		resp.BrandSlug = newsletterBrandSlug(c.Filename, c.BrandCode)
 	}
 	respondJSON(w, http.StatusOK, resp)
 }
@@ -394,7 +449,12 @@ func (s *PMTACampaignService) HandleWarmupCreative(w http.ResponseWriter, r *htt
 
 type warmupSegment struct {
 	SegmentID string `json:"segment_id"`
-	Name      string `json:"name"`
+	// ID is a TRANSITIONAL ALIAS of segment_id — same class as warmupDomain.Domain
+	// and warmupCreativeResp.ID. The wizard's WarmupSegment interface keys on
+	// `id`, so selection (`warmupSelectedSegmentIds.includes(sg.id)`) compared
+	// undefined against every row and nothing could be selected.
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	// SubscriberCount is the BUILD-LEDGER count when a ledger row exists.
 	// mailing_segments.subscriber_count is a cached tally that
 	// SegmentRefreshWorker writes as 0 whenever its count query times out
@@ -466,6 +526,7 @@ func (s *PMTACampaignService) HandleWarmupSegments(w http.ResponseWriter, r *htt
 			seg.SubscriberCount = seg.CounterCount
 			seg.CountSource = "cached_counter"
 		}
+		seg.ID = seg.SegmentID
 		if buildStatus.Valid {
 			seg.BuildStatus = buildStatus.String
 		} else {
@@ -494,18 +555,71 @@ func (s *PMTACampaignService) HandleWarmupSegments(w http.ResponseWriter, r *htt
 // =============================================================================
 
 type warmupRequestUpsertReq struct {
-	ID                 string         `json:"id"` // empty = create
-	SendingDomain      string         `json:"sending_domain"`
-	BrandSlug          string         `json:"brand_slug"`
-	CreativeID         *string        `json:"creative_id"`
-	Subject            *string        `json:"subject"`
-	Preheader          *string        `json:"preheader"`
-	AudienceSegmentIDs []string       `json:"audience_segment_ids"`
-	ColdSource         *string        `json:"cold_source"`
-	ColdQuota          *int           `json:"cold_quota"`
-	ISPQuotas          map[string]int `json:"isp_quotas"`
-	ScheduledAt        string         `json:"scheduled_at"` // RFC3339
-	Status             string         `json:"status"`       // draft|requested|cancelled
+	ID            string `json:"id"` // empty = create
+	SendingDomain string `json:"sending_domain"`
+	// Kind selects the programme: kumo_warmup (default, back-compatible with
+	// every caller that predates newsletters) or newsletter.
+	Kind               string   `json:"kind"`
+	BrandSlug          string   `json:"brand_slug"`
+	CreativeID         *string  `json:"creative_id"`
+	Subject            *string  `json:"subject"`
+	Preheader          *string  `json:"preheader"`
+	AudienceSegmentIDs []string `json:"audience_segment_ids"`
+	ColdSource         *string  `json:"cold_source"`
+	ColdQuota          *int     `json:"cold_quota"`
+	// ISPQuotas accepts BOTH wire shapes. The handler declared
+	// map[string]int; the wizard sends [{"isp":"yahoo","volume":0}] (the same
+	// array the offer payload builds). The array decoded into a nil map, so
+	// every per-ISP quota an operator set was silently dropped — including the
+	// volume:0-per-ISP marker that means "audience-bound, uncapped". Decoded
+	// by warmupParseISPQuotas and STORED as an object either way.
+	ISPQuotas   json.RawMessage `json:"isp_quotas"`
+	ScheduledAt string          `json:"scheduled_at"` // RFC3339
+	Status      string          `json:"status"`       // draft|requested|cancelled
+	// CreativeSHA256 is the sha of the bytes the operator actually previewed.
+	// creative_id does NOT pin the bytes: the daily stage UPDATEs html_content
+	// on the same row id, so a preview at 09:00 and a build at 11:00 ship
+	// different articles under the approved subject. When this is supplied and
+	// no longer matches the live creative, the request is REFUSED with
+	// NewsletterShaMismatchReason — never accepted quietly.
+	CreativeSHA256 string `json:"creative_sha256"`
+}
+
+// warmupParseISPQuotas accepts {"yahoo":100} or [{"isp":"yahoo","volume":100}]
+// and normalizes to a map. A zero volume is MEANINGFUL (volume:0 per ISP is
+// how an audience-bound/uncapped send is expressed) and is preserved, not
+// filtered out.
+func warmupParseISPQuotas(raw json.RawMessage) (map[string]int, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil, nil
+	}
+	switch trimmed[0] {
+	case '{':
+		var m map[string]int
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		return m, nil
+	case '[':
+		var arr []struct {
+			ISP    string `json:"isp"`
+			Volume int    `json:"volume"`
+		}
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return nil, err
+		}
+		m := make(map[string]int, len(arr))
+		for _, e := range arr {
+			isp := strings.ToLower(strings.TrimSpace(e.ISP))
+			if isp == "" {
+				continue
+			}
+			m[isp] = e.Volume
+		}
+		return m, nil
+	}
+	return nil, fmt.Errorf("isp_quotas must be an object or an array of {isp,volume}")
 }
 
 // HandleWarmupRequestUpsert creates or updates a warm-up request. It records
@@ -527,6 +641,17 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 	}
 	if req.ID != "" && warmupBadUUID(req.ID) {
 		respondError(w, http.StatusBadRequest, "id must be a uuid")
+		return
+	}
+
+	// --- kind: closed allow-list, defaults to the pre-newsletter behaviour --
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	if kind == "" {
+		kind = RequestKindKumoWarmup
+	}
+	if !campaignRequestKinds[kind] {
+		respondError(w, http.StatusBadRequest,
+			"unknown kind '"+kind+"' ("+RequestKindKumoWarmup+"|"+RequestKindNewsletter+")")
 		return
 	}
 
@@ -567,7 +692,13 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 		respondError(w, http.StatusBadRequest, "cold_quota must be >= 0")
 		return
 	}
-	for isp, q := range req.ISPQuotas {
+	ispQuotas, qErr := warmupParseISPQuotas(req.ISPQuotas)
+	if qErr != nil {
+		respondError(w, http.StatusBadRequest,
+			"isp_quotas must be {\"isp\":volume} or [{\"isp\":...,\"volume\":...}]: "+qErr.Error())
+		return
+	}
+	for isp, q := range ispQuotas {
 		if q < 0 {
 			respondError(w, http.StatusBadRequest, "isp_quotas."+isp+" must be >= 0")
 			return
@@ -596,8 +727,8 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 	}
 
 	var ispQuotasJSON interface{}
-	if req.ISPQuotas != nil {
-		b, mErr := json.Marshal(req.ISPQuotas)
+	if ispQuotas != nil {
+		b, mErr := json.Marshal(ispQuotas)
 		if mErr != nil {
 			respondError(w, http.StatusBadRequest, "isp_quotas not serializable")
 			return
@@ -612,22 +743,96 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 	}
 	defer tx.Rollback()
 
-	// --- the sending domain must be a LIVE kumo profile -------------------
+	// --- the sending domain must be a LIVE profile ------------------------
+	// kumo_warmup is restricted to routing_mode='kumo' (the 11 warm-up
+	// properties). NEWSLETTERS span all 27 sending domains, so the mode gate
+	// is the kind, not the transport — a required routing_mode there would
+	// exclude the 16 PMTA/SES brands the operator asked for.
+	requiredRouting := ""
+	if kind == RequestKindKumoWarmup {
+		requiredRouting = "kumo"
+	}
 	var profileExists bool
 	err = tx.QueryRowContext(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM mailing_sending_profiles
 			WHERE organization_id = $1 AND sending_domain = $2
-			  AND routing_mode = 'kumo' AND status = 'active'
-		)`, orgID, sendingDomain).Scan(&profileExists)
+			  AND status = 'active'
+			  AND ($3 = '' OR routing_mode = $3)
+		)`, orgID, sendingDomain, requiredRouting).Scan(&profileExists)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "kumo profile check failed")
+		respondError(w, http.StatusInternalServerError, "sending profile check failed")
 		return
 	}
 	if !profileExists {
-		respondError(w, http.StatusBadRequest,
-			"sending_domain '"+sendingDomain+"' is not a live KumoMTA warm-up profile (routing_mode='kumo')")
+		if kind == RequestKindKumoWarmup {
+			respondError(w, http.StatusBadRequest,
+				"sending_domain '"+sendingDomain+"' is not a live KumoMTA warm-up profile (routing_mode='kumo')")
+		} else {
+			respondError(w, http.StatusBadRequest,
+				"sending_domain '"+sendingDomain+"' has no active sending profile")
+		}
 		return
+	}
+
+	// --- the creative pin: verify the BYTES, not just the id ---------------
+	// This is the enforcement point the API owns. The builder re-checks
+	// creative_sha256 at build time (it can drift again between submit and
+	// build); both sides speak through NewsletterShaMismatchReason so a drift
+	// always reads the same way to the operator.
+	creativeID := ""
+	if req.CreativeID != nil {
+		creativeID = strings.TrimSpace(*req.CreativeID)
+	}
+	// A newsletter handed to the builder MUST be pinned. A draft may still be
+	// mid-composition, and a cancel is retiring the row.
+	if kind == RequestKindNewsletter && status == "requested" {
+		if creativeID == "" {
+			respondError(w, http.StatusBadRequest,
+				"a newsletter request needs creative_id — the creative is what is being approved")
+			return
+		}
+		if strings.TrimSpace(req.CreativeSHA256) == "" {
+			respondError(w, http.StatusBadRequest,
+				"a newsletter request needs creative_sha256 (the sha of the bytes shown in the preview); "+
+					"creative_id alone does not pin what ships — the daily stage rewrites html_content on the same row")
+			return
+		}
+	}
+
+	var liveSHA interface{}
+	if creativeID != "" {
+		var (
+			sha        string
+			approval   string
+			cUpdatedAt time.Time
+		)
+		err = tx.QueryRowContext(ctx, `
+			SELECT encode(sha256(convert_to(COALESCE(html_content,''), 'UTF8')), 'hex'),
+			       COALESCE(approval_status, ''), updated_at
+			FROM mailing_creatives
+			WHERE id = $1::uuid AND organization_id = $2`, creativeID, orgID).
+			Scan(&sha, &approval, &cUpdatedAt)
+		if err == sql.ErrNoRows {
+			respondError(w, http.StatusBadRequest,
+				"creative_id "+creativeID+" does not exist in this organization")
+			return
+		}
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "creative pin check failed")
+			return
+		}
+		if approval != "approved" {
+			respondError(w, http.StatusConflict,
+				"creative "+creativeID+" is '"+approval+"', not approved — only approved copy mails")
+			return
+		}
+		if want := strings.TrimSpace(req.CreativeSHA256); want != "" && !strings.EqualFold(want, sha) {
+			respondError(w, http.StatusConflict,
+				NewsletterShaMismatchReason(sendingDomain, want, sha, cUpdatedAt))
+			return
+		}
+		liveSHA = sha
 	}
 
 	actor := actorFromRequest(r)
@@ -637,16 +842,20 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 		// ---------------- CREATE ----------------
 		err = tx.QueryRowContext(ctx, `
 			INSERT INTO mailing_kumo_warmup_requests
-				(organization_id, sending_domain, brand_slug, creative_id, subject, preheader,
-				 audience_segment_ids, cold_source, cold_quota, isp_quotas, scheduled_at,
-				 status, requested_by, created_at, updated_at)
-			VALUES ($1, $2, $3, $4::uuid, $5, $6, $7::uuid[], $8, $9, $10::jsonb, $11, $12, $13, NOW(), NOW())
+				(organization_id, sending_domain, kind, brand_slug, creative_id, creative_sha256,
+				 subject, preheader, audience_segment_ids, cold_source, cold_quota, isp_quotas,
+				 scheduled_at, status, requested_by, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8, $9::uuid[], $10, $11, $12::jsonb, $13, $14, $15, NOW(), NOW())
 			RETURNING id`,
-			orgID, sendingDomain, brandSlug, warmupNullableUUID(req.CreativeID),
+			orgID, sendingDomain, kind, brandSlug, warmupNullableUUID(req.CreativeID), liveSHA,
 			warmupNullableText(req.Subject), warmupNullableText(req.Preheader),
 			pq.Array(segIDs), warmupNullableText(req.ColdSource), warmupNullableInt(req.ColdQuota),
 			ispQuotasJSON, scheduledAt, status, actor).Scan(&id)
 		if err != nil {
+			if msg, ok := warmupLiveSlotConflict(err, kind, sendingDomain, scheduledAt); ok {
+				respondError(w, http.StatusConflict, msg)
+				return
+			}
 			respondError(w, http.StatusInternalServerError, "warm-up request insert failed")
 			return
 		}
@@ -673,24 +882,30 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 		_, err = tx.ExecContext(ctx, `
 			UPDATE mailing_kumo_warmup_requests
 			SET sending_domain       = $3,
-			    brand_slug           = $4,
-			    creative_id          = $5::uuid,
-			    subject              = $6,
-			    preheader            = $7,
-			    audience_segment_ids = $8::uuid[],
-			    cold_source          = $9,
-			    cold_quota           = $10,
-			    isp_quotas           = $11::jsonb,
-			    scheduled_at         = $12,
-			    status               = $13,
-			    requested_by         = $14,
+			    kind                 = $4,
+			    brand_slug           = $5,
+			    creative_id          = $6::uuid,
+			    creative_sha256      = $7,
+			    subject              = $8,
+			    preheader            = $9,
+			    audience_segment_ids = $10::uuid[],
+			    cold_source          = $11,
+			    cold_quota           = $12,
+			    isp_quotas           = $13::jsonb,
+			    scheduled_at         = $14,
+			    status               = $15,
+			    requested_by         = $16,
 			    updated_at           = NOW()
 			WHERE id = $1 AND organization_id = $2`,
-			id, orgID, sendingDomain, brandSlug, warmupNullableUUID(req.CreativeID),
+			id, orgID, sendingDomain, kind, brandSlug, warmupNullableUUID(req.CreativeID), liveSHA,
 			warmupNullableText(req.Subject), warmupNullableText(req.Preheader),
 			pq.Array(segIDs), warmupNullableText(req.ColdSource), warmupNullableInt(req.ColdQuota),
 			ispQuotasJSON, scheduledAt, status, actor)
 		if err != nil {
+			if msg, ok := warmupLiveSlotConflict(err, kind, sendingDomain, scheduledAt); ok {
+				respondError(w, http.StatusConflict, msg)
+				return
+			}
 			respondError(w, http.StatusInternalServerError, "warm-up request update failed")
 			return
 		}
@@ -701,14 +916,44 @@ func (s *PMTACampaignService) HandleWarmupRequestUpsert(w http.ResponseWriter, r
 		return
 	}
 
+	shaOut := ""
+	if s, ok := liveSHA.(string); ok {
+		shaOut = s
+	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"id":             id,
 		"sending_domain": sendingDomain,
+		"kind":           kind,
 		"brand_slug":     brandSlug,
 		"status":         status,
 		"scheduled_at":   scheduledAt.UTC().Format(time.RFC3339),
 		"requested_by":   actor,
+		// The sha the row now pins. Echoed so the caller can prove the bytes
+		// it approved are the bytes recorded.
+		"creative_sha256": shaOut,
 	})
+}
+
+// warmupLiveSlotConflict turns the live-slot unique violation into an
+// operator-facing 409 instead of a bare "insert failed" 500.
+//
+// The slot is (organization_id, kind, sending_domain, Denver day) over the
+// LIVE statuses only (idx_campaign_requests_live_slot_v2). Before `kind` was
+// part of the key, a newsletter request and a warm-up request for the same
+// kumo domain on the same day collided and the operator saw a 500 with no
+// explanation — that is the defect this message closes out.
+func warmupLiveSlotConflict(err error, kind, sendingDomain string, scheduledAt time.Time) (string, bool) {
+	pqErr, ok := err.(*pq.Error)
+	if !ok || pqErr.Code != "23505" {
+		return "", false
+	}
+	if !strings.Contains(pqErr.Constraint, "live_slot") {
+		return "", false
+	}
+	return "a live '" + kind + "' request already exists for " + sendingDomain + " on " +
+		scheduledAt.In(propertyLedgerLoc).Format("2006-01-02") + " (Denver). " +
+		"Cancel it before requesting another, or edit the existing request by id. " +
+		"Warm-up and newsletter requests are separate slots — this conflict is within '" + kind + "'.", true
 }
 
 // warmupTransitionAllowed encodes who owns which state.
@@ -769,10 +1014,21 @@ func warmupNullableInt(v *int) interface{} {
 // =============================================================================
 
 type warmupRequestRow struct {
-	ID                 string     `json:"id"`
-	SendingDomain      string     `json:"sending_domain"`
-	BrandSlug          string     `json:"brand_slug"`
-	CreativeID         *string    `json:"creative_id"`
+	ID            string  `json:"id"`
+	SendingDomain string  `json:"sending_domain"`
+	Kind          string  `json:"kind"`
+	BrandSlug     string  `json:"brand_slug"`
+	CreativeID    *string `json:"creative_id"`
+	// CreativeSHA256 is the sha PINNED on the request; CreativeSHA256Live is
+	// recomputed from the creative's CURRENT bytes on every read. When they
+	// differ the creative was refreshed after approval — CreativeDrifted is
+	// true and DriftReason carries the operator-facing sentence. The builder
+	// refuses such a row; surfacing it here means the operator sees the
+	// refusal coming in the portal instead of finding a `failed` row later.
+	CreativeSHA256     *string    `json:"creative_sha256"`
+	CreativeSHA256Live *string    `json:"creative_sha256_live"`
+	CreativeDrifted    bool       `json:"creative_drifted"`
+	DriftReason        string     `json:"drift_reason,omitempty"`
 	CreativeSubject    *string    `json:"creative_subject"`
 	CreativeFilename   *string    `json:"creative_filename"`
 	Subject            *string    `json:"subject"`
@@ -825,8 +1081,11 @@ func (s *PMTACampaignService) HandleWarmupRequestList(w http.ResponseWriter, r *
 			row      warmupRequestRow
 			segIDs   pq.StringArray
 			creative sql.NullString
+			pinSHA   sql.NullString
 			cSubject sql.NullString
 			cFile    sql.NullString
+			cUpdated sql.NullTime
+			liveSHA  sql.NullString
 			subject  sql.NullString
 			pre      sql.NullString
 			coldSrc  sql.NullString
@@ -838,10 +1097,10 @@ func (s *PMTACampaignService) HandleWarmupRequestList(w http.ResponseWriter, r *
 			created  sql.NullTime
 			updated  sql.NullTime
 		)
-		if err := rows.Scan(&row.ID, &row.SendingDomain, &row.BrandSlug, &creative,
+		if err := rows.Scan(&row.ID, &row.SendingDomain, &row.Kind, &row.BrandSlug, &creative, &pinSHA,
 			&subject, &pre, &segIDs, &coldSrc, &coldQ, &ispQ, &row.ScheduledAt,
 			&row.Status, &reqBy, &note, &campaign, &created, &updated,
-			&cSubject, &cFile); err != nil {
+			&cSubject, &cFile, &cUpdated, &liveSHA); err != nil {
 			respondError(w, http.StatusInternalServerError, "warm-up request scan failed")
 			return
 		}
@@ -850,6 +1109,16 @@ func (s *PMTACampaignService) HandleWarmupRequestList(w http.ResponseWriter, r *
 			row.AudienceSegmentIDs = []string{}
 		}
 		row.CreativeID = warmupStrPtr(creative)
+		row.CreativeSHA256 = warmupStrPtr(pinSHA)
+		row.CreativeSHA256Live = warmupStrPtr(liveSHA)
+		// Drift is only meaningful once a sha was pinned AND the creative still
+		// exists. An unpinned legacy row is not "drifted" — it is unpinned, and
+		// saying otherwise would cry wolf on every warm-up row.
+		if pinSHA.Valid && liveSHA.Valid && !strings.EqualFold(pinSHA.String, liveSHA.String) {
+			row.CreativeDrifted = true
+			row.DriftReason = NewsletterShaMismatchReason(
+				row.SendingDomain, pinSHA.String, liveSHA.String, cUpdated.Time)
+		}
 		row.CreativeSubject = warmupStrPtr(cSubject)
 		row.CreativeFilename = warmupStrPtr(cFile)
 		row.Subject = warmupStrPtr(subject)
@@ -889,11 +1158,12 @@ func (s *PMTACampaignService) HandleWarmupRequestList(w http.ResponseWriter, r *
 // Denver-day UTC window ($2/$3, NULL = all). Joined to the creative for its
 // subject/filename, and carrying the builder's campaign_id stamp.
 const warmupRequestListSQL = `
-	SELECT r.id, r.sending_domain, r.brand_slug, r.creative_id,
+	SELECT r.id, r.sending_domain, r.kind, r.brand_slug, r.creative_id, r.creative_sha256,
 	       r.subject, r.preheader, r.audience_segment_ids, r.cold_source,
 	       r.cold_quota, r.isp_quotas::text, r.scheduled_at, r.status,
 	       r.requested_by, r.build_note, r.campaign_id, r.created_at, r.updated_at,
-	       c.subject, c.filename
+	       c.subject, c.filename, c.updated_at,
+	       encode(sha256(convert_to(COALESCE(c.html_content,''), 'UTF8')), 'hex')
 	FROM mailing_kumo_warmup_requests r
 	LEFT JOIN mailing_creatives c ON c.id = r.creative_id
 	WHERE r.organization_id = $1

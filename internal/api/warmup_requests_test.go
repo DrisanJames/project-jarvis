@@ -54,16 +54,24 @@ func TestWarmupUpsertHappyPathBindsOrg(t *testing.T) {
 	newID := "99999999-8888-7777-6666-555555555555"
 
 	mock.ExpectBegin()
-	// The kumo-profile gate must be scoped to the CALLER's org.
+	// The profile gate must be scoped to the CALLER's org. $3 is the required
+	// routing_mode: 'kumo' for a warm-up request, '' for a newsletter (which
+	// spans all 27 domains, not just the 11 kumo properties).
 	mock.ExpectQuery(`FROM mailing_sending_profiles`).
-		WithArgs(warmupTestOrg, "em.aadwd.com").
+		WithArgs(warmupTestOrg, "em.aadwd.com", "kumo").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	// The insert's $1 is the org; $2/$3 the domain/slug.
+	// A pinned creative_id is verified against the LIVE bytes before anything
+	// is written — creative_id alone does not pin what ships.
+	mock.ExpectQuery(`FROM mailing_creatives`).
+		WithArgs("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", warmupTestOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"sha", "approval_status", "updated_at"}).
+			AddRow("deadbeef", "approved", time.Now()))
+	// The insert's $1 is the org; $2/$3/$4 the domain/kind/slug.
 	mock.ExpectQuery(`INSERT INTO mailing_kumo_warmup_requests`).
-		WithArgs(warmupTestOrg, "em.aadwd.com", "aad",
+		WithArgs(warmupTestOrg, "em.aadwd.com", "kumo_warmup", "aad",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg()).
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(newID))
 	mock.ExpectCommit()
 
@@ -84,10 +92,12 @@ func TestWarmupUpsertHappyPathBindsOrg(t *testing.T) {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		ID            string `json:"id"`
-		SendingDomain string `json:"sending_domain"`
-		BrandSlug     string `json:"brand_slug"`
-		Status        string `json:"status"`
+		ID             string `json:"id"`
+		SendingDomain  string `json:"sending_domain"`
+		Kind           string `json:"kind"`
+		BrandSlug      string `json:"brand_slug"`
+		Status         string `json:"status"`
+		CreativeSHA256 string `json:"creative_sha256"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
@@ -95,6 +105,15 @@ func TestWarmupUpsertHappyPathBindsOrg(t *testing.T) {
 	if resp.ID != newID || resp.SendingDomain != "em.aadwd.com" ||
 		resp.BrandSlug != "aad" || resp.Status != "requested" {
 		t.Fatalf("response contract wrong: %+v", resp)
+	}
+	// kind defaults to kumo_warmup so every pre-newsletter caller keeps working.
+	if resp.Kind != RequestKindKumoWarmup {
+		t.Fatalf("kind must default to %q, got %q", RequestKindKumoWarmup, resp.Kind)
+	}
+	// The sha the row pins is echoed, and it is the sha computed from the LIVE
+	// bytes -- not whatever the client claimed.
+	if resp.CreativeSHA256 != "deadbeef" {
+		t.Fatalf("response must echo the live pinned sha, got %q", resp.CreativeSHA256)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -110,7 +129,7 @@ func TestWarmupUpsertRejectsNonKumoDomain(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(`FROM mailing_sending_profiles`).
-		WithArgs(warmupTestOrg, "em.discountblog.com").
+		WithArgs(warmupTestOrg, "em.discountblog.com", "kumo").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	// Decisive: no INSERT expectation. sqlmock (ordered) fails the test if the
 	// handler writes anyway; the tx must roll back.
@@ -253,13 +272,12 @@ func TestWarmupCreativeExposesBothTimestamps(t *testing.T) {
 	updated := time.Date(2026, 8, 20, 16, 33, 17, 0, time.UTC)
 
 	mock.ExpectQuery(`FROM mailing_creatives`).
-		WithArgs(warmupTestOrg, "aadwd.com").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "brand_code", "filename", "subject", "preheader",
-			"updated_at", "generated_at", "length", "sha256", "approval_status"}).
+		WithArgs(warmupTestOrg, sqlmock.AnyArg(), sqlmock.AnyArg(), "").
+		WillReturnRows(newsletterCreativeRows().
 			AddRow("cccccccc-dddd-eeee-ffff-000000000000", "aadwd.com",
 				"nl-aad-kumo-digest.html", "Today's read", "Three minutes",
-				updated, generated, int64(6744), "a103cb07607eb149", "approved"))
+				"<html>body</html>", updated, generated, "approved",
+				"kumo_newsletter_stage", int64(6744), "a103cb07607eb149"))
 
 	req := httptest.NewRequest("GET",
 		"/api/mailing/pmta-campaign/warmup/creative?sending_domain=em.aadwd.com", nil)
@@ -274,7 +292,8 @@ func TestWarmupCreativeExposesBothTimestamps(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"updated_at", "generated_at", "freshness_field", "sha256", "html_length", "brand_slug"} {
+	for _, field := range []string{"updated_at", "generated_at", "freshness_field", "sha256",
+		"creative_sha256", "html_length", "brand_slug", "creative_id", "approved_by"} {
 		if _, ok := raw[field]; !ok {
 			t.Fatalf("creative response must carry %q: %s", field, rec.Body.String())
 		}
@@ -292,6 +311,20 @@ func TestWarmupCreativeExposesBothTimestamps(t *testing.T) {
 	}
 	if raw["brand_slug"] != "aad" {
 		t.Fatalf("brand_slug must be read out of the filename, got %v", raw["brand_slug"])
+	}
+	// include_html was NOT requested, so the body must be absent -- not "" and
+	// not a truncated placeholder.
+	if _, present := raw["html"]; present {
+		t.Fatalf("html must be omitted unless include_html=1: %s", rec.Body.String())
+	}
+	// TRANSITIONAL ALIASES: the wizard reads id/html_bytes while the canonical
+	// names are creative_id/html_length. Both must be present and equal until
+	// the client converges.
+	if raw["id"] != raw["creative_id"] {
+		t.Fatalf("id must alias creative_id: %v vs %v", raw["id"], raw["creative_id"])
+	}
+	if raw["html_bytes"] != raw["html_length"] {
+		t.Fatalf("html_bytes must alias html_length: %v vs %v", raw["html_bytes"], raw["html_length"])
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

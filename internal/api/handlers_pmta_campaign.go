@@ -171,6 +171,13 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/warmup/segments", s.HandleWarmupSegments)
 		cr.Post("/warmup/request", s.HandleWarmupRequestUpsert)
 		cr.Get("/warmup/requests", s.HandleWarmupRequestList)
+		// Campaign Manager NEWSLETTERS flow (operator 2026-08-20): one
+		// scheduled send across ALL 27 sending domains. Read-only audit
+		// surface — exactly what would ship per domain, with an absent
+		// creative reported as status:"missing", never omitted.
+		// (internal/api/newsletter_requests.go). Requests REUSE
+		// POST /warmup/request with kind="newsletter".
+		cr.Get("/newsletter/preview", s.HandleNewsletterPreview)
 		// Supply strip (Pipeline Cockpit P1, read-only): live pcq tranche
 		// anatomy per feed — total / cleaning / ready-by-ISP / held.
 		cr.Get("/property-ledger/supply", s.HandleLaneSupply)
