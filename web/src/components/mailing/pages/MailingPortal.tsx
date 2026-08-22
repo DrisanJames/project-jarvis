@@ -45,6 +45,7 @@ const DripLanesView = lazy(() => import('../components/DripLanesView').then(m =>
 const DripJourneyCanvas = lazy(() => import('../components/DripJourneyCanvas').then(m => ({ default: m.DripJourneyCanvas })));
 const DripLaneOnboarding = lazy(() => import('../components/DripLaneOnboarding').then(m => ({ default: m.DripLaneOnboarding })));
 const BoardGrid = lazy(() => import('../components/BoardGrid').then(m => ({ default: m.BoardGrid })));
+const DayCards = lazy(() => import('../components/DayCards').then(m => ({ default: m.DayCards })));
 const ScheduleView = lazy(() => import('../components/ScheduleView').then(m => ({ default: m.ScheduleView })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
 const GlobalSuppressionDashboard = lazy(() => import('../components/GlobalSuppressionDashboard').then(m => ({ default: m.GlobalSuppressionDashboard })));
@@ -79,7 +80,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards';
 
 interface Tab {
   id: TabId;
@@ -91,7 +92,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'board-grid', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'schedule', 'scheduling-copilot'] },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'schedule', 'scheduling-copilot'] },
   { id: 'audiences', label: 'Audiences', icon: faUsers, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
@@ -226,6 +227,7 @@ export const MailingPortal: React.FC = () => {
       case 'drip-lanes':
       case 'drip-lane-onboarding':
       case 'board-grid':
+      case 'day-cards':
       case 'drip-journey':
       case 'schedule':
       case 'marketing-agent':
@@ -2084,7 +2086,7 @@ const CampaignCenterSection: React.FC<{
   setCopilotOpen: (v: boolean) => void;
 }> = ({ activeSubTab, onSubTabChange, pendingOffer, onOfferConsumed, copilotOpen, setCopilotOpen }) => {
   const { organization } = useAuth();
-  const subTab = (['pmta-wizard', 'board-grid', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'marketing-agent', 'schedule', 'scheduling-copilot'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
+  const subTab = (['pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'marketing-agent', 'schedule', 'scheduling-copilot'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
   const [editCampaignId, setEditCampaignId] = useState<string | null>(null);
   const [preparingCampaigns, setPreparingCampaigns] = useState<PreparingCampaign[]>([]);
   const [transitions, setTransitions] = useState<{ id: string; name: string; status: string }[]>([]);
@@ -2138,6 +2140,7 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'campaign-center')} onClick={() => onSubTabChange('campaign-center')}>Dashboard</button>
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
         <button style={subNavBtnStyle(subTab === 'board-grid')} onClick={() => onSubTabChange('board-grid')}>Board Grid</button>
+        <button style={subNavBtnStyle(subTab === 'day-cards')} onClick={() => onSubTabChange('day-cards')}>Day Cards</button>
         <button style={subNavBtnStyle(subTab === 'draft-board')} onClick={() => onSubTabChange('draft-board')}>Draft Board</button>
         <button style={subNavBtnStyle(subTab === 'drip-lanes')} onClick={() => onSubTabChange('drip-lanes')}>Drip Lanes</button>
         <button style={subNavBtnStyle(subTab === 'drip-lane-onboarding')} onClick={() => onSubTabChange('drip-lane-onboarding')}>Lane Onboarding</button>
@@ -2178,6 +2181,8 @@ const CampaignCenterSection: React.FC<{
           <EmailMarketingAgentPanel />
         ) : subTab === 'board-grid' ? (
           <BoardGrid />
+        ) : subTab === 'day-cards' ? (
+          <DayCards />
         ) : subTab === 'draft-board' ? (
           <DraftBoardView />
         ) : subTab === 'drip-lanes' ? (

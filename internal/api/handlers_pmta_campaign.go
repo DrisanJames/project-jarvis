@@ -67,6 +67,12 @@ type PMTACampaignService struct {
 	// evaluation reads live gate sources via SQL). Nil means use the real
 	// implementation. Same pattern as preflightFn.
 	gateEvalFn func(ctx context.Context, in sendDayGateEvalInput) sendDayGateReport
+
+	// dayCardsDeployFn overrides deployFromInput for the day-cards rebuild
+	// handler in tests (the real path runs preflight/DNS + a multi-table
+	// reservation TX that sqlmock cannot carry). Nil means use the real
+	// s.deployFromInput. Same seam posture as preflightFn/gateEvalFn.
+	dayCardsDeployFn func(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, bool, error)
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
@@ -243,6 +249,11 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/source-qualification", s.HandleSourceQualification)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 		cr.Post("/{campaignId}/retry", s.HandleRetryCampaign)
+		// Day Cards: per-sending-domain daily campaign panel + the sanctioned
+		// cancel+redeploy-sibling rebuild (day_cards.go / day_cards_rebuild.go).
+		cr.Get("/day-cards/domains", s.HandleDayCardsDomains)
+		cr.Get("/day-cards", s.HandleDayCards)
+		cr.Post("/day-cards/rebuild", s.HandleDayCardsRebuild)
 		cr.Get("/pool-isolation-status", s.HandlePoolIsolationStatus)
 		cr.Post("/pool-isolation-activate", s.HandlePoolIsolationActivate)
 	})
