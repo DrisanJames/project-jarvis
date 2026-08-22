@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -43,7 +44,6 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
-	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 )
 
 // Brands in deterministic round-robin order. The first 4 are the mature
@@ -819,12 +819,20 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// coordination — every sweep, claim and deploy attempt ran twice, saved
 	// only by SKIP LOCKED and by-name idempotency, and doubling per-tick DB
 	// load (two identical reconcile UPDATEs were measured running side by
-	// side). Every sibling worker takes a distlock lease; this one now does
-	// too (PG advisory fallback — no Redis plumbing on this struct). The
-	// non-leader skips the tick entirely; leadership migrates when the
-	// holder's connection dies. Fail-OPEN on acquire error: locking must
-	// never stop the drip. Kill switch: PARTNER_DRIP_TICK_LOCK_DISABLED=1
-	// restores the old dual-tick behavior.
+	// side). The non-leader skips the tick entirely; leadership migrates when
+	// the holder's session dies.
+	//
+	// INCIDENT 2026-08-22 (~22:20 UTC): the first version of this lease used
+	// distlock's PG-advisory fallback on the POOLED *sql.DB. pg_try_advisory_lock
+	// is SESSION(connection)-scoped, so Acquire ran on one pooled connection and
+	// Release's pg_advisory_unlock landed on a DIFFERENT pooled connection — a
+	// silent no-op — leaving the lock held by an idle pooled connection. From
+	// the second tick onward BOTH ECS tasks got acquired=false and skipped
+	// every tick: ALL partner-drip sending stopped ~40 min after boot while
+	// broadcast continued. Fixed by holding the lock on a DEDICATED connection
+	// for the tick's duration (see acquireTickLease). Fail-OPEN on any
+	// lock-infrastructure error: locking must never stop the drip. Kill
+	// switch: PARTNER_DRIP_TICK_LOCK_DISABLED=1 restores dual-tick.
 	release, lead := po.acquireTickLease()
 	if !lead {
 		return
@@ -3955,33 +3963,77 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, br
 	return keep, deferred, reasons, nil
 }
 
+// partnerDripTickLockKey is the tick-lease key. The advisory-lock id below is
+// derived from it exactly the way distlock.NewPGAdvisoryLock derives its id
+// (fnv64a of the key string → int64) so this lease contends with any other
+// holder of the same key. Pinned here rather than calling into distlock:
+// distlock only exposes pooled-*sql.DB locks (the bug — see acquireTickLease),
+// and extending it is out of scope for this hotfix.
+const partnerDripTickLockKey = "partner-drip-tick"
+
+// partnerDripTickLockID mirrors distlock.NewPGAdvisoryLock's id derivation.
+func partnerDripTickLockID() int64 {
+	h := fnv.New64a()
+	h.Write([]byte(partnerDripTickLockKey))
+	return int64(h.Sum64())
+}
+
 // acquireTickLease takes the single-leader lease for one tick. Returns a
 // release func and whether this instance leads. See the tickOnce comment for
 // why this exists (desiredCount=2 ran two uncoordinated orchestrators).
-// PG advisory locks are session-scoped on a pooled connection: a Release that
-// lands on a different pooled conn is a no-op and the lease then sticks to
-// the original connection until it dies — which pins leadership to one task.
-// That is acceptable here (we WANT one leader) and is the same trade every
-// sibling worker using the PG fallback already makes.
+//
+// INCIDENT 2026-08-22 (~22:20 UTC): the first version used distlock's PG
+// advisory fallback on the POOLED *sql.DB. pg_try_advisory_lock is
+// SESSION(connection)-scoped: Acquire ran on one pooled connection while
+// Release's pg_advisory_unlock landed on a DIFFERENT pooled connection — a
+// silent no-op (returns false + SQL WARNING) — so the lock stayed held by an
+// idle pooled connection forever. From the second tick onward BOTH ECS tasks
+// got acquired=false and skipped every tick; ALL partner-drip sending stopped
+// ~40 min after boot. (The comment that stood here claimed the different-conn
+// no-op benignly "pins leadership" — it wedged every tick on both tasks
+// instead.)
+//
+// The fix: hold the advisory lock on a DEDICATED connection for the tick's
+// duration and unlock ON THAT SAME connection. If the task is killed or
+// crashes mid-tick, the dedicated session dies with it and Postgres frees the
+// lock automatically, so leadership migrates to the surviving task.
+//
+// Fail-OPEN on any lock-infrastructure error (conn checkout or acquire query):
+// locking must never stop the drip — worst case is the pre-lease dual-tick
+// behavior. Kill switch: PARTNER_DRIP_TICK_LOCK_DISABLED=1 restores dual-tick.
 func (po *PartnerDripOrchestrator) acquireTickLease() (func(), bool) {
 	if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_TICK_LOCK_DISABLED")); v == "1" || strings.EqualFold(v, "true") {
 		return func() {}, true
 	}
-	lock := distlock.NewLock(nil, po.db, "partner-drip-tick", po.cfg.TickInterval)
-	acquired, err := lock.Acquire(po.ctx)
+	conn, err := po.db.Conn(po.ctx)
 	if err != nil {
-		// Fail-open: a lock-infrastructure error must never stop the drip —
-		// worst case we are back to the pre-lease dual-tick behavior.
+		log.Printf("[PartnerDripOrchestrator] tick lease conn checkout error (fail-open, ticking anyway): %v", err)
+		return func() {}, true
+	}
+	lockID := partnerDripTickLockID()
+	var acquired bool
+	if err := conn.QueryRowContext(po.ctx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired); err != nil {
+		conn.Close()
 		log.Printf("[PartnerDripOrchestrator] tick lease acquire error (fail-open, ticking anyway): %v", err)
 		return func() {}, true
 	}
 	if !acquired {
+		conn.Close()
 		log.Printf("[PartnerDripOrchestrator] tick lease held by the other instance — skipping tick")
-		return func() {}, false
+		return nil, false
 	}
 	return func() {
-		if rerr := lock.Release(context.Background()); rerr != nil {
+		// Unlock on the SAME dedicated connection that acquired the lock —
+		// this is the whole fix. Background context: release must run even
+		// when po.ctx is being torn down.
+		var released bool
+		if rerr := conn.QueryRowContext(context.Background(), "SELECT pg_advisory_unlock($1)", lockID).Scan(&released); rerr != nil {
 			log.Printf("[PartnerDripOrchestrator] tick lease release error: %v", rerr)
+		} else if !released {
+			log.Printf("[PartnerDripOrchestrator] WARNING: tick lease pg_advisory_unlock returned false — lock was not held by this session")
+		}
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("[PartnerDripOrchestrator] tick lease conn close error: %v", cerr)
 		}
 	}, true
 }
