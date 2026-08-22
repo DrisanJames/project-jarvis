@@ -4,8 +4,14 @@ package api
 // exception, that arrives already knowing what is wrong with it.
 //
 //	GET  /api/mailing/board-grid?date=YYYY-MM-DD     the day, as a grid, gated
-//	GET  /api/mailing/board-grid/clone?from=&to=     yesterday's grid, retimed (NO WRITE)
+//	GET  /api/mailing/board-grid/clone?from=&to=     yesterday's grid re-dated (NO WRITE)
 //	POST /api/mailing/board-grid/gates               run the gates over a proposed grid
+//
+// Clone does NOT retime anything: the proposal keeps the source day's slots —
+// the stable structure — and only rewrites the date token inside each name
+// (both the 8-digit '08222026' form and the month-name 'aug22' form) to the
+// target date. Staging the proposal still happens via /stage-board or the
+// Campaign Manager; nothing here writes.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY THIS EXISTS
@@ -40,19 +46,25 @@ package api
 // ─────────────────────────────────────────────────────────────────────────────
 // READ-ONLY BY CONSTRUCTION
 //
-// Every statement in this file is a SELECT. Cloning returns a PROPOSAL; it does
-// not create campaigns. Deploying a cell goes through the existing
-// /api/mailing/pmta-campaign/deploy path, which owns audience planning, the wave
-// sanity check, and the time_spans[*].source contract. There is no second send
-// path here and none may be added — TestBoardGrid_ReadOnly asserts it.
+// Every statement in this file is a SELECT. Cloning returns a PROPOSAL — the
+// source day's slots kept, names re-dated — and does not create campaigns.
+// Staging still happens via /stage-board or the Campaign Manager; deploying a
+// cell goes through the existing /api/mailing/pmta-campaign/deploy path, which
+// owns audience planning, the wave sanity check, and the time_spans[*].source
+// contract. There is no second send path here and none may be added —
+// TestBoardGrid_ReadOnly asserts it.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,7 +138,10 @@ type BoardGrid struct {
 func (s *BoardGridService) HandleGetGrid(w http.ResponseWriter, r *http.Request) {
 	date := strings.TrimSpace(r.URL.Query().Get("date"))
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		// The board day is a DENVER day (§6 throttle defaults) — server-local
+		// "today" is a different date for a few hours around midnight.
+		// denverToday lives in segmentation_health.go.
+		date = denverToday(time.Now()).Format("2006-01-02")
 	}
 	if _, err := time.Parse("2006-01-02", date); err != nil {
 		respondError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
@@ -134,14 +149,17 @@ func (s *BoardGridService) HandleGetGrid(w http.ResponseWriter, r *http.Request)
 	}
 	cells, err := s.loadCells(r, date)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondLoadError(w, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, s.assemble(r, date, "", cells))
 }
 
-// HandleCloneGrid returns `from`'s grid retimed onto `to`. It writes nothing:
-// the response is a PROPOSAL the operator edits and then deploys cell by cell.
+// HandleCloneGrid returns `from`'s grid re-dated onto `to`. It does NOT retime:
+// the proposal keeps `from`'s slots (the stable structure of a day) and only
+// rewrites the date token in each name to `to`. It writes nothing — the
+// response is a PROPOSAL the operator edits; staging still happens via
+// /stage-board or the Campaign Manager.
 func (s *BoardGridService) HandleCloneGrid(w http.ResponseWriter, r *http.Request) {
 	from := strings.TrimSpace(r.URL.Query().Get("from"))
 	to := strings.TrimSpace(r.URL.Query().Get("to"))
@@ -157,7 +175,7 @@ func (s *BoardGridService) HandleCloneGrid(w http.ResponseWriter, r *http.Reques
 	}
 	src, err := s.loadCells(r, from)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondLoadError(w, err)
 		return
 	}
 	toks, err := time.Parse("2006-01-02", to)
@@ -165,20 +183,21 @@ func (s *BoardGridService) HandleCloneGrid(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "bad to date")
 		return
 	}
-	nameDate := toks.Format("01022006")
 	proposed := make([]BoardCell, 0, len(src))
 	for _, c := range src {
 		c.CampaignID = "" // a proposal is not a campaign
 		c.Status = ""
 		c.Recipients = 0
 		c.Proposed = true
-		c.Name = reDateToken.ReplaceAllString(c.Name, nameDate)
+		c.Name = rewriteNameDate(c.Name, toks)
 		proposed = append(proposed, c)
 	}
 	respondJSON(w, http.StatusOK, s.assemble(r, to, from, proposed))
 }
 
 // HandleRunGates gates a proposed grid the operator has edited client-side.
+// The date is parsed exactly like HandleGetGrid's: a malformed date would make
+// dateTok empty in runGates and silently disable the NAME_DATE gate.
 func (s *BoardGridService) HandleRunGates(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Date  string      `json:"date"`
@@ -192,7 +211,24 @@ func (s *BoardGridService) HandleRunGates(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusBadRequest, "date is required")
 		return
 	}
+	if _, err := time.Parse("2006-01-02", body.Date); err != nil {
+		respondError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
+		return
+	}
 	respondJSON(w, http.StatusOK, s.assemble(r, body.Date, "", body.Cells))
+}
+
+// respondLoadError maps a loadCells failure onto the wire. A deadline is a 503
+// naming the query; anything else is logged in full and answered generically —
+// the raw driver string is not an operator-facing message.
+func respondLoadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		respondError(w, http.StatusServiceUnavailable,
+			"the board-grid query timed out after 15s — the database is busy, retry shortly")
+		return
+	}
+	log.Printf("[board-grid] load failed: %v", err)
+	respondError(w, http.StatusInternalServerError, "board-grid query failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +236,14 @@ func (s *BoardGridService) HandleRunGates(w http.ResponseWriter, r *http.Request
 
 func (s *BoardGridService) loadCells(r *http.Request, date string) ([]BoardCell, error) {
 	orgID := getOrgID(r)
+	// The board day is a DENVER day. Computing the bounds here (two timestamptz
+	// instants) keeps the WHERE sargable — an AT TIME ZONE on the column would
+	// defeat the scheduled_at index; a bare `>= $1::date` compares in the
+	// session's TZ and is wrong at the day boundary.
+	dayStart, dayEnd, err := denverDayBounds(date)
+	if err != nil {
+		return nil, fmt.Errorf("board grid day bounds: %w", err)
+	}
 	const q = `
 SELECT COALESCE(bm.brand_code, '')                                   AS brand_code,
        COALESCE(bm.brand_label, '')                                  AS brand_label,
@@ -218,15 +262,17 @@ SELECT COALESCE(bm.brand_code, '')                                   AS brand_co
   LEFT JOIN mailing_offers o            ON o.id  = c.offer_id
   LEFT JOIN mailing_brand_metadata bm
          ON bm.sending_domain = regexp_replace(COALESCE(sp.sending_domain,''), '^(e?m)\.', 'em.')
- WHERE c.scheduled_at >= ($1::date)
-   AND c.scheduled_at <  ($1::date + INTERVAL '1 day')
-   AND ($2 = '' OR c.organization_id::text = $2)
+ WHERE c.scheduled_at >= $1
+   AND c.scheduled_at <  $2
+   AND ($3 = '' OR c.organization_id::text = $3)
    AND ` + boardCampaignPredicate + `
- ORDER BY 1, 4`
+ ORDER BY brand_code, slot`
 
-	rows, err := s.db.Query(q, date, orgID)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, q, dayStart, dayEnd, orgID)
 	if err != nil {
-		return nil, fmt.Errorf("board grid query: %w", err)
+		return nil, gridQueryErr(ctx, err)
 	}
 	defer rows.Close()
 
@@ -247,7 +293,19 @@ SELECT COALESCE(bm.brand_code, '')                                   AS brand_co
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, gridQueryErr(ctx, err)
+	}
+	return out, nil
+}
+
+// gridQueryErr keeps context.DeadlineExceeded reachable through errors.Is even
+// when the driver reports the cancellation with its own error string.
+func gridQueryErr(ctx context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("board grid query: %w", context.DeadlineExceeded)
+	}
+	return fmt.Errorf("board grid query: %w", err)
 }
 
 // ---------------------------------------------------------------------------
@@ -283,8 +341,45 @@ func (s *BoardGridService) assemble(r *http.Request, date, sourceDate string, ce
 
 var (
 	reDateToken = regexp.MustCompile(`\b\d{8}\b`)
-	reLiquid    = regexp.MustCompile(`\{\{|\{%`)
+	// KUMO-WARM and FRESH-BCAST names date themselves 'aug22' / 'jul28', not
+	// '08222026'. Both schemes are live; both must be rewritten and gated.
+	reMonthDateToken = regexp.MustCompile(`(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{1,2}\b`)
+	reLiquid         = regexp.MustCompile(`\{\{|\{%`)
 )
+
+// rewriteNameDate rewrites a campaign name's date token to `to`, whichever
+// scheme the name uses: the 8-digit '08222026' form or the month-name 'aug22'
+// form (rewritten in the same style, preserving the token's letter case).
+func rewriteNameDate(name string, to time.Time) string {
+	name = reDateToken.ReplaceAllString(name, to.Format("01022006"))
+	return reMonthDateToken.ReplaceAllStringFunc(name, func(tok string) string {
+		repl := strings.ToLower(to.Format("Jan")) + strconv.Itoa(to.Day())
+		switch {
+		case tok == strings.ToUpper(tok):
+			return strings.ToUpper(repl)
+		case tok[0] >= 'A' && tok[0] <= 'Z':
+			return strings.ToUpper(repl[:1]) + repl[1:]
+		default:
+			return repl
+		}
+	})
+}
+
+// monthTokenRegexForDate matches the month-name token for one specific date,
+// zero-padded or not ('aug8' / 'aug08'), any case.
+// isOfferExemptName reports whether a cell legitimately carries no offer:
+// KUMO-WARM (and any explicitly newsletter-labelled) campaigns mail editorial
+// warm-up content in which offers are BANNED (CLAUDE.md §13.1), so gating them
+// on offer_id would raise a false blocker on every kumo cell, every day.
+func isOfferExemptName(name string) bool {
+	n := strings.ToUpper(name)
+	return strings.Contains(n, "KUMO-WARM") || strings.Contains(n, "NEWSLETTER")
+}
+
+func monthTokenRegexForDate(t time.Time) *regexp.Regexp {
+	return regexp.MustCompile(fmt.Sprintf(`(?i)\b%s0?%d\b`,
+		strings.ToLower(t.Format("Jan")), t.Day()))
+}
 
 func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardCell) []BoardFinding {
 	var f []BoardFinding
@@ -304,6 +399,15 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 				names = append(names, g.Name)
 			}
 			sort.Strings(names)
+			// When every colliding cell is '(unmapped)' — no brand-metadata
+			// row resolved a property — two unknowns at one slot is a metadata
+			// gap, not a proven double-book on one property. Warn, don't block.
+			if parts[0] == "(unmapped)" {
+				f = append(f, BoardFinding{"warn", "UNMAPPED_COLLISION", parts[0], parts[1],
+					fmt.Sprintf("%d unmapped campaigns share this anchor (no brand metadata — cannot prove a double-book): %s",
+						len(group), strings.Join(names, " | "))})
+				continue
+			}
 			f = append(f, BoardFinding{"blocker", "SLOT_COLLISION", parts[0], parts[1],
 				fmt.Sprintf("%d campaigns share this anchor: %s", len(group), strings.Join(names, " | "))})
 		}
@@ -338,14 +442,20 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 	}
 
 	// Per-cell gates.
-	dateTok := ""
+	dateTok, monthTok := "", ""
+	var reMonthTok *regexp.Regexp
 	if t, err := time.Parse("2006-01-02", date); err == nil {
 		dateTok = t.Format("01022006")
+		monthTok = strings.ToLower(t.Format("Jan")) + strconv.Itoa(t.Day())
+		reMonthTok = monthTokenRegexForDate(t)
 	}
 	for _, c := range cells {
 		// Gate 3 MISSING_OFFER — RR-Globe / RB-ADR finalized with a NULL offer_id,
 		// which silently breaks conversion attribution and offer suppression.
-		if c.OfferID == "" {
+		// Exemption: KUMO-WARM / newsletter cells carry NO offer BY DOCTRINE —
+		// warm-up content is editorial and offers are banned in it (CLAUDE.md
+		// §13.1), so a NULL offer there is correct, not a defect.
+		if c.OfferID == "" && !isOfferExemptName(c.Name) {
 			f = append(f, BoardFinding{"blocker", "MISSING_OFFER", c.Property, c.Slot,
 				"no offer_id — conversions will not attribute and offer suppression cannot apply"})
 		}
@@ -355,10 +465,14 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 			f = append(f, BoardFinding{"blocker", "LIQUID_SUBJECT", c.Property, c.Slot,
 				fmt.Sprintf("subject carries an unrendered template token: %q", c.Subject)})
 		}
-		// Gate 5 NAME_DATE — '08062026' and '080202026' both shipped.
-		if dateTok != "" && !strings.Contains(c.Name, dateTok) {
+		// Gate 5 NAME_DATE — '08062026' and '080202026' both shipped. Either
+		// live scheme satisfies the gate: the 8-digit token or the month-name
+		// token ('aug22') that KUMO-WARM and FRESH-BCAST names use. A wrong or
+		// absent date in both schemes still flags.
+		if dateTok != "" && !strings.Contains(c.Name, dateTok) && !reMonthTok.MatchString(c.Name) {
 			f = append(f, BoardFinding{"warn", "NAME_DATE", c.Property, c.Slot,
-				fmt.Sprintf("name does not carry this board's date token %s: %q", dateTok, c.Name)})
+				fmt.Sprintf("name does not carry this board's date token (%s or %s): %q",
+					dateTok, monthTok, c.Name)})
 		}
 		// Gate 6 NAME_PROPERTY — a 'DB'-named campaign that sent from consumerpro.
 		if c.Property != "" && !nameMentionsPropertyRoot(c.Name, c.Property, c.BrandRoot) {
@@ -382,6 +496,22 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 
 // ---------------------------------------------------------------------------
 // helpers
+
+// denverDayBounds returns the [start, end) UTC instants of one Denver calendar
+// day, so the query keeps a sargable range on scheduled_at with no AT TIME
+// ZONE in the WHERE.
+func denverDayBounds(date string) (time.Time, time.Time, error) {
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("load America/Denver: %w", err)
+	}
+	start, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("parse date %q: %w", date, err)
+	}
+	// AddDate, not Add(24h): DST transition days are 23h or 25h long.
+	return start, start.AddDate(0, 0, 1), nil
+}
 
 // apexFromSendingDomain turns m.foo.com / em.foo.com into FOO for display.
 func apexFromSendingDomain(sd string) string {

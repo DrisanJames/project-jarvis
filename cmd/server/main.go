@@ -2530,6 +2530,11 @@ var concurrentIndexSpecs = []struct {
 	{"idx_pcq_claimed_reconcile", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_claimed_reconcile ON partner_clean_queue (last_touch_campaign_id) WHERE status = 'claimed' AND last_touch_campaign_id IS NOT NULL`},
 	{"idx_pcq_claimed_janitor", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_claimed_janitor ON partner_clean_queue (claimed_at) WHERE status = 'claimed' AND subscriber_id IS NULL AND mailed_campaign_id IS NULL`},
 	{"idx_campaigns_org_name", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_name ON mailing_campaigns (organization_id, name)`},
+	// Board grid (board_grid.go): the day-window read
+	// (organization_id, scheduled_at range) had NO usable index — every prior
+	// scheduled_at index is partial on predicates the grid query contradicts,
+	// so each grid load full-scanned the multi-GB campaigns heap.
+	{"idx_campaigns_org_sched", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_sched ON mailing_campaigns (organization_id, scheduled_at)`},
 
 	// ---- Drip Observatory D1 (Vector B rev4 §4) — supporting indexes ONLY ----
 	// The rollup worker's discovery scans (plan §6.3/§6.5) and the hygiene/
