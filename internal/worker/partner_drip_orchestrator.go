@@ -43,6 +43,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 )
 
 // Brands in deterministic round-robin order. The first 4 are the mature
@@ -813,6 +814,22 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		log.Println("[PartnerDripOrchestrator] no DeployFn wired — skipping tick")
 		return
 	}
+	// TICK LEADER LEASE (2026-08-22). The ECS service runs desiredCount=2, so
+	// TWO full orchestrators have been ticking concurrently with no
+	// coordination — every sweep, claim and deploy attempt ran twice, saved
+	// only by SKIP LOCKED and by-name idempotency, and doubling per-tick DB
+	// load (two identical reconcile UPDATEs were measured running side by
+	// side). Every sibling worker takes a distlock lease; this one now does
+	// too (PG advisory fallback — no Redis plumbing on this struct). The
+	// non-leader skips the tick entirely; leadership migrates when the
+	// holder's connection dies. Fail-OPEN on acquire error: locking must
+	// never stop the drip. Kill switch: PARTNER_DRIP_TICK_LOCK_DISABLED=1
+	// restores the old dual-tick behavior.
+	release, lead := po.acquireTickLease()
+	if !lead {
+		return
+	}
+	defer release()
 	// Refresh the property-governor cache once per tick so operator edits to
 	// partner_property_governor (caps, subscriptions) take effect on the next
 	// tick without a deploy. Fail-safe: on load error the cache is emptied so
@@ -3936,6 +3953,37 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, br
 		keep = append(keep, r)
 	}
 	return keep, deferred, reasons, nil
+}
+
+// acquireTickLease takes the single-leader lease for one tick. Returns a
+// release func and whether this instance leads. See the tickOnce comment for
+// why this exists (desiredCount=2 ran two uncoordinated orchestrators).
+// PG advisory locks are session-scoped on a pooled connection: a Release that
+// lands on a different pooled conn is a no-op and the lease then sticks to
+// the original connection until it dies — which pins leadership to one task.
+// That is acceptable here (we WANT one leader) and is the same trade every
+// sibling worker using the PG fallback already makes.
+func (po *PartnerDripOrchestrator) acquireTickLease() (func(), bool) {
+	if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_TICK_LOCK_DISABLED")); v == "1" || strings.EqualFold(v, "true") {
+		return func() {}, true
+	}
+	lock := distlock.NewLock(nil, po.db, "partner-drip-tick", po.cfg.TickInterval)
+	acquired, err := lock.Acquire(po.ctx)
+	if err != nil {
+		// Fail-open: a lock-infrastructure error must never stop the drip —
+		// worst case we are back to the pre-lease dual-tick behavior.
+		log.Printf("[PartnerDripOrchestrator] tick lease acquire error (fail-open, ticking anyway): %v", err)
+		return func() {}, true
+	}
+	if !acquired {
+		log.Printf("[PartnerDripOrchestrator] tick lease held by the other instance — skipping tick")
+		return func() {}, false
+	}
+	return func() {
+		if rerr := lock.Release(context.Background()); rerr != nil {
+			log.Printf("[PartnerDripOrchestrator] tick lease release error: %v", rerr)
+		}
+	}, true
 }
 
 // loadThrottledISPs refreshes the per-tick throttle snapshot. Called once from
