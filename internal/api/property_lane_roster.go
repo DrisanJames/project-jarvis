@@ -76,13 +76,18 @@ func clampLaneRosterWeight(w int) int {
 }
 
 type laneRosterRow struct {
-	Vertical  string    `json:"vertical"`
-	Brand     string    `json:"brand"`
-	Weight    int       `json:"weight"`
-	Active    bool      `json:"active"`
-	SortOrder int       `json:"sort_order"`
-	UpdatedAt time.Time `json:"updated_at"`
-	UpdatedBy string    `json:"updated_by,omitempty"`
+	Vertical string `json:"vertical"`
+	// DisplayName is the operator label from partner_drip_lane_labels
+	// (PUT …/property-ledger/lane-label). BEST-EFFORT: empty when unlabeled
+	// or when the table doesn't exist yet (overseer-owned DDL) — the
+	// vertical key is always the identity.
+	DisplayName string    `json:"display_name,omitempty"`
+	Brand       string    `json:"brand"`
+	Weight      int       `json:"weight"`
+	Active      bool      `json:"active"`
+	SortOrder   int       `json:"sort_order"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	UpdatedBy   string    `json:"updated_by,omitempty"`
 }
 
 // laneRosterListSQL returns EVERY matching row including active=false ones —
@@ -214,6 +219,13 @@ func (s *PMTACampaignService) HandleLaneRosterList(w http.ResponseWriter, r *htt
 	if err := rows.Err(); err != nil {
 		respondError(w, http.StatusInternalServerError, "roster query failed")
 		return
+	}
+
+	// Operator lane labels — best-effort (laneLabelMap degrades to empty on
+	// any error, incl. the table not existing yet), never fails the roster.
+	labels := laneLabelMap(ctx, s.db)
+	for i := range out {
+		out[i].DisplayName = labels[out[i].Vertical]
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{

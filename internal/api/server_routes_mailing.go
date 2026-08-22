@@ -560,7 +560,23 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/creatives", partnerAdmin.HandleListCreatives)
 				dp.Put("/creatives/{vertical}/{brand}", partnerAdmin.HandleUpdateCreative)
 				dp.Get("/audit-log", partnerAdmin.HandleListAuditLog)
+				// API key lifecycle (partner_key_handlers.go): list / rotate /
+				// revoke — the raw key is returned ONCE at rotate, only the
+				// prefix is ever listed.
+				dp.Get("/datasets/{id}/keys", partnerAdmin.HandleListDatasetKeys)
+				dp.Post("/datasets/{id}/rotate-key", partnerAdmin.HandleRotateDatasetKey)
+				dp.Post("/keys/{keyId}/revoke", partnerAdmin.HandleRevokeKey)
+				// Allowed verticals — sourced from api.PartnerVerticals (the
+				// ONE Go source; the DB CHECK constraint enforces it).
+				dp.Get("/verticals", partnerAdmin.HandleListVerticals)
 			})
+
+			// Operator CSV ingestion for partner datasets
+			// (partner_csv_ingest.go): preview + commit reuse the EXACT batch
+			// persistence path the partner API door uses. Session/admin auth
+			// via the /api router — never partner-key auth.
+			partnerCSVIngest := NewPartnerCSVIngestService(db, s.partnerIngestS3)
+			partnerCSVIngest.RegisterRoutes(r)
 
 			// Engine ingestor + PMTA accounting webhook first — the rest of this group registers
 			// hundreds of routes; main is blocked for that whole time while ListenAndServe is live.
@@ -1496,6 +1512,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				pmtaCampaignAPI.SetOfferSuppressionManager(s.OfferSuppMgr)
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
+			// Estate-wide drip overview + operator lane labels
+			// (property_ledger_overview.go). Registered as static siblings of
+			// the mounted /pmta-campaign subrouter — chi matches the static
+			// path first and backtracks to the mount for everything else.
+			pmtaCampaignAPI.RegisterPropertyLedgerOverviewRoutes(r)
 			// Expose the campaign service so the data partner drip orchestrator
 			// can invoke HandleDeployCampaign in-process at wave time.
 			s.SetPMTACampaignService(pmtaCampaignAPI)

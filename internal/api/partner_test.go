@@ -898,7 +898,11 @@ func TestHandleGetSchema_NoAuthRequired(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Equal(t, "POST /api/partner-ingest/v1/records", body["endpoint"])
 	verticals := body["verticals_supported"].([]interface{})
-	require.Len(t, verticals, 4)
+	// Sourced from PartnerVerticals (item: single Go source) — the schema must
+	// advertise the FULL allowed list, not the 4 legacy verticals it hardcoded
+	// before 2026-08-22.
+	require.Len(t, verticals, len(PartnerVerticals))
+	require.Equal(t, PartnerVerticals[0], verticals[0])
 	limits := body["limits"].(map[string]interface{})
 	require.Equal(t, float64(maxRecordsPerBatch), limits["max_records_per_batch"])
 }

@@ -321,61 +321,27 @@ func (h *PartnerIngestHandler) HandlePostRecords(w http.ResponseWriter, r *http.
 	// never fail or visibly slow the partner-facing request.
 	h.captureRawSample(ctx, batchID, authCtx.DatasetID, bodyBytes, contentType)
 
-	// Reduce parsed records to canonical NDJSON — one JSON object per line in
-	// FIFO order. The slicer reads this NDJSON, applies suppression checks,
-	// then enqueues survivors into partner_clean_queue.
-	var canonicalNDJSON bytes.Buffer
-	for _, rec := range parsed {
-		line, err := json.Marshal(rec)
-		if err != nil {
-			continue
-		}
-		canonicalNDJSON.Write(line)
-		canonicalNDJSON.WriteByte('\n')
-	}
-
-	s3Key := h.s3Client.BatchKey(authCtx.PartnerSlug, authCtx.DatasetSlug, batchID, receivedAt)
-	bytesWritten, uploadErr := h.s3Client.UploadBatchGzip(ctx, s3Key, &canonicalNDJSON)
-	if uploadErr != nil {
-		log.Printf("[partner-ingest] s3 upload failed bucket=%s key=%s partner=%s dataset=%s err=%v",
-			h.s3Client.Bucket(), s3Key, authCtx.PartnerSlug, authCtx.DatasetSlug, uploadErr)
+	s3Key, _, indexDeferred, persistErr := persistPartnerBatch(ctx, h.db, h.s3Client, partnerBatchPersistInput{
+		BatchID:     batchID,
+		PartnerID:   authCtx.PartnerID,
+		PartnerSlug: authCtx.PartnerSlug,
+		DatasetID:   authCtx.DatasetID,
+		DatasetSlug: authCtx.DatasetSlug,
+		Vertical:    authCtx.Vertical,
+		ReceivedAt:  receivedAt,
+		ContentType: contentType,
+		Records:     parsed,
+		IngestMeta: map[string]interface{}{
+			"api_key_prefix": authCtx.KeyPrefix,
+			"remote_ip":      readClientIP(r),
+			"user_agent":     r.UserAgent(),
+		},
+	})
+	if persistErr != nil {
 		partnerErrorResponse(w, http.StatusBadGateway, "s3_upload_failed", "Unable to persist batch right now. Retry in a moment.")
 		return
 	}
-
-	meta := PartnerBatchMeta{
-		BatchID:      batchID,
-		PartnerID:    authCtx.PartnerID,
-		PartnerSlug:  authCtx.PartnerSlug,
-		DatasetID:    authCtx.DatasetID,
-		DatasetSlug:  authCtx.DatasetSlug,
-		Vertical:     authCtx.Vertical,
-		RecordCount:  len(parsed),
-		ReceivedAt:   receivedAt,
-		S3Bucket:     h.s3Client.Bucket(),
-		S3Key:        s3Key,
-		ContentBytes: bytesWritten,
-	}
-	_ = h.s3Client.UploadBatchMeta(ctx, h.s3Client.MetaKey(authCtx.PartnerSlug, authCtx.DatasetSlug, batchID, receivedAt), meta)
-
-	_, dbErr := h.db.ExecContext(ctx, `
-		INSERT INTO partner_inbound_batches
-		    (id, dataset_id, partner_id, s3_bucket, s3_key, record_count, status,
-		     emergency_stopped, next_record_offset, received_at, ingest_metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, 'received', false, 0, $7, $8::jsonb)
-	`,
-		batchID, authCtx.DatasetID, authCtx.PartnerID,
-		h.s3Client.Bucket(), s3Key, len(parsed),
-		receivedAt,
-		mustJSONString(map[string]interface{}{
-			"api_key_prefix": authCtx.KeyPrefix,
-			"content_type":   contentType,
-			"bytes_written":  bytesWritten,
-			"remote_ip":      readClientIP(r),
-			"user_agent":     r.UserAgent(),
-		}),
-	)
-	if dbErr != nil {
+	if indexDeferred {
 		// The S3 object is already persisted — operators can still recover
 		// it via the slicer's S3-discovery fallback. Return a soft error so
 		// the partner is told the upload completed but the indexing failed.
@@ -392,6 +358,92 @@ func (h *PartnerIngestHandler) HandlePostRecords(w http.ResponseWriter, r *http.
 		S3Key:       s3Key,
 		ReceivedAt:  receivedAt.Format(time.RFC3339),
 	})
+}
+
+// ============ shared batch persistence ============
+
+// partnerBatchPersistInput carries one batch through the shared persistence
+// path. IngestMeta is caller-specific context merged into the batch row's
+// ingest_metadata (content_type and bytes_written are always stamped).
+type partnerBatchPersistInput struct {
+	BatchID     string
+	PartnerID   string
+	PartnerSlug string
+	DatasetID   string
+	DatasetSlug string
+	Vertical    string
+	ReceivedAt  time.Time
+	ContentType string
+	Records     []ingestRecord
+	IngestMeta  map[string]interface{}
+}
+
+// persistPartnerBatch is the ONE batch persistence path: canonical NDJSON
+// (one re-marshaled ingestRecord per line, FIFO) → gzip to S3 (+ .meta.json
+// audit sidecar) → INSERT partner_inbound_batches status='received'. Shared
+// by the partner API door (HandlePostRecords) and the operator CSV upload
+// (partner_csv_ingest.go) so the slicer sees byte-identical batches from
+// both. Returns:
+//   - err != nil            — the S3 upload failed; nothing was persisted.
+//   - indexDeferred == true — S3 succeeded but the DB index insert failed;
+//     the slicer's S3-discovery fallback will pick the batch up.
+func persistPartnerBatch(ctx context.Context, db *sql.DB, s3c *PartnerIngestS3Client, in partnerBatchPersistInput) (s3Key string, bytesWritten int64, indexDeferred bool, err error) {
+	var canonicalNDJSON bytes.Buffer
+	for _, rec := range in.Records {
+		line, mErr := json.Marshal(rec)
+		if mErr != nil {
+			continue
+		}
+		canonicalNDJSON.Write(line)
+		canonicalNDJSON.WriteByte('\n')
+	}
+
+	s3Key = s3c.BatchKey(in.PartnerSlug, in.DatasetSlug, in.BatchID, in.ReceivedAt)
+	bytesWritten, uploadErr := s3c.UploadBatchGzip(ctx, s3Key, &canonicalNDJSON)
+	if uploadErr != nil {
+		log.Printf("[partner-ingest] s3 upload failed bucket=%s key=%s partner=%s dataset=%s err=%v",
+			s3c.Bucket(), s3Key, in.PartnerSlug, in.DatasetSlug, uploadErr)
+		return s3Key, 0, false, uploadErr
+	}
+
+	meta := PartnerBatchMeta{
+		BatchID:      in.BatchID,
+		PartnerID:    in.PartnerID,
+		PartnerSlug:  in.PartnerSlug,
+		DatasetID:    in.DatasetID,
+		DatasetSlug:  in.DatasetSlug,
+		Vertical:     in.Vertical,
+		RecordCount:  len(in.Records),
+		ReceivedAt:   in.ReceivedAt,
+		S3Bucket:     s3c.Bucket(),
+		S3Key:        s3Key,
+		ContentBytes: bytesWritten,
+	}
+	_ = s3c.UploadBatchMeta(ctx, s3c.MetaKey(in.PartnerSlug, in.DatasetSlug, in.BatchID, in.ReceivedAt), meta)
+
+	ingestMeta := map[string]interface{}{
+		"content_type":  in.ContentType,
+		"bytes_written": bytesWritten,
+	}
+	for k, v := range in.IngestMeta {
+		ingestMeta[k] = v
+	}
+
+	_, dbErr := db.ExecContext(ctx, `
+		INSERT INTO partner_inbound_batches
+		    (id, dataset_id, partner_id, s3_bucket, s3_key, record_count, status,
+		     emergency_stopped, next_record_offset, received_at, ingest_metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, 'received', false, 0, $7, $8::jsonb)
+	`,
+		in.BatchID, in.DatasetID, in.PartnerID,
+		s3c.Bucket(), s3Key, len(in.Records),
+		in.ReceivedAt,
+		mustJSONString(ingestMeta),
+	)
+	if dbErr != nil {
+		return s3Key, bytesWritten, true, nil
+	}
+	return s3Key, bytesWritten, false, nil
 }
 
 // ============ raw-sample capture ============
@@ -578,12 +630,9 @@ func (h *PartnerIngestHandler) HandleGetSchema(w http.ResponseWriter, r *http.Re
 			"max_records_per_batch": maxRecordsPerBatch,
 			"max_payload_bytes":     maxIngestBytes,
 		},
-		"verticals_supported": []string{
-			"refi_heloc",
-			"personal_loans",
-			"tax_relief",
-			"remodel",
-		},
+		// Sourced from PartnerVerticals (partner_admin_handlers.go) — the ONE
+		// Go source; the DB CHECK constraint (cmd/server/main.go) enforces it.
+		"verticals_supported": append([]string{}, PartnerVerticals...),
 		"example_json": map[string]interface{}{
 			"records": []map[string]interface{}{
 				{

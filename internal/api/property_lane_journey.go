@@ -163,6 +163,12 @@ type laneJourneyTouch struct {
 	OfferSource  string            `json:"offer_source,omitempty"`
 	OfferDataset string            `json:"offer_dataset,omitempty"`
 	Offer        *laneJourneyOffer `json:"offer,omitempty"`
+	// Perf7d: the lane's trailing-7-day wave counters for THIS touch number
+	// (property_lane_journey_perf.go). nil = the perf read failed (named gap
+	// via perf_7d_error) — never a zero row substituted for a failed read.
+	// Counters are the denormalized mailing_campaigns columns: opens/clicks
+	// undercount SES-routed engagement (see laneJourneyPerfNote).
+	Perf7d *laneJourneyPerf `json:"perf_7d"`
 	// VerticalConfigured mirrors followupTouchConfigured
 	// (partner_drip_orchestrator.go), which tests the touch WITHOUT the brand
 	// filter — it is the test the orchestrator uses to decide retirement.
@@ -434,7 +440,12 @@ func (s *PMTACampaignService) HandleLaneJourney(w http.ResponseWriter, r *http.R
 		edges = append(edges, e)
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	// ---- PER-TOUCH 7D PERFORMANCE (aux read — degrades, never fails the
+	// canvas; property_lane_journey_perf.go). Runs LAST so its single query
+	// sits after the core reads.
+	perfErr := s.laneJourneyAttachPerf(ctx, orgID, vertical, brand, touches)
+
+	resp := map[string]interface{}{
 		"organization_id": orgID,
 		"brand":           brand,
 		"sending_domain":  sendingDomain,
@@ -442,6 +453,7 @@ func (s *PMTACampaignService) HandleLaneJourney(w http.ResponseWriter, r *http.R
 		"delay_hours":     laneJourneyDelayHours,
 		"max_touches":     laneJourneyMaxTouches,
 		"touches":         touches,
+		"perf_7d_note":    laneJourneyPerfNote,
 		"edges":           edges,
 		"totals":          totals,
 		"send_activity":   s.laneJourneyActivity(ctx, orgID, vertical, brand, staleHours),
@@ -455,7 +467,11 @@ func (s *PMTACampaignService) HandleLaneJourney(w http.ResponseWriter, r *http.R
 		},
 		"scope_note":   laneJourneyScopeNote,
 		"generated_at": time.Now().UTC(),
-	})
+	}
+	if perfErr != "" {
+		resp["perf_7d_error"] = perfErr
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // laneJourneyValidVertical is a cheap charset gate — a feed key is lowercase

@@ -2061,23 +2061,39 @@ func slugifyForPartner(s string) string {
 	return strings.Trim(string(out), "-")
 }
 
-// validVerticals mirrors the partner_datasets_vertical_check CHECK constraint
-// (cmd/server/main.go). It had drifted to just the original four, which meant
-// the eleven verticals added since could not be created OR have their drip
-// creatives edited through the portal — HandleUpdateCreative rejected them
-// before reaching the DB. Keep this list and the CHECK array in lockstep.
-var validVerticals = map[string]bool{
-	"refi_heloc": true, "personal_loans": true, "tax_relief": true, "remodel": true,
-	"direct_offer": true, "clickers_samsclub": true, "metal_roofing_signal": true,
-	"samsclub_internal": true, "flooring": true, "term_life": true, "senior_care": true,
-	"auto_insurance": true, "jarvis_att": true, "jarvis_apple": true, "consumer": true,
-	"internal_auto_insurance": true,
+// PartnerVerticals is the ONE Go source for the allowed partner_datasets
+// verticals. It mirrors the partner_datasets_vertical_check CHECK constraint
+// (cmd/server/main.go, migration key
+// "aug14_partner_datasets_vertical_internal_auto_v3_v7") — the DB CHECK is the
+// ENFORCEMENT; this slice is the advertised/validated list. The map had
+// drifted to just the original four once already (the eleven verticals added
+// since could not be created OR have their drip creatives edited through the
+// portal — HandleUpdateCreative rejected them before reaching the DB). Keep
+// this slice and the CHECK array in lockstep; everything else
+// (isValidVertical, GET /api/mailing/data-partners/verticals, the public
+// GET /api/partner-ingest/v1/schema) derives from it.
+var PartnerVerticals = []string{
+	"refi_heloc", "personal_loans", "tax_relief", "remodel",
+	"direct_offer", "clickers_samsclub", "metal_roofing_signal",
+	"samsclub_internal", "flooring", "term_life", "senior_care",
+	"auto_insurance", "jarvis_att", "jarvis_apple", "consumer",
+	"internal_auto_insurance",
 	// Auto Insurance Remarketing feeds 2-6 (operator 2026-08-14) — one vertical
 	// per dataset so each feed carries its own offer creative + brand roster.
-	"internal_auto_insurance_v3": true, "internal_auto_insurance_v4": true,
-	"internal_auto_insurance_v5": true, "internal_auto_insurance_v6": true,
-	"internal_auto_insurance_v7": true,
+	"internal_auto_insurance_v3", "internal_auto_insurance_v4",
+	"internal_auto_insurance_v5", "internal_auto_insurance_v6",
+	"internal_auto_insurance_v7",
 }
+
+// validVerticals is DERIVED from PartnerVerticals — never write to it and
+// never add a literal here; extend the slice (and the CHECK constraint).
+var validVerticals = func() map[string]bool {
+	m := make(map[string]bool, len(PartnerVerticals))
+	for _, v := range PartnerVerticals {
+		m[v] = true
+	}
+	return m
+}()
 
 func isValidVertical(v string) bool {
 	return validVerticals[v]

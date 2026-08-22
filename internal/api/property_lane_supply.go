@@ -215,6 +215,35 @@ func laneSupplyOrderReadyByISP(counts map[string]int64) []laneSupplyISP {
 	return out
 }
 
+// laneSupplyIndexGate — INDEX GATE (same fail-closed posture as the
+// intro-rollup worker): the anatomy aggregate is a measured 16.7s seq scan on
+// prod WITHOUT idx_pcq_dataset_status_mailed (covering IOS: 27.7ms). Refuse
+// rather than tax the heap until the CONCURRENTLY build lands and is valid.
+// Once observed valid it stays valid in-process (indexes don't un-build; a
+// REINDEX bounce is a redeploy-scale event) — no probe per poll. Shared by
+// HandleLaneSupply and the estate-wide overview (property_ledger_overview.go).
+// Returns false after writing the refusal response.
+func (s *PMTACampaignService) laneSupplyIndexGate(ctx context.Context, w http.ResponseWriter) bool {
+	if s.laneSupplyIndexOK.Load() {
+		return true
+	}
+	var indexValid bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(i.indisvalid, false)
+		FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = 'idx_pcq_dataset_status_mailed'
+	`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
+		respondError(w, http.StatusInternalServerError, "index check failed")
+		return false
+	}
+	if !indexValid {
+		respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
+		return false
+	}
+	s.laneSupplyIndexOK.Store(true)
+	return true
+}
+
 // HandleLaneSupply GET …/property-ledger/supply?domain=<apex-or-sending-domain>
 func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -224,27 +253,8 @@ func (s *PMTACampaignService) HandleLaneSupply(w http.ResponseWriter, r *http.Re
 		respondError(w, http.StatusBadRequest, "unknown domain — must be a drip roster sending domain or a registered mailing_brand_metadata domain")
 		return
 	}
-	// INDEX GATE (same fail-closed posture as the intro-rollup worker): the
-	// anatomy aggregate is a measured 16.7s seq scan on prod WITHOUT
-	// idx_pcq_dataset_status_mailed (covering IOS: 27.7ms). Refuse rather
-	// than tax the heap until the CONCURRENTLY build lands and is valid.
-	// Once observed valid it stays valid in-process (indexes don't un-build;
-	// a REINDEX bounce is a redeploy-scale event) — no probe per poll.
-	if !s.laneSupplyIndexOK.Load() {
-		var indexValid bool
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT COALESCE(i.indisvalid, false)
-			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE c.relname = 'idx_pcq_dataset_status_mailed'
-		`).Scan(&indexValid); err != nil && err != sql.ErrNoRows {
-			respondError(w, http.StatusInternalServerError, "index check failed")
-			return
-		}
-		if !indexValid {
-			respondError(w, http.StatusServiceUnavailable, "supply view warming up — idx_pcq_dataset_status_mailed is still building (calm-IO CONCURRENTLY); retry shortly")
-			return
-		}
-		s.laneSupplyIndexOK.Store(true)
+	if !s.laneSupplyIndexGate(ctx, w) {
+		return
 	}
 	dayStart, dayEnd := laneSupplyDenverDayBoundsUTC(time.Now())
 
