@@ -379,3 +379,119 @@ func TestLaneSupplyCacheCollapse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ── Per-feed degradation (2026-08-22, IO-starved RDS) ───────────────────────
+//
+// A per-feed count read failing (statement timeout) must NOT 500 the whole
+// supply response: the feed stays present with partial_error set and its
+// cached counts (or zeros on a cold cache — UNKNOWN, not zero).
+
+// TestLaneSupplyReadyByISPErrorDegradesPartial: cold cache + a failed
+// ready-by-isp read → HTTP 200, feed present, partial_error names the failure
+// and the cold cache, counts zero.
+func TestLaneSupplyReadyByISPErrorDegradesPartial(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	dsID := "77777777-7777-7777-7777-777777777777"
+
+	expectSupplyIndexValid(mock, true)
+	mock.ExpectQuery(`SELECT vertical`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, false))
+	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
+		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
+	// Anatomy succeeds, the ready-by-isp split times out.
+	mock.ExpectQuery(`AS tranche_total`).
+		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "tranche_total", "cleaning", "pending_eo",
+			"eo_in_flight", "ready_total", "held", "suppressed", "dead_letter", "mailed_lifetime", "mailed_today"}).
+			AddRow(dsID, 1000, 150, 100, 50, 300, 200, 40, 10, 300, 25))
+	mock.ExpectQuery(`GROUP BY isp_family`).WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+
+	rec := getSupply(t, s, "em.discountblog.com")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a per-feed read failure must degrade, not 500: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp laneSupplyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Feeds) != 1 {
+		t.Fatalf("the feed must stay present, got %d feeds", len(resp.Feeds))
+	}
+	f := resp.Feeds[0]
+	if f.PartialError == "" || !strings.Contains(f.PartialError, "ready-by-isp query failed") {
+		t.Fatalf("partial_error must name the failed read: %+v", f)
+	}
+	if !strings.Contains(f.PartialError, "no cached read") {
+		t.Fatalf("a cold cache must be labeled UNKNOWN-not-zero: %q", f.PartialError)
+	}
+	if f.TrancheTotal != 0 || f.ReadyTotal != 0 || len(f.ReadyByISP) != 0 {
+		t.Fatalf("cold-cache partial must serve zeros (the slot never computed): %+v", f)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLaneSupplyPartialServesExpiredCache: a warm-but-expired slot + a failed
+// anatomy read → HTTP 200 serving the LAST cached computation, partial_error
+// carrying its timestamp.
+func TestLaneSupplyPartialServesExpiredCache(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	dsID := "88888888-8888-8888-8888-888888888888"
+
+	// Call 1: full success primes the slot.
+	expectSupplyIndexValid(mock, true)
+	mock.ExpectQuery(`SELECT vertical`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
+	expectSupplyFeedQueries(mock, "homeimprovement", dsID, true)
+	if rec := getSupply(t, s, "em.discountblog.com"); rec.Code != http.StatusOK {
+		t.Fatalf("prime call got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Expire the slot past the 120s TTL so call 2 re-scans.
+	slotI, ok := s.laneSupplyCache.Load(dsID)
+	if !ok {
+		t.Fatal("slot must exist after the prime call")
+	}
+	slot := slotI.(*laneSupplyCacheSlot)
+	primedAt := time.Now().Add(-3 * time.Minute)
+	slot.mu.Lock()
+	slot.computedAt = primedAt
+	slot.mu.Unlock()
+
+	// Call 2: re-scan fails — the expired cached counts are served instead.
+	mock.ExpectQuery(`SELECT vertical`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, true))
+	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
+		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
+	mock.ExpectQuery(`AS tranche_total`).WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+
+	rec := getSupply(t, s, "em.discountblog.com")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expired-cache partial must still answer 200: got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp laneSupplyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	f := resp.Feeds[0]
+	if !strings.Contains(f.PartialError, "supply anatomy query failed") ||
+		!strings.Contains(f.PartialError, "serving cached read") {
+		t.Fatalf("partial_error must name the failure AND the cached serve: %q", f.PartialError)
+	}
+	// The slot's last computation rides through — counts from call 1, not zeros.
+	if f.TrancheTotal != 1000 || f.ReadyTotal != 300 || f.MailedToday != 25 {
+		t.Fatalf("expired cached counts must be served on a failed re-scan: %+v", f)
+	}
+	if f.ComputedAt.IsZero() || time.Since(f.ComputedAt) < 2*time.Minute {
+		t.Fatalf("computed_at must be the CACHED scan instant (honest staleness): %v (primed at %v)", f.ComputedAt, primedAt)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

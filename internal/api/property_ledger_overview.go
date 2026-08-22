@@ -166,8 +166,22 @@ func (s *PMTACampaignService) HandlePropertyLedgerOverview(w http.ResponseWriter
 
 	payload, err := s.buildPropertyLedgerOverview(ctx)
 	if err != nil {
-		// Never a silent partial-200 — same robustness rule as the supply strip.
-		respondError(w, http.StatusInternalServerError, err.Error())
+		// 2026-08-22: under an IO-starved RDS one failed sub-read used to 500
+		// the whole overview. Serve the LAST GOOD payload (up to 30 min old)
+		// with an explicit staleness stamp instead; 503 only when there is
+		// neither live nor cached data. Never a SILENT partial — the stamp is
+		// the honesty.
+		if propertyOverviewCache.payload != nil &&
+			time.Since(propertyOverviewCache.computedAt) < 30*time.Minute {
+			payload := propertyOverviewCache.payload
+			payload["organization_id"] = orgID
+			payload["stale_as_of"] = propertyOverviewCache.computedAt.UTC()
+			payload["stale_reason"] = err.Error()
+			respondJSON(w, http.StatusOK, payload)
+			return
+		}
+		respondError(w, http.StatusServiceUnavailable,
+			"overview build failed and no recent cached copy exists — the database is under load, retry shortly ("+err.Error()+")")
 		return
 	}
 	propertyOverviewCache.payload = payload
@@ -226,6 +240,7 @@ func (s *PMTACampaignService) buildPropertyLedgerOverview(ctx context.Context) (
 	byISPMailedToday := map[string]int64{}
 	laneAgg := map[string]*propertyOverviewLane{}
 	laneOrder := []string{}
+	feedsPartial := 0
 
 	for _, fd := range feeds {
 		// The per-dataset supply cache is the ONLY count source — a cache
@@ -236,9 +251,15 @@ func (s *PMTACampaignService) buildPropertyLedgerOverview(ctx context.Context) (
 		if err := s.laneSupplyFillAnatomy(ctx, f, dayStart, dayEnd); err != nil {
 			return nil, err
 		}
+		if f.PartialError != "" {
+			feedsPartial++
+		}
 		mailedISP, err := s.propertyOverviewMailedTodayByISP(ctx, fd.id, dayStart, dayEnd)
 		if err != nil {
-			return nil, errors.New("mailed-today-by-isp query failed")
+			// Fail-soft: this feed's mailed-today split is UNKNOWN for this
+			// build; the rest of the estate still renders. Counted + flagged.
+			feedsPartial++
+			mailedISP = map[string]int64{}
 		}
 
 		totals.ready += f.ReadyTotal
@@ -320,8 +341,10 @@ func (s *PMTACampaignService) buildPropertyLedgerOverview(ctx context.Context) (
 			"clean":           totals.ready + totals.mailedLT,
 			"dirty":           totals.suppressed + totals.deadLetter,
 		},
-		"by_isp":  byISP,
-		"by_lane": byLane,
+		"by_isp":        byISP,
+		"by_lane":       byLane,
+		"feeds_partial": feedsPartial,
+		"partial":       feedsPartial > 0,
 		"definitions_note": "clean = ready + mailed_lifetime; dirty = suppressed (suppressed_eo) + dead_letter. " +
 			"Counts are live-queue facts served through the per-dataset supply cache (120s TTL) and a 300s whole-overview cache — computed_at is honest staleness.",
 		"scope_note": "Supply is a DATASET fact shared across each vertical's brand rotation — never domain-owned inventory (see /property-ledger/supply).",

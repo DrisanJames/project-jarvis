@@ -11,12 +11,14 @@
 // line, and that line should have numbers calling out how many audience members
 // are awaiting the next touch."
 //
-// Screen order (the real render order): the GLOBAL DASHBOARD first (all lanes,
-// estate-wide), then IN MOTION (journey canvas: who is mid-ladder right now),
-// TODAY (the lake snapshot), the INTRODUCTION LEDGER (the enforced cap), then
-// PLAN-AHEAD (available data + cold intake + the per-ISP quota levers), then
-// HISTORY (the 7/14/30-day scoreboard). Roster membership (which domains ride
-// this drip) sits last because it is a structural edit, not a daily one.
+// Screen order (the real render order — operator verdict 2026-08-22: the page
+// was overwhelming and the estate dashboard was intertwined with the initial
+// display): ENTRY VIEW is lane-first and light — the journey canvas only,
+// backed by the three mount fetches (property-ledger for the domain selector,
+// roster, journey). Everything else is a COLLAPSED section that fetches on
+// FIRST EXPAND only: Estate overview (/overview), Today's results (lake
+// snapshot + the send-activity strip), Levers & supply (feed cards with the
+// three levers + the brand-budget ledger + cold intake), History, Roster.
 //
 // Honesty rules this screen holds to (PORTAL_DESIGN_SYSTEM §1.6, METRIC_CONTRACT):
 //   - Four distinct displays: loading / error+Retry / empty / data. A failed
@@ -35,7 +37,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faDiagramProject, faSlidersH, faChartLine, faSitemap, faHourglassHalf, faClock,
+  faDiagramProject, faSlidersH, faChartLine, faSitemap, faHourglassHalf, faClock, faGlobe,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
@@ -57,7 +59,7 @@ import { DripOverviewPanel, LaneRename, type OverviewResponse } from './DripOver
 import { DripStepShelf } from './DripStepShelf';
 import { DripCsvUpload } from './DripCsvUpload';
 
-const PAGE_VERSION = 'drip-journey-canvas v2 — 2026-08-22';
+const PAGE_VERSION = 'drip-journey-canvas v3 — 2026-08-22 (lane-first entry, collapsed sections)';
 
 // Sentinel for the drip selector's "All lanes" option: shows the global
 // overview and blanks the lane-scoped panels (a journey needs one vertical).
@@ -225,6 +227,16 @@ export interface JourneyTouch {
   // 7-day per-touch performance (NEW server field — optional; an absent block
   // renders as unknown in the step shelf, never as zero).
   perf_7d?: { sent: number; delivered: number; opened: number; clicked: number };
+  // WHAT IS ACTIVELY MAILING on this touch right now (NEW server field). The
+  // server resolves live rotation; absent on an older server → the shelf
+  // derives best-effort from the configured fields and labels it as such.
+  serving?: {
+    source: 'offer_pool' | 'file' | 'none';
+    creative_label?: string;
+    subject_mode?: string;       // 'rotating' | 'fixed'
+    subject?: string;
+    pool_size?: number;
+  };
 }
 
 // SEND ACTIVITY (operator 2026-08-21: "very challenging to infer if mail is
@@ -398,6 +410,9 @@ interface SupplyFeed {
   dead_letter: number;
   mailed_lifetime: number;
   mailed_today: number;
+  // NEW server field: this feed's queue read failed during THIS refresh. Its
+  // counts are UNKNOWN, not zero — rendered as an amber note on the feed card.
+  partial_error?: string;
 }
 interface SupplyResponse {
   domain: string;
@@ -601,10 +616,16 @@ interface Resource<T> {
  * (null = the fetch is not applicable yet, e.g. no drip selected). Data is
  * cleared on a new key so a stale payload never sits under a new selection,
  * and an error NEVER leaves an empty-looking success behind it.
+ *
+ * `enabled` (default true) gates the fetch entirely — the lazy-section wiring:
+ * a collapsed section passes false until its FIRST expand, so nothing is
+ * fetched at mount. Callers latch it true (it never flips back), so collapsing
+ * a section again does not clear or refetch its data.
  */
 function useResource<T>(
   key: string | null,
   fetcher: (signal: AbortSignal) => Promise<T>,
+  enabled = true,
 ): Resource<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
@@ -614,7 +635,7 @@ function useResource<T>(
   fetcherRef.current = fetcher;
 
   useEffect(() => {
-    if (key === null) {
+    if (key === null || !enabled) {
       setData(null);
       setError(null);
       setLoading(false);
@@ -637,7 +658,7 @@ function useResource<T>(
       }
     })();
     return () => ac.abort();
-  }, [key, nonce]);
+  }, [key, nonce, enabled]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   return { data, loading, error, reload };
@@ -741,17 +762,69 @@ const ReadOnlyBanner: React.FC<{ envVar?: string; what: string; title?: string }
   </div>
 );
 
+/**
+ * CollapsibleSection — the lazy-section wrapper the redesign hangs on. Closed
+ * by default; the body (and therefore its resources, via the useResource
+ * `enabled` latch) only exists after the first expand. The header always says
+ * whether the section has loaded anything, so a closed section is honest about
+ * being unfetched rather than looking "empty".
+ */
+const CollapsibleSection: React.FC<{
+  title: string;
+  icon: typeof faClock;
+  open: boolean;
+  onToggle: () => void;
+  hint?: string;                 // one-liner shown while closed
+  right?: React.ReactNode;       // right-slot rendered only while open
+  children: React.ReactNode;
+}> = ({ title, icon, open, onToggle, hint, right, children }) => (
+  <Panel style={{ marginBottom: 14 }}>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+      }}
+      title={open ? `Collapse ${title}` : `Expand ${title}${hint ? ` — ${hint}` : ''}`}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+        userSelect: 'none',
+      }}
+    >
+      <span style={{ color: colors.indigo300, fontSize: 12, width: 12, display: 'inline-block' }}>
+        {open ? '▾' : '▸'}
+      </span>
+      <h3 style={{ ...panelTitleStyle, margin: 0 }}>
+        <FontAwesomeIcon icon={icon} style={{ color: colors.indigo400 }} />
+        {title}
+      </h3>
+      {!open && hint && (
+        <span style={{ fontSize: 11, color: colors.textFaint }}>{hint}</span>
+      )}
+      <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10 }}
+        onClick={(e) => e.stopPropagation()}>
+        {open && right}
+        <span style={{ fontSize: 10, color: colors.textFaint }} onClick={onToggle}>
+          {open ? 'collapse' : 'open'}
+        </span>
+      </span>
+    </div>
+    {open && <div style={{ marginTop: 12 }}>{children}</div>}
+  </Panel>
+);
+
 // ── The canvas ──────────────────────────────────────────────────────────────
 // Layout mirrors JourneyBuilder.tsx: one absolutely-positioned SVG
 // "connections layer" (lines + arrowheads) with an HTML node layer on top, so
 // node text can truncate/wrap normally. Hand-rolled SVG, no new dependency.
 
 const NODE_W = 244;
-const NODE_H = 148;
+const NODE_H = 172;       // includes the integrated "N waiting" line
 const DIA = 92;           // diamond bounding box
 const GAP = 30;
 const PAD_X = 16;
-const PAD_TOP = 34;
+const PAD_TOP = 12;
 const STEP = NODE_W + GAP + DIA + GAP;
 
 /** Line weight scales with the waiting population; 0 stays a hairline. */
@@ -848,7 +921,17 @@ const TouchContentLine: React.FC<{ touch: JourneyTouch }> = ({ touch }) => {
 
 const TouchNode: React.FC<{
   touch: JourneyTouch; x: number; y: number; onOpen?: () => void;
-}> = ({ touch, x, y, onOpen }) => {
+  // Integrated waiting line (operator 2026-08-22: "the waiting should be
+  // included in each touch … 'Touch 1 — 446 waiting'"). This is the touch's
+  // INBOUND edge census: subscribers who finished the previous touch and are
+  // queued for this one. `hasInbound=false` (the first rung) renders no line;
+  // an inbound rung whose edge the server did not report renders "not
+  // reported" — an unknown, never 0.
+  hasInbound?: boolean;
+  waitingIn?: number | null;     // null = edge not reported
+  edgeOpen?: boolean;
+  onToggleEdge?: () => void;
+}> = ({ touch, x, y, onOpen, hasInbound, waitingIn, edgeOpen, onToggleEdge }) => {
   const configured = touch.configured;
   // A touch that is CONFIGURED but does not RESOLVE is the worst state on this
   // screen: it looks live and will not send. Make the whole node alarming.
@@ -928,35 +1011,94 @@ const TouchNode: React.FC<{
           <TouchContentLine touch={touch} />
         </>
       )}
+
+      {/* Integrated waiting line — the inbound edge census, IN the touch
+          (replaces the old floating badges). Click for the per-ISP split. */}
+      {hasInbound && (
+        <button
+          type="button"
+          onClick={onToggleEdge ? (e) => { e.stopPropagation(); onToggleEdge(); } : undefined}
+          title={waitingIn == null
+            ? `The server reported no queue census for touch ${touch.touch} — this is an UNKNOWN, not a zero.`
+            : `${num(waitingIn)} subscriber(s) finished touch ${touch.touch - 1} and are queued for touch ${touch.touch}. Click for the per-ISP split.`}
+          style={{
+            position: 'absolute', left: 11, right: 11, bottom: 7,
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'transparent',
+            border: 'none',
+            borderTop: `1px solid ${colors.hairline}`,
+            padding: '4px 0 0 0',
+            cursor: onToggleEdge ? 'pointer' : 'default',
+            textAlign: 'left',
+          }}
+        >
+          <span style={{
+            fontSize: 12, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+            color: waitingIn == null
+              ? colors.textFaint
+              : waitingIn > 0 ? colors.indigo200 : colors.textMuted,
+          }}>
+            {waitingIn == null ? `${UNKNOWN} waiting (not reported)` : `${num(waitingIn)} waiting`}
+          </span>
+          {waitingIn != null && (
+            <span style={{ fontSize: 9, color: edgeOpen ? colors.indigo300 : colors.textFaint, marginLeft: 'auto' }}>
+              {edgeOpen ? 'ISP split ▾' : 'ISP split ▸'}
+            </span>
+          )}
+        </button>
+      )}
     </div>
   );
 };
 
-const DelayDiamond: React.FC<{ x: number; y: number; hours: number }> = ({ x, y, hours }) => (
-  <div style={{ position: 'absolute', left: x, top: y, width: DIA, height: DIA }}>
-    <div
-      style={{
-        position: 'absolute', inset: 10,
-        background: alpha(colors.indigo500, '14'),
-        border: `1px solid ${alpha(colors.indigo400, '66')}`,
-        transform: 'rotate(45deg)',
-        borderRadius: 6,
-      }}
-    />
-    <div
-      style={{
-        position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
-      }}
-    >
-      <FontAwesomeIcon icon={faHourglassHalf} style={{ fontSize: 10, color: colors.indigo300 }} />
-      <div style={{ fontSize: 12, fontWeight: 700, color: colors.indigo200, fontVariantNumeric: 'tabular-nums' }}>
-        {Number.isFinite(hours) ? `${hours}h` : UNKNOWN}
+const DelayDiamond: React.FC<{
+  x: number; y: number; hours: number;
+  // The wait's own census — the same population as the next touch's inbound
+  // line ("24h wait · N waiting", operator 2026-08-22). null = not reported.
+  waiting: number | null;
+  soonest?: string | null;
+}> = ({ x, y, hours, waiting, soonest }) => {
+  const hoursLabel = Number.isFinite(hours) ? `${hours}h` : UNKNOWN;
+  return (
+    <div style={{ position: 'absolute', left: x, top: y, width: DIA, height: DIA }}>
+      <div
+        style={{
+          position: 'absolute', inset: 10,
+          background: alpha(colors.indigo500, '14'),
+          border: `1px solid ${alpha(colors.indigo400, '66')}`,
+          transform: 'rotate(45deg)',
+          borderRadius: 6,
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+        }}
+      >
+        <FontAwesomeIcon icon={faHourglassHalf} style={{ fontSize: 10, color: colors.indigo300 }} />
+        <div style={{ fontSize: 12, fontWeight: 700, color: colors.indigo200, fontVariantNumeric: 'tabular-nums' }}>
+          {hoursLabel}
+        </div>
+        <div style={{ fontSize: 8, color: colors.textFaint, letterSpacing: 0.4 }}>WAIT</div>
       </div>
-      <div style={{ fontSize: 8, color: colors.textFaint, letterSpacing: 0.4 }}>WAIT</div>
+      {/* The wait's census, attached to the wait itself. */}
+      <div
+        title={waiting == null
+          ? `No census reported for this ${hoursLabel} wait — unknown, not zero.`
+          : `${hoursLabel} wait · ${num(waiting)} subscriber(s) in it. Next one due ${shortTime(soonest)} (${durationUntil(soonest)}).`}
+        style={{
+          position: 'absolute', left: -GAP, right: -GAP, top: DIA + 2,
+          textAlign: 'center', fontSize: 10, whiteSpace: 'nowrap',
+          color: waiting == null ? colors.textFaint : waiting > 0 ? colors.indigo200 : colors.textMuted,
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {waiting == null ? 'not reported' : `${num(waiting)} waiting`}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const JourneyCanvas: React.FC<{
   journey: JourneyResponse;
@@ -994,7 +1136,7 @@ const JourneyCanvas: React.FC<{
   );
 
   const width = PAD_X * 2 + (rungs.length - 1) * STEP + NODE_W;
-  const height = PAD_TOP + NODE_H + 46;
+  const height = PAD_TOP + NODE_H + 10;
   const cy = PAD_TOP + NODE_H / 2;
 
   return (
@@ -1040,83 +1182,35 @@ const JourneyCanvas: React.FC<{
         </svg>
 
         <div style={{ position: 'absolute', left: 0, top: 0, width, height }}>
-          {rungs.map((t, i) => (
-            <TouchNode key={t.touch} touch={t} x={PAD_X + i * STEP} y={PAD_TOP}
-              onOpen={() => onOpenTouch(t.touch)} />
-          ))}
-          {rungs.slice(0, -1).map((t, i) => (
-            <DelayDiamond
-              key={`d${t.touch}`}
-              x={PAD_X + i * STEP + NODE_W + GAP}
-              y={PAD_TOP + NODE_H / 2 - DIA / 2}
-              hours={journey.delay_hours}
-            />
-          ))}
-          {/* Waiting badges — the operator's headline ask. They sit BELOW the
-              node/diamond row, horizontally centered on the node→diamond gap:
-              on-the-line placement (mid-46, width 92) overlapped the right
-              ~31px of each TouchNode and the left of the delay diamond,
-              stealing their clicks. */}
-          {rungs.slice(0, -1).map((t, i) => {
-            const e = edgeFor(t.touch);
-            const waiting = e ? e.waiting : null;
-            const known = waiting != null && Number.isFinite(waiting);
-            const mid = PAD_X + i * STEP + NODE_W + GAP / 2;
-            const isOpen = openEdge === t.touch;
+          {/* The floating badges are GONE (operator 2026-08-22: confusing).
+              Each edge's census now lives on the elements it describes: the
+              wait diamond ("24h wait · N waiting") and the next touch's
+              integrated "N waiting" line — exactly the operator's asked-for
+              pairing ("Touch 1 — 446 waiting" / "24h wait — 446 waiting").
+              Click either to open the per-ISP split. */}
+          {rungs.map((t, i) => {
+            const inEdge = i > 0 ? edgeFor(rungs[i - 1].touch) : null;
             return (
-              <button
-                key={`b${t.touch}`}
-                type="button"
-                onClick={() => onToggleEdge(t.touch)}
-                title={
-                  known
-                    ? `${num(waiting)} subscriber(s) sitting between touch ${t.touch} and touch ${t.touch + 1}. Next due ${shortTime(e?.soonest)} (${durationUntil(e?.soonest)}). Click for the per-ISP split.`
-                    : `No edge reported by the server for touch ${t.touch} → ${t.touch + 1}. This is an UNKNOWN, not a zero.`
-                }
-                style={{
-                  position: 'absolute',
-                  left: mid - 46,
-                  top: PAD_TOP + NODE_H + 8,
-                  width: 92,
-                  cursor: 'pointer',
-                  background: known ? colors.panelBgSolid : 'rgba(15,30,60,0.9)',
-                  border: `1px solid ${isOpen ? colors.indigo400 : known && waiting > 0 ? alpha(colors.indigo400, '66') : alpha(colors.textFaint, '66')}`,
-                  borderRadius: 8,
-                  padding: '3px 4px',
-                  color: colors.text,
-                  textAlign: 'center',
-                }}
-              >
-                <div style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: known ? (waiting > 0 ? colors.indigo200 : colors.textMuted) : colors.textFaint }}>
-                  {known ? num(waiting) : UNKNOWN}
-                </div>
-                <div style={{ fontSize: 8, color: colors.textFaint, letterSpacing: 0.4 }}>
-                  {known ? 'WAITING' : 'NOT REPORTED'}
-                </div>
-              </button>
+              <TouchNode key={t.touch} touch={t} x={PAD_X + i * STEP} y={PAD_TOP}
+                onOpen={() => onOpenTouch(t.touch)}
+                hasInbound={i > 0}
+                waitingIn={inEdge ? inEdge.waiting : null}
+                edgeOpen={i > 0 && openEdge === rungs[i - 1].touch}
+                onToggleEdge={i > 0 ? () => onToggleEdge(rungs[i - 1].touch) : undefined}
+              />
             );
           })}
-          {/* Next-due caption under each connector. */}
           {rungs.slice(0, -1).map((t, i) => {
             const e = edgeFor(t.touch);
-            if (!e) return null;
             return (
-              <div
-                key={`s${t.touch}`}
-                style={{
-                  position: 'absolute',
-                  left: PAD_X + i * STEP + NODE_W,
-                  top: PAD_TOP + NODE_H / 2 + 22,
-                  width: GAP + DIA + GAP,
-                  textAlign: 'center',
-                  fontSize: 9,
-                  color: colors.textFaint,
-                  whiteSpace: 'nowrap',
-                }}
-                title={`soonest ${shortTime(e.soonest)} · latest ${shortTime(e.latest)}`}
-              >
-                next {durationUntil(e.soonest)}
-              </div>
+              <DelayDiamond
+                key={`d${t.touch}`}
+                x={PAD_X + i * STEP + NODE_W + GAP}
+                y={PAD_TOP + NODE_H / 2 - DIA / 2}
+                hours={journey.delay_hours}
+                waiting={e ? e.waiting : null}
+                soonest={e?.soonest}
+              />
             );
           })}
         </div>
@@ -1610,16 +1704,35 @@ export const DripJourneyCanvas: React.FC<{
   const [notice, setNotice] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
 
+  // ── Collapsed-by-default sections (operator 2026-08-22: the entry view is
+  // lane-first and LIGHT). `secOpen` is the visible state; `secSeen` is the
+  // one-way latch that arms each section's resources on FIRST expand — nothing
+  // below the journey fetches at mount, and collapsing again neither clears
+  // nor refetches.
+  type SectionKey = 'overview' | 'today' | 'levers' | 'history';
+  const [secOpen, setSecOpen] = useState<Record<SectionKey, boolean>>({
+    overview: false, today: false, levers: false, history: false,
+  });
+  const [secSeen, setSecSeen] = useState<Record<SectionKey, boolean>>({
+    overview: false, today: false, levers: false, history: false,
+  });
+  const toggleSec = useCallback((k: SectionKey) => {
+    setSecOpen((s) => ({ ...s, [k]: !s[k] }));
+    setSecSeen((s) => (s[k] ? s : { ...s, [k]: true }));
+  }, []);
+
   const notify = useCallback((s: string) => {
     setNotice(s);
     toast.addToast({ type: 'info', title: 'Drip journey', message: s });
   }, [toast]);
 
-  // 0. GLOBAL OVERVIEW — the estate-wide rollup for the dashboard panel.
+  // 0. GLOBAL OVERVIEW — the estate-wide rollup for the (collapsed) Estate
+  // overview section. Fetches on the section's first expand only.
   // NEW endpoint; a 404 degrades to the panel's error state and blocks nothing.
   const overview = useResource<OverviewResponse>(
     'overview',
     (signal) => getJSON<OverviewResponse>('/api/mailing/pmta-campaign/property-ledger/overview', signal),
+    secSeen.overview,
   );
 
   // 1. Brand ⇄ sending-domain pairs, from the existing Property Ledger read.
@@ -1744,6 +1857,7 @@ export const DripJourneyCanvas: React.FC<{
       + (snapScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
       signal,
     ),
+    secSeen.today,   // fetches on the Today's-results section's first expand
   );
 
   // 4b. HISTORY — the scoreboard. SLOW (Postgres, ~10s warm / 25s cold), so it
@@ -1760,6 +1874,7 @@ export const DripJourneyCanvas: React.FC<{
       + (statsScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
       signal,
     ),
+    secSeen.history, // fetches on the History section's first expand
   );
 
   // 5. The levers. VERIFIED against HandleLaneThrottle: keyed by `domain`, and
@@ -1771,6 +1886,7 @@ export const DripJourneyCanvas: React.FC<{
       `/api/mailing/pmta-campaign/property-ledger/throttle?domain=${encodeURIComponent(sendingDomain ?? '')}`,
       signal,
     ),
+    secSeen.levers,  // fetches on the Levers-&-supply section's first expand
   );
 
   // 5b. AVAILABLE DATA — the live queue behind those levers, per sending
@@ -1782,6 +1898,8 @@ export const DripJourneyCanvas: React.FC<{
       `/api/mailing/pmta-campaign/property-ledger/supply?domain=${encodeURIComponent(sendingDomain ?? '')}`,
       signal,
     ),
+    // The CSV-ingest shelf also needs the feed list, so opening it arms this.
+    secSeen.levers || ingestOpen,
   );
 
   // 5c. Cold-intake TREND, estate-wide (see the type note: sizing an ask means
@@ -1790,6 +1908,7 @@ export const DripJourneyCanvas: React.FC<{
     `ingestion:${days}`,
     (signal) => getJSON<IngestionResponse>(
       `/api/mailing/pmta-campaign/property-ledger/ingestion?days=${days}`, signal),
+    secSeen.levers,  // lives inside Levers & supply — fetches on first expand
   );
 
   const ingestionRows = useMemo(
@@ -2228,6 +2347,16 @@ export const DripJourneyCanvas: React.FC<{
   const expectedEdges = j ? Math.max(0, (j.max_touches || (j.touches?.length ?? 0)) - 1) : 0;
   const waitingSum = (j?.edges ?? []).reduce((a, e) => a + (Number.isFinite(e.waiting) ? e.waiting : 0), 0);
   const openEdgeRow = openEdge != null ? (j?.edges ?? []).find((e) => e.from_touch === openEdge) ?? null : null;
+  // Plain-words header split (operator 2026-08-22: "due now / waiting on
+  // connectors" was jargon). The edge census counts EVERY row sitting between
+  // two touches, whether its wait has elapsed or not; due_now is the subset
+  // already past it. "Inside their wait" is therefore census − past-due —
+  // derivable only when every edge was reported and due_now is known.
+  const dueNowVal = j?.totals?.due_now;
+  const edgesComplete = expectedEdges > 0 && edgesReported === expectedEdges;
+  const insideWait = typeof dueNowVal === 'number' && edgesComplete
+    ? Math.max(0, waitingSum - dueNowVal)
+    : null;
 
   // Snapshot sub-states. rows===null (no snapshot captured) and rows===[] (a
   // snapshot exists and this lane did nothing today) are DIFFERENT displays.
@@ -2520,24 +2649,7 @@ export const DripJourneyCanvas: React.FC<{
         </div>
       )}
 
-      {/* ── 0. GLOBAL DASHBOARD — every lane, before any lane scoping ─────── */}
-      <Panel style={{ marginBottom: 14 }}>
-        <DripOverviewPanel
-          data={overview.data}
-          loading={overview.loading}
-          error={overview.error}
-          reload={overview.reload}
-          selectedVertical={selVertical}
-          // null = clear the spotlight (clicking the already-spotlighted row)
-          // → back to the All-lanes overview, never an auto-reselected lane.
-          onSelectLane={(v) => { setVertical(v ?? ALL_LANES); setShowRoster(false); }}
-          onOpenIngest={() => setIngestOpen(true)}
-          onOnboardLane={onNavigate ? () => onNavigate('drip-lane-onboarding') : undefined}
-          onNotice={notify}
-        />
-      </Panel>
-
-      {/* ── 1. IN MOTION — the journey canvas ─────────────────────────────── */}
+      {/* ── 1. THE ENTRY VIEW — the journey canvas, and nothing else ──────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
           title="Journey — in motion right now"
@@ -2547,7 +2659,7 @@ export const DripJourneyCanvas: React.FC<{
         {allLanes ? (
           <EmptyState
             title="Select a lane to draw its journey"
-            hint="The journey canvas is scoped to ONE drip. Click a lane on the dashboard above, or pick one in the drip selector — the overview never draws a merged ladder."
+            hint="The journey canvas is scoped to ONE drip. Pick one in the drip selector, or open the Estate overview below and spotlight a lane — the overview never draws a merged ladder."
           />
         ) : (
         <AsyncPanel
@@ -2563,8 +2675,7 @@ export const DripJourneyCanvas: React.FC<{
         >
           {j && (
             <>
-              <SendActivityStrip activity={j.send_activity} />
-              <div style={{ ...cardGrid(150), marginBottom: 14 }}>
+              <div style={{ ...cardGrid(170), marginBottom: 14 }}>
                 <Stat
                   label="In flight (this drip)"
                   value={num(j.totals?.in_flight)}
@@ -2573,27 +2684,24 @@ export const DripJourneyCanvas: React.FC<{
                   title="Server-reported total currently enrolled and not yet retired on this vertical."
                 />
                 <Stat
-                  label="Due now"
-                  value={num(j.totals?.due_now)}
-                  sub={`next_touch_at already passed${shareSub(j.totals?.due_now, j.totals?.in_flight, 'in flight')}`}
-                  color={(j.totals?.due_now ?? 0) > 0 ? colors.warningText : colors.text}
-                  title="Rows whose next touch is already due — the backlog the orchestrator will claim from on its next wave. The percentage is of IN FLIGHT: a rising share means the ladder is claiming slower than it enrols."
+                  label="Past their wait"
+                  value={num(dueNowVal)}
+                  sub={`mail on next tick (≤15 min)${shareSub(dueNowVal, j.totals?.in_flight, 'in flight')}`}
+                  color={(dueNowVal ?? 0) > 0 ? colors.warningText : colors.text}
+                  title={`Subscribers whose ${Number.isFinite(j.delay_hours) ? `${j.delay_hours}h` : ''} wait has already elapsed — the orchestrator claims them on its next wave (~every 15 min). Denominator of the percentage: in flight (${num(j.totals?.in_flight)}). A rising share means the ladder is claiming slower than it enrols.`}
                 />
                 <Stat
-                  label="Waiting on connectors"
-                  value={num(waitingSum)}
-                  sub={(edgesReported === expectedEdges
-                    ? `sum of all ${edgesReported} reported edges`
-                    : `sum of ${edgesReported} of ${expectedEdges} edges — ${expectedEdges - edgesReported} not reported`)
-                    + shareSub(waitingSum, j.totals?.in_flight, 'in flight')}
-                  color={edgesReported === expectedEdges ? colors.text : colors.warningText}
-                  title="Sum of the per-edge waiting counts drawn on the canvas. When edges are missing this is a FLOOR, not the total — and so is its percentage of in-flight."
-                />
-                <Stat
-                  label="Inter-touch delay"
-                  value={Number.isFinite(j.delay_hours) ? `${j.delay_hours}h` : UNKNOWN}
-                  sub="uniform, every rung"
-                  title="The lane's configured delay between consecutive touches — the duration drawn in each diamond."
+                  label={`Inside their ${Number.isFinite(j.delay_hours) ? `${j.delay_hours}h` : ''} wait`}
+                  value={insideWait != null ? num(insideWait) : num(waitingSum)}
+                  sub={insideWait != null
+                    ? `census ${num(waitingSum)} − ${num(dueNowVal)} past due${shareSub(insideWait, j.totals?.in_flight, 'in flight')}`
+                    : (edgesComplete
+                      ? 'past-due split unknown — includes rows already past their wait'
+                      : `FLOOR — ${expectedEdges - edgesReported} of ${expectedEdges} edges not reported`)}
+                  color={insideWait != null ? colors.text : colors.warningText}
+                  title={insideWait != null
+                    ? `Derived: the full between-touch census (${num(waitingSum)}, sum of all ${edgesReported} edges) minus the ${num(dueNowVal)} already past their wait. Denominator of the percentage: in flight (${num(j.totals?.in_flight)}).`
+                    : 'The raw between-touch census. The past-due subset could not be split out (missing edges or unknown due-now), so this number INCLUDES rows already past their wait — an upper bound on "still waiting", a floor when edges are missing.'}
                 />
                 <Stat
                   label="Touches configured"
@@ -2653,10 +2761,12 @@ export const DripJourneyCanvas: React.FC<{
               )}
 
               <p style={noteStyle}>
-                Each connector's number is the population sitting between those two touches — click it for the
-                per-ISP split and the soonest next-due time. A dashed grey connector means the server reported
-                <b> no edge</b> for that gap: unknown, not zero. Rungs drawn dashed and muted are
-                <b> not configured</b> — the ladder retires there regardless of <code>max_touches</code>.
+                Each touch shows its own queue (“N waiting” — subscribers who finished the previous
+                touch and are queued for it); the wait diamond between two touches shows the same
+                population sitting in that wait. Click a touch&apos;s waiting line for the per-ISP split.
+                A dashed grey connector means the server reported <b>no edge</b> for that gap:
+                unknown, not zero. Rungs drawn dashed and muted are <b>not configured</b> — the
+                ladder retires there regardless of <code>max_touches</code>.
               </p>
             </>
           )}
@@ -2664,10 +2774,58 @@ export const DripJourneyCanvas: React.FC<{
         )}
       </Panel>
 
-      {/* ── 2. TODAY — the lake snapshot (answers in ~0s) ─────────────────── */}
-      {!allLanes && (
-      <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader
+      {/* ── 2. ESTATE OVERVIEW — collapsed; /overview fetches on first open ── */}
+      <CollapsibleSection
+        title="Estate overview"
+        icon={faGlobe}
+        open={secOpen.overview}
+        onToggle={() => toggleSec('overview')}
+        hint="all lanes, estate-wide — loads when opened"
+      >
+        <DripOverviewPanel
+          data={overview.data}
+          loading={overview.loading}
+          error={overview.error}
+          reload={overview.reload}
+          selectedVertical={selVertical}
+          // null = clear the spotlight (clicking the already-spotlighted row)
+          // → back to the All-lanes overview, never an auto-reselected lane.
+          onSelectLane={(v) => { setVertical(v ?? ALL_LANES); setShowRoster(false); }}
+          onOpenIngest={() => setIngestOpen(true)}
+          onOnboardLane={onNavigate ? () => onNavigate('drip-lane-onboarding') : undefined}
+          onNotice={notify}
+        />
+      </CollapsibleSection>
+
+      {/* ── 3. TODAY'S RESULTS — send activity + the lake snapshot ─────────── */}
+      <CollapsibleSection
+        title="Today's results"
+        icon={faClock}
+        open={secOpen.today}
+        onToggle={() => toggleSec('today')}
+        hint="send activity + lake snapshot for this lane — loads when opened"
+      >
+        {(allLanes || !selVertical) ? (
+          <EmptyState
+            title="Select a lane first"
+            hint="Today's results are scoped to ONE drip lane. Pick one in the drip selector or spotlight a lane from the Estate overview."
+          />
+        ) : (
+          <>
+            {/* Send activity — is this lane actually mailing? Moved here from
+                the always-on journey area (operator 2026-08-22: reduce). */}
+            {journey.loading
+              ? <LoadingRow label="send activity (journey)" />
+              : journey.error
+                ? (
+                  <div style={{ ...noteStyle, color: colors.warningText, marginTop: 0, marginBottom: 12 }}>
+                    The journey read failed, so send activity is UNKNOWN for this refresh — see the
+                    journey panel above for the error.
+                  </div>
+                )
+                : <SendActivityStrip activity={journey.data?.send_activity} />}
+
+            <SectionHeader
           title="Today so far — lake snapshot"
           icon={faClock}
           right={
@@ -2951,10 +3109,310 @@ export const DripJourneyCanvas: React.FC<{
             </>
           )}
         </AsyncPanel>
-      </Panel>
-      )}
+          </>
+        )}
+      </CollapsibleSection>
 
-      {/* ── 2b. THE ENFORCED CAP — the introduction ledger ────────────────── */}
+
+      {/* ── 4. LEVERS & SUPPLY — one merged section: per-feed cards (queue +
+             the three levers), then the ledger budget, then what binds, then
+             cold intake. Fetches on first expand. ─────────────────────────── */}
+      <CollapsibleSection
+        title="Levers & supply"
+        icon={faSlidersH}
+        open={secOpen.levers}
+        onToggle={() => toggleSec('levers')}
+        hint="per-feed caps, pause, express + the ledger budget — loads when opened"
+        right={throttle.data ? <span style={{ fontSize: 11, color: colors.textFaint }}>as of {shortTime(throttle.data.as_of)}</span> : undefined}
+      >
+        {/* ── PER-FEED CARDS — queue + the three levers, one card per feed ── */}
+        <AsyncPanel
+          label="the throttle configuration"
+          res={throttle}
+          isEmpty={feeds.length === 0}
+          emptyTitle={throttle.data
+            ? (allLanes ? 'No feed delivers to this domain' : 'No feed on this domain belongs to this drip')
+            : 'No throttle data'}
+          emptyHint={allLanes
+            ? 'The throttle read succeeded but returned no feeds for this sending domain — there is nothing to throttle.'
+            : 'The throttle read succeeded but returned no feed whose vertical matches the selected drip.'}
+        >
+          {throttle.data && (
+            <>
+              {/* Gate default differs from the ledger's on purpose: the roster
+                  and throttle endpoints ALWAYS send write_enabled, so an absent
+                  flag means an old server and the panel fails READ-ONLY. The
+                  ledger endpoint never sends it, so there absent = writable. */}
+              {!throttle.data.write_enabled && (
+                <ReadOnlyBanner
+                  envVar={throttle.data.write_flag_env}
+                  what="Quota editing"
+                  title={throttle.data.enforcement_note}
+                />
+              )}
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }} title={throttle.data.cap_systems_note}>
+                {throttle.data.cap_systems_note}
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>
+                The introduction ledger (above) and these feed throttle caps are separate systems —
+                the orchestrator enforces BOTH; the tighter one binds.
+              </div>
+              {feeds.map((f) => {
+                // The matching supply feed (same dataset), for the queue
+                // mini-table and express state. Absent ≠ empty: the supply
+                // read may have failed or not cover this feed.
+                const sf = supplyFeeds.find((s) => s.dataset_id === f.dataset_id) ?? null;
+                const exp = expressFor(f.dataset_id);
+                const canWrite = !!throttle.data?.write_enabled;
+                const expKnown = exp !== undefined;
+                const roExpTitle = !canWrite
+                  ? `READ-ONLY — the server reports write_enabled=false${throttle.data?.write_flag_env ? ` (env ${throttle.data.write_flag_env} is not set)` : ''}. Dispatch mode cannot be changed from here.`
+                  : undefined;
+                const leverRow: React.CSSProperties = {
+                  display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                  padding: '6px 0', borderTop: `1px solid ${colors.hairline}`,
+                };
+                const leverName: React.CSSProperties = {
+                  fontSize: 11, fontWeight: 700, color: colors.heading, width: 74, flex: '0 0 auto',
+                };
+                const leverExplain: React.CSSProperties = {
+                  fontSize: 11, color: colors.textMuted, flex: '1 1 260px',
+                };
+                return (
+                <div
+                  key={f.dataset_id}
+                  style={{
+                    border: `1px solid ${colors.hairline}`, borderRadius: 8,
+                    padding: '10px 12px', marginBottom: 10,
+                    opacity: f.paused_emergency ? 0.65 : 1,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: colors.heading }}>{f.name}</span>
+                    <Pill color={stateColor(f.paused_emergency ? 'paused' : f.status)} style={{ fontSize: 9 }}>
+                      {f.paused_emergency ? 'paused' : f.status || 'unknown'}
+                    </Pill>
+                    <span
+                      style={{ fontSize: 10, fontFamily: 'monospace', color: colors.textFaint }}
+                      title={`dataset_id ${f.dataset_id}`}
+                    >
+                      {f.dataset_id.slice(0, 8)}…
+                    </span>
+                    {f.shared_brands.length > 1 && (
+                      <span
+                        style={{ fontSize: 10, color: colors.warningText }}
+                        title={`This feed's supply is shared across the whole rotation: ${f.shared_brands.join(', ')} — edits here change all of them.`}
+                      >
+                        shared across {f.shared_brands.length} brands
+                      </span>
+                    )}
+                    {sf && (
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}
+                        title="From the live supply queue read (partner_clean_queue). ready = EO-validated and claimable; cleaning = inside the validation pipeline; mailed today = first touches stamped today.">
+                        ready <b style={{ color: sf.ready_total > 0 ? colors.successText : colors.warningText }}>{num(sf.ready_total)}</b>
+                        {' '}· cleaning <b style={{ color: colors.text }}>{num(sf.cleaning)}</b>
+                        {' '}· mailed today <b style={{ color: colors.text }}>{num(sf.mailed_today)}</b>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Queue read state — a failed read is a NAMED gap, not 0. */}
+                  {supply.loading && <LoadingRow label="this feed's queue" />}
+                  {supply.error && (
+                    <div style={{ fontSize: 10, color: colors.warningText, marginBottom: 8 }}>
+                      Queue read failed ({supply.error}) — ready counts for this feed are UNKNOWN, not zero.
+                    </div>
+                  )}
+                  {sf?.partial_error && (
+                    <div style={{
+                      fontSize: 10, fontWeight: 600, color: colors.warningText,
+                      background: alpha(colors.warning, '14'),
+                      border: `1px solid ${alpha(colors.warning, '44')}`,
+                      borderRadius: 6, padding: '5px 9px', marginBottom: 8,
+                    }}>
+                      This feed was unreadable during this refresh ({sf.partial_error}) — its counts
+                      are UNKNOWN, not zero.
+                    </div>
+                  )}
+                  {supply.data && !sf && !supply.error && (
+                    <div style={{ fontSize: 10, color: colors.textFaint, marginBottom: 8 }}>
+                      The supply read returned no queue row for this feed — unknown, not empty.
+                    </div>
+                  )}
+
+                  {/* Ready-by-ISP mini table — what this feed can introduce, per ISP. */}
+                  {sf && (sf.ready_by_isp ?? []).length > 0 && (
+                    <div style={{ overflowX: 'auto', marginBottom: 8 }}>
+                      <table style={{ ...tableStyle, maxWidth: 560 }}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>ISP</th>
+                            <th style={numTh} title="EO-validated records sitting claimable in this feed's queue right now.">Ready</th>
+                            <th style={numTh} title="Share of this feed's total ready supply.">% of feed ready</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(sf.ready_by_isp ?? []).slice().sort((a, b) => b.ready - a.ready).map((r) => (
+                            <tr key={r.isp}>
+                              <td style={tdStyle}>{r.isp}</td>
+                              <td style={numTd}>{num(r.ready)}</td>
+                              <td style={numTd}>{ratePct(derive(r.ready, sf.ready_total))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* ── THE THREE LEVERS — plain words, always visible ─────── */}
+                  <div style={leverRow}>
+                    <span style={leverName}>Daily cap</span>
+                    <span style={leverExplain}>
+                      max new records introduced per ISP per day
+                      <span style={{ color: colors.textFaint }} title={throttle.data?.cap_systems_note}>
+                        {' '}· supply release cap {f.supply_release_daily_cap > 0 ? `${num(f.supply_release_daily_cap)}/day` : 'uncapped'} (a separate, lane-level system)
+                      </span>
+                    </span>
+                    {throttle.data?.write_enabled ? (
+                      <button
+                        type="button" style={smallBtn}
+                        title={throttle.data.enforcement_note}
+                        onClick={() => setEditingFeed((cur) => (cur === f.dataset_id ? null : f.dataset_id))}
+                      >
+                        {editingFeed === f.dataset_id ? 'Close editor' : 'Edit caps'}
+                      </button>
+                    ) : (
+                      <Pill color={colors.warning} style={{ fontSize: 9 }}>read-only</Pill>
+                    )}
+                  </div>
+                  <div style={leverRow}>
+                    <span style={leverName}>Pause</span>
+                    <span style={leverExplain}>stops intake and follow-ups for this feed</span>
+                    {/* Per-feed emergency pause/resume — same endpoints as
+                        the Partner Ingest portal (datasets/{id}/emergency-stop
+                        with {reason}; /resume with no body). */}
+                    <button
+                      type="button"
+                      disabled={!!feedBusy[`pause/${f.dataset_id}`]}
+                      onClick={() => void (f.paused_emergency ? resumeFeed(f) : pauseFeed(f))}
+                      title={f.paused_emergency
+                        ? 'This feed is emergency-stopped (paused_emergency). Resume restarts intake and the follow-up ladder on the next tick.'
+                        : 'Emergency-stops THIS feed only (paused_emergency): intake and follow-up claims halt at the next safe point. Asks for a reason.'}
+                      style={{
+                        background: f.paused_emergency ? alpha(colors.success, '14') : 'rgba(239,68,68,0.15)',
+                        color: f.paused_emergency ? colors.successText : colors.dangerText,
+                        border: `1px solid ${f.paused_emergency ? alpha(colors.success, '44') : 'rgba(239,68,68,0.40)'}`,
+                        borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                      }}
+                    >
+                      {feedBusy[`pause/${f.dataset_id}`] ? 'Confirming…' : f.paused_emergency ? 'Resume' : 'Pause'}
+                    </button>
+                  </div>
+                  <div style={leverRow}>
+                    <span style={leverName}>Express</span>
+                    <span style={leverExplain}>mail as fast as caps allow instead of spreading over days</span>
+                    {/* EXPRESS / PACED toggle. State comes from the SUPPLY
+                        payload (new server field) — absent = UNKNOWN, never
+                        false. Gated by the throttle write flag; write
+                        surfaces render read-only, never hidden. */}
+                    <button
+                      type="button"
+                      disabled={!canWrite || !expKnown || !!feedBusy[`express/${f.dataset_id}`]}
+                      onClick={() => void toggleExpress(f, exp)}
+                      title={roExpTitle ?? (!expKnown
+                        ? 'This server did not report express_dispatch for this feed (older /supply payload) — dispatch mode UNKNOWN, not paced. Nothing to toggle safely.'
+                        : exp
+                          ? 'EXPRESS — this feed skips the multi-day drain spread. Click to return it to paced dispatch (plain confirm).'
+                          : 'PACED — this feed spreads each ISP over its drain horizon. Click to enable express (typed-name confirm): express removes the multi-day SPREAD only; daily caps, brand budgets and throttle safety still bind.')}
+                      style={{
+                        background: expKnown && exp ? alpha(colors.success, '14') : 'rgba(255,255,255,0.05)',
+                        color: expKnown ? (exp ? colors.successText : colors.textMuted) : colors.textFaint,
+                        border: `1px solid ${expKnown && exp ? alpha(colors.success, '44') : colors.hairline}`,
+                        borderRadius: 999, padding: '3px 10px', fontSize: 10, fontWeight: 700,
+                        cursor: canWrite && expKnown ? 'pointer' : 'not-allowed',
+                        opacity: canWrite && expKnown ? 1 : 0.6,
+                      }}
+                    >
+                      {feedBusy[`express/${f.dataset_id}`] ? '…' : expKnown ? (exp ? 'express — click to pace' : 'paced — click for express') : 'express: unknown'}
+                    </button>
+                  </div>
+
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...tableStyle, minWidth: 620 }}>
+                      <thead>
+                        <tr>
+                          <th style={thStyle}>ISP</th>
+                          <th style={numTh} title="Fraction of each wave's claim allocated to this ISP (0–1).">
+                            Pct of wave (0–1)
+                          </th>
+                          <th style={numTh} title="Per-wave claim cap for this dataset's waves — replaces the global per-wave cap. Blank = global default.">
+                            Max/wave (per wave)
+                          </th>
+                          <th style={numTh} title="Lane-owned per-ISP DAILY budget. Blank = global default; 0 = hard-suppressed for this lane.">
+                            Daily cap (per day)
+                          </th>
+                          <th style={thStyle}>Last change</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {f.overrides.length === 0 && (
+                          <tr>
+                            <td style={{ ...tdStyle, color: colors.textFaint }} colSpan={5}>
+                              No override rows — every ISP on this feed rides the global defaults.
+                            </td>
+                          </tr>
+                        )}
+                        {f.overrides.map((ov) => (
+                          <tr key={ov.isp}>
+                            <td style={tdStyle}>{ov.isp}</td>
+                            <td style={numTd}>{Number.isFinite(ov.pct_override) ? ov.pct_override : UNKNOWN}</td>
+                            <td style={numTd}>{ov.max_per_wave > 0 ? num(ov.max_per_wave) : <span style={{ color: colors.textFaint }}>default</span>}</td>
+                            <td style={numTd}>
+                              {ov.daily_cap == null
+                                ? <span style={{ color: colors.textFaint }} title="NULL — this ISP rides the compiled default: the process-wide DefaultNewRecordDailyISPCaps value from the orchestrator config (env-overridable), separate from the Introduction ledger's per-brand daily budget above.">compiled default</span>
+                                : ov.daily_cap === 0
+                                  ? <span style={{ color: colors.dangerText, fontWeight: 700 }} title="0 = hard-suppressed for this lane.">0 (suppressed)</span>
+                                  : num(ov.daily_cap)}
+                            </td>
+                            <td style={{ ...tdStyle, fontSize: 11, color: colors.textMuted }}>
+                              {shortTime(ov.updated_at)}{ov.updated_by ? ` · ${ov.updated_by}` : ''}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* EFFECTIVE POSTURE — the provenance the operator asked for.
+                      A bare list of "ISPs riding the defaults" never said what
+                      the defaults ARE, which is the whole confidence gap. */}
+                  <EffectiveCapTable
+                    rows={f.effective}
+                    defaultISPs={f.default_isps}
+                    provenanceNote={throttle.data?.provenance_note}
+                    drainNote={throttle.data?.drain_horizon_note}
+                  />
+
+                  {throttle.data?.write_enabled && editingFeed === f.dataset_id && (
+                    <ThrottleEditor
+                      feed={f}
+                      replacementNote={throttle.data.replacement_note}
+                      zeroCapNote={throttle.data.zero_cap_note}
+                      onClose={() => setEditingFeed(null)}
+                      // A throttle write moves the supply panel's binding
+                      // verdict and the dashboard too — reload all three.
+                      onSaved={() => { setEditingFeed(null); throttle.reload(); supply.reload(); overview.reload(); }}
+                      onNotice={notify}
+                    />
+                  )}
+                </div>
+                );
+              })}
+              <p style={noteStyle}>{throttle.data.enforcement_note}</p>
+            </>
+          )}
+        </AsyncPanel>
+        {/* ── LEDGER BUDGET — per-domain daily ceiling on top of feed caps ── */}
       {/*
         Ported from the Property Ledger screen. This is the ONE thing on that
         screen the drip orchestrator actually reads every wave: per (sending
@@ -2966,9 +3424,9 @@ export const DripJourneyCanvas: React.FC<{
         proposal approve, and the global emergency hold — all CAS-guarded by
         lock_version with 409 → reload-and-say-so.
       */}
-      <Panel style={{ marginBottom: 14 }}>
+      <div style={{ marginTop: 18 }}>
         <SectionHeader
-          title="Introduction ledger — the cap the orchestrator enforces"
+          title="Ledger budget — per-domain daily ceiling enforced on top of feed caps"
           icon={faHourglassHalf}
           right={ledger.data ? (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -3278,27 +3736,17 @@ export const DripJourneyCanvas: React.FC<{
             <code> partner_property_governor</code> is their single ceiling.
           </p>
         </AsyncPanel>
-      </Panel>
+      </div>
 
-      {/* ── 3. PLAN AHEAD — the quota levers ──────────────────────────────── */}
-      <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader
-          title={allLanes
-            ? 'Quota levers — all feeds on this domain'
-            : 'Quota levers — per-ISP caps for this drip'}
-          icon={faSlidersH}
-          right={throttle.data ? <span style={{ fontSize: 11, color: colors.textFaint }}>as of {shortTime(throttle.data.as_of)}</span> : undefined}
-        />
-
-        {/* ── AVAILABLE DATA — the queue the levers act on ──────────────────
-            Operator gap, 2026-08-20: the levers were shown with no view of what
-            is actually available to spend them on. This is the live
-            partner_clean_queue anatomy for THIS sending domain's feeds on THIS
-            drip, joined to the introduction ledger so "claimable" and
-            "permitted" sit on the same row. */}
-        <div style={{ marginBottom: 14 }}>
+        {/* ── SUPPLY ROLL-UP & WHAT BINDS — the queue the levers act on ─────
+            The live partner_clean_queue anatomy for THIS sending domain's
+            feeds on THIS drip, joined to the ledger budget so "claimable" and
+            "permitted" sit on the same row. Per-feed detail lives on the feed
+            cards above; this is the cross-feed roll-up and the binding-
+            constraint verdict per ISP. */}
+        <div style={{ marginTop: 18, marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>
-            AVAILABLE DATA — {(sendingDomain ?? brand ?? 'this domain').toUpperCase()}
+            SUPPLY ROLL-UP &amp; WHAT BINDS — {(sendingDomain ?? brand ?? 'this domain').toUpperCase()}
             {selVertical ? ` · ${selVertical}` : ' · all feeds on this domain'}
           </div>
           <AsyncPanel
@@ -3312,6 +3760,18 @@ export const DripJourneyCanvas: React.FC<{
               ? 'The supply read succeeded but returned no feeds at all for this sending domain. That is a routing fact — no dataset delivers to this domain — not an empty queue.'
               : 'The supply read succeeded but returned no feed whose vertical matches the selected drip. That is a routing fact — this domain has no dataset feeding this drip — not an empty queue.'}
           >
+            {supplyFeeds.some((f) => f.partial_error) && (
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: colors.warningText,
+                background: alpha(colors.warning, '14'),
+                border: `1px solid ${alpha(colors.warning, '44')}`,
+                borderRadius: 6, padding: '6px 10px', marginBottom: 10,
+              }}>
+                {supplyFeeds.filter((f) => f.partial_error).length} feed(s) were unreadable during
+                this refresh — their counts are UNKNOWN, not zero, so every total below is a floor.
+                The affected feed cards above name the error.
+              </div>
+            )}
             <div style={{ ...cardGrid(160), marginBottom: 12 }}>
               <Stat
                 label="Ready now"
@@ -3552,220 +4012,25 @@ export const DripJourneyCanvas: React.FC<{
           </AsyncPanel>
         </div>
 
-        <AsyncPanel
-          label="the throttle configuration"
-          res={throttle}
-          isEmpty={feeds.length === 0}
-          emptyTitle={throttle.data
-            ? (allLanes ? 'No feed delivers to this domain' : 'No feed on this domain belongs to this drip')
-            : 'No throttle data'}
-          emptyHint={allLanes
-            ? 'The throttle read succeeded but returned no feeds for this sending domain — there is nothing to throttle.'
-            : 'The throttle read succeeded but returned no feed whose vertical matches the selected drip.'}
-        >
-          {throttle.data && (
-            <>
-              {/* Gate default differs from the ledger's on purpose: the roster
-                  and throttle endpoints ALWAYS send write_enabled, so an absent
-                  flag means an old server and the panel fails READ-ONLY. The
-                  ledger endpoint never sends it, so there absent = writable. */}
-              {!throttle.data.write_enabled && (
-                <ReadOnlyBanner
-                  envVar={throttle.data.write_flag_env}
-                  what="Quota editing"
-                  title={throttle.data.enforcement_note}
-                />
-              )}
-              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }} title={throttle.data.cap_systems_note}>
-                {throttle.data.cap_systems_note}
-              </div>
-              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>
-                The introduction ledger (above) and these feed throttle caps are separate systems —
-                the orchestrator enforces BOTH; the tighter one binds.
-              </div>
-              {feeds.map((f) => (
-                <div
-                  key={f.dataset_id}
-                  style={{
-                    border: `1px solid ${colors.hairline}`, borderRadius: 8,
-                    padding: '10px 12px', marginBottom: 10,
-                    opacity: f.paused_emergency ? 0.65 : 1,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: colors.heading }}>{f.name}</span>
-                    <Pill color={stateColor(f.paused_emergency ? 'paused' : f.status)} style={{ fontSize: 9 }}>
-                      {f.paused_emergency ? 'paused' : f.status || 'unknown'}
-                    </Pill>
-                    <span
-                      style={{ fontSize: 10, fontFamily: 'monospace', color: colors.textFaint }}
-                      title={`dataset_id ${f.dataset_id}`}
-                    >
-                      {f.dataset_id.slice(0, 8)}…
-                    </span>
-                    <span style={{ fontSize: 11, color: colors.textMuted }} title={throttle.data?.cap_systems_note}>
-                      supply release cap: <b style={{ color: colors.text, fontVariantNumeric: 'tabular-nums' }}>
-                        {f.supply_release_daily_cap > 0 ? `${num(f.supply_release_daily_cap)}/day` : 'uncapped'}
-                      </b> <span style={{ color: colors.textFaint }}>(lane ready-vs-held — a DIFFERENT system from the per-ISP caps below)</span>
-                    </span>
-                    {f.shared_brands.length > 1 && (
-                      <span
-                        style={{ fontSize: 10, color: colors.warningText }}
-                        title={`This feed's supply is shared across the whole rotation: ${f.shared_brands.join(', ')} — edits here change all of them.`}
-                      >
-                        shared across {f.shared_brands.length} brands
-                      </span>
-                    )}
-                    <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                      {/* EXPRESS / PACED toggle. State comes from the SUPPLY
-                          payload (new server field) — absent = UNKNOWN, never
-                          false. Gated by the throttle write flag; write
-                          surfaces render read-only, never hidden. */}
-                      {(() => {
-                        const exp = expressFor(f.dataset_id);
-                        const canWrite = !!throttle.data?.write_enabled;
-                        const busy = !!feedBusy[`express/${f.dataset_id}`];
-                        const known = exp !== undefined;
-                        const roExpTitle = !canWrite
-                          ? `READ-ONLY — the server reports write_enabled=false${throttle.data?.write_flag_env ? ` (env ${throttle.data.write_flag_env} is not set)` : ''}. Dispatch mode cannot be changed from here.`
-                          : undefined;
-                        return (
-                          <button
-                            type="button"
-                            disabled={!canWrite || !known || busy}
-                            onClick={() => void toggleExpress(f, exp)}
-                            title={roExpTitle ?? (!known
-                              ? 'This server did not report express_dispatch for this feed (older /supply payload) — dispatch mode UNKNOWN, not paced. Nothing to toggle safely.'
-                              : exp
-                                ? 'EXPRESS — this feed skips the multi-day drain spread. Click to return it to paced dispatch (plain confirm).'
-                                : 'PACED — this feed spreads each ISP over its drain horizon. Click to enable express (typed-name confirm): express removes the multi-day SPREAD only; daily caps, brand budgets and throttle safety still bind.')}
-                            style={{
-                              background: known && exp ? alpha(colors.success, '14') : 'rgba(255,255,255,0.05)',
-                              color: known ? (exp ? colors.successText : colors.textMuted) : colors.textFaint,
-                              border: `1px solid ${known && exp ? alpha(colors.success, '44') : colors.hairline}`,
-                              borderRadius: 999, padding: '3px 10px', fontSize: 10, fontWeight: 700,
-                              cursor: canWrite && known ? 'pointer' : 'not-allowed',
-                              opacity: canWrite && known ? 1 : 0.6,
-                            }}
-                          >
-                            {busy ? '…' : known ? (exp ? 'express' : 'paced') : 'express: unknown'}
-                          </button>
-                        );
-                      })()}
-                      {/* Per-feed emergency pause/resume — same endpoints as
-                          the Partner Ingest portal (datasets/{id}/emergency-stop
-                          with {reason}; /resume with no body). */}
-                      <button
-                        type="button"
-                        disabled={!!feedBusy[`pause/${f.dataset_id}`]}
-                        onClick={() => void (f.paused_emergency ? resumeFeed(f) : pauseFeed(f))}
-                        title={f.paused_emergency
-                          ? 'This feed is emergency-stopped (paused_emergency). Resume restarts intake and the follow-up ladder on the next tick.'
-                          : 'Emergency-stops THIS feed only (paused_emergency): intake and follow-up claims halt at the next safe point. Asks for a reason.'}
-                        style={{
-                          background: f.paused_emergency ? alpha(colors.success, '14') : 'rgba(239,68,68,0.15)',
-                          color: f.paused_emergency ? colors.successText : colors.dangerText,
-                          border: `1px solid ${f.paused_emergency ? alpha(colors.success, '44') : 'rgba(239,68,68,0.40)'}`,
-                          borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                        }}
-                      >
-                        {feedBusy[`pause/${f.dataset_id}`] ? 'Confirming…' : f.paused_emergency ? 'Resume' : 'Pause'}
-                      </button>
-                      {throttle.data?.write_enabled ? (
-                        <button
-                          type="button" style={smallBtn}
-                          title={throttle.data.enforcement_note}
-                          onClick={() => setEditingFeed((cur) => (cur === f.dataset_id ? null : f.dataset_id))}
-                        >
-                          {editingFeed === f.dataset_id ? 'Close editor' : 'Edit caps'}
-                        </button>
-                      ) : (
-                        <Pill color={colors.warning} style={{ fontSize: 9 }}>read-only</Pill>
-                      )}
-                    </span>
-                  </div>
+      </CollapsibleSection>
 
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ ...tableStyle, minWidth: 620 }}>
-                      <thead>
-                        <tr>
-                          <th style={thStyle}>ISP</th>
-                          <th style={numTh} title="Fraction of each wave's claim allocated to this ISP (0–1).">
-                            Pct of wave (0–1)
-                          </th>
-                          <th style={numTh} title="Per-wave claim cap for this dataset's waves — replaces the global per-wave cap. Blank = global default.">
-                            Max/wave (per wave)
-                          </th>
-                          <th style={numTh} title="Lane-owned per-ISP DAILY budget. Blank = global default; 0 = hard-suppressed for this lane.">
-                            Daily cap (per day)
-                          </th>
-                          <th style={thStyle}>Last change</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {f.overrides.length === 0 && (
-                          <tr>
-                            <td style={{ ...tdStyle, color: colors.textFaint }} colSpan={5}>
-                              No override rows — every ISP on this feed rides the global defaults.
-                            </td>
-                          </tr>
-                        )}
-                        {f.overrides.map((ov) => (
-                          <tr key={ov.isp}>
-                            <td style={tdStyle}>{ov.isp}</td>
-                            <td style={numTd}>{Number.isFinite(ov.pct_override) ? ov.pct_override : UNKNOWN}</td>
-                            <td style={numTd}>{ov.max_per_wave > 0 ? num(ov.max_per_wave) : <span style={{ color: colors.textFaint }}>default</span>}</td>
-                            <td style={numTd}>
-                              {ov.daily_cap == null
-                                ? <span style={{ color: colors.textFaint }} title="NULL — this ISP rides the compiled default: the process-wide DefaultNewRecordDailyISPCaps value from the orchestrator config (env-overridable), separate from the Introduction ledger's per-brand daily budget above.">compiled default</span>
-                                : ov.daily_cap === 0
-                                  ? <span style={{ color: colors.dangerText, fontWeight: 700 }} title="0 = hard-suppressed for this lane.">0 (suppressed)</span>
-                                  : num(ov.daily_cap)}
-                            </td>
-                            <td style={{ ...tdStyle, fontSize: 11, color: colors.textMuted }}>
-                              {shortTime(ov.updated_at)}{ov.updated_by ? ` · ${ov.updated_by}` : ''}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* EFFECTIVE POSTURE — the provenance the operator asked for.
-                      A bare list of "ISPs riding the defaults" never said what
-                      the defaults ARE, which is the whole confidence gap. */}
-                  <EffectiveCapTable
-                    rows={f.effective}
-                    defaultISPs={f.default_isps}
-                    provenanceNote={throttle.data?.provenance_note}
-                    drainNote={throttle.data?.drain_horizon_note}
-                  />
-
-                  {throttle.data?.write_enabled && editingFeed === f.dataset_id && (
-                    <ThrottleEditor
-                      feed={f}
-                      replacementNote={throttle.data.replacement_note}
-                      zeroCapNote={throttle.data.zero_cap_note}
-                      onClose={() => setEditingFeed(null)}
-                      // A throttle write moves the supply panel's binding
-                      // verdict and the dashboard too — reload all three.
-                      onSaved={() => { setEditingFeed(null); throttle.reload(); supply.reload(); overview.reload(); }}
-                      onNotice={notify}
-                    />
-                  )}
-                </div>
-              ))}
-              <p style={noteStyle}>{throttle.data.enforcement_note}</p>
-            </>
-          )}
-        </AsyncPanel>
-      </Panel>
-
-      {/* ── 4. HISTORY — the scoreboard (SLOW: Postgres) ──────────────────── */}
-      {!allLanes && (
-      <Panel style={{ marginBottom: 14 }}>
+      {/* ── 5. HISTORY — collapsed; the slow Postgres read fires on open ──── */}
+      <CollapsibleSection
+        title="History"
+        icon={faChartLine}
+        open={secOpen.history}
+        onToggle={() => toggleSec('history')}
+        hint="7/14/30-day scoreboard (slow Postgres read) — loads when opened"
+      >
+        {(allLanes || !selVertical) ? (
+          <EmptyState
+            title="Select a lane first"
+            hint="The history scoreboard is scoped to ONE drip lane. Pick one in the drip selector."
+          />
+        ) : (
+          <>
         <SectionHeader
-          title="History — by day, expandable to ISP (Postgres)"
+          title="By day, expandable to ISP (Postgres)"
           icon={faChartLine}
           right={
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -3953,27 +4218,20 @@ export const DripJourneyCanvas: React.FC<{
             independently and never gates the snapshot panel.
           </p>
         </AsyncPanel>
-      </Panel>
-      )}
+          </>
+        )}
+      </CollapsibleSection>
 
-      {/* ── 5. STRUCTURE — roster membership ──────────────────────────────── */}
-      {!allLanes && (
-      <Panel>
-        <SectionHeader
-          title="Roster — which domains ride this drip"
-          icon={faSitemap}
-          right={
-            <button type="button" style={smallBtn} onClick={() => setShowRoster((s) => !s)} disabled={!selVertical}>
-              {showRoster ? 'Hide' : 'Show membership'}
-            </button>
-          }
-        />
-        {!selVertical ? (
+      {/* ── 6. ROSTER — structural membership, collapsed; reads on open ───── */}
+      <CollapsibleSection
+        title="Roster"
+        icon={faSitemap}
+        open={showRoster}
+        onToggle={() => setShowRoster((s) => !s)}
+        hint={`which domains ride this drip — queries all ${domains.length} ledger domains when opened`}
+      >
+        {(allLanes || !selVertical) ? (
           <EmptyState title="Select a drip first" hint="Membership is scoped to one vertical." />
-        ) : !showRoster ? (
-          <div style={{ fontSize: 11, color: colors.textMuted }}>
-            Membership is read on demand — it queries the roster of all {domains.length} ledger domains.
-          </div>
         ) : membership.loading ? (
           <LoadingRow label={`membership across ${domains.length} domains`} />
         ) : membership.error ? (
@@ -4068,8 +4326,7 @@ export const DripJourneyCanvas: React.FC<{
             </p>
           </>
         )}
-      </Panel>
-      )}
+      </CollapsibleSection>
 
       {/* ── STEP SHELF — opened by clicking a TouchNode on the canvas ───────
           Gated on (j ?? lastJourneyRef.current): useResource nulls data during

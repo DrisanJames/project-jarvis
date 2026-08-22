@@ -61,6 +61,14 @@ export interface OverviewResponse {
   totals: OverviewTotals;
   by_isp: OverviewISP[];
   by_lane: OverviewLane[];
+  // NEW server honesty flags (optional — absent on an older server):
+  // stale_as_of/stale_reason = this payload is a CACHED rollup, not fresh;
+  // partial/feeds_partial = some feeds could not be read during this refresh,
+  // so their numbers are UNKNOWN (not zero) and every total is a floor.
+  stale_as_of?: string;
+  stale_reason?: string;
+  partial?: boolean;
+  feeds_partial?: number;
 }
 
 // ── Shared lane-label writer (also used by the selector-side rename) ────────
@@ -260,6 +268,33 @@ export const DripOverviewPanel: React.FC<{
           title="No overview data"
           hint="The overview endpoint answered without totals or lanes — nothing is hidden; there is nothing rolled up yet."
         />
+      )}
+
+      {/* Server honesty flags — rendered whenever data is present, before any
+          number, so cached/partial data can never read as fresh and complete. */}
+      {!loading && !error && data?.stale_as_of && (
+        <div style={{
+          fontSize: 11, fontWeight: 600, color: colors.warningText,
+          background: alpha(colors.warning, '14'),
+          border: `1px solid ${alpha(colors.warning, '44')}`,
+          borderRadius: 6, padding: '6px 10px', marginBottom: 10,
+        }}>
+          Showing cached data from {shortTime(data.stale_as_of)}
+          {data.stale_reason ? <> — {data.stale_reason}</> : ' — the server could not compute a fresh rollup.'}
+        </div>
+      )}
+      {!loading && !error && data?.partial && (
+        <div style={{
+          fontSize: 11, fontWeight: 600, color: colors.warningText,
+          background: alpha(colors.warning, '14'),
+          border: `1px solid ${alpha(colors.warning, '44')}`,
+          borderRadius: 6, padding: '6px 10px', marginBottom: 10,
+        }}>
+          {typeof data.feeds_partial === 'number' && data.feeds_partial > 0
+            ? `${num(data.feeds_partial)} feed(s) unreadable this refresh`
+            : 'Some feeds were unreadable this refresh'}
+          {' '}— their numbers are UNKNOWN, not zero, and every total below is a floor.
+        </div>
       )}
 
       {!loading && !error && t && lanes.length > 0 && (

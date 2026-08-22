@@ -294,7 +294,164 @@ export const DripStepShelf: React.FC<{
         {sendingDomain ?? brand} · {laneDisplay || labelForVertical(vertical)} · inter-touch delay {Number.isFinite(delayHours) ? `${delayHours}h` : UNKNOWN}
       </div>
 
-      {/* ── (a) STEP CONFIG ─────────────────────────────────────────────── */}
+      {/* ── MAILING NOW — the shelf leads with what is ACTIVELY being mailed
+          (operator 2026-08-22). The server's touches[].serving object is the
+          live-rotation truth; on an older server the block derives best-effort
+          from the configured fields and says so. ───────────────────────── */}
+      <div style={{ ...sectionTitle, marginTop: 4 }}>MAILING NOW — what touch {touch.touch} is sending</div>
+      {(() => {
+        const sv = touch.serving;
+        if (!touch.configured && !sv) {
+          return (
+            <div style={{ fontSize: 12, color: colors.warningText, lineHeight: 1.6 }}>
+              This touch is <b>not configured</b> — nothing is mailing; the ladder retires here.
+            </div>
+          );
+        }
+        if (sv) {
+          if (sv.source === 'none') {
+            return (
+              <div style={{
+                fontSize: 12, fontWeight: 700, color: colors.dangerText,
+                background: alpha(colors.danger, '14'),
+                border: `1px solid ${alpha(colors.danger, '44')}`,
+                borderRadius: 6, padding: '8px 10px',
+              }}>
+                Nothing resolves for this touch — it is NOT mailing.
+                {touch.resolution_problem && (
+                  <div style={{ fontWeight: 400, marginTop: 3 }}>{touch.resolution_problem}</div>
+                )}
+              </div>
+            );
+          }
+          const rotating = sv.subject_mode === 'rotating';
+          return (
+            <div style={{
+              border: `1px solid ${alpha(colors.indigo500, '44')}`,
+              borderRadius: 8, padding: '9px 12px',
+            }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', rowGap: 6, columnGap: 10, fontSize: 12 }}>
+                <span style={label}>Creative</span>
+                <span>
+                  <Pill color={sv.source === 'offer_pool' ? colors.indigo400 : colors.textMuted} style={{ fontSize: 9, marginRight: 6 }}>
+                    {sv.source === 'offer_pool' ? 'OFFER POOL' : 'FILE'}
+                  </Pill>
+                  <span style={{ color: colors.text }}>{sv.creative_label || UNKNOWN}</span>
+                </span>
+                <span style={label}>Subject</span>
+                <span style={{ color: colors.text }}>
+                  {sv.subject || <span style={{ color: colors.warningText }}>(no subject reported)</span>}
+                  {rotating && (
+                    <div style={{ fontSize: 10, color: colors.indigo200, marginTop: 2 }}>
+                      rotating across {num(sv.pool_size)} approved subject{sv.pool_size === 1 ? '' : 's'} — showing first
+                    </div>
+                  )}
+                </span>
+              </div>
+            </div>
+          );
+        }
+        // Older server — no serving object. Best-effort from configured fields.
+        return (
+          <div style={{
+            border: `1px solid ${colors.hairline}`,
+            borderRadius: 8, padding: '9px 12px',
+          }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '96px 1fr', rowGap: 6, columnGap: 10, fontSize: 12 }}>
+              <span style={label}>Creative</span>
+              <span>
+                {touch.content_source && (
+                  <Pill color={touch.content_source === 'offer' ? colors.indigo400 : colors.textMuted} style={{ fontSize: 9, marginRight: 6 }}>
+                    {touch.content_source === 'offer' ? 'OFFER' : touch.content_source === 'file' ? 'FILE' : touch.content_source}
+                  </Pill>
+                )}
+                <span style={{ color: touch.resolves === false ? colors.dangerText : colors.text }}>
+                  {touch.resolution_label || touch.creative_filename || UNKNOWN}
+                </span>
+              </span>
+              <span style={label}>Subject</span>
+              <span style={{ color: colors.text }}>
+                {touch.subject_line || <span style={{ color: colors.warningText }}>(no subject)</span>}
+              </span>
+            </div>
+            {touch.resolves === false && (
+              <div style={{ fontSize: 11, fontWeight: 700, color: colors.dangerText, marginTop: 5 }}>
+                UNRESOLVABLE — this touch will not send.{touch.resolution_problem ? ` ${touch.resolution_problem}` : ''}
+              </div>
+            )}
+            <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 5 }}>
+              resolution as configured; live rotation not shown (this server does not report the
+              serving object)
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── STEP METRICS — second, after what is mailing ─────────────────── */}
+      <div style={sectionTitle}>STEP METRICS</div>
+
+      {perf ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10, marginBottom: 10 }}>
+          <div><div style={label}>Sent (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.sent)}</div></div>
+          <div><div style={label}>Delivered (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.delivered)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.delivered, perf.sent)} of sent</span></div></div>
+          <div><div style={label}>Opened (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.opened)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.opened, perf.delivered)} of delivered</span></div></div>
+          <div><div style={label}>Clicked (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.indigo200 }}>{num(perf.clicked)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.clicked, perf.delivered)} of delivered</span></div></div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: colors.textFaint, marginBottom: 10 }}>
+          This server did not report 7-day performance for this touch (perf_7d absent) — unknown, not zero.
+        </div>
+      )}
+
+      {edgeIn && (
+        <div style={{ fontSize: 12, color: colors.text, marginBottom: 8 }}>
+          Waiting to REACH this touch: <b>{num(edgeIn.waiting)}</b>
+          <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeIn.soonest)}</span>
+          <span style={{ fontSize: 10, color: colors.textFaint }}> — release them early with the control at the bottom of this shelf</span>
+        </div>
+      )}
+      {edgeOut ? (
+        <>
+          <div style={{ fontSize: 12, color: colors.text, marginBottom: 4 }}>
+            Waiting AFTER this touch (→ touch {edgeOut.to_touch}): <b>{num(edgeOut.waiting)}</b>
+            <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeOut.soonest)} · latest {shortTime(edgeOut.latest)}</span>
+          </div>
+          {(edgeOut.by_isp ?? []).length > 0 ? (
+            <table style={{ ...tableStyle, maxWidth: 420 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>ISP</th>
+                  <th style={numTh}>Waiting</th>
+                  <th style={numTh} title="Share of this edge's waiting population.">% of edge</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(edgeOut.by_isp ?? []).slice().sort((a, b) => b.waiting - a.waiting).map((r) => (
+                  <tr key={r.isp}>
+                    <td style={tdStyle}>{r.isp}</td>
+                    <td style={numTd}>{num(r.waiting)}</td>
+                    <td style={numTd}>{pctOf(r.waiting, edgeOut.waiting)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ fontSize: 11, color: colors.textFaint }}>
+              No per-ISP split reported for this edge — unknown, not zero.
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ fontSize: 11, color: colors.textFaint }}>
+          No outgoing edge reported for this touch — either it is the last rung or the server sent no edge (unknown, not zero).
+        </div>
+      )}
+      <div style={noteStyle}>
+        Drip-wide due-now backlog: <b>{num(dueNow)}</b> (rows whose next_touch_at already passed,
+        every rung). Edge counts above are populations sitting between two specific rungs.
+      </div>
+
+      {/* ── STEP CONFIG ─────────────────────────────────────────────────── */}
       <div style={sectionTitle}>STEP CONFIG — what touch {touch.touch} ships</div>
 
       {!touch.configured ? (
@@ -509,103 +666,45 @@ export const DripStepShelf: React.FC<{
         </>
       )}
 
-      {/* ── (b) STEP METRICS ────────────────────────────────────────────── */}
-      <div style={sectionTitle}>STEP METRICS</div>
-
-      {perf ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10, marginBottom: 10 }}>
-          <div><div style={label}>Sent (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.sent)}</div></div>
-          <div><div style={label}>Delivered (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.delivered)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.delivered, perf.sent)} of sent</span></div></div>
-          <div><div style={label}>Opened (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.text }}>{num(perf.opened)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.opened, perf.delivered)} of delivered</span></div></div>
-          <div><div style={label}>Clicked (7d)</div><div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: colors.indigo200 }}>{num(perf.clicked)}<span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 5 }}>{pctOf(perf.clicked, perf.delivered)} of delivered</span></div></div>
+      {/* ── RELEASE NEXT TOUCH — the last block, after everything else ───── */}
+      <div style={sectionTitle}>RELEASE NEXT TOUCH</div>
+      {!edgeIn ? (
+        <div style={{ fontSize: 11, color: colors.textFaint }}>
+          No inbound queue was reported for this touch — nothing to release.
         </div>
-      ) : (
-        <div style={{ fontSize: 11, color: colors.textFaint, marginBottom: 10 }}>
-          This server did not report 7-day performance for this touch (perf_7d absent) — unknown, not zero.
-        </div>
-      )}
-
-      {edgeIn && (
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 12, color: colors.text, marginBottom: 4 }}>
-            Waiting to REACH this touch: <b>{num(edgeIn.waiting)}</b>
-            <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeIn.soonest)}</span>
+      ) : edgeIn.waiting > (dueNow ?? 0) ? (
+        /* Release control only when some of the waiting rows are actually in
+           the FUTURE (waiting > drip-wide due-now backlog). When everything
+           waiting is already due, an advance would be a no-op — say so. */
+        <div style={{
+          border: `1px solid ${alpha(colors.indigo500, '44')}`, borderRadius: 6,
+          padding: '7px 10px', marginTop: 2,
+        }}>
+          <div style={{ ...label, marginBottom: 4 }}>Make waiting records due immediately</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              type="number" min={1} max={50000} step={100}
+              style={{ ...input, width: 96, opacity: writable ? 1 : 0.5 }}
+              value={releaseN}
+              disabled={!writable || !!saving.release}
+              title={roTitle}
+              onChange={(e) => setReleaseN(e.target.value)}
+            />
+            <button type="button"
+              style={{ ...smallBtn, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+              disabled={!writable || !!saving.release}
+              title={roTitle ?? `Makes up to this many waiting records at touch_count ${edgeIn.from_touch} due NOW. The orchestrator claims them within ~15 min; every cap (ledger, throttle, brand budget) still binds.`}
+              onClick={() => void releaseNextTouch()}>
+              {saving.release ? 'Releasing…' : `Make due for touch ${touch.touch}`}
+            </button>
+            <span style={{ fontSize: 10, color: colors.textFaint }}>max 50,000 · caps still bind</span>
           </div>
-          {/* Release control only when some of the waiting rows are actually in
-              the FUTURE (waiting > drip-wide due-now backlog). When everything
-              waiting is already due, an advance would be a no-op — say so. */}
-          {edgeIn.waiting > (dueNow ?? 0) ? (
-            <div style={{
-              border: `1px solid ${alpha(colors.indigo500, '44')}`, borderRadius: 6,
-              padding: '7px 10px', marginTop: 2,
-            }}>
-              <div style={{ ...label, marginBottom: 4 }}>Release next touch now</div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <input
-                  type="number" min={1} max={50000} step={100}
-                  style={{ ...input, width: 96, opacity: writable ? 1 : 0.5 }}
-                  value={releaseN}
-                  disabled={!writable || !!saving.release}
-                  title={roTitle}
-                  onChange={(e) => setReleaseN(e.target.value)}
-                />
-                <button type="button"
-                  style={{ ...smallBtn, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
-                  disabled={!writable || !!saving.release}
-                  title={roTitle ?? `Makes up to this many waiting records at touch_count ${edgeIn.from_touch} due NOW. The orchestrator claims them within ~15 min; every cap (ledger, throttle, brand budget) still binds.`}
-                  onClick={() => void releaseNextTouch()}>
-                  {saving.release ? 'Releasing…' : `Make due for touch ${touch.touch}`}
-                </button>
-                <span style={{ fontSize: 10, color: colors.textFaint }}>max 50,000 · caps still bind</span>
-              </div>
-            </div>
-          ) : (
-            <div style={{ fontSize: 11, color: colors.textFaint }}>
-              All waiting records are already due — they mail on the next tick.
-            </div>
-          )}
         </div>
-      )}
-      {edgeOut ? (
-        <>
-          <div style={{ fontSize: 12, color: colors.text, marginBottom: 4 }}>
-            Waiting AFTER this touch (→ touch {edgeOut.to_touch}): <b>{num(edgeOut.waiting)}</b>
-            <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeOut.soonest)} · latest {shortTime(edgeOut.latest)}</span>
-          </div>
-          {(edgeOut.by_isp ?? []).length > 0 ? (
-            <table style={{ ...tableStyle, maxWidth: 420 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>ISP</th>
-                  <th style={numTh}>Waiting</th>
-                  <th style={numTh} title="Share of this edge's waiting population.">% of edge</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(edgeOut.by_isp ?? []).slice().sort((a, b) => b.waiting - a.waiting).map((r) => (
-                  <tr key={r.isp}>
-                    <td style={tdStyle}>{r.isp}</td>
-                    <td style={numTd}>{num(r.waiting)}</td>
-                    <td style={numTd}>{pctOf(r.waiting, edgeOut.waiting)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <div style={{ fontSize: 11, color: colors.textFaint }}>
-              No per-ISP split reported for this edge — unknown, not zero.
-            </div>
-          )}
-        </>
       ) : (
         <div style={{ fontSize: 11, color: colors.textFaint }}>
-          No outgoing edge reported for this touch — either it is the last rung or the server sent no edge (unknown, not zero).
+          All waiting records are already due — they mail on the next tick.
         </div>
       )}
-      <div style={noteStyle}>
-        Drip-wide due-now backlog: <b>{num(dueNow)}</b> (rows whose next_touch_at already passed,
-        every rung). Edge counts above are populations sitting between two specific rungs.
-      </div>
     </div>
   );
 };

@@ -66,6 +66,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -130,6 +131,78 @@ type BoardGrid struct {
 	Findings   []BoardFinding `json:"findings"`
 	Summary    map[string]int `json:"summary"`
 	SourceDate string         `json:"source_date,omitempty"`
+	// StaleAsOf is set ONLY when the live load failed and this payload was
+	// served from the success cache instead (up to boardGridCacheStaleTTL
+	// old). Absent on a live or fresh-cache read.
+	StaleAsOf *time.Time `json:"stale_as_of,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Per-(org, date) success cache.
+//
+// 2026-08-22: with RDS IO-starved (EBS burst exhausted) the loadCells
+// statement was hitting its 15s deadline and the screen 500/503'd with
+// nothing to show. The board is a slow-moving fact intra-minute, so a
+// successful assembly is cached 60s and served before querying; when a live
+// load FAILS, the last good grid (up to 10 min old) is served with an
+// explicit stale_as_of stamp instead of an error — respondLoadError only
+// fires when there is no cache at all.
+
+const (
+	boardGridCacheFreshTTL   = 60 * time.Second
+	boardGridCacheStaleTTL   = 10 * time.Minute
+	boardGridCacheMaxEntries = 64
+)
+
+type boardGridCacheEntry struct {
+	grid       BoardGrid
+	computedAt time.Time
+}
+
+var boardGridCache = struct {
+	sync.Mutex
+	entries map[string]boardGridCacheEntry
+}{entries: map[string]boardGridCacheEntry{}}
+
+// boardGridCacheGet returns the cached grid for key when it is younger than
+// maxAge. The returned BoardGrid is a value copy — callers may set StaleAsOf
+// without mutating the cache.
+func boardGridCacheGet(key string, maxAge time.Duration) (BoardGrid, time.Time, bool) {
+	boardGridCache.Lock()
+	defer boardGridCache.Unlock()
+	e, ok := boardGridCache.entries[key]
+	if !ok || time.Since(e.computedAt) >= maxAge {
+		return BoardGrid{}, time.Time{}, false
+	}
+	return e.grid, e.computedAt, true
+}
+
+// boardGridCachePut stores a successful assembly, evicting the oldest entry
+// when the map exceeds boardGridCacheMaxEntries (a simple bound — org×date
+// keys churn daily, this just stops unbounded growth).
+func boardGridCachePut(key string, grid BoardGrid) {
+	boardGridCache.Lock()
+	defer boardGridCache.Unlock()
+	boardGridCache.entries[key] = boardGridCacheEntry{grid: grid, computedAt: time.Now()}
+	if len(boardGridCache.entries) <= boardGridCacheMaxEntries {
+		return
+	}
+	oldestKey := ""
+	var oldestAt time.Time
+	for k, e := range boardGridCache.entries {
+		if oldestKey == "" || e.computedAt.Before(oldestAt) {
+			oldestKey, oldestAt = k, e.computedAt
+		}
+	}
+	delete(boardGridCache.entries, oldestKey)
+}
+
+// resetBoardGridCacheForTest drops every cached grid (the cache is package
+// level and outlives per-test service instances).
+func resetBoardGridCacheForTest() {
+	boardGridCache.Lock()
+	boardGridCache.entries = map[string]boardGridCacheEntry{}
+	boardGridCache.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +220,29 @@ func (s *BoardGridService) HandleGetGrid(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
+	cacheKey := getOrgID(r) + "|" + date
+	// Fresh success cache (60s): served before querying at all.
+	if grid, _, ok := boardGridCacheGet(cacheKey, boardGridCacheFreshTTL); ok {
+		respondJSON(w, http.StatusOK, grid)
+		return
+	}
 	cells, err := s.loadCells(r, date)
 	if err != nil {
+		// Live load failed: serve the last GOOD grid (≤10 min) with an
+		// explicit staleness stamp; error only with no cache at all.
+		if grid, at, ok := boardGridCacheGet(cacheKey, boardGridCacheStaleTTL); ok {
+			stale := at.UTC()
+			grid.StaleAsOf = &stale
+			log.Printf("[board-grid] live load failed (%v) — serving cached grid from %s", err, stale.Format(time.RFC3339))
+			respondJSON(w, http.StatusOK, grid)
+			return
+		}
 		respondLoadError(w, err)
 		return
 	}
-	respondJSON(w, http.StatusOK, s.assemble(r, date, "", cells))
+	grid := s.assemble(r, date, "", cells)
+	boardGridCachePut(cacheKey, grid)
+	respondJSON(w, http.StatusOK, grid)
 }
 
 // HandleCloneGrid returns `from`'s grid re-dated onto `to`. It does NOT retime:

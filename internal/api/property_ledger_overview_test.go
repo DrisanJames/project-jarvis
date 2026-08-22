@@ -218,6 +218,132 @@ func TestPropertyOverviewRouteCoexistsWithMount(t *testing.T) {
 	}
 }
 
+// ── Degradation under an IO-starved RDS (2026-08-22) ────────────────────────
+
+// overviewGet runs one overview request.
+func overviewGet(t *testing.T, s *PMTACampaignService) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.HandlePropertyLedgerOverview(rec, httptest.NewRequest("GET",
+		"/api/mailing/pmta-campaign/property-ledger/overview", nil))
+	return rec
+}
+
+// overviewPrimeSingleFeed queues a full successful single-feed build.
+func overviewPrimeSingleFeed(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "vertical"}).
+			AddRow("d-1", "Feed One", "consumer"))
+	mock.ExpectQuery(`FROM partner_drip_lane_labels`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical", "display_name"}))
+	mock.ExpectQuery(`AS tranche_total`).WithArgs("d-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(overviewAnatomyRows("d-1", 100, 0, 0, 0, 60, 0, 5, 1, 34, 7))
+	mock.ExpectQuery(`GROUP BY isp_family`).WithArgs("d-1").
+		WillReturnRows(sqlmock.NewRows([]string{"isp_family", "n"}).AddRow("gmail", 60))
+	mock.ExpectQuery(`status = 'mailed'`).WithArgs("d-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "n"}).AddRow("gmail", 7))
+}
+
+// TestPropertyLedgerOverview_StaleCacheServedOnBuildFailure: when the live
+// build fails and a last-good payload (≤30 min) exists, it is served 200 with
+// stale_as_of + stale_reason — never a 500, never a silent partial.
+func TestPropertyLedgerOverview_StaleCacheServedOnBuildFailure(t *testing.T) {
+	invalidatePropertyOverviewCache()
+	t.Cleanup(invalidatePropertyOverviewCache)
+	s, mock := newLedgerServiceWithMock(t)
+
+	overviewExpectIndexOK(mock)
+	overviewPrimeSingleFeed(mock)
+	require.Equal(t, http.StatusOK, overviewGet(t, s).Code)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	// Expire the 300s whole-overview TTL (but stay inside the 30-min stale
+	// window), then fail the rebuild at its first statement.
+	propertyOverviewCache.mu.Lock()
+	staleAt := time.Now().Add(-6 * time.Minute)
+	propertyOverviewCache.computedAt = staleAt
+	propertyOverviewCache.mu.Unlock()
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+
+	rec := overviewGet(t, s)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp struct {
+		Totals      map[string]int64 `json:"totals"`
+		StaleAsOf   *time.Time       `json:"stale_as_of"`
+		StaleReason string           `json:"stale_reason"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.NotNil(t, resp.StaleAsOf, "a stale serve must be STAMPED, never silent")
+	require.WithinDuration(t, staleAt.UTC(), *resp.StaleAsOf, 2*time.Second)
+	require.Equal(t, "dataset query failed", resp.StaleReason)
+	require.EqualValues(t, 60, resp.Totals["ready"], "the cached counts must ride through")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestPropertyLedgerOverview_ColdCacheBuildFailure503: no cache + a failed
+// build = 503 (the honest refusal), not a fabricated payload.
+func TestPropertyLedgerOverview_ColdCacheBuildFailure503(t *testing.T) {
+	invalidatePropertyOverviewCache()
+	t.Cleanup(invalidatePropertyOverviewCache)
+	s, mock := newLedgerServiceWithMock(t)
+
+	overviewExpectIndexOK(mock)
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+
+	rec := overviewGet(t, s)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "no recent cached copy")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestPropertyLedgerOverview_PartialFeedsCounted: per-feed degradation inside
+// a build — a failed anatomy read (cold slot → zeros + partial_error) and a
+// failed mailed-today split are each COUNTED in feeds_partial; the overview
+// still answers 200 with partial=true.
+func TestPropertyLedgerOverview_PartialFeedsCounted(t *testing.T) {
+	invalidatePropertyOverviewCache()
+	t.Cleanup(invalidatePropertyOverviewCache)
+	s, mock := newLedgerServiceWithMock(t)
+
+	overviewExpectIndexOK(mock)
+	mock.ExpectQuery(`FROM partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "vertical"}).
+			AddRow("d-1", "Feed One", "consumer").
+			AddRow("d-2", "Feed Two", "consumer"))
+	mock.ExpectQuery(`FROM partner_drip_lane_labels`).
+		WillReturnRows(sqlmock.NewRows([]string{"vertical", "display_name"}))
+	// d-1: anatomy read fails on a cold slot → the feed degrades to zeros with
+	// partial_error (never fails the build); its mailed-today split still runs.
+	mock.ExpectQuery(`AS tranche_total`).WithArgs("d-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+	mock.ExpectQuery(`status = 'mailed'`).WithArgs("d-1", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "n"}))
+	// d-2: counts fine, mailed-today split fails → fail-soft to empty + counted.
+	mock.ExpectQuery(`AS tranche_total`).WithArgs("d-2", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnRows(overviewAnatomyRows("d-2", 50, 0, 0, 0, 50, 0, 0, 0, 0, 3))
+	mock.ExpectQuery(`GROUP BY isp_family`).WithArgs("d-2").
+		WillReturnRows(sqlmock.NewRows([]string{"isp_family", "n"}).AddRow("yahoo", 50))
+	mock.ExpectQuery(`status = 'mailed'`).WithArgs("d-2", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))
+
+	rec := overviewGet(t, s)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp struct {
+		Totals       map[string]int64 `json:"totals"`
+		FeedsPartial int              `json:"feeds_partial"`
+		Partial      bool             `json:"partial"`
+		StaleAsOf    *time.Time       `json:"stale_as_of"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 2, resp.FeedsPartial, "both degraded feeds must be counted")
+	require.True(t, resp.Partial)
+	require.Nil(t, resp.StaleAsOf, "a LIVE partial build is not a stale cache serve")
+	require.EqualValues(t, 50, resp.Totals["ready"], "the healthy feed's counts still aggregate")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // ── lane labels ─────────────────────────────────────────────────────────────
 
 func labelPut(t *testing.T, s *PMTACampaignService, body string) *httptest.ResponseRecorder {

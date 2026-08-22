@@ -169,6 +169,9 @@ type laneJourneyTouch struct {
 	// Counters are the denormalized mailing_campaigns columns: opens/clicks
 	// undercount SES-routed engagement (see laneJourneyPerfNote).
 	Perf7d *laneJourneyPerf `json:"perf_7d"`
+	// Serving is the shelf's LEAD summary of what this touch actually
+	// serves, derived from the resolution fields above (never a second read).
+	Serving laneJourneyServing `json:"serving"`
 	// VerticalConfigured mirrors followupTouchConfigured
 	// (partner_drip_orchestrator.go), which tests the touch WITHOUT the brand
 	// filter — it is the test the orchestrator uses to decide retirement.
@@ -176,6 +179,57 @@ type laneJourneyTouch struct {
 	// record is NOT retired, but resolveFollowupCreative (which DOES filter by
 	// brand) finds nothing for this brand.
 	VerticalConfigured bool `json:"vertical_configured"`
+}
+
+// laneJourneyServing condenses a touch's content resolution into the shape
+// the shelf leads with: WHAT ships (source + creative_label) and WHICH
+// subject line(s) it ships under.
+//
+// subject_mode="rotating_pool" (the offer-center path): the subject is drawn
+// from the offer's active subject pool at send time and ROTATION IS EVEN
+// ACROSS THE POOL — there is no single "default" subject. `subject` is a
+// SAMPLE (the pool's first active row, the orchestrator's ORDER BY id) and
+// `pool_size` says how many rotate. subject_mode="fixed" (file path /
+// unconfigured): the creative row's own subject_line, verbatim.
+type laneJourneyServing struct {
+	Source        string `json:"source"` // "offer_pool" | "file" | "none"
+	CreativeLabel string `json:"creative_label"`
+	SubjectMode   string `json:"subject_mode"` // "fixed" | "rotating_pool"
+	Subject       string `json:"subject"`
+	PoolSize      int64  `json:"pool_size,omitempty"`
+}
+
+// laneJourneyBuildServing derives the serving summary from a node's ALREADY
+// RESOLVED fields (laneJourneyApplyResolution runs first) — no extra query.
+func laneJourneyBuildServing(t *laneJourneyTouch) laneJourneyServing {
+	switch t.ContentSource {
+	case "file":
+		return laneJourneyServing{
+			Source:        "file",
+			CreativeLabel: t.ResolutionLabel,
+			SubjectMode:   "fixed",
+			Subject:       t.SubjectLine,
+		}
+	case "offer":
+		s := laneJourneyServing{
+			Source:        "offer_pool",
+			CreativeLabel: t.ResolutionLabel,
+			// Rotation is even across the pool — no single 'default' subject.
+			SubjectMode: "rotating_pool",
+		}
+		if t.Offer != nil {
+			s.PoolSize = t.Offer.Subjects
+			s.Subject = t.Offer.FirstSubject
+		}
+		return s
+	default:
+		return laneJourneyServing{
+			Source:        "none",
+			CreativeLabel: t.ResolutionLabel,
+			SubjectMode:   "fixed",
+			Subject:       t.SubjectLine,
+		}
+	}
 }
 
 // laneJourneyEdge is the delay between two touches and who is parked on it.
@@ -360,6 +414,7 @@ func (s *PMTACampaignService) HandleLaneJourney(w http.ResponseWriter, r *http.R
 	}
 	for i := range touches {
 		laneJourneyApplyResolution(&touches[i], domOfferID, domDatasetSlug, offers)
+		touches[i].Serving = laneJourneyBuildServing(&touches[i])
 	}
 
 	// ---- EDGES ------------------------------------------------------------
@@ -583,6 +638,15 @@ GROUP BY is_followup`
 // cadence; the default matches the operator's stated 2h.
 const laneJourneyStaleDefaultHours = 2
 
+// laneJourneyActivityBudget caps the send-activity flow read with its OWN
+// deadline. It is the heaviest statement on this endpoint (0.56–0.92s warm /
+// 4.75s cold measured 2026-08-22 — and unbounded when RDS is IO-starved), and
+// it is AUXILIARY: without a budget of its own a stalled activity read
+// consumes the whole journey request. On expiry the read fails soft into the
+// named Error gap (laneJourneyActivity never fails the response) and the
+// canvas still draws.
+const laneJourneyActivityBudget = 8 * time.Second
+
 // laneJourneyActivityFamily is one flow line — WELCOME (touch 1) or FOLLOW-UP
 // (touches 2+). Never merged.
 type laneJourneyActivityFamily struct {
@@ -632,6 +696,11 @@ const laneJourneyRotationNote = "partner_drip_state row for the VERTICAL: a rota
 // error comes back as a named gap on the strip (Error set, families empty), so
 // a heavy auxiliary read cannot take the canvas down.
 func (s *PMTACampaignService) laneJourneyActivity(ctx context.Context, orgID, vertical, brand string, staleHours int) laneJourneySendActivity {
+	// Own short budget: this read must never consume the journey request's
+	// whole deadline. A timeout lands in the same fail-soft Error path as any
+	// other query error below.
+	ctx, cancel := context.WithTimeout(ctx, laneJourneyActivityBudget)
+	defer cancel()
 	now := time.Now()
 	dayStart, _ := laneSupplyDenverDayBoundsUTC(now)
 	hourCut := now.Add(-time.Hour).UTC()
@@ -823,7 +892,10 @@ const laneJourneyDominantOfferSQL = `
 
 // laneJourneyOfferPoolSQL counts each offer's three pools with the EXACT
 // predicates resolveOfferCreative / fetchOfferSubjects / fetchOfferFromNames
-// filter on. One query for the whole ladder's distinct offer set.
+// filter on. One query for the whole ladder's distinct offer set. The last
+// column is the pool's FIRST active subject (fetchOfferSubjects' ORDER BY
+// id), served as the serving strip's SAMPLE — a scalar subquery on the same
+// indexed offer_id path the COUNT beside it already walks, never a join.
 const laneJourneyOfferPoolSQL = `
 	SELECT o.id::text, COALESCE(o.name, ''), COALESCE(o.status, ''),
 	       (SELECT COUNT(*) FROM mailing_offer_creatives c
@@ -837,7 +909,12 @@ const laneJourneyOfferPoolSQL = `
 	       (SELECT COUNT(*) FROM mailing_offer_from_names fn
 	         WHERE fn.offer_id = o.id
 	           AND COALESCE(fn.status, '') NOT IN ('archived','rejected')
-	           AND COALESCE(fn.from_name, '') <> '')
+	           AND COALESCE(fn.from_name, '') <> ''),
+	       COALESCE((SELECT sl2.subject_line FROM mailing_offer_subject_lines sl2
+	         WHERE sl2.offer_id = o.id
+	           AND COALESCE(sl2.status, '') NOT IN ('archived','rejected')
+	           AND COALESCE(sl2.subject_line, '') <> ''
+	         ORDER BY sl2.id LIMIT 1), '')
 	FROM mailing_offers o
 	WHERE o.id::text = ANY($1)`
 
@@ -851,8 +928,12 @@ type laneJourneyOffer struct {
 	Creatives  int64  `json:"active_creatives"`
 	Subjects   int64  `json:"active_subjects"`
 	FromNames  int64  `json:"active_from_names"`
-	Resolvable bool   `json:"resolvable"`
-	Problem    string `json:"problem,omitempty"`
+	// FirstSubject is the pool's first active row (fetchOfferSubjects'
+	// ORDER BY id) — a SAMPLE only: rotation is even across the pool and
+	// there is no single 'default' subject.
+	FirstSubject string `json:"first_active_subject,omitempty"`
+	Resolvable   bool   `json:"resolvable"`
+	Problem      string `json:"problem,omitempty"`
 }
 
 // laneJourneyResolveOffers loads the pool census for a set of offer ids.
@@ -870,9 +951,9 @@ func (s *PMTACampaignService) laneJourneyResolveOffers(ctx context.Context, ids 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, name, status string
+		var id, name, status, firstSubject string
 		var creatives, subjects, fromNames int64
-		if err := rows.Scan(&id, &name, &status, &creatives, &subjects, &fromNames); err != nil {
+		if err := rows.Scan(&id, &name, &status, &creatives, &subjects, &fromNames, &firstSubject); err != nil {
 			return nil, err
 		}
 		o, ok := out[id]
@@ -886,6 +967,7 @@ func (s *PMTACampaignService) laneJourneyResolveOffers(ctx context.Context, ids 
 		o.Creatives = creatives
 		o.Subjects = subjects
 		o.FromNames = fromNames
+		o.FirstSubject = firstSubject
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

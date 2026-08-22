@@ -94,6 +94,11 @@ type laneSupplyFeed struct {
 	// Read live per wave by the orchestrator; toggled via
 	// POST /api/mailing/data-partners/datasets/{id}/express.
 	ExpressDispatch bool `json:"express_dispatch"`
+	// PartialError is set when this feed's counts could not be freshly read
+	// (e.g. statement timeout on a starved DB): the feed carries its last
+	// cached computation (or zeros on a cold cache) instead of failing the
+	// whole response. UNKNOWN, not zero.
+	PartialError string `json:"partial_error,omitempty"`
 	// SharedBrands: the rotation brands this dataset's supply is shared
 	// across (the vertical's active roster). Supply is never domain-owned.
 	SharedBrands   []string        `json:"shared_brands"`
@@ -316,7 +321,12 @@ func (s *PMTACampaignService) laneSupplyFillAnatomy(ctx context.Context, f *lane
 				&c.ReadyTotal, &c.Held, &c.Suppressed, &c.DeadLetter,
 				&c.MailedLifetime, &c.MailedToday)
 		if err != nil && err != sql.ErrNoRows {
-			return errors.New("supply anatomy query failed")
+			// 2026-08-22: a per-feed read failure (statement timeout under an
+			// IO-starved RDS) used to 500 the WHOLE supply/overview response.
+			// Degrade instead: serve the previous cached computation when one
+			// exists, else zero-values — either way flagged via partial_error
+			// so the operator sees UNKNOWN-not-zero, and the request survives.
+			return s.laneSupplyServeSlotPartial(f, slot, "supply anatomy query failed")
 		}
 		// sql.ErrNoRows = a dataset with zero pcq rows: all-zero counts are
 		// the true state of that queue, not an error (and cacheable).
@@ -339,7 +349,7 @@ func (s *PMTACampaignService) laneSupplyFillAnatomy(ctx context.Context, f *lane
 			return rows.Err()
 		}()
 		if err != nil {
-			return errors.New("ready-by-isp query failed")
+			return s.laneSupplyServeSlotPartial(f, slot, "ready-by-isp query failed")
 		}
 		slot.counts = c
 		slot.ready = laneSupplyOrderReadyByISP(counts)
@@ -359,6 +369,37 @@ func (s *PMTACampaignService) laneSupplyFillAnatomy(ctx context.Context, f *lane
 	f.ReadyByISP = append([]laneSupplyISP{}, slot.ready...)
 	f.ComputedAt = slot.computedAt
 	return nil
+}
+
+// laneSupplyServeSlotPartial serves whatever the slot last computed (stale,
+// or zero-values on a cold cache) with partial_error set, instead of failing
+// the whole response for one feed's read. Caller holds slot.mu.
+func (s *PMTACampaignService) laneSupplyServeSlotPartial(f *laneSupplyFeed, slot *laneSupplyCacheSlot, reason string) error {
+	f.Counts(slot)
+	if slot.computedAt.IsZero() {
+		f.PartialError = reason + " — no cached read; counts UNKNOWN, not zero"
+	} else {
+		f.PartialError = reason + " — serving cached read from " +
+			slot.computedAt.UTC().Format(time.RFC3339)
+	}
+	return nil
+}
+
+// Counts copies a slot's cached computation onto the feed (shared by the
+// fresh and partial paths).
+func (f *laneSupplyFeed) Counts(slot *laneSupplyCacheSlot) {
+	f.TrancheTotal = slot.counts.TrancheTotal
+	f.Cleaning = slot.counts.Cleaning
+	f.PendingEO = slot.counts.PendingEO
+	f.EOInFlight = slot.counts.EOInFlight
+	f.ReadyTotal = slot.counts.ReadyTotal
+	f.Held = slot.counts.Held
+	f.Suppressed = slot.counts.Suppressed
+	f.DeadLetter = slot.counts.DeadLetter
+	f.MailedLifetime = slot.counts.MailedLifetime
+	f.MailedToday = slot.counts.MailedToday
+	f.ReadyByISP = append([]laneSupplyISP{}, slot.ready...)
+	f.ComputedAt = slot.computedAt
 }
 
 // laneSupplyResolveFeeds resolves a lane brand's feeds — roster verticals →

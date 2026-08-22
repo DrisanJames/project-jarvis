@@ -120,11 +120,11 @@ func expectJourneyDominant(mock sqlmock.Sqlmock, datasetID, slug, offerID string
 }
 
 // expectJourneyOffers stands in for the single offer-pool census. rows are
-// (offer_id, name, status, creatives, subjects, from_names).
-func expectJourneyOffers(mock sqlmock.Sqlmock, rows ...[6]interface{}) {
-	r := sqlmock.NewRows([]string{"id", "name", "status", "creatives", "subjects", "from_names"})
+// (offer_id, name, status, creatives, subjects, from_names, first_subject).
+func expectJourneyOffers(mock sqlmock.Sqlmock, rows ...[7]interface{}) {
+	r := sqlmock.NewRows([]string{"id", "name", "status", "creatives", "subjects", "from_names", "first_subject"})
 	for _, v := range rows {
-		r = r.AddRow(v[0], v[1], v[2], v[3], v[4], v[5])
+		r = r.AddRow(v[0], v[1], v[2], v[3], v[4], v[5], v[6])
 	}
 	mock.ExpectQuery(`FROM mailing_offers`).WillReturnRows(r)
 }
@@ -380,7 +380,7 @@ func TestLaneJourneyOfferPathIsNotUnbound(t *testing.T) {
 			// Touch 4: neither a file nor an offer -> the resolver reads an
 			// empty path and the wave errors.
 			AddRow(4, "internal_auto_insurance", "db", "", "orphan", "", "Jamie", "", true))
-	expectJourneyOffers(mock, [6]interface{}{offerID, "AutoCoveragePoint - Quote Ready", "active", 1, 3, 1})
+	expectJourneyOffers(mock, [7]interface{}{offerID, "AutoCoveragePoint - Quote Ready", "active", 1, 3, 1, "Your 3 quotes are waiting"})
 	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
 		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
 	expectJourneyActivity(mock)
@@ -462,8 +462,8 @@ func TestLaneJourneyArchivedPoolIsUnresolvable(t *testing.T) {
 			mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
 				WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
 					"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}))
-			expectJourneyOffers(mock, [6]interface{}{offerID, "Dead Offer", "active",
-				c.creatives, c.subjects, c.fromNames})
+			expectJourneyOffers(mock, [7]interface{}{offerID, "Dead Offer", "active",
+				c.creatives, c.subjects, c.fromNames, ""})
 			mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
 				WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
 			expectJourneyActivity(mock)
@@ -624,6 +624,87 @@ func TestLaneJourneyActivitySQLShape(t *testing.T) {
 	// authority the ladder-stamp recovery uses.
 	if strings.Contains(laneJourneyActivitySQL, "sent_count") {
 		t.Fatal("sent must come from mailing_message_log, never mailing_campaigns.sent_count")
+	}
+}
+
+// ── SERVING (the shelf's lead object) ───────────────────────────────────────
+//
+// Each touch carries serving{source, creative_label, subject_mode, subject,
+// pool_size} derived from the resolution fields. The offer-center path
+// ROTATES subjects evenly across the pool — there is no single 'default' —
+// so its subject is a SAMPLE (the pool's first active row) and pool_size
+// says how many rotate; the file path serves the row's fixed subject_line.
+func TestLaneJourneyServingObject(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	const offerID = "48ddcdf4-5bd0-4cca-a8e8-878a72d6702a"
+
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
+	// Touch 1: FILE path — a configured filename with a fixed subject.
+	expectJourneyTouch1(mock, true)
+	// Touch 2: OFFER path — empty filename + offer_id. Touch 3+: unconfigured.
+	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
+			"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}).
+			AddRow(2, "internal_auto_insurance", "db", "", "row subject (not what ships)", "", "Jamie", offerID, true))
+	expectJourneyOffers(mock, [7]interface{}{offerID, "AutoCoveragePoint - Quote Ready", "active", 2, 5, 1, "Your 3 quotes are waiting"})
+	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	expectJourneyActivity(mock)
+
+	rec := getJourney(t, s, "db", "internal_auto_insurance")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp laneJourneyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	// FILE shape: the row's own subject is what ships — fixed, no pool.
+	sv1 := resp.Touches[0].Serving
+	if sv1.Source != "file" || sv1.CreativeLabel != "welcome-auto.html" {
+		t.Fatalf("file touch serving wrong: %+v", sv1)
+	}
+	if sv1.SubjectMode != "fixed" || sv1.Subject != "Your auto quote" || sv1.PoolSize != 0 {
+		t.Fatalf("file touch must serve the row's FIXED subject: %+v", sv1)
+	}
+
+	// OFFER_POOL shape: rotating pool, sample subject + pool size, and the
+	// creative label names the offer.
+	sv2 := resp.Touches[1].Serving
+	if sv2.Source != "offer_pool" || sv2.CreativeLabel != "offer: AutoCoveragePoint - Quote Ready" {
+		t.Fatalf("offer touch serving wrong: %+v", sv2)
+	}
+	if sv2.SubjectMode != "rotating_pool" || sv2.PoolSize != 5 {
+		t.Fatalf("offer touch must report the rotating pool: %+v", sv2)
+	}
+	if sv2.Subject != "Your 3 quotes are waiting" {
+		t.Fatalf("offer touch subject must be the pool's first active SAMPLE, got %q", sv2.Subject)
+	}
+	if sv2.Subject == resp.Touches[1].SubjectLine {
+		t.Fatal("the offer path must NOT lead with the creative row's subject_line — the pool ships, the row does not")
+	}
+
+	// NONE shape: an unconfigured touch says so plainly.
+	sv3 := resp.Touches[2].Serving
+	if sv3.Source != "none" || sv3.SubjectMode != "fixed" || sv3.Subject != "" || sv3.PoolSize != 0 {
+		t.Fatalf("unconfigured touch serving wrong: %+v", sv3)
+	}
+	if !strings.Contains(sv3.CreativeLabel, "retires") {
+		t.Fatalf("unconfigured serving must carry the retirement label: %q", sv3.CreativeLabel)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLaneJourneyActivityBudgetPinned: the send-activity read runs under its
+// OWN short deadline so it can never consume the whole journey request; a
+// timeout lands in the fail-soft named-gap path
+// (TestLaneJourneyActivityFailureIsANamedGap proves the journey stays 200).
+func TestLaneJourneyActivityBudgetPinned(t *testing.T) {
+	if laneJourneyActivityBudget != 8*time.Second {
+		t.Fatalf("the activity read's own budget is 8s (measured 0.56–4.75s; unbounded under IO starvation), got %v", laneJourneyActivityBudget)
 	}
 }
 
