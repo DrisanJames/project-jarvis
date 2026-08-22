@@ -15,6 +15,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, thStyle, tdStyle, tableStyle } from '../shared/theme';
 import { Pill } from '../shared/ui';
+import { labelForVertical } from '../datapartners/verticalLabels';
 
 // ── Contract shapes ─────────────────────────────────────────────────────────
 
@@ -79,7 +80,9 @@ const confidenceColor = (c: number): string =>
 export const DripCsvUpload: React.FC<{
   feeds: CsvFeedOption[];        // datasets already known from the supply payload
   onNotice: (s: string) => void;
-}> = ({ feeds, onNotice }) => {
+  onCommitted?: () => void;      // fired after a successful commit (parent reloads its panels)
+  onClose?: () => void;          // "Done" after a commit — closes the hosting shelf
+}> = ({ feeds, onNotice, onCommitted, onClose }) => {
   // Supplement the supply-derived feed list with the full dataset roster so a
   // dataset outside the selected domain's supply is still targetable. Failure
   // here is non-fatal: the supply-derived list remains usable.
@@ -192,6 +195,7 @@ export const DripCsvUpload: React.FC<{
       const res = j as unknown as CommitResponse;
       setResult(res);
       onNotice(`CSV committed — ${num(res.records)} record(s) ingested, ${num(res.skipped_invalid)} skipped, ${res.batch_ids?.length ?? 0} batch(es).`);
+      onCommitted?.();
     } catch (e) {
       setCommitErr(e instanceof Error ? e.message : 'commit failed');
     } finally {
@@ -230,7 +234,7 @@ export const DripCsvUpload: React.FC<{
             onChange={(e) => { setDatasetId(e.target.value); resetFlow(); }}>
             <option value="">select a dataset…</option>
             {options.map((o) => (
-              <option key={o.dataset_id} value={o.dataset_id}>{o.name} ({o.vertical})</option>
+              <option key={o.dataset_id} value={o.dataset_id}>{o.name} ({labelForVertical(o.vertical)})</option>
             ))}
           </select>
         </label>
@@ -375,6 +379,27 @@ export const DripCsvUpload: React.FC<{
                   <code key={id} style={{ fontFamily: 'monospace', marginRight: 8 }}>{id}</code>
                 ))}
                 {(result.batch_ids ?? []).length === 0 && UNKNOWN}
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                Counts land in AVAILABLE DATA and COLD INTAKE after the slicer + EO validation run.
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button type="button" style={smallBtn}
+                  onClick={() => {
+                    // Full reset of the flow state — ready for the next file.
+                    resetFlow();
+                    setFile(null);
+                    if (fileRef.current) fileRef.current.value = '';
+                  }}>
+                  Ingest another file
+                </button>
+                {onClose && (
+                  <button type="button"
+                    style={{ ...smallBtn, background: 'transparent', color: colors.textMuted, border: `1px solid ${colors.hairline}` }}
+                    onClick={onClose}>
+                    Done
+                  </button>
+                )}
               </div>
             </div>
           )}

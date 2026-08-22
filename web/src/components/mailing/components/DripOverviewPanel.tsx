@@ -20,6 +20,7 @@ import {
   colors, alpha, thStyle, tdStyle, numTd, numTh, tableStyle,
 } from '../shared/theme';
 import { SectionHeader, Stat, SectionError, EmptyState } from '../shared/ui';
+import { labelForVertical } from '../datapartners/verticalLabels';
 
 // ── API shapes (contract for the parallel backend build) ────────────────────
 
@@ -204,7 +205,8 @@ export const DripOverviewPanel: React.FC<{
   error: string | null;
   reload: () => void;
   selectedVertical: string | null;
-  onSelectLane: (vertical: string) => void;
+  // null = clear the spotlight (clicking the already-spotlighted row).
+  onSelectLane: (vertical: string | null) => void;
   onOpenIngest: () => void;
   onOnboardLane?: () => void;   // absent = no navigation mechanism wired; button hidden
   onNotice: (s: string) => void;
@@ -358,16 +360,21 @@ export const DripOverviewPanel: React.FC<{
                 {lanes.map((l) => {
                   const sel = l.vertical === selectedVertical;
                   const laneDen = l.clean + l.dirty;
+                  const display = l.display_name || labelForVertical(l.vertical);
                   return (
                     <tr
                       key={l.vertical}
-                      onClick={() => onSelectLane(l.vertical)}
-                      title={`Spotlight ${l.display_name || l.vertical} — sets the drip selector to this lane.`}
+                      // Clicking the already-spotlighted row CLEARS the
+                      // spotlight (null → back to the All-lanes overview).
+                      onClick={() => onSelectLane(sel ? null : l.vertical)}
+                      title={sel
+                        ? `${display} is spotlighted — click again to clear the spotlight.`
+                        : `Spotlight ${display} — sets the drip selector to this lane.`}
                       style={{ cursor: 'pointer', background: sel ? alpha(colors.indigo400, '14') : undefined }}
                     >
                       <td style={{ ...tdStyle, fontWeight: sel ? 700 : 400 }}>
-                        {l.display_name || l.vertical}
-                        {l.display_name && (
+                        {display}
+                        {display !== l.vertical && (
                           <span style={{ fontSize: 10, color: colors.textFaint, marginLeft: 6, fontFamily: 'monospace' }}>
                             {l.vertical}
                           </span>
@@ -391,7 +398,10 @@ export const DripOverviewPanel: React.FC<{
                         {num(l.suppressed + l.dead_letter)}
                       </td>
                       <td style={numTd}>{num(l.tranche_total)}</td>
-                      <td style={{ ...tdStyle, fontSize: 10, color: colors.indigo300 }}>{sel ? 'spotlighted' : 'spotlight ▸'}</td>
+                      <td style={{ ...tdStyle, fontSize: 10, color: colors.indigo300 }}
+                        title={sel ? 'Click again to clear the spotlight.' : undefined}>
+                        {sel ? 'spotlighted ✕' : 'spotlight ▸'}
+                      </td>
                     </tr>
                   );
                 })}
@@ -399,7 +409,8 @@ export const DripOverviewPanel: React.FC<{
             </table>
           </div>
           <p style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.6, marginTop: 8 }}>
-            Clicking a lane spotlights it in the drip selector above the journey canvas. The pencil
+            Clicking a lane spotlights it in the drip selector above the journey canvas; clicking the
+            spotlighted lane again clears the spotlight. The pencil
             sets a friendly display name (server-stored; empty deletes it). Clean % divides by that
             lane&apos;s clean+dirty — denominators differ per lane and are shown in each tooltip.
           </p>

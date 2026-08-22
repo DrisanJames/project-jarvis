@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
 import { Pill, SectionError } from '../shared/ui';
+import { labelForVertical } from '../datapartners/verticalLabels';
 import type { JourneyTouch, JourneyEdge } from './DripJourneyCanvas';
 
 // ── Lane-content shapes (property_lane_content.go — mirrored from
@@ -97,6 +98,7 @@ export const DripStepShelf: React.FC<{
   brand: string;
   sendingDomain: string | null;
   vertical: string;
+  laneDisplay?: string;          // friendly lane name (display_name || label); falls back to labelForVertical
   touch: JourneyTouch;
   edgeOut: JourneyEdge | null;   // this touch → next touch
   edgeIn: JourneyEdge | null;    // previous touch → this touch
@@ -104,7 +106,7 @@ export const DripStepShelf: React.FC<{
   dueNow: number | null;         // journey.totals.due_now (whole drip)
   onChanged: () => void;         // reload the journey after a write
   onNotice: (s: string) => void;
-}> = ({ brand, sendingDomain, vertical, touch, edgeOut, edgeIn, delayHours, dueNow, onChanged, onNotice }) => {
+}> = ({ brand, sendingDomain, vertical, laneDisplay, touch, edgeOut, edgeIn, delayHours, dueNow, onChanged, onNotice }) => {
   // ── lane-content fetch (own lifecycle; keyed by brand) ────────────────────
   const [content, setContent] = useState<LaneContentResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -125,6 +127,11 @@ export const DripStepShelf: React.FC<{
   useEffect(() => { setContent(null); void loadContent(); }, [loadContent]);
 
   const writable = content != null && content.write_enabled !== false;
+  // Screen doctrine: write surfaces render READ-ONLY, never hidden. Controls
+  // below stay visible when !writable, disabled, carrying this title.
+  const roTitle = !writable
+    ? `READ-ONLY — the server reports write_enabled=false${content?.write_flag_env ? ` (env ${content.write_flag_env} is not set)` : ''}. Nothing on this shelf will save.`
+    : undefined;
 
   // The feed for this vertical, and this touch's copy row (feed-specific first,
   // global fallback second) — the row's OWN vertical is what the POST must
@@ -141,20 +148,22 @@ export const DripStepShelf: React.FC<{
   })();
 
   // The offer this touch resolves to: match the journey's offer_id first, then
-  // touch-level bindings, then the feed's dataset-level offer.
-  const offer: LaneOffer | null = (() => {
+  // touch-level bindings, then the feed's dataset-level offer. When neither
+  // matches and we fall back to the FIRST offer in the payload, that is an
+  // INFERENCE, not a resolution — flagged so edits are verified first.
+  const { offer, offerInferred } = ((): { offer: LaneOffer | null; offerInferred: boolean } => {
     const all: LaneOffer[] = [
       ...(feed?.datasets ?? []).map((d) => d.offer).filter((o): o is LaneOffer => !!o),
       ...(feed?.touch_offers ?? []).map((t) => t.offer).filter((o): o is LaneOffer => !!o),
     ];
     if (touch.offer_id) {
       const hit = all.find((o) => o.id === touch.offer_id);
-      if (hit) return hit;
+      if (hit) return { offer: hit, offerInferred: false };
     }
     const touchScoped = (feed?.touch_offers ?? []).find((t) =>
       t.offer && t.touch_scope.some((s) => s.replace(/[^0-9]/g, '') === String(touch.touch)));
-    if (touchScoped?.offer) return touchScoped.offer;
-    return all[0] ?? null;
+    if (touchScoped?.offer) return { offer: touchScoped.offer, offerInferred: false };
+    return { offer: all[0] ?? null, offerInferred: all.length > 0 };
   })();
 
   // ── writes (same endpoints as LaneContentPanel) ───────────────────────────
@@ -202,6 +211,7 @@ export const DripStepShelf: React.FC<{
     if (!res.ok) { onNotice(`Subject add failed: ${String(res.json.error ?? res.status)}`); return; }
     setNewSubject('');
     await loadContent();
+    onChanged();
   });
   const archiveSubject = (row: LaneCopyRow) => withSaving(`arch/${row.id}`, async () => {
     if (!offer) return;
@@ -209,6 +219,7 @@ export const DripStepShelf: React.FC<{
     const res = await post('subject', { offer_id: offer.id, action: 'archive', subject_id: row.id });
     if (!res.ok) { onNotice(`Subject archive failed: ${String(res.json.error ?? res.status)}`); return; }
     await loadContent();
+    onChanged();
   });
 
   // Offer swap (per dataset on this feed) — typed-name confirm, ThrottleEditor pattern
@@ -234,8 +245,8 @@ export const DripStepShelf: React.FC<{
 
   return (
     <div style={{ padding: '14px 20px 24px 20px' }}>
-      <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
-        {sendingDomain ?? brand} · {vertical} · inter-touch delay {Number.isFinite(delayHours) ? `${delayHours}h` : UNKNOWN}
+      <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }} title={`vertical: ${vertical}`}>
+        {sendingDomain ?? brand} · {laneDisplay || labelForVertical(vertical)} · inter-touch delay {Number.isFinite(delayHours) ? `${delayHours}h` : UNKNOWN}
       </div>
 
       {/* ── (a) STEP CONFIG ─────────────────────────────────────────────── */}
@@ -334,19 +345,20 @@ export const DripStepShelf: React.FC<{
               <span style={{ color: colors.text, flex: '2 1 200px' }} title="subject">{copyRow.subject_line || UNKNOWN}</span>
               <span style={{ color: colors.textMuted, flex: '2 1 160px' }} title="preheader">{copyRow.preheader || UNKNOWN}</span>
               <span style={{ color: colors.textMuted, flex: '1 1 120px' }} title="from name">{copyRow.from_name || UNKNOWN}</span>
-              {writable && (
-                <button type="button" style={smallBtn}
-                  onClick={() => setCopyEdit({
-                    subject_line: copyRow.subject_line, preheader: copyRow.preheader, from_name: copyRow.from_name,
-                  })}>
-                  Edit
-                </button>
-              )}
+              {/* Write surfaces render READ-ONLY, never hidden. */}
+              <button type="button" style={{ ...smallBtn, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+                disabled={!writable}
+                title={roTitle}
+                onClick={() => setCopyEdit({
+                  subject_line: copyRow.subject_line, preheader: copyRow.preheader, from_name: copyRow.from_name,
+                })}>
+                Edit
+              </button>
             </div>
           )}
 
           {/* Offer + subject pool */}
-          <div style={sectionTitle}>OFFER &amp; SUBJECT POOL</div>
+          <div style={sectionTitle}>OFFER &amp; SUBJECT POOL{offerInferred ? ' (inferred)' : ''}</div>
           {!offer ? (
             <div style={{ fontSize: 11, color: colors.textFaint }}>
               No offer resolved for this touch in the lane content payload.
@@ -355,6 +367,14 @@ export const DripStepShelf: React.FC<{
             <>
               <div style={{ fontSize: 12, color: colors.indigo200, marginBottom: 6 }}>
                 offer: <b>{offer.name || offer.id}</b> ({offer.status || '?'})
+                {offerInferred && (
+                  <span
+                    style={{ marginLeft: 8 }}
+                    title="No offer matched this touch's offer_id or a touch-scoped binding — this is the FIRST offer in the lane-content payload, an inference. Confirm it is the right offer before editing its pools."
+                  >
+                    <Pill color={colors.warning} style={{ fontSize: 9 }}>offer inferred — verify before editing</Pill>
+                  </span>
+                )}
                 {offer.creative
                   ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 8 }}>
                       creative v{offer.creative.version} ({offer.creative.status}) · {shortTime(offer.creative.updated_at)}
@@ -371,13 +391,13 @@ export const DripStepShelf: React.FC<{
               {servingSubjects.map((sr) => (
                 <div key={sr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
                   <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{sr.text}</span>
-                  {writable && (
-                    <button type="button" style={{ ...ghostBtn, padding: '1px 7px', fontSize: 9 }}
-                      disabled={!!saving[`arch/${sr.id}`]}
-                      onClick={() => void archiveSubject(sr)}>
-                      {saving[`arch/${sr.id}`] ? '…' : 'Archive'}
-                    </button>
-                  )}
+                  <button type="button"
+                    style={{ ...ghostBtn, padding: '1px 7px', fontSize: 9, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+                    disabled={!writable || !!saving[`arch/${sr.id}`]}
+                    title={roTitle}
+                    onClick={() => void archiveSubject(sr)}>
+                    {saving[`arch/${sr.id}`] ? '…' : 'Archive'}
+                  </button>
                 </div>
               ))}
               {servingSubjects.length === 0 && (
@@ -385,17 +405,18 @@ export const DripStepShelf: React.FC<{
                   EMPTY SUBJECT POOL — the lane fails at send time
                 </div>
               )}
-              {writable && (
-                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                  <input style={{ ...input, flex: 1 }} placeholder="Add a subject line…"
-                    value={newSubject} onChange={(e) => setNewSubject(e.target.value)} />
-                  <button type="button" style={smallBtn}
-                    disabled={!!saving.addSub || !newSubject.trim()}
-                    onClick={() => void addSubject()}>
-                    {saving.addSub ? 'Adding…' : 'Add'}
-                  </button>
-                </div>
-              )}
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                <input style={{ ...input, flex: 1, opacity: writable ? 1 : 0.5 }} placeholder="Add a subject line…"
+                  disabled={!writable} title={roTitle}
+                  value={newSubject} onChange={(e) => setNewSubject(e.target.value)} />
+                <button type="button"
+                  style={{ ...smallBtn, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+                  disabled={!writable || !!saving.addSub || !newSubject.trim()}
+                  title={roTitle}
+                  onClick={() => void addSubject()}>
+                  {saving.addSub ? 'Adding…' : 'Add'}
+                </button>
+              </div>
               <div style={{ ...label, marginTop: 8 }}>Serving from-names</div>
               {servingFromNames.map((fr) => (
                 <div key={fr.id} style={{ fontSize: 12, color: colors.text, padding: '1px 0' }}>{fr.text}</div>
@@ -408,8 +429,9 @@ export const DripStepShelf: React.FC<{
             </>
           )}
 
-          {/* Offer swap — per dataset on this feed */}
-          {writable && feed && feed.datasets.length > 0 && (
+          {/* Offer swap — per dataset on this feed. Rendered even when not
+              writable (write surfaces are read-only, never hidden). */}
+          {feed && feed.datasets.length > 0 && (
             <>
               <div style={sectionTitle}>OFFER SWAP (per feed dataset)</div>
               {feed.datasets.map((ds) => (
@@ -419,18 +441,19 @@ export const DripStepShelf: React.FC<{
                     {ds.offer ? <>mails <b>{ds.offer.name || ds.offer.id}</b></> : 'no dataset-level offer'}
                   </span>
                   <select
-                    style={{ ...input, maxWidth: 200 }}
+                    style={{ ...input, maxWidth: 200, opacity: writable ? 1 : 0.5 }}
                     value={swapSel[ds.id] ?? (ds.offer?.id ?? '')}
-                    disabled={!!saving[`swap/${ds.id}`]}
+                    disabled={!writable || !!saving[`swap/${ds.id}`]}
+                    title={roTitle}
                     onChange={(e) => setSwapSel((s) => ({ ...s, [ds.id]: e.target.value }))}
                   >
                     {!ds.offer && <option value="">(no offer)</option>}
                     {content.active_offers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
                   </select>
                   <button type="button"
-                    style={{ ...smallBtn, background: 'rgba(239,68,68,0.12)', color: colors.dangerText, border: '1px solid rgba(239,68,68,0.40)' }}
-                    disabled={!!saving[`swap/${ds.id}`] || !swapSel[ds.id] || swapSel[ds.id] === (ds.offer?.id ?? '')}
-                    title="Changes what this feed mails — requires typing the feed name to confirm."
+                    style={{ ...smallBtn, background: 'rgba(239,68,68,0.12)', color: colors.dangerText, border: '1px solid rgba(239,68,68,0.40)', opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+                    disabled={!writable || !!saving[`swap/${ds.id}`] || !swapSel[ds.id] || swapSel[ds.id] === (ds.offer?.id ?? '')}
+                    title={roTitle ?? 'Changes what this feed mails — requires typing the feed name to confirm.'}
                     onClick={() => void swapOffer(ds)}>
                     {saving[`swap/${ds.id}`] ? 'Swapping…' : 'Swap offer…'}
                   </button>

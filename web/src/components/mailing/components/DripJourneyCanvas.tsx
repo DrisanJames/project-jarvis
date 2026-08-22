@@ -11,11 +11,12 @@
 // line, and that line should have numbers calling out how many audience members
 // are awaiting the next touch."
 //
-// Screen order follows the standing display doctrine — IN MOTION first
-// (journey canvas: who is mid-ladder right now), then PLAN-AHEAD (the per-ISP
-// caps that decide tomorrow's flow), then HISTORY (the 7/14/30-day scoreboard).
-// Roster membership (which domains ride this drip) sits last because it is a
-// structural edit, not a daily one.
+// Screen order (the real render order): the GLOBAL DASHBOARD first (all lanes,
+// estate-wide), then IN MOTION (journey canvas: who is mid-ladder right now),
+// TODAY (the lake snapshot), the INTRODUCTION LEDGER (the enforced cap), then
+// PLAN-AHEAD (available data + cold intake + the per-ISP quota levers), then
+// HISTORY (the 7/14/30-day scoreboard). Roster membership (which domains ride
+// this drip) sits last because it is a structural edit, not a daily one.
 //
 // Honesty rules this screen holds to (PORTAL_DESIGN_SYSTEM §1.6, METRIC_CONTRACT):
 //   - Four distinct displays: loading / error+Retry / empty / data. A failed
@@ -45,6 +46,7 @@ import {
   Panel, SectionHeader, Stat, SectionError, EmptyState, Pill, PortalKeyframes,
 } from '../shared/ui';
 import { FilterChip, daysAgoDenver, denverToday } from '../shared/filters';
+import { labelForVertical } from '../datapartners/verticalLabels';
 import { useToast } from '../shared/ToastSystem';
 import {
   buildThrottleDiff, buildThrottlePayload, validateThrottleRows, zeroDailyCaps,
@@ -846,6 +848,10 @@ const TouchNode: React.FC<{
     <div
       onClick={onOpen}
       role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onKeyDown={onOpen ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
+      } : undefined}
       title={onOpen ? `Open touch ${touch.touch} — config, edit actions and step metrics` : undefined}
       style={{
         position: 'absolute', left: x, top: y, width: NODE_W, height: NODE_H,
@@ -1034,7 +1040,11 @@ const JourneyCanvas: React.FC<{
               hours={journey.delay_hours}
             />
           ))}
-          {/* Waiting badges ride ON the line — the operator's headline ask. */}
+          {/* Waiting badges — the operator's headline ask. They sit BELOW the
+              node/diamond row, horizontally centered on the node→diamond gap:
+              on-the-line placement (mid-46, width 92) overlapped the right
+              ~31px of each TouchNode and the left of the delay diamond,
+              stealing their clicks. */}
           {rungs.slice(0, -1).map((t, i) => {
             const e = edgeFor(t.touch);
             const waiting = e ? e.waiting : null;
@@ -1054,7 +1064,7 @@ const JourneyCanvas: React.FC<{
                 style={{
                   position: 'absolute',
                   left: mid - 46,
-                  top: PAD_TOP + NODE_H / 2 - 15,
+                  top: PAD_TOP + NODE_H + 8,
                   width: 92,
                   cursor: 'pointer',
                   background: known ? colors.panelBgSolid : 'rgba(15,30,60,0.9)',
@@ -1268,6 +1278,14 @@ const EffectiveCapTable: React.FC<{
     src === 'lane override' ? colors.indigo200
       : src === 'none' ? colors.textFaint
         : colors.textMuted;
+  // Provenance honesty: the server's "global default (per brand)" daily source
+  // is the COMPILED/env `DefaultNewRecordDailyISPCaps` value — NOT the
+  // Introduction ledger's per-brand daily budget. Label it as what it is.
+  const COMPILED_DEFAULT_TIP =
+    'process-wide default from the orchestrator config (env-overridable); '
+    + "separate from the Introduction ledger's per-brand daily budget above";
+  const dailySourceLabel = (src: string): string =>
+    src === 'global default (per brand)' ? 'compiled default' : src;
   return (
     <div style={{ marginTop: 10 }}>
       <div style={{ fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: colors.textMuted, marginBottom: 5 }}>
@@ -1315,8 +1333,11 @@ const EffectiveCapTable: React.FC<{
                         ? <span style={{ color: colors.textFaint }} title="No daily budget at either scope — ABSENT, not zero.">—</span>
                         : zeroDay ? '0 (suppressed)' : num(e.daily_cap)}
                   </td>
-                  <td style={{ ...tdStyle, fontSize: 10, color: srcColor(e.daily_cap_source) }}>
-                    {e.brand_blocked ? 'brand-allow gate (forced 0)' : e.daily_cap_source}
+                  <td
+                    style={{ ...tdStyle, fontSize: 10, color: srcColor(e.daily_cap_source) }}
+                    title={e.daily_cap_source === 'global default (per brand)' ? COMPILED_DEFAULT_TIP : undefined}
+                  >
+                    {e.brand_blocked ? 'brand-allow gate (forced 0)' : dailySourceLabel(e.daily_cap_source)}
                   </td>
                 </tr>
               );
@@ -1689,7 +1710,14 @@ export const DripJourneyCanvas: React.FC<{
       signal,
     ),
   );
-  useEffect(() => { setOpenEdge(null); setOpenTouch(null); }, [journeyKey]);
+  // The step shelf must survive a journey.reload(): useResource nulls data
+  // during refetch, so the shelf gates on (data ?? lastJourneyRef.current) and
+  // keeps its local edit state instead of unmounting mid-flow. Cleared on a
+  // lane/domain change (below) so a stale payload can never render under a
+  // different selection.
+  const lastJourneyRef = useRef<JourneyResponse | null>(null);
+  if (journey.data) lastJourneyRef.current = journey.data;
+  useEffect(() => { setOpenEdge(null); setOpenTouch(null); lastJourneyRef.current = null; }, [journeyKey]);
 
   // 4a. TODAY — the lake snapshot. Its own resource, so the slow Postgres
   // /stats read below can never delay or blank this panel. `brand` is optional
@@ -1791,6 +1819,25 @@ export const DripJourneyCanvas: React.FC<{
     [throttle.data, selVertical],
   );
 
+  // Throttle posture folded into the binding-constraint verdict, from the
+  // ALREADY-FETCHED throttle payload (no extra fetch). Per ISP across the
+  // feeds in scope: does any override hard-suppress it (daily_cap 0), and
+  // what is the tightest positive override daily cap.
+  const throttleCapsByISP = useMemo(() => {
+    const m = new Map<string, { zero: boolean; minPositive: number | null }>();
+    for (const f of feeds) {
+      for (const ov of f.overrides ?? []) {
+        const cur = m.get(ov.isp) ?? { zero: false, minPositive: null };
+        if (ov.daily_cap === 0) cur.zero = true;
+        else if (typeof ov.daily_cap === 'number' && ov.daily_cap > 0) {
+          cur.minPositive = cur.minPositive == null ? ov.daily_cap : Math.min(cur.minPositive, ov.daily_cap);
+        }
+        m.set(ov.isp, cur);
+      }
+    }
+    return m;
+  }, [feeds]);
+
   // 6. Membership across the roster (lazy — only when the panel is opened).
   const [membership, setMembership] = useState<MembershipState>({
     loading: false, members: [], failed: [], checked: 0, error: null,
@@ -1863,6 +1910,11 @@ export const DripJourneyCanvas: React.FC<{
   // means the row changed underneath; reload fresh values and say so. Gated by
   // the optional server write flags (absent = writable, matching the retired
   // Property Ledger screen's standing behavior).
+  // Gate default differs from the roster/throttle gates ON PURPOSE: the server
+  // never sends write_enabled on /property-ledger, so an ABSENT flag must mean
+  // writable (the Property Ledger screen's standing behavior). Roster and
+  // throttle responses always send it, so there absent = old server and the
+  // panels fail READ-ONLY instead.
   const ledgerWritable = ledger.data?.write_enabled !== false;
   const [budgetEdit, setBudgetEdit] = useState<Record<string, string>>({});
   const [ledgerBusy, setLedgerBusy] = useState<Record<string, boolean>>({});
@@ -1891,6 +1943,14 @@ export const DripJourneyCanvas: React.FC<{
     ledger.reload();
   };
 
+  // A ledger write changes what Supply's "Ledger headroom"/"Binding constraint"
+  // and the dashboard report — reload all three surfaces, not just the ledger.
+  const reloadAfterLedgerWrite = () => {
+    ledger.reload();
+    supply.reload();
+    overview.reload();
+  };
+
   const saveBudget = (row: LedgerRow, value: number) =>
     withLedgerBusy(ledgerCellKey(row), async () => {
       const res = await ledgerPost('update', {
@@ -1900,7 +1960,7 @@ export const DripJourneyCanvas: React.FC<{
       if (!res.ok) { notify(`Budget edit failed: ${String(res.json.error ?? res.status)}`); return; }
       setBudgetEdit((s) => { const n = { ...s }; delete n[ledgerCellKey(row)]; return n; });
       notify(`Budget for ${row.brand}/${row.isp} → ${value.toLocaleString()} (applies from tomorrow, Denver).`);
-      ledger.reload();
+      reloadAfterLedgerWrite();
     });
 
   // Server-confirmed hold: busy until the 200 lands, then refetch — the UI
@@ -1916,7 +1976,7 @@ export const DripJourneyCanvas: React.FC<{
       if (res.status === 409) { handleLedger409(res.json); return; }
       if (!res.ok) { notify(`Hold change failed: ${String(res.json.error ?? res.status)}`); return; }
       notify(`${row.brand}/${row.isp} ${row.hold ? 'released' : 'HELD'} — server confirmed.`);
-      ledger.reload();
+      reloadAfterLedgerWrite();
     });
 
   const approveProposal = (row: LedgerRow) =>
@@ -1930,7 +1990,7 @@ export const DripJourneyCanvas: React.FC<{
       }
       if (!res.ok) { notify(`Approve failed: ${String(res.json.error ?? res.status)}`); return; }
       notify(`Proposal approved for ${row.brand}/${row.isp} (effective tomorrow, Denver).`);
-      ledger.reload();
+      reloadAfterLedgerWrite();
     });
 
   const approveAllProposals = async () => {
@@ -1944,7 +2004,7 @@ export const DripJourneyCanvas: React.FC<{
     notify(failed.length === 0
       ? `All ${results.length} proposal(s) approved (effective tomorrow, Denver).`
       : `${results.length - failed.length} approved, ${failed.length} failed/stale — see refreshed rows.`);
-    ledger.reload();
+    reloadAfterLedgerWrite();
   };
 
   const toggleGlobalHold = async () => {
@@ -1964,7 +2024,7 @@ export const DripJourneyCanvas: React.FC<{
       if (res.status === 409) { handleLedger409(res.json); return; }
       if (!res.ok) { notify(`Global hold change failed: ${String(res.json.error ?? res.status)}`); return; }
       notify(enabling ? 'GLOBAL HOLD ENGAGED — server confirmed.' : 'Global hold released — server confirmed.');
-      ledger.reload();
+      reloadAfterLedgerWrite();
     } finally { setGhBusy(false); }
   };
 
@@ -1972,6 +2032,22 @@ export const DripJourneyCanvas: React.FC<{
 
   // ── Derived headline numbers ──────────────────────────────────────────────
   const j = journey.data;
+  // The overview can spotlight a lane this domain's roster does not carry —
+  // onSelectLane never changes `brand`. The journey then comes back empty, but
+  // "no ladder built" would be FALSE: the real fact is roster membership (the
+  // same mechanism behind the selector's "(not on this domain's roster)"
+  // option). Only asserted once the roster read has actually succeeded.
+  const laneNotOnDomainRoster = selVertical != null && !roster.loading && !roster.error
+    && roster.data != null && !drips.some((d) => d.vertical === selVertical);
+
+  // One display-name rule everywhere a lane is shown: the operator's friendly
+  // display_name wins; the fallback is the shared humanized label, never the
+  // bare slug.
+  const laneDisplayName = useCallback(
+    (v: string): string =>
+      overview.data?.by_lane?.find((l) => l.vertical === v)?.display_name || labelForVertical(v),
+    [overview.data],
+  );
   const configuredCount = (j?.touches ?? []).filter((t) => t.configured).length;
   const edgesReported = j?.edges?.length ?? 0;
   const expectedEdges = j ? Math.max(0, (j.max_touches || (j.touches?.length ?? 0)) - 1) : 0;
@@ -2164,22 +2240,19 @@ export const DripJourneyCanvas: React.FC<{
             style={selectStyle}
             value={vertical ?? ''}
             disabled={roster.loading || !!roster.error}
-            onChange={(e) => setVertical(e.target.value || null)}
+            onChange={(e) => { setVertical(e.target.value || null); setShowRoster(false); }}
           >
             {vertical === null && <option value="">—</option>}
             <option value={ALL_LANES}>All lanes (overview)</option>
-            {drips.map((d) => {
-              const friendly = overview.data?.by_lane?.find((l) => l.vertical === d.vertical)?.display_name;
-              return (
-                <option key={d.vertical} value={d.vertical}>
-                  {friendly ? `${friendly} (${d.vertical})` : d.vertical}{d.active ? '' : ' (inactive)'} · weight {d.weight}
-                </option>
-              );
-            })}
+            {drips.map((d) => (
+              <option key={d.vertical} value={d.vertical}>
+                {`${laneDisplayName(d.vertical)} (${d.vertical})`}{d.active ? '' : ' (inactive)'} · weight {d.weight}
+              </option>
+            ))}
             {/* A lane spotlighted from the overview that this domain's roster
                 does not carry still needs a visible selected option. */}
             {selVertical && !drips.some((d) => d.vertical === selVertical) && (
-              <option value={selVertical}>{selVertical} (not on this domain&apos;s roster)</option>
+              <option value={selVertical}>{laneDisplayName(selVertical)} (not on this domain&apos;s roster)</option>
             )}
           </select>
         </label>
@@ -2196,7 +2269,10 @@ export const DripJourneyCanvas: React.FC<{
         )}
 
         <button type="button" style={{ ...btnStyle, marginLeft: 'auto' }}
-          onClick={() => { overview.reload(); ledger.reload(); roster.reload(); journey.reload(); stats.reload(); throttle.reload(); }}>
+          onClick={() => {
+            overview.reload(); ledger.reload(); roster.reload(); journey.reload();
+            snapshot.reload(); stats.reload(); throttle.reload(); supply.reload(); ingestion.reload();
+          }}>
           Refresh all
         </button>
       </div>
@@ -2217,8 +2293,21 @@ export const DripJourneyCanvas: React.FC<{
           background: alpha(colors.indigo500, '14'),
           border: `1px solid ${alpha(colors.indigo500, '44')}`,
           borderRadius: 6, padding: '7px 10px',
+          display: 'flex', alignItems: 'flex-start', gap: 10,
         }}>
-          {notice}
+          <span style={{ flex: 1 }}>{notice}</span>
+          <button
+            type="button"
+            title="Dismiss this notice"
+            aria-label="Dismiss notice"
+            onClick={() => setNotice(null)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px',
+              color: colors.textMuted, fontSize: 13, lineHeight: 1, flex: '0 0 auto',
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -2226,8 +2315,11 @@ export const DripJourneyCanvas: React.FC<{
       {brand && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
           <FilterChip label={`domain ${sendingDomain ?? brand}`} />
-          <FilterChip label={`drip ${allLanes ? 'ALL LANES' : (selVertical ?? '(none)')}`} />
-          <FilterChip label={`scoreboard ${daysAgoDenver(days - 1)} → ${denverToday()} · America/Denver`} />
+          <FilterChip label={`drip ${allLanes ? 'ALL LANES' : (selVertical ? laneDisplayName(selVertical) : '(none)')}`} />
+          {/* The history panel is hidden in All-lanes, so its range chip is too. */}
+          {!allLanes && (
+            <FilterChip label={`scoreboard ${daysAgoDenver(days - 1)} → ${denverToday()} · America/Denver`} />
+          )}
         </div>
       )}
 
@@ -2239,7 +2331,9 @@ export const DripJourneyCanvas: React.FC<{
           error={overview.error}
           reload={overview.reload}
           selectedVertical={selVertical}
-          onSelectLane={(v) => { setVertical(v); setShowRoster(false); }}
+          // null = clear the spotlight (clicking the already-spotlighted row)
+          // → back to the All-lanes overview, never an auto-reselected lane.
+          onSelectLane={(v) => { setVertical(v ?? ALL_LANES); setShowRoster(false); }}
           onOpenIngest={() => setIngestOpen(true)}
           onOnboardLane={onNavigate ? () => onNavigate('drip-lane-onboarding') : undefined}
           onNotice={notify}
@@ -2263,8 +2357,12 @@ export const DripJourneyCanvas: React.FC<{
           label="the journey"
           res={journey}
           isEmpty={!j || (j.touches ?? []).length === 0}
-          emptyTitle="This drip has no ladder built"
-          emptyHint="The server returned a journey with zero touches — never built, as opposed to built-and-empty. Check the vertical's touch copy in the lane content panel."
+          emptyTitle={laneNotOnDomainRoster
+            ? `${sendingDomain ?? brand ?? 'This domain'} is not on this drip's roster`
+            : 'This drip has no ladder built'}
+          emptyHint={laneNotOnDomainRoster
+            ? 'The spotlighted lane does not include this sending domain, so there is no ladder to draw here — that is a roster fact, not a missing build. Pick a domain from this lane\'s roster in the Sending domain selector (the lane\'s membership is listed in the Roster panel below).'
+            : "The server returned a journey with zero touches — never built, as opposed to built-and-empty. Check the vertical's touch copy in the lane content panel."}
         >
           {j && (
             <>
@@ -2988,7 +3086,9 @@ export const DripJourneyCanvas: React.FC<{
       {/* ── 3. PLAN AHEAD — the quota levers ──────────────────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
-          title="Quota levers — per-ISP caps for this drip"
+          title={allLanes
+            ? 'Quota levers — all feeds on this domain'
+            : 'Quota levers — per-ISP caps for this drip'}
           icon={faSlidersH}
           right={throttle.data ? <span style={{ fontSize: 11, color: colors.textFaint }}>as of {shortTime(throttle.data.as_of)}</span> : undefined}
         />
@@ -3002,14 +3102,18 @@ export const DripJourneyCanvas: React.FC<{
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5, marginBottom: 8 }}>
             AVAILABLE DATA — {(sendingDomain ?? brand ?? 'this domain').toUpperCase()}
-            {vertical ? ` · ${vertical}` : ''}
+            {selVertical ? ` · ${selVertical}` : ' · all feeds on this domain'}
           </div>
           <AsyncPanel
             label="the live supply queue"
             res={supply}
             isEmpty={supplyFeeds.length === 0}
-            emptyTitle={supply.data ? 'No feed on this domain belongs to this drip' : 'No supply data'}
-            emptyHint="The supply read succeeded but returned no feed whose vertical matches the selected drip. That is a routing fact — this domain has no dataset feeding this drip — not an empty queue."
+            emptyTitle={supply.data
+              ? (allLanes ? 'No feed delivers to this domain' : 'No feed on this domain belongs to this drip')
+              : 'No supply data'}
+            emptyHint={allLanes
+              ? 'The supply read succeeded but returned no feeds at all for this sending domain. That is a routing fact — no dataset delivers to this domain — not an empty queue.'
+              : 'The supply read succeeded but returned no feed whose vertical matches the selected drip. That is a routing fact — this domain has no dataset feeding this drip — not an empty queue.'}
           >
             <div style={{ ...cardGrid(160), marginBottom: 12 }}>
               <Stat
@@ -3057,7 +3161,7 @@ export const DripJourneyCanvas: React.FC<{
                       <th style={numTh} title="Claimable records sitting in the queue for this ISP right now, summed across this drip's feeds.">Ready (in queue)</th>
                       <th style={numTh} title="Share of this drip's total ready supply.">% of ready</th>
                       <th style={numTh} title="Today's remaining introduction allowance for this (sending domain × ISP) from the ledger above. '—' means no ledger row: UNGOVERNED by that overlay, not capped at 0.">Ledger headroom</th>
-                      <th style={thStyle} title="What actually binds this ISP first — the smaller of supply and permission.">Binding constraint</th>
+                      <th style={thStyle} title="What actually binds this ISP first — the tightest of supply, ledger permission, and the feed throttle daily caps below.">Binding constraint</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3067,10 +3171,22 @@ export const DripJourneyCanvas: React.FC<{
                         ? Math.max(0, led.daily_budget - led.introduced_today)
                         : null;
                       const stopped = !!led && (led.hold || led.daily_budget <= 0);
+                      // Throttle posture for this ISP across the feeds in
+                      // scope (already fetched — no extra request): an
+                      // override daily_cap of 0 is a hard suppression; a
+                      // positive one can be the tightest bound.
+                      const thr = throttleCapsByISP.get(row.isp) ?? null;
+                      const thrCap = thr?.minPositive ?? null;
                       let binding: React.ReactNode = <span style={{ color: colors.textFaint }}>unknown</span>;
                       if (stopped) binding = <span style={{ color: colors.dangerText, fontWeight: 700 }}>ledger STOP</span>;
-                      else if (!led) binding = <span style={{ color: colors.textMuted }}>supply (ungoverned)</span>;
+                      else if (thr?.zero) binding = <span style={{ color: colors.dangerText, fontWeight: 700 }} title="A feed throttle override sets daily_cap 0 for this ISP — hard-suppressed regardless of supply or ledger headroom.">throttle 0 (hard-suppressed)</span>;
+                      else if (!led) {
+                        binding = thrCap != null && thrCap < row.ready
+                          ? <span style={{ color: colors.warningText }} title={`Feed throttle daily cap ${num(thrCap)} is below the ready supply ${num(row.ready)} (no ledger row for this ISP).`}>throttle cap</span>
+                          : <span style={{ color: colors.textMuted }}>supply (ungoverned)</span>;
+                      }
                       else if (headroom == null) binding = <span style={{ color: colors.textFaint }}>counter not in yet</span>;
+                      else if (thrCap != null && thrCap < row.ready && thrCap < headroom) binding = <span style={{ color: colors.warningText }} title={`Feed throttle daily cap ${num(thrCap)} is tighter than both the ready supply ${num(row.ready)} and the ledger headroom ${num(headroom)}.`}>throttle cap</span>;
                       else if (headroom < row.ready) binding = <span style={{ color: colors.warningText }}>ledger cap</span>;
                       else binding = <span style={{ color: colors.textMuted }}>supply</span>;
                       return (
@@ -3214,11 +3330,19 @@ export const DripJourneyCanvas: React.FC<{
           label="the throttle configuration"
           res={throttle}
           isEmpty={feeds.length === 0}
-          emptyTitle={throttle.data ? 'No feed on this domain belongs to this drip' : 'No throttle data'}
-          emptyHint="The throttle read succeeded but returned no feed whose vertical matches the selected drip."
+          emptyTitle={throttle.data
+            ? (allLanes ? 'No feed delivers to this domain' : 'No feed on this domain belongs to this drip')
+            : 'No throttle data'}
+          emptyHint={allLanes
+            ? 'The throttle read succeeded but returned no feeds for this sending domain — there is nothing to throttle.'
+            : 'The throttle read succeeded but returned no feed whose vertical matches the selected drip.'}
         >
           {throttle.data && (
             <>
+              {/* Gate default differs from the ledger's on purpose: the roster
+                  and throttle endpoints ALWAYS send write_enabled, so an absent
+                  flag means an old server and the panel fails READ-ONLY. The
+                  ledger endpoint never sends it, so there absent = writable. */}
               {!throttle.data.write_enabled && (
                 <ReadOnlyBanner
                   envVar={throttle.data.write_flag_env}
@@ -3228,6 +3352,10 @@ export const DripJourneyCanvas: React.FC<{
               )}
               <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }} title={throttle.data.cap_systems_note}>
                 {throttle.data.cap_systems_note}
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>
+                The introduction ledger (above) and these feed throttle caps are separate systems —
+                the orchestrator enforces BOTH; the tighter one binds.
               </div>
               {feeds.map((f) => (
                 <div
@@ -3309,7 +3437,7 @@ export const DripJourneyCanvas: React.FC<{
                             <td style={numTd}>{ov.max_per_wave > 0 ? num(ov.max_per_wave) : <span style={{ color: colors.textFaint }}>default</span>}</td>
                             <td style={numTd}>
                               {ov.daily_cap == null
-                                ? <span style={{ color: colors.textFaint }} title="NULL — this ISP rides the global per-brand default.">default</span>
+                                ? <span style={{ color: colors.textFaint }} title="NULL — this ISP rides the compiled default: the process-wide DefaultNewRecordDailyISPCaps value from the orchestrator config (env-overridable), separate from the Introduction ledger's per-brand daily budget above.">compiled default</span>
                                 : ov.daily_cap === 0
                                   ? <span style={{ color: colors.dangerText, fontWeight: 700 }} title="0 = hard-suppressed for this lane.">0 (suppressed)</span>
                                   : num(ov.daily_cap)}
@@ -3339,7 +3467,9 @@ export const DripJourneyCanvas: React.FC<{
                       replacementNote={throttle.data.replacement_note}
                       zeroCapNote={throttle.data.zero_cap_note}
                       onClose={() => setEditingFeed(null)}
-                      onSaved={() => { setEditingFeed(null); throttle.reload(); }}
+                      // A throttle write moves the supply panel's binding
+                      // verdict and the dashboard too — reload all three.
+                      onSaved={() => { setEditingFeed(null); throttle.reload(); supply.reload(); overview.reload(); }}
                       onNotice={notify}
                     />
                   )}
@@ -3661,18 +3791,24 @@ export const DripJourneyCanvas: React.FC<{
       </Panel>
       )}
 
-      {/* ── STEP SHELF — opened by clicking a TouchNode on the canvas ─────── */}
-      {openTouch != null && j && brand && selVertical && (() => {
-        const t = (j.touches ?? []).find((x) => x.touch === openTouch)
+      {/* ── STEP SHELF — opened by clicking a TouchNode on the canvas ───────
+          Gated on (j ?? lastJourneyRef.current): useResource nulls data during
+          a refetch, and gating on j alone unmounted the shelf on EVERY
+          journey.reload() — including the shelf's own saves — dropping its
+          edit state mid-flow. The cached payload keeps it mounted; fresh data
+          replaces it when the reload lands. */}
+      {openTouch != null && brand && selVertical && (j ?? lastJourneyRef.current) && (() => {
+        const jj = (j ?? lastJourneyRef.current)!;
+        const t = (jj.touches ?? []).find((x) => x.touch === openTouch)
           ?? {
             touch: openTouch, subject_line: '', preheader: '', from_name: '',
             creative_filename: '', active: false, configured: false,
           };
-        const edgeOut = (j.edges ?? []).find((e) => e.from_touch === openTouch) ?? null;
-        const edgeIn = (j.edges ?? []).find((e) => e.to_touch === openTouch) ?? null;
+        const edgeOut = (jj.edges ?? []).find((e) => e.from_touch === openTouch) ?? null;
+        const edgeIn = (jj.edges ?? []).find((e) => e.to_touch === openTouch) ?? null;
         return (
           <SideShelf
-            title={`Touch ${openTouch} — ${sendingDomain ?? brand} · ${selVertical}`}
+            title={`Touch ${openTouch} — ${sendingDomain ?? brand} · ${laneDisplayName(selVertical)}`}
             width={620}
             onClose={() => setOpenTouch(null)}
           >
@@ -3680,11 +3816,12 @@ export const DripJourneyCanvas: React.FC<{
               brand={brand}
               sendingDomain={sendingDomain}
               vertical={selVertical}
+              laneDisplay={laneDisplayName(selVertical)}
               touch={t}
               edgeOut={edgeOut}
               edgeIn={edgeIn}
-              delayHours={j.delay_hours}
-              dueNow={j.totals?.due_now ?? null}
+              delayHours={jj.delay_hours}
+              dueNow={jj.totals?.due_now ?? null}
               onChanged={journey.reload}
               onNotice={notify}
             />
@@ -3701,6 +3838,9 @@ export const DripJourneyCanvas: React.FC<{
                 dataset_id: f.dataset_id, name: f.name, vertical: f.vertical,
               }))}
               onNotice={notify}
+              // A committed file changes the queues these panels report.
+              onCommitted={() => { supply.reload(); ingestion.reload(); overview.reload(); }}
+              onClose={() => setIngestOpen(false)}
             />
           </div>
         </SideShelf>
