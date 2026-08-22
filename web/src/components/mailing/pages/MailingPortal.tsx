@@ -2185,7 +2185,7 @@ const CampaignCenterSection: React.FC<{
         ) : subTab === 'drip-lane-onboarding' ? (
           <DripLaneOnboarding />
         ) : subTab === 'drip-journey' ? (
-          <DripJourneyCanvas />
+          <DripJourneyCanvas onNavigate={onSubTabChange} />
         ) : subTab === 'scheduling-copilot' ? (
           <CampaignCopilotPanel isOpen inline onClose={() => onSubTabChange('campaign-center')} />
         ) : subTab === 'schedule' ? (

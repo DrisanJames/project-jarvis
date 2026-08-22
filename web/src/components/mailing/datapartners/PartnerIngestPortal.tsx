@@ -3,8 +3,10 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faPlus, faSync, faSpinner, faExclamationTriangle, faPause, faPlay,
   faSeedling, faFingerprint, faRoute, faChartBar, faClipboardList, faGaugeHigh,
+  faKey,
 } from '@fortawesome/free-solid-svg-icons';
 import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
+import { DatasetKeysPanel } from './DatasetKeysPanel';
 import { BatchInspector } from './BatchInspector';
 import { DripStateCard } from './DripStateCard';
 import { DripPerformancePanel } from './DripPerformancePanel';
@@ -106,6 +108,7 @@ export const PartnerIngestPortal: React.FC = () => {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [inspectingBatchId, setInspectingBatchId] = useState<string | null>(null);
   const [distributionDataset, setDistributionDataset] = useState<{ id: string; name: string } | null>(null);
+  const [keysDataset, setKeysDataset] = useState<{ id: string; name: string } | null>(null);
   const [reportDatasetId, setReportDatasetId] = useState<string>('');
   const [showRawPosts, setShowRawPosts] = useState(false);
 
@@ -344,6 +347,13 @@ export const PartnerIngestPortal: React.FC = () => {
                       >
                         <FontAwesomeIcon icon={faChartBar} /> Providers
                       </button>
+                      <button
+                        onClick={() => setKeysDataset(k => (k?.id === d.id ? null : { id: d.id, name: `${d.partner_name} / ${d.name}` }))}
+                        style={ghostBtn}
+                        title="API keys for this dataset — list, rotate, revoke"
+                      >
+                        <FontAwesomeIcon icon={faKey} /> Keys
+                      </button>
                       {d.paused_emergency ? (
                         <button onClick={() => handleResumeDataset(d.id)} style={ghostBtn}>
                           <FontAwesomeIcon icon={faPlay} /> Resume
@@ -359,6 +369,14 @@ export const PartnerIngestPortal: React.FC = () => {
               ))}
             </tbody>
           </table>
+
+          {keysDataset && (
+            <DatasetKeysPanel
+              datasetId={keysDataset.id}
+              datasetName={keysDataset.name}
+              onClose={() => setKeysDataset(null)}
+            />
+          )}
         </div>
       )}
 

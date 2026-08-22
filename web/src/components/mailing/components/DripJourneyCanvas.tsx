@@ -50,8 +50,16 @@ import {
   buildThrottleDiff, buildThrottlePayload, validateThrottleRows, zeroDailyCaps,
   type ThrottleRow,
 } from './throttleDiff';
+import { SideShelf } from './shared/SideShelf';
+import { DripOverviewPanel, LaneRename, type OverviewResponse } from './DripOverviewPanel';
+import { DripStepShelf } from './DripStepShelf';
+import { DripCsvUpload } from './DripCsvUpload';
 
-const PAGE_VERSION = 'drip-journey-canvas v1 — 2026-08-19';
+const PAGE_VERSION = 'drip-journey-canvas v2 — 2026-08-22';
+
+// Sentinel for the drip selector's "All lanes" option: shows the global
+// overview and blanks the lane-scoped panels (a journey needs one vertical).
+const ALL_LANES = '__all_lanes__';
 
 // ── API shapes ──────────────────────────────────────────────────────────────
 // Property Ledger read (existing, property_ledger.go). This ONE response carries
@@ -144,6 +152,11 @@ interface LedgerResponse {
     actor: string;
     note: string;
   };
+  // Optional write gates for the ledger's budget/hold/proposal writes. Absent
+  // = writable (the Property Ledger screen's standing behavior); an explicit
+  // false renders the ReadOnlyBanner and keeps the panel read-only.
+  write_enabled?: boolean;
+  write_flag_env?: string;
 }
 
 // Roster (…/property-ledger/roster) — which verticals (drips) a brand rides.
@@ -179,7 +192,7 @@ interface JourneyOffer {
   resolvable: boolean;
   problem?: string;
 }
-interface JourneyTouch {
+export interface JourneyTouch {
   touch: number;
   subject_line: string;
   preheader: string;
@@ -198,6 +211,9 @@ interface JourneyTouch {
   offer_source?: string;       // 'dataset' | 'touch-row'
   offer_dataset?: string;
   offer?: JourneyOffer;
+  // 7-day per-touch performance (NEW server field — optional; an absent block
+  // renders as unknown in the step shelf, never as zero).
+  perf_7d?: { sent: number; delivered: number; opened: number; clicked: number };
 }
 
 // SEND ACTIVITY (operator 2026-08-21: "very challenging to infer if mail is
@@ -239,7 +255,7 @@ interface JourneyEdgeISP {
   isp: string;
   waiting: number;
 }
-interface JourneyEdge {
+export interface JourneyEdge {
   from_touch: number;
   to_touch: number;
   waiting: number;
@@ -816,7 +832,9 @@ const TouchContentLine: React.FC<{ touch: JourneyTouch }> = ({ touch }) => {
   );
 };
 
-const TouchNode: React.FC<{ touch: JourneyTouch; x: number; y: number }> = ({ touch, x, y }) => {
+const TouchNode: React.FC<{
+  touch: JourneyTouch; x: number; y: number; onOpen?: () => void;
+}> = ({ touch, x, y, onOpen }) => {
   const configured = touch.configured;
   // A touch that is CONFIGURED but does not RESOLVE is the worst state on this
   // screen: it looks live and will not send. Make the whole node alarming.
@@ -826,9 +844,13 @@ const TouchNode: React.FC<{ touch: JourneyTouch; x: number; y: number }> = ({ to
     : !configured ? colors.textFaint : touch.active ? colors.indigo400 : colors.warning;
   return (
     <div
+      onClick={onOpen}
+      role={onOpen ? 'button' : undefined}
+      title={onOpen ? `Open touch ${touch.touch} — config, edit actions and step metrics` : undefined}
       style={{
         position: 'absolute', left: x, top: y, width: NODE_W, height: NODE_H,
         boxSizing: 'border-box',
+        cursor: onOpen ? 'pointer' : undefined,
         background: configured ? colors.panelBg : 'rgba(15,30,60,0.16)',
         border: broken
           ? `1px solid ${alpha(colors.danger, '66')}`
@@ -922,7 +944,8 @@ const JourneyCanvas: React.FC<{
   journey: JourneyResponse;
   openEdge: number | null;
   onToggleEdge: (fromTouch: number) => void;
-}> = ({ journey, openEdge, onToggleEdge }) => {
+  onOpenTouch: (touch: number) => void;
+}> = ({ journey, openEdge, onToggleEdge, onOpenTouch }) => {
   // The ladder is max_touches rungs long. A rung the server did not describe is
   // rendered as an explicit "not configured" node rather than being omitted —
   // the operator must see WHERE the ladder retires.
@@ -1000,7 +1023,8 @@ const JourneyCanvas: React.FC<{
 
         <div style={{ position: 'absolute', left: 0, top: 0, width, height }}>
           {rungs.map((t, i) => (
-            <TouchNode key={t.touch} touch={t} x={PAD_X + i * STEP} y={PAD_TOP} />
+            <TouchNode key={t.touch} touch={t} x={PAD_X + i * STEP} y={PAD_TOP}
+              onOpen={() => onOpenTouch(t.touch)} />
           ))}
           {rungs.slice(0, -1).map((t, i) => (
             <DelayDiamond
@@ -1527,11 +1551,18 @@ interface MembershipState {
 
 // ── Screen ──────────────────────────────────────────────────────────────────
 
-export const DripJourneyCanvas: React.FC = () => {
+export const DripJourneyCanvas: React.FC<{
+  // Optional tab-navigation hook threaded from MailingPortal's
+  // CampaignCenterSection (onSubTabChange). Absent = the onboarding button is
+  // not rendered (this component stays mountable standalone).
+  onNavigate?: (tab: 'drip-lane-onboarding') => void;
+}> = ({ onNavigate }) => {
   const toast = useToast();
   const [brand, setBrand] = useState<string | null>(null);
   const [vertical, setVertical] = useState<string | null>(null);
   const [openEdge, setOpenEdge] = useState<number | null>(null);
+  const [openTouch, setOpenTouch] = useState<number | null>(null);
+  const [ingestOpen, setIngestOpen] = useState(false);
   const [days, setDays] = useState(7);
   // History scope. 'domain' passes brand= to the stats endpoint (server-side —
   // the response has no brand column so it cannot be filtered client-side).
@@ -1551,11 +1582,23 @@ export const DripJourneyCanvas: React.FC = () => {
     toast.addToast({ type: 'info', title: 'Drip journey', message: s });
   }, [toast]);
 
+  // 0. GLOBAL OVERVIEW — the estate-wide rollup for the dashboard panel.
+  // NEW endpoint; a 404 degrades to the panel's error state and blocks nothing.
+  const overview = useResource<OverviewResponse>(
+    'overview',
+    (signal) => getJSON<OverviewResponse>('/api/mailing/pmta-campaign/property-ledger/overview', signal),
+  );
+
   // 1. Brand ⇄ sending-domain pairs, from the existing Property Ledger read.
   const ledger = useResource<LedgerResponse>(
     'ledger',
     (signal) => getJSON<LedgerResponse>('/api/mailing/pmta-campaign/property-ledger', signal),
   );
+
+  // The lane the panels are scoped to. ALL_LANES is a selector state, not a
+  // vertical — every lane-scoped fetch keys off selVertical (null in that mode).
+  const allLanes = vertical === ALL_LANES;
+  const selVertical = allLanes ? null : vertical;
 
   const domains = useMemo(() => {
     const m = new Map<string, string>(); // brand -> sending_domain
@@ -1627,24 +1670,26 @@ export const DripJourneyCanvas: React.FC = () => {
     [roster.data],
   );
 
-  // Auto-select when a domain rides exactly one drip (the dropdown still shows).
+  // Auto-select ONLY when nothing is chosen. An explicit choice — including
+  // ALL_LANES and a lane spotlighted from the overview that this domain's
+  // roster does not carry — is never clobbered by a roster reload.
   useEffect(() => {
-    if (drips.length === 0) { setVertical(null); return; }
-    if (vertical && drips.some((d) => d.vertical === vertical)) return;
+    if (vertical !== null) return;
+    if (drips.length === 0) return;
     const active = drips.filter((d) => d.active);
     setVertical((active.length > 0 ? active[0] : drips[0]).vertical);
   }, [drips, vertical]);
 
   // 3. The journey.
-  const journeyKey = brand && vertical ? `journey:${brand}:${vertical}` : null;
+  const journeyKey = brand && selVertical ? `journey:${brand}:${selVertical}` : null;
   const journey = useResource<JourneyResponse>(
     journeyKey,
     (signal) => getJSON<JourneyResponse>(
-      `/api/mailing/pmta-campaign/property-ledger/journey?brand=${encodeURIComponent(brand ?? '')}&vertical=${encodeURIComponent(vertical ?? '')}`,
+      `/api/mailing/pmta-campaign/property-ledger/journey?brand=${encodeURIComponent(brand ?? '')}&vertical=${encodeURIComponent(selVertical ?? '')}`,
       signal,
     ),
   );
-  useEffect(() => { setOpenEdge(null); }, [journeyKey]);
+  useEffect(() => { setOpenEdge(null); setOpenTouch(null); }, [journeyKey]);
 
   // 4a. TODAY — the lake snapshot. Its own resource, so the slow Postgres
   // /stats read below can never delay or blank this panel. `brand` is optional
@@ -1653,9 +1698,9 @@ export const DripJourneyCanvas: React.FC = () => {
   // whole drip. The rollup is always the SERVER's — never recomputed here,
   // because its nullable-engagement accumulation is part of the contract.
   const snapshot = useResource<SnapshotResponse>(
-    vertical ? `snapshot:${vertical}:${snapScope === 'domain' ? brand ?? '' : '*'}` : null,
+    selVertical ? `snapshot:${selVertical}:${snapScope === 'domain' ? brand ?? '' : '*'}` : null,
     (signal) => getJSON<SnapshotResponse>(
-      `/api/mailing/pmta-campaign/property-ledger/snapshot?vertical=${encodeURIComponent(vertical ?? '')}`
+      `/api/mailing/pmta-campaign/property-ledger/snapshot?vertical=${encodeURIComponent(selVertical ?? '')}`
       + (snapScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
       signal,
     ),
@@ -1669,9 +1714,9 @@ export const DripJourneyCanvas: React.FC = () => {
   // Default is this domain: the unscoped whole-drip read is the "dump" the operator
   // could not use, and is now an explicit opt-in.
   const stats = useResource<StatsResponse>(
-    vertical ? `stats:${vertical}:${days}:${statsScope === 'domain' ? (brand ?? '') : 'all'}` : null,
+    selVertical ? `stats:${selVertical}:${days}:${statsScope === 'domain' ? (brand ?? '') : 'all'}` : null,
     (signal) => getJSON<StatsResponse>(
-      `/api/mailing/pmta-campaign/property-ledger/stats?vertical=${encodeURIComponent(vertical ?? '')}&days=${days}`
+      `/api/mailing/pmta-campaign/property-ledger/stats?vertical=${encodeURIComponent(selVertical ?? '')}&days=${days}`
       + (statsScope === 'domain' && brand ? `&brand=${encodeURIComponent(brand)}` : ''),
       signal,
     ),
@@ -1713,8 +1758,8 @@ export const DripJourneyCanvas: React.FC = () => {
   );
 
   const supplyFeeds = useMemo(
-    () => (supply.data?.feeds ?? []).filter((f) => !vertical || f.vertical === vertical),
-    [supply.data, vertical],
+    () => (supply.data?.feeds ?? []).filter((f) => !selVertical || f.vertical === selVertical),
+    [supply.data, selVertical],
   );
 
   // Domain-level roll-up of the queue, plus the per-ISP ready split summed
@@ -1742,8 +1787,8 @@ export const DripJourneyCanvas: React.FC = () => {
   }, [supplyFeeds]);
 
   const feeds = useMemo(
-    () => (throttle.data?.feeds ?? []).filter((f) => !vertical || f.vertical === vertical),
-    [throttle.data, vertical],
+    () => (throttle.data?.feeds ?? []).filter((f) => !selVertical || f.vertical === selVertical),
+    [throttle.data, selVertical],
   );
 
   // 6. Membership across the roster (lazy — only when the panel is opened).
@@ -1752,7 +1797,7 @@ export const DripJourneyCanvas: React.FC = () => {
   });
 
   const loadMembership = useCallback(async () => {
-    if (!vertical || domains.length === 0) return;
+    if (!selVertical || domains.length === 0) return;
     setMembership({ loading: true, members: [], failed: [], checked: 0, error: null });
     const results = await Promise.allSettled(
       domains.map(async (d) => {
@@ -1768,7 +1813,7 @@ export const DripJourneyCanvas: React.FC = () => {
     const failed: string[] = [];
     results.forEach((r, i) => {
       if (r.status === 'fulfilled') {
-        const row = r.value.rows.find((x) => x.vertical === vertical);
+        const row = r.value.rows.find((x) => x.vertical === selVertical);
         if (row) members.push(row);
       } else {
         failed.push(domains[i].code);
@@ -1781,7 +1826,7 @@ export const DripJourneyCanvas: React.FC = () => {
       checked: domains.length,
       error: failed.length === domains.length ? 'every roster read failed' : null,
     });
-  }, [vertical, domains]);
+  }, [selVertical, domains]);
 
   useEffect(() => {
     if (!showRoster) return;
@@ -1811,6 +1856,119 @@ export const DripJourneyCanvas: React.FC = () => {
       notify(`${label} failed: ${e instanceof Error ? e.message : 'network error'}`);
     }
   };
+
+  // ── Introduction-ledger WRITES (ported from PropertyLedgerView) ───────────
+  // Same endpoints (POST …/property-ledger/update | approve-proposal |
+  // approve-proposals | global-hold), CAS via integer lock_version — a 409
+  // means the row changed underneath; reload fresh values and say so. Gated by
+  // the optional server write flags (absent = writable, matching the retired
+  // Property Ledger screen's standing behavior).
+  const ledgerWritable = ledger.data?.write_enabled !== false;
+  const [budgetEdit, setBudgetEdit] = useState<Record<string, string>>({});
+  const [ledgerBusy, setLedgerBusy] = useState<Record<string, boolean>>({});
+  const [ghBusy, setGhBusy] = useState(false);
+  const ledgerCellKey = (r: LedgerRow) => `${r.brand}|${r.isp}`;
+
+  const ledgerPost = async (
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<{ ok: boolean; status: number; json: Record<string, unknown> }> => {
+    const r = await apiFetch(`/api/mailing/pmta-campaign/property-ledger/${path}`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    let json: Record<string, unknown> = {};
+    try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON error body */ }
+    return { ok: r.ok, status: r.status, json };
+  };
+
+  const withLedgerBusy = async (key: string, fn: () => Promise<void>) => {
+    setLedgerBusy((b) => ({ ...b, [key]: true }));
+    try { await fn(); } finally { setLedgerBusy((b) => ({ ...b, [key]: false })); }
+  };
+
+  const handleLedger409 = (json: Record<string, unknown>) => {
+    notify(`Row changed underneath you (lock_version conflict) — reloaded fresh values. ${String(json.error ?? '')}`);
+    ledger.reload();
+  };
+
+  const saveBudget = (row: LedgerRow, value: number) =>
+    withLedgerBusy(ledgerCellKey(row), async () => {
+      const res = await ledgerPost('update', {
+        brand: row.brand, isp: row.isp, daily_budget: value, lock_version: row.lock_version,
+      });
+      if (res.status === 409) { handleLedger409(res.json); return; }
+      if (!res.ok) { notify(`Budget edit failed: ${String(res.json.error ?? res.status)}`); return; }
+      setBudgetEdit((s) => { const n = { ...s }; delete n[ledgerCellKey(row)]; return n; });
+      notify(`Budget for ${row.brand}/${row.isp} → ${value.toLocaleString()} (applies from tomorrow, Denver).`);
+      ledger.reload();
+    });
+
+  // Server-confirmed hold: busy until the 200 lands, then refetch — the UI
+  // never assumes the hold applied.
+  const toggleHold = (row: LedgerRow) =>
+    withLedgerBusy(ledgerCellKey(row), async () => {
+      const reason = window.prompt(
+        row.hold ? `Release hold on ${row.brand}/${row.isp} — reason:` : `Hold ${row.brand}/${row.isp} — reason:`);
+      if (!reason || !reason.trim()) return;
+      const res = await ledgerPost('update', {
+        brand: row.brand, isp: row.isp, hold: !row.hold, reason: reason.trim(), lock_version: row.lock_version,
+      });
+      if (res.status === 409) { handleLedger409(res.json); return; }
+      if (!res.ok) { notify(`Hold change failed: ${String(res.json.error ?? res.status)}`); return; }
+      notify(`${row.brand}/${row.isp} ${row.hold ? 'released' : 'HELD'} — server confirmed.`);
+      ledger.reload();
+    });
+
+  const approveProposal = (row: LedgerRow) =>
+    withLedgerBusy(ledgerCellKey(row), async () => {
+      if (!row.proposal) return;
+      const res = await ledgerPost('approve-proposal', { proposal_id: row.proposal.id });
+      if (res.status === 409) {
+        notify(`Proposal for ${row.brand}/${row.isp} was stale — superseded. ${String(res.json.error ?? '')}`);
+        ledger.reload();
+        return;
+      }
+      if (!res.ok) { notify(`Approve failed: ${String(res.json.error ?? res.status)}`); return; }
+      notify(`Proposal approved for ${row.brand}/${row.isp} (effective tomorrow, Denver).`);
+      ledger.reload();
+    });
+
+  const approveAllProposals = async () => {
+    const ids = ledgerRows.filter((r) => r.proposal).map((r) => r.proposal!.id);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Approve all ${ids.length} open proposal(s) on ${sendingDomain ?? brand}? Each applies from tomorrow (Denver).`)) return;
+    const res = await ledgerPost('approve-proposals', { proposal_ids: ids });
+    if (!res.ok) { notify(`Bulk approve failed: HTTP ${res.status}`); return; }
+    const results = (res.json.results ?? []) as Array<Record<string, unknown>>;
+    const failed = results.filter((x) => x.status_code !== 200);
+    notify(failed.length === 0
+      ? `All ${results.length} proposal(s) approved (effective tomorrow, Denver).`
+      : `${results.length - failed.length} approved, ${failed.length} failed/stale — see refreshed rows.`);
+    ledger.reload();
+  };
+
+  const toggleGlobalHold = async () => {
+    if (!ledger.data) return;
+    const enabling = !ledger.data.global_hold.value;
+    // Confirmation is deliberate: this zeroes EVERY drip intro cap at once.
+    if (!window.confirm(enabling
+      ? 'ENGAGE GLOBAL HOLD? Every drip-introduction cap goes to ZERO within one orchestrator tick.'
+      : 'Release the global hold? Per-cell budgets resume within one orchestrator tick.')) return;
+    const reason = window.prompt(`${enabling ? 'Global hold' : 'Release global hold'} — reason:`);
+    if (!reason || !reason.trim()) return;
+    setGhBusy(true);
+    try {
+      const res = await ledgerPost('global-hold', {
+        value: enabling, reason: reason.trim(), lock_version: ledger.data.global_hold.lock_version,
+      });
+      if (res.status === 409) { handleLedger409(res.json); return; }
+      if (!res.ok) { notify(`Global hold change failed: ${String(res.json.error ?? res.status)}`); return; }
+      notify(enabling ? 'GLOBAL HOLD ENGAGED — server confirmed.' : 'Global hold released — server confirmed.');
+      ledger.reload();
+    } finally { setGhBusy(false); }
+  };
+
+  const proposalCount = ledgerRows.filter((r) => r.proposal).length;
 
   // ── Derived headline numbers ──────────────────────────────────────────────
   const j = journey.data;
@@ -2000,25 +2158,45 @@ export const DripJourneyCanvas: React.FC = () => {
         </label>
 
         <label style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6 }}
-          title="Every drip (vertical) this sending domain is assigned to. Shown even when there is only one, so the operator can see there is only one.">
+          title="Every drip (vertical) this sending domain is assigned to, plus the estate-wide overview. Shown even when there is only one, so the operator can see there is only one.">
           Drip
           <select
             style={selectStyle}
             value={vertical ?? ''}
-            disabled={roster.loading || !!roster.error || drips.length === 0}
+            disabled={roster.loading || !!roster.error}
             onChange={(e) => setVertical(e.target.value || null)}
           >
-            {drips.length === 0 && <option value="">—</option>}
-            {drips.map((d) => (
-              <option key={d.vertical} value={d.vertical}>
-                {d.vertical}{d.active ? '' : ' (inactive)'} · weight {d.weight}
-              </option>
-            ))}
+            {vertical === null && <option value="">—</option>}
+            <option value={ALL_LANES}>All lanes (overview)</option>
+            {drips.map((d) => {
+              const friendly = overview.data?.by_lane?.find((l) => l.vertical === d.vertical)?.display_name;
+              return (
+                <option key={d.vertical} value={d.vertical}>
+                  {friendly ? `${friendly} (${d.vertical})` : d.vertical}{d.active ? '' : ' (inactive)'} · weight {d.weight}
+                </option>
+              );
+            })}
+            {/* A lane spotlighted from the overview that this domain's roster
+                does not carry still needs a visible selected option. */}
+            {selVertical && !drips.some((d) => d.vertical === selVertical) && (
+              <option value={selVertical}>{selVertical} (not on this domain&apos;s roster)</option>
+            )}
           </select>
         </label>
 
+        {/* Inline rename for the spotlighted lane — same PUT lane-label write
+            as the overview table's pencil. */}
+        {selVertical && (
+          <LaneRename
+            vertical={selVertical}
+            currentName={overview.data?.by_lane?.find((l) => l.vertical === selVertical)?.display_name || ''}
+            onSaved={overview.reload}
+            onNotice={notify}
+          />
+        )}
+
         <button type="button" style={{ ...btnStyle, marginLeft: 'auto' }}
-          onClick={() => { ledger.reload(); roster.reload(); journey.reload(); stats.reload(); throttle.reload(); }}>
+          onClick={() => { overview.reload(); ledger.reload(); roster.reload(); journey.reload(); stats.reload(); throttle.reload(); }}>
           Refresh all
         </button>
       </div>
@@ -2048,10 +2226,25 @@ export const DripJourneyCanvas: React.FC = () => {
       {brand && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
           <FilterChip label={`domain ${sendingDomain ?? brand}`} />
-          <FilterChip label={`drip ${vertical ?? '(none)'}`} />
+          <FilterChip label={`drip ${allLanes ? 'ALL LANES' : (selVertical ?? '(none)')}`} />
           <FilterChip label={`scoreboard ${daysAgoDenver(days - 1)} → ${denverToday()} · America/Denver`} />
         </div>
       )}
+
+      {/* ── 0. GLOBAL DASHBOARD — every lane, before any lane scoping ─────── */}
+      <Panel style={{ marginBottom: 14 }}>
+        <DripOverviewPanel
+          data={overview.data}
+          loading={overview.loading}
+          error={overview.error}
+          reload={overview.reload}
+          selectedVertical={selVertical}
+          onSelectLane={(v) => { setVertical(v); setShowRoster(false); }}
+          onOpenIngest={() => setIngestOpen(true)}
+          onOnboardLane={onNavigate ? () => onNavigate('drip-lane-onboarding') : undefined}
+          onNotice={notify}
+        />
+      </Panel>
 
       {/* ── 1. IN MOTION — the journey canvas ─────────────────────────────── */}
       <Panel style={{ marginBottom: 14 }}>
@@ -2060,6 +2253,12 @@ export const DripJourneyCanvas: React.FC = () => {
           icon={faDiagramProject}
           right={j?.generated_at ? <span style={{ fontSize: 11, color: colors.textFaint }}>as of {shortTime(j.generated_at)}</span> : undefined}
         />
+        {allLanes ? (
+          <EmptyState
+            title="Select a lane to draw its journey"
+            hint="The journey canvas is scoped to ONE drip. Click a lane on the dashboard above, or pick one in the drip selector — the overview never draws a merged ladder."
+          />
+        ) : (
         <AsyncPanel
           label="the journey"
           res={journey}
@@ -2114,6 +2313,7 @@ export const DripJourneyCanvas: React.FC = () => {
                 journey={j}
                 openEdge={openEdge}
                 onToggleEdge={(t) => setOpenEdge((cur) => (cur === t ? null : t))}
+                onOpenTouch={(t) => setOpenTouch(t)}
               />
 
               {openEdgeRow && (
@@ -2166,9 +2366,11 @@ export const DripJourneyCanvas: React.FC = () => {
             </>
           )}
         </AsyncPanel>
+        )}
       </Panel>
 
       {/* ── 2. TODAY — the lake snapshot (answers in ~0s) ─────────────────── */}
+      {!allLanes && (
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
           title="Today so far — lake snapshot"
@@ -2455,6 +2657,7 @@ export const DripJourneyCanvas: React.FC = () => {
           )}
         </AsyncPanel>
       </Panel>
+      )}
 
       {/* ── 2b. THE ENFORCED CAP — the introduction ledger ────────────────── */}
       {/*
@@ -2463,8 +2666,10 @@ export const DripJourneyCanvas: React.FC = () => {
         domain × ISP), how many NEW-RECORD introductions this domain may absorb
         today, whether the lane is held, and how much of the cap is already
         spent — plus the SES VDM lane scoreboard that justifies moving it.
-        Read-only here: every budget/hold/proposal write is a LIVE WRITE and
-        stays on the Property Ledger screen behind its own confirmations.
+        WRITES live here now (the Property Ledger tab is retired): budget edit
+        (applies tomorrow, Denver), hold toggle (immediate, server-confirmed),
+        proposal approve, and the global emergency hold — all CAS-guarded by
+        lock_version with 409 → reload-and-say-so.
       */}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
@@ -2529,6 +2734,38 @@ export const DripJourneyCanvas: React.FC = () => {
             </div>
           )}
 
+          {!ledgerWritable && (
+            <ReadOnlyBanner envVar={ledger.data?.write_flag_env} what="Introduction-ledger editing" />
+          )}
+
+          {ledgerWritable && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 11, color: colors.warningText, fontWeight: 600 }}>
+                Budget edits apply from tomorrow (Denver). Hold is immediate.
+              </span>
+              {proposalCount > 0 && (
+                <button type="button" style={smallBtn} onClick={() => void approveAllProposals()}>
+                  Approve all {proposalCount} proposal(s)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => void toggleGlobalHold()}
+                disabled={ghBusy || !ledger.data}
+                title="Fail-closed emergency stop: zeroes EVERY drip-introduction cap estate-wide within one orchestrator tick. CAS-guarded by the flag's lock_version."
+                style={{
+                  marginLeft: 'auto',
+                  background: ledger.data?.global_hold?.value ? alpha(colors.success, '14') : 'rgba(239,68,68,0.15)',
+                  color: ledger.data?.global_hold?.value ? colors.successText : colors.dangerText,
+                  border: `1px solid ${ledger.data?.global_hold?.value ? alpha(colors.success, '44') : 'rgba(239,68,68,0.40)'}`,
+                  borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                }}
+              >
+                {ghBusy ? 'Confirming…' : ledger.data?.global_hold?.value ? 'RELEASE GLOBAL HOLD' : 'GLOBAL HOLD'}
+              </button>
+            </div>
+          )}
+
           <div style={{ ...cardGrid(170), marginBottom: 12 }}>
             <Stat
               label="Cap today"
@@ -2573,7 +2810,7 @@ export const DripJourneyCanvas: React.FC = () => {
                   <th style={numTh} title="VDM unique opens ÷ delivery.">Open %</th>
                   <th style={numTh} title="VDM unique clicks ÷ delivery.">Click %</th>
                   <th style={numTh} title="VDM sends over the trailing 7 complete UTC days. Hover a cell for its 7-day rates.">Sent 7d</th>
-                  <th style={thStyle} title="A staged next-day budget change, or a proposal waiting on operator approval. Approving is a LIVE WRITE and stays on the Property Ledger screen.">Pending</th>
+                  <th style={thStyle} title="A staged next-day budget change, or a grader proposal waiting on operator approval. Approving is a LIVE WRITE — the new budget applies from tomorrow (Denver).">Pending</th>
                 </tr>
               </thead>
               <tbody>
@@ -2592,11 +2829,29 @@ export const DripJourneyCanvas: React.FC = () => {
                     && spent * 100 > r.daily_budget * cb.threshold_pct
                     && spent - r.daily_budget > cb.min_excess;
                   const autoHeld = r.hold && r.updated_by === (cb?.actor || 'cap-breach-detector');
+                  const cellK = ledgerCellKey(r);
+                  const cellBusy = !!ledgerBusy[cellK];
                   return (
                     <tr key={`${r.brand}|${r.isp}`} style={stopped ? { opacity: 0.7 } : undefined}>
                       <td style={tdStyle}>{r.isp}</td>
-                      <td style={numTd} title={r.daily_budget <= 0 ? 'Cap 0 — this lane introduces nothing, identical in effect to a hold.' : undefined}>
-                        {r.daily_budget <= 0
+                      <td style={numTd} title={r.daily_budget <= 0 ? 'Cap 0 — this lane introduces nothing, identical in effect to a hold.' : 'daily_budget. Edits apply from tomorrow (Denver) — the counter worker promotes them at the boundary.'}>
+                        {ledgerWritable ? (
+                          <input
+                            type="number" min={0} step={100}
+                            value={budgetEdit[cellK] ?? String(r.daily_budget)}
+                            disabled={cellBusy}
+                            onChange={(e) => setBudgetEdit((s) => ({ ...s, [cellK]: e.target.value }))}
+                            onBlur={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              if (!Number.isNaN(v) && v >= 0 && v !== r.daily_budget) void saveBudget(r, v);
+                              else setBudgetEdit((s) => { const n = { ...s }; delete n[cellK]; return n; });
+                            }}
+                            style={{
+                              ...inputStyle, width: 84, textAlign: 'right',
+                              color: r.daily_budget <= 0 ? colors.dangerText : colors.text,
+                            }}
+                          />
+                        ) : r.daily_budget <= 0
                           ? <span style={{ color: colors.dangerText, fontWeight: 700 }}>0</span>
                           : num(r.daily_budget)}
                       </td>
@@ -2619,8 +2874,30 @@ export const DripJourneyCanvas: React.FC = () => {
                         {spent == null ? UNKNOWN : num(Math.max(0, r.daily_budget - spent))}
                       </td>
                       <td style={tdStyle}>
-                        {r.hold
-                          ? <span title={`${r.hold_reason || 'No reason recorded'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}${autoHeld ? ' · Un-hold on the Property Ledger screen; daily_budget was never modified.' : ''}`}>
+                        {ledgerWritable ? (
+                          <span title={`${r.hold_reason ? `Reason: ${r.hold_reason}` : 'Hold is immediate (server-confirmed).'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}`}>
+                            <button
+                              type="button"
+                              onClick={() => void toggleHold(r)}
+                              disabled={cellBusy}
+                              style={{
+                                background: r.hold ? 'rgba(239,68,68,0.15)' : alpha(colors.success, '14'),
+                                color: r.hold ? colors.dangerText : colors.successText,
+                                border: `1px solid ${r.hold ? 'rgba(239,68,68,0.40)' : alpha(colors.success, '44')}`,
+                                borderRadius: 999, padding: '3px 10px', fontSize: 10,
+                                fontWeight: 700, cursor: 'pointer',
+                              }}
+                            >
+                              {cellBusy ? 'Confirming…' : r.hold ? (autoHeld ? 'AUTO-HELD' : 'HELD') : 'ACTIVE'}
+                            </button>
+                            {autoHeld && r.hold_reason && (
+                              <div style={{ fontSize: 10, color: colors.dangerText, marginTop: 3, maxWidth: 260, lineHeight: 1.35 }}>
+                                {r.hold_reason}
+                              </div>
+                            )}
+                          </span>
+                        ) : r.hold
+                          ? <span title={`${r.hold_reason || 'No reason recorded'}${r.held_since ? ` · held since ${shortTime(r.held_since)}` : ''}${autoHeld ? ' · daily_budget was never modified.' : ''}`}>
                               <Pill color={colors.danger} style={{ fontSize: 9 }}>{autoHeld ? 'auto-held' : 'held'}</Pill>
                               {autoHeld && r.hold_reason && (
                                 <div style={{ fontSize: 10, color: colors.dangerText, marginTop: 3, maxWidth: 260, lineHeight: 1.35 }}>
@@ -2652,8 +2929,18 @@ export const DripJourneyCanvas: React.FC = () => {
                           </span>
                         ) : r.proposal ? (
                           <span style={{ fontSize: 11, color: colors.indigo200 }}
-                            title={`${r.proposal.basis} · proposed ${shortTime(r.proposal.created_at)} · expires ${shortTime(r.proposal.expires_at)}. Approve on the Property Ledger screen — that is a live write.`}>
+                            title={`${r.proposal.basis} · proposed ${shortTime(r.proposal.created_at)} · expires ${shortTime(r.proposal.expires_at)}. Approving is a LIVE WRITE — the new budget applies from tomorrow (Denver).`}>
                             proposal {num(r.proposal.base_budget)} → {num(r.proposal.proposed_budget)}
+                            {ledgerWritable && (
+                              <button
+                                type="button"
+                                style={{ ...smallBtn, marginLeft: 8, padding: '2px 8px', fontSize: 10 }}
+                                disabled={cellBusy}
+                                onClick={() => void approveProposal(r)}
+                              >
+                                {cellBusy ? '…' : 'Approve'}
+                              </button>
+                            )}
                           </span>
                         ) : (
                           <span style={{ fontSize: 11, color: colors.textFaint }}>—</span>
@@ -2688,9 +2975,11 @@ export const DripJourneyCanvas: React.FC = () => {
             exceed 100%</b> when a wave overshoots the remaining headroom.
           </p>
           <p style={noteStyle}>
-            <b>Read-only here.</b> Budget edits, holds, and proposal approvals are live writes that
-            change what mails on the next wave — they stay on the Property Ledger screen behind its
-            confirmations. Governed (Kumo) brands are excluded from this ledger entirely;
+            <b>Writes live here.</b> Budget edits are approvals and apply from tomorrow (Denver) —
+            the counter worker promotes them at the boundary; a hold is immediate, server-confirmed,
+            and reason-tracked. Every write is CAS-guarded by <code>lock_version</code>: a 409 means
+            the row changed underneath you and this panel reloads fresh values rather than
+            overwriting them. Governed (Kumo) brands are excluded from this ledger entirely;
             <code> partner_property_governor</code> is their single ceiling.
           </p>
         </AsyncPanel>
@@ -3063,6 +3352,7 @@ export const DripJourneyCanvas: React.FC = () => {
       </Panel>
 
       {/* ── 4. HISTORY — the scoreboard (SLOW: Postgres) ──────────────────── */}
+      {!allLanes && (
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader
           title="History — by day, expandable to ISP (Postgres)"
@@ -3254,19 +3544,21 @@ export const DripJourneyCanvas: React.FC = () => {
           </p>
         </AsyncPanel>
       </Panel>
+      )}
 
       {/* ── 5. STRUCTURE — roster membership ──────────────────────────────── */}
+      {!allLanes && (
       <Panel>
         <SectionHeader
           title="Roster — which domains ride this drip"
           icon={faSitemap}
           right={
-            <button type="button" style={smallBtn} onClick={() => setShowRoster((s) => !s)} disabled={!vertical}>
+            <button type="button" style={smallBtn} onClick={() => setShowRoster((s) => !s)} disabled={!selVertical}>
               {showRoster ? 'Hide' : 'Show membership'}
             </button>
           }
         />
-        {!vertical ? (
+        {!selVertical ? (
           <EmptyState title="Select a drip first" hint="Membership is scoped to one vertical." />
         ) : !showRoster ? (
           <div style={{ fontSize: 11, color: colors.textMuted }}>
@@ -3335,9 +3627,9 @@ export const DripJourneyCanvas: React.FC = () => {
                                 title="Soft-disables the assignment (the server never deletes the row)."
                                 disabled={!m.active}
                                 onClick={() => {
-                                  if (!window.confirm(`Remove ${dom?.domain ?? m.brand} from ${vertical}?\n\nThis soft-disables the roster row; the drip stops selecting this domain on the next wave.`)) return;
-                                  void rosterWrite('unassign', { vertical, brand: m.brand },
-                                    `Remove ${m.brand} from ${vertical}`);
+                                  if (!window.confirm(`Remove ${dom?.domain ?? m.brand} from ${selVertical}?\n\nThis soft-disables the roster row; the drip stops selecting this domain on the next wave.`)) return;
+                                  void rosterWrite('unassign', { vertical: selVertical, brand: m.brand },
+                                    `Remove ${m.brand} from ${selVertical}`);
                                 }}
                               >
                                 Remove
@@ -3354,7 +3646,7 @@ export const DripJourneyCanvas: React.FC = () => {
               </div>
             )}
             <AddToDripRow
-              vertical={vertical}
+              vertical={selVertical}
               domains={domains}
               members={membership.members}
               writeEnabled={!!roster.data?.write_enabled}
@@ -3367,6 +3659,52 @@ export const DripJourneyCanvas: React.FC = () => {
           </>
         )}
       </Panel>
+      )}
+
+      {/* ── STEP SHELF — opened by clicking a TouchNode on the canvas ─────── */}
+      {openTouch != null && j && brand && selVertical && (() => {
+        const t = (j.touches ?? []).find((x) => x.touch === openTouch)
+          ?? {
+            touch: openTouch, subject_line: '', preheader: '', from_name: '',
+            creative_filename: '', active: false, configured: false,
+          };
+        const edgeOut = (j.edges ?? []).find((e) => e.from_touch === openTouch) ?? null;
+        const edgeIn = (j.edges ?? []).find((e) => e.to_touch === openTouch) ?? null;
+        return (
+          <SideShelf
+            title={`Touch ${openTouch} — ${sendingDomain ?? brand} · ${selVertical}`}
+            width={620}
+            onClose={() => setOpenTouch(null)}
+          >
+            <DripStepShelf
+              brand={brand}
+              sendingDomain={sendingDomain}
+              vertical={selVertical}
+              touch={t}
+              edgeOut={edgeOut}
+              edgeIn={edgeIn}
+              delayHours={j.delay_hours}
+              dueNow={j.totals?.due_now ?? null}
+              onChanged={journey.reload}
+              onNotice={notify}
+            />
+          </SideShelf>
+        );
+      })()}
+
+      {/* ── INGEST SHELF — CSV upload flow, launched from the dashboard ───── */}
+      {ingestOpen && (
+        <SideShelf title="Ingest data — CSV upload" width={680} onClose={() => setIngestOpen(false)}>
+          <div style={{ padding: '14px 20px 24px 20px' }}>
+            <DripCsvUpload
+              feeds={(supply.data?.feeds ?? []).map((f) => ({
+                dataset_id: f.dataset_id, name: f.name, vertical: f.vertical,
+              }))}
+              onNotice={notify}
+            />
+          </div>
+        </SideShelf>
+      )}
 
       <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 14 }}>{PAGE_VERSION}</div>
     </div>

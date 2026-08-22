@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faCopy, faExclamationTriangle, faCheckCircle } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
@@ -7,17 +7,58 @@ interface Props {
   onClose: () => void;
 }
 
-const VERTICALS = [
+// Fallback vertical list — used only when GET /api/mailing/data-partners/
+// verticals fails or returns nothing, so the wizard never renders an empty
+// dropdown.
+const FALLBACK_VERTICALS = [
   { value: 'refi_heloc', label: 'Refi / HELOC (Amerisave)' },
   { value: 'personal_loans', label: 'Personal Loans' },
   { value: 'tax_relief', label: 'Tax Relief (Optima)' },
   { value: 'remodel', label: 'Remodel (Renewal by Andersen)' },
 ];
 
+interface VerticalOption { value: string; label: string; }
+
+// The endpoint's items may be bare strings or {value,label} objects — accept
+// both shapes and normalize.
+const normalizeVerticals = (raw: unknown): VerticalOption[] => {
+  const list = (raw as { verticals?: unknown } | null)?.verticals;
+  if (!Array.isArray(list)) return [];
+  const out: VerticalOption[] = [];
+  for (const item of list) {
+    if (typeof item === 'string' && item) {
+      out.push({ value: item, label: item });
+    } else if (item && typeof item === 'object') {
+      const o = item as { value?: unknown; label?: unknown; vertical?: unknown; display_name?: unknown };
+      const value = typeof o.value === 'string' ? o.value : typeof o.vertical === 'string' ? o.vertical : '';
+      if (!value) continue;
+      const label = typeof o.label === 'string' && o.label ? o.label
+        : typeof o.display_name === 'string' && o.display_name ? o.display_name : value;
+      out.push({ value, label });
+    }
+  }
+  return out;
+};
+
 type Step = 1 | 2 | 3 | 4;
 
 export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
   const [step, setStep] = useState<Step>(1);
+
+  // Server-sourced vertical list (falls back to the static list on error).
+  const [verticals, setVerticals] = useState<VerticalOption[]>(FALLBACK_VERTICALS);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await apiFetch('/api/mailing/data-partners/verticals');
+        if (!r.ok) return; // keep the fallback
+        const j = normalizeVerticals(await r.json());
+        if (!cancelled && j.length > 0) setVerticals(j);
+      } catch { /* network failure — keep the fallback */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Step 1: partner info
   const [partnerName, setPartnerName] = useState('');
@@ -27,7 +68,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
 
   // Step 2: dataset
   const [datasetName, setDatasetName] = useState('');
-  const [vertical, setVertical] = useState(VERTICALS[0].value);
+  const [vertical, setVertical] = useState(FALLBACK_VERTICALS[0].value);
   const [flushHours, setFlushHours] = useState(24);
 
   // Step 3: api key
@@ -144,7 +185,11 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
             <input value={datasetName} onChange={e => setDatasetName(e.target.value)} placeholder="Attribits HOME" style={input} />
             <label style={fieldLabel}>Vertical</label>
             <select value={vertical} onChange={e => setVertical(e.target.value)} style={input}>
-              {VERTICALS.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              {verticals.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+              {/* Keep the selected value visible even if the server list omits it. */}
+              {!verticals.some(v => v.value === vertical) && (
+                <option value={vertical}>{vertical}</option>
+              )}
             </select>
             <label style={fieldLabel}>Send window (hours) — how long before all records have been sent</label>
             <input type="number" min={1} max={168} value={flushHours} onChange={e => setFlushHours(parseInt(e.target.value || '24', 10))} style={input} />
