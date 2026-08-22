@@ -1078,6 +1078,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			segmentationHealthSvc := NewSegmentationHealthService(db)
 			segmentationHealthSvc.RegisterRoutes(r)
 
+			// === SEGMENT GRID FRESHNESS + ON-DEMAND REFRESH ===
+			// GET /segments/freshness (grid + ledger truth + worker liveness)
+			// and POST /segments/refresh (queue rows drained by
+			// worker.SegmentGridWorker). See segment_freshness_handlers.go.
+			segmentFreshnessSvc := NewSegmentFreshnessService(db)
+			segmentFreshnessSvc.RegisterRoutes(r)
+
 			// === GROWTH (Reporting → Growth: the daily growth series) ===
 			// Reads mailing_growth_daily (worker.GrowthRollupWorker) — one
 			// row per Denver day for a (sending domain × ISP) slice, with
@@ -1533,6 +1540,11 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// === AUDIENCE ARCHITECTURE: Background workers ===
 			workerCtx := context.Background()
 			segMaterializer := NewSegmentMaterializer(db, "04:00")
+			// Single-writer gate (2026-08-21 SEV-2: both ECS instances ran the
+			// nightly cycle + boot hydrators in lockstep, doubling rebuild IO
+			// during a brownout). Redis preferred; nil falls back to a PG
+			// advisory lock inside the materializer.
+			segMaterializer.SetRedisClient(s.redisClient)
 			segMaterializer.Start(workerCtx)
 			// Populate the canonical master-list segments (Master List,
 			// Engaged Openers, Engaged Clickers) right away so the UI

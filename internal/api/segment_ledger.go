@@ -13,11 +13,14 @@ package api
 // this app-owned table keyed by segment_id instead.
 //
 // Source values: 'materializer' | 'recalculate' | 'lake-builder' |
-// 'lake-standard' | 'lake-engaged' | 'backfill' | 'bulk-tag' |
-// 'partner-drip' (the partner-drip upsert SQL is inlined in
-// internal/worker/partner_drip_orchestrator.go because internal/api already
-// imports internal/worker — keep it in sync with UpsertSegmentLedger below)
-// Status values: 'running' | 'ok' | 'failed' | 'blocked_delta' | 'unknown'
+// 'lake-standard' | 'lake-engaged' | 'lake-grid' | 'backfill' | 'bulk-tag' |
+// 'partner-drip' (the partner-drip AND lake-grid upsert SQL are inlined in
+// internal/worker/partner_drip_orchestrator.go / segment_grid_worker.go
+// because internal/api already imports internal/worker — keep them in sync
+// with UpsertSegmentLedger below)
+// Status values: 'running' | 'ok' | 'failed' | 'blocked_delta' |
+// 'skipped_delta' (the grid worker's guard skips — every outcome writes a
+// row, a skip with no ledger row is the documented footgun) | 'unknown'
 //
 // Best-effort philosophy: the ledger is observability, not control flow.
 // Callers MUST log-and-continue on any ledger error and never fail a build

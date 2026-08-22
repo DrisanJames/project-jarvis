@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 // Segment-materialization throttle.
@@ -58,8 +60,50 @@ var materializeSem = make(chan struct{}, materializeConcurrency)
 // planning can read cached results instead of running expensive live queries.
 type SegmentMaterializer struct {
 	db         *sql.DB
+	redis      *redis.Client
 	targetHour int
 	targetMin  int
+}
+
+// SetRedisClient wires the preferred distributed-lock backend. When nil the
+// lock falls back to a PG advisory lock (the distlock package contract).
+func (m *SegmentMaterializer) SetRedisClient(rc *redis.Client) { m.redis = rc }
+
+// segmentMaterializerLockKey single-writer-gates every heavy materializer
+// pass (nightly cycle + both boot hydrators). ECS runs desired=2 and before
+// this gate BOTH instances ran the same 88 DELETE+INSERT hydrations in
+// lockstep during the 2026-08-20 brownout, doubling rebuild IO against a
+// primary already at 99% CPU (2026-08-21 SEV-2 finding).
+const segmentMaterializerLockKey = "segment-materializer"
+
+// segmentMaterializerLockTTL is the Redis lease length. A pass that outlives
+// the lease can, at the margin, let the other instance start a second pass —
+// accepted: per-segment builds are individually transactional and idempotent,
+// and the bound exists so a crashed holder cannot wedge the nightly cycle
+// forever.
+const segmentMaterializerLockTTL = 4 * time.Hour
+
+// acquireMaterializerLock returns (lock, true) when this instance may run a
+// heavy pass. On (nil, false) the caller must skip the pass — the other
+// instance owns it.
+func (m *SegmentMaterializer) acquireMaterializerLock(ctx context.Context, what string) (distlock.DistLock, bool) {
+	lock := distlock.NewLock(m.redis, m.db, segmentMaterializerLockKey, segmentMaterializerLockTTL)
+	acquired, err := lock.Acquire(ctx)
+	if err != nil {
+		log.Printf("[SegmentMaterializer] %s: lock acquire error (skipping pass): %v", what, err)
+		return nil, false
+	}
+	if !acquired {
+		log.Printf("[SegmentMaterializer] %s: another instance holds the materializer lock — skipping", what)
+		return nil, false
+	}
+	return lock, true
+}
+
+func releaseMaterializerLock(lock distlock.DistLock, what string) {
+	if err := lock.Release(context.Background()); err != nil {
+		log.Printf("[SegmentMaterializer] %s: lock release error: %v", what, err)
+	}
 }
 
 // NewSegmentMaterializer creates a materializer that runs daily at the given
@@ -132,6 +176,14 @@ var CanonicalMasterListSegments = []string{
 // off for a 3-segment set that every campaign screen reads from, but would
 // not scale to hundreds of segments.
 func (m *SegmentMaterializer) MaterializeCanonicalSegments(ctx context.Context) {
+	// Single-writer gate: the boot hydrators re-fire on EVERY deploy on BOTH
+	// instances (see segmentMaterializerLockKey).
+	lock, ok := m.acquireMaterializerLock(ctx, "canonical hydrator")
+	if !ok {
+		return
+	}
+	defer releaseMaterializerLock(lock, "canonical hydrator")
+
 	start := time.Now()
 
 	rows, err := m.db.QueryContext(ctx, `
@@ -206,6 +258,15 @@ func (m *SegmentMaterializer) MaterializeCanonicalSegments(ctx context.Context) 
 // engagement catalog (.scratch/may29_seed_engagement_segments.py) to
 // resolve the 10 stragglers that the inline goroutine couldn't finish.
 func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) {
+	// Single-writer gate: during the 2026-08-20 brownout both instances
+	// ground through the same 88 heavy hydrations in 10-min-timeout lockstep
+	// (see segmentMaterializerLockKey).
+	lock, ok := m.acquireMaterializerLock(ctx, "engagement-catalog hydrator")
+	if !ok {
+		return
+	}
+	defer releaseMaterializerLock(lock, "engagement-catalog hydrator")
+
 	start := time.Now()
 
 	rows, err := m.db.QueryContext(ctx, `
@@ -267,6 +328,14 @@ func (m *SegmentMaterializer) MaterializeEngagementCatalog(ctx context.Context) 
 }
 
 func (m *SegmentMaterializer) materializeAll(ctx context.Context) {
+	// Single-writer gate (see segmentMaterializerLockKey): without it both
+	// ECS instances run the identical 500-segment cycle simultaneously.
+	lock, ok := m.acquireMaterializerLock(ctx, "nightly cycle")
+	if !ok {
+		return
+	}
+	defer releaseMaterializerLock(lock, "nightly cycle")
+
 	start := time.Now()
 
 	// Selection strategy: oldest `updated_at` first, capped at 500 per

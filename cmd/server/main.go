@@ -989,6 +989,21 @@ func main() {
 			go segmentPerfRollup.Start(ctx)
 			log.Printf("Segment perf rollup started (nightly 04:10 UTC, 35d gap-fill; kill: DISABLE_SEGMENT_PERF_ROLLUP)")
 
+			// Segment grid worker — the daily in-platform build of the
+			// per-sending-domain engagement grid ('<CODE> <N>D
+			// (Openers|Clickers)') from the Athena lake, replacing the
+			// Fargate sidecar (operator mandate: no cron, no sidecar —
+			// baked into the software). Daily 05:30 UTC (23:30 Denver,
+			// fresh before the ~06:30Z board build) + drains the UI's
+			// mailing_segment_refresh_requests queue every tick.
+			// Single-writer via distlock; directional delta guard; every
+			// outcome (incl. skips) writes a build-ledger row; circuit
+			// opens after consecutive failures instead of grinding a
+			// browned-out primary. Kill: DISABLE_SEGMENT_GRID_WORKER=true.
+			segmentGrid := worker.NewSegmentGridWorker(mailingDB, redisClient)
+			go segmentGrid.Start(ctx)
+			log.Printf("Segment grid worker started (daily 05:30 UTC grid build + on-demand refresh queue; kill: DISABLE_SEGMENT_GRID_WORKER)")
+
 			// Growth rollup — the daily (Denver day × sending domain × ISP)
 			// fact table behind GET /api/mailing/growth/daily (Reporting →
 			// Growth). Delivery half from the Athena lake, engagement half
@@ -2359,6 +2374,14 @@ var concurrentIndexSpecs = []struct {
 	// the grouping key. Concurrent slice, not the 5s migration slice: the build
 	// scans the whole 10 GB heap.
 	{"idx_pcq_ingested_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ingested_dataset ON partner_clean_queue (ingested_at, dataset_id)`},
+	// Segment-freshness member-stamp read (2026-08-21): GET
+	// /api/mailing/segments/freshness cross-checks the build ledger with the
+	// REAL max(materialized_at) per grid segment. Without this index that is
+	// a per-segment scan of the ~47M-row members table on every screen load;
+	// with it each segment resolves via one backward index probe.
+	// Concurrent slice, never the 5s migration slice: the build scans the
+	// full members heap.
+	{"idx_segment_members_seg_stamp", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_segment_members_seg_stamp ON mailing_segment_members (segment_id, materialized_at DESC)`},
 	// Partner ingest work-queue selectivity (2026-08-21 incident). The original
 	// idx_pib_status_received was partial over
 	// ('received','slicing','slicing_complete','validating') — but
@@ -2739,6 +2762,21 @@ func runStartupMigrations(db *sql.DB) {
 		// SEPARATE ENTRIES: migrationSkipProbe classifies by leading keywords
 		// (migration_skip.go:41), so a combined CREATE TABLE + CREATE INDEX is
 		// probed as CREATE TABLE and the indexes silently never land.
+		// Segment-grid on-demand refresh queue (2026-08-21) — written by
+		// POST /api/mailing/segments/refresh, drained by
+		// worker.SegmentGridWorker. SIX SEPARATE ENTRIES: migrationSkipProbe
+		// classifies by LEADING keyword (migration_skip.go:41), so a combined
+		// CREATE TABLE + CREATE INDEX string is probed as CREATE TABLE and
+		// the indexes silently never land. lock_timeout is SET first and
+		// RESET after the last entry — the runner holds ONE dedicated
+		// connection, so an un-reset SET re-scopes every later migration
+		// (2026-08-20 barricade lesson).
+		{"aug21_seg_refresh_req_lock_timeout", worker.SegmentGridLockTimeoutDDL},
+		{"aug21_seg_refresh_requests", worker.SegmentRefreshRequestsDDL},
+		{"aug21_seg_refresh_req_pending_idx", worker.SegmentRefreshRequestsPendingIdxDDL},
+		{"aug21_seg_refresh_req_open_slot", worker.SegmentRefreshRequestsOpenSlotDDL},
+		{"aug21_seg_refresh_req_segment_idx", worker.SegmentRefreshRequestsDoneIdxDDL},
+		{"aug21_seg_refresh_req_lock_timeout_reset", worker.SegmentGridLockTimeoutResetDDL},
 		{"aug20_kumo_warmup_requests", api.KumoWarmupRequestsDDL},
 		{"aug20_kumo_warmup_requests_idx", api.KumoWarmupRequestsIndexDDL},
 		// Newsletters mode (2026-08-20) — internal/api/newsletter_requests.go.

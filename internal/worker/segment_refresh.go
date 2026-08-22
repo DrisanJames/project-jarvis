@@ -205,19 +205,49 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		log.Printf("SegmentRefreshWorker: member-count query error: %v", mErr)
 		return
 	}
+	var scanErr error
 	for mrows.Next() {
 		var id uuid.UUID
 		var n int
-		if err := mrows.Scan(&id, &n); err == nil {
-			counts[id] = n
+		if err := mrows.Scan(&id, &n); err != nil {
+			scanErr = err
+			continue
 		}
+		counts[id] = n
+	}
+	// PARTIAL-READ GUARD (2026-08-21 incident). lib/pq streams result rows
+	// lazily, so the QueryContext error check above only covers query-time
+	// failure: the 120s cctx expiring mid-iteration, a replica recovery
+	// cancellation, or a dropped connection ends the Next() loop SILENTLY with
+	// a truncated counts map. The write loop below then treats every absent
+	// segment as "genuinely empty" and stamps subscriber_count = 0 — on
+	// 2026-08-21 one such pass zeroed 118 of 250 active Opener/Clicker
+	// segments whose member tables held tens of thousands of fresh rows,
+	// which the operator read as "segments are not refreshing".
+	//
+	// Absence of measurement is not zero: an absent segment may only be
+	// written 0 when the result set is VERIFIED complete (rows.Err() == nil
+	// and every row scanned). Any partial read aborts the pass with no writes
+	// — the previous counts stand until a clean cycle.
+	if err := mrows.Err(); err != nil {
+		mrows.Close()
+		ccancel()
+		hbStatus, hbErr = "error", "member-count read truncated: "+err.Error()
+		log.Printf("SegmentRefreshWorker: member-count read truncated after %d/%d segments (no counts written): %v",
+			len(counts), len(segments), err)
+		return
 	}
 	mrows.Close()
 	ccancel()
+	if scanErr != nil {
+		hbStatus, hbErr = "error", "member-count scan error: "+scanErr.Error()
+		log.Printf("SegmentRefreshWorker: member-count scan error (no counts written): %v", scanErr)
+		return
+	}
 
-	// Segments with no row in the result simply have zero materialized members
-	// (genuinely empty, or created since the last materialization pass — they
-	// fill in on the next SegmentMaterializer run).
+	// The result set is verified complete: segments with no row genuinely have
+	// zero materialized members (empty, or created since the last
+	// materialization pass — they fill in on the next SegmentMaterializer run).
 	for _, seg := range segments {
 		if ctx.Err() != nil {
 			break
