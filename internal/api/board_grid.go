@@ -367,6 +367,28 @@ func rewriteNameDate(name string, to time.Time) string {
 
 // monthTokenRegexForDate matches the month-name token for one specific date,
 // zero-padded or not ('aug8' / 'aug08'), any case.
+// advertiserToken is the ADVERTISER_REPEAT proxy: the first word of the offer
+// name, lowercased and stripped of non-alphanumerics. "Optima Tax Relief v2"
+// and "Optima - Fresh Start" both yield "optima". Names shorter than 3 chars
+// yield "" (too ambiguous to warn on).
+func advertiserToken(offerName string) string {
+	first := strings.Fields(strings.TrimSpace(offerName))
+	if len(first) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(first[0]) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	tok := b.String()
+	if len(tok) < 3 {
+		return ""
+	}
+	return tok
+}
+
 // isOfferExemptName reports whether a cell legitimately carries no offer:
 // KUMO-WARM (and any explicitly newsletter-labelled) campaigns mail editorial
 // warm-up content in which offers are BANNED (CLAUDE.md §13.1), so gating them
@@ -437,6 +459,42 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 				f = append(f, BoardFinding{"blocker", "REPEAT_OFFER", prop, slots[0],
 					fmt.Sprintf("%q runs %d times on this property (%s)",
 						group[0].OfferName, len(group), strings.Join(slots, ", "))})
+			}
+		}
+	}
+
+	// Gate 2b ADVERTISER_REPEAT (warn) — REPEAT_OFFER keys on offer_id, so two
+	// DIFFERENT offer rows for the same advertiser slip through (2026-08-22:
+	// FC and QF each carried two Optima campaigns under distinct offer ids).
+	// Advertiser identity is not modelled anywhere, so the proxy is the
+	// normalized first word of the offer name; a proxy match is a WARN for a
+	// human to judge, never a blocker.
+	byAdv := map[string]map[string][]BoardCell{}
+	for _, c := range cells {
+		adv := advertiserToken(c.OfferName)
+		if adv == "" {
+			continue
+		}
+		if byAdv[c.Property] == nil {
+			byAdv[c.Property] = map[string][]BoardCell{}
+		}
+		byAdv[c.Property][adv] = append(byAdv[c.Property][adv], c)
+	}
+	for prop, advs := range byAdv {
+		for adv, group := range advs {
+			distinct := map[string]bool{}
+			for _, g := range group {
+				distinct[g.OfferID] = true
+			}
+			if len(group) > 1 && len(distinct) > 1 {
+				slots := make([]string, 0, len(group))
+				for _, g := range group {
+					slots = append(slots, g.Slot)
+				}
+				sort.Strings(slots)
+				f = append(f, BoardFinding{"warn", "ADVERTISER_REPEAT", prop, slots[0],
+					fmt.Sprintf("advertiser %q appears under %d distinct offer rows on this property (%s) — same-advertiser repeat slips the offer_id gate",
+						adv, len(distinct), strings.Join(slots, ", "))})
 			}
 		}
 	}
