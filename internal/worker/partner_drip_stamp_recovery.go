@@ -27,9 +27,10 @@ package worker
 //	                       so a retry can never double-advance the ladder.
 //	2. recordStampFailure — a durable, operator-queryable signal
 //	                       (partner_drip_stamp_failures) for every lost stamp.
-//	3. RecoverUnstampedTouches — an opt-in, dry-by-default sweep that re-stamps
-//	                       lost rows FROM mailing_message_log (send truth), never
-//	                       by inference.
+//	3. RecoverUnstampedTouches — an always-on (opt-OUT via
+//	                       PARTNER_DRIP_STAMP_RECOVERY_DISABLED) sweep that
+//	                       re-stamps lost rows FROM mailing_message_log (send
+//	                       truth), never by inference.
 //
 // Nothing here changes what gets sent, how records are claimed, or how waves
 // are dispatched. It only records what already happened.
@@ -181,7 +182,7 @@ func (po *PartnerDripOrchestrator) emitStampHeartbeat(ctx context.Context) {
 	status, detail := "ok", ""
 	if outstanding > 0 {
 		status = "error"
-		detail = fmt.Sprintf("%d ladder stamps LOST across %d waves (last %s) — mail shipped, touch NOT recorded, records still claimable. Worklist: SELECT * FROM partner_drip_stamp_failures WHERE recovered_at IS NULL. Recover with PARTNER_DRIP_STAMP_RECOVERY=apply.",
+		detail = fmt.Sprintf("%d ladder stamps LOST across %d waves (last %s) — mail shipped, touch NOT recorded. Worklist: SELECT * FROM partner_drip_stamp_failures WHERE recovered_at IS NULL. Recovery runs automatically each tick cadence unless PARTNER_DRIP_STAMP_RECOVERY_DISABLED is set.",
 			outstanding, st.WavesFailed, st.LastFailureAt.Format(time.RFC3339))
 	}
 	interval := int(po.cfg.TickInterval.Seconds())
@@ -340,12 +341,17 @@ func (po *PartnerDripOrchestrator) recordStampFailure(ctx context.Context, campa
 // Recovery
 // -----------------------------------------------------------------------------
 
-// stampRecoveryMode is read from PARTNER_DRIP_STAMP_RECOVERY:
+// stampRecoveryMode controls the recovery sweep. Since 2026-08-22 recovery is
+// ALWAYS ON (mode "apply") by default: the residual reconcile in tickOnce used
+// to make un-stamped rows re-claimable every tick (the 2026-08-17 triple-fire),
+// so replaying lost stamps cannot depend on an operator remembering to arm an
+// env var. The gate is now an opt-OUT kill switch:
 //
-//	unset / "off" / "0" — inert. Nothing runs. This is the default, so a deploy
-//	                      of this code changes NOTHING about the send path.
-//	"dry"               — measure and report only; no writes to the queue.
-//	"apply"             — measure, then stamp.
+//	PARTNER_DRIP_STAMP_RECOVERY_DISABLED=1 — inert. Nothing runs.
+//
+// The legacy PARTNER_DRIP_STAMP_RECOVERY var is still honored as a mode
+// override: "dry" measures and reports without writing; "off"/"0" also
+// disables. Unset (the production default) now means "apply".
 type stampRecoveryMode string
 
 const (
@@ -355,13 +361,18 @@ const (
 )
 
 func currentStampRecoveryMode() stampRecoveryMode {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_STAMP_RECOVERY"))) {
-	case "dry", "report", "1":
-		return stampRecoveryDry
-	case "apply", "live", "2":
-		return stampRecoveryApply
-	default:
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_STAMP_RECOVERY_DISABLED"))) {
+	case "1", "true", "yes", "on":
 		return stampRecoveryOff
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_STAMP_RECOVERY"))) {
+	case "dry", "report":
+		return stampRecoveryDry
+	case "off", "0", "none":
+		return stampRecoveryOff
+	default:
+		// Unset, "apply", "live", or anything unrecognized: recovery runs.
+		return stampRecoveryApply
 	}
 }
 
@@ -613,9 +624,12 @@ func (po *PartnerDripOrchestrator) markStampFailureRecovered(ctx context.Context
 	`, campaignID, fixed)
 }
 
-// maybeRunStampRecovery is the tick hook. Inert unless PARTNER_DRIP_STAMP_RECOVERY
-// is set, and rate-limited to stampRecoveryInterval so a re-fired scheduler (every
-// ECS bounce restarts this worker) cannot turn it into a per-tick sweep.
+// maybeRunStampRecovery is the tick hook. ALWAYS ON by default since 2026-08-22
+// (kill switch: PARTNER_DRIP_STAMP_RECOVERY_DISABLED=1 — see
+// currentStampRecoveryMode), and rate-limited to stampRecoveryInterval so a
+// re-fired scheduler (every ECS bounce restarts this worker) cannot turn it
+// into a per-tick sweep. tickOnce runs it BEFORE reconcileShippedClaims so the
+// precise per-campaign replay lands before the coarse residual flip.
 func (po *PartnerDripOrchestrator) maybeRunStampRecovery(ctx context.Context) {
 	mode := currentStampRecoveryMode()
 	if mode == stampRecoveryOff {

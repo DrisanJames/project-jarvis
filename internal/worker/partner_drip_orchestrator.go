@@ -491,6 +491,20 @@ type PartnerDripOrchestrator struct {
 	brandBudgetCache map[string]map[string]brandBudgetRow
 	globalHold       *bool
 
+	// throttleCache is the per-tick snapshot of mailing_isp_throttle_state
+	// (fetchThrottledISPs), loaded once by loadThrottledISPs in tickOnce.
+	// applyThroughputSafety runs once per WAVE (8-10+ waves per vertical per
+	// tick across welcome + follow-up + governed passes), and before this cache
+	// each of those calls re-read the table. throttleErr preserves the exact
+	// pre-cache semantics: a failed read still surfaces to applyThroughputSafety,
+	// whose callers proceed without deferral. throttleLoaded=false (a path that
+	// never went through tickOnce, e.g. tests) falls back to a direct fetch.
+	// Guarded by throttleMu.
+	throttleMu     sync.RWMutex
+	throttleCache  map[string]float64
+	throttleErr    error
+	throttleLoaded bool
+
 	// stamp counts markMailed / recovery outcomes since process start. Before
 	// this existed the ONLY evidence of a dropped ladder advance was a single
 	// log line (2026-08-20). Snapshot it with StampStats(); the durable,
@@ -810,6 +824,9 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	po.loadBrandDomains(po.ctx)
 	po.loadVerticalRosters(po.ctx)
 	po.loadBrandBudgets(po.ctx)
+	// Throttle snapshot for this tick — applyThroughputSafety runs once per WAVE
+	// and used to re-read mailing_isp_throttle_state on every call.
+	po.loadThrottledISPs(po.ctx)
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -817,17 +834,24 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor released %d stale rows", n)
 		}
 	}
+	// Ladder-stamp recovery (partner_drip_stamp_recovery.go) runs BEFORE the
+	// residual reconcile below: it replays every durable stamp failure from
+	// mailing_message_log (send truth), advancing the ladder to the EXACT
+	// campaign that shipped. Always on since 2026-08-22 (opt-OUT kill switch
+	// PARTNER_DRIP_STAMP_RECOVERY_DISABLED=1); rate-limited to its own cadence,
+	// so a re-fired scheduler on every ECS bounce cannot turn it into a
+	// per-tick sweep.
+	po.maybeRunStampRecovery(po.ctx)
+	// Residual reconcile for whatever recovery could not attribute. Since
+	// 2026-08-22 this ALSO advances touch_count / next_touch_at (the bare status
+	// flip was the 2026-08-17 triple-fire: a flipped-but-not-advanced row was
+	// instantly re-claimable by claimFollowupRecordsByISPCaps and the same
+	// people re-mailed every tick until a markMailed succeeded).
 	if n, err := po.reconcileShippedClaims(po.ctx); err != nil {
 		log.Printf("[PartnerDripOrchestrator] reconcile shipped claims: %v", err)
 	} else if n > 0 {
-		log.Printf("[PartnerDripOrchestrator] reconciled %d claimed rows to mailed (post-deploy markMailed miss)", n)
+		log.Printf("[PartnerDripOrchestrator] reconciled %d claimed rows to mailed + advanced their ladder (post-deploy markMailed miss)", n)
 	}
-	// Opt-in ladder-stamp recovery (partner_drip_stamp_recovery.go). Inert unless
-	// PARTNER_DRIP_STAMP_RECOVERY is set, and rate-limited to its own cadence, so
-	// a re-fired scheduler on every ECS bounce cannot turn it into a per-tick sweep.
-	// NOTE: reconcileShippedClaims above only flips status; it does NOT advance
-	// touch_count / next_touch_at, which is why a lost stamp still needs this pass.
-	po.maybeRunStampRecovery(po.ctx)
 	// Always-on health surface for the ladder stamp (mailing_worker_heartbeats
 	// row 'partner_drip_ladder_stamp'). Flips to last_status='error' the moment a
 	// stamp is dropped, so the loss is visible in the portal's worker-health view
@@ -1329,21 +1353,85 @@ func (po *PartnerDripOrchestrator) deployWaveGroup(ctx context.Context, v vertic
 	}
 	campaignID, err := po.cfg.DeployFn(ctx, input)
 	if err != nil {
-		return "", fmt.Errorf("deploy: %w", err)
+		// ErrDeployNameReused means the idempotency guard converged on a DIFFERENT
+		// wave's live campaign — by definition a campaign with this name already
+		// exists, so the by-name recovery below must NOT run (it would stamp this
+		// group's records onto another group's audience, the 2026-08-11 loss).
+		// Keep the release path for it.
+		if errors.Is(err, ErrDeployNameReused) {
+			return "", fmt.Errorf("deploy: %w", err)
+		}
+		// 2026-08-21 double-send defect: HandleDeployCampaign COMMITS the campaign
+		// row and only then runs a post-commit verification query; when that query
+		// times out the handler returns 500 with the campaign already live.
+		// Treating that as a failed deploy released the claim, and the next tick
+		// re-claimed and RE-MAILED the same people (55 double-mailed). The name is
+		// unique per wave group (buildCampaignInput folds in the per-group segment
+		// nonce), so a live campaign under this exact name IS this deploy —
+		// recover it and finish the bookkeeping instead of releasing.
+		if id, ok := po.findDeployedCampaignByName(ctx, input.Name); ok {
+			log.Printf("[PartnerDripOrchestrator] post-deploy-error campaign found by name — treating as deployed: campaign=%s name=%q deploy_err=%v",
+				id, input.Name, err)
+			campaignID = id
+		} else {
+			return "", fmt.Errorf("deploy: %w", err)
+		}
 	}
 	if err := po.stampPartnerAttributionOnCampaign(ctx, campaignID, v.datasetID, v.partnerSlug, v.vertical); err != nil {
 		log.Printf("[PartnerDripOrchestrator] stamp_attribution (campaign=%s dataset=%s): %v", campaignID, v.datasetID, err)
 	}
+	// markMailed does its own chunked retries, records any residual loss durably
+	// in partner_drip_stamp_failures, and the always-on recovery pass replays it
+	// from mailing_message_log — the campaign is already live, so the wave itself
+	// is a success either way. Log the loss loudly with counts; never silent.
 	if err := po.markMailed(ctx, g.recs, campaignID, brand); err != nil {
-		log.Printf("[PartnerDripOrchestrator] mark_mailed (campaign %s already deployed!): %v", campaignID, err)
+		log.Printf("[PartnerDripOrchestrator] ALERT mark_mailed failed post-deploy campaign=%s brand=%s rows=%d — loss durably recorded (partner_drip_stamp_failures), stamp recovery replays it from mailing_message_log: %v",
+			campaignID, brand, len(g.recs), err)
 	}
 	return campaignID, nil
 }
 
-// routeLabel renders a routing group's route for logs: "pmta" for the default
+// findDeployedCampaignByName reports whether a campaign with this wave group's
+// (unique-per-group, see buildCampaignInput) name exists in a live state —
+// the post-deploy-error probe for the "handler committed, then 500'd on its
+// post-commit verification" defect. Runs on a context detached from
+// cancellation with its own short deadline: the deploy error may itself be a
+// context timeout, and this one bounded read decides mailed-vs-release.
+func (po *PartnerDripOrchestrator) findDeployedCampaignByName(ctx context.Context, name string) (string, bool) {
+	if strings.TrimSpace(name) == "" || po.db == nil {
+		return "", false
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	var id string
+	err := po.db.QueryRowContext(wctx, `
+		SELECT id::text
+		FROM mailing_campaigns
+		WHERE organization_id = $1::uuid
+		  AND name = $2
+		  AND status NOT IN ('failed', 'cancelled', 'deleted')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, po.cfg.OrganizationID, name).Scan(&id)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[PartnerDripOrchestrator] post-deploy-error campaign-by-name lookup failed name=%q: %v — treating deploy as failed (release path)", name, err)
+		}
+		return "", false
+	}
+	return id, true
+}
+
+// routeLabel renders a routing group's route for logs: "kumo" for a governed
+// (Kumo) brand's default by-domain route, "pmta" for every other default
 // by-domain route, or "ses:<profile>" when pinned to an SES tenant profile.
-func routeLabel(profileID string) string {
+// Log/label-only — nothing parses this (verified: the only consumers are the
+// two deployWaveGroups log lines).
+func routeLabel(profileID, brand string) string {
 	if profileID == "" {
+		if governedBrands[strings.ToLower(strings.TrimSpace(brand))] {
+			return "kumo"
+		}
 		return "pmta"
 	}
 	return "ses:" + profileID
@@ -1360,13 +1448,13 @@ func (po *PartnerDripOrchestrator) deployWaveGroups(ctx context.Context, v verti
 		if err != nil {
 			_ = po.releaseClaim(ctx, g.recs)
 			log.Printf("[PartnerDripOrchestrator] wave group deploy failed: vertical=%s brand=%s route=%s size=%d: %v",
-				v.vertical, brand, routeLabel(g.profileID), len(g.recs), err)
+				v.vertical, brand, routeLabel(g.profileID, brand), len(g.recs), err)
 			continue
 		}
 		lastCampaignID = cid
 		deployedCount += len(g.recs)
 		log.Printf("[PartnerDripOrchestrator] wave fired: vertical=%s brand=%s campaign=%s size=%d route=%s creative=%s",
-			v.vertical, brand, cid, len(g.recs), routeLabel(g.profileID), creative.filename)
+			v.vertical, brand, cid, len(g.recs), routeLabel(g.profileID, brand), creative.filename)
 	}
 	return lastCampaignID, deployedCount
 }
@@ -2891,58 +2979,139 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 	return out, nil
 }
 
+// claimSweepBatchSize / claimSweepMaxBatchesPerTick bound the two per-tick
+// janitor UPDATEs (releaseStaleClaims, reconcileShippedClaims). Both used to
+// run as one unbounded statement over the whole 11.8M-row queue, holding row
+// locks across the entire matching backlog for the statement's lifetime and
+// contending with the claim CTEs. Each batch is now its own short transaction
+// over at most claimSweepBatchSize rows, selected with FOR UPDATE SKIP LOCKED
+// so a batch never blocks on (or is blocked by) a concurrent claim. The
+// per-tick iteration cap keeps a pathological backlog from monopolizing a
+// tick; the remainder is picked up next tick.
+const claimSweepBatchSize = 5000
+const claimSweepMaxBatchesPerTick = 10
+
+// releaseStaleClaimsSQL — see releaseStaleClaims. $1 cutoff, $2 batch size.
+const releaseStaleClaimsSQL = `
+		UPDATE partner_clean_queue
+		SET status = 'ready',
+		    claimed_at = NULL
+		WHERE id IN (
+		    SELECT id
+		    FROM partner_clean_queue
+		    WHERE status = 'claimed'
+		      AND claimed_at IS NOT NULL
+		      AND claimed_at < $1
+		      AND subscriber_id IS NULL
+		      AND mailed_campaign_id IS NULL
+		    LIMIT $2
+		    FOR UPDATE SKIP LOCKED
+		)
+`
+
 // releaseStaleClaims returns zombie 'claimed' rows to 'ready'. These appear
 // when the process dies after claimRecordsByISPCaps but before promote/deploy
 // completes (no subscriber_id, no mailed_campaign_id). Safe to re-queue.
+// Batched — see claimSweepBatchSize.
 func (po *PartnerDripOrchestrator) releaseStaleClaims(ctx context.Context) (int64, error) {
 	cutoff := time.Now().UTC().Add(-po.cfg.ClaimedJanitorMaxAge)
-	var n int64
-	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
-			UPDATE partner_clean_queue
-			SET status = 'ready',
-			    claimed_at = NULL
-			WHERE status = 'claimed'
-			  AND claimed_at IS NOT NULL
-			  AND claimed_at < $1
-			  AND subscriber_id IS NULL
-			  AND mailed_campaign_id IS NULL
-		`, cutoff)
-		if err != nil {
+	var total int64
+	for i := 0; i < claimSweepMaxBatchesPerTick; i++ {
+		var n int64
+		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, releaseStaleClaimsSQL, cutoff, claimSweepBatchSize)
+			if err != nil {
+				return err
+			}
+			n, err = res.RowsAffected()
 			return err
+		})
+		if err != nil {
+			return total, err
 		}
-		n, err = res.RowsAffected()
-		return err
-	})
-	return n, err
+		total += n
+		if n < claimSweepBatchSize {
+			break
+		}
+	}
+	return total, nil
 }
+
+// reconcileShippedClaimsSQL — see reconcileShippedClaims. $1 MaxTouchCount,
+// $2 followupTouchGapHours, $3 batch size.
+//
+// The SET clause mirrors markMailedStampSQL's ladder transition: the EXISTS
+// proves a campaign for these rows reached the sending stage, so the flip back
+// to 'mailed' must ALSO advance touch_count / next_touch_at (NULL +
+// terminal_reason='completed' at the MaxTouchCount ceiling). What it cannot do
+// is move last_touch_campaign_id — the shipped campaign's id is exactly what
+// markMailed failed to record — so the stamp-recovery pass (which replays the
+// true campaign id from mailing_message_log, and runs FIRST in tickOnce)
+// remains the precise repair; this is the coarse residual backstop that
+// guarantees a row is never re-claimable without its ladder advanced.
+const reconcileShippedClaimsSQL = `
+		UPDATE partner_clean_queue q
+		SET status = 'mailed',
+		    claimed_at = NULL,
+		    mailed_at = COALESCE(q.mailed_at, NOW()),
+		    touch_count = LEAST(COALESCE(q.touch_count, 0) + 1, $1),
+		    next_touch_at = CASE
+		        WHEN COALESCE(q.touch_count, 0) + 1 < $1
+		        THEN NOW() + make_interval(hours => $2::int)
+		        ELSE NULL
+		    END,
+		    terminal_reason = CASE
+		        WHEN COALESCE(q.touch_count, 0) + 1 >= $1 THEN 'completed'
+		        ELSE q.terminal_reason
+		    END
+		WHERE q.id IN (
+		    SELECT id
+		    FROM partner_clean_queue
+		    WHERE status = 'claimed'
+		      AND last_touch_campaign_id IS NOT NULL
+		      AND EXISTS (
+		        SELECT 1 FROM mailing_campaigns c
+		        WHERE c.id = partner_clean_queue.last_touch_campaign_id
+		          AND c.status IN ('sending', 'sent', 'completed', 'completed_with_errors')
+		      )
+		    LIMIT $3
+		    FOR UPDATE SKIP LOCKED
+		)
+`
 
 // reconcileShippedClaims repairs rows left in status='claimed' after a wave
 // deployed successfully but markMailed failed (logged, non-fatal). Without
 // this, follow-up touches stay claimed and block claimFollowupRecordsByISPCaps
-// (which only picks status='mailed'). Idempotent: only touches rows whose
-// last_touch_campaign is already sending or terminal.
+// (which only picks status='mailed').
+//
+// 2026-08-17 triple-fire fix: the old bare `SET status = 'mailed'` did NOT
+// advance touch_count / next_touch_at, so a reconciled row (next_touch_at
+// still in the past) was instantly re-claimed by claimFollowupRecordsByISPCaps
+// and the SAME people were re-mailed every tick until a markMailed succeeded.
+// The reconcile now advances the ladder for every row it flips (see
+// reconcileShippedClaimsSQL). Batched — see claimSweepBatchSize.
 func (po *PartnerDripOrchestrator) reconcileShippedClaims(ctx context.Context) (int64, error) {
-	var n int64
-	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `
-			UPDATE partner_clean_queue q
-			SET status = 'mailed'
-			WHERE q.status = 'claimed'
-			  AND q.last_touch_campaign_id IS NOT NULL
-			  AND EXISTS (
-			    SELECT 1 FROM mailing_campaigns c
-			    WHERE c.id = q.last_touch_campaign_id
-			      AND c.status IN ('sending', 'sent', 'completed', 'completed_with_errors')
-			  )
-		`)
-		if err != nil {
+	var total int64
+	for i := 0; i < claimSweepMaxBatchesPerTick; i++ {
+		var n int64
+		err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, reconcileShippedClaimsSQL,
+				MaxTouchCount, followupTouchGapHours, claimSweepBatchSize)
+			if err != nil {
+				return err
+			}
+			n, err = res.RowsAffected()
 			return err
+		})
+		if err != nil {
+			return total, err
 		}
-		n, err = res.RowsAffected()
-		return err
-	})
-	return n, err
+		total += n
+		if n < claimSweepBatchSize {
+			break
+		}
+	}
+	return total, nil
 }
 
 // releaseClaim flips claimed records back to 'ready' so the next tick can
@@ -3725,7 +3894,7 @@ func (po *PartnerDripOrchestrator) applyDatasetISPCapOverrides(ctx context.Conte
 //
 // Returns (keep, deferred, reasons-by-isp).
 func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, brand string, recs []claimedRecord, perISPCaps map[string]int) ([]claimedRecord, []claimedRecord, map[string]string, error) {
-	throttled, err := po.fetchThrottledISPs(ctx)
+	throttled, err := po.throttledISPs(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -3769,8 +3938,39 @@ func (po *PartnerDripOrchestrator) applyThroughputSafety(ctx context.Context, br
 	return keep, deferred, reasons, nil
 }
 
+// loadThrottledISPs refreshes the per-tick throttle snapshot. Called once from
+// tickOnce alongside the other per-tick loads; every wave's
+// applyThroughputSafety then reads the cache instead of re-querying
+// mailing_isp_throttle_state (previously 8-10+ reads per vertical per tick).
+// The error is cached too so a failed read keeps the exact pre-cache
+// semantics: applyThroughputSafety surfaces it and its callers proceed
+// without deferral for this tick.
+func (po *PartnerDripOrchestrator) loadThrottledISPs(ctx context.Context) {
+	m, err := po.fetchThrottledISPs(ctx)
+	po.throttleMu.Lock()
+	po.throttleCache, po.throttleErr, po.throttleLoaded = m, err, true
+	po.throttleMu.Unlock()
+}
+
+// throttledISPs returns the tick's throttle snapshot. Falls back to a direct
+// fetch when no snapshot has been loaded (a call path that never went through
+// tickOnce — e.g. tests), preserving the pre-cache behavior exactly.
+func (po *PartnerDripOrchestrator) throttledISPs(ctx context.Context) (map[string]float64, error) {
+	po.throttleMu.RLock()
+	if po.throttleLoaded {
+		m, err := po.throttleCache, po.throttleErr
+		po.throttleMu.RUnlock()
+		return m, err
+	}
+	po.throttleMu.RUnlock()
+	return po.fetchThrottledISPs(ctx)
+}
+
 // fetchThrottledISPs returns isp -> msgs_per_hour for any ISPs whose rate is
 // below ThrottledISPRateThreshold. These are skipped from the upcoming wave.
+// Per-tick callers should go through throttledISPs (the cached snapshot); the
+// ThrottleDeferralDisabled short-circuit and the missing-table = no-throttling
+// behavior live HERE so both the cached and fallback paths share them.
 func (po *PartnerDripOrchestrator) fetchThrottledISPs(ctx context.Context) (map[string]float64, error) {
 	if po.cfg.ThrottleDeferralDisabled {
 		return map[string]float64{}, nil

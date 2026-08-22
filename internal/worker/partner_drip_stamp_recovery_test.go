@@ -352,23 +352,31 @@ func TestRecoverUnstampedTouches_DryModeNeverWrites(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestStampRecoveryModeDefaultsOff pins that a deploy of this code is inert:
-// with PARTNER_DRIP_STAMP_RECOVERY unset the sweep never runs.
-func TestStampRecoveryModeDefaultsOff(t *testing.T) {
+// TestStampRecoveryModeDefaultsOn pins the 2026-08-22 gate inversion: with no
+// env set the sweep RUNS (apply) — reconcileShippedClaims makes rows mailed
+// again, so recovery cannot depend on an operator arming a flag. The gate is
+// now an opt-OUT kill switch (PARTNER_DRIP_STAMP_RECOVERY_DISABLED); the
+// legacy var survives only as a mode override.
+func TestStampRecoveryModeDefaultsOn(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY_DISABLED", "")
 	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "")
-	assert.Equal(t, stampRecoveryOff, currentStampRecoveryMode())
+	assert.Equal(t, stampRecoveryApply, currentStampRecoveryMode(), "unset must mean ALWAYS ON")
 	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "dry")
 	assert.Equal(t, stampRecoveryDry, currentStampRecoveryMode())
 	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "apply")
 	assert.Equal(t, stampRecoveryApply, currentStampRecoveryMode())
-	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "yes-please")
-	assert.Equal(t, stampRecoveryOff, currentStampRecoveryMode(), "an unrecognized value must fail CLOSED")
+	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "off")
+	assert.Equal(t, stampRecoveryOff, currentStampRecoveryMode(), "legacy explicit off still honored")
+	// The kill switch wins over everything.
+	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "apply")
+	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY_DISABLED", "1")
+	assert.Equal(t, stampRecoveryOff, currentStampRecoveryMode(), "kill switch must override the mode var")
 }
 
-// TestMaybeRunStampRecovery_InertWhenUnset proves the tick hook issues no query
-// at all with the flag off — no DB expectations are set, so any query fails.
-func TestMaybeRunStampRecovery_InertWhenUnset(t *testing.T) {
-	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY", "")
+// TestMaybeRunStampRecovery_InertWhenDisabled proves the kill switch: the tick
+// hook issues no query at all — no DB expectations are set, so any query fails.
+func TestMaybeRunStampRecovery_InertWhenDisabled(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_STAMP_RECOVERY_DISABLED", "1")
 	po, mock, done := newStampMock(t)
 	defer done()
 	po.maybeRunStampRecovery(context.Background())

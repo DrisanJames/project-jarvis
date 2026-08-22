@@ -2518,6 +2518,19 @@ var concurrentIndexSpecs = []struct {
 	// heap. Partial: only first-touched rows carry a mailed_at.
 	{"idx_pcq_intro_rollup", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_intro_rollup ON partner_clean_queue (mailed_at, mailed_brand, isp_family) WHERE mailed_at IS NOT NULL`},
 
+	// ---- Drip revamp 2026-08-22: batched janitor/reconcile + deploy-name probe ----
+	// releaseStaleClaims and reconcileShippedClaims now sweep in LIMITed
+	// batches (claimSweepBatchSize, partner_drip_orchestrator.go); these two
+	// partials make each batch's id-select an index range read instead of a
+	// full scan of the 11M-row queue. Both are tiny (claimed rows are a
+	// transient minority) but the builds still scan the full heap, so they
+	// live here. idx_campaigns_org_name serves BOTH the per-deploy
+	// by-(org,name) idempotency guard (reserveCampaignForDeploy) and the
+	// orchestrator's post-deploy-error recovery probe (findDeployedCampaignByName).
+	{"idx_pcq_claimed_reconcile", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_claimed_reconcile ON partner_clean_queue (last_touch_campaign_id) WHERE status = 'claimed' AND last_touch_campaign_id IS NOT NULL`},
+	{"idx_pcq_claimed_janitor", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_claimed_janitor ON partner_clean_queue (claimed_at) WHERE status = 'claimed' AND subscriber_id IS NULL AND mailed_campaign_id IS NULL`},
+	{"idx_campaigns_org_name", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_name ON mailing_campaigns (organization_id, name)`},
+
 	// ---- Drip Observatory D1 (Vector B rev4 §4) — supporting indexes ONLY ----
 	// The rollup worker's discovery scans (plan §6.3/§6.5) and the hygiene/
 	// inactivity queries (§6.7/§9.2) ride these five. Live here (not the 5s
@@ -9859,6 +9872,16 @@ END $$`},
 			               'internal-auto-insurance-v5','internal-auto-insurance-v6',
 			               'internal-auto-insurance-v7')
 			  AND vertical = 'refi_heloc'`},
+
+		// aug22 drip revamp: operator-assigned friendly names for drip lanes
+		// (keyed on the lane's vertical slug). Read by the property-ledger
+		// /overview + /roster surfaces; written via PUT /property-ledger/lane-label.
+		{"aug22_partner_drip_lane_labels", `CREATE TABLE IF NOT EXISTS partner_drip_lane_labels (
+			vertical TEXT PRIMARY KEY,
+			display_name TEXT NOT NULL,
+			updated_by TEXT,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
 
 		// ── Drip Observatory (Vector B, plan rev4 P1 — schema ONLY) ─────────
 		// Identity + grain contracts: plan §3 (P0). Placed per plan §5 after
