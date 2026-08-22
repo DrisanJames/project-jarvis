@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  buildThrottleDiff, buildThrottlePayload, validateThrottleRows,
+  buildThrottleDiff, buildThrottlePayload, validateThrottleRows, zeroDailyCaps,
   type ThrottleRow,
 } from './throttleDiff';
 
@@ -98,5 +98,34 @@ describe('buildThrottlePayload — exact body for the existing PUT', () => {
   });
   it('drops blank-ISP rows', () => {
     expect(buildThrottlePayload([row('', 0.4, 0, null)]).overrides).toHaveLength(0);
+  });
+});
+
+// The zero-cap confirm (operator 2026-08-21: "how can I manage the caps or
+// throttling from here … with no confidence"). Setting a cap to 0 is a
+// SUPPRESSION that stops a ladder already in motion, so it earns its own
+// confirm — but ONLY for daily_cap. max_per_wave=0 is "no per-wave override".
+describe('zeroDailyCaps — what the extra confirm fires on', () => {
+  it('flags a NEW hard suppression', () => {
+    expect(zeroDailyCaps([], [row('gmail', 0.4, 100, 0)])).toEqual(['gmail']);
+  });
+  it('flags a change from a real budget to 0', () => {
+    expect(zeroDailyCaps([row('gmail', 0.4, 100, 500)], [row('gmail', 0.4, 100, 0)]))
+      .toEqual(['gmail']);
+  });
+  it('does NOT re-fire when the ISP is already suppressed', () => {
+    expect(zeroDailyCaps([row('gmail', 0.4, 100, 0)], [row('gmail', 0.2, 100, 0)]))
+      .toEqual([]);
+  });
+  it('does NOT fire on max_per_wave=0 — that is "no override", not a suppression', () => {
+    expect(zeroDailyCaps([row('yahoo', 0.3, 50, null)], [row('yahoo', 0.3, 0, null)]))
+      .toEqual([]);
+  });
+  it('does NOT fire on a NULL daily_cap (rides the global default)', () => {
+    expect(zeroDailyCaps([], [row('yahoo', 0.3, 0, null)])).toEqual([]);
+  });
+  it('normalises case and ignores blank rows', () => {
+    expect(zeroDailyCaps([], [row('GMAIL', 0.4, 0, 0), row('  ', 0, 0, 0)]))
+      .toEqual(['gmail']);
   });
 });

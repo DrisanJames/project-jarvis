@@ -151,3 +151,26 @@ export function buildThrottlePayload(rows: ThrottleRow[]): {
       }),
   };
 }
+
+/**
+ * zeroDailyCaps — ISPs this write would HARD-SUPPRESS.
+ *
+ * Only daily_cap = 0 suppresses. max_per_wave = 0 does NOT: the orchestrator's
+ * applyDatasetISPCapOverrides only applies rows with max_per_wave > 0, so a 0
+ * there means "no per-wave override", i.e. fall back to the global default.
+ * Conflating the two would fire a scary confirm on a harmless edit and, worse,
+ * teach the operator that 0 means the same thing in both columns.
+ */
+export const zeroDailyCaps = (current: ThrottleRow[], proposed: ThrottleRow[]): string[] => {
+  const before = new Map(current.map((r) => [r.isp.trim().toLowerCase(), r]));
+  const out: string[] = [];
+  for (const r of proposed) {
+    const isp = r.isp.trim().toLowerCase();
+    if (isp === '' || r.daily_cap !== 0) continue;
+    const prior = before.get(isp);
+    if (prior && prior.daily_cap === 0) continue; // already suppressed, no change
+    out.push(isp);
+  }
+  return out;
+};
+

@@ -47,7 +47,8 @@ import {
 import { FilterChip, daysAgoDenver, denverToday } from '../shared/filters';
 import { useToast } from '../shared/ToastSystem';
 import {
-  buildThrottleDiff, buildThrottlePayload, validateThrottleRows, type ThrottleRow,
+  buildThrottleDiff, buildThrottlePayload, validateThrottleRows, zeroDailyCaps,
+  type ThrottleRow,
 } from './throttleDiff';
 
 const PAGE_VERSION = 'drip-journey-canvas v1 — 2026-08-19';
@@ -162,6 +163,22 @@ interface RosterResponse {
 }
 
 // Journey (…/property-ledger/journey) — the ladder itself.
+
+// Per-touch CONTENT RESOLUTION (operator 2026-08-21: the canvas printed
+// "(no creative bound)" on every touch, which was FALSE — an empty
+// creative_filename is the OFFER-CENTER path). The server does the resolving,
+// mirroring the orchestrator branch-for-branch; this file only renders it.
+interface JourneyOffer {
+  offer_id: string;
+  name: string;
+  status: string;
+  found: boolean;
+  active_creatives: number;
+  active_subjects: number;
+  active_from_names: number;
+  resolvable: boolean;
+  problem?: string;
+}
 interface JourneyTouch {
   touch: number;
   subject_line: string;
@@ -171,6 +188,52 @@ interface JourneyTouch {
   offer_id?: string;
   active: boolean;
   configured: boolean;
+  // 'file' | 'offer' | 'none'. Absent on an older server → the node falls back
+  // to the raw filename rather than inventing a verdict.
+  content_source?: string;
+  resolves?: boolean;
+  resolution_label?: string;
+  resolution_detail?: string;
+  resolution_problem?: string;
+  offer_source?: string;       // 'dataset' | 'touch-row'
+  offer_dataset?: string;
+  offer?: JourneyOffer;
+}
+
+// SEND ACTIVITY (operator 2026-08-21: "very challenging to infer if mail is
+// being sent or not … it makes it seem like this lane is static").
+//
+// ⚠️ WELCOME and FOLLOW-UP are two SEPARATE lines and must never be merged.
+// partner_drip_state.last_wave_at is written only by the welcome pass, so a
+// lane mailing only follow-ups has a stale pointer while actively sending. The
+// server enforces the split; this file must not re-collapse it.
+interface JourneyActivityFamily {
+  family: string;              // 'welcome' | 'followup'
+  last_wave_at: string | null; // null = no wave in the window — ABSENT, not 0
+  age_seconds: number | null;
+  waves_1h: number;
+  sent_1h: number;
+  waves_today: number;
+  sent_today: number;
+  verdict: string;             // 'flowing' | 'stalled'
+  verdict_note: string;
+}
+interface JourneySendActivity {
+  stale_hours: number;
+  denver_day: string;
+  window_start: string;
+  families: JourneyActivityFamily[];
+  rotation_state: {
+    present: boolean;
+    last_wave_at: string | null;
+    last_wave_brand?: string;
+    last_wave_size?: number;
+    note: string;
+  };
+  counting_note: string;
+  // A NAMED GAP: the activity read failed while the ladder read succeeded.
+  // Rendered as a failure, never as "0 sent".
+  error?: string;
 }
 interface JourneyEdgeISP {
   isp: string;
@@ -193,6 +256,8 @@ interface JourneyResponse {
   touches: JourneyTouch[];
   edges: JourneyEdge[];
   totals: { in_flight?: number | null; due_now?: number | null };
+  send_activity?: JourneySendActivity;
+  dominant_dataset?: { dataset_id: string; slug: string; offer_id: string; note: string };
   generated_at?: string;
 }
 
@@ -355,6 +420,19 @@ interface ThrottleOverride {
   updated_at: string;
   updated_by?: string;
 }
+// EFFECTIVE CAPS + PROVENANCE (operator 2026-08-21: "how can I manage the caps
+// or throttling from here? … with no confidence"). The stated problem is
+// CONFIDENCE, so the source that wins is the feature: default_isps alone said
+// an ISP rides the default without saying what the default is.
+interface ThrottleEffective {
+  isp: string;
+  per_wave: number;
+  per_wave_source: string;
+  daily_cap: number | null;   // null = no daily budget at either scope — ABSENT
+  daily_cap_source: string;
+  brand_blocked: boolean;
+  note?: string;
+}
 interface ThrottleFeed {
   dataset_id: string;
   name: string;
@@ -365,6 +443,7 @@ interface ThrottleFeed {
   shared_brands: string[];
   overrides: ThrottleOverride[];
   default_isps: string[];
+  effective?: ThrottleEffective[];
 }
 interface ThrottleResponse {
   domain: string;
@@ -377,6 +456,9 @@ interface ThrottleResponse {
   replacement_note: string;
   enforcement_note: string;
   cap_systems_note: string;
+  provenance_note?: string;
+  drain_horizon_note?: string;
+  zero_cap_note?: string;
   feeds: ThrottleFeed[];
 }
 
@@ -648,18 +730,111 @@ const edgeWeight = (waiting: number | null): number => {
   return Math.max(1.5, Math.min(6, 1.5 + Math.log10(waiting) * 1.4));
 };
 
+/**
+ * TouchContentLine — WHAT this touch actually ships, and whether it resolves.
+ *
+ * Operator 2026-08-21: this line used to print `(no creative bound)` whenever
+ * creative_filename was empty. That is FALSE — an empty filename is the
+ * OFFER-CENTER path. Verified on prod for (db, internal_auto_insurance): all
+ * four configured touches carry creative_filename='' + an offer_id and were
+ * every one of them labelled "no creative bound".
+ *
+ * The server does the resolving (it mirrors the orchestrator's own branches);
+ * this renders its verdict. An older server that sends no resolution fields
+ * falls back to the raw filename rather than inventing one.
+ */
+const TouchContentLine: React.FC<{ touch: JourneyTouch }> = ({ touch }) => {
+  const src = touch.content_source;
+  if (!src) {
+    return (
+      <div
+        title={`Creative: ${touch.creative_filename || 'not reported by this server'}`}
+        style={{
+          fontSize: 10, fontFamily: 'monospace', color: colors.textFaint, marginTop: 3,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}
+      >
+        {touch.creative_filename || <span style={{ color: colors.warningText }}>content path not reported</span>}
+      </div>
+    );
+  }
+
+  const unresolvable = touch.resolves === false;
+  const detail = [touch.resolution_detail, touch.resolution_problem, touch.offer_dataset ? `bound by dataset ${touch.offer_dataset}` : '']
+    .filter(Boolean).join(' — ');
+
+  if (unresolvable) {
+    return (
+      <div
+        title={detail || 'This touch will not send.'}
+        style={{
+          marginTop: 4, fontSize: 10, fontWeight: 700, lineHeight: 1.35,
+          color: colors.dangerText,
+          background: alpha(colors.danger, '22'),
+          border: `1px solid ${alpha(colors.danger, '66')}`,
+          borderRadius: 5, padding: '3px 6px',
+        }}
+      >
+        {touch.resolution_label || 'UNRESOLVABLE — touch will not send'}
+        {touch.resolution_problem && (
+          <div style={{ fontWeight: 400, color: colors.dangerText, marginTop: 2,
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {touch.resolution_problem}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      title={detail || touch.resolution_label}
+      style={{
+        fontSize: 10, marginTop: 3, display: 'flex', alignItems: 'center', gap: 5,
+        whiteSpace: 'nowrap', overflow: 'hidden',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 8, letterSpacing: 0.5, fontWeight: 700, flex: '0 0 auto',
+          color: src === 'offer' ? colors.indigo200 : colors.textMuted,
+          border: `1px solid ${alpha(src === 'offer' ? colors.indigo400 : colors.textFaint, '66')}`,
+          borderRadius: 4, padding: '0 4px',
+        }}
+      >
+        {src === 'offer' ? 'OFFER' : 'FILE'}
+      </span>
+      <span
+        style={{
+          fontFamily: src === 'file' ? 'monospace' : undefined,
+          color: colors.textFaint, overflow: 'hidden', textOverflow: 'ellipsis',
+        }}
+      >
+        {touch.resolution_label}
+      </span>
+    </div>
+  );
+};
+
 const TouchNode: React.FC<{ touch: JourneyTouch; x: number; y: number }> = ({ touch, x, y }) => {
   const configured = touch.configured;
-  const accent = !configured ? colors.textFaint : touch.active ? colors.indigo400 : colors.warning;
+  // A touch that is CONFIGURED but does not RESOLVE is the worst state on this
+  // screen: it looks live and will not send. Make the whole node alarming.
+  const broken = configured && touch.resolves === false;
+  const accent = broken
+    ? colors.danger
+    : !configured ? colors.textFaint : touch.active ? colors.indigo400 : colors.warning;
   return (
     <div
       style={{
         position: 'absolute', left: x, top: y, width: NODE_W, height: NODE_H,
         boxSizing: 'border-box',
         background: configured ? colors.panelBg : 'rgba(15,30,60,0.16)',
-        border: configured
-          ? `1px solid ${alpha(colors.indigo500, '44')}`
-          : `1px dashed ${alpha(colors.textFaint, '66')}`,
+        border: broken
+          ? `1px solid ${alpha(colors.danger, '66')}`
+          : configured
+            ? `1px solid ${alpha(colors.indigo500, '44')}`
+            : `1px dashed ${alpha(colors.textFaint, '66')}`,
         borderLeft: `4px solid ${accent}`,
         borderRadius: 10,
         padding: '9px 11px',
@@ -671,11 +846,13 @@ const TouchNode: React.FC<{ touch: JourneyTouch; x: number; y: number }> = ({ to
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: colors.heading }}>
           TOUCH {touch.touch}
         </span>
-        {configured
-          ? <Pill color={touch.active ? colors.success : colors.warning} style={{ fontSize: 9, padding: '1px 7px' }}>
-              {touch.active ? 'active' : 'inactive'}
-            </Pill>
-          : <Pill color={colors.textFaint} style={{ fontSize: 9, padding: '1px 7px' }}>none</Pill>}
+        {broken
+          ? <Pill color={colors.danger} style={{ fontSize: 9, padding: '1px 7px' }}>won&apos;t send</Pill>
+          : configured
+            ? <Pill color={touch.active ? colors.success : colors.warning} style={{ fontSize: 9, padding: '1px 7px' }}>
+                {touch.active ? 'active' : 'inactive'}
+              </Pill>
+            : <Pill color={colors.textFaint} style={{ fontSize: 9, padding: '1px 7px' }}>none</Pill>}
       </div>
 
       {!configured ? (
@@ -708,15 +885,7 @@ const TouchNode: React.FC<{ touch: JourneyTouch; x: number; y: number }> = ({ to
           <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 6 }}>
             from <b style={{ color: colors.indigo200 }}>{touch.from_name || UNKNOWN}</b>
           </div>
-          <div
-            title={`Creative: ${touch.creative_filename || 'none'}${touch.offer_id ? ` · offer ${touch.offer_id}` : ''}`}
-            style={{
-              fontSize: 10, fontFamily: 'monospace', color: colors.textFaint, marginTop: 3,
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}
-          >
-            {touch.creative_filename || '(no creative bound)'}
-          </div>
+          <TouchContentLine touch={touch} />
         </>
       )}
     </div>
@@ -910,11 +1079,232 @@ const JourneyCanvas: React.FC<{
   );
 };
 
+// ── SEND ACTIVITY strip ─────────────────────────────────────────────────────
+//
+// Operator 2026-08-21: "it is very challenging to infer if mail is being sent
+// or not … it makes it seem like this lane is static." Everything else on this
+// screen is a STOCK count (in-flight, due-now, waiting) — a stalled lane and a
+// flowing lane render identically. This strip is the FLOW half.
+//
+// ⚠️ TWO LINES, NEVER ONE. partner_drip_state.last_wave_at is written only by
+// the WELCOME pass, so a lane running only follow-ups shows a stale pointer
+// while it is actively mailing. The server splits welcome from follow-up and
+// grades each independently; merging them here would reintroduce exactly the
+// wrong verdict this exists to prevent.
+
+/** relativeAgo — "4m ago" from a server age. An unknown is "—", never "0s". */
+const relativeAgo = (ageSeconds: number | null | undefined): string => {
+  if (typeof ageSeconds !== 'number' || !Number.isFinite(ageSeconds)) return UNKNOWN;
+  const a = Math.max(0, Math.round(ageSeconds));
+  if (a < 60) return `${a}s ago`;
+  if (a < 3600) return `${Math.floor(a / 60)}m ago`;
+  if (a < 172800) return `${Math.floor(a / 3600)}h ${Math.floor((a % 3600) / 60)}m ago`;
+  return `${Math.floor(a / 86400)}d ago`;
+};
+
+const ActivityLine: React.FC<{ fam: JourneyActivityFamily; staleHours: number }> = ({ fam, staleHours }) => {
+  const stalled = fam.verdict !== 'flowing';
+  const label = fam.family === 'followup' ? 'FOLLOW-UP (touches 2+)' : 'WELCOME (touch 1)';
+  return (
+    <div
+      style={{
+        border: `1px solid ${alpha(stalled ? colors.danger : colors.success, '44')}`,
+        background: alpha(stalled ? colors.danger : colors.success, '14'),
+        borderLeft: `4px solid ${stalled ? colors.danger : colors.success}`,
+        borderRadius: 8, padding: '8px 11px',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: colors.heading }}>{label}</span>
+        <span
+          title={fam.verdict_note}
+          style={{
+            fontSize: 12, fontWeight: 800, letterSpacing: 0.8,
+            color: stalled ? colors.dangerText : colors.successText,
+          }}
+        >
+          {stalled ? 'STALLED' : 'FLOWING'}
+        </span>
+        <span style={{ fontSize: 11, color: colors.textMuted }}>
+          last wave {fam.last_wave_at ? shortTime(fam.last_wave_at) : UNKNOWN}
+          {fam.last_wave_at ? ` · ${relativeAgo(fam.age_seconds)}` : ''}
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: colors.text, marginTop: 5, fontVariantNumeric: 'tabular-nums' }}>
+        last hour <b>{num(fam.waves_1h)}</b> wave{fam.waves_1h === 1 ? '' : 's'} ·{' '}
+        <b>{num(fam.sent_1h)}</b> sent
+        <span style={{ color: colors.textFaint }}> | </span>
+        today <b>{num(fam.waves_today)}</b> wave{fam.waves_today === 1 ? '' : 's'} ·{' '}
+        <b>{num(fam.sent_today)}</b> sent
+      </div>
+      <div style={{ fontSize: 10, color: stalled ? colors.dangerText : colors.textFaint, marginTop: 4, lineHeight: 1.45 }}>
+        {fam.verdict_note || `threshold ${staleHours}h`}
+      </div>
+    </div>
+  );
+};
+
+const SendActivityStrip: React.FC<{ activity?: JourneySendActivity }> = ({ activity }) => {
+  if (!activity) {
+    return (
+      <div style={{ ...noteStyle, color: colors.warningText, marginTop: 0, marginBottom: 12 }}>
+        This server did not report send activity — flow is UNKNOWN on this screen, not zero.
+      </div>
+    );
+  }
+  if (activity.error) {
+    // A NAMED GAP. The read failed; it is not "nothing was sent".
+    return (
+      <div
+        style={{
+          fontSize: 11, fontWeight: 600, color: colors.warningText,
+          background: alpha(colors.warning, '14'),
+          border: `1px solid ${alpha(colors.warning, '44')}`,
+          borderRadius: 6, padding: '7px 10px', marginBottom: 12,
+        }}
+      >
+        Send activity unavailable — the server reported “{activity.error}”. The ladder below is
+        still live; flow is UNKNOWN for this refresh, not zero.
+      </div>
+    );
+  }
+  const rot = activity.rotation_state;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 7, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: colors.heading, fontWeight: 700, letterSpacing: 0.5 }}>
+          <FontAwesomeIcon icon={faClock} style={{ marginRight: 6 }} />
+          SEND ACTIVITY — is this lane actually mailing?
+        </span>
+        <span style={{ fontSize: 10, color: colors.textFaint }}>
+          Denver day {activity.denver_day} · stale threshold {activity.stale_hours}h
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
+        {activity.families.length === 0 && (
+          <div style={{ fontSize: 11, color: colors.textFaint }}>
+            The server returned no activity lines for this lane.
+          </div>
+        )}
+        {activity.families.map((f) => (
+          <ActivityLine key={f.family} fam={f} staleHours={activity.stale_hours} />
+        ))}
+      </div>
+      <div style={{ ...noteStyle, marginTop: 8 }} title={rot.note}>
+        Rotation pointer (partner_drip_state, whole vertical):{' '}
+        {rot.present
+          ? <>last welcome wave {rot.last_wave_at ? shortTime(rot.last_wave_at) : UNKNOWN}
+              {rot.last_wave_brand ? ` by ${rot.last_wave_brand}` : ''}
+              {typeof rot.last_wave_size === 'number' ? ` · ${num(rot.last_wave_size)} recipients` : ''}</>
+          : <>no row — the welcome pass has never fired for this drip</>}
+        {' — '}written only by the welcome pass, shared across the rotation. It is NOT evidence about
+        follow-ups: a lane doing only follow-ups leaves this pointer stale while it mails.
+      </div>
+      <div style={{ ...noteStyle, marginTop: 4 }}>{activity.counting_note}</div>
+    </div>
+  );
+};
+
 // ── Throttle editor (quota levers) ──────────────────────────────────────────
 // Writes go through the ONE existing writer, PUT
 // /api/mailing/data-partners/datasets/{id}/isp-distribution (delete-and-
 // replace, audit-logged server-side). The diff/validation/payload logic is the
 // shared pure module throttleDiff.ts — not re-derived here.
+
+/**
+ * EffectiveCapTable — per ISP, the cap that will bind on the NEXT wave and
+ * WHICH source produced it.
+ *
+ * Operator 2026-08-21: "how can I manage the caps or throttling from here?
+ * Seems like I have to spin up an agent to do that and with no confidence."
+ * The stated problem is CONFIDENCE, so the provenance IS the feature. The old
+ * panel listed the override rows plus a bare "riding global defaults: …" line
+ * that never said what the default was.
+ *
+ * Every value here is server-resolved (internal/api/property_lane_supply.go);
+ * nothing is inferred in the browser.
+ */
+const EffectiveCapTable: React.FC<{
+  rows?: ThrottleEffective[];
+  defaultISPs: string[];
+  provenanceNote?: string;
+  drainNote?: string;
+}> = ({ rows, defaultISPs, provenanceNote, drainNote }) => {
+  if (!rows) {
+    // Older server: say so rather than pretending the defaults are unknowable.
+    return (
+      <div style={{ fontSize: 10, color: colors.warningText, marginTop: 6 }}>
+        This server did not report effective caps. ISPs with no override row (
+        {defaultISPs.join(', ') || 'none'}) ride the global defaults, whose values this
+        server does not expose.
+      </div>
+    );
+  }
+  const srcColor = (src: string): string =>
+    src === 'lane override' ? colors.indigo200
+      : src === 'none' ? colors.textFaint
+        : colors.textMuted;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: colors.textMuted, marginBottom: 5 }}>
+        Effective on the next wave — and which source wins
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ ...tableStyle, minWidth: 640 }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>ISP</th>
+              <th style={numTh} title="Base per-wave claim ceiling that binds next wave. The drain horizon can only LOWER it.">
+                Per wave
+              </th>
+              <th style={thStyle}>Per-wave source</th>
+              <th style={numTh} title="Lane-owned or global per-ISP DAILY budget. Blank = no daily budget at either scope; 0 = HARD SUPPRESSED.">
+                Daily cap
+              </th>
+              <th style={thStyle}>Daily source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => {
+              const zeroDay = e.daily_cap === 0;
+              const rowColor = e.brand_blocked || zeroDay ? colors.dangerText : colors.text;
+              return (
+                <tr key={e.isp} title={e.note}>
+                  <td style={{ ...tdStyle, color: rowColor, fontWeight: e.brand_blocked || zeroDay ? 700 : 400 }}>
+                    {e.isp}
+                    {e.brand_blocked && (
+                      <span style={{ fontSize: 9, marginLeft: 6, color: colors.dangerText }}>
+                        BRAND BLOCKED
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ ...numTd, color: e.brand_blocked ? colors.dangerText : colors.text }}>
+                    {e.brand_blocked ? '0' : num(e.per_wave)}
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: 10, color: srcColor(e.per_wave_source) }}>
+                    {e.brand_blocked ? 'brand-allow gate (forced 0)' : e.per_wave_source}
+                  </td>
+                  <td style={{ ...numTd, color: rowColor, fontWeight: zeroDay ? 700 : 400 }}>
+                    {e.brand_blocked
+                      ? '0'
+                      : e.daily_cap == null
+                        ? <span style={{ color: colors.textFaint }} title="No daily budget at either scope — ABSENT, not zero.">—</span>
+                        : zeroDay ? '0 (suppressed)' : num(e.daily_cap)}
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: 10, color: srcColor(e.daily_cap_source) }}>
+                    {e.brand_blocked ? 'brand-allow gate (forced 0)' : e.daily_cap_source}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {provenanceNote && <p style={noteStyle}>{provenanceNote}</p>}
+      {drainNote && <p style={noteStyle}>{drainNote}</p>}
+    </div>
+  );
+};
 
 interface ThrottleEditRow { isp: string; pct: string; wave: string; day: string; }
 
@@ -945,10 +1335,11 @@ const currentRows = (feed: ThrottleFeed): ThrottleRow[] =>
 const ThrottleEditor: React.FC<{
   feed: ThrottleFeed;
   replacementNote: string;
+  zeroCapNote?: string;
   onClose: () => void;
   onSaved: () => void;
   onNotice: (s: string) => void;
-}> = ({ feed, replacementNote, onClose, onSaved, onNotice }) => {
+}> = ({ feed, replacementNote, zeroCapNote, onClose, onSaved, onNotice }) => {
   const [rows, setRows] = useState<ThrottleEditRow[]>(() => editRowsFromFeed(feed));
   const [addISP, setAddISP] = useState('');
   const [busy, setBusy] = useState(false);
@@ -958,12 +1349,29 @@ const ThrottleEditor: React.FC<{
   const diff = errors.length === 0 ? buildThrottleDiff(currentRows(feed), proposed) : [];
   const changes = diff.filter((d) => d.kind !== 'unchanged');
   const availableISPs = feed.default_isps.filter((g) => !rows.some((r) => r.isp === g));
+  const zeroed = errors.length === 0 ? zeroDailyCaps(currentRows(feed), proposed) : [];
   const diffColor: Record<string, string> = {
     added: colors.success, removed: colors.danger, changed: colors.warning, unchanged: colors.textFaint,
   };
 
   const submit = async () => {
     if (errors.length > 0 || busy) return;
+    // A cap set to 0 is a SUPPRESSION, not a slowdown, and it stops a ladder
+    // already in motion. It gets its own confirm naming exactly what stops.
+    if (zeroed.length > 0) {
+      const stops = zeroed.map((isp) => ` • ${isp}: no NEW records claimed, AND every follow-up`
+        + ` touch already in motion for ${isp} on this feed STOPS`).join('\n');
+      const ok = window.confirm(
+        `HARD SUPPRESSION — this write sets a DAILY CAP TO 0 for ${zeroed.length} ISP(s) on `
+        + `"${feed.name}".\n\nWhat that stops on the next wave:\n${stops}\n\n`
+        + `The key is DATASET: if this drip is split across several v-lane feeds, the other `
+        + `feeds keep mailing unless you set the same 0 on each of them.\n\nContinue?`,
+      );
+      if (!ok) {
+        onNotice('Throttle write cancelled — hard-suppression not confirmed.');
+        return;
+      }
+    }
     const typed = window.prompt(
       `THROTTLE REPLACE changes LIVE claim routing for this feed on the next orchestrator wave.\n\n${replacementNote}\n\nType the feed name exactly to confirm:\n${feed.name}`,
     );
@@ -1071,13 +1479,29 @@ const ThrottleEditor: React.FC<{
           ))}
         </div>
       )}
+      {zeroed.length > 0 && (
+        <div
+          style={{
+            marginTop: 8, fontSize: 10, lineHeight: 1.5, fontWeight: 600,
+            color: colors.dangerText,
+            background: alpha(colors.danger, '22'),
+            border: `1px solid ${alpha(colors.danger, '66')}`,
+            borderRadius: 6, padding: '7px 10px',
+          }}
+        >
+          HARD SUPPRESSION — daily cap 0 on <b>{zeroed.join(', ')}</b>. This stops new intake AND
+          the follow-up touches already in motion for those ISPs on this feed; a ladder mid-flight
+          stops. A second confirm names it before the write.
+          {zeroCapNote && <div style={{ fontWeight: 400, marginTop: 4 }}>{zeroCapNote}</div>}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
         <button
           type="button" style={dangerBtn}
           disabled={busy || errors.length > 0 || changes.length === 0}
           onClick={() => void submit()}
         >
-          {busy ? 'Replacing…' : 'Replace throttle…'}
+          {busy ? 'Replacing…' : zeroed.length > 0 ? 'Replace throttle (SUPPRESSES)…' : 'Replace throttle…'}
         </button>
         <button
           type="button"
@@ -1645,6 +2069,7 @@ export const DripJourneyCanvas: React.FC = () => {
         >
           {j && (
             <>
+              <SendActivityStrip activity={j.send_activity} />
               <div style={{ ...cardGrid(150), marginBottom: 14 }}>
                 <Stat
                   label="In flight (this drip)"
@@ -2609,16 +3034,21 @@ export const DripJourneyCanvas: React.FC = () => {
                     </table>
                   </div>
 
-                  {f.default_isps.length > 0 && (
-                    <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 6 }}>
-                      Riding global defaults (no override row): {f.default_isps.join(', ')}
-                    </div>
-                  )}
+                  {/* EFFECTIVE POSTURE — the provenance the operator asked for.
+                      A bare list of "ISPs riding the defaults" never said what
+                      the defaults ARE, which is the whole confidence gap. */}
+                  <EffectiveCapTable
+                    rows={f.effective}
+                    defaultISPs={f.default_isps}
+                    provenanceNote={throttle.data?.provenance_note}
+                    drainNote={throttle.data?.drain_horizon_note}
+                  />
 
                   {throttle.data?.write_enabled && editingFeed === f.dataset_id && (
                     <ThrottleEditor
                       feed={f}
                       replacementNote={throttle.data.replacement_note}
+                      zeroCapNote={throttle.data.zero_cap_note}
                       onClose={() => setEditingFeed(null)}
                       onSaved={() => { setEditingFeed(null); throttle.reload(); }}
                       onNotice={notify}
