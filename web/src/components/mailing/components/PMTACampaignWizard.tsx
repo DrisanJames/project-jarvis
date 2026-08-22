@@ -63,6 +63,110 @@ const ALL_ISPS = ['gmail', 'yahoo', 'aol', 'microsoft', 'apple', 'comcast', 'att
 //   pacing   agents/scheduling/legacy_lib.build_isp_plans (15 min, gentle, Denver)
 const SEND_DAY_TIMEZONE = 'America/Denver';
 
+// ---------------------------------------------------------------------------
+// AUTO-NAMING (operator 2026-08-20). Every campaign-name defect on the 08/20 and
+// 08/21 boards came from hand-typing the field: 'MF' for MH, '08062026' and
+// '080202026' for 08202026, and a 'DB' name on a consumerpro payload. The name is
+// how the board is verified — a mistyped one is invisible to by-name checks and
+// forks the property in reporting — so it is derived, not typed.
+//
+// Shape: MMDDYYYY - BRAND - OFFER, dated for the NEXT send day.
+const BRAND_PREFIX: Record<string, string> = {
+  historythinking: 'HT', ratesbazar: 'RB', quizfiesta: 'QF',
+  learnpersonalloans: 'LPL', myownhealth: 'MH', discountblog: 'DB',
+  casainsure: 'CI', consumerpro: 'CP', warrantyforyou: 'WF',
+  yourinsurancehub: 'YIH', thingoftheday: 'TOT', financialcalculate: 'FC',
+  homewarrantyservices: 'HWS', myrepairdiy: 'MR', businessweeklypro: 'BWP',
+  refinanceratesusa: 'RR',
+};
+
+// Offer rows carry long catalogue names ("Sam's Club Membership - Partner Drip
+// (4989)"); boards use a short token. Longest match wins so 'west shore' is not
+// shadowed by a shorter key.
+const OFFER_TOKEN: Record<string, string> = {
+  "sam's club": 'Sams', 'samsclub': 'Sams',
+  'globe life': 'Globe',
+  'choice home warranty': 'CHW',
+  'accredited debt': 'ADR',
+  'freedom debt': 'Freedom',
+  'liberty mutual': 'Liberty',
+  'adt': 'ADT',
+  'metal roofing': 'MR',
+  'west shore': 'Westshore', 'westshore': 'Westshore',
+  'carshield': 'CarShield',
+  'serviceplus': 'ServicePlus',
+  'budget blinds': 'Blinds',
+};
+
+export const brandPrefixForDomain = (domain: string): string => {
+  const apex = (domain || '').replace(/^(em|m)\./i, '').split('.')[0] || '';
+  return BRAND_PREFIX[apex.toLowerCase()] || '';
+};
+
+export const offerTokenForName = (offerName: string): string => {
+  const n = (offerName || '').toLowerCase();
+  const hit = Object.keys(OFFER_TOKEN)
+    .filter(k => n.includes(k))
+    .sort((a, b) => b.length - a.length)[0];
+  if (hit) return OFFER_TOKEN[hit];
+  // Fallback: first meaningful word, so an unmapped offer still yields a usable
+  // token rather than an empty segment.
+  const w = (offerName || '').split(/[\s\-—(]+/).filter(Boolean)[0] || '';
+  return w ? w.charAt(0).toUpperCase() + w.slice(1) : '';
+};
+
+// MMDDYYYY of an INSTANT, read in the send-day zone. The campaign name has to
+// say the day the mail actually lands, and the operator's browser is not
+// necessarily in Denver — so the calendar date is always read back through the
+// send-day zone, never off the local Date getters.
+export const sendDayTokenForInstant = (when: Date): string => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SEND_DAY_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(when);
+  const g = (t: string) => parts.find(x => x.type === t)?.value || '';
+  return `${g('month')}${g('day')}${g('year')}`;
+};
+
+// MMDDYYYY for the send day `dayOffset` days from today, in the send-day zone.
+export const sendDayDateToken = (dayOffset: number): string => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SEND_DAY_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const g = (t: string) => parts.find(x => x.type === t)?.value || '';
+  const base = new Date(Number(g('year')), Number(g('month')) - 1, Number(g('day')));
+  base.setDate(base.getDate() + dayOffset);
+  const mm = String(base.getMonth() + 1).padStart(2, '0');
+  const dd = String(base.getDate()).padStart(2, '0');
+  return `${mm}${dd}${base.getFullYear()}`;
+};
+
+/**
+ * The date token a campaign should carry, given the schedule it will actually
+ * run on. `scheduledAtLocal` is the raw <input type="datetime-local"> value.
+ *
+ * The date is NEVER a fixed "tomorrow": a preset can move the send to today
+ * (applyAnchorPreset shifts to today whenever the anchor is still >15 min out)
+ * and the operator can hand-edit the field to any day. A name that disagrees
+ * with the payload is the 08/20-08/21 defect all over again — invisible to
+ * verify-by-name, and it forks the property in trend reporting.
+ */
+export const nameDateTokenForSchedule = (
+  scheduledAtLocal: string,
+  sendMode: 'immediate' | 'scheduled',
+): string => {
+  if (sendMode === 'immediate') return sendDayDateToken(0);
+  if (scheduledAtLocal) {
+    const when = new Date(scheduledAtLocal);
+    if (!Number.isNaN(when.getTime())) return sendDayTokenForInstant(when);
+  }
+  // Nothing chosen yet — the wizard's own default anchor is tomorrow 01:01 MT.
+  return sendDayDateToken(1);
+};
+
+// Default anchor for a newly built campaign: 01:01 in the send-day zone, tomorrow.
+const DEFAULT_ANCHOR_HOUR = 1;
+const DEFAULT_ANCHOR_MINUTE = 1;
+
 // KumoMTA warm-up estate: YAHOO-FAMILY ONLY. Operator 2026-08-11 — "model
 // exactly the aawd and hcfl and prevent any other sending aside from Yahoo
 // family" — and agents/scheduling/data/kumo_estate.json carries isp_caps for
@@ -722,6 +826,12 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
 
   // Step 6 state
   const [campaignName, setCampaignName] = useState('');
+  // Auto-naming stops the moment the operator types: a derived default is a
+  // convenience, never an override of an explicit choice.
+  const [nameTouched, setNameTouched] = useState(false);
+  // The 01:01-tomorrow schedule default is seeded at most once per campaign
+  // build; every operator schedule action afterwards wins.
+  const [scheduleSeeded, setScheduleSeeded] = useState(false);
   const [sendMode, setSendMode] = useState<'immediate' | 'scheduled'>('scheduled');
   const [scheduleMode, setScheduleMode] = useState<'quick' | 'per-isp'>('per-isp');
   const [scheduledAt, setScheduledAt] = useState('');
@@ -2057,6 +2167,38 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
    * normalizePMTACampaignInput silently downgrades anything inside 5 minutes to
    * an IMMEDIATE send, so a tighter margin would fire the campaign on the spot.
    */
+  // Derive "MMDDYYYY - BRAND - OFFER" for the next send day, and default the
+  // anchor to 01:01 in the send-day zone. Runs only while the name is untouched.
+  const derivedCampaignName = useMemo(() => {
+    const brand = brandPrefixForDomain(selectedDomain);
+    const offerRow = offersCatalog.find(o => o.id === selectedOfferId);
+    const token = offerTokenForName(offerRow?.name || '');
+    if (!brand || !token) return '';
+    return `${nameDateTokenForSchedule(scheduledAt, sendMode)} - ${brand} - ${token}`;
+  }, [selectedDomain, selectedOfferId, offersCatalog, scheduledAt, sendMode]);
+
+  useEffect(() => {
+    if (nameTouched || !derivedCampaignName) return;
+    setCampaignName(derivedCampaignName);
+  }, [derivedCampaignName, nameTouched]);
+
+  // Default the schedule to tomorrow 01:01 MT as soon as a domain is picked, so
+  // a campaign is never built against today's already-passed anchor.
+  //
+  // SEEDS ONCE. `scheduledAt` alone is not a sufficient guard: switching to
+  // "Send Now" CLEARS it (:6347), so an effect keyed only on emptiness re-fired
+  // on the way back and silently replaced the anchor the operator had already
+  // chosen — leaving payload.scheduled_at (tomorrow 01:01) contradicting the
+  // per-ISP time_spans and the still-highlighted preset (today 12:01). Same
+  // posture as nameTouched: a derived default is a convenience, never an
+  // override of an explicit choice.
+  useEffect(() => {
+    if (!selectedDomain || scheduleSeeded || scheduledAt || sendMode === 'immediate') return;
+    setScheduledAt(toDateTimeLocal(sendDayInstant(1, DEFAULT_ANCHOR_HOUR, DEFAULT_ANCHOR_MINUTE)));
+    setCampaignTimezone(SEND_DAY_TIMEZONE);
+    setScheduleSeeded(true);
+  }, [selectedDomain, scheduleSeeded, scheduledAt, sendMode]);
+
   const applyAnchorPreset = (preset: AnchorPreset) => {
     const [hh, mm] = preset.localTime.split(':').map(Number);
     let when = sendDayInstant(0, hh, mm);
@@ -2065,6 +2207,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     }
     const local = toDateTimeLocal(when);
     setActivePreset(preset.id);
+    setScheduleSeeded(true);
     setSendMode('scheduled');
     setScheduleMode('per-isp');
     setScheduledAt(local);
@@ -2180,6 +2323,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     hydratedDomainRef.current = input.sending_domain || '';
     setCampaignId(draft.campaign_id || input.campaign_id || '');
     setCampaignName(input.name || draft.name || '');
+    if (input.name || draft.name) setNameTouched(true);
     setSelectedISPs(derivedISPs);
     setISPQuotas(nextQuotas);
     setRandomizeAudience(Boolean(input.randomize_audience));
@@ -2204,6 +2348,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
     setSendMode(input.send_mode === 'scheduled' ? 'scheduled' : 'immediate');
     setScheduleMode(draft.schedule_mode === 'per-isp' ? 'per-isp' : 'quick');
     setScheduledAt(toLocalInputValue(input.scheduled_at));
+    setScheduleSeeded(true);
     setISPPlansByKey(nextPlans);
     // New round-trip fields. The draft blob is the whole PMTACampaignInput
     // (mailing_campaigns.pmta_config), so these persist with no server change.
@@ -6237,7 +6382,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             <label style={{ fontSize: 12, color: showErr(6) && !campaignName.trim() ? '#ef4444' : 'rgba(180,210,240,0.65)', display: 'block', marginBottom: 4 }}>Campaign Name<RequiredDot /></label>
             <input
               value={campaignName} placeholder="e.g. Q1 Gmail Warmup Blast"
-              onChange={e => setCampaignName(e.target.value)}
+              onChange={e => { setNameTouched(true); setCampaignName(e.target.value); }}
               style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!campaignName.trim()), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
             />
             {showErr(6) && !campaignName.trim() && <div style={{ fontSize: 10, color: '#ef4444', marginTop: 3 }}>Campaign name is required</div>}
@@ -6248,7 +6393,14 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             {(['immediate', 'scheduled'] as const).map(mode => (
               <button
                 key={mode}
-                onClick={() => { setSendMode(mode); if (mode === 'immediate') { setScheduledAt(''); } }}
+                // Switching to "Send Now" no longer WIPES the chosen anchor.
+                // buildCampaignPayload only emits scheduled_at when sendMode is
+                // 'scheduled' (:2718) and every step-6 schedule check is gated
+                // the same way, so holding the value is inert while immediate —
+                // and it means a Send Now / Schedule for Later round trip gives
+                // the operator back the anchor they picked instead of silently
+                // re-seeding 01:01 tomorrow underneath a still-highlighted preset.
+                onClick={() => setSendMode(mode)}
                 style={{
                   flex: 1, padding: '10px 0', borderRadius: 8, fontSize: 13, fontWeight: 600,
                   cursor: 'pointer', transition: 'all 0.2s',
@@ -6362,7 +6514,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   <input
                     type="datetime-local"
                     value={scheduledAt}
-                    onChange={e => setScheduledAt(e.target.value)}
+                    onChange={e => { setScheduleSeeded(true); setScheduledAt(e.target.value); }}
                     min={toDateTimeLocal(new Date(Date.now() + 5 * 60 * 1000))}
                     style={{ width: '100%', background: '#0a0f1a', border: fieldBorder(!scheduledAt), borderRadius: 8, color: '#e0e6f0', padding: '10px 12px', fontSize: 14, boxSizing: 'border-box', transition: 'border-color 0.2s' }}
                   />
