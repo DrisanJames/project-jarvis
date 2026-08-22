@@ -1106,6 +1106,15 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			dripLaneOnboardSvc := NewDripLaneOnboardingService(db)
 			dripLaneOnboardSvc.RegisterRoutes(r)
 
+			// === BOARD GRID (operator ask 2026-08-21) ===
+			// The send-day as a PROPERTY x SLOT grid: clone yesterday, edit only
+			// the offer in each cell, and see the gates before deploying rather
+			// than after. Strictly read-only — cloning returns a PROPOSAL and
+			// deploying still goes through /pmta-campaign/deploy, which owns
+			// audience planning and the wave sanity check.
+			boardGridSvc := NewBoardGridService(db)
+			boardGridSvc.RegisterRoutes(r)
+
 			// === EO CLEANING SERVICE (operator ask 2026-07-26) ===
 			// Ad-hoc EmailOversight cleaning jobs — upload / segment / list
 			// sources; already-Verified emails skipped at enqueue (never pay
