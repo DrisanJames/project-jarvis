@@ -30,16 +30,17 @@ import (
 )
 
 type laneJourneyResp struct {
-	OrganizationID string             `json:"organization_id"`
-	Brand          string             `json:"brand"`
-	SendingDomain  string             `json:"sending_domain"`
-	Vertical       string             `json:"vertical"`
-	DelayHours     int                `json:"delay_hours"`
-	MaxTouches     int                `json:"max_touches"`
-	Touches        []laneJourneyTouch `json:"touches"`
-	Edges          []laneJourneyEdge  `json:"edges"`
-	Totals         laneJourneyTotals  `json:"totals"`
-	ScopeNote      string             `json:"scope_note"`
+	OrganizationID string                  `json:"organization_id"`
+	Brand          string                  `json:"brand"`
+	SendingDomain  string                  `json:"sending_domain"`
+	Vertical       string                  `json:"vertical"`
+	DelayHours     int                     `json:"delay_hours"`
+	MaxTouches     int                     `json:"max_touches"`
+	Touches        []laneJourneyTouch      `json:"touches"`
+	Edges          []laneJourneyEdge       `json:"edges"`
+	Totals         laneJourneyTotals       `json:"totals"`
+	ScopeNote      string                  `json:"scope_note"`
+	SendActivity   laneJourneySendActivity `json:"send_activity"`
 }
 
 func getJourney(t *testing.T, s *PMTACampaignService, brand, vertical string) *httptest.ResponseRecorder {
@@ -109,6 +110,35 @@ func TestLaneJourneyRejectsBadInput(t *testing.T) {
 	}
 }
 
+// expectJourneyDominant stands in for the dominant-dataset lookup that decides
+// whether touch 1 resolves through the offer centre (refreshVerticalState
+// phase 2). It runs FIRST, before any content query.
+func expectJourneyDominant(mock sqlmock.Sqlmock, datasetID, slug, offerID string) {
+	mock.ExpectQuery(`LEFT JOIN partner_datasets`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "slug", "offer_id"}).
+			AddRow(datasetID, slug, offerID))
+}
+
+// expectJourneyOffers stands in for the single offer-pool census. rows are
+// (offer_id, name, status, creatives, subjects, from_names).
+func expectJourneyOffers(mock sqlmock.Sqlmock, rows ...[6]interface{}) {
+	r := sqlmock.NewRows([]string{"id", "name", "status", "creatives", "subjects", "from_names"})
+	for _, v := range rows {
+		r = r.AddRow(v[0], v[1], v[2], v[3], v[4], v[5])
+	}
+	mock.ExpectQuery(`FROM mailing_offers`).WillReturnRows(r)
+}
+
+// expectJourneyActivity stands in for the send-activity reads (rotation state
+// row, then the per-family wave/message counts).
+func expectJourneyActivity(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`FROM partner_drip_state`).
+		WillReturnRows(sqlmock.NewRows([]string{"last_wave_at", "last_wave_brand", "last_wave_size"}))
+	mock.ExpectQuery(`FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"is_followup", "last_wave_at",
+			"waves_1h", "sent_1h", "waves_today", "sent_today"}))
+}
+
 func expectJourneyTouch1(mock sqlmock.Sqlmock, active bool) {
 	mock.ExpectQuery(`FROM partner_drip_creatives`).
 		WillReturnRows(sqlmock.NewRows([]string{"creative_filename", "subject_line", "preheader",
@@ -121,6 +151,9 @@ func TestLaneJourneyHappyPath(t *testing.T) {
 	soonest := time.Date(2026, 8, 19, 14, 0, 0, 0, time.UTC)
 	latest := time.Date(2026, 8, 20, 2, 30, 0, 0, time.UTC)
 
+	// No dataset-bound offer on this vertical: touch 1 resolves through
+	// partner_drip_creatives, as it did before this change.
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
 	expectJourneyTouch1(mock, true)
 
 	// Touch 2 has BOTH a vertical-specific row and a global fallback: the
@@ -133,11 +166,14 @@ func TestLaneJourneyHappyPath(t *testing.T) {
 			AddRow(2, "", "db", "t2-global.html", "GLOBAL should lose", "preG", "Jamie", "", true).
 			AddRow(3, "", "db", "t3-global.html", "Last call", "pre3", "Jamie", "offer-3", true))
 
+	// Touch 3 carries an offer_id but ALSO a filename — the filename wins, so
+	// no offer needs resolving and no census query is issued.
 	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
 		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}).
 			AddRow(1, "gmail", 257, 0, soonest, latest).
 			AddRow(1, "microsoft", 164, 0, soonest, latest).
 			AddRow(2, "gmail", 40, 40, soonest, soonest))
+	expectJourneyActivity(mock)
 
 	rec := getJourney(t, s, "db", "internal_auto_insurance")
 	if rec.Code != http.StatusOK {
@@ -221,6 +257,7 @@ func TestLaneJourneyHappyPath(t *testing.T) {
 // SHOW the retirement (configured:false), never silently drop the node.
 func TestLaneJourneyUnconfiguredTouchRendered(t *testing.T) {
 	s, mock := newLedgerServiceWithMock(t)
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
 	expectJourneyTouch1(mock, true)
 	// Only touch 2 is configured for this brand. Touch 3 exists for ANOTHER
 	// brand (the stall state: vertical_configured true, configured false).
@@ -231,6 +268,7 @@ func TestLaneJourneyUnconfiguredTouchRendered(t *testing.T) {
 			AddRow(3, "internal_auto_insurance", "ht", "t3.html", "Other brand", "p", "Hank", "", true))
 	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
 		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	expectJourneyActivity(mock)
 
 	rec := getJourney(t, s, "db", "internal_auto_insurance")
 	if rec.Code != http.StatusOK {
@@ -270,6 +308,7 @@ func TestLaneJourneyUnconfiguredTouchRendered(t *testing.T) {
 func TestLaneJourneyQueryErrorsFail500(t *testing.T) {
 	t.Run("census query error", func(t *testing.T) {
 		s, mock := newLedgerServiceWithMock(t)
+		expectJourneyDominant(mock, "ds-1", "feed-one", "")
 		expectJourneyTouch1(mock, true)
 		mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
 			WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
@@ -281,6 +320,7 @@ func TestLaneJourneyQueryErrorsFail500(t *testing.T) {
 	})
 	t.Run("followup query error", func(t *testing.T) {
 		s, mock := newLedgerServiceWithMock(t)
+		expectJourneyDominant(mock, "ds-1", "feed-one", "")
 		expectJourneyTouch1(mock, true)
 		mock.ExpectQuery(`FROM partner_drip_followup_creatives`).WillReturnError(fmt.Errorf("boom"))
 		if rec := getJourney(t, s, "db", "internal_auto_insurance"); rec.Code != http.StatusInternalServerError {
@@ -293,12 +333,14 @@ func TestLaneJourneyQueryErrorsFail500(t *testing.T) {
 // renders (the operator needs to SEE the hole), it does not 500.
 func TestLaneJourneyMissingTouch1IsNotAnError(t *testing.T) {
 	s, mock := newLedgerServiceWithMock(t)
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
 	mock.ExpectQuery(`FROM partner_drip_creatives`).WillReturnError(sql.ErrNoRows)
 	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
 		WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
 			"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}))
 	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
 		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	expectJourneyActivity(mock)
 
 	rec := getJourney(t, s, "db", "internal_auto_insurance")
 	if rec.Code != http.StatusOK {
@@ -310,5 +352,299 @@ func TestLaneJourneyMissingTouch1IsNotAnError(t *testing.T) {
 	}
 	if resp.Touches[0].Configured || resp.Touches[0].Touch != 1 {
 		t.Fatalf("missing touch-1 row must render as an unconfigured node: %+v", resp.Touches[0])
+	}
+}
+
+// ── COMPLAINT 2 (operator 2026-08-21): "(no creative bound)" on all touches ──
+//
+// An empty creative_filename is the OFFER-CENTER path, not an empty binding.
+// Verified on prod for (db, internal_auto_insurance): all four configured
+// touches carry creative_filename=” + offer_id, and every one of them was
+// rendering as "no creative bound".
+func TestLaneJourneyOfferPathIsNotUnbound(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	const offerID = "48ddcdf4-5bd0-4cca-a8e8-878a72d6702a"
+
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
+	// Touch 1: empty filename + offer_id -> resolveCreative's offer branch.
+	mock.ExpectQuery(`FROM partner_drip_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"creative_filename", "subject_line", "preheader",
+			"from_name", "offer_id", "active"}).
+			AddRow("", "your quotes are ready", "", "Discount Auto Insurance", offerID, true))
+	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
+			"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}).
+			AddRow(2, "internal_auto_insurance", "db", "", "still saved", "", "Discount Auto Insurance", offerID, true).
+			// Touch 3: a filename WINS even though the row carries an offer.
+			AddRow(3, "internal_auto_insurance", "db", "t3.html", "last look", "", "Jamie", offerID, true).
+			// Touch 4: neither a file nor an offer -> the resolver reads an
+			// empty path and the wave errors.
+			AddRow(4, "internal_auto_insurance", "db", "", "orphan", "", "Jamie", "", true))
+	expectJourneyOffers(mock, [6]interface{}{offerID, "AutoCoveragePoint - Quote Ready", "active", 1, 3, 1})
+	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	expectJourneyActivity(mock)
+
+	rec := getJourney(t, s, "db", "internal_auto_insurance")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp laneJourneyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	t1 := resp.Touches[0]
+	if t1.ContentSource != "offer" || !t1.Resolves {
+		t.Fatalf("touch 1 (empty filename + offer_id) must resolve via the OFFER path: %+v", t1)
+	}
+	if t1.ResolutionLabel != "offer: AutoCoveragePoint - Quote Ready" {
+		t.Fatalf("the node must name the offer, not report an unbound creative: %q", t1.ResolutionLabel)
+	}
+	if t1.OfferSource != "touch-row" {
+		t.Fatalf("touch 1 offer came from the creative ROW here (no dataset offer): %+v", t1)
+	}
+	if t1.Offer == nil || t1.Offer.Subjects != 3 || t1.Offer.FromNames != 1 {
+		t.Fatalf("the pool census must ride along so the operator sees WHY it resolves: %+v", t1.Offer)
+	}
+
+	t2 := resp.Touches[1]
+	if t2.ContentSource != "offer" || !t2.Resolves {
+		t.Fatalf("touch 2 must resolve via the offer path: %+v", t2)
+	}
+
+	// A configured filename WINS on touch 2+ (resolveFollowupCreative:4924).
+	t3 := resp.Touches[2]
+	if t3.ContentSource != "file" || t3.ResolutionLabel != "t3.html" {
+		t.Fatalf("a configured filename must win over the row's offer_id: %+v", t3)
+	}
+	if !strings.Contains(t3.ResolutionDetail, "suppression/attribution only") {
+		t.Fatalf("the offer_id on a file-path touch must be labeled as scrub-only: %q", t3.ResolutionDetail)
+	}
+
+	// Neither file nor offer: the orchestrator reads "" and errors.
+	t4 := resp.Touches[3]
+	if t4.Resolves || t4.ContentSource != "none" {
+		t.Fatalf("a row with no file and no offer must be UNRESOLVABLE: %+v", t4)
+	}
+	if !strings.Contains(t4.ResolutionLabel, "UNRESOLVABLE") {
+		t.Fatalf("the label must be alarming, got %q", t4.ResolutionLabel)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLaneJourneyArchivedPoolIsUnresolvable: an offer whose subject or
+// from-name pool is entirely archived HARD-ERRORS at send ("offer has no
+// active from-names", partner_drip_orchestrator.go:1913). The node must say
+// so, and say WHICH pool.
+func TestLaneJourneyArchivedPoolIsUnresolvable(t *testing.T) {
+	for _, c := range []struct {
+		name                           string
+		creatives, subjects, fromNames int
+		wantFragment                   string
+	}{
+		{"from-names all archived", 1, 3, 0, "FROM-NAME pool is empty"},
+		{"subjects all archived", 1, 0, 1, "SUBJECT pool is empty"},
+		{"creatives all archived", 0, 3, 1, "CREATIVE pool is empty"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, mock := newLedgerServiceWithMock(t)
+			const offerID = "0f0f0f0f-0000-0000-0000-000000000001"
+			// This time the DATASET binds the offer: partner_drip_creatives is
+			// still read for the row, but the dataset's offer wins for touch 1.
+			expectJourneyDominant(mock, "ds-1", "attribits-internal-car-insurance", offerID)
+			mock.ExpectQuery(`FROM partner_drip_creatives`).
+				WillReturnRows(sqlmock.NewRows([]string{"creative_filename", "subject_line", "preheader",
+					"from_name", "offer_id", "active"}).
+					AddRow("legacy.html", "s", "", "Jamie", "", true))
+			mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+				WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
+					"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}))
+			expectJourneyOffers(mock, [6]interface{}{offerID, "Dead Offer", "active",
+				c.creatives, c.subjects, c.fromNames})
+			mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
+				WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+			expectJourneyActivity(mock)
+
+			rec := getJourney(t, s, "db", "internal_auto_insurance")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+			}
+			var resp laneJourneyResp
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			t1 := resp.Touches[0]
+			// The DATASET's offer wins: the row's legacy.html is NOT consulted.
+			if t1.ContentSource != "offer" || t1.OfferSource != "dataset" {
+				t.Fatalf("a dataset-bound offer must bypass partner_drip_creatives: %+v", t1)
+			}
+			if t1.Resolves {
+				t.Fatalf("an offer with an empty pool must not read as resolvable: %+v", t1)
+			}
+			if !strings.Contains(t1.ResolutionLabel, "UNRESOLVABLE") {
+				t.Fatalf("label must be alarming: %q", t1.ResolutionLabel)
+			}
+			if !strings.Contains(t1.ResolutionProblem, c.wantFragment) {
+				t.Fatalf("the problem must name WHICH pool is empty (want %q): %q", c.wantFragment, t1.ResolutionProblem)
+			}
+		})
+	}
+}
+
+// ── COMPLAINT 1 (operator 2026-08-21): "very challenging to infer if mail is
+// being sent" ──
+//
+// THE COUNTING RULE. A lane mailing only FOLLOW-UPS has a stale/NULL
+// per-vertical partner_drip_state.last_wave_at (updateDripState is called only
+// by the welcome pass) while it is actively sending. A single merged verdict
+// would call that lane STALLED. The two families are graded independently.
+func TestLaneJourneySendActivitySplitsWelcomeAndFollowup(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	now := time.Now().UTC()
+	staleWelcome := now.Add(-9 * time.Hour)
+	freshFollowup := now.Add(-6 * time.Minute)
+
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
+	expectJourneyTouch1(mock, true)
+	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
+			"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}))
+	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	// The rotation pointer is 9h stale — reading it alone says STALLED.
+	mock.ExpectQuery(`FROM partner_drip_state`).
+		WillReturnRows(sqlmock.NewRows([]string{"last_wave_at", "last_wave_brand", "last_wave_size"}).
+			AddRow(staleWelcome, "db", 1))
+	mock.ExpectQuery(`FROM mailing_campaigns`).
+		WillReturnRows(sqlmock.NewRows([]string{"is_followup", "last_wave_at",
+			"waves_1h", "sent_1h", "waves_today", "sent_today"}).
+			AddRow(false, staleWelcome, 0, 0, 4, 12).
+			AddRow(true, freshFollowup, 3, 271, 37, 2655))
+
+	rec := getJourney(t, s, "db", "internal_auto_insurance")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp laneJourneyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	a := resp.SendActivity
+	if a.Error != "" {
+		t.Fatalf("activity read failed: %q", a.Error)
+	}
+	if len(a.Families) != 2 || a.Families[0].Family != "welcome" || a.Families[1].Family != "followup" {
+		t.Fatalf("welcome and follow-up must be two separate lines, got %+v", a.Families)
+	}
+	w, f := a.Families[0], a.Families[1]
+	if w.Verdict != "stalled" {
+		t.Fatalf("a 9h-old welcome wave is STALLED at the 2h threshold: %+v", w)
+	}
+	if f.Verdict != "flowing" {
+		t.Fatalf("a 6m-old FOLLOW-UP wave is FLOWING — the lane is not static: %+v", f)
+	}
+	if f.Sent1h != 271 || f.SentToday != 2655 || f.Waves1h != 3 {
+		t.Fatalf("follow-up counts must come from campaign rows + message_log: %+v", f)
+	}
+	if w.SentToday != 12 {
+		t.Fatalf("welcome counts must stay separate: %+v", w)
+	}
+	// The rotation pointer is reported, but labeled for what it is — it must
+	// never be presented as this brand's follow-up evidence.
+	if !a.RotationState.Present || a.RotationState.LastWaveAt == nil {
+		t.Fatalf("the partner_drip_state row must be surfaced: %+v", a.RotationState)
+	}
+	if !strings.Contains(a.RotationState.Note, "welcome pass") {
+		t.Fatalf("the rotation note must say only the welcome pass writes it: %q", a.RotationState.Note)
+	}
+	if !strings.Contains(a.CountingNote, "must not be merged") {
+		t.Fatalf("the counting rule must ship in the payload: %q", a.CountingNote)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLaneJourneyActivityFailureIsANamedGap: the activity read is the heaviest
+// query on this endpoint. If it fails, the strip reports a NAMED gap and the
+// canvas still draws — a failure is never rendered as "0 sent".
+func TestLaneJourneyActivityFailureIsANamedGap(t *testing.T) {
+	s, mock := newLedgerServiceWithMock(t)
+	expectJourneyDominant(mock, "ds-1", "feed-one", "")
+	expectJourneyTouch1(mock, true)
+	mock.ExpectQuery(`FROM partner_drip_followup_creatives`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_number", "vertical", "brand",
+			"creative_filename", "subject_line", "preheader", "from_name", "offer_id", "active"}))
+	mock.ExpectQuery(`GROUP BY touch_count, isp_family`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "isp_family", "waiting", "due_now", "soonest", "latest"}))
+	mock.ExpectQuery(`FROM partner_drip_state`).
+		WillReturnRows(sqlmock.NewRows([]string{"last_wave_at", "last_wave_brand", "last_wave_size"}))
+	mock.ExpectQuery(`FROM mailing_campaigns`).WillReturnError(fmt.Errorf("statement timeout"))
+
+	rec := getJourney(t, s, "db", "internal_auto_insurance")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the ladder must still render: got %d", rec.Code)
+	}
+	var resp laneJourneyResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.SendActivity.Error == "" {
+		t.Fatal("a failed activity read must be a NAMED gap, not silent")
+	}
+	if len(resp.SendActivity.Families) != 0 {
+		t.Fatalf("a failed read must not fabricate zero rows: %+v", resp.SendActivity.Families)
+	}
+}
+
+// TestLaneJourneyActivitySQLShape pins the access path. mailing_campaigns has
+// NO index on `name`, so the driver must be
+// idx_campaigns_org_status_created (organization_id, status, created_at DESC)
+// with the name regex as a filter on the already-narrow slice.
+func TestLaneJourneyActivitySQLShape(t *testing.T) {
+	for _, frag := range []string{
+		"c.organization_id = $1::uuid",
+		"c.status IN ('sending','sent','completed','completed_with_errors')",
+		"c.created_at >= $2",
+		"c.partner_drip_tag IS NOT NULL",
+		"mailing_message_log",
+	} {
+		if !strings.Contains(laneJourneyActivitySQL, frag) {
+			t.Fatalf("activity SQL missing %q — it must ride idx_campaigns_org_status_created", frag)
+		}
+	}
+	// Denver windows are param-injected, never tz-cast in the WHERE clause.
+	if strings.Contains(laneJourneyActivitySQL, "AT TIME ZONE") {
+		t.Fatal("activity SQL must not tz-cast (the documented seq-scan footgun)")
+	}
+	// sent_count is stamped ahead of the physical send; message_log is the
+	// authority the ladder-stamp recovery uses.
+	if strings.Contains(laneJourneyActivitySQL, "sent_count") {
+		t.Fatal("sent must come from mailing_message_log, never mailing_campaigns.sent_count")
+	}
+}
+
+// TestLaneJourneyStaleHoursClamp: the FLOWING/STALLED threshold defaults to the
+// operator's 2h and only accepts 1..48.
+func TestLaneJourneyStaleHoursClamp(t *testing.T) {
+	for raw, want := range map[string]int{
+		"":     laneJourneyStaleDefaultHours,
+		"junk": laneJourneyStaleDefaultHours,
+		"0":    laneJourneyStaleDefaultHours,
+		"-3":   laneJourneyStaleDefaultHours,
+		"49":   laneJourneyStaleDefaultHours,
+		"1":    1,
+		"6":    6,
+		"48":   48,
+	} {
+		if got := laneJourneyStaleHours(raw); got != want {
+			t.Fatalf("stale_hours=%q -> %d, want %d", raw, got, want)
+		}
+	}
+	if laneJourneyStaleDefaultHours != 2 {
+		t.Fatalf("the operator's stated default is 2h, got %d", laneJourneyStaleDefaultHours)
 	}
 }

@@ -516,6 +516,158 @@ type laneThrottleFeed struct {
 	// DefaultISPs: ledger ISPs with NO override row — they ride the global
 	// defaults (the effective posture's other half).
 	DefaultISPs []string `json:"default_isps"`
+	// Effective: per ledger ISP, the value that will actually bind on the next
+	// wave and WHICH source produced it. This is the provenance the operator
+	// asked for — DefaultISPs alone said an ISP rides the default without
+	// saying what the default is.
+	Effective []laneThrottleEffective `json:"effective"`
+}
+
+// ── EFFECTIVE CAPS + PROVENANCE (operator 2026-08-21) ───────────────────────
+//
+// "how can I manage the caps or throttling from here? Seems like I have to spin
+// up an agent to do that and with no confidence." The stated problem is
+// CONFIDENCE, so the provenance IS the feature: for every ledger ISP the
+// response now names the value that will actually bind on the next wave and
+// WHICH source produced it, instead of listing override rows beside a bare
+// list of ISP names that "ride the defaults" without saying what the defaults
+// are.
+//
+// Two independent ladders, resolved exactly as the orchestrator resolves them:
+//
+//  PER-WAVE (claim ceiling, resolvePerISPCaps -> basePerISPCaps +
+//  applyDatasetISPCapOverrides, partner_drip_orchestrator.go:3631):
+//     lane override  partner_isp_distribution_overrides.max_per_wave > 0
+//     global overlay partner_drip_isp_caps (active) — the operator-editable
+//                    table, seeded from the compiled map
+//     compiled       worker.DefaultPerISPCapPerWave()
+//   ⚠️ Reported value is the BASE. resolvePerISPCaps then clamps it by the
+//   drain horizon (PerISPDrainDays) and the governed floor gate, which can
+//   only lower it. Stated in drain_horizon_note.
+//
+//  DAILY (new-record budget, applyNewRecordDailyBudget :2198):
+//     lane override  partner_isp_distribution_overrides.daily_cap (NULL = none,
+//                    0 = hard-suppressed)
+//     global         worker.DefaultNewRecordDailyISPCaps() — per (brand, ISP),
+//                    shared across the brand's feeds
+//     none           ISP absent from both = no daily budget at all
+//
+//  BRAND-ALLOW GATE (worker.DefaultNewRecordISPBrandAllow) sits ON TOP of both
+//  and a lane override cannot bypass it: a brand outside a gated ISP's allow
+//  set gets cap 0 no matter what either ladder says. Reporting an effective cap
+//  without applying it would be wrong, so it is applied and flagged.
+
+// laneThrottleGlobalPerWaveSQL reads the operator-editable global per-wave
+// overlay — the same rows loadISPCaps installs (partner_drip_orchestrator.go
+// :2393). Only `active` rows overlay, matching that query.
+const laneThrottleGlobalPerWaveSQL = `
+	SELECT lower(btrim(isp)), per_wave_cap
+	FROM partner_drip_isp_caps
+	WHERE active`
+
+// laneThrottleEffective is one ISP's binding posture for one feed.
+type laneThrottleEffective struct {
+	ISP string `json:"isp"`
+	// PerWave is the base per-wave claim ceiling that will bind next wave.
+	PerWave       int64  `json:"per_wave"`
+	PerWaveSource string `json:"per_wave_source"` // "lane override" | "global default (partner_drip_isp_caps)" | "global default (compiled)"
+	// DailyCap is nil when NO daily budget applies at either scope — that is
+	// ABSENT (uncapped daily), never 0.
+	DailyCap       *int64 `json:"daily_cap"`
+	DailyCapSource string `json:"daily_cap_source"` // "lane override" | "global default (per brand)" | "none"
+	// BrandBlocked: this brand is outside the ISP's allow set, so BOTH caps
+	// are forced to 0 regardless of the values above.
+	BrandBlocked bool   `json:"brand_blocked"`
+	Note         string `json:"note,omitempty"`
+}
+
+// laneThrottleGlobalPerWave resolves the global per-wave default per ISP:
+// compiled map overlaid by active partner_drip_isp_caps rows. Returns the
+// resolved value plus its source label.
+func (s *PMTACampaignService) laneThrottleGlobalPerWave(ctx context.Context) (map[string]int64, map[string]string, error) {
+	vals := map[string]int64{}
+	srcs := map[string]string{}
+	for isp, cap := range worker.DefaultPerISPCapPerWave() {
+		k := strings.ToLower(strings.TrimSpace(isp))
+		vals[k] = int64(cap)
+		srcs[k] = "global default (compiled)"
+	}
+	rows, err := s.db.QueryContext(ctx, laneThrottleGlobalPerWaveSQL)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var isp string
+		var cap int64
+		if err := rows.Scan(&isp, &cap); err != nil {
+			return nil, nil, err
+		}
+		if isp == "" || cap < 0 {
+			continue
+		}
+		vals[isp] = cap
+		srcs[isp] = "global default (partner_drip_isp_caps)"
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return vals, srcs, nil
+}
+
+// laneThrottleBuildEffective composes one feed's per-ISP posture.
+func laneThrottleBuildEffective(
+	brand string,
+	overrides []laneThrottleOverride,
+	globalWave map[string]int64, globalWaveSrc map[string]string,
+	globalDaily map[string]int, brandAllow map[string]map[string]bool,
+) []laneThrottleEffective {
+	byISP := map[string]laneThrottleOverride{}
+	for _, ov := range overrides {
+		byISP[strings.ToLower(strings.TrimSpace(ov.ISP))] = ov
+	}
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	out := []laneThrottleEffective{}
+	for _, isp := range isppkg.LedgerGroups() {
+		e := laneThrottleEffective{ISP: isp}
+
+		// Per-wave ladder.
+		if ov, ok := byISP[isp]; ok && ov.MaxPerWave > 0 {
+			e.PerWave = int64(ov.MaxPerWave)
+			e.PerWaveSource = "lane override"
+		} else {
+			e.PerWave = globalWave[isp]
+			e.PerWaveSource = globalWaveSrc[isp]
+			if e.PerWaveSource == "" {
+				e.PerWaveSource = "global default (compiled)"
+			}
+		}
+
+		// Daily ladder.
+		if ov, ok := byISP[isp]; ok && ov.DailyCap != nil {
+			v := *ov.DailyCap
+			e.DailyCap = &v
+			e.DailyCapSource = "lane override"
+		} else if g, ok := globalDaily[isp]; ok {
+			v := int64(g)
+			e.DailyCap = &v
+			e.DailyCapSource = "global default (per brand)"
+		} else {
+			e.DailyCapSource = "none"
+		}
+
+		// Brand-allow gate — applied last, on top of both.
+		if allow, gated := brandAllow[isp]; gated && !allow[lb] {
+			e.BrandBlocked = true
+			e.Note = "brand \"" + lb + "\" is NOT in this ISP's allow set — new records are forced to 0 whatever the caps above say; a lane override cannot bypass it"
+		} else if e.DailyCap != nil && *e.DailyCap == 0 {
+			e.Note = "daily cap 0 = HARD SUPPRESSED for this lane — stops new intake AND follow-up touches, so a ladder already in motion stops too"
+		} else if e.PerWave == 0 {
+			e.Note = "per-wave cap 0 — this lane claims nothing for this ISP"
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // HandleLaneThrottle GET …/property-ledger/throttle?domain=<apex-or-sending-domain>
@@ -532,6 +684,14 @@ func (s *PMTACampaignService) HandleLaneThrottle(w http.ResponseWriter, r *http.
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	globalWave, globalWaveSrc, err := s.laneThrottleGlobalPerWave(ctx)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "global per-wave cap read failed")
+		return
+	}
+	globalDaily := worker.DefaultNewRecordDailyISPCaps()
+	brandAllow := worker.DefaultNewRecordISPBrandAllow()
+
 	out := make([]laneThrottleFeed, 0, len(feeds))
 	for _, f := range feeds {
 		tf := laneThrottleFeed{
@@ -577,6 +737,8 @@ func (s *PMTACampaignService) HandleLaneThrottle(w http.ResponseWriter, r *http.
 				tf.DefaultISPs = append(tf.DefaultISPs, g)
 			}
 		}
+		tf.Effective = laneThrottleBuildEffective(brand, tf.Overrides,
+			globalWave, globalWaveSrc, globalDaily, brandAllow)
 		out = append(out, tf)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
@@ -591,10 +753,13 @@ func (s *PMTACampaignService) HandleLaneThrottle(w http.ResponseWriter, r *http.
 		"write_enabled":  laneThrottleWriteEnabled(),
 		"write_flag_env": laneThrottleWriteFlagEnv,
 		// The one writer (REUSED, never duplicated): delete-and-replace.
-		"write_endpoint":   "/api/mailing/data-partners/datasets/{id}/isp-distribution",
-		"replacement_note": "Writes REPLACE the lane's override set (delete-and-replace): ISPs omitted from a write fall back to the global defaults, and their lane daily budgets are removed with the row. An ISP included without daily_cap keeps its prior lane budget.",
-		"enforcement_note": "LIVE enforcement input — the drip orchestrator reads these rows fresh each wave: max_per_wave replaces the global per-wave claim cap for this dataset; daily_cap is the lane-owned per-ISP daily budget, counted per (dataset, ISP) across all of the lane\u0027s brands; NULL = global default, 0 = hard-suppressed. It bounds BOTH new intake and follow-up touches \u2014 applyNewRecordDailyBudget and applyFollowupDailyISPBudget both read this same column, and daily_cap=0 forces the per-wave cap to 0 on either path, so a ladder already in motion STOPS too. (Corrected 2026-08-20: the earlier note here claimed follow-ups keep flowing at daily_cap=0 \u2014 that was fixed 2026-07-15 and the note was wrong.) Because the key is DATASET, a vertical split across v-lanes needs the row on every dataset of the family; a dataset with no row is NOT capped at 0, it falls through to the global default. The brand-allow gate still applies on top and a lane override cannot bypass it. Changes apply on the next wave, no deploy.",
-		"cap_systems_note": "Two distinct cap systems: supply_release_daily_cap = supply release cap (lane, ready-vs-held); overrides[] = claim cap (per ISP, orchestrator).",
-		"feeds":            out,
+		"write_endpoint":     "/api/mailing/data-partners/datasets/{id}/isp-distribution",
+		"replacement_note":   "Writes REPLACE the lane's override set (delete-and-replace): ISPs omitted from a write fall back to the global defaults, and their lane daily budgets are removed with the row. An ISP included without daily_cap keeps its prior lane budget.",
+		"enforcement_note":   "LIVE enforcement input — the drip orchestrator reads these rows fresh each wave: max_per_wave replaces the global per-wave claim cap for this dataset; daily_cap is the lane-owned per-ISP daily budget, counted per (dataset, ISP) across all of the lane\u0027s brands; NULL = global default, 0 = hard-suppressed. It bounds BOTH new intake and follow-up touches \u2014 applyNewRecordDailyBudget and applyFollowupDailyISPBudget both read this same column, and daily_cap=0 forces the per-wave cap to 0 on either path, so a ladder already in motion STOPS too. (Corrected 2026-08-20: the earlier note here claimed follow-ups keep flowing at daily_cap=0 \u2014 that was fixed 2026-07-15 and the note was wrong.) Because the key is DATASET, a vertical split across v-lanes needs the row on every dataset of the family; a dataset with no row is NOT capped at 0, it falls through to the global default. The brand-allow gate still applies on top and a lane override cannot bypass it. Changes apply on the next wave, no deploy.",
+		"provenance_note":    "effective[] names the value that binds on the NEXT wave and its source. per_wave ladder: lane override (partner_isp_distribution_overrides.max_per_wave > 0) > global default (partner_drip_isp_caps, operator-editable) > global default (compiled). daily ladder: lane override (daily_cap; NULL = none, 0 = HARD SUPPRESSED) > global default (per brand) > none (no daily budget at all). The brand-allow gate is applied LAST and forces 0 for a brand outside a gated ISP's allow set — a lane override cannot bypass it.",
+		"drain_horizon_note": "effective[].per_wave is the BASE claim ceiling. resolvePerISPCaps then clamps it by the multi-day drain horizon (PerISPDrainDays) and the governed floor gate on every wave — those can only LOWER it, never raise it, so a raised cap on a drain-managed ISP may not change actual throughput. express_dispatch datasets are exempt from the horizon.",
+		"zero_cap_note":      "Setting a cap to 0 is not a slowdown. daily_cap=0 hard-suppresses the ISP for this lane and stops BOTH new intake AND follow-up touches — a ladder already in motion STOPS. Because the key is DATASET, a vertical split across v-lanes needs the row on EVERY dataset of the family; a dataset with no row is NOT capped at 0, it falls through to the global default.",
+		"cap_systems_note":   "Two distinct cap systems: supply_release_daily_cap = supply release cap (lane, ready-vs-held); overrides[] = claim cap (per ISP, orchestrator).",
+		"feeds":              out,
 	})
 }

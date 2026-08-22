@@ -513,6 +513,163 @@ type propertyGovernor struct {
 	active         bool
 }
 
+// DefaultPerISPCapPerWave returns the COMPILED per-ISP per-wave claim
+// ceilings — the value NewPartnerDripOrchestrator installs when the caller
+// supplies none (cmd/server does not). Extracted from the constructor so the
+// Property Ledger throttle read can name the GLOBAL default an ISP without a
+// partner_isp_distribution_overrides row actually rides, instead of
+// re-declaring the map in internal/api and drifting from it.
+//
+// NOTE: this is the compiled BASE only. The live per-wave default is this map
+// OVERLAID by active partner_drip_isp_caps rows (loadISPCaps -> basePerISPCaps),
+// which the startup migration seeds with these exact values.
+func DefaultPerISPCapPerWave() map[string]int {
+	var out map[string]int
+	// Per-ISP per-wave caps. With 4 waves/hour (15-min ticks) and 4
+	// brands round-robin, each brand sees one wave per hour, so:
+	//
+	//   per_brand_per_day = cap * 24
+	//
+	// Caps below stay under each ISP's published per-brand-per-day
+	// guidance with ~5–10% headroom:
+	//
+	//   gmail     200 -> 4,800/brand/day (Google: 5,000/sender/day)
+	//   microsoft 100 -> 2,400/brand/day (operator 2026-06-02: 50% pullback from 200)
+	//   apple     200 -> 4,800/brand/day (no published cap; warm reputation)
+	//   yahoo     20  -> 480/brand/day  (Yahoo: 500/sender/day)
+	//   aol       20  -> 480/brand/day  (matches Yahoo carve)
+	//   other     150 -> 3,600/brand/day (mixed deliverability bucket)
+	//
+	// 2026-05-14 bump: gmail 150->200, microsoft/apple 100->200,
+	// other 100->150, comcast/charter 60->100. Operator directive
+	// "INCREASE THROUGHPUT. Especially for GMAIL." after observing
+	// David Cal's Personal Loans feed shipping 235 gmail/day vs a
+	// 2,334-record queue.
+	//
+	// Pairs with the per-ISP claim strategy in claimRecordsByISPCaps —
+	// without that change, raising caps alone has near-zero effect
+	// because the old oldest-first claim wastes wave slots on ISPs
+	// (yahoo) whose share of the queue dominates and whose cap is
+	// then defer-released.
+	// 2026-06-05 REDUCTION (operator directive "do not stop them just reduce
+	// the quotas"): DSN-truth analysis showed the drip's "14-17% hard bounce"
+	// is ~98% ISP reputation BLOCKS (5.0.0 policy, 5.3.2 system-not-accepting,
+	// 5.7.1 spam) on clean EO-verified addresses — i.e. a reputation/placement
+	// problem, not bad data. The cold-mail VOLUME on the shared PMTA IPs is what
+	// manufactures those blocks. Caps cut ~70% to relieve block pressure while
+	// the engaged-only model rebuilds reputation; the channel keeps flowing.
+	// Prior caps (gmail 200/yahoo 20/aol 20/microsoft 100/apple 200/comcast 100/
+	// charter 100/att 60/sbcglobal 60/cox 60/verizon 60/other 150) are preserved
+	// in git history; raise back once block rate (5.x.x reputation DSNs) recovers.
+	// 2026-06-13 operator cap revision (Sam's data "fine, just drain faster"):
+	//   gmail     0      HOLD all new gmail; focus on known engagers (follow-ups
+	//                    + clicker rings continue; only new first-touch stops)
+	//   yahoo     8->16  growing lane, doubled per operator
+	//   apple     ~uncapped (100000; routed to mature-4 for placement)
+	//   microsoft ~uncapped (100000; spreads all 16)
+	//   att       50 ceiling, true rate set by NewRecordDailyISPCaps att=225/brand
+	//             (×4 mature = ~900/day) — "loving the growth, 480->900/d"
+	//   aol       30 ceiling, true rate set by NewRecordDailyISPCaps aol=56/brand
+	//             (×16 brands = ~900/day)
+	// 2026-06-29 operator "double the family draining and monitor": the partner
+	// ready backlog is ~76% Yahoo-family (~1.26M ready) and SES is healthy (Yahoo
+	// 99.1% / AOL 98.8% / ATT 99.6% accept, 0% complaints, ~100k headroom), so the
+	// binding per-wave ceiling — NOT data or SES — is throttling the drain. Double
+	// the Yahoo-family per-wave caps (yahoo 16->32, aol 30->60, att 50->100,
+	// sbcglobal 20->40, verizon 20->40). Watch deferral/complaint and step again.
+	out = map[string]int{
+		"gmail":     0,
+		"yahoo":     32,
+		"aol":       60,
+		"microsoft": 100000,
+		"apple":     100000,
+		"comcast":   30,
+		"charter":   30,
+		"att":       100,
+		"sbcglobal": 40,
+		"cox":       20,
+		"verizon":   40,
+		"other":     40,
+	}
+	return out
+}
+
+// DefaultNewRecordDailyISPCaps returns the GLOBAL per-(brand, ISP) daily
+// new-record budgets the orchestrator installs by default, including the
+// PARTNER_DRIP_DAILY_ISP_CAPS env override. Same reason as
+// DefaultPerISPCapPerWave: one definition, read by both the orchestrator and
+// the throttle read that reports which cap source is winning.
+func DefaultNewRecordDailyISPCaps() map[string]int {
+	var out map[string]int
+	// Operator 2026-06-10: gmail 400/day (allow-listed brands only),
+	// yahoo 100/day and aol 100/day across all brands. ISPs not listed
+	// here have no daily new-record budget (per-wave caps only).
+	// 2026-06-13 operator: gmail HELD to 0 (no new gmail). att/aol set to
+	// hit ~900/day TOTAL via per-brand budgets (caps are per-brand/day):
+	//   att 225/brand × 4 mature (routed) = ~900/day
+	//   aol 225/brand × 4 mature (routed 2026-06-13) = ~900/day
+	// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
+	// Operator 2026-06-27: drain the non-gmail backlog GLOBALLY (shared across all
+	// feeds). gmail HELD at 0; yahoo/aol/att daily budgets removed so the 7-day
+	// drain-horizon (PerISPDrainDays below) paces the drain, not a flat per-brand
+	// ceiling. ("Share across all feeds. Also expand across all brands.")
+	out = map[string]int{"gmail": 0}
+	if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
+		parsed := map[string]int{}
+		for _, pair := range strings.Split(v, ",") {
+			kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil {
+				parsed[strings.ToLower(strings.TrimSpace(kv[0]))] = n
+			}
+		}
+		if len(parsed) > 0 {
+			out = parsed
+		}
+	}
+	return out
+}
+
+// DefaultNewRecordISPBrandAllow returns the brand-allow routing gate. It is
+// the HARD ceiling a lane override cannot bypass (applyNewRecordDailyBudget
+// zeroes the cap for a brand outside an ISP's allow set), so the throttle
+// read must apply it before claiming any effective cap.
+func DefaultNewRecordISPBrandAllow() map[string]map[string]bool {
+	var out map[string]map[string]bool
+	// Deliverability routing (operator 2026-06-13): the engagement-priced /
+	// reputation-sensitive ISPs ship only from the warmed mature-4 domains
+	// (db/ht/mh/qf own the isolated per-ISP IP pools). Per-ISP env override:
+	// PARTNER_DRIP_<ISP>_NEW_BRANDS (e.g. PARTNER_DRIP_YAHOO_NEW_BRANDS).
+	matureBrands := "db,ht,mh,qf"
+	parseAllow := func(envKey, def string) map[string]bool {
+		v := strings.TrimSpace(os.Getenv(envKey))
+		if v == "" {
+			v = def
+		}
+		m := map[string]bool{}
+		for _, b := range strings.Split(v, ",") {
+			if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
+				m[b] = true
+			}
+		}
+		return m
+	}
+	// Operator 2026-06-27: "expand across all brands" — yahoo/att/aol now
+	// ship from ALL 16 brands (removed from this map = unrestricted routing). Only
+	// gmail stays mature-4-restricted, and it is held at per-wave cap 0 regardless.
+	// Operator 2026-07-07 (term_life_apple/Liberty lane): apple excludes the two
+	// Apple-banned brands lpl/wfy (HM08 — Apple hard-rejects those sending
+	// domains regardless of offer). Applied on welcome AND follow-up passes.
+	appleBrands := "db,ht,mh,qf,bwp,ci,cp,fc,hws,mrd,rb,rru,tot,yih"
+	out = map[string]map[string]bool{
+		"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
+		"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", appleBrands),
+	}
+	return out
+}
+
 func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *PartnerDripOrchestrator {
 	if cfg.OrganizationID == "" {
 		cfg.OrganizationID = "00000000-0000-0000-0000-000000000001"
@@ -533,133 +690,13 @@ func NewPartnerDripOrchestrator(db *sql.DB, cfg PartnerDripOrchestratorConfig) *
 		cfg.CreativesDir = "docs/emails"
 	}
 	if cfg.PerISPCapPerWave == nil {
-		// Per-ISP per-wave caps. With 4 waves/hour (15-min ticks) and 4
-		// brands round-robin, each brand sees one wave per hour, so:
-		//
-		//   per_brand_per_day = cap * 24
-		//
-		// Caps below stay under each ISP's published per-brand-per-day
-		// guidance with ~5–10% headroom:
-		//
-		//   gmail     200 -> 4,800/brand/day (Google: 5,000/sender/day)
-		//   microsoft 100 -> 2,400/brand/day (operator 2026-06-02: 50% pullback from 200)
-		//   apple     200 -> 4,800/brand/day (no published cap; warm reputation)
-		//   yahoo     20  -> 480/brand/day  (Yahoo: 500/sender/day)
-		//   aol       20  -> 480/brand/day  (matches Yahoo carve)
-		//   other     150 -> 3,600/brand/day (mixed deliverability bucket)
-		//
-		// 2026-05-14 bump: gmail 150->200, microsoft/apple 100->200,
-		// other 100->150, comcast/charter 60->100. Operator directive
-		// "INCREASE THROUGHPUT. Especially for GMAIL." after observing
-		// David Cal's Personal Loans feed shipping 235 gmail/day vs a
-		// 2,334-record queue.
-		//
-		// Pairs with the per-ISP claim strategy in claimRecordsByISPCaps —
-		// without that change, raising caps alone has near-zero effect
-		// because the old oldest-first claim wastes wave slots on ISPs
-		// (yahoo) whose share of the queue dominates and whose cap is
-		// then defer-released.
-		// 2026-06-05 REDUCTION (operator directive "do not stop them just reduce
-		// the quotas"): DSN-truth analysis showed the drip's "14-17% hard bounce"
-		// is ~98% ISP reputation BLOCKS (5.0.0 policy, 5.3.2 system-not-accepting,
-		// 5.7.1 spam) on clean EO-verified addresses — i.e. a reputation/placement
-		// problem, not bad data. The cold-mail VOLUME on the shared PMTA IPs is what
-		// manufactures those blocks. Caps cut ~70% to relieve block pressure while
-		// the engaged-only model rebuilds reputation; the channel keeps flowing.
-		// Prior caps (gmail 200/yahoo 20/aol 20/microsoft 100/apple 200/comcast 100/
-		// charter 100/att 60/sbcglobal 60/cox 60/verizon 60/other 150) are preserved
-		// in git history; raise back once block rate (5.x.x reputation DSNs) recovers.
-		// 2026-06-13 operator cap revision (Sam's data "fine, just drain faster"):
-		//   gmail     0      HOLD all new gmail; focus on known engagers (follow-ups
-		//                    + clicker rings continue; only new first-touch stops)
-		//   yahoo     8->16  growing lane, doubled per operator
-		//   apple     ~uncapped (100000; routed to mature-4 for placement)
-		//   microsoft ~uncapped (100000; spreads all 16)
-		//   att       50 ceiling, true rate set by NewRecordDailyISPCaps att=225/brand
-		//             (×4 mature = ~900/day) — "loving the growth, 480->900/d"
-		//   aol       30 ceiling, true rate set by NewRecordDailyISPCaps aol=56/brand
-		//             (×16 brands = ~900/day)
-		// 2026-06-29 operator "double the family draining and monitor": the partner
-		// ready backlog is ~76% Yahoo-family (~1.26M ready) and SES is healthy (Yahoo
-		// 99.1% / AOL 98.8% / ATT 99.6% accept, 0% complaints, ~100k headroom), so the
-		// binding per-wave ceiling — NOT data or SES — is throttling the drain. Double
-		// the Yahoo-family per-wave caps (yahoo 16->32, aol 30->60, att 50->100,
-		// sbcglobal 20->40, verizon 20->40). Watch deferral/complaint and step again.
-		cfg.PerISPCapPerWave = map[string]int{
-			"gmail":     0,
-			"yahoo":     32,
-			"aol":       60,
-			"microsoft": 100000,
-			"apple":     100000,
-			"comcast":   30,
-			"charter":   30,
-			"att":       100,
-			"sbcglobal": 40,
-			"cox":       20,
-			"verizon":   40,
-			"other":     40,
-		}
+		cfg.PerISPCapPerWave = DefaultPerISPCapPerWave()
 	}
 	if cfg.NewRecordDailyISPCaps == nil {
-		// Operator 2026-06-10: gmail 400/day (allow-listed brands only),
-		// yahoo 100/day and aol 100/day across all brands. ISPs not listed
-		// here have no daily new-record budget (per-wave caps only).
-		// 2026-06-13 operator: gmail HELD to 0 (no new gmail). att/aol set to
-		// hit ~900/day TOTAL via per-brand budgets (caps are per-brand/day):
-		//   att 225/brand × 4 mature (routed) = ~900/day
-		//   aol 225/brand × 4 mature (routed 2026-06-13) = ~900/day
-		// yahoo kept at 100/brand × 4 mature = 400/day ceiling (per-wave 16 binds ~384).
-		// Operator 2026-06-27: drain the non-gmail backlog GLOBALLY (shared across all
-		// feeds). gmail HELD at 0; yahoo/aol/att daily budgets removed so the 7-day
-		// drain-horizon (PerISPDrainDays below) paces the drain, not a flat per-brand
-		// ceiling. ("Share across all feeds. Also expand across all brands.")
-		cfg.NewRecordDailyISPCaps = map[string]int{"gmail": 0}
-		if v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_DAILY_ISP_CAPS")); v != "" {
-			parsed := map[string]int{}
-			for _, pair := range strings.Split(v, ",") {
-				kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-				if len(kv) != 2 {
-					continue
-				}
-				if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil {
-					parsed[strings.ToLower(strings.TrimSpace(kv[0]))] = n
-				}
-			}
-			if len(parsed) > 0 {
-				cfg.NewRecordDailyISPCaps = parsed
-			}
-		}
+		cfg.NewRecordDailyISPCaps = DefaultNewRecordDailyISPCaps()
 	}
 	if cfg.NewRecordISPBrandAllow == nil {
-		// Deliverability routing (operator 2026-06-13): the engagement-priced /
-		// reputation-sensitive ISPs ship only from the warmed mature-4 domains
-		// (db/ht/mh/qf own the isolated per-ISP IP pools). Per-ISP env override:
-		// PARTNER_DRIP_<ISP>_NEW_BRANDS (e.g. PARTNER_DRIP_YAHOO_NEW_BRANDS).
-		matureBrands := "db,ht,mh,qf"
-		parseAllow := func(envKey, def string) map[string]bool {
-			v := strings.TrimSpace(os.Getenv(envKey))
-			if v == "" {
-				v = def
-			}
-			m := map[string]bool{}
-			for _, b := range strings.Split(v, ",") {
-				if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
-					m[b] = true
-				}
-			}
-			return m
-		}
-		// Operator 2026-06-27: "expand across all brands" — yahoo/att/aol now
-		// ship from ALL 16 brands (removed from this map = unrestricted routing). Only
-		// gmail stays mature-4-restricted, and it is held at per-wave cap 0 regardless.
-		// Operator 2026-07-07 (term_life_apple/Liberty lane): apple excludes the two
-		// Apple-banned brands lpl/wfy (HM08 — Apple hard-rejects those sending
-		// domains regardless of offer). Applied on welcome AND follow-up passes.
-		appleBrands := "db,ht,mh,qf,bwp,ci,cp,fc,hws,mrd,rb,rru,tot,yih"
-		cfg.NewRecordISPBrandAllow = map[string]map[string]bool{
-			"gmail": parseAllow("PARTNER_DRIP_GMAIL_NEW_BRANDS", matureBrands),
-			"apple": parseAllow("PARTNER_DRIP_APPLE_NEW_BRANDS", appleBrands),
-		}
+		cfg.NewRecordISPBrandAllow = DefaultNewRecordISPBrandAllow()
 	}
 	if cfg.PerISPDrainDays == nil {
 		// Operator 2026-05-30: stretch high-volume / sensitive ISPs so a
