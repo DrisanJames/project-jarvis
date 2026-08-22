@@ -557,6 +557,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				dp.Get("/lanes/{vertical}/health", partnerAdmin.HandleGetLaneHealth)
 				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
 				dp.Post("/datasets/{id}/resume", partnerAdmin.HandleResumeDataset)
+				// express_dispatch toggle (mail-on-arrival). The orchestrator
+				// reads the flag live per wave — next-tick effect, no deploy.
+				dp.Post("/datasets/{id}/express", partnerAdmin.HandleSetDatasetExpress)
 				dp.Get("/creatives", partnerAdmin.HandleListCreatives)
 				dp.Put("/creatives/{vertical}/{brand}", partnerAdmin.HandleUpdateCreative)
 				dp.Get("/audit-log", partnerAdmin.HandleListAuditLog)

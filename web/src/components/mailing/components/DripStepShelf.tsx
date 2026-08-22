@@ -239,6 +239,51 @@ export const DripStepShelf: React.FC<{
     onChanged();
   });
 
+  // ── Release next touch now (journey/advance) ──────────────────────────────
+  // Rows waiting to RECEIVE touch N sit at touch_count = N-1, which is exactly
+  // the inbound edge's from_touch — the payload's `touch` is derived from the
+  // edge, never recomputed from the shelf's touch number.
+  const [releaseN, setReleaseN] = useState('1000');
+  const releaseNextTouch = () => withSaving('release', async () => {
+    if (!edgeIn) return;
+    const n = parseInt(releaseN, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 50000) {
+      onNotice('Release cancelled — count must be between 1 and 50,000.');
+      return;
+    }
+    const laneName = laneDisplay || labelForVertical(vertical);
+    if (!window.confirm(
+      `Make ${n.toLocaleString()} waiting records due immediately for touch ${touch.touch} on ${laneName}? `
+      + `They will mail on the orchestrator's next tick (≤15 min), subject to all caps.`,
+    )) return;
+    let r: Response;
+    try {
+      r = await apiFetch('/api/mailing/pmta-campaign/property-ledger/journey/advance', {
+        method: 'POST',
+        body: JSON.stringify({ vertical, touch: edgeIn.from_touch, limit: n, brand }),
+      });
+    } catch (e) {
+      onNotice(`Release failed: ${e instanceof Error ? e.message : 'network error'} — nothing was made due.`);
+      return;
+    }
+    let json: Record<string, unknown> = {};
+    try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
+    if (r.status === 404) {
+      onNotice('Release failed: this server does not have the journey/advance endpoint yet (HTTP 404) — nothing was made due.');
+      return;
+    }
+    if (!r.ok) {
+      onNotice(`Release failed: ${String(json.error ?? r.status)} — nothing was made due.`);
+      return;
+    }
+    const advanced = typeof json.advanced === 'number' ? json.advanced : null;
+    onNotice(
+      `${advanced == null ? 'Some' : advanced.toLocaleString()} record(s) made due now for touch ${touch.touch}`
+      + `${typeof json.note === 'string' && json.note ? ` — ${json.note}` : ''}. The orchestrator picks them up within ~15 min.`,
+    );
+    onChanged();
+  });
+
   const servingSubjects = (offer?.subjects ?? []).filter((s) => s.serving);
   const servingFromNames = (offer?.from_names ?? []).filter((f) => f.serving);
   const perf = touch.perf_7d;
@@ -481,9 +526,44 @@ export const DripStepShelf: React.FC<{
       )}
 
       {edgeIn && (
-        <div style={{ fontSize: 12, color: colors.text, marginBottom: 4 }}>
-          Waiting to REACH this touch: <b>{num(edgeIn.waiting)}</b>
-          <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeIn.soonest)}</span>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: colors.text, marginBottom: 4 }}>
+            Waiting to REACH this touch: <b>{num(edgeIn.waiting)}</b>
+            <span style={{ fontSize: 11, color: colors.textMuted }}> · soonest {shortTime(edgeIn.soonest)}</span>
+          </div>
+          {/* Release control only when some of the waiting rows are actually in
+              the FUTURE (waiting > drip-wide due-now backlog). When everything
+              waiting is already due, an advance would be a no-op — say so. */}
+          {edgeIn.waiting > (dueNow ?? 0) ? (
+            <div style={{
+              border: `1px solid ${alpha(colors.indigo500, '44')}`, borderRadius: 6,
+              padding: '7px 10px', marginTop: 2,
+            }}>
+              <div style={{ ...label, marginBottom: 4 }}>Release next touch now</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="number" min={1} max={50000} step={100}
+                  style={{ ...input, width: 96, opacity: writable ? 1 : 0.5 }}
+                  value={releaseN}
+                  disabled={!writable || !!saving.release}
+                  title={roTitle}
+                  onChange={(e) => setReleaseN(e.target.value)}
+                />
+                <button type="button"
+                  style={{ ...smallBtn, opacity: writable ? 1 : 0.5, cursor: writable ? 'pointer' : 'not-allowed' }}
+                  disabled={!writable || !!saving.release}
+                  title={roTitle ?? `Makes up to this many waiting records at touch_count ${edgeIn.from_touch} due NOW. The orchestrator claims them within ~15 min; every cap (ledger, throttle, brand budget) still binds.`}
+                  onClick={() => void releaseNextTouch()}>
+                  {saving.release ? 'Releasing…' : `Make due for touch ${touch.touch}`}
+                </button>
+                <span style={{ fontSize: 10, color: colors.textFaint }}>max 50,000 · caps still bind</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: colors.textFaint }}>
+              All waiting records are already due — they mail on the next tick.
+            </div>
+          )}
         </div>
       )}
       {edgeOut ? (

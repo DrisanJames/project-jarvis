@@ -63,6 +63,15 @@ const PAGE_VERSION = 'drip-journey-canvas v2 — 2026-08-22';
 // overview and blanks the lane-scoped panels (a journey needs one vertical).
 const ALL_LANES = '__all_lanes__';
 
+// Drain-horizon COMPILED DEFAULTS (per-ISP drain days + 384 wave-slots/day —
+// the orchestrator's PerISPDrainDays clamp: per-wave ≈ ceil(ready/(384×days))).
+// Client-side mirrors of compiled constants, labelled "est." everywhere they
+// are shown — they can drift from server config and are never authoritative.
+const DRAIN_HORIZON_DAYS: Record<string, number> = {
+  gmail: 3, yahoo: 2, aol: 2, att: 2, sbcglobal: 2,
+};
+const DRAIN_WAVES_PER_DAY = 384;
+
 // ── API shapes ──────────────────────────────────────────────────────────────
 // Property Ledger read (existing, property_ledger.go). This ONE response carries
 // both the brand ⇄ sending-domain pairs for the selector AND the introduction
@@ -374,6 +383,9 @@ interface SupplyFeed {
   status: string;
   daily_cap: number;
   paused_emergency: boolean;
+  // Priority-dispatch flag (NEW server field). May be ABSENT on an older
+  // server — absent is UNKNOWN, never false.
+  express_dispatch?: boolean;
   shared_brands: string[];
   tranche_total: number;
   cleaning: number;
@@ -2030,6 +2042,169 @@ export const DripJourneyCanvas: React.FC<{
 
   const proposalCount = ledgerRows.filter((r) => r.proposal).length;
 
+  // ── Feed dispatch controls (express + emergency pause) ────────────────────
+  // Express state lives on the SUPPLY payload (feeds[].express_dispatch, a new
+  // server field); the toggle is rendered on the throttle panel's feed rows and
+  // reuses the throttle write gate. Absent = UNKNOWN, never false.
+  const [feedBusy, setFeedBusy] = useState<Record<string, boolean>>({});
+  const [laneBusy, setLaneBusy] = useState(false);
+
+  const expressFor = useCallback(
+    (datasetID: string): boolean | undefined =>
+      supply.data?.feeds?.find((sf) => sf.dataset_id === datasetID)?.express_dispatch,
+    [supply.data],
+  );
+
+  const withFeedBusy = async (key: string, fn: () => Promise<void>) => {
+    setFeedBusy((b) => ({ ...b, [key]: true }));
+    try { await fn(); } finally { setFeedBusy((b) => ({ ...b, [key]: false })); }
+  };
+
+  // A dispatch-mode or pause write moves the supply queue, the throttle rows
+  // (paused pill) and the dashboard — reload all three, never just one.
+  const reloadAfterFeedWrite = () => { supply.reload(); throttle.reload(); overview.reload(); };
+
+  const toggleExpress = (f: ThrottleFeed, current: boolean | undefined) =>
+    withFeedBusy(`express/${f.dataset_id}`, async () => {
+      const enabling = current !== true;
+      if (enabling) {
+        // Typed-name confirm for ENABLING: it removes the multi-day drain
+        // spread, so it must be named and typed, not one-clicked.
+        const typed = window.prompt(
+          `EXPRESS DISPATCH for "${f.name}".\n\nExpress removes the multi-day SPREAD only; `
+          + `daily caps, brand budgets and throttle safety still bind.\n\n`
+          + `Type the feed name exactly to confirm:\n${f.name}`,
+        );
+        if (typed === null) return;
+        if (typed !== f.name) { notify('Express enable cancelled — feed name did not match.'); return; }
+      } else if (!window.confirm(
+        `Return "${f.name}" to PACED dispatch? The multi-day drain spread applies again from the next tick.`,
+      )) return;
+      let r: Response;
+      try {
+        r = await apiFetch(`/api/mailing/data-partners/datasets/${f.dataset_id}/express`, {
+          method: 'POST', body: JSON.stringify({ enabled: enabling }),
+        });
+      } catch (e) {
+        notify(`Express toggle failed: ${e instanceof Error ? e.message : 'network error'} — dispatch mode unchanged.`);
+        return;
+      }
+      let json: Record<string, unknown> = {};
+      try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
+      if (r.status === 404) {
+        notify('Express toggle failed: this server does not have the express endpoint yet (HTTP 404) — dispatch mode unchanged.');
+        return;
+      }
+      if (!r.ok) { notify(`Express toggle failed: ${String(json.error ?? r.status)} — dispatch mode unchanged.`); return; }
+      const nowExpress = json.express_dispatch === true;
+      notify(`Feed "${String(json.name ?? f.name)}" is now ${nowExpress ? 'EXPRESS' : 'PACED'} — effective on the next tick.`);
+      reloadAfterFeedWrite();
+    });
+
+  // Per-feed emergency pause/resume — the SAME endpoints and contract as
+  // PartnerIngestPortal (datapartners/PartnerIngestPortal.tsx): emergency-stop
+  // takes {reason}, resume takes no body. A failed stop must never look paused.
+  const pauseFeed = (f: ThrottleFeed) =>
+    withFeedBusy(`pause/${f.dataset_id}`, async () => {
+      if (!window.confirm(`Pause feed "${f.name}"? Its intake AND follow-up claims halt at the next safe point (paused_emergency).`)) return;
+      const reason = window.prompt('Reason for pause:', 'operator emergency stop');
+      if (reason === null) return;
+      let r: Response;
+      try {
+        r = await apiFetch(`/api/mailing/data-partners/datasets/${f.dataset_id}/emergency-stop`, {
+          method: 'POST', body: JSON.stringify({ reason }),
+        });
+      } catch (e) {
+        notify(`EMERGENCY STOP FAILED (${e instanceof Error ? e.message : 'network error'}) — "${f.name}" is NOT paused.`);
+        return;
+      }
+      let json: Record<string, unknown> = {};
+      try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
+      if (!r.ok) {
+        notify(`EMERGENCY STOP FAILED (HTTP ${r.status}${json.error ? `: ${String(json.error)}` : ''}) — "${f.name}" is NOT paused and its queued records are still sending.`);
+        return;
+      }
+      notify(`Feed "${f.name}" paused (emergency) — server confirmed.`);
+      reloadAfterFeedWrite();
+    });
+
+  const resumeFeed = (f: ThrottleFeed) =>
+    withFeedBusy(`pause/${f.dataset_id}`, async () => {
+      if (!window.confirm(`Resume feed "${f.name}"? Intake and the follow-up ladder restart on the next tick.`)) return;
+      let r: Response;
+      try {
+        r = await apiFetch(`/api/mailing/data-partners/datasets/${f.dataset_id}/resume`, { method: 'POST' });
+      } catch (e) {
+        notify(`Resume failed (${e instanceof Error ? e.message : 'network error'}) — "${f.name}" is still emergency-stopped.`);
+        return;
+      }
+      let json: Record<string, unknown> = {};
+      try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
+      if (!r.ok) {
+        notify(`Resume failed (HTTP ${r.status}${json.error ? `: ${String(json.error)}` : ''}) — "${f.name}" is still emergency-stopped.`);
+        return;
+      }
+      notify(`Feed "${f.name}" resumed — server confirmed.`);
+      reloadAfterFeedWrite();
+    });
+
+  // ── Lane-level pause (every feed of the vertical at once) ────────────────
+  // "Paused" for the lane = every feed in scope reports paused_emergency. With
+  // no supply data the state is unknown and the button says so.
+  const laneAllPaused = supplyFeeds.length > 0 && supplyFeeds.every((f) => f.paused_emergency);
+
+  const toggleLanePause = async () => {
+    if (!selVertical || laneBusy) return;
+    const pause = !laneAllPaused;
+    const laneName = laneDisplayName(selVertical);
+    const body: Record<string, unknown> = { vertical: selVertical, pause };
+    if (pause) {
+      const reason = window.prompt(`Pause lane ${laneName} — reason (required):`);
+      if (reason === null) return;
+      if (!reason.trim()) { notify('Lane pause cancelled — a reason is required.'); return; }
+      body.reason = reason.trim();
+      const typed = window.prompt(
+        `LANE PAUSE stops intake AND the follow-up ladder for EVERY feed of this lane (paused_emergency on each).\n\n`
+        + `Type the lane's vertical exactly to confirm:\n${selVertical}`,
+      );
+      if (typed === null) return;
+      if (typed !== selVertical) { notify('Lane pause cancelled — lane name did not match.'); return; }
+    } else if (!window.confirm(`Resume lane ${laneName}? Every feed of this lane restarts on the next tick.`)) return;
+    setLaneBusy(true);
+    try {
+      let r: Response;
+      try {
+        r = await apiFetch('/api/mailing/pmta-campaign/property-ledger/lane-pause', {
+          method: 'POST', body: JSON.stringify(body),
+        });
+      } catch (e) {
+        notify(`Lane ${pause ? 'pause' : 'resume'} failed: ${e instanceof Error ? e.message : 'network error'} — no feed was changed.`);
+        return;
+      }
+      let json: Record<string, unknown> = {};
+      try { json = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
+      if (r.status === 404) {
+        notify(`Lane ${pause ? 'pause' : 'resume'} failed: this server does not have the lane-pause endpoint yet (HTTP 404) — no feed was changed. Pause each feed individually in the quota panel below.`);
+        return;
+      }
+      if (!r.ok) {
+        notify(`Lane ${pause ? 'pause' : 'resume'} failed: ${String(json.error ?? r.status)} — no feed was changed.`);
+        return;
+      }
+      const affected = typeof json.datasets_affected === 'number' ? json.datasets_affected : null;
+      notify(`Lane ${laneName} ${pause ? 'PAUSED' : 'resumed'} — ${affected == null ? 'server confirmed' : `${affected} feed(s) affected`}.`);
+      supply.reload();
+      overview.reload();
+      throttle.reload();
+    } finally {
+      setLaneBusy(false);
+    }
+  };
+
+  // Drain-horizon footnote scope: only meaningful when EVERY feed in scope is
+  // known-express (absent = unknown, which is NOT express).
+  const allSelectedExpress = supplyFeeds.length > 0 && supplyFeeds.every((f) => f.express_dispatch === true);
+
   // ── Derived headline numbers ──────────────────────────────────────────────
   const j = journey.data;
   // The overview can spotlight a lane this domain's roster does not carry —
@@ -2266,6 +2441,28 @@ export const DripJourneyCanvas: React.FC<{
             onSaved={overview.reload}
             onNotice={notify}
           />
+        )}
+
+        {/* Lane-level emergency pause — one lane only, never All-lanes. Pauses
+            /resumes EVERY feed of the vertical (paused_emergency on each), so
+            it stops intake AND the follow-up ladder. */}
+        {selVertical && (
+          <button
+            type="button"
+            onClick={() => void toggleLanePause()}
+            disabled={laneBusy}
+            title={laneAllPaused
+              ? `Every feed of ${laneDisplayName(selVertical)} reports paused_emergency — resume restarts them all on the next tick.`
+              : `Pauses EVERY feed of ${laneDisplayName(selVertical)} (paused_emergency): stops intake AND the follow-up ladder. Requires a reason and typing the lane's vertical to confirm.`}
+            style={{
+              background: laneAllPaused ? alpha(colors.success, '14') : 'rgba(239,68,68,0.15)',
+              color: laneAllPaused ? colors.successText : colors.dangerText,
+              border: `1px solid ${laneAllPaused ? alpha(colors.success, '44') : 'rgba(239,68,68,0.40)'}`,
+              borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {laneBusy ? 'Confirming…' : laneAllPaused ? 'Resume lane' : 'Pause lane'}
+          </button>
         )}
 
         <button type="button" style={{ ...btnStyle, marginLeft: 'auto' }}
@@ -3160,6 +3357,11 @@ export const DripJourneyCanvas: React.FC<{
                       <th style={thStyle}>ISP</th>
                       <th style={numTh} title="Claimable records sitting in the queue for this ISP right now, summed across this drip's feeds.">Ready (in queue)</th>
                       <th style={numTh} title="Share of this drip's total ready supply.">% of ready</th>
+                      {!allSelectedExpress && (
+                        <th style={numTh} title="Estimated per-wave clamp for PACED feeds: ceil(ready ÷ (384 × drain days)). Drain days are COMPILED DEFAULTS mirrored client-side (gmail 3d; yahoo/aol/att/sbcglobal 2d) and may drift from server config — 'est.', never authoritative. '—' = no compiled drain horizon for this ISP.">
+                          Wave clamp (est.)
+                        </th>
+                      )}
                       <th style={numTh} title="Today's remaining introduction allowance for this (sending domain × ISP) from the ledger above. '—' means no ledger row: UNGOVERNED by that overlay, not capped at 0.">Ledger headroom</th>
                       <th style={thStyle} title="What actually binds this ISP first — the tightest of supply, ledger permission, and the feed throttle daily caps below.">Binding constraint</th>
                     </tr>
@@ -3194,6 +3396,15 @@ export const DripJourneyCanvas: React.FC<{
                           <td style={tdStyle}>{row.isp}</td>
                           <td style={numTd}>{num(row.ready)}</td>
                           <td style={numTd}>{ratePct(derive(row.ready, supplyTotals.ready))}</td>
+                          {!allSelectedExpress && (
+                            <td style={numTd} title={DRAIN_HORIZON_DAYS[row.isp]
+                              ? `est. ceil(${num(row.ready)} ÷ (${DRAIN_WAVES_PER_DAY} × ${DRAIN_HORIZON_DAYS[row.isp]}d)) — compiled defaults, may drift from server config`
+                              : 'No compiled drain horizon for this ISP — unknown, not unclamped.'}>
+                              {DRAIN_HORIZON_DAYS[row.isp]
+                                ? <>≈ {num(Math.ceil(row.ready / (DRAIN_WAVES_PER_DAY * DRAIN_HORIZON_DAYS[row.isp])))} <span style={{ fontSize: 9, color: colors.textFaint }}>est.</span></>
+                                : <span style={{ color: colors.textFaint }}>{UNKNOWN}</span>}
+                            </td>
+                          )}
                           <td style={numTd} title={led
                             ? `cap ${num(led.daily_budget)} − introduced ${num(led.introduced_today)}`
                             : 'No partner_drip_brand_budgets row for this (domain × ISP).'}>
@@ -3207,6 +3418,21 @@ export const DripJourneyCanvas: React.FC<{
                     })}
                   </tbody>
                 </table>
+                {allSelectedExpress ? (
+                  <div style={{ fontSize: 10, color: colors.indigo200, marginTop: 6 }}
+                    title="Every feed in scope reports express_dispatch=true — the multi-day drain spread does not apply. Daily caps, brand budgets and throttle safety still bind.">
+                    express — no drain spread
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 6 }}>
+                    Paced feeds spread each ISP over its drain horizon (gmail 3d, yahoo/aol/att/sbcglobal 2d):
+                    estimated per-wave clamp ≈ ceil(ready ÷ (384 × days)). <b>est.</b> — these are compiled
+                    defaults mirrored client-side and may drift from server config.
+                    {supplyFeeds.some((f) => f.express_dispatch === undefined) && (
+                      <> Express state was not reported for every feed in scope (older server) — treated as unknown, not paced.</>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -3390,7 +3616,61 @@ export const DripJourneyCanvas: React.FC<{
                         shared across {f.shared_brands.length} brands
                       </span>
                     )}
-                    <span style={{ marginLeft: 'auto' }}>
+                    <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      {/* EXPRESS / PACED toggle. State comes from the SUPPLY
+                          payload (new server field) — absent = UNKNOWN, never
+                          false. Gated by the throttle write flag; write
+                          surfaces render read-only, never hidden. */}
+                      {(() => {
+                        const exp = expressFor(f.dataset_id);
+                        const canWrite = !!throttle.data?.write_enabled;
+                        const busy = !!feedBusy[`express/${f.dataset_id}`];
+                        const known = exp !== undefined;
+                        const roExpTitle = !canWrite
+                          ? `READ-ONLY — the server reports write_enabled=false${throttle.data?.write_flag_env ? ` (env ${throttle.data.write_flag_env} is not set)` : ''}. Dispatch mode cannot be changed from here.`
+                          : undefined;
+                        return (
+                          <button
+                            type="button"
+                            disabled={!canWrite || !known || busy}
+                            onClick={() => void toggleExpress(f, exp)}
+                            title={roExpTitle ?? (!known
+                              ? 'This server did not report express_dispatch for this feed (older /supply payload) — dispatch mode UNKNOWN, not paced. Nothing to toggle safely.'
+                              : exp
+                                ? 'EXPRESS — this feed skips the multi-day drain spread. Click to return it to paced dispatch (plain confirm).'
+                                : 'PACED — this feed spreads each ISP over its drain horizon. Click to enable express (typed-name confirm): express removes the multi-day SPREAD only; daily caps, brand budgets and throttle safety still bind.')}
+                            style={{
+                              background: known && exp ? alpha(colors.success, '14') : 'rgba(255,255,255,0.05)',
+                              color: known ? (exp ? colors.successText : colors.textMuted) : colors.textFaint,
+                              border: `1px solid ${known && exp ? alpha(colors.success, '44') : colors.hairline}`,
+                              borderRadius: 999, padding: '3px 10px', fontSize: 10, fontWeight: 700,
+                              cursor: canWrite && known ? 'pointer' : 'not-allowed',
+                              opacity: canWrite && known ? 1 : 0.6,
+                            }}
+                          >
+                            {busy ? '…' : known ? (exp ? 'express' : 'paced') : 'express: unknown'}
+                          </button>
+                        );
+                      })()}
+                      {/* Per-feed emergency pause/resume — same endpoints as
+                          the Partner Ingest portal (datasets/{id}/emergency-stop
+                          with {reason}; /resume with no body). */}
+                      <button
+                        type="button"
+                        disabled={!!feedBusy[`pause/${f.dataset_id}`]}
+                        onClick={() => void (f.paused_emergency ? resumeFeed(f) : pauseFeed(f))}
+                        title={f.paused_emergency
+                          ? 'This feed is emergency-stopped (paused_emergency). Resume restarts intake and the follow-up ladder on the next tick.'
+                          : 'Emergency-stops THIS feed only (paused_emergency): intake and follow-up claims halt at the next safe point. Asks for a reason.'}
+                        style={{
+                          background: f.paused_emergency ? alpha(colors.success, '14') : 'rgba(239,68,68,0.15)',
+                          color: f.paused_emergency ? colors.successText : colors.dangerText,
+                          border: `1px solid ${f.paused_emergency ? alpha(colors.success, '44') : 'rgba(239,68,68,0.40)'}`,
+                          borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                        }}
+                      >
+                        {feedBusy[`pause/${f.dataset_id}`] ? 'Confirming…' : f.paused_emergency ? 'Resume' : 'Pause'}
+                      </button>
                       {throttle.data?.write_enabled ? (
                         <button
                           type="button" style={smallBtn}

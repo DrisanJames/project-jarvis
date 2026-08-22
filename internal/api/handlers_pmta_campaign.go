@@ -143,6 +143,15 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		// members are awaiting the next touch"). Read-only: the ladder's touch
 		// content + per-edge waiting census from partner_clean_queue.
 		cr.Get("/property-ledger/journey", s.HandleLaneJourney)
+		// Journey ADVANCE (operator lever): rewind up to `limit` waiting
+		// follow-up rows to due-now; the orchestrator claims them on its next
+		// ~15-min tick. Gated by PROPERTY_LEDGER_ROSTER_WRITE_ENABLED (same
+		// live-sending-change posture as roster writes), audit-logged.
+		cr.Post("/property-ledger/journey/advance", s.HandleJourneyAdvance)
+		// Lane-level pause/resume: loops the vertical's active datasets
+		// applying the per-dataset emergency-stop UPDATE. Stops ingest
+		// slicing AND both drip claim passes (welcome + follow-ups).
+		cr.Post("/property-ledger/lane-pause", s.HandleLanePause)
 		// Domain <-> drip binding (partner_drip_vertical_roster). The
 		// orchestrator reloads this table every tick, so an assign/unassign is a
 		// LIVE sending change with no deploy — hence the dedicated write gate

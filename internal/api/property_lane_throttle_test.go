@@ -119,8 +119,8 @@ func TestLaneThrottleReadMapping(t *testing.T) {
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency"}).
-			AddRow(dsID, "feed-one", "active", 5000, false))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, true))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db").AddRow("ht"))
 	// The global per-wave overlay: microsoft is raised above its compiled
@@ -287,8 +287,8 @@ func TestLaneThrottleOverrideQueryErrorFails(t *testing.T) {
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("insurance"))
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency"}).
-			AddRow(dsID, "feed-one", "active", 0, false))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
+			AddRow(dsID, "feed-one", "active", 0, false, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
 	expectThrottleGlobalCaps(mock)

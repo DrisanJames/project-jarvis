@@ -383,6 +383,70 @@ func (h *PartnerAdminHandler) HandleResumeDataset(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]interface{}{"dataset_id": datasetID, "paused_emergency": false})
 }
 
+// ============ POST /api/mailing/data-partners/datasets/{id}/express ============
+
+type setExpressDispatchRequest struct {
+	// Pointer so an absent field is a 400, not a silent disable.
+	Enabled *bool `json:"enabled"`
+}
+
+// HandleSetDatasetExpress toggles partner_datasets.express_dispatch — the
+// mail-on-arrival flag. The drip orchestrator reads it LIVE per wave
+// (datasetIsExpress, internal/worker/partner_drip_orchestrator.go:3847 — a
+// fresh SELECT per call, no cache), so the toggle takes effect on the next
+// tick with no deploy. Express exempts the dataset from the multi-day drain
+// horizon (resolvePerISPCaps) and switches its follow-up pass from the blind
+// 16-brand round-robin to firing every brand that holds due records.
+func (h *PartnerAdminHandler) HandleSetDatasetExpress(w http.ResponseWriter, r *http.Request) {
+	datasetID := chi.URLParam(r, "id")
+	if !isValidUUID(datasetID) {
+		writeJSONError(w, "invalid dataset id", http.StatusBadRequest)
+		return
+	}
+	var req setExpressDispatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+		writeJSONError(w, "enabled (bool) is required", http.StatusBadRequest)
+		return
+	}
+
+	var name string
+	var oldExpress bool
+	err := h.db.QueryRowContext(r.Context(), `
+		SELECT name, COALESCE(express_dispatch, false)
+		FROM partner_datasets
+		WHERE id = $1
+	`, datasetID).Scan(&name, &oldExpress)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSONError(w, "dataset not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		writeJSONError(w, "express_lookup_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := h.db.ExecContext(r.Context(), `
+		UPDATE partner_datasets
+		SET express_dispatch = $2,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, datasetID, *req.Enabled); err != nil {
+		writeJSONError(w, "express_update_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeAuditLog(r.Context(), h.db, actorFromRequest(r), "set_express_dispatch", "partner_dataset", datasetID,
+		map[string]interface{}{"express_dispatch": oldExpress},
+		map[string]interface{}{"express_dispatch": *req.Enabled})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":               datasetID,
+		"name":             name,
+		"express_dispatch": *req.Enabled,
+		"note":             "The orchestrator reads express_dispatch live per wave (no cache) — effective on its next tick, no deploy.",
+	})
+}
+
 // ============ GET /api/mailing/data-partners/datasets/{id}/throughput ============
 
 // HandleGetDatasetThroughput returns the live ISP distribution of records in
