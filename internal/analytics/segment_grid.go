@@ -55,6 +55,18 @@ type GridPair struct {
 // BuildEngagementGridBucket and re-validated here so the SQL shape is
 // unit-testable without an Athena client or a clock.
 func buildGridBucketSQL(event, fromDt, toDt string, fromEpochMs int64) (string, error) {
+	sel, err := buildGridPairsSelect(event, fromDt, toDt, fromEpochMs)
+	if err != nil {
+		return "", err
+	}
+	return sel + " LIMIT " + strconv.Itoa(gridBucketMaxPairs+1), nil
+}
+
+// buildGridPairsSelect renders the LIMIT-less distinct-pairs SELECT shared by
+// the bucket read (which caps it) and the snapshot UNLOAD in
+// segment_grid_delta.go (UNLOAD wants the full set — the cap is enforced when
+// the diff/read pages results back).
+func buildGridPairsSelect(event, fromDt, toDt string, fromEpochMs int64) (string, error) {
 	switch event {
 	case SegmentEventOpen, SegmentEventClick:
 	default:
@@ -77,8 +89,7 @@ func buildGridBucketSQL(event, fromDt, toDt string, fromEpochMs int64) (string, 
 		" AND dt BETWEEN " + sqlStr(fromDt) + " AND " + sqlStr(toDt) +
 		" AND event_epoch_ms >= " + strconv.FormatInt(fromEpochMs, 10) +
 		" AND subscriber_id <> ''" +
-		" GROUP BY subscriber_id, brand" +
-		" LIMIT " + strconv.Itoa(gridBucketMaxPairs+1), nil
+		" GROUP BY subscriber_id, brand", nil
 }
 
 // BuildEngagementGridBucket returns the distinct (subscriber_id, brand)

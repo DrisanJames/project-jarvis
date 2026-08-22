@@ -228,7 +228,7 @@ func TestRunDailyPass_CircuitOpensAfterConsecutiveFailures(t *testing.T) {
 		mock.ExpectExec(`VALUES \(\$1::uuid, \$2, 'running'`).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec(`CASE WHEN \$4::text = 'ok'`).
-			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), segmentGridLedgerSource, "error",
+			WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), segmentGridLedgerSourceFull, "error",
 				sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
@@ -313,7 +313,7 @@ func TestRunDailyPass_DeltaSkipWritesLedgerRowAndNoSwap(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// Terminal upsert MUST be 'skipped_delta' — with a row, not silence.
 	mock.ExpectExec(`CASE WHEN \$4::text = 'ok'`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), segmentGridLedgerSource, "skipped_delta",
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), segmentGridLedgerSourceFull, "skipped_delta",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

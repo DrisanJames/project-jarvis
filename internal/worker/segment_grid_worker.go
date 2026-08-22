@@ -90,11 +90,6 @@ const (
 	segmentGridWorkerName = "segment_grid"
 	segmentGridLockKey    = "segment-grid-worker"
 
-	// segmentGridLedgerSource is this worker's mailing_segment_build_ledger
-	// build_source. Keep the source list in internal/api/segment_ledger.go's
-	// doc comment in sync.
-	segmentGridLedgerSource = "lake-grid"
-
 	// Daily target: 05:30 UTC = 23:30 America/Denver (MDT) — after the send
 	// day, before the ~06:30Z board build the grid must be fresh for.
 	segmentGridTargetHourUTC = 5
@@ -430,6 +425,20 @@ type SegmentGridWorker struct {
 	nowFn           func() time.Time
 	readerEnabledFn func() bool
 
+	// Delta-path seams (phase 2 — segment_grid_delta.go). All default to the
+	// real implementations; tests stub them to prove routing without S3,
+	// Athena, or a DB.
+	deltaSupportedFn func() bool
+	ensureSnapFn     func(ctx context.Context) error
+	unloadFn         func(ctx context.Context, event string, windowDays int, dt string) (int64, error)
+	diffFn           func(ctx context.Context, event string, windowDays int, baseDt, todayDt string) ([]analytics.GridDelta, error)
+	mergeFn          func(ctx context.Context, segmentID string, adds []gridMember, removes []string) (int64, error)
+	snapExistsFn     func(ctx context.Context, event string, windowDays int, dt string) bool
+	recordSnapFn     func(ctx context.Context, event string, windowDays int, dt string, pairs int64)
+	deleteSnapshotFn func(ctx context.Context, event string, windowDays int, dt string) error
+	pruneFn          func(ctx context.Context, event string, windowDays int, todayDt string)
+	loadDeltaStateFn func(ctx context.Context, ids []string) (map[string]gridDeltaState, bool)
+
 	lastDailyDay     string    // UTC day of the last COMPLETED daily pass
 	lastDailyAttempt time.Time // start of the last daily-pass attempt (cooldown)
 }
@@ -444,6 +453,24 @@ func NewSegmentGridWorker(db *sql.DB, redisClient *redis.Client) *SegmentGridWor
 	w.resolveFn = w.resolveSubscribers
 	w.swapFn = w.writeSegmentMembers
 	w.readerEnabledFn = analytics.ReaderEnabled
+	w.deltaSupportedFn = analytics.GridSnapshotsSupported
+	w.ensureSnapFn = analytics.EnsureGridSnapshotTable
+	w.unloadFn = func(ctx context.Context, event string, windowDays int, dt string) (int64, error) {
+		cctx, cancel := context.WithTimeout(ctx, segmentGridUnloadTimeout)
+		defer cancel()
+		return analytics.UnloadGridSnapshot(cctx, event, windowDays, dt)
+	}
+	w.diffFn = func(ctx context.Context, event string, windowDays int, baseDt, todayDt string) ([]analytics.GridDelta, error) {
+		cctx, cancel := context.WithTimeout(ctx, segmentGridDiffTimeout)
+		defer cancel()
+		return analytics.DiffGridSnapshots(cctx, event, windowDays, baseDt, todayDt)
+	}
+	w.mergeFn = w.mergeSegmentDelta
+	w.snapExistsFn = w.snapshotRecorded
+	w.recordSnapFn = w.recordSnapshot
+	w.deleteSnapshotFn = analytics.DeleteGridSnapshot
+	w.pruneFn = w.pruneSnapshotsDefault
+	w.loadDeltaStateFn = w.loadDeltaState
 	return w
 }
 
@@ -707,22 +734,22 @@ func (w *SegmentGridWorker) runDailyPass(ctx context.Context) {
 }
 
 // buildSegments runs the shared build core over a set of parsed grid
-// segments: bucket fetches, one resolve, then sequential per-segment
-// rebuilds with guards, ledger writes and the failure circuit.
+// segments. Phase 2: each segment is routed down the DELTA path (Athena
+// snapshot diff → one-TX PG merge — quick and IO-light) when its state
+// allows, and down the phase-1 FULL path (bucket query → transactional
+// member swap) otherwise: bootstrap (no prior snapshot), the 7-day
+// reconcile, snapshot infra unavailable, an intraday refresh, or the
+// DISABLE_SEGMENT_GRID_DELTA kill switch. A failed diff applies NOTHING
+// (error ledger row — never a stale partial, never a surprise full swap).
 // Returns (circuitTripped, built, skipped, failed).
 func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmentRow, ledger map[string]gridLedgerRow) (bool, int, int, int) {
 	built, skipped, failed := 0, 0, 0
 	consecFails := 0
+	passStart := time.Now()
+	now := w.nowFn().UTC()
+	todayDt := now.Format("2006-01-02")
+	totalAdds, totalRemoves := 0, 0
 
-	fail := func(segID, name, msg string) bool {
-		failed++
-		consecFails++
-		w.ledgerUpsert(ctx, segID, ledgerCountOf(ledger, segID), "error", 0, 0, msg)
-		log.Printf("[SegmentGrid] %q failed: %s", name, msg)
-		return consecFails >= segmentGridCircuitLimit
-	}
-
-	// Bucket fetches — one Athena query per distinct (event, window).
 	type bucketKey struct {
 		event  string
 		window int
@@ -731,20 +758,150 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 	for _, s := range need {
 		needBuckets[bucketKey{s.spec.Event, s.spec.WindowDays}] = true
 	}
+
+	// ---- Path routing -----------------------------------------------------
+	deltaOn := os.Getenv("DISABLE_SEGMENT_GRID_DELTA") != "true" && w.deltaSupportedFn()
+	var deltaState map[string]gridDeltaState
+	if deltaOn {
+		ids := make([]string, len(need))
+		for i, s := range need {
+			ids[i] = s.spec.ID
+		}
+		var ok bool
+		deltaState, ok = w.loadDeltaStateFn(ctx, ids)
+		if !ok {
+			deltaOn = false // logged inside; every segment goes full (phase-1)
+		}
+	}
+	if deltaOn {
+		if err := w.ensureSnapFn(ctx); err != nil {
+			log.Printf("[SegmentGrid] snapshot table unavailable (delta path disabled this pass): %v", err)
+			deltaOn = false
+		}
+	}
+
+	type segPath struct {
+		delta  bool
+		baseDt string
+		source string
+		why    string
+	}
+	paths := make(map[string]segPath, len(need))
+	for _, s := range need {
+		p := segPath{source: segmentGridLedgerSourceFull}
+		st := deltaState[s.spec.ID]
+		switch {
+		case !deltaOn:
+			p.why = "delta unavailable"
+		case st.snapshotDt == "":
+			p.why = "bootstrap (no prior snapshot)"
+		case !analytics.GridSnapshotWindowOK(s.spec.WindowDays):
+			p.why = "window has no snapshot partition"
+		case !st.fullBuiltAt.Valid || now.Sub(st.fullBuiltAt.Time) >= segmentGridReconcileEvery:
+			p.why = "reconcile due — forcing full rebuild to correct snapshot/PG drift"
+		case st.snapshotDt >= todayDt:
+			// The base IS today's snapshot: the daily pass has nothing to
+			// diff, and an operator's intraday Refresh wants CURRENT lake
+			// truth, not "no change since the morning snapshot".
+			p.why = "base snapshot is today's (intraday refresh) — full rebuild"
+		case gridSnapshotBaseTooOld(st.snapshotDt, todayDt):
+			p.why = fmt.Sprintf("base snapshot %s older than %dd", st.snapshotDt, segmentGridDeltaMaxBaseAgeDays)
+		default:
+			p.delta, p.baseDt, p.source = true, st.snapshotDt, segmentGridLedgerSourceDelta
+		}
+		if !p.delta && deltaOn {
+			log.Printf("[SegmentGrid] %q full path: %s", s.spec.Name, p.why)
+		}
+		paths[s.spec.ID] = p
+	}
+	srcOf := func(segID string) string {
+		if p, ok := paths[segID]; ok {
+			return p.source
+		}
+		return segmentGridLedgerSourceFull
+	}
+
+	fail := func(segID, name, msg string) bool {
+		failed++
+		consecFails++
+		w.ledgerUpsert(ctx, segID, ledgerCountOf(ledger, segID), srcOf(segID), "error", 0, 0, msg)
+		log.Printf("[SegmentGrid] %q failed: %s", name, msg)
+		return consecFails >= segmentGridCircuitLimit
+	}
+
+	// ---- Snapshot phase: UNLOAD today's snapshot per needed bucket --------
+	// Needed as tomorrow's diff base regardless of today's path, and as the
+	// diff's "today" side. Idempotent within a day via the PG bookkeeping
+	// row (a crash between UNLOAD and record re-UNLOADs after a prefix
+	// cleanup — partial S3 files are never trusted). An UNLOAD failure
+	// demotes the bucket's delta segments to the full path: that is the
+	// phase-1-approved complete rebuild, not a stale partial.
+	snapshotted := map[bucketKey]bool{}
+	if deltaOn {
+		for bk := range needBuckets {
+			if ctx.Err() != nil {
+				return false, built, skipped, failed
+			}
+			if w.snapExistsFn(ctx, bk.event, bk.window, todayDt) {
+				snapshotted[bk] = true
+				continue
+			}
+			snapStart := time.Now()
+			pairs, err := w.unloadFn(ctx, bk.event, bk.window, todayDt)
+			if err != nil {
+				log.Printf("[SegmentGrid] snapshot %s/%dd/%s failed (bucket's delta segments demoted to full): %v",
+					bk.event, bk.window, todayDt, err)
+				continue
+			}
+			w.recordSnapFn(ctx, bk.event, bk.window, todayDt, pairs)
+			snapshotted[bk] = true
+			log.Printf("[SegmentGrid] snapshot %s/%dd/%s: %d pairs in %s",
+				bk.event, bk.window, todayDt, pairs, time.Since(snapStart).Round(time.Millisecond))
+			w.pruneFn(ctx, bk.event, bk.window, todayDt)
+		}
+		for _, s := range need {
+			p := paths[s.spec.ID]
+			if !p.delta {
+				continue
+			}
+			bk := bucketKey{s.spec.Event, s.spec.WindowDays}
+			switch {
+			case !snapshotted[bk]:
+				p.delta, p.source, p.why = false, segmentGridLedgerSourceFull, "today's snapshot unavailable — full fallback"
+			case !w.snapExistsFn(ctx, bk.event, bk.window, p.baseDt):
+				// A base whose UNLOAD never completed must not be diffed
+				// against: an empty/partial base reads as mass adds/removes.
+				p.delta, p.source, p.why = false, segmentGridLedgerSourceFull, "base snapshot record missing — full fallback"
+			}
+			if !p.delta {
+				log.Printf("[SegmentGrid] %q full path: %s", s.spec.Name, p.why)
+				paths[s.spec.ID] = p
+			}
+		}
+	}
+
+	// ---- FULL-path bucket fetches — one Athena query per distinct bucket
+	// still needed by at least one full-path segment.
+	fullBuckets := map[bucketKey]bool{}
+	for _, s := range need {
+		if !paths[s.spec.ID].delta {
+			fullBuckets[bucketKey{s.spec.Event, s.spec.WindowDays}] = true
+		}
+	}
 	buckets := map[bucketKey]map[string][]string{} // key → brandApex → subscriber ids
-	for bk := range needBuckets {
+	for bk := range fullBuckets {
 		if ctx.Err() != nil {
 			return false, built, skipped, failed
 		}
 		pairs, err := w.bucketFn(ctx, bk.event, bk.window)
 		if err != nil {
-			// The bucket's segments all fail; the circuit counts ONE fault
-			// per bucket (an Athena outage must not instantly trip on the
-			// first bucket when others may succeed).
+			// The bucket's FULL segments all fail; the circuit counts ONE
+			// fault per bucket (an Athena outage must not instantly trip on
+			// the first bucket when others may succeed).
 			for _, s := range need {
-				if s.spec.Event == bk.event && s.spec.WindowDays == bk.window {
+				if !paths[s.spec.ID].delta && s.spec.Event == bk.event && s.spec.WindowDays == bk.window {
 					failed++
-					w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), "error", 0, 0,
+					w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), srcOf(s.spec.ID), "error", 0, 0,
 						"lake bucket query: "+err.Error())
 				}
 			}
@@ -762,8 +919,67 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		buckets[bucketKey{bk.event, bk.window}] = byBrand
 	}
 
-	// Resolve the union of subscriber ids actually needed (only the brands
-	// on the build list) in ONE bounded hash join.
+	// ---- DELTA diffs, one Athena anti-join per (bucket, base day) --------
+	type diffKey struct {
+		bk     bucketKey
+		baseDt string
+	}
+	type segDiff struct {
+		adds    []string
+		removes []string
+	}
+	diffGroups := map[diffKey][]int{} // → indexes into need
+	for i, s := range need {
+		p := paths[s.spec.ID]
+		if p.delta {
+			dk := diffKey{bucketKey{s.spec.Event, s.spec.WindowDays}, p.baseDt}
+			diffGroups[dk] = append(diffGroups[dk], i)
+		}
+	}
+	diffs := map[string]segDiff{} // segment_id → its adds/removes
+	for dk, idxs := range diffGroups {
+		if ctx.Err() != nil {
+			return false, built, skipped, failed
+		}
+		deltas, err := w.diffFn(ctx, dk.bk.event, dk.bk.window, dk.baseDt, todayDt)
+		if err != nil {
+			// THE RAIL: a failed Athena diff applies NOTHING — error ledger
+			// rows, never a stale partial.
+			for _, i := range idxs {
+				s := need[i]
+				failed++
+				w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), srcOf(s.spec.ID), "error", 0, 0,
+					"lake diff query: "+err.Error())
+			}
+			consecFails++
+			log.Printf("[SegmentGrid] diff %s/%dd %s→%s failed: %v", dk.bk.event, dk.bk.window, dk.baseDt, todayDt, err)
+			if consecFails >= segmentGridCircuitLimit {
+				return true, built, skipped, failed
+			}
+			continue
+		}
+		addsByBrand := map[string][]string{}
+		removesByBrand := map[string][]string{}
+		for _, d := range deltas {
+			switch d.Op {
+			case "add":
+				addsByBrand[d.BrandApex] = append(addsByBrand[d.BrandApex], d.SubscriberID)
+			case "del":
+				removesByBrand[d.BrandApex] = append(removesByBrand[d.BrandApex], d.SubscriberID)
+			}
+		}
+		for _, i := range idxs {
+			s := need[i]
+			diffs[s.spec.ID] = segDiff{
+				adds:    addsByBrand[s.spec.BrandApex],
+				removes: removesByBrand[s.spec.BrandApex],
+			}
+		}
+	}
+
+	// Resolve the union of subscriber ids actually needed — full segments'
+	// whole bucket-brand slices plus delta segments' ADDS (removes are
+	// deleted by id and need no attributes) — in ONE bounded hash join.
 	wantSeeds := false
 	for _, s := range need {
 		if s.spec.ExcludeSeeds {
@@ -772,6 +988,14 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 	}
 	unionSet := map[string]bool{}
 	for _, s := range need {
+		if p := paths[s.spec.ID]; p.delta {
+			if d, ok := diffs[s.spec.ID]; ok {
+				for _, id := range d.adds {
+					unionSet[id] = true
+				}
+			}
+			continue
+		}
 		byBrand, ok := buckets[bucketKey{s.spec.Event, s.spec.WindowDays}]
 		if !ok {
 			continue
@@ -795,7 +1019,7 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 			// segments would build BROADER than defined.
 			for _, s := range need {
 				failed++
-				w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), "error", 0, 0,
+				w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), srcOf(s.spec.ID), "error", 0, 0,
 					"seed-list fetch failed: "+err.Error())
 			}
 			return false, built, skipped, failed
@@ -809,7 +1033,7 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		if err != nil {
 			for _, s := range need {
 				failed++
-				w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), "error", 0, 0,
+				w.ledgerUpsert(ctx, s.spec.ID, ledgerCountOf(ledger, s.spec.ID), srcOf(s.spec.ID), "error", 0, 0,
 					"subscriber resolve: "+err.Error())
 			}
 			log.Printf("[SegmentGrid] subscriber resolve failed: %v", err)
@@ -843,9 +1067,24 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 			return false, built, skipped, failed
 		}
 		spec := s.spec
-		byBrand, ok := buckets[bucketKey{spec.Event, spec.WindowDays}]
-		if !ok {
-			continue // bucket failed; already ledgered above
+		p := paths[spec.ID]
+
+		// Candidate ids to filter: the whole bucket-brand slice (full path)
+		// or just the diff's adds (delta path). Removes bypass the filters —
+		// deleting a member the filters would also have dropped is a no-op.
+		var rawIDs, removes []string
+		if p.delta {
+			d, ok := diffs[spec.ID]
+			if !ok {
+				continue // diff failed; already ledgered above
+			}
+			rawIDs, removes = d.adds, d.removes
+		} else {
+			byBrand, ok := buckets[bucketKey{spec.Event, spec.WindowDays}]
+			if !ok {
+				continue // bucket failed; already ledgered above
+			}
+			rawIDs = byBrand[spec.BrandApex]
 		}
 		if spec.NeverClickersGte > 0 && converted == nil {
 			if fail(spec.ID, spec.Name, "never-clicker exemption set unavailable — refusing to build a wrong audience") {
@@ -855,10 +1094,10 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		}
 
 		buildStart := time.Now()
-		w.ledgerMarkRunning(ctx, spec.ID)
+		w.ledgerMarkRunning(ctx, spec.ID, p.source)
 
-		members := make([]gridMember, 0, len(byBrand[spec.BrandApex]))
-		for _, sub := range byBrand[spec.BrandApex] {
+		members := make([]gridMember, 0, len(rawIDs))
+		for _, sub := range rawIDs {
 			r, ok := resolved[sub]
 			if !ok {
 				continue // no current subscriber row / no email — dropped (sidecar parity)
@@ -882,12 +1121,84 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		}
 
 		prior := ledgerCountOf(ledger, spec.ID)
+		durMs := func() int { return int(time.Since(buildStart).Milliseconds()) }
+
+		if p.delta {
+			// ---- DELTA path: guards on the DIFF SIZES, then one-TX merge.
+			addN, remN := int64(len(members)), int64(len(removes))
+			projected := prior - remN + addN
+			if projected < 0 {
+				projected = 0
+			}
+			deltaPct := 0.0
+			if prior > 0 {
+				deltaPct = float64(projected-prior) / float64(prior) * 100.0
+			}
+			switch {
+			case addN == 0 && remN == 0:
+				// No churn: 'ok' advances freshness without touching a row.
+				built++
+				consecFails = 0
+				w.ledgerUpsert(ctx, spec.ID, prior, p.source, "ok", durMs(), 0, "")
+				w.ledgerStampDeltaState(ctx, spec.ID, p.source, todayDt)
+				ledger[spec.ID] = gridLedgerRow{count: prior, builtAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, status: "ok", updatedAt: time.Now().UTC()}
+				log.Printf("[SegmentGrid] %q delta: no change (%d members) in %dms", spec.Name, prior, durMs())
+				continue
+			case prior >= segmentGridMinGuardSize && float64(remN) > float64(prior)*segmentGridMaxDropPct/100.0:
+				// The directional guard applied to the diff itself: a diff
+				// that would remove the majority of a big segment is the
+				// lake-gap / lost-snapshot signature, refused the same way.
+				skipped++
+				consecFails = 0
+				w.ledgerUpsert(ctx, spec.ID, prior, p.source, "skipped_delta", durMs(), deltaPct,
+					fmt.Sprintf("diff guard: %d removes against %d members (drop limit -%.0f%%)", remN, prior, segmentGridMaxDropPct))
+				log.Printf("[SegmentGrid] %q SKIP(diff): %d removes vs %d members", spec.Name, remN, prior)
+				continue
+			case projected == 0 && prior > 0:
+				skipped++
+				consecFails = 0
+				w.ledgerUpsert(ctx, spec.ID, prior, p.source, "skipped_delta", durMs(), deltaPct,
+					fmt.Sprintf("empty result — refusing to wipe %d members via delta", prior))
+				log.Printf("[SegmentGrid] %q SKIP(empty-delta): %d → 0", spec.Name, prior)
+				continue
+			case gridDeltaGuardTrips(prior, projected, segmentGridMaxDropPct, segmentGridMaxGrowthPct, segmentGridMinGuardSize):
+				skipped++
+				consecFails = 0
+				w.ledgerUpsert(ctx, spec.ID, prior, p.source, "skipped_delta", durMs(), deltaPct,
+					fmt.Sprintf("delta guard: %d → %d (%+.1f%%; drop limit -%.0f%%, growth limit +%.0f%%)",
+						prior, projected, deltaPct, segmentGridMaxDropPct, segmentGridMaxGrowthPct))
+				log.Printf("[SegmentGrid] %q SKIP(delta): %d → %d (%+.1f%%)", spec.Name, prior, projected, deltaPct)
+				continue
+			}
+			count, err := w.mergeFn(ctx, spec.ID, members, removes)
+			if err != nil {
+				if fail(spec.ID, spec.Name, "delta merge: "+err.Error()) {
+					return true, built, skipped, failed
+				}
+				continue
+			}
+			built++
+			consecFails = 0
+			totalAdds += int(addN)
+			totalRemoves += int(remN)
+			finalPct := 0.0
+			if prior > 0 {
+				finalPct = float64(count-prior) / float64(prior) * 100.0
+			}
+			w.ledgerUpsert(ctx, spec.ID, count, p.source, "ok", durMs(), finalPct, "")
+			w.ledgerStampDeltaState(ctx, spec.ID, p.source, todayDt)
+			ledger[spec.ID] = gridLedgerRow{count: count, builtAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, status: "ok", updatedAt: time.Now().UTC()}
+			log.Printf("[SegmentGrid] %q delta-merged: +%d/-%d → %d members (prior %d, %+.1f%%) in %dms",
+				spec.Name, addN, remN, count, prior, finalPct, durMs())
+			continue
+		}
+
+		// ---- FULL path (phase-1 semantics, unchanged).
 		newN := int64(len(members))
 		deltaPct := 0.0
 		if prior > 0 {
 			deltaPct = float64(newN-prior) / float64(prior) * 100.0
 		}
-		durMs := func() int { return int(time.Since(buildStart).Milliseconds()) }
 
 		// Empty rail: never wipe an existing membership to zero (sidecar
 		// --allow-empty semantics; a 0-member grid cell on an active brand
@@ -895,7 +1206,7 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		if newN == 0 && prior > 0 {
 			skipped++
 			consecFails = 0
-			w.ledgerUpsert(ctx, spec.ID, prior, "skipped_delta", durMs(), deltaPct,
+			w.ledgerUpsert(ctx, spec.ID, prior, p.source, "skipped_delta", durMs(), deltaPct,
 				fmt.Sprintf("empty result — refusing to wipe %d members", prior))
 			log.Printf("[SegmentGrid] %q SKIP(empty): %d → 0", spec.Name, prior)
 			continue
@@ -906,13 +1217,13 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 			// is the documented footgun).
 			skipped++
 			consecFails = 0
-			w.ledgerUpsert(ctx, spec.ID, 0, "skipped_delta", durMs(), 0, "empty result on empty segment")
+			w.ledgerUpsert(ctx, spec.ID, 0, p.source, "skipped_delta", durMs(), 0, "empty result on empty segment")
 			continue
 		}
 		if gridDeltaGuardTrips(prior, newN, segmentGridMaxDropPct, segmentGridMaxGrowthPct, segmentGridMinGuardSize) {
 			skipped++
 			consecFails = 0
-			w.ledgerUpsert(ctx, spec.ID, prior, "skipped_delta", durMs(), deltaPct,
+			w.ledgerUpsert(ctx, spec.ID, prior, p.source, "skipped_delta", durMs(), deltaPct,
 				fmt.Sprintf("delta guard: %d → %d (%+.1f%%; drop limit -%.0f%%, growth limit +%.0f%%)",
 					prior, newN, deltaPct, segmentGridMaxDropPct, segmentGridMaxGrowthPct))
 			log.Printf("[SegmentGrid] %q SKIP(delta): %d → %d (%+.1f%%)", spec.Name, prior, newN, deltaPct)
@@ -927,12 +1238,33 @@ func (w *SegmentGridWorker) buildSegments(ctx context.Context, need []gridSegmen
 		}
 		built++
 		consecFails = 0
-		w.ledgerUpsert(ctx, spec.ID, newN, "ok", durMs(), deltaPct, "")
+		w.ledgerUpsert(ctx, spec.ID, newN, p.source, "ok", durMs(), deltaPct, "")
+		// Stamp which snapshot this membership corresponds to (tomorrow's
+		// diff base) — or CLEAR it when the build ran without a snapshot, so
+		// a stale base can never be diffed against.
+		snapDt := ""
+		if snapshotted[bucketKey{spec.Event, spec.WindowDays}] {
+			snapDt = todayDt
+		}
+		w.ledgerStampDeltaState(ctx, spec.ID, p.source, snapDt)
 		ledger[spec.ID] = gridLedgerRow{count: newN, builtAt: sql.NullTime{Time: time.Now().UTC(), Valid: true}, status: "ok", updatedAt: time.Now().UTC()}
-		log.Printf("[SegmentGrid] %q built: %d members (prior %d, %+.1f%%) in %dms",
-			spec.Name, newN, prior, deltaPct, durMs())
+		log.Printf("[SegmentGrid] %q built (full: %s): %d members (prior %d, %+.1f%%) in %dms",
+			spec.Name, p.why, newN, prior, deltaPct, durMs())
 	}
+	log.Printf("[SegmentGrid] build core: %d built, %d skipped, %d failed; delta rows shipped +%d/-%d in %s",
+		built, skipped, failed, totalAdds, totalRemoves, time.Since(passStart).Round(time.Millisecond))
 	return false, built, skipped, failed
+}
+
+// gridSnapshotBaseTooOld reports whether a diff base day is beyond the
+// allowed lookback. Unparseable inputs read as too old (full path).
+func gridSnapshotBaseTooOld(baseDt, todayDt string) bool {
+	b, err1 := time.Parse("2006-01-02", baseDt)
+	t, err2 := time.Parse("2006-01-02", todayDt)
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return t.Sub(b) > time.Duration(segmentGridDeltaMaxBaseAgeDays)*24*time.Hour
 }
 
 func ledgerCountOf(ledger map[string]gridLedgerRow, id string) int64 {
@@ -1160,7 +1492,7 @@ func (w *SegmentGridWorker) writeSegmentMembers(ctx context.Context, segmentID s
 // last good count. Best-effort: errors are logged, never control flow.
 // ---------------------------------------------------------------------------
 
-func (w *SegmentGridWorker) ledgerMarkRunning(ctx context.Context, segmentID string) {
+func (w *SegmentGridWorker) ledgerMarkRunning(ctx context.Context, segmentID, source string) {
 	wctx, cancel := gridLedgerCtx(ctx)
 	defer cancel()
 	if _, err := w.db.ExecContext(wctx, `
@@ -1172,12 +1504,12 @@ func (w *SegmentGridWorker) ledgerMarkRunning(ctx context.Context, segmentID str
 			last_build_status = 'running',
 			last_error        = NULL,
 			updated_at        = NOW()
-	`, segmentID, segmentGridLedgerSource); err != nil {
+	`, segmentID, source); err != nil {
 		log.Printf("[SegmentGrid] ledger mark-running failed for %s: %v", segmentID, err)
 	}
 }
 
-func (w *SegmentGridWorker) ledgerUpsert(ctx context.Context, segmentID string, count int64, status string, durMs int, deltaPct float64, errMsg string) {
+func (w *SegmentGridWorker) ledgerUpsert(ctx context.Context, segmentID string, count int64, source, status string, durMs int, deltaPct float64, errMsg string) {
 	if len(errMsg) > 500 {
 		errMsg = errMsg[:500]
 	}
@@ -1203,7 +1535,7 @@ func (w *SegmentGridWorker) ledgerUpsert(ctx context.Context, segmentID string, 
 			last_delta_pct    = EXCLUDED.last_delta_pct,
 			last_error        = EXCLUDED.last_error,
 			updated_at        = NOW()
-	`, segmentID, count, segmentGridLedgerSource, status, durMs, deltaPct, errMsg); err != nil {
+	`, segmentID, count, source, status, durMs, deltaPct, errMsg); err != nil {
 		log.Printf("[SegmentGrid] ledger upsert(%s) failed for %s: %v", status, segmentID, err)
 	}
 }

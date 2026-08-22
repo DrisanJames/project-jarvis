@@ -13,7 +13,10 @@ package api
 // this app-owned table keyed by segment_id instead.
 //
 // Source values: 'materializer' | 'recalculate' | 'lake-builder' |
-// 'lake-standard' | 'lake-engaged' | 'lake-grid' | 'backfill' | 'bulk-tag' |
+// 'lake-standard' | 'lake-engaged' | 'lake-grid-full' | 'lake-grid-delta'
+// (the grid worker's phase-2 split: full snapshot-anchored rebuild vs
+// snapshot-diff merge — 'lake-grid' is the retired phase-1 spelling still
+// present on historical rows) | 'backfill' | 'bulk-tag' |
 // 'partner-drip' (the partner-drip AND lake-grid upsert SQL are inlined in
 // internal/worker/partner_drip_orchestrator.go / segment_grid_worker.go
 // because internal/api already imports internal/worker — keep them in sync

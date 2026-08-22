@@ -32,6 +32,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/athena"
 	atypes "github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Reader owns the Athena client + query configuration for the read layer.
@@ -41,6 +42,20 @@ type Reader struct {
 	workgroup string
 	output    string // S3 results location, e.g. s3://bucket/athena-results/
 	region    string
+
+	// Segment-grid DELTA snapshots (segment_grid_delta.go, 2026-08-21
+	// operator-approved architecture). The ONE sanctioned write path in this
+	// otherwise read-only package: UNLOAD of engagement-grid membership
+	// snapshots to s3://<bucket>/segment_snapshots/ so the next pass can
+	// anti-join today vs yesterday instead of full-swapping members in PG
+	// (full delete+insert swaps exhausted RDS EBSIOBalance to 0%). s3c is
+	// used only to clean a snapshot day-prefix before re-UNLOAD (UNLOAD
+	// refuses a non-empty location) and to prune aged snapshots. bucket is
+	// parsed from the Athena output location; when either is missing the
+	// delta layer reports unsupported and the grid worker stays on the
+	// phase-1 full-swap path.
+	s3c    *s3.Client
+	bucket string
 }
 
 var (
@@ -402,6 +417,15 @@ func InitReader(ctx context.Context, database, workgroup, output, region string)
 		workgroup: workgroup,
 		output:    output,
 		region:    region,
+	}
+	// Segment-grid delta snapshots: derive the lake bucket from the Athena
+	// output location ("s3://<bucket>/athena-results/"). If the output is not
+	// an s3:// URL the delta layer simply reports unsupported — never fatal.
+	if b := parseS3Bucket(output); b != "" {
+		r.bucket = b
+		r.s3c = s3.NewFromConfig(cfg)
+	} else {
+		log.Printf("[analytics-lake-read] segment-grid snapshots unsupported: cannot parse bucket from output %q", output)
 	}
 	readerMu.Lock()
 	reader = r

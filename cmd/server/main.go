@@ -2777,6 +2777,21 @@ func runStartupMigrations(db *sql.DB) {
 		{"aug21_seg_refresh_req_open_slot", worker.SegmentRefreshRequestsOpenSlotDDL},
 		{"aug21_seg_refresh_req_segment_idx", worker.SegmentRefreshRequestsDoneIdxDDL},
 		{"aug21_seg_refresh_req_lock_timeout_reset", worker.SegmentGridLockTimeoutResetDDL},
+		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
+		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
+		// merges). FOUR DDL entries in their own SET/RESET lock_timeout
+		// bracket, one statement each (migrationSkipProbe classifies by
+		// LEADING keyword). The UNLOGGED stage is intentionally WAL-free
+		// (transient merge staging, truncated every use); the two ledger
+		// ADD COLUMNs are nullable/no-default = instant. If any entry is
+		// timeout-skipped, worker.SegmentGridWorker degrades to the phase-1
+		// full-swap path by design — never a broken ledger write.
+		{"aug21_seg_grid_delta_lock_timeout", worker.SegmentGridLockTimeoutDDL},
+		{"aug21_seg_grid_stage", worker.SegmentGridStageDDL},
+		{"aug21_seg_grid_snapshots", worker.SegmentGridSnapshotsDDL},
+		{"aug21_seg_grid_ledger_full_built_at", worker.SegmentGridLedgerFullBuiltAtDDL},
+		{"aug21_seg_grid_ledger_snapshot_dt", worker.SegmentGridLedgerSnapshotDtDDL},
+		{"aug21_seg_grid_delta_lock_timeout_reset", worker.SegmentGridLockTimeoutResetDDL},
 		{"aug20_kumo_warmup_requests", api.KumoWarmupRequestsDDL},
 		{"aug20_kumo_warmup_requests_idx", api.KumoWarmupRequestsIndexDDL},
 		// Newsletters mode (2026-08-20) — internal/api/newsletter_requests.go.
