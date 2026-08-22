@@ -93,7 +93,7 @@ const tabs: Tab[] = [
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'schedule', 'scheduling-copilot'] },
   { id: 'audiences', label: 'Audiences', icon: faUsers, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
-  { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Membership-build truth per segment family — staleness verdicts against declared SLAs, worker liveness, churn and campaign use.' },
+  { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
   { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
   { id: 'click-funnels', label: 'Click Funnels', icon: faRoute, description: 'Click-drip offer funnels — per-node reach, open, click and conversion rates, the copy on each touch, and bulk clicker upload by sub1.' },
   // Tab id stays 'eo-cleaning' — it is the persisted key in localStorage
