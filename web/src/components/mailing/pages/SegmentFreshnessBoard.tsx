@@ -45,7 +45,7 @@ interface FreshnessRow {
   window_days: number;
   kind: Kind;
   status: string;
-  member_count: number;
+  member_count: number | null;
   members_stamped_at: string | null;
   last_built_at: string | null;
   build_source: string;
@@ -94,7 +94,7 @@ const SILENT_ZERO_STAMP_HOURS = 24;
 
 // ── Display helpers ─────────────────────────────────────────────────────────
 
-const fmtInt = (n: number): string => n.toLocaleString();
+const fmtInt = (n: number | null): string => (n == null ? '?' : n.toLocaleString());
 
 const ageHours = (iso: string | null): number | null => {
   if (!iso) return null;
@@ -282,7 +282,7 @@ export const SegmentFreshnessBoard: React.FC = () => {
     } else if (silentZero) {
       countNode = <span style={{ color: colors.warningText, fontWeight: 700 }}>0*</span>;
     } else if (r.freshness === 'unknown') {
-      countNode = r.member_count > 0
+      countNode = r.member_count != null && r.member_count > 0
         ? <span style={{ color: colors.textMuted }}>{fmtInt(r.member_count)}</span>
         : <span style={{ color: colors.textMuted }}>?</span>;
     } else {
