@@ -37,6 +37,7 @@ func domainAgentTestPayloadJSON(t *testing.T, name string) string {
 	t.Helper()
 	scheduledAt := time.Now().UTC().Add(30 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          name,
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
 		SendingDomain: "mail.example.com",

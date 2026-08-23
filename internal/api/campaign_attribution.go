@@ -175,29 +175,11 @@ func stampCampaignAttribution(ctx context.Context, db attributionQuerier, orgID,
 	var offerID, offerKey, attributionSource interface{}
 
 	if parsed, err := uuid.Parse(strings.TrimSpace(input.OfferID)); err == nil {
-		// (1) payload path.
+		// (1) payload path. Key resolution shared with HandleAttachOffer
+		// (offer_gate.go) — one lookup shape, never two.
 		offerID = parsed.String()
 		attributionSource = "payload"
-		var slug, everflowID string
-		err := db.QueryRowContext(ctx, `
-			SELECT COALESCE(NULLIF(lower(landing_page_slug), ''), ''), COALESCE(everflow_offer_id, '')
-			FROM mailing_offers
-			WHERE id = $1 AND organization_id = $2
-		`, parsed.String(), orgID).Scan(&slug, &everflowID)
-		if err != nil && err != sql.ErrNoRows {
-			log.Printf("[attribution] campaign %s: offer_key lookup for payload offer %s failed (continuing): %v", campaignID, parsed, err)
-		}
-		if slug == "" && everflowID != "" {
-			// Best-effort reverse lookup through the slug map.
-			if err := db.QueryRowContext(ctx, `
-				SELECT lower(cratoolpro_slug) FROM mailing_offer_slug_map
-				WHERE everflow_offer_id = $1
-				ORDER BY cratoolpro_slug ASC LIMIT 1
-			`, everflowID).Scan(&slug); err != nil && err != sql.ErrNoRows {
-				log.Printf("[attribution] campaign %s: slug-map reverse lookup ef=%s failed (continuing): %v", campaignID, everflowID, err)
-			}
-		}
-		if slug != "" {
+		if slug := resolveOfferKeyForOfferID(ctx, db, orgID, campaignID, parsed.String()); slug != "" {
 			offerKey = slug
 		}
 	} else if token, ok := parseOfferTokenFromCampaignName(name); ok {

@@ -59,6 +59,7 @@ func TestHandleDeployCampaign_ReservesAndReturns202(t *testing.T) {
 	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          "Async Deploy",
 		TargetISPs:    []engine.ISP{engine.ISPGmail, engine.ISPApple},
 		SendingDomain: "mail.example.com",
@@ -157,6 +158,7 @@ func TestHandleDeployCampaign_ThreadsSendingProfileIDToPreflight(t *testing.T) {
 
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:             "Pinned Profile Deploy",
 		SendingProfileID: pinnedID,
 		TargetISPs:       []engine.ISP{engine.ISPGmail},
@@ -218,6 +220,7 @@ func TestHandleDeployCampaign_NoOverrideThreadsEmpty(t *testing.T) {
 
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          "No Pin Deploy",
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
 		SendingDomain: "mail.example.com",
@@ -266,6 +269,7 @@ func TestHandleDeployCampaign_RePostConvergesOnExistingName(t *testing.T) {
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	existingID := uuid.New().String()
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          "Repeated Deploy",
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
 		SendingDomain: "mail.example.com",
@@ -335,6 +339,7 @@ func TestHandleDeployCampaign_TerminalNameAllowsRedeploy(t *testing.T) {
 	service := newTestPMTAService(db, defaultOrgID)
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          "Redeploy After Cancel",
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
 		SendingDomain: "mail.example.com",
@@ -399,6 +404,7 @@ func TestHandleSaveDraftCampaign_CreatesDraft(t *testing.T) {
 	input := engine.PMTACampaignDraftInput{
 		ScheduleMode: "quick",
 		CampaignInput: engine.PMTACampaignInput{
+			OfferID: "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 			Name:          "Draft Campaign",
 			TargetISPs:    []engine.ISP{engine.ISPGmail},
 			SendingDomain: "mail.example.com",
@@ -461,6 +467,7 @@ func TestHandleDeployCampaign_ReusesDraftCampaignID(t *testing.T) {
 	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
 	draftID := uuid.New().String()
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		CampaignID:    draftID,
 		Name:          "Draft Deploy",
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
@@ -528,6 +535,7 @@ func TestHandleDeployCampaign_ReusesScheduledCampaignID(t *testing.T) {
 	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
 	existingID := uuid.New().String()
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		CampaignID:    existingID,
 		Name:          "Edited Scheduled Campaign",
 		TargetISPs:    []engine.ISP{engine.ISPGmail, engine.ISPYahoo},
@@ -596,6 +604,7 @@ func TestHandleDeployCampaign_RejectsNonEditableCampaign(t *testing.T) {
 	scheduledAt := time.Now().UTC().Add(45 * time.Minute).Round(time.Minute)
 	completedID := uuid.New().String()
 	input := engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		CampaignID:    completedID,
 		Name:          "Cannot Redeploy Completed",
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
@@ -648,6 +657,7 @@ func TestHandleDeployCampaign_RejectsNonEditableCampaign(t *testing.T) {
 func gateTestInput(name string) engine.PMTACampaignInput {
 	scheduledAt := time.Now().UTC().Add(20 * time.Minute).Round(time.Minute)
 	return engine.PMTACampaignInput{
+		OfferID:       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		Name:          name,
 		TargetISPs:    []engine.ISP{engine.ISPGmail},
 		SendingDomain: "mail.example.com",

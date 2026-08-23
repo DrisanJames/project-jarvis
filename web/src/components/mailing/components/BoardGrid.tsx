@@ -370,7 +370,14 @@ export const BoardGrid: React.FC = () => {
                         {f.level === 'blocker' ? '✗' : '⚠'} {f.code}
                       </td>
                       <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>{f.property} {f.slot}</td>
-                      <td style={cellTd}>{f.message}</td>
+                      <td style={cellTd}>
+                        {f.message}
+                        {f.code === 'MISSING_OFFER' && (
+                          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                            Fix: Day Cards → open the campaign → attach offer or rebuild with offer.
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

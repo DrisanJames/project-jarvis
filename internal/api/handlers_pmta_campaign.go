@@ -249,6 +249,11 @@ func (s *PMTACampaignService) RegisterRoutes(r chi.Router) {
 		cr.Get("/source-qualification", s.HandleSourceQualification)
 		cr.Post("/deliverability-recs", s.HandleDeliverabilityRecommendations)
 		cr.Post("/{campaignId}/retry", s.HandleRetryCampaign)
+		// Offer repair for an already-scheduled campaign that deployed with
+		// no offer (pre-gate rows): sets offer_id/offer_key + re-stamps
+		// attribution. suppression_caveat always rides — the audience was
+		// planned without the offer's suppression file (offer_gate.go).
+		cr.Post("/{campaignId}/attach-offer", s.HandleAttachOffer)
 		// Day Cards: per-sending-domain daily campaign panel + the sanctioned
 		// cancel+redeploy-sibling rebuild (day_cards.go / day_cards_rebuild.go).
 		cr.Get("/day-cards/domains", s.HandleDayCardsDomains)
@@ -1086,9 +1091,14 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 	// 27 drip wave-group deploys failed with `412 send-day gates failed: A`
 	// (nobody had attested host health that day) — partner touches simply
 	// stopped. Internal callers therefore bypass the gates, audit-logged.
+	deployCtx := r.Context()
 	if internal := strings.TrimSpace(r.Header.Get("X-Internal-Caller")); internal != "" {
 		log.Printf("[SendDayGates] bypass: internal caller %q (campaign %q) — gates govern operator boards, not automation", internal, input.Name)
 		gateEnforcementDisabled = true
+		// Threaded to deployFromInput's offer gate (offer_gate.go): the drip
+		// orchestrator's deploys are offer-exempt — offers bind at the
+		// creative-row level, not the campaign payload.
+		deployCtx = withInternalCaller(deployCtx, internal)
 	}
 
 	report := s.evaluateDeployGates(r.Context(), orgID, input)
@@ -1119,10 +1129,15 @@ func (s *PMTACampaignService) HandleDeployCampaign(w http.ResponseWriter, r *htt
 		s.auditGateOverride(r.Context(), orgID, input.Name, names, reason)
 	}
 
-	campaignID, status, alreadyExisted, err := s.deployFromInput(r.Context(), orgID, input)
+	campaignID, status, alreadyExisted, err := s.deployFromInput(deployCtx, orgID, input)
 	if err != nil {
 		var inputErr *deployInputError
-		if errors.As(err, &inputErr) {
+		var gateErr *offerGateError
+		if errors.As(err, &gateErr) {
+			// Offer deploy gate (offer_gate.go): well-formed payload, missing
+			// offer binding — 422, actionable message.
+			respondJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": gateErr.Error()})
+		} else if errors.As(err, &inputErr) {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": inputErr.Error()})
 		} else {
 			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1403,6 +1418,18 @@ func (s *PMTACampaignService) deployFromInput(ctx context.Context, orgID string,
 		if len(input.ISPPlans) == 0 {
 			return "", "", false, &deployInputError{"at least one target ISP is required"}
 		}
+	}
+
+	// Offer deploy gate (operator mandate 2026-08-22, offer_gate.go): a NULL
+	// offer_id plans the audience WITHOUT the advertiser's suppression file
+	// and leaves conversions unattributable — the enforcement offer_proofs.go
+	// v1 deferred. Pure check, runs BEFORE preflight and BEFORE any DB work,
+	// so a blocked deploy performs ZERO writes. Maps to HTTP 422 in
+	// HandleDeployCampaign. Kill switch: OFFER_DEPLOY_GATE_DISABLED=1.
+	if ok, reason := offerGateCheck(input, internalCallerFromContext(ctx)); !ok {
+		return "", "", false, &offerGateError{reason}
+	} else if reason != "" {
+		log.Printf("[OfferGate] pass without offer_id: campaign %q — %s", input.Name, reason)
 	}
 
 	// ── Phase 1: synchronous pre-checks (fast, <2s) ─────────────────────

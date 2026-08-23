@@ -18,6 +18,7 @@ import { apiFetch } from '../shared/apiFetch'
 import { colors, alpha, btnStyle, thStyle, tdStyle } from '../shared/theme'
 import { Pill } from '../shared/ui'
 import { SideShelf } from './shared/SideShelf'
+import { isOfferExemptCampaignName } from './DayCards'
 import type { DayCard } from './DayCards'
 
 // ── Pick-list contract types ────────────────────────────────────────────────
@@ -42,6 +43,14 @@ interface KumoCreative {
   approval_status: string
 }
 interface PickerItem { id: string; name: string; subscriber_count?: number }
+interface OfferListItem { id: string; key: string; name: string; status: string }
+interface AttachOfferResult {
+  campaign_id: string
+  offer_id: string
+  offer_key: string
+  offer_name: string
+  suppression_caveat: string
+}
 
 interface DryPreview {
   would_cancel: string
@@ -222,6 +231,15 @@ export const DayCardEditor: React.FC<{
   const [minRemail, setMinRemail] = useState<string>(card.min_remail_hours != null ? String(card.min_remail_hours) : '')
   const [scheduledLocal, setScheduledLocal] = useState<string>(() => isoToDenverNaive(card.scheduled_at))
 
+  // ── Offer binding ──
+  const missingOffer = !card.offer_id && !isOfferExemptCampaignName(card.name)
+  const [offerPool, setOfferPool] = useState<OfferListItem[] | null>(null)
+  const [offerError, setOfferError] = useState<string | null>(null)
+  const [selOfferId, setSelOfferId] = useState<string>(card.offer_id ?? '')
+  const [attachBusy, setAttachBusy] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [attachResult, setAttachResult] = useState<AttachOfferResult | null>(null)
+
   // ── Pickers pools ──
   const [segPool, setSegPool] = useState<PickerItem[] | null>(null)
   const [segError, setSegError] = useState<string | null>(null)
@@ -286,6 +304,21 @@ export const DayCardEditor: React.FC<{
     })()
   }, [readOnly, isKumo, apex])
 
+  // Offer pool — loaded even for read-only (pre-blob) cards: attach-offer
+  // repairs the ROW and needs no stored deploy config.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/offers/list')
+        if (!res.ok) throw new Error(res.status === 404 ? describe404('GET /api/mailing/offers/list') : `offers: ${res.status}`)
+        const j = await res.json()
+        setOfferPool((j.offers ?? []) as OfferListItem[])
+      } catch (e) {
+        setOfferError(e instanceof Error ? e.message : String(e))
+      }
+    })()
+  }, [])
+
   // Preview the selected creative in an iframe (fetched via apiFetch so the
   // org header rides along; iframe src would drop it).
   useEffect(() => {
@@ -349,7 +382,44 @@ export const DayCardEditor: React.FC<{
       if (!isNaN(n)) o.min_remail_hours = n
     }
     if (timeChanged && scheduledISO) o.scheduled_at = scheduledISO
+    if (selOfferId && selOfferId !== (card.offer_id ?? '')) o.offer_id = selOfferId
     return o
+  }
+
+  // ── Attach-offer repair (no rebuild): sets offer_id on the LIVE row and
+  // re-stamps attribution. The audience was already planned, so the offer's
+  // suppression file did NOT apply — the server says so in every response
+  // (suppression_caveat) and we render it verbatim.
+  const runAttach = async () => {
+    if (!selOfferId) { setAttachError('Pick an offer first.'); return }
+    const typed = window.prompt(
+      `ATTACH OFFER sets the offer on the live campaign WITHOUT rebuilding it.\n`
+      + `The audience was already planned, so the offer's suppression file did NOT apply.\n\n`
+      + `Type the campaign name exactly to confirm:\n${card.name}`,
+    )
+    if (typed === null) return
+    if (typed !== card.name) {
+      setAttachError('Attach cancelled — campaign name did not match.')
+      return
+    }
+    setAttachBusy(true); setAttachError(null)
+    try {
+      const res = await apiFetch(`/api/mailing/pmta-campaign/${card.id}/attach-offer`, {
+        method: 'POST',
+        body: JSON.stringify({ offer_id: selOfferId, confirmed: true }),
+      })
+      const bodyText = await res.text().catch(() => '')
+      if (!res.ok) {
+        throw new Error(res.status === 404
+          ? describe404(`POST /api/mailing/pmta-campaign/{id}/attach-offer`)
+          : `Attach failed: ${res.status} ${bodyText.slice(0, 400)}`)
+      }
+      setAttachResult(JSON.parse(bodyText) as AttachOfferResult)
+    } catch (e) {
+      setAttachError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAttachBusy(false)
+    }
   }
 
   const postRebuild = async (confirmed: boolean): Promise<Response> =>
@@ -505,6 +575,94 @@ export const DayCardEditor: React.FC<{
             <span style={fieldLabel}>From name</span>
             <input style={inputStyle} value={fromName} onChange={e => invalidate(setFromName)(e.target.value)} />
           </>
+        )}
+      </Section>
+
+      {/* OFFER */}
+      <Section title="Offer">
+        <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
+          Current: <span style={{ color: card.offer_id ? colors.text : colors.dangerText }}>
+            {card.offer_name || card.offer_key || (card.offer_id ? card.offer_id : 'NO OFFER')}
+          </span>
+        </div>
+        {missingOffer && !attachResult && (
+          <div style={{
+            marginBottom: 10, padding: '10px 12px', borderRadius: 8, fontSize: 12,
+            color: colors.dangerText, background: alpha(colors.danger, '14'),
+            border: `1px solid ${alpha(colors.danger, '66')}`,
+          }}>
+            <div style={{ fontWeight: 700, color: colors.danger, marginBottom: 4 }}>NO OFFER attached</div>
+            This campaign's audience was planned WITHOUT any advertiser suppression file
+            (offer-level suppression keys off offer_id), and its conversions cannot be
+            attributed to an offer. Attach an offer to repair attribution, or rebuild with
+            the offer for full correctness (the rebuild re-plans the audience WITH the
+            offer's suppression file).
+          </div>
+        )}
+        {offerError ? (
+          <div style={{ ...noteStyle, color: colors.dangerText }}>{offerError}</div>
+        ) : (
+          <select
+            style={{ ...inputStyle, marginBottom: 8 }}
+            value={selOfferId}
+            onChange={e => { setSelOfferId(e.target.value); setDry(null) }}
+            disabled={attachBusy}
+          >
+            <option value="">{card.offer_id ? 'keep current offer' : 'select offer…'}</option>
+            {(offerPool ?? []).map(o => (
+              <option key={o.id} value={o.id}>{o.name}{o.key ? ` (${o.key})` : ''}</option>
+            ))}
+          </select>
+        )}
+        {attachError && (
+          <div style={{ ...noteStyle, color: colors.dangerText, marginBottom: 6 }}>{attachError}</div>
+        )}
+        {attachResult ? (
+          <div style={{
+            padding: '10px 12px', borderRadius: 8, fontSize: 12,
+            background: alpha(colors.warning, '14'), border: `1px solid ${alpha(colors.warning, '44')}`,
+          }}>
+            <div style={{ fontWeight: 700, color: colors.successText, marginBottom: 4 }}>
+              Offer attached: {attachResult.offer_name}{attachResult.offer_key ? ` (${attachResult.offer_key})` : ''}
+            </div>
+            <div style={{ color: colors.warningText, marginBottom: 6 }}>
+              {attachResult.suppression_caveat}
+            </div>
+            {!readOnly && (
+              <div style={{ color: colors.textMuted, marginBottom: 8 }}>
+                Full fix: use "Preview rebuild" → "Rebuild campaign" below with the offer
+                selected — the sibling re-plans its audience WITH the offer's suppression file.
+              </div>
+            )}
+            <button style={btnStyle} onClick={onRebuilt}>Close and reload day</button>
+          </div>
+        ) : missingOffer && (
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              style={{ ...btnStyle, opacity: selOfferId ? 1 : 0.5 }}
+              disabled={attachBusy || !selOfferId}
+              title="Sets offer_id on the live campaign and re-stamps attribution. Does NOT re-plan the audience — the offer's suppression file still did not apply."
+              onClick={() => void runAttach()}
+            >
+              {attachBusy ? 'Attaching…' : 'Attach offer'}
+            </button>
+            {!readOnly && (
+              <button
+                style={{ ...btnStyle, opacity: selOfferId ? 1 : 0.5 }}
+                disabled={busy || attachBusy || !selOfferId}
+                title="The full fix: cancel + redeploy a sibling with this offer — the planner applies the offer's suppression file. Runs the normal Preview → Rebuild flow."
+                onClick={() => void runPreview()}
+              >
+                Rebuild with offer
+              </button>
+            )}
+          </div>
+        )}
+        {!missingOffer && !readOnly && (
+          <div style={noteStyle}>
+            Changing the offer is applied on rebuild (it re-plans the audience with the
+            new offer's suppression file).
+          </div>
         )}
       </Section>
 

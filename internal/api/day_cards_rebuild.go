@@ -55,6 +55,10 @@ type dayCardsRebuildOverrides struct {
 	ExclusionLists    *[]string `json:"exclusion_lists,omitempty"`
 	MinRemailHours    *int      `json:"min_remail_hours,omitempty"`
 	ScheduledAt       string    `json:"scheduled_at,omitempty"` // RFC3339
+	// OfferID (mailing_offers UUID) overrides the sibling's offer binding —
+	// the "rebuild with offer" path that repairs a NO-OFFER card with the
+	// planner actually applying the offer's suppression file (offer_gate.go).
+	OfferID string `json:"offer_id,omitempty"`
 }
 
 type dayCardsRebuildRequest struct {
@@ -223,6 +227,20 @@ func (s *PMTACampaignService) HandleDayCardsRebuild(w http.ResponseWriter, r *ht
 		// #3) — we set it faithfully and leave the semantics to the planner.
 		input.MinRemailHours = *req.Overrides.MinRemailHours
 	}
+	if v := strings.TrimSpace(req.Overrides.OfferID); v != "" {
+		if _, perr := uuid.Parse(v); perr != nil {
+			respondError(w, http.StatusBadRequest, "overrides.offer_id must be a mailing_offers UUID")
+			return
+		}
+		var one int
+		if oerr := s.db.QueryRowContext(ctx, `
+			SELECT 1 FROM mailing_offers WHERE id = $1 AND organization_id = $2
+		`, v, orgID).Scan(&one); oerr != nil {
+			respondError(w, http.StatusNotFound, "overrides.offer_id: offer not found: "+v)
+			return
+		}
+		input.OfferID = v
+	}
 	if v := strings.TrimSpace(req.Overrides.ScheduledAt); v != "" {
 		newAt, perr := time.Parse(time.RFC3339, v)
 		if perr != nil {
@@ -246,6 +264,7 @@ func (s *PMTACampaignService) HandleDayCardsRebuild(w http.ResponseWriter, r *ht
 	}
 	summary := map[string]interface{}{
 		"name":               input.Name,
+		"offer_id":           input.OfferID,
 		"scheduled_at":       input.ScheduledAt,
 		"send_mode":          input.SendMode,
 		"isp_plans":          len(input.ISPPlans),
@@ -258,6 +277,12 @@ func (s *PMTACampaignService) HandleDayCardsRebuild(w http.ResponseWriter, r *ht
 		"exclusion_lists":    len(input.ExclusionLists),
 		"min_remail_hours":   input.MinRemailHours,
 	}
+	// Offer deploy gate (offer_gate.go), checked HERE — before the cancel —
+	// because a gate failure inside the sibling deploy would otherwise land
+	// AFTER the original was cancelled (the 502 half-state). The dry preview
+	// surfaces it as a warning; a confirmed rebuild refuses up front.
+	offerGateOK, offerGateReason := offerGateCheck(input, "")
+
 	if !req.Confirmed {
 		resp := map[string]interface{}{
 			"dry_run": true,
@@ -269,12 +294,24 @@ func (s *PMTACampaignService) HandleDayCardsRebuild(w http.ResponseWriter, r *ht
 			},
 			"new_input_summary": summary,
 		}
+		if !offerGateOK {
+			resp["offer_gate_warning"] = offerGateReason +
+				" A confirmed rebuild will be refused — set overrides.offer_id."
+		}
 		if partialSend {
 			resp["partial_send_warning"] = fmt.Sprintf(
 				"%d recipients already mailed by %q (status %s) will be RE-ELIGIBLE in the rebuilt sibling",
 				sentCount, name, status)
 		}
 		respondJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if !offerGateOK {
+		// Refuse BEFORE cancelling — nothing has been written yet.
+		respondJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error": offerGateReason + " Set overrides.offer_id to rebuild with an offer.",
+		})
 		return
 	}
 

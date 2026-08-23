@@ -83,6 +83,16 @@ interface DayCardsResponse {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Mirrors the server's isOfferExemptName (offer_gate.go / board_grid.go):
+ * KUMO-WARM and newsletter-labelled campaigns mail editorial content in which
+ * offers are BANNED, so "no offer" is correct for them — never flag it.
+ */
+export const isOfferExemptCampaignName = (name: string): boolean => {
+  const n = name.toUpperCase()
+  return n.includes('KUMO-WARM') || n.includes('NEWSLETTER')
+}
+
 /** Today's date in America/Denver as YYYY-MM-DD (en-CA gives ISO order). */
 const denverToday = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date())
@@ -336,6 +346,11 @@ export const DayCards: React.FC = () => {
                       {!c.has_config && (
                         <span title="This campaign predates the stored deploy config (pre-blob) — the original inputs are not recoverable, so rebuild is unavailable.">
                           <Pill color={colors.danger}>no config</Pill>
+                        </span>
+                      )}
+                      {!c.offer_id && !isOfferExemptCampaignName(c.name) && (
+                        <span title="No offer attached — the advertiser's suppression file did NOT apply when the audience was planned, and conversions cannot be attributed. Open the card to attach an offer or rebuild with one.">
+                          <Pill color={colors.danger}>NO OFFER</Pill>
                         </span>
                       )}
                     </div>

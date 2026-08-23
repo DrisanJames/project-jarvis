@@ -49,6 +49,7 @@ func dcConfigBlob(t *testing.T, name string) string {
 	end := sched.Add(8 * time.Hour)
 	input := map[string]interface{}{
 		"name":           name,
+		"offer_id":       "0d0d0d0d-0d0d-40d0-80d0-0d0d0d0d0d0d",
 		"sending_domain": "em.discountblog.com",
 		"send_mode":      "scheduled",
 		"scheduled_at":   sched.Format(time.RFC3339),

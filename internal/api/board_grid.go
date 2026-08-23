@@ -479,14 +479,8 @@ func advertiserToken(offerName string) string {
 	return tok
 }
 
-// isOfferExemptName reports whether a cell legitimately carries no offer:
-// KUMO-WARM (and any explicitly newsletter-labelled) campaigns mail editorial
-// warm-up content in which offers are BANNED (CLAUDE.md §13.1), so gating them
-// on offer_id would raise a false blocker on every kumo cell, every day.
-func isOfferExemptName(name string) bool {
-	n := strings.ToUpper(name)
-	return strings.Contains(n, "KUMO-WARM") || strings.Contains(n, "NEWSLETTER")
-}
+// isOfferExemptName moved to offer_gate.go — it is now shared between this
+// audit gate (Gate 3 MISSING_OFFER) and the deploy-time offer gate.
 
 func monthTokenRegexForDate(t time.Time) *regexp.Regexp {
 	return regexp.MustCompile(fmt.Sprintf(`(?i)\b%s0?%d\b`,
