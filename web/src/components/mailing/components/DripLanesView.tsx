@@ -37,6 +37,7 @@ export const DripLanesView: React.FC = () => {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [offersErr, setOffersErr] = useState<string | null>(null);
   const [edit, setEdit] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
@@ -47,11 +48,25 @@ export const DripLanesView: React.FC = () => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       setLanes(j.lanes ?? []);
-      const o = await fetch('/api/mailing/offers?limit=200', { headers });
-      if (o.ok) {
-        const oj = await o.json();
-        setOffers((Array.isArray(oj) ? oj : oj.data ?? oj.offers ?? [])
-          .map((x: { id: string; name: string }) => ({ id: x.id, name: x.name })));
+      // /api/mailing/offers 404s in prod — the real catalog endpoint is
+      // /offers/list → {offers:[{id,key,name,everflow_id,status}]}. A failure
+      // is surfaced (offersErr), never a silently empty dropdown.
+      try {
+        const o = await fetch('/api/mailing/offers/list', { headers });
+        if (!o.ok) {
+          setOffers([]);
+          setOffersErr(`offer catalog unavailable: HTTP ${o.status}`);
+        } else {
+          const oj: { offers?: Array<{ id: string; name: string; status?: string }> } = await o.json();
+          setOffers((oj.offers ?? [])
+            .filter(x => x.status === 'active')
+            .map(x => ({ id: x.id, name: x.name }))
+            .sort((a, b) => a.name.localeCompare(b.name)));
+          setOffersErr(null);
+        }
+      } catch (oe) {
+        setOffers([]);
+        setOffersErr(`offer catalog unavailable: ${oe instanceof Error ? oe.message : 'network error'}`);
       }
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'load failed');
@@ -99,6 +114,15 @@ export const DripLanesView: React.FC = () => {
         }}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
       {err && <div style={{ color: '#e94560', fontSize: 12, marginBottom: 10 }}>{err}</div>}
+      {offersErr && (
+        <div style={{
+          display: 'inline-block', color: '#e94560', fontSize: 12, fontWeight: 700,
+          background: 'rgba(233,69,96,0.10)', border: '1px solid rgba(233,69,96,0.40)',
+          borderRadius: 6, padding: '5px 10px', marginBottom: 10,
+        }}>
+          {offersErr} — offer dropdowns are disabled until it loads.
+        </div>
+      )}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 900 }}>
           <thead><tr>
@@ -117,7 +141,8 @@ export const DripLanesView: React.FC = () => {
                 <td style={td}>
                   <select
                     value={l.offer_id || 'none'}
-                    disabled={busy[l.dataset_id]}
+                    disabled={busy[l.dataset_id] || !!offersErr}
+                    title={offersErr ?? undefined}
                     onChange={e => void save(l, { offer_id: e.target.value })}
                     style={{ background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
                              border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,

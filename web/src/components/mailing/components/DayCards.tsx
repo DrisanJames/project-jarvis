@@ -2,9 +2,11 @@
  * Day Cards — one send-day for one sending domain, campaign by campaign.
  *
  * Header picks a sending domain (from the day-cards/domains endpoint; kumo
- * domains carry a transport pill) and a Denver date. The PREV-DAY strip gives
- * yesterday's totals as context (PG counters — the lake/VDM stays the per-ISP
- * delivery scoreboard). The grid shows one card per campaign on the selected
+ * domains carry a transport pill) and a Denver date. The PREV-DAY strip leads
+ * with the SES VDM scorecard (the doctrine scoreboard — every per-(domain×ISP)
+ * delivery statement comes from VDM, never PG); the PG counters sit below it
+ * as collapsed context, and a VDM read failure shows an amber chip and keeps
+ * PG context only. The grid shows one card per campaign on the selected
  * day; clicking a card opens the DayCardEditor SideShelf, which drives the
  * cancel-and-rebuild flow via /api/mailing/pmta-campaign/day-cards/rebuild.
  *
@@ -68,10 +70,41 @@ interface PrevDayTotals {
   unsubscribed: number
 }
 
-interface PrevDay {
-  date: string
+/** One (domain, raw AWS ISP) row of the SES VDM scoreboard. */
+interface VdmIspStat {
+  isp: string
+  send: number
+  delivered: number
+  open: number
+  click: number
+}
+
+/** SES VDM domain×UTC-day counters — the doctrine scoreboard. */
+interface VdmStats {
+  domain: string
+  day_utc: string
+  send: number
+  delivered: number
+  open: number
+  click: number
+  complaint: number
+  permanent_bounce: number
+  transient_bounce: number
+  by_isp: VdmIspStat[] | null
+}
+
+interface PrevDayPGContext {
+  note: string
   totals: PrevDayTotals
   campaigns: DayCard[]
+}
+
+interface PrevDay {
+  date: string
+  vdm?: VdmStats | null
+  vdm_note?: string
+  vdm_error?: string
+  pg_context: PrevDayPGContext
 }
 
 interface DayCardsResponse {
@@ -79,6 +112,25 @@ interface DayCardsResponse {
   domain: string
   cards: DayCard[]
   prev_day: PrevDay | null
+}
+
+const PG_CONTEXT_NOTE = 'PG counters — context only, not the scoreboard'
+
+/**
+ * Tolerate the pre-VDM backend during deploy skew: the old payload carried
+ * totals/campaigns at the prev_day top level; fold them into pg_context.
+ */
+const normalizePrevDay = (p: unknown): PrevDay | null => {
+  if (!p || typeof p !== 'object') return null
+  const raw = p as PrevDay & { totals?: PrevDayTotals; campaigns?: DayCard[] }
+  if (raw.pg_context) return raw
+  if (!raw.totals) return null
+  return {
+    date: raw.date,
+    vdm: null,
+    vdm_error: 'server predates the VDM scorecard — showing PG context only',
+    pg_context: { note: PG_CONTEXT_NOTE, totals: raw.totals, campaigns: raw.campaigns ?? [] },
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -143,6 +195,8 @@ export const DayCards: React.FC = () => {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [prevOpen, setPrevOpen] = useState(true)
+  // PG context is subordinate to the VDM scorecard — collapsed by default.
+  const [pgOpen, setPgOpen] = useState(false)
   const [editing, setEditing] = useState<DayCard | null>(null)
 
   const load = useCallback(async (dom: string, d: string) => {
@@ -154,7 +208,7 @@ export const DayCards: React.FC = () => {
       const res = await apiFetch(endpoint)
       if (!res.ok) throw new Error(await describeError(res, 'GET /api/mailing/pmta-campaign/day-cards'))
       const j: DayCardsResponse = await res.json()
-      setData({ ...j, cards: j.cards ?? [], prev_day: j.prev_day ?? null })
+      setData({ ...j, cards: j.cards ?? [], prev_day: normalizePrevDay(j.prev_day) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setData(null)
@@ -258,51 +312,131 @@ export const DayCards: React.FC = () => {
           />
           {prevOpen && (
             <>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12 }}>
-                <Stat label="campaigns" value={fmt(prev.totals.campaigns)} sub="mailed yesterday" />
-                <Stat label="recipients" value={fmt(prev.totals.recipients)} sub="planned recipients" />
-                <Stat label="sent" value={fmt(prev.totals.sent)} sub="of recipients" />
-                <Stat
-                  label="delivered %"
-                  value={pct(prev.totals.delivered, prev.totals.sent)}
-                  sub={`${fmt(prev.totals.delivered)} of ${fmt(prev.totals.sent)} sent`}
-                  color={colors.success}
-                />
-                <Stat label="opens" value={fmt(prev.totals.opened)} sub={`of ${fmt(prev.totals.delivered)} delivered`} />
-                <Stat label="clicks" value={fmt(prev.totals.clicked)} sub={`of ${fmt(prev.totals.delivered)} delivered`} />
-                <Stat label="bounces" value={fmt(prev.totals.bounced)} sub={`of ${fmt(prev.totals.sent)} sent`} color={colors.warning} />
-                <Stat label="unsubs" value={fmt(prev.totals.unsubscribed)} sub={`of ${fmt(prev.totals.delivered)} delivered`} />
-              </div>
-              {(prev.campaigns ?? []).length > 0 && (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={tableStyle}>
-                    <thead>
-                      <tr>
-                        <th style={thStyle}>Campaign</th>
-                        <th style={thStyle}>Slot</th>
-                        <th style={numTh}>Sent</th>
-                        <th style={numTh}>Delivered</th>
-                        <th style={numTh}>Opens</th>
-                        <th style={numTh}>Clicks</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {prev.campaigns.map(c => (
-                        <tr key={c.id}>
-                          <td style={tdStyle}>{c.name}</td>
-                          <td style={tdStyle}>{c.slot || '—'}</td>
-                          <td style={numTd}>{fmt(c.sent_count)}</td>
-                          <td style={numTd}>{fmt(c.delivered_count)}</td>
-                          <td style={numTd}>{fmt(c.open_count)}</td>
-                          <td style={numTd}>{fmt(c.click_count)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              {/* THE SCOREBOARD: SES VDM leads. */}
+              {prev.vdm_error && (
+                <div style={{
+                  display: 'inline-block', marginBottom: 12, padding: '4px 10px',
+                  fontSize: 12, fontWeight: 600, borderRadius: 6,
+                  color: colors.warningText, background: alpha(colors.warning, '22'),
+                  border: `1px solid ${alpha(colors.warning, '66')}`,
+                }}>
+                  VDM unavailable: {prev.vdm_error} — showing PG context only
                 </div>
               )}
-              <div style={{ marginTop: 10, fontSize: 11, color: colors.textFaint }}>
-                PG counters — per-ISP delivery truth is VDM/lake; context, not the scoreboard.
+              {prev.vdm && (
+                <>
+                  <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12 }}>
+                    <Stat label="VDM send" value={fmt(prev.vdm.send)} sub={`SES VDM · UTC ${prev.vdm.day_utc}`} />
+                    <Stat
+                      label="delivered % of send"
+                      value={pct(prev.vdm.delivered, prev.vdm.send)}
+                      sub={`${fmt(prev.vdm.delivered)} of ${fmt(prev.vdm.send)} send`}
+                      color={colors.success}
+                    />
+                    <Stat label="opens" value={fmt(prev.vdm.open)} sub={`of ${fmt(prev.vdm.delivered)} delivered`} />
+                    <Stat label="clicks" value={fmt(prev.vdm.click)} sub={`of ${fmt(prev.vdm.delivered)} delivered`} />
+                    <Stat
+                      label="complaint rate"
+                      value={prev.vdm.send > 0 ? `${((prev.vdm.complaint / prev.vdm.send) * 100).toFixed(3)}%` : '—'}
+                      sub={`${fmt(prev.vdm.complaint)} of ${fmt(prev.vdm.send)} send`}
+                      color={colors.warning}
+                    />
+                    <Stat
+                      label="bounces"
+                      value={fmt(prev.vdm.permanent_bounce + prev.vdm.transient_bounce)}
+                      sub={`${fmt(prev.vdm.permanent_bounce)} hard · ${fmt(prev.vdm.transient_bounce)} soft`}
+                      color={colors.warning}
+                    />
+                  </div>
+                  {(prev.vdm.by_isp ?? []).length > 0 && (
+                    <div style={{ overflowX: 'auto', marginBottom: 8 }}>
+                      <table style={tableStyle}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>ISP (VDM)</th>
+                            <th style={numTh}>Send</th>
+                            <th style={numTh}>Delivered</th>
+                            <th style={numTh}>Dlv %</th>
+                            <th style={numTh}>Opens</th>
+                            <th style={numTh}>Clicks</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(prev.vdm.by_isp ?? []).map(row => (
+                            <tr key={row.isp}>
+                              <td style={tdStyle}>{row.isp}</td>
+                              <td style={numTd}>{fmt(row.send)}</td>
+                              <td style={numTd}>{fmt(row.delivered)}</td>
+                              <td style={numTd}>{pct(row.delivered, row.send)}</td>
+                              <td style={numTd}>{fmt(row.open)}</td>
+                              <td style={numTd}>{fmt(row.click)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  <div style={{ marginBottom: 12, fontSize: 11, color: colors.textFaint }}>
+                    {prev.vdm_note || 'SES VDM — the doctrine scoreboard (BatchGetMetricData us-west-1)'}
+                  </div>
+                </>
+              )}
+
+              {/* PG CONTEXT: subordinate, collapsed by default (unless VDM is down). */}
+              <div style={{ borderTop: `1px solid ${colors.panelBorder}`, paddingTop: 8 }}>
+                {!prev.vdm_error && (
+                  <button
+                    style={{ ...btnStyle, background: 'transparent', fontSize: 11, padding: '2px 8px' }}
+                    onClick={() => setPgOpen(o => !o)}
+                  >
+                    {pgOpen ? 'Hide' : 'Show'} PG context
+                  </button>
+                )}
+                {(pgOpen || !!prev.vdm_error) && (
+                  <div style={{ marginTop: 8, fontSize: 12 }}>
+                    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 10, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
+                      <span>campaigns <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.campaigns)}</b></span>
+                      <span>recipients <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.recipients)}</b></span>
+                      <span>sent <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.sent)}</b></span>
+                      <span>delivered <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.delivered)}</b> ({pct(prev.pg_context.totals.delivered, prev.pg_context.totals.sent)})</span>
+                      <span>opens <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.opened)}</b></span>
+                      <span>clicks <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.clicked)}</b></span>
+                      <span>bounces <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.bounced)}</b></span>
+                      <span>unsubs <b style={{ color: colors.text }}>{fmt(prev.pg_context.totals.unsubscribed)}</b></span>
+                    </div>
+                    {(prev.pg_context.campaigns ?? []).length > 0 && (
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={tableStyle}>
+                          <thead>
+                            <tr>
+                              <th style={thStyle}>Campaign</th>
+                              <th style={thStyle}>Slot</th>
+                              <th style={numTh}>Sent</th>
+                              <th style={numTh}>Delivered</th>
+                              <th style={numTh}>Opens</th>
+                              <th style={numTh}>Clicks</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {prev.pg_context.campaigns.map(c => (
+                              <tr key={c.id}>
+                                <td style={tdStyle}>{c.name}</td>
+                                <td style={tdStyle}>{c.slot || '—'}</td>
+                                <td style={numTd}>{fmt(c.sent_count)}</td>
+                                <td style={numTd}>{fmt(c.delivered_count)}</td>
+                                <td style={numTd}>{fmt(c.open_count)}</td>
+                                <td style={numTd}>{fmt(c.click_count)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 8, fontSize: 11, color: colors.textFaint }}>
+                      {prev.pg_context.note || PG_CONTEXT_NOTE}
+                    </div>
+                  </div>
+                )}
               </div>
             </>
           )}

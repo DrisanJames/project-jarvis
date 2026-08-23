@@ -7,11 +7,13 @@ package api
 // under /api/mailing/pmta-campaign/day-cards* in RegisterRoutes
 // (handlers_pmta_campaign.go).
 //
-// NOTE ON THE NUMBERS: every counter here (sent/delivered/open/click/bounce/
-// unsub) is the PG-denormalized mailing_campaigns column. Per-ISP delivery
-// TRUTH is the VDM / analytics lake (PG delivered_count is an ingestion rate,
-// not delivery — see memory pg-delivery-confirmation-undercount). This panel
-// is judgement context for the operator, never a delivery claim.
+// NOTE ON THE NUMBERS: the per-campaign counters here (sent/delivered/open/
+// click/bounce/unsub) are the PG-denormalized mailing_campaigns columns —
+// context only. The prev-day SCORECARD leads with SES VDM (vdm_metrics.go,
+// BatchGetMetricData us-west-1): every per-(domain×ISP) delivery statement
+// comes from VDM, never PG (PG delivered_count is an ingestion rate, not
+// delivery — see memory pg-delivery-confirmation-undercount). On a VDM read
+// failure the panel keeps the PG context and carries vdm_error.
 
 import (
 	"context"
@@ -117,6 +119,34 @@ type dayCardsTotals struct {
 	Unsubscribed int `json:"unsubscribed"`
 }
 
+// The two instrument notes the prev-day panel ships verbatim.
+const (
+	dayCardsVDMNote = "SES VDM — the doctrine scoreboard (BatchGetMetricData us-west-1)"
+	dayCardsPGNote  = "PG counters — context only, not the scoreboard"
+)
+
+// dayCardsPGContext is the PG-denormalized block, explicitly subordinated
+// under pg_context so no consumer mistakes it for the scoreboard.
+type dayCardsPGContext struct {
+	Note      string         `json:"note"`
+	Totals    dayCardsTotals `json:"totals"`
+	Campaigns []dayCard      `json:"campaigns"`
+}
+
+// dayCardsPrevDay is the prev_day payload: VDM leads (nil + vdm_error when
+// the reader fails), PG stays as context.
+type dayCardsPrevDay struct {
+	Date      string             `json:"date"`
+	VDM       *vdmDomainDayStats `json:"vdm,omitempty"`
+	VDMNote   string             `json:"vdm_note,omitempty"`
+	VDMError  string             `json:"vdm_error,omitempty"`
+	PGContext dayCardsPGContext  `json:"pg_context"`
+}
+
+// dayCardsVDMTimeout bounds the VDM fetch separately from the DB budget —
+// ~55 BatchGetMetricData queries in 6 chunked calls, cached 15m/6h after.
+const dayCardsVDMTimeout = 10 * time.Second
+
 // HandleDayCards returns the campaign cards for one sending domain on one
 // Denver day, plus the previous day's completed sends as judgement context.
 // GET /api/mailing/pmta-campaign/day-cards?domain=<sending_domain>&date=YYYY-MM-DD
@@ -166,16 +196,44 @@ func (s *PMTACampaignService) HandleDayCards(w http.ResponseWriter, r *http.Requ
 		totals.Unsubscribed += c.UnsubscribeCount
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"date":   date,
-		"domain": domain,
-		"cards":  cards,
-		"prev_day": map[string]interface{}{
-			"date":      prevDate,
-			"totals":    totals,
-			"campaigns": prevCards,
+	prevDay := dayCardsPrevDay{
+		Date: prevDate,
+		PGContext: dayCardsPGContext{
+			Note:      dayCardsPGNote,
+			Totals:    totals,
+			Campaigns: prevCards,
 		},
+	}
+	// The scoreboard: VDM for the prev day, read as the UTC day of the same
+	// calendar date (VDM buckets are UTC-midnight-only; the Denver board day
+	// offsets it by 6-7h — a known instrument difference, still the doctrine
+	// number). Errors degrade to PG context, never fail the panel.
+	vdmCtx, vdmCancel := context.WithTimeout(r.Context(), dayCardsVDMTimeout)
+	defer vdmCancel()
+	prevDayUTC := time.Date(dayTime.Year(), dayTime.Month(), dayTime.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1)
+	if vdm, vdmErr := s.dayCardsVDMReader().vdmDomainDay(vdmCtx, domain, prevDayUTC); vdmErr != nil {
+		log.Printf("[day-cards] VDM read failed for %s %s: %v", domain, prevDate, vdmErr)
+		prevDay.VDMError = vdmErr.Error()
+	} else {
+		prevDay.VDM = vdm
+		prevDay.VDMNote = dayCardsVDMNote
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"date":     date,
+		"domain":   domain,
+		"cards":    cards,
+		"prev_day": prevDay,
 	})
+}
+
+// dayCardsVDMReader returns the injected test seam or the process-wide
+// shared reader (one cache for every request).
+func (s *PMTACampaignService) dayCardsVDMReader() *vdmReader {
+	if s.vdmMetrics != nil {
+		return s.vdmMetrics
+	}
+	return sharedVDMReader
 }
 
 // loadDayCards runs ONE indexed query for one (org, sending domain, Denver

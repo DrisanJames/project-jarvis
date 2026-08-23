@@ -95,7 +95,14 @@ func (s *BoardGridService) RegisterRoutes(r chi.Router) {
 const boardCampaignPredicate = `
     c.partner_drip_tag IS NULL
 AND c.journey_id IS NULL
+AND c.name NOT LIKE '[partner-drip]%'
 AND c.status NOT IN ('cancelled','deleted')`
+// The name exclusion is BELT AND SUSPENDERS on top of the tag discriminator,
+// not a replacement for it (see the warning above): the drip orchestrator's
+// attribution stamp is logged-non-fatal, so a stamp failure leaves
+// partner_drip_tag NULL and the drip campaign leaked onto the grid (found
+// live 2026-08-22: '[partner-drip] consumer tot ...' produced a phantom
+// REPEAT_OFFER blocker on TT). Named drip campaigns are never the board.
 
 // BoardCell is one (property, slot) assignment.
 type BoardCell struct {
@@ -710,6 +717,13 @@ func nameMentionsPropertyRoot(name, code, brandRoot string) bool {
 		}
 		// Accept the other code system: an acronym of the brand root.
 		if root != "" && len(tok) >= 2 && isSubsequence(tok, root) {
+			return true
+		}
+		// No brand-metadata row (root unmapped — e.g. the kumo warmup
+		// domains): fall back to the property code itself as the acronym
+		// target, so 'aad' satisfies AADWD instead of warning on every kumo
+		// cell every day (found live 2026-08-22).
+		if root == "" && len(tok) >= 3 && isSubsequence(tok, code) {
 			return true
 		}
 	}

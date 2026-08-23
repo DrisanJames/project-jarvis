@@ -11,32 +11,12 @@
  * stable structure) with only the name's date token rewritten; staging still
  * happens via /stage-board or the Campaign Manager.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { apiFetch } from '../shared/apiFetch'
 import { colors, panelStyle, panelTitleStyle, btnStyle, pageStyle } from '../shared/theme'
+import { BoardCellShelf } from './BoardCellShelf'
+import type { BoardCell as Cell, BoardFindingRow as Finding, OfferOpt } from './BoardCellShelf'
 
-interface Cell {
-  property: string
-  property_label?: string
-  sending_domain?: string
-  brand_root?: string
-  slot: string
-  campaign_id?: string
-  name: string
-  offer_id?: string
-  offer_name?: string
-  subject?: string
-  status?: string
-  recipients: number
-  proposed?: boolean
-}
-interface Finding {
-  level: 'blocker' | 'warn'
-  code: string
-  property: string
-  slot: string
-  message: string
-}
 interface Grid {
   date: string
   source_date?: string
@@ -46,7 +26,6 @@ interface Grid {
   findings: Finding[]
   summary: Record<string, number>
 }
-interface OfferOpt { id: string; name: string }
 
 const dayOffset = (iso: string, n: number): string => {
   const d = new Date(iso + 'T12:00:00Z')
@@ -67,8 +46,13 @@ export const BoardGrid: React.FC = () => {
   const [findings, setFindings] = useState<Finding[]>([])
   const [summary, setSummary] = useState<Record<string, number>>({})
   const [edited, setEdited] = useState<Record<number, boolean>>({})
-  const [editingIdx, setEditingIdx] = useState<number | null>(null)
+  // shelfIdx: index into cells of the campaign open in the side shelf.
+  const [shelfIdx, setShelfIdx] = useState<number | null>(null)
   const [offers, setOffers] = useState<OfferOpt[]>([])
+  const [offersError, setOffersError] = useState<string | null>(null)
+  // A confirmed LIVE attach landed while the shelf was open — reload the
+  // actual grid when the shelf closes so the row reflects the server.
+  const attachedRef = useRef(false)
   const [loading, setLoading] = useState(false)
   const [gating, setGating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -86,7 +70,12 @@ export const BoardGrid: React.FC = () => {
       setFindings(g.findings ?? [])
       setSummary(g.summary ?? {})
       setEdited({})
-      setEditingIdx(null)
+      // Do NOT force-close the shelf here: a load resolving AFTER the
+      // operator opened a cell (double-fired date-change loads, background
+      // refresh) silently yanked the shelf shut. The render gate already
+      // hides the shelf gracefully when its index no longer resolves; only
+      // clamp an index that fell off the end of a smaller day.
+      setShelfIdx(prev => (prev !== null && prev >= (g.cells ?? []).length ? null : prev))
       setCloned(isClone)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -107,35 +96,42 @@ export const BoardGrid: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Offer options for the inline picker, fetched once.
+  // Offer catalog for the shelf picker, fetched once. GET /api/mailing/offers
+  // 404s in prod (that route does not exist) — the REAL endpoint is
+  // /api/mailing/offers/list → {offers:[{id,key,name,everflow_id,status}]}.
+  // A failure is SURFACED (offersError chip in the shelf), never swallowed
+  // into an empty picker.
   useEffect(() => {
     void (async () => {
       try {
-        const res = await apiFetch('/api/mailing/offers?limit=200')
-        if (!res.ok) return
-        const oj = await res.json()
-        setOffers((Array.isArray(oj) ? oj : oj.data ?? oj.offers ?? [])
-          .map((x: { id: string; name: string }) => ({ id: x.id, name: x.name })))
-      } catch { /* picker degrades; grid stays viewable */ }
+        const res = await apiFetch('/api/mailing/offers/list')
+        if (!res.ok) {
+          setOffers([])
+          setOffersError(`offer catalog unavailable: HTTP ${res.status}`)
+          return
+        }
+        const oj: { offers?: Array<{ id: string; name: string; status?: string }> } = await res.json()
+        setOffers((oj.offers ?? [])
+          .filter(x => x.status === 'active')
+          .map(x => ({ id: x.id, name: x.name }))
+          .sort((a, b) => a.name.localeCompare(b.name)))
+        setOffersError(null)
+      } catch (e) {
+        setOffers([])
+        setOffersError(`offer catalog unavailable: ${e instanceof Error ? e.message : 'network error'}`)
+      }
     })()
   }, [])
 
-  const applyOffer = (idx: number, offerId: string) => {
-    const opt = offers.find(o => o.id === offerId)
-    if (!opt) { setEditingIdx(null); return }
-    setCells(prev => prev.map((c, i) =>
-      i === idx ? { ...c, offer_id: opt.id, offer_name: opt.name } : c))
-    setEdited(prev => ({ ...prev, [idx]: true }))
-    setEditingIdx(null)
-  }
-
-  const rerunGates = async () => {
+  // Gates run over an explicit cell array (not the state variable) so an
+  // applyOffer can gate the NEXT cells synchronously with the edit.
+  const runGates = useCallback(async (cellsToGate: Cell[]) => {
     if (!serverGrid) return
     setGating(true); setError(null)
     try {
       const res = await apiFetch('/api/mailing/board-grid/gates', {
         method: 'POST',
-        body: JSON.stringify({ date: serverGrid.date, cells }),
+        body: JSON.stringify({ date: serverGrid.date, cells: cellsToGate }),
       })
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
       const g: Grid = await res.json()
@@ -146,6 +142,18 @@ export const BoardGrid: React.FC = () => {
     } finally {
       setGating(false)
     }
+  }, [serverGrid])
+
+  // Local edit + AUTO gate re-run (findings refresh without hunting for the
+  // button). The global Re-run gates button still works via runGates(cells).
+  const applyOffer = (idx: number, offerId: string) => {
+    const opt = offers.find(o => o.id === offerId)
+    if (!opt) return
+    const next = cells.map((c, i) =>
+      i === idx ? { ...c, offer_id: opt.id, offer_name: opt.name } : c)
+    setCells(next)
+    setEdited(prev => ({ ...prev, [idx]: true }))
+    void runGates(next)
   }
 
   const resetEdits = () => {
@@ -154,7 +162,14 @@ export const BoardGrid: React.FC = () => {
     setFindings(serverGrid.findings ?? [])
     setSummary(serverGrid.summary ?? {})
     setEdited({})
-    setEditingIdx(null)
+  }
+
+  const closeShelf = () => {
+    setShelfIdx(null)
+    if (attachedRef.current && serverGrid) {
+      attachedRef.current = false
+      loadActual(serverGrid.date)
+    }
   }
 
   const copyProposal = async () => {
@@ -259,7 +274,7 @@ export const BoardGrid: React.FC = () => {
             <Stat label="blockers" value={blockers} color={colors.danger} />
             <Stat label="edited" value={editedCount} color={colors.warning} />
             <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
-              <button style={btnStyle} disabled={gating} onClick={() => void rerunGates()}>
+              <button style={btnStyle} disabled={gating} onClick={() => void runGates(cells)}>
                 {gating ? 'Gating…' : 'Re-run gates'}
               </button>
               <button style={{ ...btnStyle, background: 'transparent' }}
@@ -276,9 +291,9 @@ export const BoardGrid: React.FC = () => {
           </div>
 
           <div style={{ marginBottom: 12, fontSize: 12, color: colors.textMuted }}>
-            Click a cell's offer to swap it. Edits are LOCAL to this screen — nothing writes to
-            campaigns from here. Re-run gates to check the edited grid; findings and the summary
-            come back from the server.
+            Click a cell to open its editor shelf: details, this cell's findings, and the offer
+            picker. Edits are LOCAL to this screen and gates auto re-run on apply — nothing
+            deploys from here except the shelf's explicit attach-offer LIVE action.
           </div>
 
           {cells.length === 0 ? (
@@ -320,29 +335,20 @@ export const BoardGrid: React.FC = () => {
                               : worst === 'warn' ? 'rgba(245,158,11,0.10)' : undefined,
                           }}>
                             {c ? (
-                              <div title={tooltip}>
-                                {editingIdx === idx ? (
-                                  <select autoFocus style={{ ...inputStyle, marginTop: 0, maxWidth: 220 }}
-                                    value={c.offer_id ?? ''}
-                                    onChange={e => applyOffer(idx, e.target.value)}
-                                    onBlur={() => setEditingIdx(null)}>
-                                    <option value="">select offer…</option>
-                                    {offers.map(o => (
-                                      <option key={o.id} value={o.id}>{o.name}</option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <div style={{ color: colors.text, cursor: 'pointer' }}
-                                    onClick={() => setEditingIdx(idx)}>
-                                    {c.offer_name || <span style={{ color: colors.danger }}>no offer</span>}
-                                    {worst === 'blocker' && ' ✗'}
-                                    {worst === 'warn' && ' ⚠'}
-                                    {idxs.length > 1 && (
-                                      <span style={multiBadge}>×{idxs.length}</span>
-                                    )}
-                                    {isEdited && <span style={editedChip}>edited</span>}
-                                  </div>
-                                )}
+                              /* The WHOLE cell opens the shelf — a label-only
+                                 click target left a dead zone right of short
+                                 labels ("no offer") that swallowed clicks. */
+                              <div title={tooltip} style={{ cursor: 'pointer' }}
+                                onClick={() => setShelfIdx(idx)}>
+                                <div style={{ color: colors.text }}>
+                                  {c.offer_name || <span style={{ color: colors.danger }}>no offer</span>}
+                                  {worst === 'blocker' && ' ✗'}
+                                  {worst === 'warn' && ' ⚠'}
+                                  {idxs.length > 1 && (
+                                    <span style={multiBadge}>×{idxs.length}</span>
+                                  )}
+                                  {isEdited && <span style={editedChip}>edited</span>}
+                                </div>
                                 <div style={{ fontSize: 11, color: colors.textMuted }}>
                                   {c.recipients ? c.recipients.toLocaleString() : ''}
                                   {c.status ? ` · ${c.status}` : ''}
@@ -383,6 +389,25 @@ export const BoardGrid: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          )}
+
+          {shelfIdx !== null && cells[shelfIdx] && (
+            <BoardCellShelf
+              date={serverGrid.date}
+              entries={(idxAt[`${cells[shelfIdx].property}|${cells[shelfIdx].slot}`] ?? [shelfIdx])
+                .map(i => ({ idx: i, cell: cells[i] }))}
+              activeIdx={shelfIdx}
+              onSelectEntry={setShelfIdx}
+              findings={findings}
+              offers={offers}
+              offersError={offersError}
+              edited={!!edited[shelfIdx]}
+              gating={gating}
+              cloneMode={cloned}
+              onApplyOffer={applyOffer}
+              onAttached={() => { attachedRef.current = true }}
+              onClose={closeShelf}
+            />
           )}
         </>
       )}

@@ -138,7 +138,8 @@ func TestDayCards_DenverWindowParams(t *testing.T) {
 		t.Fatalf("sqlmock: %v", err)
 	}
 	defer db.Close()
-	svc := &PMTACampaignService{db: db}
+	svc := &PMTACampaignService{db: db,
+		vdmMetrics: newVDMReaderWithAPI(&stubVDMAPI{values: vdmStubValues()}, nil)}
 
 	dayStart, dayEnd, err := denverDayBounds("2026-08-21")
 	if err != nil {
@@ -168,14 +169,10 @@ func TestDayCards_DenverWindowParams(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Date    string    `json:"date"`
-		Domain  string    `json:"domain"`
-		Cards   []dayCard `json:"cards"`
-		PrevDay struct {
-			Date      string         `json:"date"`
-			Totals    dayCardsTotals `json:"totals"`
-			Campaigns []dayCard      `json:"campaigns"`
-		} `json:"prev_day"`
+		Date    string          `json:"date"`
+		Domain  string          `json:"domain"`
+		Cards   []dayCard       `json:"cards"`
+		PrevDay dayCardsPrevDay `json:"prev_day"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -186,9 +183,77 @@ func TestDayCards_DenverWindowParams(t *testing.T) {
 	if len(out.Cards) != 1 || out.Cards[0].BounceCount != 7 {
 		t.Errorf("cards = %+v (want 1 card, bounce_count 7 = hard 3 + soft 4)", out.Cards)
 	}
-	tt := out.PrevDay.Totals
+	// PG counters now live UNDER pg_context, labelled as context.
+	if out.PrevDay.PGContext.Note != dayCardsPGNote {
+		t.Errorf("pg_context.note = %q", out.PrevDay.PGContext.Note)
+	}
+	tt := out.PrevDay.PGContext.Totals
 	if tt.Campaigns != 1 || tt.Sent != 2000 || tt.Delivered != 1900 || tt.Bounced != 20 || tt.Unsubscribed != 2 {
-		t.Errorf("prev totals = %+v", tt)
+		t.Errorf("prev pg_context.totals = %+v", tt)
+	}
+	if len(out.PrevDay.PGContext.Campaigns) != 1 {
+		t.Errorf("pg_context.campaigns = %d, want 1", len(out.PrevDay.PGContext.Campaigns))
+	}
+	// The scoreboard leads: VDM stats for the prev day + the doctrine note.
+	if out.PrevDay.VDMError != "" {
+		t.Fatalf("vdm_error = %q with a healthy stub", out.PrevDay.VDMError)
+	}
+	if out.PrevDay.VDM == nil {
+		t.Fatal("prev_day.vdm missing")
+	}
+	if out.PrevDay.VDM.Send != 1000 || out.PrevDay.VDM.Delivered != 990 || out.PrevDay.VDM.DayUTC != "2026-08-20" {
+		t.Errorf("vdm = %+v", out.PrevDay.VDM)
+	}
+	if len(out.PrevDay.VDM.ByISP) != 2 || out.PrevDay.VDM.ByISP[0].ISP != "Gmail" {
+		t.Errorf("vdm.by_isp = %+v", out.PrevDay.VDM.ByISP)
+	}
+	if out.PrevDay.VDMNote != dayCardsVDMNote {
+		t.Errorf("vdm_note = %q", out.PrevDay.VDMNote)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// 2b. VDM reader failure — the panel keeps the PG context and carries
+// vdm_error; the request still 200s.
+
+func TestDayCards_VDMErrorKeepsPGContext(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	svc := &PMTACampaignService{db: db,
+		vdmMetrics: newVDMReaderWithAPI(&stubVDMAPI{err: fmt.Errorf("AccessDenied: no VDM role")}, nil)}
+
+	sched := time.Date(2026, 8, 21, 7, 1, 0, 0, time.UTC)
+	mock.ExpectQuery(`status <> 'deleted'`).
+		WillReturnRows(dayCardCols())
+	mock.ExpectQuery(`status IN \('sent','completed','completed_with_errors','sending'\)`).
+		WillReturnRows(dayCardCols().AddRow(
+			"eeeeeeee-0000-0000-0000-000000000001", "aug20-DB-gmail-CLK", "sent", sched.AddDate(0, 0, -1), "01:01",
+			"", "personal-loans", "Personal Loans", "s0", "Deal Desk",
+			2000, 0, 2000, 1900, 200, 30, 5, 15, 2, true, "", "ses"))
+
+	rec := dcGet(t, svc, "/pmta-campaign/day-cards?domain=em.discountblog.com&date=2026-08-21", svc.HandleDayCards)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s (VDM failure must never fail the panel)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		PrevDay dayCardsPrevDay `json:"prev_day"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.PrevDay.VDM != nil {
+		t.Errorf("vdm must be absent on reader error: %+v", out.PrevDay.VDM)
+	}
+	if !strings.Contains(out.PrevDay.VDMError, "AccessDenied") {
+		t.Errorf("vdm_error = %q, want the reader error surfaced", out.PrevDay.VDMError)
+	}
+	if out.PrevDay.PGContext.Totals.Sent != 2000 || out.PrevDay.PGContext.Note != dayCardsPGNote {
+		t.Errorf("pg_context must survive a VDM failure: %+v", out.PrevDay.PGContext)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)

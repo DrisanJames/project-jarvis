@@ -73,6 +73,10 @@ type PMTACampaignService struct {
 	// reservation TX that sqlmock cannot carry). Nil means use the real
 	// s.deployFromInput. Same seam posture as preflightFn/gateEvalFn.
 	dayCardsDeployFn func(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, bool, error)
+
+	// vdmMetrics overrides the shared SES VDM reader (vdm_metrics.go) for
+	// day-cards tests. Nil means use sharedVDMReader.
+	vdmMetrics *vdmReader
 }
 
 func (s *PMTACampaignService) SetExecutor(e *engine.Executor) {
