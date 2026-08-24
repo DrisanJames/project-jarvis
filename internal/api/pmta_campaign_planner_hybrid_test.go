@@ -50,6 +50,8 @@ const (
 // case — not just for efficiency but because a freshly-imported vendor
 // cohort has no SDS rows and the SDS query would return nothing anyway.
 func TestPlanPMTAAudience_Hybrid_PreludeFillsAllQuotas_SkipsSDS(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -123,6 +125,8 @@ func TestPlanPMTAAudience_Hybrid_PreludeFillsAllQuotas_SkipsSDS(t *testing.T) {
 // This is the common case for a medium vendor batch paired with a large
 // quota plan.
 func TestPlanPMTAAudience_Hybrid_PreludeUndersupplies_SDSFillsRemaining(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -205,6 +209,8 @@ func TestPlanPMTAAudience_Hybrid_PreludeUndersupplies_SDSFillsRemaining(t *testi
 // failure mode we hit when a segment is created but not yet hydrated —
 // better to fall through than crash the campaign.
 func TestPlanPMTAAudience_Hybrid_EmptySegmentFallsThroughToSDS(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
@@ -288,6 +294,8 @@ func TestPlanPMTAAudience_Hybrid_EmptySegmentFallsThroughToSDS(t *testing.T) {
 // which would trigger SDS queries the test does not mock. Reserve-pool
 // behavior is covered in TestPlanPMTAAudience_ReservePool_OverSelect.
 func TestPlanPMTAAudience_Hybrid_InclusionSegmentAfterSendPriority(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	t.Setenv("DISABLE_RESERVE_POOL", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {

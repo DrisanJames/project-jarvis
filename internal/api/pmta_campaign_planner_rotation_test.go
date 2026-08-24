@@ -229,6 +229,7 @@ func TestColdFallbackRotation_DaySaltRotatesAcrossDenverDays(t *testing.T) {
 // ORDER BY + bounding LIMIT on the mailing_segment_members read. The prelude
 // fills the quota so no SDS query follows.
 func TestPlanPMTAAudience_CappedSegment_RotatesDaily(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // rotation is the fallback beneath the recency default
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)

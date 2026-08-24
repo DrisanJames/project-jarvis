@@ -293,6 +293,8 @@ func TestExclusionSegmentFailClosed_KillSwitchRevertsToWarnAndSkip(t *testing.T)
 // ---------------------------------------------------------------------------
 
 func TestInclusionSegmentZeroMembers_WarnsOnceOnDoubleStream(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	t.Setenv("DISABLE_RESERVE_POOL", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {

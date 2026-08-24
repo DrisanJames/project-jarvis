@@ -84,6 +84,8 @@ func rsvPlan(t *testing.T, db *sql.DB, reserves []engine.SegmentReserve, quota i
 // ---------------------------------------------------------------------------
 
 func TestSegmentReserves_GoldenAbsentFieldIdentical(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	t.Setenv("DISABLE_RESERVE_POOL", "true")
 
 	runOnce := func(reserves []engine.SegmentReserve) pmtaAudiencePlan {
@@ -130,6 +132,8 @@ func TestSegmentReserves_GoldenAbsentFieldIdentical(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSegmentReserves_ReservedFirstCappedDraw(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	t.Setenv("DISABLE_RESERVE_POOL", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -196,6 +200,8 @@ func TestSegmentReserves_ReservedFirstCappedDraw(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSegmentReserves_ShortfallFallsThroughLoudly(t *testing.T) {
+	t.Setenv("RECENCY_AUDIENCE_DRAW_DISABLED", "true") // pin the pre-recency path this test mocks
+	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
 	t.Setenv("DISABLE_RESERVE_POOL", "true")
 	db, mock, err := sqlmock.New()
 	if err != nil {
