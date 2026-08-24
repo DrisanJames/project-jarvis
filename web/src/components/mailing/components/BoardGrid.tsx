@@ -66,6 +66,8 @@ interface StageItem {
   proofId?: string
   proofName?: string
   inclusionSegments?: string[]
+  excludeISPs?: string[]
+  ispCaps?: Record<string, number>
   audienceLabel: string
   exempt: boolean            // KUMO-WARM / newsletter — no offer by doctrine
   skipReason?: string
@@ -293,6 +295,18 @@ export const BoardGrid: React.FC = () => {
     void runGates(next)
   }
 
+  // Fine-grain ISP controls for a proposal cell (empty = cleared).
+  const applyISPControls = (idx: number, excludes: string[], caps: Record<string, number>) => {
+    setCells(prev => prev.map((c, i) => i === idx
+      ? {
+          ...c,
+          exclude_isps: excludes.length ? excludes : undefined,
+          isp_caps: Object.keys(caps).length ? caps : undefined,
+        }
+      : c))
+    setEdited(prev => ({ ...prev, [idx]: true }))
+  }
+
   // Audience override for a proposal cell (null = back to source audience).
   const applyAudience = (idx: number, segments: Array<{ id: string; name: string }> | null) => {
     setCells(prev => prev.map((c, i) => i === idx
@@ -504,6 +518,8 @@ export const BoardGrid: React.FC = () => {
         offerId: c.offer_id, offerName: c.offer_name,
         proofId, proofName,
         inclusionSegments: c.inclusion_segments,
+        excludeISPs: c.exclude_isps,
+        ispCaps: c.isp_caps,
         audienceLabel: c.inclusion_segments?.length
           ? `${c.inclusion_segments.length} segment${c.inclusion_segments.length === 1 ? '' : 's'} override`
           : 'source',
@@ -547,6 +563,8 @@ export const BoardGrid: React.FC = () => {
           ...(it.offerId ? { offer_id: it.offerId } : {}),
           ...(it.proofId ? { proof_id: it.proofId } : {}),
           ...(it.inclusionSegments?.length ? { inclusion_segments: it.inclusionSegments } : {}),
+          ...(it.excludeISPs?.length ? { exclude_isps: it.excludeISPs } : {}),
+          ...(it.ispCaps && Object.keys(it.ispCaps).length ? { isp_caps: it.ispCaps } : {}),
         })),
       }
       if (Object.keys(slotTimes).length > 0) body.slot_times = slotTimes
@@ -949,6 +967,7 @@ export const BoardGrid: React.FC = () => {
               cloneMode={cloned}
               onApplyOffer={applyOffer}
               onApplyAudience={applyAudience}
+              onApplyISPControls={applyISPControls}
               onAttached={() => { attachedRef.current = true }}
               onRebuilt={handleRebuilt}
               onClose={closeShelf}
@@ -993,6 +1012,7 @@ export const BoardGrid: React.FC = () => {
                       <th style={hdr}>Offer</th>
                       <th style={hdr}>Proof</th>
                       <th style={hdr}>Audience</th>
+                      <th style={hdr}>ISP controls</th>
                       <th style={hdr}>Target (Denver)</th>
                       <th style={hdr}>Result</th>
                     </tr>
@@ -1008,6 +1028,12 @@ export const BoardGrid: React.FC = () => {
                             byte-faithful (unchanged clone cells, exempt cells). */}
                         <td style={cellTd}>{it.proofName || '(source creative)'}</td>
                         <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>{it.audienceLabel}</td>
+                        <td style={{ ...cellTd, fontSize: 11 }}>
+                          {[
+                            ...(it.excludeISPs?.length ? [`−${it.excludeISPs.join(',−')}`] : []),
+                            ...Object.entries(it.ispCaps ?? {}).map(([k, v]) => `${k}≤${v.toLocaleString()}`),
+                          ].join(' ') || '—'}
+                        </td>
                         <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>
                           {serverGrid.date} {slotTimes[it.slot] ?? it.slot}
                         </td>

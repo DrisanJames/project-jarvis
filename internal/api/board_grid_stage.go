@@ -95,6 +95,103 @@ type boardGridStageCell struct {
 	// program for this cell (segments + send_priority + segment_reserves).
 	// Empty/absent = the source audience rides along untouched.
 	InclusionSegments []string `json:"inclusion_segments,omitempty"`
+	// Fine-grain ISP controls (operator 2026-08-24 — the per-ISP framework's
+	// levers, grid-native). ExcludeISPs removes those ISPs' plans/quotas from
+	// the cell entirely ("stop gmail from HWS/MR/BWP/FC"); ISPCaps sets a hard
+	// per-ISP volume cap onto the plan quota AND isp_quotas ("hold CI yahoo at
+	// 12,000 while filters catch up"). Both use canonical lowercase ISP class
+	// names; unknown names fail the cell at the door rather than silently
+	// no-opping.
+	ExcludeISPs []string       `json:"exclude_isps,omitempty"`
+	ISPCaps     map[string]int `json:"isp_caps,omitempty"`
+}
+
+// boardGridCanonicalISPs mirrors internal/pkg/isp's class roster (+ 'other').
+// A typo'd ISP name in a control must refuse loudly — a silently ignored
+// exclude is a policy violation that LOOKS applied.
+var boardGridCanonicalISPs = map[string]bool{
+	"microsoft": true, "gmail": true, "yahoo": true, "apple": true,
+	"comcast": true, "aol": true, "att": true, "sbcglobal": true,
+	"cox": true, "charter": true, "verizon": true, "other": true,
+}
+
+// applyCellISPControls applies exclude/cap controls onto the deploy input.
+// Exclusion removes the ISP from ISPPlans, ISPQuotas and TargetISPs; a cap
+// clamps the plan Quota and the ISPQuotas volume (inserting a quota row when
+// the blob had none — a cap the planner cannot see is not a cap).
+func applyCellISPControls(input *engine.PMTACampaignInput, excludes []string, caps map[string]int) error {
+	ex := map[string]bool{}
+	for _, e := range excludes {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if !boardGridCanonicalISPs[e] {
+			return fmt.Errorf("exclude_isps: unknown ISP class %q", e)
+		}
+		ex[e] = true
+	}
+	for k, v := range caps {
+		if !boardGridCanonicalISPs[strings.ToLower(strings.TrimSpace(k))] {
+			return fmt.Errorf("isp_caps: unknown ISP class %q", k)
+		}
+		if v < 0 {
+			return fmt.Errorf("isp_caps[%s]: cap must be >= 0", k)
+		}
+	}
+	capFor := func(isp string) (int, bool) {
+		for k, v := range caps {
+			if strings.EqualFold(strings.TrimSpace(k), isp) {
+				return v, true
+			}
+		}
+		return 0, false
+	}
+
+	kept := input.ISPPlans[:0]
+	for _, p := range input.ISPPlans {
+		isp := strings.ToLower(strings.TrimSpace(p.ISP))
+		if ex[isp] {
+			continue
+		}
+		if c, ok := capFor(isp); ok && (p.Quota == 0 || p.Quota > c) {
+			p.Quota = c
+		}
+		kept = append(kept, p)
+	}
+	if len(input.ISPPlans) > 0 && len(kept) == 0 {
+		return fmt.Errorf("exclude_isps removes every ISP plan — nothing would send")
+	}
+	input.ISPPlans = kept
+
+	seen := map[string]bool{}
+	keptQ := input.ISPQuotas[:0]
+	for _, q := range input.ISPQuotas {
+		isp := strings.ToLower(strings.TrimSpace(q.ISP))
+		if ex[isp] {
+			continue
+		}
+		if c, ok := capFor(isp); ok && (q.Volume == 0 || q.Volume > c) {
+			q.Volume = c
+		}
+		seen[isp] = true
+		keptQ = append(keptQ, q)
+	}
+	input.ISPQuotas = keptQ
+	for k, v := range caps {
+		isp := strings.ToLower(strings.TrimSpace(k))
+		if !seen[isp] && !ex[isp] {
+			input.ISPQuotas = append(input.ISPQuotas, engine.ISPQuota{ISP: isp, Volume: v})
+		}
+	}
+
+	if len(input.TargetISPs) > 0 {
+		keptT := input.TargetISPs[:0]
+		for _, t := range input.TargetISPs {
+			if !ex[strings.ToLower(strings.TrimSpace(string(t)))] {
+				keptT = append(keptT, t)
+			}
+		}
+		input.TargetISPs = keptT
+	}
+	return nil
 }
 
 // boardGridStageBoard carries the BOARD-WIDE timing/throttle overrides
@@ -133,6 +230,9 @@ type boardGridStageResult struct {
 	// Audience: "source" (blob's audience rides along) or
 	// "N segments override".
 	Audience string `json:"audience,omitempty"`
+	// ISPControls echoes the applied per-ISP excludes/caps ("exclude gmail ·
+	// cap yahoo=12000") so the stage result proves the policy landed.
+	ISPControls string `json:"isp_controls,omitempty"`
 	// RecipientsEstimate is intentionally not a number: the audience is
 	// planned by the AudienceFinalizationWorker AFTER deploy.
 	RecipientsEstimate string `json:"recipients_estimate,omitempty"`
@@ -354,6 +454,23 @@ func (s *BoardGridService) stageOneCell(ctx context.Context, orgID string, daySt
 		res.Audience = fmt.Sprintf("%d segments override", len(cell.InclusionSegments))
 	} else {
 		res.Audience = "source"
+	}
+
+	// (b3) fine-grain ISP controls — excludes and per-ISP caps land on the
+	// deploy input itself so the planner/wave path enforce them; a bad ISP
+	// name refuses the cell instead of silently no-opping.
+	if len(cell.ExcludeISPs) > 0 || len(cell.ISPCaps) > 0 {
+		if err := applyCellISPControls(&input, cell.ExcludeISPs, cell.ISPCaps); err != nil {
+			return fail(http.StatusBadRequest, err.Error())
+		}
+		parts := []string{}
+		if len(cell.ExcludeISPs) > 0 {
+			parts = append(parts, "exclude "+strings.Join(cell.ExcludeISPs, ","))
+		}
+		for k, v := range cell.ISPCaps {
+			parts = append(parts, fmt.Sprintf("cap %s=%d", k, v))
+		}
+		res.ISPControls = strings.Join(parts, " · ")
 	}
 
 	// (c) the proposed name + the CELL's (possibly column-remapped) slot on

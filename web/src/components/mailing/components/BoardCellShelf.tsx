@@ -63,6 +63,12 @@ export interface BoardCell {
   failure_reason?: string
   // >15 min in finalizing_audience/preparing — the finalizer may be stalled.
   stuck_finalize?: boolean
+  // The deploy blob's per-ISP plan brief (quota 0 = audience-bound) — what
+  // the fine-grain ISP controls edit against.
+  isp_plans?: Array<{ isp: string; quota: number }>
+  // Local proposal-editing ISP controls, passed through /board-grid/stage.
+  exclude_isps?: string[]
+  isp_caps?: Record<string, number>
 }
 
 // GET /api/mailing/board-grid/creative?campaign_id= — one live cell's stored
@@ -262,12 +268,15 @@ export const BoardCellShelf: React.FC<{
   // Audience override apply (proposal cells): null clears the override back
   // to "source audience carried over".
   onApplyAudience: (idx: number, segments: SegmentOpt[] | null) => void
+  // Fine-grain ISP controls apply (proposal cells): excludes + per-ISP caps.
+  // Empty arrays/objects clear the controls.
+  onApplyISPControls: (idx: number, excludes: string[], caps: Record<string, number>) => void
   onAttached: () => void                             // a confirmed LIVE attach landed
   onRebuilt: () => void                              // a confirmed LIVE rebuild landed
   onClose: () => void
 }> = ({ date, entries, activeIdx, onSelectEntry, findings, offers, offersError,
         proofs, proofsError, edited, gating, cloneMode, onApplyOffer, onApplyAudience,
-        onAttached, onRebuilt, onClose }) => {
+        onApplyISPControls, onAttached, onRebuilt, onClose }) => {
   const entry = entries.find(e => e.idx === activeIdx) ?? entries[0]
   const cell = entry?.cell
 
@@ -333,6 +342,15 @@ export const BoardCellShelf: React.FC<{
   // materialized from an empty grid slot on a non-clone grid.
   const proposalMode = cloneMode || !!cell?.proposed
   const [selCloneProof, setSelCloneProof] = useState('')
+  // ── FINE-GRAIN ISP CONTROLS state (proposal cells) ───────────────────────
+  const [ispEx, setIspEx] = useState<Set<string>>(new Set())
+  const [ispCaps, setIspCaps] = useState<Record<string, string>>({})
+  useEffect(() => {
+    setIspEx(new Set(cell?.exclude_isps ?? []))
+    setIspCaps(Object.fromEntries(Object.entries(cell?.isp_caps ?? {}).map(([k, v]) => [k, String(v)])))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cell?.property, cell?.slot, cell?.campaign_id, cell?.source_campaign_id])
+
   const [audOpen, setAudOpen] = useState(false)
   const [audSel, setAudSel] = useState<SegmentOpt[]>([])
   const [audQuery, setAudQuery] = useState('')
@@ -870,6 +888,84 @@ export const BoardCellShelf: React.FC<{
                   its send priority and segment reserves are cleared with it.
                 </div>
               </div>
+            )}
+          </>
+        )}
+
+        {/* ── FINE-GRAIN ISP CONTROLS (proposal cells) ─────────────────────
+               Per-cell exclude + per-ISP volume cap, applied at stage onto the
+               deploy input's isp_plans/isp_quotas ("stop gmail from this
+               domain", "hold yahoo at 12,000 while filters catch up"). ──── */}
+        {proposalMode && (
+          <>
+            <div style={sectionTitle}>ISP targeting — this cell</div>
+            {(cell.isp_plans?.length ?? 0) === 0 ? (
+              <div style={{ fontSize: 12, color: colors.textMuted }}>
+                Source payload declares no per-ISP plans — the cell sends per its audience;
+                no ISP controls apply.
+              </div>
+            ) : (
+              <>
+                <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
+                  <thead><tr>
+                    <th style={{ ...label, textAlign: 'left', padding: '2px 6px' }}>ISP</th>
+                    <th style={{ ...label, textAlign: 'right', padding: '2px 6px' }}>source quota</th>
+                    <th style={{ ...label, textAlign: 'center', padding: '2px 6px' }}>exclude</th>
+                    <th style={{ ...label, textAlign: 'right', padding: '2px 6px' }}>cap volume</th>
+                  </tr></thead>
+                  <tbody>
+                    {cell.isp_plans!.map(p => {
+                      const isp = p.isp.toLowerCase()
+                      const excluded = ispEx.has(isp)
+                      return (
+                        <tr key={isp} style={{ opacity: excluded ? 0.5 : 1 }}>
+                          <td style={{ padding: '3px 6px', fontFamily: 'monospace' }}>{isp}</td>
+                          <td style={{ padding: '3px 6px', textAlign: 'right', color: colors.textMuted }}>
+                            {p.quota > 0 ? p.quota.toLocaleString() : 'audience-bound'}
+                          </td>
+                          <td style={{ padding: '3px 6px', textAlign: 'center' }}>
+                            <input type="checkbox" checked={excluded}
+                              aria-label={`exclude ${isp}`}
+                              onChange={e => setIspEx(prev => {
+                                const next = new Set(prev)
+                                if (e.target.checked) next.add(isp); else next.delete(isp)
+                                return next
+                              })} />
+                          </td>
+                          <td style={{ padding: '3px 6px', textAlign: 'right' }}>
+                            <input type="number" min={0} placeholder="—" disabled={excluded}
+                              value={ispCaps[isp] ?? ''}
+                              onChange={e => setIspCaps(prev => ({ ...prev, [isp]: e.target.value }))}
+                              style={{ ...input, width: 92, textAlign: 'right', padding: '2px 6px' }} />
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button type="button" style={smallBtn}
+                    onClick={() => {
+                      const caps: Record<string, number> = {}
+                      for (const [k, v] of Object.entries(ispCaps)) {
+                        const n = Math.trunc(Number(v))
+                        if (v !== '' && Number.isFinite(n) && n >= 0 && !ispEx.has(k)) caps[k] = n
+                      }
+                      onApplyISPControls(entry.idx, [...ispEx], caps)
+                    }}>
+                    Apply ISP controls
+                  </button>
+                  <button type="button" style={{ ...smallBtn, background: 'transparent' }}
+                    onClick={() => { setIspEx(new Set()); setIspCaps({}); onApplyISPControls(entry.idx, [], {}) }}>
+                    Clear
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
+                  Applied at stage onto the deploy payload itself: an exclude removes that ISP's
+                  plan and quota entirely; a cap clamps the plan quota and isp_quotas. The stage
+                  result echoes the controls per cell as proof they landed.
+                </div>
+              </>
             )}
           </>
         )}

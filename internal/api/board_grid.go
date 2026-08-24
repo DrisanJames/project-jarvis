@@ -170,6 +170,21 @@ type BoardCell struct {
 	// beyond the finalizer's plausible runtime (15 min) — the worker pool may
 	// be stalled, and OFFER_PENDING's "re-check shortly" no longer applies.
 	StuckFinalize bool `json:"stuck_finalize,omitempty"`
+	// ISPPlans is the deploy blob's per-ISP plan brief (isp + quota; quota 0 =
+	// audience-bound). It is what the shelf's fine-grain ISP controls edit
+	// against — controls without visibility invite blind caps.
+	ISPPlans []BoardCellISPPlan `json:"isp_plans,omitempty"`
+	// Local proposal-editing fields (client-set; server echoes them through
+	// gates untouched).
+	ExcludeISPs []string       `json:"exclude_isps,omitempty"`
+	ISPCaps     map[string]int `json:"isp_caps,omitempty"`
+}
+
+// BoardCellISPPlan is one row of the blob's isp_plans, reduced to what the
+// grid needs.
+type BoardCellISPPlan struct {
+	ISP   string `json:"isp"`
+	Quota int    `json:"quota"`
 }
 
 // BoardFinding is one gate result against one cell.
@@ -427,6 +442,7 @@ WITH b AS (
          COALESCE(c.offer_id::text,'')                                               AS offer_id,
          (c.status IN ('finalizing_audience','preparing'))                           AS pending_finalize,
          COALESCE(c.pmta_config->>'failure_reason','')                               AS failure_reason,
+         COALESCE(c.pmta_config->'campaign_input'->'isp_plans','[]'::jsonb)::text    AS isp_plans_json,
          (c.status IN ('finalizing_audience','preparing')
           AND c.updated_at < NOW() - INTERVAL '15 minutes')                          AS stuck_finalize
     FROM mailing_campaigns c
@@ -450,6 +466,7 @@ SELECT COALESCE(bm.brand_code, '')                                   AS brand_co
        COALESCE(b.total_recipients,0)                                AS recipients,
        b.pending_finalize                                            AS pending_finalize,
        b.failure_reason                                              AS failure_reason,
+       b.isp_plans_json                                              AS isp_plans_json,
        b.stuck_finalize                                              AS stuck_finalize,
        b.preheader                                                   AS preheader,
        b.from_name                                                   AS from_name,
@@ -479,11 +496,25 @@ SELECT COALESCE(bm.brand_code, '')                                   AS brand_co
 	var out []BoardCell
 	for rows.Next() {
 		var c BoardCell
+		var ispPlansJSON string
 		if err := rows.Scan(&c.Property, &c.PropertyLabel, &c.SendingDomain, &c.BrandRoot, &c.Slot,
 			&c.CampaignID, &c.Name, &c.OfferID, &c.OfferName, &c.Subject,
-			&c.Status, &c.Recipients, &c.PendingFinalize, &c.FailureReason, &c.StuckFinalize,
+			&c.Status, &c.Recipients, &c.PendingFinalize, &c.FailureReason, &ispPlansJSON, &c.StuckFinalize,
 			&c.Preheader, &c.FromName, &c.FromEmail, &c.CreativeLen); err != nil {
 			return nil, fmt.Errorf("board grid scan: %w", err)
+		}
+		// Reduce the blob's isp_plans to (isp, quota) briefs; a malformed blob
+		// yields an empty list, never a load failure.
+		var raw []struct {
+			ISP   string `json:"isp"`
+			Quota int    `json:"quota"`
+		}
+		if json.Unmarshal([]byte(ispPlansJSON), &raw) == nil {
+			for _, p := range raw {
+				if p.ISP != "" {
+					c.ISPPlans = append(c.ISPPlans, BoardCellISPPlan{ISP: p.ISP, Quota: p.Quota})
+				}
+			}
 		}
 		c.SubjectRendered = renderForOperator(c.Subject)
 		c.PreheaderRendered = renderForOperator(c.Preheader)

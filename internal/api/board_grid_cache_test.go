@@ -37,7 +37,7 @@ func newBoardGridServiceWithMock(t *testing.T) (*BoardGridService, sqlmock.Sqlmo
 func boardGridCellColumns() []string {
 	return []string{"brand_code", "brand_label", "sending_domain", "brand_root", "slot",
 		"campaign_id", "name", "offer_id", "offer_name", "subject", "status", "recipients",
-		"pending_finalize", "failure_reason", "stuck_finalize",
+		"pending_finalize", "failure_reason", "isp_plans_json", "stuck_finalize",
 		"preheader", "from_name", "from_email", "creative_len"}
 }
 
@@ -45,7 +45,7 @@ func expectBoardGridCells(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`FROM mailing_campaigns c`).
 		WillReturnRows(sqlmock.NewRows(boardGridCellColumns()).
 			AddRow("DB", "Discount Blog", "em.discountblog.com", "discountblog.com", "01:01",
-				"c-1", "08222026 - DB - OFR-CLK", "of-1", "Optima Tax Relief", "Settle for less", "scheduled", 1200, false, "", false,
+				"c-1", "08222026 - DB - OFR-CLK", "of-1", "Optima Tax Relief", "Settle for less", "scheduled", 1200, false, "", "[]", false,
 				"Your refund, itemized", "Optima Tax", "hello@em.discountblog.com", 8515))
 }
 

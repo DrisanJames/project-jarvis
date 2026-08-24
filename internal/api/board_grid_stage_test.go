@@ -668,10 +668,10 @@ func TestBoardGrid_CloneKeepsSourceCampaignID(t *testing.T) {
 		WithArgs(dayStart, dayEnd, bgsOrg).
 		WillReturnRows(sqlmock.NewRows([]string{"brand_code", "brand_label", "sending_domain",
 			"brand_root", "slot", "campaign_id", "name", "offer_id", "offer_name",
-			"subject", "status", "recipients", "pending_finalize", "failure_reason", "stuck_finalize",
+			"subject", "status", "recipients", "pending_finalize", "failure_reason", "isp_plans_json", "stuck_finalize",
 			"preheader", "from_name", "from_email", "creative_len"}).
 			AddRow("DB", "Discount Blog", "m.discountblog.com", "discountblog.com", "01:01",
-				bgsSrc1, "08222026 - DB - Sams", bgsOffer, "Sams Club", "s", "sent", 1000, false, "", false,
+				bgsSrc1, "08222026 - DB - Sams", bgsOffer, "Sams Club", "s", "sent", 1000, false, "", "[]", false,
 				"ph", "Sams Club", "hello@em.discountblog.com", 4096))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mailing/board-grid/clone?from=2026-08-22&to=2026-08-23", nil)
@@ -700,5 +700,99 @@ func TestBoardGrid_CloneKeepsSourceCampaignID(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fine-grain ISP controls (operator 2026-08-24): an exclude removes the ISP's
+// plan/quota/target entirely, a cap clamps plan quota AND isp_quotas, an
+// unknown ISP name refuses the cell, and excluding every plan refuses the
+// cell — a policy that silently no-ops is worse than none.
+
+func TestBoardGridStage_ISPControls(t *testing.T) {
+	sched := time.Date(2026, 8, 21, 7, 1, 0, 0, time.UTC)
+	end := sched.Add(8 * time.Hour)
+	mkPlan := func(isp string, quota int) map[string]interface{} {
+		return map[string]interface{}{"isp": isp, "quota": quota,
+			"cadence": map[string]interface{}{"mode": "interval", "every_minutes": 15},
+			"time_spans": []map[string]interface{}{{"type": "absolute",
+				"start_at": sched.Format(time.RFC3339), "end_at": end.Format(time.RFC3339),
+				"source": "duration-calc"}}}
+	}
+	input := map[string]interface{}{
+		"name": "src two", "offer_id": bgsOffer, "sending_domain": "em.casainsure.com",
+		"send_mode": "scheduled", "scheduled_at": sched.Format(time.RFC3339),
+		"variants":  []map[string]interface{}{{"variant_name": "A", "subject": "s", "from_name": "f", "html_content": "<b>x</b>"}},
+		"isp_plans": []map[string]interface{}{mkPlan("gmail", 0), mkPlan("yahoo", 50000), mkPlan("microsoft", 0)},
+		"isp_quotas": []map[string]interface{}{
+			{"isp": "gmail", "volume": 9000}, {"isp": "yahoo", "volume": 50000}},
+	}
+	blobB, _ := json.Marshal(map[string]interface{}{"campaign_input": input})
+	blob := string(blobB)
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	var got engine.PMTACampaignInput
+	svc := &BoardGridService{db: db, campaigns: &PMTACampaignService{db: db,
+		dayCardsDeployFn: func(ctx context.Context, orgID string, in engine.PMTACampaignInput) (string, string, bool, error) {
+			got = in
+			return "new-id", "", false, nil
+		}}}
+	bgsExpectSource(mock, bgsSrc1, "src two", blob)
+
+	date := bgsDate(t)
+	rec := bgsPost(t, svc, `{"date":"`+date+`","confirmed":true,"cells":[{"property":"CI","slot":"05:01",
+	  "name":"08252026 - CI - Sams","source_campaign_id":"`+bgsSrc1+`",
+	  "exclude_isps":["gmail"],"isp_caps":{"yahoo":12000}}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	results, _ := bgsDecode(t, rec)
+	if results[0].Status != "deployed" {
+		t.Fatalf("cell failed: %+v", results[0])
+	}
+	if !strings.Contains(results[0].ISPControls, "exclude gmail") ||
+		!strings.Contains(results[0].ISPControls, "cap yahoo=12000") {
+		t.Errorf("isp_controls echo missing: %q", results[0].ISPControls)
+	}
+	var isps []string
+	for _, p := range got.ISPPlans {
+		isps = append(isps, p.ISP)
+		if p.ISP == "yahoo" && p.Quota != 12000 {
+			t.Errorf("yahoo plan quota = %d, want 12000", p.Quota)
+		}
+	}
+	if strings.Join(isps, ",") != "yahoo,microsoft" {
+		t.Errorf("plans after exclude = %v", isps)
+	}
+	for _, q := range got.ISPQuotas {
+		if q.ISP == "gmail" {
+			t.Errorf("gmail quota survived the exclude: %+v", got.ISPQuotas)
+		}
+		if q.ISP == "yahoo" && q.Volume != 12000 {
+			t.Errorf("yahoo isp_quotas = %d, want 12000", q.Volume)
+		}
+	}
+
+	// Unknown ISP name refuses the cell.
+	bgsExpectSource(mock, bgsSrc1, "src two", blob)
+	rec = bgsPost(t, svc, `{"date":"`+date+`","confirmed":true,"cells":[{"property":"CI","slot":"05:01",
+	  "name":"08252026 - CI - Sams B","source_campaign_id":"`+bgsSrc1+`","exclude_isps":["gmial"]}]}`)
+	results, _ = bgsDecode(t, rec)
+	if results[0].Status != "failed" || !strings.Contains(results[0].Error, "unknown ISP") {
+		t.Errorf("typo'd ISP must refuse the cell: %+v", results[0])
+	}
+
+	// Excluding every plan refuses the cell.
+	bgsExpectSource(mock, bgsSrc1, "src two", blob)
+	rec = bgsPost(t, svc, `{"date":"`+date+`","confirmed":true,"cells":[{"property":"CI","slot":"05:01",
+	  "name":"08252026 - CI - Sams C","source_campaign_id":"`+bgsSrc1+`",
+	  "exclude_isps":["gmail","yahoo","microsoft"]}]}`)
+	results, _ = bgsDecode(t, rec)
+	if results[0].Status != "failed" || !strings.Contains(results[0].Error, "every ISP plan") {
+		t.Errorf("total exclusion must refuse the cell: %+v", results[0])
 	}
 }
