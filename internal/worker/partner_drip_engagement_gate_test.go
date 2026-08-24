@@ -576,3 +576,59 @@ func TestColdSweepTouchesOnlyRealColumns(t *testing.T) {
 		}
 	}
 }
+
+// The progression scan must be scoped to the gated lanes. Unscoped, it swept
+// every drip campaign and timed out on every chunk (2026-08-24), so the
+// backfill never completed and the gate stayed permanently held.
+func TestGatedCampaignNameLike_ScopesToGatedLanes(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED", "")
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
+
+	got := gatedCampaignNameLike()
+	if len(got) != 1 || !strings.Contains(got[0], "[partner-drip] internal_auto_insurance%") {
+		t.Fatalf("default scope wrong: %v", got)
+	}
+	// Must not degrade to sweeping every lane.
+	if strings.Contains(got[0], "'[partner-drip] %'") {
+		t.Error("scan fell back to ALL drip campaigns — this is the timeout shape")
+	}
+
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "consumer,term_life")
+	got = gatedCampaignNameLike()
+	if len(got) != 2 {
+		t.Fatalf("override should produce one pattern per prefix, got %v", got)
+	}
+	for _, want := range []string{"consumer%", "term_life%"} {
+		found := false
+		for _, g := range got {
+			if strings.Contains(g, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing pattern for %q in %v", want, got)
+		}
+	}
+}
+
+// The backfill must chunk finely enough to fit a statement budget and must run
+// under a raised local timeout.
+func TestBackfillChunkingAndTimeout(t *testing.T) {
+	src, err := os.ReadFile("partner_engagement_marker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "chunkMins = 6 * 60") {
+		t.Error("backfill chunk is not 6h — a 24h chunk timed out in prod")
+	}
+	if !strings.Contains(body, "SET LOCAL statement_timeout") {
+		t.Error("progression chunk does not raise its statement timeout")
+	}
+	if !strings.Contains(body, "gatedCampaignNameLike()") {
+		t.Error("progression scan is not scoped to the gated lanes")
+	}
+	if !strings.Contains(body, "defer tx.Rollback()") {
+		t.Error("progression chunk transaction is not rollback-safe")
+	}
+}

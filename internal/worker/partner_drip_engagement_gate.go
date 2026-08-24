@@ -526,3 +526,18 @@ func (s *PartnerDripColdSweeper) runBatched(ctx context.Context, label, q string
 	}
 	return total
 }
+
+// gatedCampaignNameLike returns one LIKE pattern per gated vertical prefix,
+// matching the drip campaign-name convention `[partner-drip] <vertical> <brand> …`.
+// Used to scope the progression-signal scan to the lanes the gate governs.
+func gatedCampaignNameLike() []string {
+	prefixes := gatedVerticalPrefixes()
+	out := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		out = append(out, "c.name LIKE "+quoteSQLLiteral("[partner-drip] "+p+"%"))
+	}
+	if len(out) == 0 {
+		out = append(out, "c.name LIKE "+quoteSQLLiteral("[partner-drip] %"))
+	}
+	return out
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"log"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -381,18 +382,24 @@ const progressionBackfillDays = 14
 // succeeded: partial coverage must not latch readiness, or the cold sweep would
 // bucket records whose engagement simply had not been stamped yet.
 func (m *PartnerEngagementMarker) backfillProgressionSignals(ctx context.Context) bool {
-	const day = 24 * 60
-	for d := progressionBackfillDays; d >= 1; d-- {
+	// 6h chunks, not 24h. Measured 2026-08-24: a full day of drip tracking
+	// events still hit the statement timeout on the first chunk, so the backfill
+	// never completed and the gate stayed held.
+	const chunkMins = 6 * 60
+	chunks := progressionBackfillDays * 24 * 60 / chunkMins
+	for i := chunks; i >= 1; i-- {
 		if ctx.Err() != nil {
 			return false
 		}
-		// Window [now-d days, now-(d-1) days).
-		if !m.markProgressionSignals(ctx, d*day, (d-1)*day) {
-			log.Printf("[PartnerEngagementMarker] progression backfill FAILED at day -%d — cold bucketing stays held", d)
+		// Window [now-i*chunk, now-(i-1)*chunk).
+		if !m.markProgressionSignals(ctx, i*chunkMins, (i-1)*chunkMins) {
+			log.Printf("[PartnerEngagementMarker] progression backfill FAILED at chunk -%d (%dh back) — cold bucketing stays held",
+				i, i*chunkMins/60)
 			return false
 		}
 	}
-	log.Printf("[PartnerEngagementMarker] progression backfill complete (%d days) — cold bucketing may proceed", progressionBackfillDays)
+	log.Printf("[PartnerEngagementMarker] progression backfill complete (%d days in %d chunks) — cold bucketing may proceed",
+		progressionBackfillDays, chunks)
 	return true
 }
 
@@ -443,6 +450,12 @@ func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, si
 		verdictFilter = "AND " + humanVerdictSQL
 	}
 
+	// Scope to the GATED lanes only. The signal is consumed by the engagement
+	// gate and nothing else, so scanning every drip campaign is pure cost — the
+	// internal family is ~25k of ~280k daily drip sends, and the unscoped
+	// version timed out on every chunk (2026-08-24).
+	laneFilter := "AND (" + strings.Join(gatedCampaignNameLike(), " OR ") + ")"
+
 	q := `
 		UPDATE partner_clean_queue q
 		SET last_open_at  = GREATEST(q.last_open_at,  e.last_open),
@@ -456,7 +469,7 @@ func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, si
 			JOIN mailing_campaigns c ON c.id = te.campaign_id
 			WHERE te.event_type IN ('opened', 'clicked')
 			  AND te.subscriber_id IS NOT NULL
-			  AND c.name LIKE '[partner-drip] %'
+			  ` + laneFilter + `
 			  ` + timeFilter + `
 			GROUP BY 1, 2
 		) e
@@ -467,9 +480,25 @@ func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, si
 		     OR q.last_click_at IS DISTINCT FROM GREATEST(q.last_click_at, e.last_click)
 		  )`
 
-	res, err := m.db.ExecContext(ctx, q, args...)
+	// Own transaction with a raised local timeout: the app default is tuned for
+	// request handlers, and this is a bounded background backfill chunk.
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Printf("[PartnerEngagementMarker] progression-signal begin err (window %dm..%dm): %v", sinceMins, untilMins, err)
+		return false
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '120s'"); err != nil {
+		log.Printf("[PartnerEngagementMarker] progression-signal timeout-set err: %v", err)
+		return false
+	}
+	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {
 		log.Printf("[PartnerEngagementMarker] progression-signal mark err (window %dm..%dm): %v", sinceMins, untilMins, err)
+		return false
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[PartnerEngagementMarker] progression-signal commit err (window %dm..%dm): %v", sinceMins, untilMins, err)
 		return false
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
