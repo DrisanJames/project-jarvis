@@ -441,13 +441,11 @@ export const BoardCellShelf: React.FC<{
     }
     const out: Array<SegmentOpt & { cls: number; win: number }> = []
     for (const p of segPool) {
-      const vh = /^([A-Z]{2,4}) Verified Humans$/.exec(p.name)
       const m = /^([A-Z]{2,4}) (7|14|30|60)D (Openers|Clickers)$/.exec(p.name)
-      const code = vh?.[1] ?? m?.[1]
-      if (!code) continue
+      if (!m) continue
+      const [, code, win, kind] = m
       if (code !== cell.property.toUpperCase() && !(rootLetters && isSubseq(code, rootLetters))) continue
-      if (vh) out.push({ ...p, cls: 0, win: 0 })
-      else out.push({ ...p, cls: m![3] === 'Clickers' ? 1 : 2, win: Number(m![2]) })
+      out.push({ ...p, cls: kind === 'Clickers' ? 0 : 1, win: Number(win) })
     }
     return out.sort((a, b) => a.cls - b.cls || a.win - b.win)
   }, [segPool, cell])
@@ -457,10 +455,9 @@ export const BoardCellShelf: React.FC<{
   // stage — this keeps the UI honest about what will happen.
   const audApplyOrdered = () => {
     const rank = (s: SegmentOpt) => {
-      if (/Verified Humans$/.test(s.name)) return [0, 0] as const
       const m = /(7|14|30|60)D (Openers|Clickers)$/.exec(s.name)
-      if (!m) return [3, 999] as const
-      return [m[2] === 'Clickers' ? 1 : 2, Number(m[1])] as const
+      if (!m) return [2, 999] as const
+      return [m[2] === 'Clickers' ? 0 : 1, Number(m[1])] as const
     }
     return [...audSel].sort((a, b) => {
       const ra = rank(a), rb = rank(b)
@@ -955,7 +952,7 @@ export const BoardCellShelf: React.FC<{
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
-                  Replaces the source audience at stage · priority is automatic: verified humans → clickers → openers → cold.
+                  Replaces the source audience at stage · priority is automatic: clickers → openers → cold.
                 </div>
               </div>
             )}

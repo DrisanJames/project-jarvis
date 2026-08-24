@@ -115,7 +115,7 @@ type boardGridStageCell struct {
 var boardGridSegClassRe = regexp.MustCompile(`(?i)\b(\d+)D (Clickers|Openers)\b`)
 
 // boardGridAutoPriority orders an audience-override segment list by the
-// standing doctrine — Verified Humans first, then clickers, openers, cold —
+// standing doctrine — clickers first, then openers, then cold/other —
 // narrower windows first within each class, stable by name for ties. Names
 // come from the DB; an id that resolves to no row keeps its position at the
 // cold tier (the deploy path will surface a genuinely bad id itself).
@@ -148,16 +148,12 @@ func (s *BoardGridService) boardGridAutoPriority(ctx context.Context, orgID stri
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		name := names[id]
-		class, window := 3, 1<<30 // cold/other by default
-		// Verified Humans (ever-clicked ∪ ever-converted) outrank every
-		// window cohort — conversion is platinum, click is gold (§6).
-		if strings.Contains(name, "Verified Humans") {
-			class, window = 0, 0
-		} else if m := boardGridSegClassRe.FindStringSubmatch(name); m != nil {
+		class, window := 2, 1<<30 // cold/other by default
+		if m := boardGridSegClassRe.FindStringSubmatch(name); m != nil {
 			if strings.EqualFold(m[2], "Clickers") {
-				class = 1
+				class = 0
 			} else {
-				class = 2
+				class = 1
 			}
 			if w, aerr := strconv.Atoi(m[1]); aerr == nil {
 				window = w
