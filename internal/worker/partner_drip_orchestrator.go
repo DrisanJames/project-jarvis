@@ -3313,6 +3313,13 @@ func personaFieldsFromExtra(extra []byte) map[string]interface{} {
 	// the send looks healthy. Partners spell its parent object "data" (merged
 	// into metadata at the door) as well as "metadata".
 	put("tid", m.TID, nested("tid"))
+	// emd5 — the recipient's email-md5, passed by the Attribits gmail feeds in
+	// metadata and required in their money link as s11= (vendor spec
+	// 2026-08-24). Same failure shape as tid: absent here, the creative's
+	// {{ custom.emd5 }} renders s11 empty for the whole feed while every send
+	// looks healthy. Existing subscribers were backfilled with
+	// md5(lower(trim(email))) on 2026-08-24; this carries it for new claims.
+	put("emd5", nested("emd5"))
 	return out
 }
 

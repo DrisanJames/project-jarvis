@@ -341,3 +341,21 @@ func TestPersonaFieldsFromExtra_ThinEquityEmitsNoKey(t *testing.T) {
 		t.Fatalf("thin equity must emit no key: %#v", got)
 	}
 }
+
+// The Attribits gmail feeds pass the recipient's email-md5 nested in metadata,
+// and the vendor's money link requires it as s11= (spec 2026-08-24). Absent
+// from the allow-list it died at claim exactly like loan_type did — pinned so
+// s11 never silently goes blank for the whole feed again.
+func TestPersonaFieldsFromExtra_CarriesEmd5(t *testing.T) {
+	got := personaFieldsFromExtra([]byte(
+		`{"metadata":{"emd5":"6ff7d2773e99aabbccddeeff00112233","tid":"abc123"}}`))
+	if got["emd5"] != "6ff7d2773e99aabbccddeeff00112233" {
+		t.Fatalf("emd5 not carried: %v", got)
+	}
+	// A feed without emd5 emits no key — the creative's default keeps s11 empty
+	// rather than rendering a literal.
+	none := personaFieldsFromExtra([]byte(`{"metadata":{"tid":"abc123"}}`))
+	if _, exists := none["emd5"]; exists {
+		t.Fatalf("emd5 key must be absent when the feed does not send it: %v", none)
+	}
+}
