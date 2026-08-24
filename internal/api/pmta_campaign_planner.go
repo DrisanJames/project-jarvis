@@ -235,6 +235,18 @@ func rotatingAudienceSelectionEnabled() bool {
 	return strings.ToLower(strings.TrimSpace(os.Getenv("DISABLE_ROTATING_AUDIENCE_SELECTION"))) != "true"
 }
 
+// recencyAudienceDrawEnabled — operator ruling 2026-08-24 ("perform this
+// recency approach"): a CAPPED inclusion-segment draw fills MOST-RECENTLY
+// ENGAGED FIRST (SDS last_click_at/last_open_at for THIS sending domain),
+// replacing the daily-rotating hash order as the default. The accepted
+// trade-off is explicit: the same most-recent members are drawn every day
+// until they age past the window — the repetition the rotation existed to
+// prevent is now the intended behavior for engagement-window segments.
+// Kill switch: RECENCY_AUDIENCE_DRAW_DISABLED=true falls back to rotation.
+func recencyAudienceDrawEnabled() bool {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("RECENCY_AUDIENCE_DRAW_DISABLED"))) != "true"
+}
+
 // segmentBuildLedgerState classifies a segment that read 0 rows from
 // mailing_segment_members using mailing_segment_build_ledger (written by
 // every member-writing build path — see segment_ledger.go).
@@ -1124,15 +1136,37 @@ func planPMTAAudience(
 		// and sorting an unbounded segment would risk work_mem spill / the
 		// 30s statement_timeout — the legitimate reason NOT to touch it.
 		segQuery := `SELECT subscriber_id::text, email FROM mailing_segment_members WHERE segment_id = $1`
-		if rotatingAudienceSelectionEnabled() && !hasUnlimited && totalQuota > 0 {
+		segArgs := []interface{}{segmentID}
+		if !hasUnlimited && totalQuota > 0 {
 			scanLimit := totalQuota * 3
 			if scanLimit < 10000 {
 				scanLimit = 10000
 			}
-			segQuery += ` ORDER BY hashtext(subscriber_id::text || to_char(now() AT TIME ZONE 'America/Denver', 'YYYY-MM-DD')) ASC` +
-				fmt.Sprintf(` LIMIT %d`, scanLimit)
+			switch {
+			case recencyAudienceDrawEnabled():
+				// RECENCY DRAW (operator ruling 2026-08-24): the cap fills
+				// most-recently-engaged first. Ordered by the subscriber's
+				// GLOBAL last engagement (mailing_subscribers PK join, hot
+				// cache: measured 10s on a 33k segment) rather than the
+				// per-domain SDS join (75s cold — past the 30s statement
+				// budget, which would silently skip the segment). For a
+				// single-brand engagement segment global recency is the
+				// faithful proxy; per-domain precision would need a
+				// build-time precompute. GREATEST ignores NULLs, so
+				// click-only or open-only histories rank by their real
+				// instant; never-engaged members sort last.
+				segQuery = `SELECT m.subscriber_id::text, m.email
+					FROM mailing_segment_members m
+					LEFT JOIN mailing_subscribers s ON s.id = m.subscriber_id
+					WHERE m.segment_id = $1
+					ORDER BY GREATEST(s.last_click_at, s.last_open_at) DESC NULLS LAST` +
+					fmt.Sprintf(` LIMIT %d`, scanLimit)
+			case rotatingAudienceSelectionEnabled():
+				segQuery += ` ORDER BY hashtext(subscriber_id::text || to_char(now() AT TIME ZONE 'America/Denver', 'YYYY-MM-DD')) ASC` +
+					fmt.Sprintf(` LIMIT %d`, scanLimit)
+			}
 		}
-		rows, err := db.QueryContext(ctx, segQuery, segmentID)
+		rows, err := db.QueryContext(ctx, segQuery, segArgs...)
 		if err != nil {
 			log.Printf("[PlanAudience] segment %s materialized read error: %v, skipping", segmentID, err)
 			return accepted, nil
