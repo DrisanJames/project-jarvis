@@ -495,14 +495,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	headerBuf.WriteString(fmt.Sprintf("X-Message-ID: %s\r\n", msg.ID))
 
 	// Feedback-ID is required by Gmail for FBL (Feedback Loop) correlation.
-	// Format: campaignID:subscriberID:orgID:sendingDomain
-	// Gmail uses the last segment (SenderId) as the primary identifier.
-	feedbackDomain := msg.FromEmail
-	if atIdx := strings.LastIndex(msg.FromEmail, "@"); atIdx >= 0 {
-		feedbackDomain = msg.FromEmail[atIdx+1:]
-	}
-	headerBuf.WriteString(fmt.Sprintf("Feedback-ID: %s:%s:%s:%s\r\n",
-		msg.CampaignID, msg.SubscriberID, msg.ID, feedbackDomain))
+	// Spec-compliant aggregating format — see buildFeedbackID (send_worker.go).
+	headerBuf.WriteString(fmt.Sprintf("Feedback-ID: %s\r\n",
+		buildFeedbackID(msg.CampaignID, msg.FromEmail)))
 
 	for k, v := range msg.Headers {
 		headerBuf.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))

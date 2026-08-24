@@ -298,6 +298,43 @@ type SendResult struct {
 }
 
 // QueueItem represents an item from the send queue
+// buildFeedbackID composes the Gmail FBL header per Google's spec
+// (Feedback-ID: a:b:c:SenderId) so Postmaster Tools can actually aggregate:
+//
+//	a = campaign id     — aggregates per campaign
+//	b = brand token     — the from-domain apex label, aggregates per brand
+//	c = stream type     — bcast (m.<apex>) vs drip (em.<apex>) vs other
+//	SenderId = jvmail1  — mandatory, 5–15 chars, CONSTANT across the estate
+//
+// The previous format put subscriberID and the queue-row id in b/c — unique
+// per message, which Google explicitly warns never aggregates (each identifier
+// appears once and misses the volume threshold), so 2 of 3 identifiers were
+// dead and the FBL dashboard could attribute nothing. Recipient-level
+// reconciliation lives in X-Message-ID and the SES message tags, never here.
+func buildFeedbackID(campaignID, fromEmail string) string {
+	domain := fromEmail
+	if atIdx := strings.LastIndex(fromEmail, "@"); atIdx >= 0 {
+		domain = fromEmail[atIdx+1:]
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	stream := "other"
+	switch {
+	case strings.HasPrefix(domain, "m."):
+		stream = "bcast"
+	case strings.HasPrefix(domain, "em."):
+		stream = "drip"
+	}
+	apex := strings.TrimPrefix(strings.TrimPrefix(domain, "em."), "m.")
+	brand := apex
+	if i := strings.IndexByte(apex, '.'); i > 0 {
+		brand = apex[:i]
+	}
+	if brand == "" {
+		brand = "unknown"
+	}
+	return fmt.Sprintf("%s:%s:%s:jvmail1", campaignID, brand, stream)
+}
+
 type QueueItem struct {
 	ID           uuid.UUID
 	CampaignID   uuid.UUID
@@ -2082,13 +2119,8 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		headers["X-Ignite-Idempotency-Key"] = item.IdempotencyKey.String()
 	}
 
-	// Feedback-ID enables Gmail FBL and aids ISP complaint attribution.
-	feedbackDomain := item.FromEmail
-	if atIdx := strings.LastIndex(item.FromEmail, "@"); atIdx >= 0 {
-		feedbackDomain = item.FromEmail[atIdx+1:]
-	}
-	headers["Feedback-ID"] = fmt.Sprintf("%s:%s:%s:%s",
-		item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(), feedbackDomain)
+	// Feedback-ID enables Gmail FBL (Postmaster Tools) complaint attribution.
+	headers["Feedback-ID"] = buildFeedbackID(item.CampaignID.String(), item.FromEmail)
 
 	// Zero-width Subject steganography (subject_zw_encode.go): Yahoo-only,
 	// per-sending-domain-gated, OFF by default. When enabled for this profile
