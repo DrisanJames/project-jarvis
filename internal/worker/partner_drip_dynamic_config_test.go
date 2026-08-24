@@ -137,7 +137,14 @@ func TestDominantTouchPickExcludesPausedDatasets(t *testing.T) {
 	if i < 0 {
 		t.Fatal("dominant-pick comment anchor not found")
 	}
-	window := body[i : i+900]
+	// Window widened 2026-08-24: the touch-rotation rationale sits between the
+	// anchor and the SQL. What is being guarded is unchanged — the pause
+	// predicate must be concatenated into the dominant-pick query.
+	end := i + 2600
+	if end > len(body) {
+		end = len(body)
+	}
+	window := body[i:end]
 	if !strings.Contains(window, "datasetNotEmergencyPausedSQL") {
 		t.Fatal("dominant touch pick does not exclude paused datasets")
 	}

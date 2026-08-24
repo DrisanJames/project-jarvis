@@ -317,6 +317,13 @@ func (m *PartnerEngagementMarker) Start(ctx context.Context) {
 	// above).
 	m.markOnce(ctx, 7*24*60)
 
+	// Progression backfill BEFORE any cold bucketing is allowed. The 30m
+	// windowed sweeps only ever see the last half hour, so without this the
+	// gate would judge every older record on NULL columns.
+	if m.backfillProgressionSignals(ctx) {
+		MarkProgressionSignalsReady()
+	}
+
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
 	for {
@@ -346,14 +353,47 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 	q := buildEngagementMarkSQL(lookbackMins, !verdictEngagementMarkerDisabled(), perRecord)
 	res, err := m.db.ExecContext(ctx, q, args...)
 	if err != nil {
+		// DO NOT return. The engaged_at statement and the progression-signal
+		// statement answer different questions and the ladder gate depends on
+		// the latter. Coupling them cost us the 2026-08-24 rollout: the 7-day
+		// engaged_at catch-up hit the statement timeout, so the progression
+		// backfill never ran and every record looked un-engaged.
 		log.Printf("[PartnerEngagementMarker] mark err (lookback=%dm perRecord=%v): %v", lookbackMins, perRecord, err)
-		return
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
+	} else if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("[PartnerEngagementMarker] marked %d records engaged (clicks, lookback=%dm, perRecord=%v)", n, lookbackMins, perRecord)
 	}
 
-	m.markProgressionSignals(ctx, lookbackMins)
+	m.markProgressionSignals(ctx, lookbackMins, lookbackMins)
+}
+
+// progressionBackfillDays is how far back the boot backfill walks the
+// progression signal. It must exceed the OLDEST window the cold sweep can
+// judge: a record's window opens at next_touch_at - 24h, and rows sit past due
+// for days on a starved lane (measured 2026-08-24: v7 touch-2 rows were 105h
+// past due, so their window opened ~129h back). 14 days covers that with room.
+const progressionBackfillDays = 14
+
+// backfillProgressionSignals walks the progression signal back day by day.
+//
+// One DAY-sized chunk per statement, oldest first, so no single statement can
+// hit the timeout the way an all-history pass does — that timeout is exactly
+// what left the gate judging on empty columns. Returns true only if EVERY chunk
+// succeeded: partial coverage must not latch readiness, or the cold sweep would
+// bucket records whose engagement simply had not been stamped yet.
+func (m *PartnerEngagementMarker) backfillProgressionSignals(ctx context.Context) bool {
+	const day = 24 * 60
+	for d := progressionBackfillDays; d >= 1; d-- {
+		if ctx.Err() != nil {
+			return false
+		}
+		// Window [now-d days, now-(d-1) days).
+		if !m.markProgressionSignals(ctx, d*day, (d-1)*day) {
+			log.Printf("[PartnerEngagementMarker] progression backfill FAILED at day -%d — cold bucketing stays held", d)
+			return false
+		}
+	}
+	log.Printf("[PartnerEngagementMarker] progression backfill complete (%d days) — cold bucketing may proceed", progressionBackfillDays)
+	return true
 }
 
 // markProgressionSignals stamps last_open_at / last_click_at — the LADDER
@@ -384,15 +424,19 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 // record — that is precisely the batch-and-blast signal the gate exists to
 // stop). Opens are taken raw: there is no verdict function for opens, and the
 // gate's own measurements were taken on raw opens.
-func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, lookbackMins int) {
+func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, sinceMins, untilMins int) bool {
 	if engagementGateDisabled() {
-		return
+		return false
 	}
 	var args []interface{}
 	timeFilter := ""
-	if lookbackMins > 0 {
+	if sinceMins > 0 {
 		timeFilter = "AND te.event_at > NOW() - make_interval(mins => $1)"
-		args = append(args, lookbackMins)
+		args = append(args, sinceMins)
+		if untilMins > 0 && untilMins < sinceMins {
+			timeFilter += " AND te.event_at <= NOW() - make_interval(mins => $2)"
+			args = append(args, untilMins)
+		}
 	}
 	verdictFilter := ""
 	if !verdictEngagementMarkerDisabled() {
@@ -425,14 +469,11 @@ func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, lo
 
 	res, err := m.db.ExecContext(ctx, q, args...)
 	if err != nil {
-		log.Printf("[PartnerEngagementMarker] progression-signal mark err (lookback=%dm): %v", lookbackMins, err)
-		return
+		log.Printf("[PartnerEngagementMarker] progression-signal mark err (window %dm..%dm): %v", sinceMins, untilMins, err)
+		return false
 	}
-	// Latch BEFORE logging: the pass succeeded, so the columns now reflect
-	// reality and the cold sweeper may start bucketing. A zero-row pass is still
-	// a successful pass (nothing new engaged), so it latches too.
-	MarkProgressionSignalsReady()
 	if n, _ := res.RowsAffected(); n > 0 {
-		log.Printf("[PartnerEngagementMarker] stamped progression signals on %d records (opens+clicks, lookback=%dm)", n, lookbackMins)
+		log.Printf("[PartnerEngagementMarker] stamped progression signals on %d records (opens+clicks, window %dm..%dm)", n, sinceMins, untilMins)
 	}
+	return true
 }

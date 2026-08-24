@@ -37,7 +37,7 @@ func TestEmergencyStop_ClaimRecordsExcludesPausedDatasets(t *testing.T) {
 
 	// Paused: the predicate filters the dataset's ready rows out at the DB —
 	// the claim returns nothing and nothing is flipped to 'claimed'.
-	mock.ExpectQuery(`(?s)WITH picked AS.*status = 'ready' AND vertical = \$1.*` + pausePredicateRe).
+	mock.ExpectQuery(`(?s)WITH picked AS.*status = 'ready' AND vertical = \$1.*`+pausePredicateRe).
 		WithArgs("refi_heloc", 100).
 		WillReturnRows(sqlmock.NewRows(dripClaimCols))
 	got, err := po.claimRecords(context.Background(), "refi_heloc", 100)
@@ -108,8 +108,11 @@ func TestEmergencyStop_ClaimFollowupRecordsExcludesPausedDatasets(t *testing.T) 
 	// it selects nothing, only sizes the wave).
 	mock.ExpectBegin()
 	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`(?s)SELECT touch_count\s+FROM partner_clean_queue`).
-		WillReturnRows(sqlmock.NewRows([]string{"touch_count"}).AddRow(2))
+	// Rotation (2026-08-24) made this pick return every eligible touch with its
+	// due count, so the wave can take its turn instead of always serving the
+	// biggest pool. Shape changed; the pause guarantee below did not.
+	mock.ExpectQuery(`(?s)SELECT touch_count, COUNT\(\*\) AS due\s+FROM partner_clean_queue`).
+		WillReturnRows(sqlmock.NewRows([]string{"touch_count", "due"}).AddRow(2, 10))
 	mock.ExpectCommit()
 
 	// Phase 2: the follow-up claim — touch 2/3/4 sends of a stopped dataset

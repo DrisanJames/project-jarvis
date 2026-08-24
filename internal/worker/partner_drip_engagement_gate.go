@@ -64,16 +64,21 @@ import (
 const ColdTerminalReason = "cold_no_engagement"
 
 // progressionSignalsStamped latches true once PartnerEngagementMarker has
-// completed a progression-signal pass in THIS process.
+// completed its FULL progression backfill in THIS process.
 //
 // ORDERING HAZARD this exists to close: last_open_at/last_click_at are added by
-// the boot migration as NULL on all ~11.2M rows. Between that migration and the
-// marker's first pass, EVERY record looks un-engaged — so a cold sweep running
-// in that window would bucket the entire internal ladder, engaged records
-// included, and the damage is only undone by a manual re-open of the bucket.
-// The sweeper therefore refuses to bucket until the marker has actually
-// written signals at least once. Fail-CLOSED: an unset flag means "do not
-// bucket", never "nothing engaged".
+// the boot migration as NULL on all ~11.2M rows. Until the backfill has run,
+// EVERY record looks un-engaged — so a cold sweep in that window would bucket
+// the entire internal ladder, engaged records included, and the damage is only
+// undone by a manual re-open of the bucket.
+//
+// It must be the BACKFILL, not any pass. The ongoing sweeps look back only 30
+// minutes; latching on one of those was the 2026-08-24 rollout defect — the
+// flag went true while the columns still held nothing older than half an hour,
+// which is far short of the window the sweep judges (a record's window opens at
+// next_touch_at - 24h, and rows sit days past due).
+//
+// Fail-CLOSED: an unset flag means "do not bucket", never "nothing engaged".
 //
 // Per-process, not per-estate: each of the 2 service instances gates its own
 // sweeping, and each runs its own marker, so no cross-instance coordination is
@@ -81,7 +86,8 @@ const ColdTerminalReason = "cold_no_engagement"
 var progressionSignalsStamped atomic.Bool
 
 // MarkProgressionSignalsReady latches the readiness flag. Called by the
-// engagement marker after a successful progression-signal pass.
+// engagement marker ONLY after every chunk of the progression backfill has
+// succeeded — never after a routine windowed sweep.
 func MarkProgressionSignalsReady() { progressionSignalsStamped.Store(true) }
 
 // defaultGatedVerticalPrefixes is the operator's "internal feeds" scope. Prefix
@@ -234,6 +240,104 @@ func quoteSQLLiteral(s string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Follow-up daily-budget scope
+
+// sharedDailyBudgetEnabled restores the pre-2026-08-24 behavior where a lane's
+// daily ISP cap is a SINGLE pool shared by introductions and follow-ups.
+func sharedDailyBudgetEnabled() bool {
+	v := os.Getenv("PARTNER_DRIP_SHARED_DAILY_BUDGET")
+	return v == "1" || v == "true"
+}
+
+// introSpendTermSQL returns the "introductions mailed today" disjunct of the
+// FOLLOW-UP daily-budget count, or "" to drop it.
+//
+// Operator 2026-08-24: "introduce the first touch with caps in place. The
+// subsequent touches are performed as well." Those are two statements, and the
+// old query collapsed them into one pool: the follow-up budget counted
+// introductions AND follow-up touches against the same daily_cap, so a heavy T1
+// day left `remaining = 0` and the ladder stopped for the rest of the day.
+//
+// Measured on 2026-08-24 with a gmail daily_cap of 2,000 per lane:
+//
+//	gmail_v1  8,476 introductions  → follow-up gmail budget 0 for the whole day
+//	v7        4,268 introductions  → follow-up gmail budget 0
+//	v5        3,511 introductions  → follow-up gmail budget 0
+//
+// and gmail is where those lanes' audience lives (v7: 16,927 of 20,584 due).
+// The introduction cap was eating the entire ladder.
+//
+// Dropping the term gives each pass its own daily_cap allowance: introductions
+// stay capped exactly as before (applyNewRecordDailyBudget is untouched), and
+// follow-ups get their own. Note this raises a lane's theoretical per-ISP
+// ceiling to 2x daily_cap across both passes — that is the intended reading of
+// the directive, and with the engagement gate live only ~7% of records are even
+// eligible to advance, so the realised follow-up volume is far below the cap.
+//
+// Kill switch: PARTNER_DRIP_SHARED_DAILY_BUDGET=1 restores the single pool.
+func introSpendTermSQL(term string) string {
+	if sharedDailyBudgetEnabled() {
+		return term
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up touch rotation
+
+// touchPool is one (touch_count, due-row-count) pair for a vertical — the
+// candidates a follow-up wave may serve.
+type touchPool struct {
+	touchCount int
+	due        int
+}
+
+// followupTouchRotationMinutes is the rotation period. It matches the
+// orchestrator's ~15m tick so consecutive ticks land on consecutive touches and
+// a full ladder cycle completes in about an hour.
+const followupTouchRotationMinutes = 15
+
+func touchRotationDisabled() bool {
+	v := os.Getenv("PARTNER_DRIP_TOUCH_ROTATION_DISABLED")
+	return v == "1" || v == "true"
+}
+
+// pickFollowupTouch chooses which touch_count this wave serves.
+//
+// Rotation (default): the eligible touches take turns, one per rotation period,
+// so touch 3 and touch 4 run on their own schedule instead of waiting for their
+// pool to become the largest — which, on a lane with steady T1 inflow, never
+// happens. `now` is injected so the behavior is testable.
+//
+// Legacy (kill switch): largest pool wins, ties to the lower touch_count —
+// byte-identical to the pre-rotation `ORDER BY COUNT(*) DESC, touch_count ASC`.
+//
+// Callers must pass a non-empty, touch_count-ASC-ordered slice; the ordering is
+// what makes the rotation deterministic across both service instances.
+func pickFollowupTouch(eligible []touchPool, now time.Time) int {
+	if len(eligible) == 0 {
+		return 0
+	}
+	if touchRotationDisabled() {
+		best := eligible[0]
+		for _, tp := range eligible[1:] {
+			if tp.due > best.due {
+				best = tp
+			}
+		}
+		return best.touchCount
+	}
+	// Unix-minute bucket → index. Wall-clock derived so the two instances agree
+	// with no shared state and a restart cannot lose the position.
+	slot := now.Unix() / int64(followupTouchRotationMinutes*60)
+	idx := int(slot % int64(len(eligible)))
+	if idx < 0 { // defensive: negative Unix time (clock skew) must not panic
+		idx = -idx % len(eligible)
+	}
+	return eligible[idx].touchCount
+}
+
+// ---------------------------------------------------------------------------
 // Cold bucketing + reactivation sweep
 
 // PartnerDripColdSweeper buckets non-engagers out of the gated ladders and
@@ -340,8 +444,7 @@ func (s *PartnerDripColdSweeper) markCold(ctx context.Context, prefixes []string
 		UPDATE partner_clean_queue q
 		SET terminal_reason = '%[1]s',
 		    cold_at         = NOW(),
-		    cold_touch      = q.touch_count,
-		    updated_at      = NOW()
+		    cold_touch      = q.touch_count
 		FROM (
 			SELECT id FROM partner_clean_queue
 			WHERE status = 'mailed'
@@ -379,8 +482,7 @@ func (s *PartnerDripColdSweeper) revive(ctx context.Context, prefixes []string) 
 		SET terminal_reason = NULL,
 		    cold_at         = NULL,
 		    cold_touch      = NULL,
-		    next_touch_at   = NOW(),
-		    updated_at      = NOW()
+		    next_touch_at   = NOW()
 		FROM (
 			SELECT id FROM partner_clean_queue
 			WHERE terminal_reason = $%[2]d

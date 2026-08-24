@@ -2499,9 +2499,9 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 					SELECT COUNT(*) FROM partner_clean_queue
 					WHERE dataset_id = $1::uuid
 					  AND LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
-					  AND (
+					  AND (`+introSpendTermSQL(`
 					    mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver'
-					    OR
+					    OR`)+`
 					    (COALESCE(touch_count, 0) > 1
 					       AND next_touch_at >= (date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver') + INTERVAL '24 hours')
 					  )
@@ -2510,10 +2510,10 @@ func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(ctx context.Conte
 			return tx.QueryRowContext(ctx, `
 				SELECT COUNT(*) FROM partner_clean_queue
 				WHERE LOWER(COALESCE(NULLIF(isp_family, ''), 'other')) = $2
-				  AND (
+				  AND (`+introSpendTermSQL(`
 				    (mailed_brand = $1
 				       AND mailed_at >= date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver')
-				    OR
+				    OR`)+`
 				    (last_touch_brand = $1
 				       AND COALESCE(touch_count, 0) > 1
 				       AND next_touch_at >= (date_trunc('day', NOW() AT TIME ZONE 'America/Denver') AT TIME ZONE 'America/Denver') + INTERVAL '24 hours')
@@ -5142,11 +5142,32 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 	// On engagement-gated verticals the count is taken over ELIGIBLE rows only,
 	// so a lane whose largest pool has gone cold does not pin every wave on a
 	// touch that can then claim nothing.
+	//
+	// TOUCH ROTATION (operator 2026-08-24, "the subsequent touches are performed
+	// as well … the ladder should be automated, no manual intervention"). The
+	// legacy pick was `ORDER BY COUNT(*) DESC LIMIT 1` — one touch per wave,
+	// always the biggest pool. On any lane whose T1 inflow outruns its T2 drain
+	// that pool NEVER changes hands, so touches 3+ are structurally unreachable:
+	// measured 2026-08-24, internal_auto_insurance_v7 shipped ZERO t3 and ZERO
+	// t4 for eight consecutive days with 11,580 records parked at t2, and
+	// gmail_v1/v5 the same. Selecting by oldest-due instead only moves the lock
+	// (v7 t3's oldest is 56h vs t2's 105h — t2 still wins for days).
+	//
+	// So we rotate: every eligible touch_count takes its turn, one per tick.
+	// This does NOT dilute introductions — touch 1 ships from the separate
+	// welcome pass (processVerticalWith) and never appears here; this rotation
+	// only shares out the FOLLOW-UP waves the lane was already firing.
+	//
+	// Stateless on purpose. The index comes from the wall clock, so both service
+	// instances agree without a shared pointer, there is no extra row to write
+	// per wave, and a restart cannot lose the position.
+	// Kill switch: PARTNER_DRIP_TOUCH_ROTATION_DISABLED=1 restores the
+	// largest-pool pick exactly.
 	var targetTouchCount int
 	noRows := false
 	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `
-			SELECT touch_count
+		rows, err := tx.QueryContext(ctx, `
+			SELECT touch_count, COUNT(*) AS due
 			FROM partner_clean_queue
 			WHERE status = 'mailed'
 			  AND vertical = $1
@@ -5155,14 +5176,29 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND engaged_at IS NULL
 			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
 			GROUP BY touch_count
-			ORDER BY COUNT(*) DESC, touch_count ASC
-			LIMIT 1
-		`, vertical, MaxTouchCount-1).Scan(&targetTouchCount)
-		if err == sql.ErrNoRows {
+			ORDER BY touch_count ASC
+		`, vertical, MaxTouchCount-1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var eligible []touchPool
+		for rows.Next() {
+			var tp touchPool
+			if err := rows.Scan(&tp.touchCount, &tp.due); err != nil {
+				return err
+			}
+			eligible = append(eligible, tp)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(eligible) == 0 {
 			noRows = true
 			return nil
 		}
-		return err
+		targetTouchCount = pickFollowupTouch(eligible, time.Now())
+		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("pick_dominant_touch: %w", err)
 	}

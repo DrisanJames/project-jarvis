@@ -375,3 +375,204 @@ func TestMarkerLatchesProgressionReadiness(t *testing.T) {
 		}
 	}
 }
+
+// ROTATION. The whole point is that touch 3 and touch 4 run without waiting to
+// become the biggest pool — the condition that never arrives on a lane with
+// steady T1 inflow (v7 shipped zero t3/t4 for eight days with 11,580 rows
+// parked at t2).
+func TestPickFollowupTouch_RotatesAcrossEveryEligibleTouch(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_TOUCH_ROTATION_DISABLED", "")
+
+	// v7's real shape on 2026-08-24: t1 dwarfs everything, t3/t4 are rounding
+	// errors. Legacy selection returns tc=1 forever.
+	eligible := []touchPool{{1, 13012}, {2, 8970}, {3, 7}, {4, 1}}
+
+	seen := map[int]int{}
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < len(eligible); i++ {
+		tc := pickFollowupTouch(eligible, base.Add(time.Duration(i)*followupTouchRotationMinutes*time.Minute))
+		seen[tc]++
+	}
+	for _, tp := range eligible {
+		if seen[tp.touchCount] != 1 {
+			t.Errorf("touch_count %d served %d times in one full cycle, want exactly 1 (seen=%v)",
+				tp.touchCount, seen[tp.touchCount], seen)
+		}
+	}
+}
+
+// Within one rotation period the choice must be stable, or the two service
+// instances would disagree and a wave could claim a touch its caps were not
+// computed for.
+func TestPickFollowupTouch_StableWithinPeriod(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_TOUCH_ROTATION_DISABLED", "")
+	eligible := []touchPool{{1, 10}, {2, 20}, {3, 30}}
+	// Align to a rotation-bucket boundary so "within the period" is exactly one
+	// bucket — an arbitrary instant would straddle two and is not the invariant.
+	period := int64(followupTouchRotationMinutes * 60)
+	base := time.Unix((1_700_000_000/period)*period, 0)
+	want := pickFollowupTouch(eligible, base)
+	for _, off := range []time.Duration{0, time.Second, 7 * time.Minute, 14*time.Minute + 59*time.Second} {
+		if got := pickFollowupTouch(eligible, base.Add(off)); got != want {
+			t.Errorf("choice changed within the period at +%s: %d != %d", off, got, want)
+		}
+	}
+	// ...and must advance at the boundary.
+	if got := pickFollowupTouch(eligible, base.Add(followupTouchRotationMinutes*time.Minute)); got == want && len(eligible) > 1 {
+		t.Errorf("rotation did not advance at the period boundary (still %d)", got)
+	}
+}
+
+func TestPickFollowupTouch_SingleAndEmpty(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_TOUCH_ROTATION_DISABLED", "")
+	if got := pickFollowupTouch([]touchPool{{3, 5}}, time.Unix(1_700_000_000, 0)); got != 3 {
+		t.Errorf("single eligible touch = %d, want 3", got)
+	}
+	if got := pickFollowupTouch(nil, time.Unix(1_700_000_000, 0)); got != 0 {
+		t.Errorf("empty eligible = %d, want 0 (caller treats as no-rows)", got)
+	}
+}
+
+// The kill switch must reproduce the legacy largest-pool pick exactly, ties to
+// the lower touch_count.
+func TestPickFollowupTouch_KillSwitchIsLegacyLargestPool(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_TOUCH_ROTATION_DISABLED", "1")
+	eligible := []touchPool{{1, 13012}, {2, 8970}, {3, 7}, {4, 1}}
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < 6; i++ {
+		if got := pickFollowupTouch(eligible, base.Add(time.Duration(i)*followupTouchRotationMinutes*time.Minute)); got != 1 {
+			t.Fatalf("kill switch should pin the largest pool (tc=1), got %d", got)
+		}
+	}
+	// Tie → lower touch_count, matching `ORDER BY COUNT(*) DESC, touch_count ASC`.
+	if got := pickFollowupTouch([]touchPool{{2, 50}, {3, 50}}, base); got != 2 {
+		t.Errorf("tie-break = %d, want the lower touch_count 2", got)
+	}
+}
+
+// BUDGET SPLIT. "Introduce the first touch with caps in place. The subsequent
+// touches are performed as well" — introductions must not consume the follow-up
+// allowance, which is what zeroed gmail follow-ups for whole days.
+func TestIntroSpendTermSQL_SplitByDefault(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_SHARED_DAILY_BUDGET", "")
+	if got := introSpendTermSQL("MAILED_TODAY OR"); got != "" {
+		t.Errorf("introductions still counted against the follow-up budget: %q", got)
+	}
+	for _, on := range []string{"1", "true"} {
+		t.Setenv("PARTNER_DRIP_SHARED_DAILY_BUDGET", on)
+		if got := introSpendTermSQL("MAILED_TODAY OR"); got != "MAILED_TODAY OR" {
+			t.Errorf("kill switch %q did not restore the shared pool: %q", on, got)
+		}
+	}
+}
+
+// Both follow-up count branches must route through introSpendTermSQL, or one of
+// them silently keeps starving the ladder.
+func TestFollowupBudgetBranchesUseSplitTerm(t *testing.T) {
+	src, err := os.ReadFile("partner_drip_orchestrator.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	i := strings.Index(body, "func (po *PartnerDripOrchestrator) applyFollowupDailyISPBudget(")
+	if i < 0 {
+		t.Fatal("applyFollowupDailyISPBudget not found")
+	}
+	fn := body[i:]
+	if j := strings.Index(fn, "\n}\n"); j > 0 {
+		fn = fn[:j]
+	}
+	if n := strings.Count(fn, "introSpendTermSQL("); n != 2 {
+		t.Errorf("follow-up budget routes %d branch(es) through introSpendTermSQL, want 2 (lane + brand)", n)
+	}
+	// The WELCOME budget must keep counting introductions — that is the cap the
+	// operator asked to keep in place on touch 1.
+	k := strings.Index(body, "func (po *PartnerDripOrchestrator) applyNewRecordDailyBudget(")
+	if k < 0 {
+		t.Fatal("applyNewRecordDailyBudget not found")
+	}
+	wf := body[k:]
+	if j := strings.Index(wf, "\n}\n"); j > 0 {
+		wf = wf[:j]
+	}
+	if strings.Contains(wf, "introSpendTermSQL(") {
+		t.Error("welcome budget must keep counting introductions — touch 1 stays capped")
+	}
+	if !strings.Contains(wf, "mailed_at >=") {
+		t.Error("welcome budget no longer counts introductions — touch 1 would be uncapped")
+	}
+}
+
+// ROLLOUT REGRESSION (2026-08-24, caught in prod). Two defects shipped in the
+// first gate deploy; both are guarded here.
+func TestMarkerBackfillContract(t *testing.T) {
+	src, err := os.ReadFile("partner_engagement_marker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+
+	// (1) The progression pass must NOT be skipped when the engaged_at pass
+	// errors. They answer different questions; coupling them meant a timed-out
+	// 7-day engaged_at catch-up also silently skipped the progression backfill,
+	// leaving the gate to judge on empty columns.
+	i := strings.Index(body, "func (m *PartnerEngagementMarker) markOnce(")
+	if i < 0 {
+		t.Fatal("markOnce not found")
+	}
+	fn := body[i:]
+	if j := strings.Index(fn, "\n}\n"); j > 0 {
+		fn = fn[:j]
+	}
+	if strings.Contains(fn, "mark err") && strings.Contains(fn, "\t\treturn\n") {
+		t.Error("markOnce still returns early on engaged_at error — the progression pass would be skipped")
+	}
+	if !strings.Contains(fn, "markProgressionSignals(") {
+		t.Error("markOnce no longer runs the progression pass")
+	}
+
+	// (2) Readiness must latch on the chunked BACKFILL, not on a 30m sweep.
+	if !strings.Contains(body, "backfillProgressionSignals") {
+		t.Fatal("no chunked progression backfill — an all-history pass hits the statement timeout")
+	}
+	bi := strings.Index(body, "func (m *PartnerEngagementMarker) backfillProgressionSignals(")
+	bf := body[bi:]
+	if j := strings.Index(bf, "\n}\n"); j > 0 {
+		bf = bf[:j]
+	}
+	if !strings.Contains(bf, "return false") {
+		t.Error("backfill does not fail closed — partial coverage must not latch readiness")
+	}
+	// The latch may only be called from the boot path guarded by the backfill.
+	if n := strings.Count(body, "MarkProgressionSignalsReady()"); n != 1 {
+		t.Errorf("MarkProgressionSignalsReady called %d times; want exactly 1 (guarded by the backfill result)", n)
+	}
+	if !strings.Contains(body, "if m.backfillProgressionSignals(ctx) {\n\t\tMarkProgressionSignalsReady()") {
+		t.Error("readiness is not gated on a successful full backfill")
+	}
+
+	// The backfill must reach further back than the oldest window the sweep can
+	// judge (rows measured 105h past due → window opened ~129h back).
+	if progressionBackfillDays*24 < 6*24 {
+		t.Errorf("progression backfill covers only %dh; the cold sweep can judge windows older than that",
+			progressionBackfillDays*24)
+	}
+}
+
+// partner_clean_queue has NO updated_at column (that is partner_datasets). The
+// first deploy wrote one and every sweep statement errored.
+func TestColdSweepTouchesOnlyRealColumns(t *testing.T) {
+	src, err := os.ReadFile("partner_drip_engagement_gate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if strings.Contains(body, "updated_at") {
+		t.Error("partner_clean_queue has no updated_at column — every sweep statement would error")
+	}
+	for _, col := range []string{"terminal_reason", "cold_at", "cold_touch", "next_touch_at"} {
+		if !strings.Contains(body, col) {
+			t.Errorf("sweep no longer writes %s", col)
+		}
+	}
+}
