@@ -274,7 +274,7 @@ export const BoardCellShelf: React.FC<{
   onAttached: () => void                             // a confirmed LIVE attach landed
   onRebuilt: () => void                              // a confirmed LIVE rebuild landed
   onClose: () => void
-}> = ({ date, entries, activeIdx, onSelectEntry, findings, offers, offersError,
+}> = ({ entries, activeIdx, onSelectEntry, findings, offers, offersError,
         proofs, proofsError, edited, gating, cloneMode, onApplyOffer, onApplyAudience,
         onApplyISPControls, onAttached, onRebuilt, onClose }) => {
   const entry = entries.find(e => e.idx === activeIdx) ?? entries[0]
@@ -425,6 +425,45 @@ export const BoardCellShelf: React.FC<{
       .filter(p => !chosen.has(p.id) && (p.name.toLowerCase().includes(needle) || p.id === audQuery.trim()))
       .slice(0, 12)
   }, [segPool, audQuery, audSel])
+
+  // The cell's STANDARD engagement grid — its domain's 7/14/30/60 Openers +
+  // Clickers, matched by the segment family's own code (letters must appear
+  // in order inside the brand root — the two live code systems differ, e.g.
+  // segment 'BWP' vs registry 'BW'). Ordered by doctrine: clickers first.
+  const stdSegments = useMemo(() => {
+    if (!segPool || !cell) return []
+    const rootLetters = (cell.brand_root ?? cell.sending_domain ?? '')
+      .toUpperCase().replace(/[^A-Z]/g, '')
+    const isSubseq = (need: string, hay: string) => {
+      let i = 0
+      for (const ch of hay) if (i < need.length && need[i] === ch) i++
+      return i === need.length
+    }
+    const out: Array<SegmentOpt & { cls: number; win: number }> = []
+    for (const p of segPool) {
+      const m = /^([A-Z]{2,4}) (7|14|30|60)D (Openers|Clickers)$/.exec(p.name)
+      if (!m) continue
+      const [, code, win, kind] = m
+      if (code !== cell.property.toUpperCase() && !(rootLetters && isSubseq(code, rootLetters))) continue
+      out.push({ ...p, cls: kind === 'Clickers' ? 0 : 1, win: Number(win) })
+    }
+    return out.sort((a, b) => a.cls - b.cls || a.win - b.win)
+  }, [segPool, cell])
+
+  // Doctrine ordering for the applied list: clickers (narrow→wide), openers,
+  // then everything else (cold). The server re-derives the same order at
+  // stage — this keeps the UI honest about what will happen.
+  const audApplyOrdered = () => {
+    const rank = (s: SegmentOpt) => {
+      const m = /(7|14|30|60)D (Openers|Clickers)$/.exec(s.name)
+      if (!m) return [2, 999] as const
+      return [m[2] === 'Clickers' ? 0 : 1, Number(m[1])] as const
+    }
+    return [...audSel].sort((a, b) => {
+      const ra = rank(a), rb = rank(b)
+      return ra[0] - rb[0] || ra[1] - rb[1] || a.name.localeCompare(b.name)
+    })
+  }
 
   // The applied offer's approved proofs, scoped to this cell's domain roots.
   const offerKey = offers.find(o => o.id === cell?.offer_id)?.key
@@ -813,8 +852,7 @@ export const BoardCellShelf: React.FC<{
               )
             )}
             <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
-              Apply updates the LOCAL working grid and auto re-runs the gates — findings above refresh.
-              {proposalMode && ' The picked proof rides with the cell into "Schedule proposal".'}
+              Applies locally · gates re-run{proposalMode && ' · proof rides into scheduling'}.
             </div>
           </>
         )}
@@ -854,29 +892,59 @@ export const BoardCellShelf: React.FC<{
                     </span>
                   ))}
                 </div>
-                <input style={{ ...input, width: '100%', boxSizing: 'border-box' }}
-                  placeholder={segPool ? `search segments by name (min 2 chars) · ${segPool.length} available` : 'loading segments…'}
-                  value={audQuery} onChange={e => setAudQuery(e.target.value)} />
-                {segError && <div style={{ ...errorChip, marginTop: 6 }}>{segError}</div>}
-                {audMatches.length > 0 && (
-                  <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
-                    {audMatches.map(m => (
-                      <div key={m.id}
-                        onClick={() => { setAudSel(prev => [...prev, { id: m.id, name: m.name }]); setAudQuery('') }}
-                        style={{ padding: '6px 9px', fontSize: 12, color: colors.text, cursor: 'pointer', borderBottom: `1px solid ${colors.panelBorder}` }}>
-                        {m.name}
-                        {m.subscriber_count != null && (
-                          <span style={{ color: colors.textMuted, marginLeft: 8 }}>{m.subscriber_count.toLocaleString()}</span>
-                        )}
-                      </div>
-                    ))}
+                {/* The STANDARD set for this domain — 7/14/30/60 clickers +
+                    openers, one-tap toggles, doctrine-ordered. */}
+                {stdSegments.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 6 }}>
+                    {stdSegments.map(sg => {
+                      const on = audSel.some(x => x.id === sg.id)
+                      return (
+                        <button key={sg.id} type="button"
+                          onClick={() => setAudSel(prev => on
+                            ? prev.filter(x => x.id !== sg.id)
+                            : [...prev, { id: sg.id, name: sg.name }])}
+                          style={{
+                            ...smallBtn, padding: '3px 9px', fontSize: 11,
+                            background: on ? 'rgba(99,102,241,0.30)' : 'transparent',
+                            fontWeight: on ? 700 : 400,
+                          }}>
+                          {sg.name.replace(/^\S+ /, '')}
+                          {sg.subscriber_count != null && (
+                            <span style={{ color: colors.textMuted, marginLeft: 5 }}>{sg.subscriber_count.toLocaleString()}</span>
+                          )}
+                        </button>
+                      )
+                    })}
                   </div>
                 )}
+                <details>
+                  <summary style={{ fontSize: 11, color: colors.textMuted, cursor: 'pointer' }}>
+                    Add other segment (cold data)…
+                  </summary>
+                  <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                    placeholder={segPool ? `search ${segPool.length} segments…` : 'loading segments…'}
+                    value={audQuery} onChange={e => setAudQuery(e.target.value)} />
+                  {audMatches.length > 0 && (
+                    <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, marginTop: 4, maxHeight: 160, overflowY: 'auto' }}>
+                      {audMatches.map(m => (
+                        <div key={m.id}
+                          onClick={() => { setAudSel(prev => [...prev, { id: m.id, name: m.name }]); setAudQuery('') }}
+                          style={{ padding: '6px 9px', fontSize: 12, color: colors.text, cursor: 'pointer', borderBottom: `1px solid ${colors.panelBorder}` }}>
+                          {m.name}
+                          {m.subscriber_count != null && (
+                            <span style={{ color: colors.textMuted, marginLeft: 8 }}>{m.subscriber_count.toLocaleString()}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </details>
+                {segError && <div style={{ ...errorChip, marginTop: 6 }}>{segError}</div>}
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button type="button" style={{ ...smallBtn, opacity: audSel.length ? 1 : 0.5 }}
                     disabled={audSel.length === 0 || gating}
-                    onClick={() => onApplyAudience(entry.idx, audSel)}>
-                    Apply audience override ({audSel.length})
+                    onClick={() => onApplyAudience(entry.idx, audApplyOrdered())}>
+                    Apply audience ({audSel.length}) — auto-priority
                   </button>
                   <button type="button" style={{ ...smallBtn, background: 'transparent' }}
                     onClick={() => { setAudOpen(false); setAudSel([]); onApplyAudience(entry.idx, null) }}>
@@ -884,8 +952,7 @@ export const BoardCellShelf: React.FC<{
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
-                  An override REPLACES the source's audience program at stage time —
-                  its send priority and segment reserves are cleared with it.
+                  Replaces the source audience at stage · priority is automatic: clickers → openers → cold.
                 </div>
               </div>
             )}
@@ -961,9 +1028,7 @@ export const BoardCellShelf: React.FC<{
                   </button>
                 </div>
                 <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
-                  Applied at stage onto the deploy payload itself: an exclude removes that ISP's
-                  plan and quota entirely; a cap clamps the plan quota and isp_quotas. The stage
-                  result echoes the controls per cell as proof they landed.
+                  Applied at stage; the result echoes them per cell.
                 </div>
               </>
             )}
@@ -980,9 +1045,7 @@ export const BoardCellShelf: React.FC<{
                   Attach offer to live campaign — LIVE WRITE
                 </div>
                 <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
-                  This campaign finalized with no offer_id. Attaching repairs conversion attribution
-                  on the deployed row. Pick the offer above, preview first, then confirm by typing
-                  the campaign name.
+                  Finalized without an offer — attaching repairs attribution. Preview, then confirm by name.
                 </div>
                 {attach.phase === 'idle' || attach.phase === 'previewing' ? (
                   <button type="button" style={{ ...smallBtn, opacity: selOffer ? 1 : 0.5 }}
@@ -1038,8 +1101,8 @@ export const BoardCellShelf: React.FC<{
             ) : (
               <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5 }}>
                 {cell.offer_id
-                  ? 'This campaign already carries an offer — no attach repair applies. To CHANGE it: apply a different offer above, then use MAKE IT REAL below to cancel + rebuild the live campaign.'
-                  : 'This cell is offer-exempt (KUMO-WARM / newsletter) — no offer belongs here by doctrine.'}
+                  ? 'Offer attached. To change it: apply a different offer above, then MAKE IT REAL below.'
+                  : 'Offer-exempt cell (KUMO-WARM / newsletter).'}
               </div>
             )}
 
@@ -1051,10 +1114,8 @@ export const BoardCellShelf: React.FC<{
                   MAKE IT REAL — rebuild live campaign
                 </div>
                 <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
-                  Cancels the deployed campaign and redeploys it with the offer applied
-                  above (<b style={{ color: colors.text }}>{cell.offer_name || cell.offer_id}</b>) and its approved
-                  proof — the proof's html becomes the creative; its first subject / from-name fill in
-                  automatically unless overridden. Preview first, then confirm by typing the campaign name.
+                  Cancels + redeploys with <b style={{ color: colors.text }}>{cell.offer_name || cell.offer_id}</b> and
+                  its approved proof. Preview, then confirm by name.
                 </div>
                 {proofsError ? (
                   <div style={errorChip}>{proofsError}</div>
@@ -1152,9 +1213,7 @@ export const BoardCellShelf: React.FC<{
                   Cancel campaign — LIVE
                 </div>
                 <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
-                  Cancels this {cell.status} campaign: the row goes <b>cancelled</b>, its queued
-                  emails are cancelled, and its waves self-cancel at dispatch. Anything already
-                  sent stays sent. To replace it, re-stage the slot afterwards (clone or ＋).
+                  Row goes <b>cancelled</b>; queued mail and waves stop. Already-sent stays sent.
                 </div>
                 {cancelOp.phase === 'idle' ? (
                   <button type="button" style={dangerBtn}
@@ -1199,10 +1258,6 @@ export const BoardCellShelf: React.FC<{
               </div>
             )}
 
-            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
-              <b>Open in Day Cards:</b> Day Cards tab → select domain <b>{cell.sending_domain || cell.property}</b>,
-              date <b>{date}</b>. (No cross-tab navigation from this screen.)
-            </div>
           </>
         )}
 
@@ -1210,9 +1265,7 @@ export const BoardCellShelf: React.FC<{
           fontSize: 11, color: colors.textMuted, marginTop: 18, paddingTop: 10,
           borderTop: `1px solid ${colors.panelBorder}`, lineHeight: 1.5,
         }}>
-          Grid edits are LOCAL until acted on — nothing deploys from this screen except the
-          explicit actions above labeled LIVE (attach-offer, MAKE IT REAL which rebuilds the
-          live campaign via the Day Cards rebuild path, and Cancel campaign).
+          Edits are local until an action labeled LIVE.
         </div>
       </div>
     </SideShelf>

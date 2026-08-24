@@ -512,8 +512,8 @@ func TestBoardGridStage_MissingBlobPerCellContinues(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 7. Per-cell AUDIENCE override: inclusion_segments replaces the source's
-// audience program (segments set, priority + reserves CLEARED); absent, the
-// blob's program rides untouched (proven in test 2).
+// audience program (reserves CLEARED, priority REBUILT under the doctrine
+// order); absent, the blob's program rides untouched (proven in test 2).
 
 func TestBoardGridStage_AudienceOverrideReplacesProgram(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -530,6 +530,8 @@ func TestBoardGridStage_AudienceOverrideReplacesProgram(t *testing.T) {
 
 	bgsExpectSource(mock, bgsSrc1, "src one", bgsBlob(t, "src one"))
 	bgsExpectOffer(mock)
+	mock.ExpectQuery(`FROM mailing_segments`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(bgsSeg, "DB 30D Openers"))
 	mock.ExpectExec(`INSERT INTO partner_admin_audit_log`).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	date := bgsDate(t)
@@ -541,16 +543,18 @@ func TestBoardGridStage_AudienceOverrideReplacesProgram(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	results, _ := bgsDecode(t, rec)
-	if results[0].Audience != "1 segments override" {
+	if !strings.Contains(results[0].Audience, "1 segments") {
 		t.Errorf("audience = %q", results[0].Audience)
 	}
 	in := deployed[0]
 	if len(in.InclusionSegments) != 1 || in.InclusionSegments[0] != bgsSeg {
 		t.Fatalf("override did not land: %+v", in.InclusionSegments)
 	}
-	if len(in.SendPriority) != 0 || len(in.SegmentReserves) != 0 {
-		t.Errorf("priority/reserves must be CLEARED with an audience override: %+v %+v",
-			in.SendPriority, in.SegmentReserves)
+	if len(in.SegmentReserves) != 0 {
+		t.Errorf("reserves must be CLEARED with an audience override: %+v", in.SegmentReserves)
+	}
+	if len(in.SendPriority) != 1 || in.SendPriority[0].ID != bgsSeg || in.SendPriority[0].Type != "segment" {
+		t.Errorf("priority must be REBUILT from the override: %+v", in.SendPriority)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
@@ -794,5 +798,55 @@ func TestBoardGridStage_ISPControls(t *testing.T) {
 	results, _ = bgsDecode(t, rec)
 	if results[0].Status != "failed" || !strings.Contains(results[0].Error, "every ISP plan") {
 		t.Errorf("total exclusion must refuse the cell: %+v", results[0])
+	}
+}
+
+// Auto-priority: a multi-segment audience override is ordered CLICKERS →
+// OPENERS → cold (narrower windows first), and SendPriority is REBUILT to
+// match — the operator never hand-orders (doctrine 2026-08-24).
+func TestBoardGridStage_AudienceAutoPriority(t *testing.T) {
+	segClk30 := "dddddddd-0000-0000-0000-000000000030"
+	segOpn7 := "dddddddd-0000-0000-0000-000000000007"
+	segCold := "dddddddd-0000-0000-0000-00000000c01d"
+	segClk7 := "dddddddd-0000-0000-0000-000000000070"
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	var got engine.PMTACampaignInput
+	svc := &BoardGridService{db: db, campaigns: &PMTACampaignService{db: db,
+		dayCardsDeployFn: func(ctx context.Context, orgID string, in engine.PMTACampaignInput) (string, string, bool, error) {
+			got = in
+			return "new-id", "", false, nil
+		}}}
+	bgsExpectSource(mock, bgsSrc1, "src one", bgsBlob(t, "src one"))
+	mock.ExpectQuery(`FROM mailing_segments`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(segClk30, "DB 30D Clickers").
+			AddRow(segOpn7, "DB 7D Openers").
+			AddRow(segCold, "DB Fresh Cold Import").
+			AddRow(segClk7, "DB 7D Clickers"))
+
+	date := bgsDate(t)
+	body := `{"date":"` + date + `","confirmed":true,"cells":[{"property":"DB","slot":"05:01",
+	  "name":"08252026 - DB - Sams","source_campaign_id":"` + bgsSrc1 + `",
+	  "inclusion_segments":["` + segCold + `","` + segClk30 + `","` + segOpn7 + `","` + segClk7 + `"]}]}`
+	rec := bgsPost(t, svc, body)
+	results, _ := bgsDecode(t, rec)
+	if results[0].Status != "deployed" {
+		t.Fatalf("cell failed: %+v", results[0])
+	}
+	want := []string{segClk7, segClk30, segOpn7, segCold}
+	if strings.Join(got.InclusionSegments, ",") != strings.Join(want, ",") {
+		t.Errorf("inclusion order = %v, want %v", got.InclusionSegments, want)
+	}
+	if len(got.SendPriority) != 4 || got.SendPriority[0].ID != segClk7 ||
+		got.SendPriority[3].ID != segCold || got.SendPriority[0].Type != "segment" {
+		t.Errorf("send_priority = %+v", got.SendPriority)
+	}
+	if !strings.Contains(results[0].Audience, "auto-priority") {
+		t.Errorf("audience label = %q", results[0].Audience)
 	}
 }

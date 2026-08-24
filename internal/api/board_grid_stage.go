@@ -62,11 +62,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/lib/pq"
 )
 
 // boardGridStageMinLead is the per-cell floor for the target schedule time.
@@ -104,6 +108,73 @@ type boardGridStageCell struct {
 	// no-opping.
 	ExcludeISPs []string       `json:"exclude_isps,omitempty"`
 	ISPCaps     map[string]int `json:"isp_caps,omitempty"`
+}
+
+// boardGridSegClassRe classifies the standard engagement-grid segment names
+// ("BWP 7D Clickers"). Anything that doesn't match is cold/other data.
+var boardGridSegClassRe = regexp.MustCompile(`(?i)\b(\d+)D (Clickers|Openers)\b`)
+
+// boardGridAutoPriority orders an audience-override segment list by the
+// standing doctrine — clickers first, then openers, then cold/other —
+// narrower windows first within each class, stable by name for ties. Names
+// come from the DB; an id that resolves to no row keeps its position at the
+// cold tier (the deploy path will surface a genuinely bad id itself).
+func (s *BoardGridService) boardGridAutoPriority(ctx context.Context, orgID string, ids []string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(name,'') FROM mailing_segments
+		WHERE id::text = ANY($1) AND ($2 = '' OR organization_id::text = $2)
+	`, pq.Array(ids), orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		names[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	type ranked struct {
+		id            string
+		class, window int
+		name          string
+	}
+	rankedIDs := make([]ranked, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		name := names[id]
+		class, window := 2, 1<<30 // cold/other by default
+		if m := boardGridSegClassRe.FindStringSubmatch(name); m != nil {
+			if strings.EqualFold(m[2], "Clickers") {
+				class = 0
+			} else {
+				class = 1
+			}
+			if w, aerr := strconv.Atoi(m[1]); aerr == nil {
+				window = w
+			}
+		}
+		rankedIDs = append(rankedIDs, ranked{id: id, class: class, window: window, name: name})
+	}
+	sort.SliceStable(rankedIDs, func(i, j int) bool {
+		if rankedIDs[i].class != rankedIDs[j].class {
+			return rankedIDs[i].class < rankedIDs[j].class
+		}
+		if rankedIDs[i].window != rankedIDs[j].window {
+			return rankedIDs[i].window < rankedIDs[j].window
+		}
+		return rankedIDs[i].name < rankedIDs[j].name
+	})
+	out := make([]string, 0, len(rankedIDs))
+	for _, r := range rankedIDs {
+		out = append(out, r.id)
+	}
+	return out, nil
 }
 
 // boardGridCanonicalISPs mirrors internal/pkg/isp's class roster (+ 'other').
@@ -438,20 +509,28 @@ func (s *BoardGridService) stageOneCell(ctx context.Context, orgID string, daySt
 	}
 
 	// (b2) per-cell AUDIENCE override: an explicit segment list REPLACES the
-	// source's audience program. SendPriority and SegmentReserves are cleared
-	// with it — they order/reserve the SOURCE's segments, and carrying them
-	// against a different inclusion set would silently mis-order the draw and
-	// reserve against segments that are no longer in the audience.
+	// source's audience program. SegmentReserves are cleared (they reserve
+	// against the SOURCE's segments); SendPriority is REBUILT from the
+	// override under the standing doctrine order — CLICKERS, then OPENERS,
+	// then everything else (cold data) — narrower windows first within each
+	// class. The operator never hand-orders; the system knows the priority.
 	if len(cell.InclusionSegments) > 0 {
 		for _, sid := range cell.InclusionSegments {
 			if _, perr := uuid.Parse(strings.TrimSpace(sid)); perr != nil {
 				return fail(http.StatusBadRequest, "inclusion_segments must be segment UUIDs, got "+sid)
 			}
 		}
-		input.InclusionSegments = cell.InclusionSegments
-		input.SendPriority = nil
+		ordered, perr := s.boardGridAutoPriority(ctx, orgID, cell.InclusionSegments)
+		if perr != nil {
+			return fail(http.StatusInternalServerError, "audience priority lookup failed: "+perr.Error())
+		}
+		input.InclusionSegments = ordered
+		input.SendPriority = make([]engine.PriorityItem, 0, len(ordered))
+		for _, sid := range ordered {
+			input.SendPriority = append(input.SendPriority, engine.PriorityItem{ID: sid, Type: "segment"})
+		}
 		input.SegmentReserves = nil
-		res.Audience = fmt.Sprintf("%d segments override", len(cell.InclusionSegments))
+		res.Audience = fmt.Sprintf("%d segments · auto-priority clickers→openers→cold", len(ordered))
 	} else {
 		res.Audience = "source"
 	}

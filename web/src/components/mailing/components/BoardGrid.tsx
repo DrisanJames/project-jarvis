@@ -896,6 +896,17 @@ export const BoardGrid: React.FC = () => {
                                       {` · ${c.status}`}
                                     </span>
                                   )}
+                                  {/* Multi-campaign slots are sanctioned: add
+                                      another campaign at this same anchor. */}
+                                  <button type="button"
+                                    title={`Add another ${p} campaign at ${s}`}
+                                    onClick={e => { e.stopPropagation(); void addNewCell(p, s) }}
+                                    style={{
+                                      background: 'none', border: 'none', color: colors.textMuted,
+                                      cursor: 'pointer', fontSize: 12, padding: '0 4px', marginLeft: 4,
+                                    }}>
+                                    ＋
+                                  </button>
                                 </div>
                               </div>
                             ) : (

@@ -635,7 +635,11 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 	var f []BoardFinding
 
 	// Gate 1 SLOT_COLLISION — two campaigns on one property at one anchor.
-	// This is the WF/BWP double-booking, and it is only ever a mistake.
+	// A WARN, not a blocker (operator 2026-08-24: multiple campaigns per
+	// (domain, slot) are a sanctioned scheduling pattern). The unintentional
+	// double-book this gate was born from — the SAME offer twice — is still a
+	// blocker via Gate 2 REPEAT_OFFER; this warn is the heads-up that the slot
+	// carries deliberate multiples.
 	seen := map[string][]BoardCell{}
 	for _, c := range cells {
 		k := c.Property + "|" + c.Slot
@@ -658,8 +662,8 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 						len(group), strings.Join(names, " | "))})
 				continue
 			}
-			f = append(f, BoardFinding{"blocker", "SLOT_COLLISION", parts[0], parts[1],
-				fmt.Sprintf("%d campaigns share this anchor: %s", len(group), strings.Join(names, " | "))})
+			f = append(f, BoardFinding{"warn", "SLOT_COLLISION", parts[0], parts[1],
+				fmt.Sprintf("%d campaigns share this anchor (sanctioned multi-campaign slot — verify it is deliberate): %s", len(group), strings.Join(names, " | "))})
 		}
 	}
 
