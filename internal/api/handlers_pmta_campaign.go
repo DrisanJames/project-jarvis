@@ -1742,7 +1742,18 @@ func (s *PMTACampaignService) markCampaignFailed(campaignID, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	log.Printf("[Deploy/BG] marking campaign %s as failed: %s", campaignID, reason)
-	if _, err := s.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed', updated_at = NOW() WHERE id = $1`, campaignID); err != nil {
+	// The reason is persisted into pmta_config->>'failure_reason' — the Board
+	// Grid's FAILED_CAMPAIGN gate surfaces it to the operator. Before this, the
+	// reason lived only in this log line and a failed row on the board carried
+	// no explanation at all. JSONB, not a new column: an ADD COLUMN on
+	// mailing_campaigns risks the 5s startup-migration lock-wait timeout and
+	// would be silently absent forever.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns
+		SET status = 'failed', updated_at = NOW(),
+		    pmta_config = jsonb_set(COALESCE(pmta_config, '{}'::jsonb),
+		                            '{failure_reason}', to_jsonb(left($2::text, 500)))
+		WHERE id = $1`, campaignID, reason); err != nil {
 		log.Printf("[Deploy/BG] CRITICAL: failed to mark campaign %s as failed: %v (campaign may be orphaned in preparing)", campaignID, err)
 	}
 }

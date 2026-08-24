@@ -5,6 +5,8 @@ package api
 //
 //	GET  /api/mailing/board-grid?date=YYYY-MM-DD     the day, as a grid, gated
 //	GET  /api/mailing/board-grid/clone?from=&to=     yesterday's grid re-dated (NO WRITE)
+//	GET  /api/mailing/board-grid/creative?campaign_id= what a live cell will SAY
+//	                                                 (board_grid_content.go)
 //	POST /api/mailing/board-grid/gates               run the gates over a proposed grid
 //	POST /api/mailing/board-grid/stage               stage a proposal as campaigns
 //	                                                 (lives in board_grid_stage.go —
@@ -96,6 +98,7 @@ func (s *BoardGridService) RegisterRoutes(r chi.Router) {
 	r.Route("/board-grid", func(cr chi.Router) {
 		cr.Get("/", s.HandleGetGrid)
 		cr.Get("/clone", s.HandleCloneGrid)
+		cr.Get("/creative", s.HandleGetCellCreative) // board_grid_content.go — read-only
 		cr.Post("/gates", s.HandleRunGates)
 		cr.Post("/stage", s.HandleStageGrid) // board_grid_stage.go — CREATE-ONLY
 	})
@@ -109,6 +112,7 @@ const boardCampaignPredicate = `
 AND c.journey_id IS NULL
 AND c.name NOT LIKE '[partner-drip]%'
 AND c.status NOT IN ('cancelled','deleted')`
+
 // The name exclusion is BELT AND SUSPENDERS on top of the tag discriminator,
 // not a replacement for it (see the warning above): the drip orchestrator's
 // attribution stamp is logged-non-fatal, so a stamp failure leaves
@@ -130,12 +134,42 @@ type BoardCell struct {
 	// payload — without it a proposal cell cannot be staged.
 	SourceCampaignID string `json:"source_campaign_id,omitempty"`
 	Name             string `json:"name"`
-	OfferID       string `json:"offer_id,omitempty"`
-	OfferName     string `json:"offer_name,omitempty"`
-	Subject       string `json:"subject,omitempty"`
-	Status        string `json:"status,omitempty"`
-	Recipients    int    `json:"recipients"`
-	Proposed      bool   `json:"proposed,omitempty"`
+	OfferID          string `json:"offer_id,omitempty"`
+	OfferName        string `json:"offer_name,omitempty"`
+	Subject          string `json:"subject,omitempty"`
+	// WHAT WILL ACTUALLY SHIP. The grid used to carry the subject alone, so
+	// the preheader, the friendly-from and the creative were invisible until
+	// the mail was already out (operator 2026-08-23: "I do not know the
+	// subject lines, preheaders and content it is going to use"). These are
+	// the stored columns the send worker reads — not the offer's proof, which
+	// is only what a REBUILD would install.
+	Preheader   string `json:"preheader,omitempty"`
+	FromName    string `json:"from_name,omitempty"`
+	FromEmail   string `json:"from_email,omitempty"`
+	CreativeLen int    `json:"creative_len,omitempty"`
+	// SubjectRendered is Subject put through the same Liquid engine the send
+	// worker uses, against a recipient with NO personalization data — the
+	// ~90% case. Equal to Subject when the subject carries no tokens.
+	SubjectRendered   string `json:"subject_rendered,omitempty"`
+	PreheaderRendered string `json:"preheader_rendered,omitempty"`
+	Status            string `json:"status,omitempty"`
+	Recipients        int    `json:"recipients"`
+	Proposed          bool   `json:"proposed,omitempty"`
+	// PendingFinalize marks a row the AudienceFinalizationWorker has not
+	// finished yet (status finalizing_audience/preparing). offer_id and
+	// sending_profile_id are both written at the END of finalization
+	// (pmta_campaign_persistence.go:186), so a pending cell's NULL offer is
+	// "not yet", not "missing" — Gate 3 warns instead of blocking.
+	PendingFinalize bool `json:"pending_finalize,omitempty"`
+	// FailureReason is the recorded cause of a status='failed' row —
+	// markCampaignFailed writes it into pmta_config->>'failure_reason'.
+	// Empty on rows that failed before the reason was recorded (pre-fix
+	// deploys), which Gate 7 says explicitly instead of showing nothing.
+	FailureReason string `json:"failure_reason,omitempty"`
+	// StuckFinalize marks a row that has sat in finalizing_audience/preparing
+	// beyond the finalizer's plausible runtime (15 min) — the worker pool may
+	// be stalled, and OFFER_PENDING's "re-check shortly" no longer applies.
+	StuckFinalize bool `json:"stuck_finalize,omitempty"`
 }
 
 // BoardFinding is one gate result against one cell.
@@ -362,28 +396,76 @@ func (s *BoardGridService) loadCells(r *http.Request, date string) ([]BoardCell,
 	if err != nil {
 		return nil, fmt.Errorf("board grid day bounds: %w", err)
 	}
+	// THE DEPLOY BLOB IS THE PROPERTY SOURCE, NOT THE PROFILE JOIN.
+	// reserveCampaignForDeploy (handlers_pmta_campaign.go:1586) inserts the
+	// row with status='finalizing_audience' and sending_profile_id / offer_id
+	// still NULL — both land LATER, when the AudienceFinalizationWorker runs
+	// createPMTAWaveCampaign (pmta_campaign_persistence.go:186). Reading the
+	// grid inside that window joined nothing, dropped every in-flight
+	// campaign into one '(unmapped)' row, and fired MISSING_OFFER +
+	// NAME_PROPERTY + UNMAPPED_COLLISION on cells that were already correct
+	// (operator 2026-08-23: 11 blockers, every one of which cleared by
+	// itself once the finalizer completed). pmta_config->'campaign_input' is
+	// written IN THAT SAME RESERVATION TX, so it carries sending_domain from
+	// the first instant the row exists — resolve the domain from the profile
+	// when there is one and from the blob otherwise.
+	//
+	// offer_id gets NO such fallback: the column is the only thing the
+	// planner and stampCampaignAttribution actually read, so a blob-only
+	// offer is exactly the RR-Globe defect Gate 3 exists to catch. The
+	// pending_finalize flag below is what keeps Gate 3 quiet while the
+	// column is legitimately still on its way.
 	const q = `
+WITH b AS (
+  SELECT c.id, c.name, c.subject, c.status, c.total_recipients, c.scheduled_at,
+         COALESCE(c.preview_text,'')            AS preheader,
+         COALESCE(c.from_name,'')               AS from_name,
+         COALESCE(c.from_email,'')              AS from_email,
+         length(COALESCE(c.html_content,''))    AS creative_len,
+         COALESCE(NULLIF(sp.sending_domain,''),
+                  NULLIF(c.pmta_config->'campaign_input'->>'sending_domain',''), '') AS sending_domain,
+         COALESCE(c.offer_id::text,'')                                               AS offer_id,
+         (c.status IN ('finalizing_audience','preparing'))                           AS pending_finalize,
+         COALESCE(c.pmta_config->>'failure_reason','')                               AS failure_reason,
+         (c.status IN ('finalizing_audience','preparing')
+          AND c.updated_at < NOW() - INTERVAL '15 minutes')                          AS stuck_finalize
+    FROM mailing_campaigns c
+    LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
+   WHERE c.scheduled_at >= $1
+     AND c.scheduled_at <  $2
+     AND ($3 = '' OR c.organization_id::text = $3)
+     AND ` + boardCampaignPredicate + `
+)
 SELECT COALESCE(bm.brand_code, '')                                   AS brand_code,
        COALESCE(bm.brand_label, '')                                  AS brand_label,
-       COALESCE(sp.sending_domain, '')                               AS sending_domain,
+       b.sending_domain                                              AS sending_domain,
        COALESCE(bm.brand_root, '')                                   AS brand_root,
-       to_char(c.scheduled_at AT TIME ZONE 'America/Denver','HH24:MI') AS slot,
-       c.id::text                                                    AS campaign_id,
-       COALESCE(c.name,'')                                           AS name,
-       COALESCE(c.offer_id::text,'')                                 AS offer_id,
+       to_char(b.scheduled_at AT TIME ZONE 'America/Denver','HH24:MI') AS slot,
+       b.id::text                                                    AS campaign_id,
+       COALESCE(b.name,'')                                           AS name,
+       b.offer_id                                                    AS offer_id,
        COALESCE(o.name,'')                                           AS offer_name,
-       COALESCE(c.subject,'')                                        AS subject,
-       COALESCE(c.status,'')                                         AS status,
-       COALESCE(c.total_recipients,0)                                AS recipients
-  FROM mailing_campaigns c
-  LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
-  LEFT JOIN mailing_offers o            ON o.id  = c.offer_id
+       COALESCE(b.subject,'')                                        AS subject,
+       COALESCE(b.status,'')                                         AS status,
+       COALESCE(b.total_recipients,0)                                AS recipients,
+       b.pending_finalize                                            AS pending_finalize,
+       b.failure_reason                                              AS failure_reason,
+       b.stuck_finalize                                              AS stuck_finalize,
+       b.preheader                                                   AS preheader,
+       b.from_name                                                   AS from_name,
+       b.from_email                                                  AS from_email,
+       b.creative_len                                                AS creative_len
+  FROM b
+  LEFT JOIN mailing_offers o ON o.id::text = b.offer_id
+  -- Normalize BOTH sides. The old one-sided form forced the campaign's domain
+  -- to 'em.' and compared it against the metadata column verbatim, so a brand
+  -- whose canonical sending domain really is 'm.<apex>' (WCL: m.wcl-heloc.com)
+  -- could never join its own metadata row and fell through to the apex
+  -- fallback below.
   LEFT JOIN mailing_brand_metadata bm
-         ON bm.sending_domain = regexp_replace(COALESCE(sp.sending_domain,''), '^(e?m)\.', 'em.')
- WHERE c.scheduled_at >= $1
-   AND c.scheduled_at <  $2
-   AND ($3 = '' OR c.organization_id::text = $3)
-   AND ` + boardCampaignPredicate + `
+         ON b.sending_domain <> ''
+        AND regexp_replace(lower(bm.sending_domain), '^(e?m)\.', 'em.')
+          = regexp_replace(lower(b.sending_domain),  '^(e?m)\.', 'em.')
  ORDER BY brand_code, slot`
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -399,9 +481,12 @@ SELECT COALESCE(bm.brand_code, '')                                   AS brand_co
 		var c BoardCell
 		if err := rows.Scan(&c.Property, &c.PropertyLabel, &c.SendingDomain, &c.BrandRoot, &c.Slot,
 			&c.CampaignID, &c.Name, &c.OfferID, &c.OfferName, &c.Subject,
-			&c.Status, &c.Recipients); err != nil {
+			&c.Status, &c.Recipients, &c.PendingFinalize, &c.FailureReason, &c.StuckFinalize,
+			&c.Preheader, &c.FromName, &c.FromEmail, &c.CreativeLen); err != nil {
 			return nil, fmt.Errorf("board grid scan: %w", err)
 		}
+		c.SubjectRendered = renderForOperator(c.Subject)
+		c.PreheaderRendered = renderForOperator(c.Preheader)
 		if c.Property == "" {
 			// No brand-metadata row for this sending domain. Fall back to the
 			// apex so the cell is still visible and still gated — dropping it
@@ -620,20 +705,60 @@ func (s *BoardGridService) runGates(r *http.Request, date string, cells []BoardC
 		reMonthTok = monthTokenRegexForDate(t)
 	}
 	for _, c := range cells {
+		// Gate 7 FAILED_CAMPAIGN — a 'failed' row will NEVER send and sits on
+		// the board looking like inventory. The recorded reason (persisted by
+		// markCampaignFailed into pmta_config->>'failure_reason') is the whole
+		// point: "failed" without a why is what cost the 08/24 board its
+		// morning. A failed row is reported ONCE — the remaining per-cell
+		// gates are skipped for it (a failed row with a NULL offer firing
+		// MISSING_OFFER on top is noise, not signal).
+		if c.Status == "failed" {
+			reason := c.FailureReason
+			if reason == "" {
+				reason = "reason not recorded (row failed before failure-reason persistence shipped) — check server logs for [Deploy/BG]"
+			}
+			f = append(f, BoardFinding{"blocker", "FAILED_CAMPAIGN", c.Property, c.Slot,
+				fmt.Sprintf("campaign FAILED and will never send: %s — re-stage this slot; the failed row is inert", reason)})
+			continue
+		}
+		// Gate 8 SILENT_ZERO — scheduled with 0 recipients is the classic
+		// silent-failure signature (§6): the row LOOKS staged, dispatches
+		// nothing, and nobody finds out until the send window has passed.
+		// Proposal cells legitimately carry 0 (audience is planned at deploy).
+		if c.Status == "scheduled" && c.Recipients == 0 && !c.Proposed {
+			f = append(f, BoardFinding{"blocker", "SILENT_ZERO", c.Property, c.Slot,
+				"scheduled with 0 recipients — the silent-failure signature: this row will dispatch nothing. Cancel it from its cell shelf and re-stage the slot"})
+		}
+		// Gate 9 STUCK_FINALIZE — finalizing/preparing beyond 15 min. The
+		// OFFER_PENDING "re-check shortly" story stops applying; say so
+		// instead of letting the operator keep waiting on a stalled worker.
+		if c.StuckFinalize {
+			f = append(f, BoardFinding{"warn", "STUCK_FINALIZE", c.Property, c.Slot,
+				fmt.Sprintf("still %s after 15+ minutes — the audience finalizer may be stalled; if this persists, cancel the row from its shelf and re-stage", c.Status)})
+		}
 		// Gate 3 MISSING_OFFER — RR-Globe / RB-ADR finalized with a NULL offer_id,
 		// which silently breaks conversion attribution and offer suppression.
 		// Exemption: KUMO-WARM / newsletter cells carry NO offer BY DOCTRINE —
 		// warm-up content is editorial and offers are banned in it (CLAUDE.md
 		// §13.1), so a NULL offer there is correct, not a defect.
 		if c.OfferID == "" && !isOfferExemptName(c.Name) {
-			f = append(f, BoardFinding{"blocker", "MISSING_OFFER", c.Property, c.Slot,
-				"no offer_id — conversions will not attribute and offer suppression cannot apply"})
+			if c.PendingFinalize {
+				// The audience finalizer writes offer_id at the very end of
+				// its run; blocking here is what produced 6 phantom blockers
+				// on 2026-08-23, all of which cleared unaided.
+				f = append(f, BoardFinding{"warn", "OFFER_PENDING", c.Property, c.Slot,
+					fmt.Sprintf("offer_id not written yet — campaign is still %s; the audience finalizer writes offer_id last. Re-check once it reaches 'scheduled'", c.Status)})
+			} else {
+				f = append(f, BoardFinding{"blocker", "MISSING_OFFER", c.Property, c.Slot,
+					"no offer_id — conversions will not attribute and offer suppression cannot apply"})
+			}
 		}
 		// Gate 4 LIQUID_SUBJECT — RR-HELOC shipped '{{custom.equity_estimate}}'
-		// in a subject line to an audience that had no such field.
-		if reLiquid.MatchString(c.Subject) {
-			f = append(f, BoardFinding{"blocker", "LIQUID_SUBJECT", c.Property, c.Slot,
-				fmt.Sprintf("subject carries an unrendered template token: %q", c.Subject)})
+		// in a subject line to an audience that had no such field. Gated on
+		// what the subject RENDERS to, not on whether it contains braces —
+		// see subjectRenderProblem.
+		if msg := subjectRenderProblem(c.Subject); msg != "" {
+			f = append(f, BoardFinding{"blocker", "LIQUID_SUBJECT", c.Property, c.Slot, msg})
 		}
 		// Gate 5 NAME_DATE — '08062026' and '080202026' both shipped. Either
 		// live scheme satisfies the gate: the 8-digit token or the month-name

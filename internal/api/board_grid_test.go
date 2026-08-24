@@ -282,22 +282,28 @@ func TestBoardGrid_RunGatesRejectsBadDate(t *testing.T) {
 // belongs to /pmta-campaign/deploy, which owns audience planning and the wave
 // sanity check.
 func TestBoardGrid_ReadOnly(t *testing.T) {
-	src, err := os.ReadFile("board_grid.go")
-	if err != nil {
-		t.Fatalf("read source: %v", err)
-	}
-	// Strip comments so the doc block describing the forbidden tables does not
-	// trip the assertion.
-	body := regexp.MustCompile(`(?m)//.*$`).ReplaceAllString(string(src), "")
-	up := strings.ToUpper(body)
-	// Whole-statement forms only. A substring check is wrong here: the status
-	// predicate legitimately contains 'deleted', which contains "DELETE".
-	for _, bad := range []string{
-		"INSERT INTO", "UPDATE ", "DELETE FROM", "TRUNCATE", "DROP ",
-		"MAILING_CAMPAIGN_QUEUE", "PARTNER_CLEAN_QUEUE",
-	} {
-		if strings.Contains(up, bad) {
-			t.Fatalf("board_grid.go must stay read-only, found %q", bad)
+	// board_grid_content.go serves the same read-only surface and is held to
+	// the same rule — a "just show me the creative" endpoint is exactly where
+	// a convenience write would get slipped in later.
+	for _, file := range []string{"board_grid.go", "board_grid_content.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		// Strip comments so the doc block describing the forbidden tables does
+		// not trip the assertion.
+		body := regexp.MustCompile(`(?m)//.*$`).ReplaceAllString(string(src), "")
+		up := strings.ToUpper(body)
+		// Whole-statement forms only. A substring check is wrong here: the
+		// status predicate legitimately contains 'deleted', which contains
+		// "DELETE".
+		for _, bad := range []string{
+			"INSERT INTO", "UPDATE ", "DELETE FROM", "TRUNCATE", "DROP ",
+			"MAILING_CAMPAIGN_QUEUE", "PARTNER_CLEAN_QUEUE",
+		} {
+			if strings.Contains(up, bad) {
+				t.Fatalf("%s must stay read-only, found %q", file, bad)
+			}
 		}
 	}
 }
@@ -327,6 +333,79 @@ func TestBoardGrid_AcceptsBothCodeSystems(t *testing.T) {
 	for _, c := range bad {
 		if nameMentionsPropertyRoot(c.name, c.code, c.root) {
 			t.Errorf("missed defect: %q must NOT satisfy %s (%s)", c.name, c.code, c.root)
+		}
+	}
+}
+
+// The 08/24 near-miss class: rows that LOOK staged but will never send. Each
+// signature must be loud, actionable, and carry the recorded reason — and a
+// failed row must report exactly once (no MISSING_OFFER noise on top).
+func TestBoardGrid_FailureSignatureGates(t *testing.T) {
+	s := &BoardGridService{}
+	cells := []BoardCell{
+		// failed WITH a recorded reason: FAILED_CAMPAIGN carries it verbatim.
+		{Property: "DB", Slot: "01:01", Name: "08242026 - DB - Sams", Status: "failed",
+			FailureReason: "campaign creation failed: audience planning timeout"},
+		// failed WITHOUT a reason (pre-fix row): still a blocker, says why the
+		// reason is missing.
+		{Property: "MH", Slot: "01:01", Name: "08242026 - MH - Sams", Status: "failed"},
+		// the silent-failure signature: scheduled + 0 recipients.
+		{Property: "QF", Slot: "05:01", Name: "08242026 - QF - Globe", Status: "scheduled",
+			OfferID: "of-1", OfferName: "Globe Life", Recipients: 0},
+		// stalled finalizer: >15 min in finalizing_audience.
+		{Property: "RB", Slot: "05:01", Name: "08242026 - RB - ADR", Status: "finalizing_audience",
+			PendingFinalize: true, StuckFinalize: true},
+		// healthy row: none of the new gates fire.
+		{Property: "HT", Slot: "11:01", Name: "08242026 - HT - Sams", Status: "scheduled",
+			OfferID: "of-2", OfferName: "Sams Club", Recipients: 40900},
+		// proposal cell: 0 recipients is the NORMAL state, not a signature.
+		{Property: "CI", Slot: "11:01", Name: "08242026 - CI - ADT", Proposed: true,
+			OfferID: "of-3", OfferName: "ADT", Recipients: 0},
+	}
+	byCode := map[string][]BoardFinding{}
+	for _, f := range s.runGates(nil, "2026-08-24", cells) {
+		byCode[f.Code] = append(byCode[f.Code], f)
+	}
+
+	if got := byCode["FAILED_CAMPAIGN"]; len(got) != 2 {
+		t.Fatalf("FAILED_CAMPAIGN = %d findings, want 2: %+v", len(got), got)
+	} else {
+		if got[0].Level != "blocker" || got[1].Level != "blocker" {
+			t.Errorf("FAILED_CAMPAIGN must be blocker-level: %+v", got)
+		}
+		joined := got[0].Message + got[1].Message
+		if !strings.Contains(joined, "audience planning timeout") {
+			t.Errorf("recorded failure reason not surfaced: %+v", got)
+		}
+		if !strings.Contains(joined, "reason not recorded") {
+			t.Errorf("missing-reason fallback not surfaced: %+v", got)
+		}
+	}
+	// A failed row reports ONCE: no MISSING_OFFER / NAME gates on top of it.
+	for _, f := range append(byCode["MISSING_OFFER"], byCode["NAME_PROPERTY"]...) {
+		if f.Property == "DB" || f.Property == "MH" {
+			t.Errorf("failed row double-reported through %s: %+v", f.Code, f)
+		}
+	}
+
+	if got := byCode["SILENT_ZERO"]; len(got) != 1 || got[0].Property != "QF" || got[0].Level != "blocker" {
+		t.Fatalf("SILENT_ZERO = %+v, want one blocker on QF", got)
+	}
+	for _, f := range byCode["SILENT_ZERO"] {
+		if f.Property == "CI" {
+			t.Errorf("SILENT_ZERO fired on a proposal cell (0 recipients is normal there)")
+		}
+	}
+
+	if got := byCode["STUCK_FINALIZE"]; len(got) != 1 || got[0].Property != "RB" || got[0].Level != "warn" {
+		t.Fatalf("STUCK_FINALIZE = %+v, want one warn on RB", got)
+	}
+	// The healthy scheduled row trips nothing new.
+	for code, fs := range byCode {
+		for _, f := range fs {
+			if f.Property == "HT" && (code == "FAILED_CAMPAIGN" || code == "SILENT_ZERO" || code == "STUCK_FINALIZE") {
+				t.Errorf("healthy row tripped %s: %+v", code, f)
+			}
 		}
 	}
 }

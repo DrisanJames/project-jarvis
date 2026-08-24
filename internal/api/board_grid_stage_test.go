@@ -668,9 +668,11 @@ func TestBoardGrid_CloneKeepsSourceCampaignID(t *testing.T) {
 		WithArgs(dayStart, dayEnd, bgsOrg).
 		WillReturnRows(sqlmock.NewRows([]string{"brand_code", "brand_label", "sending_domain",
 			"brand_root", "slot", "campaign_id", "name", "offer_id", "offer_name",
-			"subject", "status", "recipients"}).
+			"subject", "status", "recipients", "pending_finalize", "failure_reason", "stuck_finalize",
+			"preheader", "from_name", "from_email", "creative_len"}).
 			AddRow("DB", "Discount Blog", "m.discountblog.com", "discountblog.com", "01:01",
-				bgsSrc1, "08222026 - DB - Sams", bgsOffer, "Sams Club", "s", "sent", 1000))
+				bgsSrc1, "08222026 - DB - Sams", bgsOffer, "Sams Club", "s", "sent", 1000, false, "", false,
+				"ph", "Sams Club", "hello@em.discountblog.com", 4096))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/mailing/board-grid/clone?from=2026-08-22&to=2026-08-23", nil)
 	req.Header.Set("X-Organization-ID", bgsOrg)

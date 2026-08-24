@@ -478,9 +478,17 @@ export const BoardGrid: React.FC = () => {
       const f = byCell[`${c.property}|${c.slot}`] ?? []
       const hasBlocker = f.some(x => x.level === 'blocker')
       const exempt = isOfferExemptName(c.name)
+      // A proof is only needed when the OFFER CHANGED (or the cell was born
+      // empty): an unchanged clone cell rides the source blob's own creative,
+      // byte-faithful. Requiring — or auto-attaching — a proof on unchanged
+      // cells did two bad things: it made a straight clone unschedulable when
+      // an offer had no approved proof yet, and it silently REPLACED a proven
+      // creative with the newest proof on cells the operator never touched.
+      const orig = serverGrid?.cells?.[i]
+      const offerChanged = !!c.new_cell || (c.offer_id ?? '') !== (orig?.offer_id ?? '')
       let proofId = c.proof_id
       let proofName = c.proof_name
-      if (!proofId && c.offer_id) {
+      if (!proofId && c.offer_id && offerChanged) {
         const key = offers.find(o => o.id === c.offer_id)?.key
         if (key && !proofsError) {
           const eligible = resolveApprovedProofs(proofs, key, cellDomainRoots(c))
@@ -502,16 +510,16 @@ export const BoardGrid: React.FC = () => {
         exempt,
       }
       if (!c.source_campaign_id) item.skipReason = 'no source campaign payload — cannot stage'
-      else if (hasBlocker) item.skipReason = 'blocker-level finding on this cell'
+      else if (hasBlocker) item.skipReason = 'blocker-level finding on this cell — open it to see the finding'
       else if (!c.name.trim()) item.skipReason = 'no name (apply an offer to generate one)'
-      else if (!exempt && !c.offer_id) item.skipReason = 'no offer applied'
-      else if (!exempt && !proofId) item.skipReason = proofsError ?? NO_PROOF_MESSAGE
+      else if (!exempt && !c.offer_id) item.skipReason = 'no offer applied — open the cell and pick one'
+      else if (!exempt && offerChanged && !proofId) item.skipReason = proofsError ?? NO_PROOF_MESSAGE
       items.push(item)
     })
     const eligible = items.filter(it => !it.skipReason)
     const anyBlocker = items.some(it => it.skipReason?.includes('blocker'))
     return { items, eligible, anyBlocker }
-  }, [cells, byCell, offers, proofs, proofsError])
+  }, [cells, byCell, offers, proofs, proofsError, serverGrid])
 
   const openStage = () => {
     setStage({
@@ -865,7 +873,11 @@ export const BoardGrid: React.FC = () => {
                                 </div>
                                 <div style={{ fontSize: 11, color: colors.textMuted }}>
                                   {c.recipients ? c.recipients.toLocaleString() : ''}
-                                  {c.status ? ` · ${c.status}` : ''}
+                                  {c.status && (
+                                    <span style={c.status === 'failed' ? { color: colors.danger, fontWeight: 700 } : undefined}>
+                                      {` · ${c.status}`}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             ) : (
@@ -907,9 +919,9 @@ export const BoardGrid: React.FC = () => {
                       <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>{f.property} {f.slot}</td>
                       <td style={cellTd}>
                         {f.message}
-                        {f.code === 'MISSING_OFFER' && (
+                        {FIX_HINTS[f.code] && (
                           <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
-                            Fix: Day Cards → open the campaign → attach offer or rebuild with offer.
+                            Fix: {FIX_HINTS[f.code]}
                           </div>
                         )}
                       </td>
@@ -992,7 +1004,9 @@ export const BoardGrid: React.FC = () => {
                         <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>{it.slot}</td>
                         <td style={cellTd}>{it.name || '—'}</td>
                         <td style={cellTd}>{it.offerName || (it.exempt ? '(offer-exempt)' : '—')}</td>
-                        <td style={cellTd}>{it.proofName || (it.exempt ? '(source creative)' : '—')}</td>
+                        {/* No proof = the source blob's creative rides along
+                            byte-faithful (unchanged clone cells, exempt cells). */}
+                        <td style={cellTd}>{it.proofName || '(source creative)'}</td>
                         <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>{it.audienceLabel}</td>
                         <td style={{ ...cellTd, whiteSpace: 'nowrap' }}>
                           {serverGrid.date} {slotTimes[it.slot] ?? it.slot}
@@ -1201,6 +1215,19 @@ export const BoardGrid: React.FC = () => {
       })()}
     </div>
   )
+}
+
+// Actionable next step per finding code — every path starts on THIS screen
+// (the old hint sent the operator to Day Cards for what the shelf now does).
+const FIX_HINTS: Record<string, string> = {
+  MISSING_OFFER: 'click the cell → pick an offer → "Attach offer" (LIVE) repairs the deployed row; or cancel it from the shelf and re-stage.',
+  OFFER_PENDING: 'nothing to do yet — the audience finalizer writes offer_id last; re-check once the row reaches "scheduled".',
+  FAILED_CAMPAIGN: 'the row is inert (failed rows cannot be cancelled) — re-stage this slot via clone or the ＋ cell; the reason is in the message and the cell shelf.',
+  SILENT_ZERO: 'open the cell → "Cancel campaign", then re-stage the slot — a scheduled row with 0 recipients dispatches nothing.',
+  STUCK_FINALIZE: 'wait for the finalizer or, if it persists, cancel from the shelf and re-stage; check Worker Health if several rows stick.',
+  SLOT_COLLISION: 'open the cell (both campaigns are listed in its shelf) and cancel the one that should not fire.',
+  REPEAT_OFFER: 'swap one of the repeated cells to a different offer, or cancel the extra from its shelf.',
+  LIQUID_SUBJECT: 'the subject renders broken for recipients without personalization data — rebuild the cell with a proof whose subject is plain or uses the safe default-filter idiom.',
 }
 
 const Stat: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (

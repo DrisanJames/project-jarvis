@@ -14,9 +14,9 @@
 //      -name confirm → confirmed:true. Proof is auto-resolved from the offer's
 //      APPROVED proofs (Creative Studio) — no approved proof, no button.
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch } from '../shared/apiFetch'
-import { colors } from '../shared/theme'
+import { colors, btnStyle } from '../shared/theme'
 import { SideShelf } from './shared/SideShelf'
 
 // ── Shared shapes (BoardGrid imports these — single definition, no cycle:
@@ -43,9 +43,49 @@ export interface BoardCell {
   inclusion_segment_names?: string[]   // parallel display names
   new_cell?: boolean                   // materialized from an empty grid cell
   subject?: string
+  // What the campaign row will ACTUALLY put in the inbox (board_grid.go
+  // loadCells). subject_rendered/preheader_rendered are the same strings put
+  // through the send worker's Liquid engine against a recipient carrying NO
+  // personalization data — the ~90% case — and are empty when the field
+  // carries no tokens at all.
+  preheader?: string
+  from_name?: string
+  from_email?: string
+  creative_len?: number
+  subject_rendered?: string
+  preheader_rendered?: string
   status?: string
   recipients: number
   proposed?: boolean
+  pending_finalize?: boolean
+  // Recorded cause of a status='failed' row (pmta_config->>'failure_reason');
+  // empty on rows that failed before the reason was persisted.
+  failure_reason?: string
+  // >15 min in finalizing_audience/preparing — the finalizer may be stalled.
+  stuck_finalize?: boolean
+}
+
+// GET /api/mailing/board-grid/creative?campaign_id= — one live cell's stored
+// send truth, including the creative body for a sandboxed preview.
+export interface CellCreative {
+  campaign_id: string
+  name: string
+  status: string
+  sending_domain: string
+  from_name: string
+  from_email: string
+  reply_to?: string
+  offer_name?: string
+  subject: string
+  subject_rendered?: string
+  subject_problem?: string
+  preheader: string
+  preheader_rendered?: string
+  preheader_problem?: string
+  creative_len: number
+  html: string
+  html_clipped?: boolean
+  recipients: number
 }
 export interface BoardFindingRow {
   level: 'blocker' | 'warn'
@@ -118,6 +158,16 @@ interface AttachResult {
   offer_name?: string
   offer_key?: string
   suppression_caveat?: string
+}
+
+// POST /api/mailing/campaigns/{id}/cancel response (campaign_builder_actions.go
+// HandleCancelCampaign — org-scoped; cancels queued/paused queue items, and the
+// wave dispatcher self-cancels the campaign's waves at dispatch time).
+interface CancelResult {
+  previous_status?: string
+  sent_before_cancel?: number
+  queue_items_cancelled?: number
+  message?: string
 }
 
 // POST /api/mailing/pmta-campaign/day-cards/rebuild shapes.
@@ -231,6 +281,32 @@ export const BoardCellShelf: React.FC<{
   }>({ phase: 'idle' })
   const [typedName, setTypedName] = useState('')
 
+  // ── CREATIVE PREVIEW state ────────────────────────────────────────────────
+  // The grid answers "which offer, which slot"; this answers "and what will it
+  // SAY". Fetched on demand (a creative is up to ~62KB) from the read-only
+  // /board-grid/creative endpoint, which returns the campaign row's STORED
+  // subject/preheader/from/html — the send truth, not the offer's proof.
+  const [creative, setCreative] = useState<{
+    phase: 'idle' | 'loading' | 'ready'
+    data?: CellCreative
+    error?: string
+  }>({ phase: 'idle' })
+
+  const loadCreative = useCallback(async (campaignId: string) => {
+    setCreative({ phase: 'loading' })
+    try {
+      const res = await apiFetch(`/api/mailing/board-grid/creative?campaign_id=${encodeURIComponent(campaignId)}`)
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setCreative({ phase: 'idle', error: body?.error || `HTTP ${res.status}` })
+        return
+      }
+      setCreative({ phase: 'ready', data: body as CellCreative })
+    } catch (e) {
+      setCreative({ phase: 'idle', error: e instanceof Error ? e.message : 'network error' })
+    }
+  }, [])
+
   // ── MAKE IT REAL (live rebuild) state ─────────────────────────────────────
   const [selProof, setSelProof] = useState('')
   const [rebuild, setRebuild] = useState<{
@@ -241,6 +317,14 @@ export const BoardCellShelf: React.FC<{
     error?: string
   }>({ phase: 'idle' })
   const [rebuildTyped, setRebuildTyped] = useState('')
+
+  // ── CANCEL CAMPAIGN state ─────────────────────────────────────────────────
+  const [cancelOp, setCancelOp] = useState<{
+    phase: 'idle' | 'arming' | 'running' | 'done'
+    result?: CancelResult
+    error?: string
+  }>({ phase: 'idle' })
+  const [cancelTyped, setCancelTyped] = useState('')
 
   // ── PROPOSAL (clone / new-cell) state ────────────────────────────────────
   // A proposal cell is editable toward /board-grid/stage: it needs an offer
@@ -341,6 +425,11 @@ export const BoardCellShelf: React.FC<{
   useEffect(() => {
     setRebuild({ phase: 'idle' })
     setRebuildTyped('')
+    setCancelOp({ phase: 'idle' })
+    setCancelTyped('')
+    // A loaded creative belongs to ONE campaign id — carrying it across to the
+    // next cell would show the operator the wrong body under the right name.
+    setCreative({ phase: 'idle' })
   }, [cell?.campaign_id, cell?.offer_id])
 
   if (!cell) return null
@@ -348,6 +437,30 @@ export const BoardCellShelf: React.FC<{
   const cellFindings = findings.filter(f => f.property === cell.property && f.slot === cell.slot)
   const liveActionable = !cloneMode && !!cell.campaign_id && !cell.proposed
   const attachEligible = liveActionable && !cell.offer_id && !isOfferExemptName(cell.name)
+  // The server's HandleCancelCampaign refuses terminal statuses — mirror that
+  // so the shelf never offers a cancel that will 400.
+  const cancelEligible = liveActionable
+    && !['sent', 'completed', 'completed_with_errors', 'cancelled', 'failed', 'deleted'].includes(cell.status ?? '')
+
+  const postCancel = async () => {
+    if (!cell.campaign_id) return
+    setCancelOp(c => ({ ...c, phase: 'running', error: undefined }))
+    try {
+      const res = await apiFetch(`/api/mailing/campaigns/${cell.campaign_id}/cancel`, { method: 'POST' })
+      const body: Record<string, unknown> = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setCancelOp({ phase: 'arming', error: `HTTP ${res.status}: ${String(body.error ?? 'cancel failed')}` })
+        return
+      }
+      setCancelOp({ phase: 'done', result: body as CancelResult })
+      // onAttached (not onRebuilt): the cancelled row vanishes from the grid
+      // on reload, and an immediate reload would yank this result box away —
+      // the attach flow's reload-on-shelf-close is the right shape here.
+      onAttached()
+    } catch (e) {
+      setCancelOp({ phase: 'arming', error: e instanceof Error ? e.message : 'network error' })
+    }
+  }
 
   const postAttach = async (confirmed: boolean) => {
     if (!cell.campaign_id || !selOffer) return
@@ -464,14 +577,64 @@ export const BoardCellShelf: React.FC<{
             </span>
             {edited && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: colors.warning }}>EDITED (local)</span>}
           </span>
+          {cell.status === 'failed' && (<>
+            <span style={label}>Failed because</span>
+            <span style={{ color: colors.danger }}>
+              {cell.failure_reason
+                || 'reason not recorded (row failed before failure-reason persistence shipped) — check server logs for [Deploy/BG]'}
+              <div style={{ color: colors.textMuted, marginTop: 2 }}>
+                A failed row is inert and cannot be cancelled — re-stage this slot (clone or the ＋ cell).
+              </div>
+            </span>
+          </>)}
+          {cell.stuck_finalize && (<>
+            <span style={label}>Finalizer</span>
+            <span style={{ color: colors.warning }}>
+              still {cell.status} after 15+ minutes — the audience finalizer may be stalled.
+              If this persists, cancel below and re-stage.
+            </span>
+          </>)}
           <span style={label}>Recipients</span>
           <span style={{ color: colors.text, fontVariantNumeric: 'tabular-nums' }}>
             {cell.recipients ? cell.recipients.toLocaleString() : '—'}
           </span>
+          <span style={label}>From</span>
+          <span style={{ color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {cell.from_name ? `${cell.from_name} <${cell.from_email || '?'}>` : '—'}
+          </span>
           <span style={label}>Subject</span>
           <span title={cell.subject || undefined}
-            style={{ color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            style={{ color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {cell.subject || '—'}
+            {/* The stored string is the template; this is what an inbox sees. */}
+            {cell.subject_rendered && cell.subject_rendered !== cell.subject && (
+              <div style={{ color: colors.text, marginTop: 2 }}>
+                <span style={{ color: colors.textMuted }}>renders as </span>
+                &ldquo;{cell.subject_rendered}&rdquo;
+              </div>
+            )}
+          </span>
+          <span style={label}>Preheader</span>
+          <span title={cell.preheader || undefined}
+            style={{ color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {cell.preheader || <span style={{ color: colors.warning }}>(none)</span>}
+            {cell.preheader_rendered && cell.preheader_rendered !== cell.preheader && (
+              <div style={{ color: colors.text, marginTop: 2 }}>
+                <span style={{ color: colors.textMuted }}>renders as </span>
+                &ldquo;{cell.preheader_rendered}&rdquo;
+              </div>
+            )}
+          </span>
+          <span style={label}>Creative</span>
+          <span style={{ color: colors.text }}>
+            {cell.creative_len ? `${cell.creative_len.toLocaleString()} bytes` : '—'}
+            {cell.campaign_id && (
+              <button style={{ ...btnStyle, marginLeft: 8, fontSize: 11, padding: '1px 8px' }}
+                onClick={() => loadCreative(cell.campaign_id as string)}
+                disabled={creative.phase === 'loading'}>
+                {creative.phase === 'loading' ? 'Loading…' : 'Preview creative'}
+              </button>
+            )}
           </span>
           <span style={label}>Sending domain</span>
           <span style={{ color: colors.text }}>{cell.sending_domain || '—'}</span>
@@ -480,6 +643,46 @@ export const BoardCellShelf: React.FC<{
             {cell.campaign_id || (cell.proposed ? '(proposal — not created)' : '—')}
           </span>
         </div>
+
+        {/* ── CREATIVE PREVIEW ─────────────────────────────────────────────
+               The body this campaign will actually send, read from the row's
+               stored html_content. Rendered inside a SANDBOXED iframe via
+               srcdoc: the creative is operator-authored HTML and must never
+               execute on the portal origin. Personalization tokens are NOT
+               substituted here — the subject/preheader rows above already show
+               the rendered form, and substituting body tokens would hide a
+               real one behind a sample value. */}
+        {creative.error && (
+          <div style={{
+            fontSize: 12, color: colors.danger, padding: '6px 10px', borderRadius: 6,
+            marginBottom: 8, border: '1px solid rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.10)',
+          }}>
+            creative unavailable: {creative.error}
+          </div>
+        )}
+        {creative.phase === 'ready' && creative.data && (
+          <>
+            <div style={sectionTitle}>Creative — what ships</div>
+            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 6, lineHeight: 1.5 }}>
+              {creative.data.creative_len.toLocaleString()} bytes from the campaign row
+              {creative.data.html_clipped ? ' (clipped for display)' : ''} · from{' '}
+              <b style={{ color: colors.text }}>{creative.data.from_name}</b> &lt;{creative.data.from_email}&gt;
+              {creative.data.offer_name ? <> · offer <b style={{ color: colors.text }}>{creative.data.offer_name}</b></> : null}
+              <div style={{ marginTop: 2 }}>
+                Tokens are shown unsubstituted — the rendered subject/preheader are above.
+              </div>
+            </div>
+            <iframe
+              title="creative preview"
+              sandbox=""
+              srcDoc={creative.data.html}
+              style={{
+                width: '100%', height: 420, border: `1px solid ${colors.panelBorder}`,
+                borderRadius: 6, background: '#fff', marginBottom: 10,
+              }}
+            />
+          </>
+        )}
 
         {/* ── FINDINGS for this cell ───────────────────────────────────── */}
         <div style={sectionTitle}>Findings — this cell</div>
@@ -844,6 +1047,62 @@ export const BoardCellShelf: React.FC<{
               </div>
             )}
 
+            {/* ── CANCEL CAMPAIGN — the mistake-recovery path. Doctrine: once
+                   scheduled, a campaign is frozen — recover via cancel +
+                   re-stage, never in-place mutation. ─────────────────────── */}
+            {cancelEligible && (
+              <div style={{ border: '1px solid rgba(239,68,68,0.35)', borderRadius: 8, padding: '10px 12px', marginTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: colors.danger, marginBottom: 4 }}>
+                  Cancel campaign — LIVE
+                </div>
+                <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 8 }}>
+                  Cancels this {cell.status} campaign: the row goes <b>cancelled</b>, its queued
+                  emails are cancelled, and its waves self-cancel at dispatch. Anything already
+                  sent stays sent. To replace it, re-stage the slot afterwards (clone or ＋).
+                </div>
+                {cancelOp.phase === 'idle' ? (
+                  <button type="button" style={dangerBtn}
+                    onClick={() => { setCancelOp({ phase: 'arming' }); setCancelTyped('') }}>
+                    Cancel this campaign…
+                  </button>
+                ) : cancelOp.phase === 'done' ? (
+                  <div style={{ fontSize: 12, color: colors.success, lineHeight: 1.6 }}>
+                    Cancelled (was <b>{cancelOp.result?.previous_status || cell.status}</b>)
+                    {typeof cancelOp.result?.sent_before_cancel === 'number' && (
+                      <> · sent before cancel: {cancelOp.result.sent_before_cancel.toLocaleString()}</>
+                    )}
+                    {typeof cancelOp.result?.queue_items_cancelled === 'number' && (
+                      <> · queue items cancelled: {cancelOp.result.queue_items_cancelled.toLocaleString()}</>
+                    )}
+                    <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                      The row leaves the grid on the next reload (closing this shelf reloads).
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={label}>Type the campaign name exactly to confirm — this CANCELS the live campaign</div>
+                    <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                      placeholder={cell.name}
+                      value={cancelTyped} onChange={e => setCancelTyped(e.target.value)} />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                      <button type="button"
+                        style={{ ...dangerBtn, opacity: cancelTyped === cell.name ? 1 : 0.5 }}
+                        disabled={cancelTyped !== cell.name || cancelOp.phase === 'running'}
+                        onClick={() => void postCancel()}>
+                        {cancelOp.phase === 'running' ? 'Cancelling…' : 'Confirm CANCEL — LIVE'}
+                      </button>
+                      <button type="button" style={{ ...smallBtn, background: 'transparent' }}
+                        disabled={cancelOp.phase === 'running'}
+                        onClick={() => { setCancelOp({ phase: 'idle' }); setCancelTyped('') }}>
+                        Keep campaign
+                      </button>
+                    </div>
+                  </>
+                )}
+                {cancelOp.error && <div style={{ ...errorChip, marginTop: 8 }}>{cancelOp.error}</div>}
+              </div>
+            )}
+
             <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
               <b>Open in Day Cards:</b> Day Cards tab → select domain <b>{cell.sending_domain || cell.property}</b>,
               date <b>{date}</b>. (No cross-tab navigation from this screen.)
@@ -856,8 +1115,8 @@ export const BoardCellShelf: React.FC<{
           borderTop: `1px solid ${colors.panelBorder}`, lineHeight: 1.5,
         }}>
           Grid edits are LOCAL until acted on — nothing deploys from this screen except the
-          explicit actions above labeled LIVE (attach-offer, and MAKE IT REAL which rebuilds
-          the live campaign via the Day Cards rebuild path).
+          explicit actions above labeled LIVE (attach-offer, MAKE IT REAL which rebuilds the
+          live campaign via the Day Cards rebuild path, and Cancel campaign).
         </div>
       </div>
     </SideShelf>
