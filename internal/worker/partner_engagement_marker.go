@@ -352,4 +352,87 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 	if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("[PartnerEngagementMarker] marked %d records engaged (clicks, lookback=%dm, perRecord=%v)", n, lookbackMins, perRecord)
 	}
+
+	m.markProgressionSignals(ctx, lookbackMins)
+}
+
+// markProgressionSignals stamps last_open_at / last_click_at — the LADDER
+// PROGRESSION signal, which is a different question from engaged_at.
+//
+// engaged_at answers "has this record ever human-clicked?" and means EXIT (and
+// feeds every data-partner Activation/Churn metric). These two columns answer
+// "did this record react to the touch we just sent?" and mean ADVANCE, for the
+// engagement-gated verticals (operator 2026-08-24 — see
+// partner_drip_engagement_gate.go).
+//
+// Differences from the engaged_at statement, all deliberate:
+//   - OPENS COUNT. The engaged_at marker is clicks-only because on a 4-touch
+//     ladder an open-based exit would eject nearly everyone after touch 1. For
+//     progression the polarity is reversed: an open is the weakest acceptable
+//     proof that a human saw the message, and the operator asked for openers
+//     AND clickers. Measured on the gated lanes, opens are 0.2-3% (not the
+//     ~90% MPP figure that governs Apple), so this does not wave everyone
+//     through.
+//   - NO engaged_at IS NULL GUARD, and idempotent via GREATEST: these columns
+//     track the LATEST signal and must keep moving forward every sweep.
+//   - MATCHED BY SUBSCRIBER + VERTICAL, not the REQ-034 dataset rule. A touch
+//     is served per (vertical, brand); reacting to it is a fact about the
+//     record's own lane, and the dataset-disambiguation rule exists to avoid
+//     double-counting Activation metrics, which these columns do not feed.
+//
+// Clicks keep the human-verdict filter (a scanner detonation must not advance a
+// record — that is precisely the batch-and-blast signal the gate exists to
+// stop). Opens are taken raw: there is no verdict function for opens, and the
+// gate's own measurements were taken on raw opens.
+func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, lookbackMins int) {
+	if engagementGateDisabled() {
+		return
+	}
+	var args []interface{}
+	timeFilter := ""
+	if lookbackMins > 0 {
+		timeFilter = "AND te.event_at > NOW() - make_interval(mins => $1)"
+		args = append(args, lookbackMins)
+	}
+	verdictFilter := ""
+	if !verdictEngagementMarkerDisabled() {
+		verdictFilter = "AND " + humanVerdictSQL
+	}
+
+	q := `
+		UPDATE partner_clean_queue q
+		SET last_open_at  = GREATEST(q.last_open_at,  e.last_open),
+		    last_click_at = GREATEST(q.last_click_at, e.last_click)
+		FROM (
+			SELECT te.subscriber_id,
+			       split_part(c.name, ' ', 2) AS vertical,
+			       MAX(te.event_at) FILTER (WHERE te.event_type = 'opened')  AS last_open,
+			       MAX(te.event_at) FILTER (WHERE te.event_type = 'clicked' ` + verdictFilter + `) AS last_click
+			FROM mailing_tracking_events te
+			JOIN mailing_campaigns c ON c.id = te.campaign_id
+			WHERE te.event_type IN ('opened', 'clicked')
+			  AND te.subscriber_id IS NOT NULL
+			  AND c.name LIKE '[partner-drip] %'
+			  ` + timeFilter + `
+			GROUP BY 1, 2
+		) e
+		WHERE q.subscriber_id = e.subscriber_id
+		  AND q.vertical = e.vertical
+		  AND (
+		        q.last_open_at  IS DISTINCT FROM GREATEST(q.last_open_at,  e.last_open)
+		     OR q.last_click_at IS DISTINCT FROM GREATEST(q.last_click_at, e.last_click)
+		  )`
+
+	res, err := m.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		log.Printf("[PartnerEngagementMarker] progression-signal mark err (lookback=%dm): %v", lookbackMins, err)
+		return
+	}
+	// Latch BEFORE logging: the pass succeeded, so the columns now reflect
+	// reality and the cold sweeper may start bucketing. A zero-row pass is still
+	// a successful pass (nothing new engaged), so it latches too.
+	MarkProgressionSignalsReady()
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[PartnerEngagementMarker] stamped progression signals on %d records (opens+clicks, lookback=%dm)", n, lookbackMins)
+	}
 }

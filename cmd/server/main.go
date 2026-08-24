@@ -963,6 +963,21 @@ func main() {
 			go engagementMarker.Start(ctx)
 			log.Printf("Partner engagement marker started (clicks->engaged_at, 3m; kill: DISABLE_PARTNER_ENGAGEMENT_MARKER)")
 
+			// Engagement-gated ladder progression (operator 2026-08-24): on the
+			// internal feeds only openers/clickers earn the next touch. This
+			// sweeper is the other half of the gate — it buckets non-engagers
+			// into terminal_reason='cold_no_engagement' (sliceable for
+			// retargeting/activation) and REVIVES a cold record that later
+			// engages, so "positive engagement progresses you" holds from cold
+			// too. Bounded SKIP LOCKED batches; idempotent, so double-firing
+			// across the 2-instance service is a no-op.
+			// Kill: PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED=1 (whole gate),
+			// PARTNER_DRIP_COLD_SWEEP_DISABLED=1 (bucketing only),
+			// PARTNER_DRIP_COLD_REVIVE_DISABLED=1 (revive only).
+			coldSweeper := worker.NewPartnerDripColdSweeper(mailingDB)
+			go coldSweeper.Start(ctx)
+			log.Printf("Partner drip cold sweeper started (engagement gate; kill: PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED)")
+
 			// Partner HUMAN rollup (REQ-035/038) — nightly per-dataset
 			// verdict-filtered engagement rollup into
 			// partner_dataset_human_rollup (the live verdict query is 40s+,
@@ -2374,6 +2389,15 @@ var concurrentIndexSpecs = []struct {
 	// the grouping key. Concurrent slice, not the 5s migration slice: the build
 	// scans the whole 10 GB heap.
 	{"idx_pcq_ingested_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ingested_dataset ON partner_clean_queue (ingested_at, dataset_id)`},
+	// Cold-bucket slicing + the cold sweep's own scan (operator 2026-08-24
+	// engagement gate). The sweep and every retargeting/activation query filter
+	// partner_clean_queue on terminal_reason='cold_no_engagement' and then slice
+	// by lane and the touch the record died at. Partial on cold rows only, so it
+	// stays small (it indexes the bucket, not the 11.2M-row queue) while making
+	// "give me the cold pool for vertical X at touch N" a bounded range scan
+	// instead of a heap scan. Concurrent slice: the initial build still reads
+	// the whole heap once.
+	{"idx_pcq_cold_bucket", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_cold_bucket ON partner_clean_queue (vertical, cold_touch, cold_at) WHERE terminal_reason = 'cold_no_engagement'`},
 	// Segment-freshness member-stamp read (2026-08-21): GET
 	// /api/mailing/segments/freshness cross-checks the build ledger with the
 	// REAL max(materialized_at) per grid segment. Without this index that is
@@ -10239,6 +10263,22 @@ END $$`},
 		{"dob_uq_hygiene_daily", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_hygiene_daily
 			ON partner_drip_hygiene_daily (organization_id, cohort_day, dataset_id, population, run_id)`},
 		{"dob_idx_hygiene_run", `CREATE INDEX IF NOT EXISTS idx_drip_hygiene_run ON partner_drip_hygiene_daily (run_id)`},
+		// ENGAGEMENT-GATED LADDER PROGRESSION (operator 2026-08-24, standing rule
+		// for the internal feeds): only openers and clickers earn the next touch;
+		// everyone else is bucketed cold for retargeting/activation. Four ADD
+		// COLUMN IF NOT EXISTS on partner_clean_queue — metadata-only in PG 11+
+		// (all nullable, no default), so they hold no table lock long enough to
+		// matter against the ~11.2M-row queue and fit the 5s slice comfortably.
+		// last_open_at/last_click_at are the PROGRESSION signal, written by
+		// PartnerEngagementMarker.markProgressionSignals; they are deliberately
+		// separate from engaged_at, whose EXIT meaning feeds every data-partner
+		// Activation/Churn metric. cold_at/cold_touch make the cold bucket
+		// sliceable by the touch a record died at.
+		// See internal/worker/partner_drip_engagement_gate.go.
+		{"drip_gate_last_open_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS last_open_at TIMESTAMPTZ`},
+		{"drip_gate_last_click_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS last_click_at TIMESTAMPTZ`},
+		{"drip_gate_cold_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS cold_at TIMESTAMPTZ`},
+		{"drip_gate_cold_touch", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS cold_touch INTEGER`},
 		// Cap-decision trace (§5.8): parent + DEFAULT partition ONLY — month
 		// partitions are the §10.6 xray_maintenance op's job, deployment-date-
 		// relative, never hardcoded here. Nothing emits rows until P6 (D6,
