@@ -6,12 +6,16 @@ package api
 //	GET  /api/mailing/board-grid?date=YYYY-MM-DD     the day, as a grid, gated
 //	GET  /api/mailing/board-grid/clone?from=&to=     yesterday's grid re-dated (NO WRITE)
 //	POST /api/mailing/board-grid/gates               run the gates over a proposed grid
+//	POST /api/mailing/board-grid/stage               stage a proposal as campaigns
+//	                                                 (lives in board_grid_stage.go —
+//	                                                 THIS file stays read-only)
 //
 // Clone does NOT retime anything: the proposal keeps the source day's slots —
 // the stable structure — and only rewrites the date token inside each name
 // (both the 8-digit '08222026' form and the month-name 'aug22' form) to the
-// target date. Staging the proposal still happens via /stage-board or the
-// Campaign Manager; nothing here writes.
+// target date. Each proposal cell KEEPS the source campaign's id as
+// source_campaign_id: that id is how /stage later loads the source's
+// byte-faithful deploy blob (pmta_config->'campaign_input').
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY THIS EXISTS
@@ -46,13 +50,14 @@ package api
 // ─────────────────────────────────────────────────────────────────────────────
 // READ-ONLY BY CONSTRUCTION
 //
-// Every statement in this file is a SELECT. Cloning returns a PROPOSAL — the
+// Every statement in THIS file is a SELECT. Cloning returns a PROPOSAL — the
 // source day's slots kept, names re-dated — and does not create campaigns.
-// Staging still happens via /stage-board or the Campaign Manager; deploying a
-// cell goes through the existing /api/mailing/pmta-campaign/deploy path, which
-// owns audience planning, the wave sanity check, and the time_spans[*].source
-// contract. There is no second send path here and none may be added —
-// TestBoardGrid_ReadOnly asserts it.
+// The write path is POST /board-grid/stage (board_grid_stage.go), which is
+// CREATE-ONLY and deploys each cell id-less through the FULL existing gated
+// deploy path (PMTACampaignService.deployFromInput — audience planning, the
+// wave sanity check, the offer gate, the time_spans[*].source contract).
+// There is no second send path and none may be added —
+// TestBoardGrid_ReadOnly asserts this file stays read-only.
 
 import (
 	"context"
@@ -75,6 +80,12 @@ import (
 // BoardGridService serves the property × slot view of a send-day.
 type BoardGridService struct {
 	db *sql.DB
+	// campaigns is the deploy dependency for POST /board-grid/stage
+	// (board_grid_stage.go): staging deploys each cell id-less through
+	// campaigns.deployFromInput — the FULL gated path. nil until
+	// SetCampaignService is called at route wiring; the stage handler
+	// answers 503 without it. Everything in THIS file ignores it.
+	campaigns *PMTACampaignService
 }
 
 func NewBoardGridService(db *sql.DB) *BoardGridService {
@@ -86,6 +97,7 @@ func (s *BoardGridService) RegisterRoutes(r chi.Router) {
 		cr.Get("/", s.HandleGetGrid)
 		cr.Get("/clone", s.HandleCloneGrid)
 		cr.Post("/gates", s.HandleRunGates)
+		cr.Post("/stage", s.HandleStageGrid) // board_grid_stage.go — CREATE-ONLY
 	})
 }
 
@@ -112,7 +124,12 @@ type BoardCell struct {
 	BrandRoot     string `json:"brand_root,omitempty"`
 	Slot          string `json:"slot"` // Denver HH:MM
 	CampaignID    string `json:"campaign_id,omitempty"`
-	Name          string `json:"name"`
+	// SourceCampaignID is set ONLY on clone-proposal cells: the id of the
+	// source day's campaign this cell was cloned from. POST /board-grid/stage
+	// loads that campaign's pmta_config->'campaign_input' blob as the deploy
+	// payload — without it a proposal cell cannot be staged.
+	SourceCampaignID string `json:"source_campaign_id,omitempty"`
+	Name             string `json:"name"`
 	OfferID       string `json:"offer_id,omitempty"`
 	OfferName     string `json:"offer_name,omitempty"`
 	Subject       string `json:"subject,omitempty"`
@@ -282,6 +299,10 @@ func (s *BoardGridService) HandleCloneGrid(w http.ResponseWriter, r *http.Reques
 	}
 	proposed := make([]BoardCell, 0, len(src))
 	for _, c := range src {
+		// KEEP the source id as source_campaign_id: /stage loads the source's
+		// pmta_config->'campaign_input' blob through it. Discarding it (the
+		// pre-2026-08-23 behavior) made a proposal un-stageable.
+		c.SourceCampaignID = c.CampaignID
 		c.CampaignID = "" // a proposal is not a campaign
 		c.Status = ""
 		c.Recipients = 0

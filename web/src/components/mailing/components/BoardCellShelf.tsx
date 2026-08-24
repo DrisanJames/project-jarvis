@@ -29,9 +29,19 @@ export interface BoardCell {
   brand_root?: string
   slot: string
   campaign_id?: string
+  // source_campaign_id: set on clone-proposal cells (and locally on new-cell
+  // proposals) — the campaign whose pmta_config blob /board-grid/stage loads
+  // as the deploy payload. A proposal without it cannot be scheduled.
+  source_campaign_id?: string
   name: string
   offer_id?: string
   offer_name?: string
+  // Local working-cell fields (proposal editing) — the server ignores them.
+  proof_id?: string
+  proof_name?: string
+  inclusion_segments?: string[]        // audience override (segment ids)
+  inclusion_segment_names?: string[]   // parallel display names
+  new_cell?: boolean                   // materialized from an empty grid cell
   subject?: string
   status?: string
   recipients: number
@@ -180,6 +190,9 @@ const statusColor = (s?: string): string => {
   return colors.textMuted
 }
 
+// One row of GET /api/mailing/segments (the DayCardEditor picker's endpoint).
+interface SegmentOpt { id: string; name: string; subscriber_count?: number }
+
 export const BoardCellShelf: React.FC<{
   date: string
   entries: Array<{ idx: number; cell: BoardCell }>  // all campaigns at this (property, slot)
@@ -193,13 +206,18 @@ export const BoardCellShelf: React.FC<{
   edited: boolean
   gating: boolean
   cloneMode: boolean
-  onApplyOffer: (idx: number, offerId: string) => void
+  // Proposal apply: extras carry the picked approved proof (clone/new-cell
+  // mode). Absent extras on a proposal apply CLEARS any stored proof.
+  onApplyOffer: (idx: number, offerId: string, extras?: { proofId: string; proofName: string }) => void
+  // Audience override apply (proposal cells): null clears the override back
+  // to "source audience carried over".
+  onApplyAudience: (idx: number, segments: SegmentOpt[] | null) => void
   onAttached: () => void                             // a confirmed LIVE attach landed
   onRebuilt: () => void                              // a confirmed LIVE rebuild landed
   onClose: () => void
 }> = ({ date, entries, activeIdx, onSelectEntry, findings, offers, offersError,
-        proofs, proofsError, edited, gating, cloneMode, onApplyOffer, onAttached,
-        onRebuilt, onClose }) => {
+        proofs, proofsError, edited, gating, cloneMode, onApplyOffer, onApplyAudience,
+        onAttached, onRebuilt, onClose }) => {
   const entry = entries.find(e => e.idx === activeIdx) ?? entries[0]
   const cell = entry?.cell
 
@@ -224,10 +242,87 @@ export const BoardCellShelf: React.FC<{
   }>({ phase: 'idle' })
   const [rebuildTyped, setRebuildTyped] = useState('')
 
+  // ── PROPOSAL (clone / new-cell) state ────────────────────────────────────
+  // A proposal cell is editable toward /board-grid/stage: it needs an offer
+  // AND that offer's APPROVED proof (Creative Studio) picked here, plus an
+  // optional audience override. proposalMode also covers new cells
+  // materialized from an empty grid slot on a non-clone grid.
+  const proposalMode = cloneMode || !!cell?.proposed
+  const [selCloneProof, setSelCloneProof] = useState('')
+  const [audOpen, setAudOpen] = useState(false)
+  const [audSel, setAudSel] = useState<SegmentOpt[]>([])
+  const [audQuery, setAudQuery] = useState('')
+  const [segPool, setSegPool] = useState<SegmentOpt[] | null>(null)
+  const [segError, setSegError] = useState<string | null>(null)
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return q ? offers.filter(o => o.name.toLowerCase().includes(q)) : offers
   }, [offers, query])
+
+  // Prefill the picker with the proposal cell's applied offer so its proof
+  // (and copy) are visible on reopen. Proposal-only: the live attach flow
+  // must keep its explicit empty start.
+  useEffect(() => {
+    if (proposalMode) setSelOffer(cell?.offer_id ?? '')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposalMode, cell?.property, cell?.slot, cell?.source_campaign_id, cell?.campaign_id])
+
+  // The PICKED offer's approved proofs, scoped to this cell's domain roots —
+  // the same resolution the live-rebuild path uses.
+  const selOfferKey = offers.find(o => o.id === selOffer)?.key
+  const cloneProofs = useMemo(() => {
+    if (!proposalMode || !selOffer || !selOfferKey || !cell) return []
+    return resolveApprovedProofs(proofs, selOfferKey, cellDomainRoots(cell))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposalMode, selOffer, selOfferKey, proofs, cell?.brand_root, cell?.sending_domain])
+
+  // Auto-select: keep a still-valid manual pick, else the cell's stored
+  // proof, else the newest ([0]).
+  useEffect(() => {
+    setSelCloneProof(prev =>
+      cloneProofs.some(p => p.id === prev) ? prev
+        : cloneProofs.some(p => p.id === cell?.proof_id) ? (cell?.proof_id ?? '')
+        : (cloneProofs[0]?.id ?? ''))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloneProofs, cell?.proof_id])
+
+  // Audience override state follows the cell under the shelf.
+  useEffect(() => {
+    const ids = cell?.inclusion_segments ?? []
+    const names = cell?.inclusion_segment_names ?? []
+    setAudSel(ids.map((id, i) => ({ id, name: names[i] ?? id })))
+    setAudOpen(ids.length > 0)
+    setAudQuery('')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cell?.property, cell?.slot, cell?.campaign_id, cell?.source_campaign_id])
+
+  // Segment pool, fetched lazily on the first override toggle — the same
+  // endpoint + shape the Day Cards editor picker reads.
+  useEffect(() => {
+    if (!audOpen || segPool !== null) return
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/mailing/segments')
+        if (!res.ok) throw new Error(`segments: HTTP ${res.status}`)
+        const j: { segments?: SegmentOpt[] } = await res.json()
+        setSegPool(j.segments ?? [])
+        setSegError(null)
+      } catch (e) {
+        setSegPool([])
+        setSegError(e instanceof Error ? e.message : 'network error')
+      }
+    })()
+  }, [audOpen, segPool])
+
+  const audMatches = useMemo(() => {
+    if (!segPool || audQuery.trim().length < 2) return []
+    const needle = audQuery.trim().toLowerCase()
+    const chosen = new Set(audSel.map(s => s.id))
+    return segPool
+      .filter(p => !chosen.has(p.id) && (p.name.toLowerCase().includes(needle) || p.id === audQuery.trim()))
+      .slice(0, 12)
+  }, [segPool, audQuery, audSel])
 
   // The applied offer's approved proofs, scoped to this cell's domain roots.
   const offerKey = offers.find(o => o.id === cell?.offer_id)?.key
@@ -418,6 +513,12 @@ export const BoardCellShelf: React.FC<{
               {cell.offer_id}
             </span>
           )}
+          {proposalMode && cell.proof_name && (
+            <div style={{ marginTop: 4 }}>
+              <span style={label}>Proof: </span>
+              <span style={{ color: colors.text }}>{cell.proof_name}</span>
+            </div>
+          )}
         </div>
 
         {offersError ? (
@@ -439,13 +540,134 @@ export const BoardCellShelf: React.FC<{
               </select>
               <button type="button" style={{ ...smallBtn, opacity: selOffer ? 1 : 0.5 }}
                 disabled={!selOffer || gating}
-                onClick={() => onApplyOffer(entry.idx, selOffer)}>
+                onClick={() => {
+                  const chosen = cloneProofs.find(p => p.id === selCloneProof)
+                  onApplyOffer(entry.idx, selOffer,
+                    proposalMode && chosen ? { proofId: chosen.id, proofName: chosen.name } : undefined)
+                }}>
                 {gating ? 'Gating…' : 'Apply to grid'}
               </button>
             </div>
+
+            {/* ── PROOF PICKER (proposal cells): the Creative Studio approved
+                   proof that will SHIP — its subject/preheader shown so the
+                   operator SEES the copy before scheduling. ─────────────── */}
+            {proposalMode && selOffer && (
+              proofsError ? (
+                <div style={{ ...errorChip, marginTop: 8 }}>{proofsError}</div>
+              ) : !selOfferKey ? (
+                <div style={{ ...errorChip, marginTop: 8 }}>
+                  offer key unknown for {selOffer} — cannot resolve approved proofs
+                </div>
+              ) : cloneProofs.length === 0 ? (
+                <div style={{ ...errorChip, marginTop: 8 }}>{NO_PROOF_MESSAGE}</div>
+              ) : (
+                <div style={{ marginTop: 8 }}>
+                  <div style={label}>Approved proof ({cloneProofs.length}, newest first) — ships as the creative</div>
+                  {cloneProofs.length > 1 ? (
+                    <select style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                      value={selCloneProof} onChange={e => setSelCloneProof(e.target.value)}>
+                      {cloneProofs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                  ) : (
+                    <div style={{ fontSize: 12, color: colors.text, marginTop: 4 }}>{cloneProofs[0].name}</div>
+                  )}
+                  {(() => {
+                    const p = cloneProofs.find(x => x.id === selCloneProof) ?? cloneProofs[0]
+                    const v = p?.variants?.[0]
+                    return (
+                      <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', rowGap: 4, columnGap: 10, fontSize: 12, marginTop: 6 }}>
+                        <span style={label}>Subject</span>
+                        <span style={{ color: colors.text }}>{v?.subject || '—'}</span>
+                        <span style={label}>Preheader</span>
+                        <span style={{ color: colors.textMuted }}>{v?.preheader || '—'}</span>
+                        {p?.from_names?.[0] && (<>
+                          <span style={label}>From</span>
+                          <span style={{ color: colors.textMuted }}>{p.from_names[0]}</span>
+                        </>)}
+                      </div>
+                    )
+                  })()}
+                </div>
+              )
+            )}
             <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
               Apply updates the LOCAL working grid and auto re-runs the gates — findings above refresh.
+              {proposalMode && ' The picked proof rides with the cell into "Schedule proposal".'}
             </div>
+          </>
+        )}
+
+        {/* ── AUDIENCE (proposal cells) ─────────────────────────────────── */}
+        {proposalMode && (
+          <>
+            <div style={sectionTitle}>Audience</div>
+            {!audOpen ? (
+              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+                Source audience carried over — the source campaign's segments, send
+                priority and reserves ride along untouched.
+                <div style={{ marginTop: 6 }}>
+                  <button type="button" style={smallBtn} onClick={() => setAudOpen(true)}>
+                    Override audience
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                  {audSel.length === 0 && (
+                    <span style={{ fontSize: 11, color: colors.textMuted }}>no segments selected yet</span>
+                  )}
+                  {audSel.map(s => (
+                    <span key={s.id} title={s.id} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      background: 'rgba(99,102,241,0.14)', border: `1px solid ${colors.panelBorder}`,
+                      borderRadius: 6, padding: '2px 8px', fontSize: 11, color: colors.text,
+                    }}>
+                      {s.name}
+                      <button type="button" aria-label={`remove ${s.name}`}
+                        onClick={() => setAudSel(prev => prev.filter(x => x.id !== s.id))}
+                        style={{ background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', padding: 0, fontSize: 12 }}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <input style={{ ...input, width: '100%', boxSizing: 'border-box' }}
+                  placeholder={segPool ? `search segments by name (min 2 chars) · ${segPool.length} available` : 'loading segments…'}
+                  value={audQuery} onChange={e => setAudQuery(e.target.value)} />
+                {segError && <div style={{ ...errorChip, marginTop: 6 }}>{segError}</div>}
+                {audMatches.length > 0 && (
+                  <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 6, marginTop: 4, maxHeight: 180, overflowY: 'auto' }}>
+                    {audMatches.map(m => (
+                      <div key={m.id}
+                        onClick={() => { setAudSel(prev => [...prev, { id: m.id, name: m.name }]); setAudQuery('') }}
+                        style={{ padding: '6px 9px', fontSize: 12, color: colors.text, cursor: 'pointer', borderBottom: `1px solid ${colors.panelBorder}` }}>
+                        {m.name}
+                        {m.subscriber_count != null && (
+                          <span style={{ color: colors.textMuted, marginLeft: 8 }}>{m.subscriber_count.toLocaleString()}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button type="button" style={{ ...smallBtn, opacity: audSel.length ? 1 : 0.5 }}
+                    disabled={audSel.length === 0 || gating}
+                    onClick={() => onApplyAudience(entry.idx, audSel)}>
+                    Apply audience override ({audSel.length})
+                  </button>
+                  <button type="button" style={{ ...smallBtn, background: 'transparent' }}
+                    onClick={() => { setAudOpen(false); setAudSel([]); onApplyAudience(entry.idx, null) }}>
+                    Clear override (keep source audience)
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
+                  An override REPLACES the source's audience program at stage time —
+                  its send priority and segment reserves are cleared with it.
+                </div>
+              </div>
+            )}
           </>
         )}
 

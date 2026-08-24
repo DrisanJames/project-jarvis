@@ -1125,12 +1125,13 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			dripLaneOnboardSvc := NewDripLaneOnboardingService(db)
 			dripLaneOnboardSvc.RegisterRoutes(r)
 
-			// === BOARD GRID (operator ask 2026-08-21) ===
+			// === BOARD GRID (operator ask 2026-08-21; stage 2026-08-23) ===
 			// The send-day as a PROPERTY x SLOT grid: clone yesterday, edit only
 			// the offer in each cell, and see the gates before deploying rather
-			// than after. Strictly read-only — cloning returns a PROPOSAL and
-			// deploying still goes through /pmta-campaign/deploy, which owns
-			// audience planning and the wave sanity check.
+			// than after. Reads are read-only; POST /board-grid/stage
+			// (board_grid_stage.go) turns a gated proposal into campaigns by
+			// deploying each cell through pmtaCampaignAPI.deployFromInput —
+			// wired below once the campaign service exists.
 			boardGridSvc := NewBoardGridService(db)
 			boardGridSvc.RegisterRoutes(r)
 
@@ -1515,6 +1516,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 				pmtaCampaignAPI.SetOfferSuppressionManager(s.OfferSuppMgr)
 			}
 			pmtaCampaignAPI.RegisterRoutes(r)
+			// Board-grid staging deploys through the SAME gated path
+			// (board_grid_stage.go); without this the stage endpoint 503s.
+			boardGridSvc.SetCampaignService(pmtaCampaignAPI)
 			// Estate-wide drip overview + operator lane labels
 			// (property_ledger_overview.go). Registered as static siblings of
 			// the mounted /pmta-campaign subrouter — chi matches the static
