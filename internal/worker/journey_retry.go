@@ -26,9 +26,24 @@ import (
 	"database/sql"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"time"
 )
+
+// journeyRetryEjectDisabled is a SEPARATE kill switch from the backoff.
+//
+// The two halves of this policy carry different risk. Backoff stops the hot
+// loop and is purely subtractive — worst case a send is slower. Ejection MUTATES
+// a live enrollment: it ends someone's sequence, and re-enrolling them needs the
+// upload path. If classification ever proves too eager in production, this
+// disables the ejection alone and leaves the loop fix in place.
+//
+// JOURNEY_RETRY_EJECT_DISABLED=1
+func journeyRetryEjectDisabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("JOURNEY_RETRY_EJECT_DISABLED")))
+	return v == "1" || v == "true" || v == "yes"
+}
 
 const (
 	// journeyRetryMaxAttempts bounds attempts at ONE node. With the backoff
@@ -147,6 +162,14 @@ func recordJourneySendFailure(ctx context.Context, db *sql.DB, enrollmentID, nod
 	elapsed := time.Duration(0)
 	if firstAt.Valid {
 		elapsed = time.Since(firstAt.Time)
+	}
+
+	// With ejection disabled the enrollment still backs off — it just never
+	// leaves the lane. The cap is honoured as a flat max-delay hold so a
+	// permanently failing send cannot go back to hammering.
+	if journeyRetryEjectDisabled() {
+		d.NextDelay = journeyRetryBackoff(attempts)
+		return d
 	}
 
 	switch {

@@ -455,3 +455,18 @@ func TestResolveShadowCampaignID_RegistryErrorIsNotMemoized(t *testing.T) {
 		t.Fatalf("the second call did not re-query — a transient error was memoized: %v", err)
 	}
 }
+
+// TestJourneyRetryEject_HasAnIndependentKillSwitch — the backoff (subtractive)
+// and the ejection (mutates a live enrollment) must be separately disableable,
+// so a too-eager classifier can be neutralized in production without giving the
+// 13-day hot loop back.
+func TestJourneyRetryEject_HasAnIndependentKillSwitch(t *testing.T) {
+	t.Setenv("JOURNEY_RETRY_EJECT_DISABLED", "1")
+	if !journeyRetryEjectDisabled() {
+		t.Fatal("kill switch did not read")
+	}
+	t.Setenv("JOURNEY_RETRY_EJECT_DISABLED", "")
+	if journeyRetryEjectDisabled() {
+		t.Fatal("kill switch must default OFF")
+	}
+}
