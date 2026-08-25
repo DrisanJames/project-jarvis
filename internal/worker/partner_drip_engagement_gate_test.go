@@ -361,9 +361,9 @@ func TestMarkerLatchesProgressionReadiness(t *testing.T) {
 	}
 	// Opens must be part of the progression signal (operator: openers AND
 	// clickers), even though engaged_at remains clicks-only.
-	i := strings.Index(body, "func (m *PartnerEngagementMarker) markProgressionSignals(")
+	i := strings.Index(body, "func (m *PartnerEngagementMarker) stampProgressionBatch(")
 	if i < 0 {
-		t.Fatal("markProgressionSignals not found")
+		t.Fatal("stampProgressionBatch not found")
 	}
 	fn := body[i:]
 	if j := strings.Index(fn, "\n}\n"); j > 0 {
@@ -577,58 +577,54 @@ func TestColdSweepTouchesOnlyRealColumns(t *testing.T) {
 	}
 }
 
-// The progression scan must be scoped to the gated lanes. Unscoped, it swept
-// every drip campaign and timed out on every chunk (2026-08-24), so the
-// backfill never completed and the gate stayed permanently held.
-func TestGatedCampaignNameLike_ScopesToGatedLanes(t *testing.T) {
+// The progression scan must be scoped to the gated lanes and parameterised.
+func TestVerticalCampaignNamePredicate(t *testing.T) {
 	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED", "")
 	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
 
-	got := gatedCampaignNameLike()
-	if len(got) != 1 || !strings.Contains(got[0], "[partner-drip] internal_auto_insurance%") {
-		t.Fatalf("default scope wrong: %v", got)
+	pred, args := verticalCampaignNamePredicate()
+	if pred != "(name LIKE $1)" {
+		t.Fatalf("default predicate wrong: %s", pred)
 	}
-	// Must not degrade to sweeping every lane.
-	if strings.Contains(got[0], "'[partner-drip] %'") {
-		t.Error("scan fell back to ALL drip campaigns — this is the timeout shape")
+	if len(args) != 1 || args[0] != "[partner-drip] internal_auto_insurance%" {
+		t.Fatalf("default args wrong: %v", args)
 	}
 
 	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "consumer,term_life")
-	got = gatedCampaignNameLike()
-	if len(got) != 2 {
-		t.Fatalf("override should produce one pattern per prefix, got %v", got)
-	}
-	for _, want := range []string{"consumer%", "term_life%"} {
-		found := false
-		for _, g := range got {
-			if strings.Contains(g, want) {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("missing pattern for %q in %v", want, got)
-		}
+	pred, args = verticalCampaignNamePredicate()
+	if pred != "(name LIKE $1 OR name LIKE $2)" || len(args) != 2 {
+		t.Fatalf("override predicate wrong: %s %v", pred, args)
 	}
 }
 
-// The backfill must chunk finely enough to fit a statement budget and must run
-// under a raised local timeout.
-func TestBackfillChunkingAndTimeout(t *testing.T) {
+// The backfill must be campaign-keyed (bounded batches riding
+// idx_tracking_campaign_type), under a raised local timeout — the time-swept
+// form timed out even at 30-minute windows (14 consecutive failures,
+// 2026-08-24) and the gate never armed.
+func TestBackfillIsCampaignKeyed(t *testing.T) {
 	src, err := os.ReadFile("partner_engagement_marker.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(src)
-	if !strings.Contains(body, "chunkMins = 6 * 60") {
-		t.Error("backfill chunk is not 6h — a 24h chunk timed out in prod")
+	for _, want := range []string{
+		"te.campaign_id = ANY($1::uuid[])", // the index-riding anchor
+		"progressionCampaignBatch",         // bounded batches
+		"SET LOCAL statement_timeout",      // raised local budget
+		"gatedDripCampaigns",               // scoped enumeration
+		"defer tx.Rollback()",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("progression stamping missing %q", want)
+		}
 	}
-	if !strings.Contains(body, "SET LOCAL statement_timeout") {
-		t.Error("progression chunk does not raise its statement timeout")
+	// The old shape must not come back: campaign-name JOIN inside the event scan.
+	i := strings.Index(body, "func (m *PartnerEngagementMarker) stampProgressionBatch(")
+	fn := body[i:]
+	if j := strings.Index(fn, "\n}\n"); j > 0 {
+		fn = fn[:j]
 	}
-	if !strings.Contains(body, "gatedCampaignNameLike()") {
-		t.Error("progression scan is not scoped to the gated lanes")
-	}
-	if !strings.Contains(body, "defer tx.Rollback()") {
-		t.Error("progression chunk transaction is not rollback-safe")
+	if strings.Contains(fn, "JOIN mailing_campaigns") {
+		t.Error("stamp statement re-grew the campaigns JOIN — this is the timeout shape")
 	}
 }

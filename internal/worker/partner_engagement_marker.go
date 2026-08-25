@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"log"
 	"os"
-	"strings"
+	"strconv"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // humanVerdictSQL is the canonical HUMAN-verdict predicate over a
@@ -364,7 +366,7 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 		log.Printf("[PartnerEngagementMarker] marked %d records engaged (clicks, lookback=%dm, perRecord=%v)", n, lookbackMins, perRecord)
 	}
 
-	m.markProgressionSignals(ctx, lookbackMins, lookbackMins)
+	m.markProgressionSignals(ctx, lookbackMins)
 }
 
 // progressionBackfillDays is how far back the boot backfill walks the
@@ -374,32 +376,83 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 // past due, so their window opened ~129h back). 14 days covers that with room.
 const progressionBackfillDays = 14
 
-// backfillProgressionSignals walks the progression signal back day by day.
+// progressionCampaignBatch is how many campaign ids one stamp statement
+// covers. The statement's cost is (events per campaign x batch), all reached
+// via idx_tracking_campaign_type — a drip wave is <=1,152 recipients, so 200
+// campaigns bounds the scan at ~a few hundred thousand index-ordered rows.
+const progressionCampaignBatch = 200
+
+// gatedDripCampaigns returns the drip campaign ids of the GATED verticals
+// created in the last `days` days, grouped by vertical. This is the anchor of
+// the campaign-keyed stamping strategy: every downstream statement is bounded
+// by explicit campaign ids riding idx_tracking_campaign_type, never by an
+// event_at sweep.
 //
-// One DAY-sized chunk per statement, oldest first, so no single statement can
-// hit the timeout the way an all-history pass does — that timeout is exactly
-// what left the gate judging on empty columns. Returns true only if EVERY chunk
-// succeeded: partial coverage must not latch readiness, or the cold sweep would
-// bucket records whose engagement simply had not been stamped yet.
-func (m *PartnerEngagementMarker) backfillProgressionSignals(ctx context.Context) bool {
-	// 6h chunks, not 24h. Measured 2026-08-24: a full day of drip tracking
-	// events still hit the statement timeout on the first chunk, so the backfill
-	// never completed and the gate stayed held.
-	const chunkMins = 6 * 60
-	chunks := progressionBackfillDays * 24 * 60 / chunkMins
-	for i := chunks; i >= 1; i-- {
-		if ctx.Err() != nil {
-			return false
+// Why not sweep by time: the time-window form (JOIN mailing_campaigns ON
+// name LIKE + te.event_at window) timed out EVEN AT 30 MINUTES under prod IO —
+// the planner has no index that serves (name-pattern x event-window), so it
+// either scans the window across all campaigns or walks every matching
+// campaign's full history. Measured 2026-08-24: 14 consecutive statement
+// timeouts, gate never armed.
+func (m *PartnerEngagementMarker) gatedDripCampaigns(ctx context.Context, days int) (map[string][]string, error) {
+	pred, args := verticalCampaignNamePredicate()
+	if pred == "" {
+		return nil, nil
+	}
+	args = append(args, days)
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id::text, split_part(name, ' ', 2) AS vertical
+		FROM mailing_campaigns
+		WHERE `+pred+`
+		  AND created_at > NOW() - make_interval(days => $`+strconv.Itoa(len(args))+`)
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var id, v string
+		if err := rows.Scan(&id, &v); err != nil {
+			return nil, err
 		}
-		// Window [now-i*chunk, now-(i-1)*chunk).
-		if !m.markProgressionSignals(ctx, i*chunkMins, (i-1)*chunkMins) {
-			log.Printf("[PartnerEngagementMarker] progression backfill FAILED at chunk -%d (%dh back) — cold bucketing stays held",
-				i, i*chunkMins/60)
-			return false
+		out[v] = append(out[v], id)
+	}
+	return out, rows.Err()
+}
+
+// backfillProgressionSignals stamps the full progression history for the gated
+// lanes, one campaign-id batch per statement. Returns true only if EVERY batch
+// succeeded: partial coverage must not latch readiness, or the cold sweep
+// would bucket records whose engagement simply had not been stamped yet.
+func (m *PartnerEngagementMarker) backfillProgressionSignals(ctx context.Context) bool {
+	byVertical, err := m.gatedDripCampaigns(ctx, progressionBackfillDays)
+	if err != nil {
+		log.Printf("[PartnerEngagementMarker] progression backfill: campaign enumeration failed (%v) — cold bucketing stays held", err)
+		return false
+	}
+	total, batches := 0, 0
+	for vertical, ids := range byVertical {
+		for start := 0; start < len(ids); start += progressionCampaignBatch {
+			if ctx.Err() != nil {
+				return false
+			}
+			end := start + progressionCampaignBatch
+			if end > len(ids) {
+				end = len(ids)
+			}
+			n, ok := m.stampProgressionBatch(ctx, vertical, ids[start:end], 0)
+			if !ok {
+				log.Printf("[PartnerEngagementMarker] progression backfill FAILED vertical=%s batch %d-%d — cold bucketing stays held",
+					vertical, start, end)
+				return false
+			}
+			total += n
+			batches++
 		}
 	}
-	log.Printf("[PartnerEngagementMarker] progression backfill complete (%d days in %d chunks) — cold bucketing may proceed",
-		progressionBackfillDays, chunks)
+	log.Printf("[PartnerEngagementMarker] progression backfill complete: %d records stamped over %d campaign batches (%dd horizon) — cold bucketing may proceed",
+		total, batches, progressionBackfillDays)
 	return true
 }
 
@@ -431,78 +484,94 @@ func (m *PartnerEngagementMarker) backfillProgressionSignals(ctx context.Context
 // record — that is precisely the batch-and-blast signal the gate exists to
 // stop). Opens are taken raw: there is no verdict function for opens, and the
 // gate's own measurements were taken on raw opens.
-func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, sinceMins, untilMins int) bool {
+func (m *PartnerEngagementMarker) markProgressionSignals(ctx context.Context, lookbackMins int) {
 	if engagementGateDisabled() {
-		return false
+		return
 	}
-	var args []interface{}
-	timeFilter := ""
-	if sinceMins > 0 {
-		timeFilter = "AND te.event_at > NOW() - make_interval(mins => $1)"
-		args = append(args, sinceMins)
-		if untilMins > 0 && untilMins < sinceMins {
-			timeFilter += " AND te.event_at <= NOW() - make_interval(mins => $2)"
-			args = append(args, untilMins)
+	// Recent sweep: only campaigns young enough to still produce events in the
+	// lookback window (ladder is 4x24h; 6d covers stragglers), events bounded
+	// by the window. Same campaign-keyed shape as the backfill.
+	byVertical, err := m.gatedDripCampaigns(ctx, 6)
+	if err != nil {
+		log.Printf("[PartnerEngagementMarker] progression sweep: campaign enumeration failed: %v", err)
+		return
+	}
+	for vertical, ids := range byVertical {
+		for start := 0; start < len(ids); start += progressionCampaignBatch {
+			end := start + progressionCampaignBatch
+			if end > len(ids) {
+				end = len(ids)
+			}
+			if _, ok := m.stampProgressionBatch(ctx, vertical, ids[start:end], lookbackMins); !ok {
+				return // logged inside; next 3m tick retries
+			}
 		}
+	}
+}
+
+// stampProgressionBatch stamps last_open_at / last_click_at for one vertical
+// from one bounded batch of its campaign ids. sinceMins > 0 additionally
+// bounds events to the recent window (the ongoing sweep); 0 means the
+// campaigns\' full history (the backfill — safe because each batch is bounded
+// by campaign count, not time).
+func (m *PartnerEngagementMarker) stampProgressionBatch(ctx context.Context, vertical string, ids []string, sinceMins int) (int, bool) {
+	if len(ids) == 0 {
+		return 0, true
 	}
 	verdictFilter := ""
 	if !verdictEngagementMarkerDisabled() {
 		verdictFilter = "AND " + humanVerdictSQL
 	}
-
-	// Scope to the GATED lanes only. The signal is consumed by the engagement
-	// gate and nothing else, so scanning every drip campaign is pure cost — the
-	// internal family is ~25k of ~280k daily drip sends, and the unscoped
-	// version timed out on every chunk (2026-08-24).
-	laneFilter := "AND (" + strings.Join(gatedCampaignNameLike(), " OR ") + ")"
-
+	args := []interface{}{pq.Array(ids), vertical}
+	timeFilter := ""
+	if sinceMins > 0 {
+		timeFilter = "AND te.event_at > NOW() - make_interval(mins => $3)"
+		args = append(args, sinceMins)
+	}
 	q := `
 		UPDATE partner_clean_queue q
 		SET last_open_at  = GREATEST(q.last_open_at,  e.last_open),
 		    last_click_at = GREATEST(q.last_click_at, e.last_click)
 		FROM (
 			SELECT te.subscriber_id,
-			       split_part(c.name, ' ', 2) AS vertical,
 			       MAX(te.event_at) FILTER (WHERE te.event_type = 'opened')  AS last_open,
 			       MAX(te.event_at) FILTER (WHERE te.event_type = 'clicked' ` + verdictFilter + `) AS last_click
 			FROM mailing_tracking_events te
-			JOIN mailing_campaigns c ON c.id = te.campaign_id
-			WHERE te.event_type IN ('opened', 'clicked')
+			WHERE te.campaign_id = ANY($1::uuid[])
+			  AND te.event_type IN ('opened', 'clicked')
 			  AND te.subscriber_id IS NOT NULL
-			  ` + laneFilter + `
 			  ` + timeFilter + `
-			GROUP BY 1, 2
+			GROUP BY 1
 		) e
 		WHERE q.subscriber_id = e.subscriber_id
-		  AND q.vertical = e.vertical
+		  AND q.vertical = $2
 		  AND (
 		        q.last_open_at  IS DISTINCT FROM GREATEST(q.last_open_at,  e.last_open)
 		     OR q.last_click_at IS DISTINCT FROM GREATEST(q.last_click_at, e.last_click)
 		  )`
 
-	// Own transaction with a raised local timeout: the app default is tuned for
-	// request handlers, and this is a bounded background backfill chunk.
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
-		log.Printf("[PartnerEngagementMarker] progression-signal begin err (window %dm..%dm): %v", sinceMins, untilMins, err)
-		return false
+		log.Printf("[PartnerEngagementMarker] progression batch begin err vertical=%s: %v", vertical, err)
+		return 0, false
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '120s'"); err != nil {
-		log.Printf("[PartnerEngagementMarker] progression-signal timeout-set err: %v", err)
-		return false
+		log.Printf("[PartnerEngagementMarker] progression batch timeout-set err: %v", err)
+		return 0, false
 	}
 	res, err := tx.ExecContext(ctx, q, args...)
 	if err != nil {
-		log.Printf("[PartnerEngagementMarker] progression-signal mark err (window %dm..%dm): %v", sinceMins, untilMins, err)
-		return false
+		log.Printf("[PartnerEngagementMarker] progression batch err vertical=%s ids=%d since=%dm: %v", vertical, len(ids), sinceMins, err)
+		return 0, false
 	}
 	if err := tx.Commit(); err != nil {
-		log.Printf("[PartnerEngagementMarker] progression-signal commit err (window %dm..%dm): %v", sinceMins, untilMins, err)
-		return false
+		log.Printf("[PartnerEngagementMarker] progression batch commit err vertical=%s: %v", vertical, err)
+		return 0, false
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		log.Printf("[PartnerEngagementMarker] stamped progression signals on %d records (opens+clicks, window %dm..%dm)", n, sinceMins, untilMins)
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("[PartnerEngagementMarker] stamped progression signals on %d records (vertical=%s campaigns=%d since=%dm)", n, vertical, len(ids), sinceMins)
 	}
-	return true
+	return int(n), true
 }

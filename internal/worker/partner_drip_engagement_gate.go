@@ -527,17 +527,20 @@ func (s *PartnerDripColdSweeper) runBatched(ctx context.Context, label, q string
 	return total
 }
 
-// gatedCampaignNameLike returns one LIKE pattern per gated vertical prefix,
-// matching the drip campaign-name convention `[partner-drip] <vertical> <brand> …`.
-// Used to scope the progression-signal scan to the lanes the gate governs.
-func gatedCampaignNameLike() []string {
+// verticalCampaignNamePredicate builds a parameterised OR of campaign-name
+// prefix matches for the gated verticals ("[partner-drip] <prefix>…"),
+// returning the predicate and its bind args starting at $1. Parameterised
+// (unlike gatedCampaignNameLike) so callers can compose further placeholders.
+func verticalCampaignNamePredicate() (string, []interface{}) {
 	prefixes := gatedVerticalPrefixes()
-	out := make([]string, 0, len(prefixes))
-	for _, p := range prefixes {
-		out = append(out, "c.name LIKE "+quoteSQLLiteral("[partner-drip] "+p+"%"))
+	if len(prefixes) == 0 {
+		return "", nil
 	}
-	if len(out) == 0 {
-		out = append(out, "c.name LIKE "+quoteSQLLiteral("[partner-drip] %"))
+	clauses := make([]string, 0, len(prefixes))
+	args := make([]interface{}, 0, len(prefixes))
+	for i, p := range prefixes {
+		clauses = append(clauses, fmt.Sprintf("name LIKE $%d", i+1))
+		args = append(args, "[partner-drip] "+p+"%")
 	}
-	return out
+	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
