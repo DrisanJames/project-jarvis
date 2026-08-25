@@ -132,7 +132,32 @@ type journeyRetryDecision struct {
 //
 // Moving to a different node RESETS the counters — a lane that failed twice at
 // touch 2 and then succeeded must not carry that history into touch 3.
+// journeyRetryCtx detaches retry bookkeeping from the FAILED SEND's context.
+//
+// WHY (verified in production 2026-08-25, on the very deploy that added this
+// policy): every write in this file inherited the caller's ctx — which, at the
+// moment a send fails, is frequently ALREADY EXPIRED, because an expired
+// context is one of the things that makes the send fail. So the backoff and the
+// eject could never land, and the policy was inert on exactly the enrollments
+// it exists for:
+//
+//   [JourneyRetry] bookkeeping failed (enrollment=enroll-clk-7d40ce26 node=email-3): context deadline exceeded
+//   [JourneyRetry] defer failed (enrollment=enroll-clk-7d40ce26): context deadline exceeded
+//
+// enroll-clk-7d40ce26 is one of the three mailboxes that had been retrying every
+// ~2 minutes for 13 days. A gate that no-ops is worse than no gate.
+//
+// WithoutCancel keeps the context VALUES (tracing, org scope) and drops only the
+// deadline and cancellation; the 5s budget bounds the detached write so a wedged
+// database cannot stall the executor goroutine that is trying to give up.
+func journeyRetryCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+}
+
 func recordJourneySendFailure(ctx context.Context, db *sql.DB, enrollmentID, nodeID string, sendErr error) journeyRetryDecision {
+	ctx, cancel := journeyRetryCtx(ctx)
+	defer cancel()
+
 	class := classifyJourneySendError(sendErr)
 	d := journeyRetryDecision{Class: class}
 
@@ -191,6 +216,9 @@ func clearJourneyRetry(ctx context.Context, db *sql.DB, enrollmentID string) {
 	if db == nil {
 		return
 	}
+	ctx, cancel := journeyRetryCtx(ctx)
+	defer cancel()
+
 	if _, err := db.ExecContext(ctx, `
 		UPDATE mailing_journey_enrollments
 		   SET retry_node_id = NULL, retry_attempts = 0, retry_first_at = NULL
@@ -206,6 +234,9 @@ func clearJourneyRetry(ctx context.Context, db *sql.DB, enrollmentID string) {
 // classifier files it as behavioral (a real lane outcome), never as an
 // administrative operator purge.
 func ejectJourneyEnrollment(ctx context.Context, db *sql.DB, enrollmentID, nodeID, reason string, sendErr error) {
+	ctx, cancel := journeyRetryCtx(ctx)
+	defer cancel()
+
 	msg := reason
 	if sendErr != nil {
 		m := sendErr.Error()
@@ -231,6 +262,9 @@ func ejectJourneyEnrollment(ctx context.Context, db *sql.DB, enrollmentID, nodeI
 // Without this the claim lease alone decides the retry cadence, which is how a
 // failing send became a two-minute hot loop for thirteen days.
 func deferJourneyEnrollment(ctx context.Context, db *sql.DB, enrollmentID string, delay time.Duration) {
+	ctx, cancel := journeyRetryCtx(ctx)
+	defer cancel()
+
 	if delay <= 0 {
 		delay = journeyRetryBaseDelay
 	}

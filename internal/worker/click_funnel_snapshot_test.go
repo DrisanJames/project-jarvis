@@ -499,3 +499,62 @@ func TestOrphanRepair_IsNotAMigration(t *testing.T) {
 		t.Fatal("the orphan repair is registered as a startup migration again — the 5s budget drops backfills silently")
 	}
 }
+
+// TestJourneyRetryCtx_SurvivesAnExpiredSendContext is the regression guard for
+// the defect that made the retry policy inert in production on the day it
+// shipped.
+//
+// The bookkeeping used the caller's context — which at the moment a send fails
+// is frequently already expired, because an expired context is one of the
+// things that MAKES a send fail. Both writes then failed with "context deadline
+// exceeded", so the backoff never landed and the 13-day hot loop continued
+// exactly as before. The negative path is the whole test: hand these functions
+// a dead context and the UPDATE must still execute.
+func TestJourneyRetryCtx_SurvivesAnExpiredSendContext(t *testing.T) {
+	dead, cancel := context.WithCancel(context.Background())
+	cancel() // the send's context, already gone
+	if dead.Err() == nil {
+		t.Fatal("precondition: the context must be dead")
+	}
+
+	// The detached context must be usable even though its parent is not.
+	live, cancel2 := journeyRetryCtx(dead)
+	defer cancel2()
+	if live.Err() != nil {
+		t.Fatalf("detached context inherited the parent's cancellation: %v", live.Err())
+	}
+	if dl, ok := live.Deadline(); !ok || time.Until(dl) <= 0 {
+		t.Fatal("detached context must carry its own live deadline, not the parent's expired one")
+	}
+
+	// End to end: the defer must still write with a dead parent context.
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectExec("UPDATE mailing_journey_enrollments").
+		WithArgs("enroll-clk-7d40ce26", 300).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	deferJourneyEnrollment(dead, db, "enroll-clk-7d40ce26", 5*time.Minute)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the backoff write did not happen with an expired send context — the policy is inert again: %v", err)
+	}
+}
+
+// TestJourneyRetryCtx_KeepsContextValues — WithoutCancel must drop the deadline
+// and KEEP the values, or tracing and org scope are lost on every retry write.
+func TestJourneyRetryCtx_KeepsContextValues(t *testing.T) {
+	type ctxKey string
+	const k ctxKey = "org"
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), k, "acme"))
+	cancel()
+
+	live, cancel2 := journeyRetryCtx(parent)
+	defer cancel2()
+	if got, _ := live.Value(k).(string); got != "acme" {
+		t.Fatalf("context values were dropped: %q", got)
+	}
+}
