@@ -121,6 +121,10 @@ func TestEngagementGateSQL_WindowIsTouchGap(t *testing.T) {
 	if strings.Count(sql, ">=") != 2 {
 		t.Errorf("expected both open and click comparisons, got:\n%s", sql)
 	}
+	// GMAIL-ONLY (Operating Plan v2): non-gmail rows must pass unconditionally.
+	if !strings.Contains(sql, "<> 'gmail'") {
+		t.Errorf("gate must scope to gmail records only:\n%s", sql)
+	}
 	// Must AND onto an existing WHERE chain, never start its own clause.
 	if !strings.HasPrefix(strings.TrimSpace(sql), "AND (") {
 		t.Errorf("gate SQL must be an AND fragment, got:\n%s", sql)
@@ -155,6 +159,7 @@ func TestEngagementGateAnyVerticalSQL_Shape(t *testing.T) {
 	}
 	for _, want := range []string{
 		"NOT (LOWER(q.vertical) LIKE 'internal_auto_insurance%')",
+		"COALESCE(q.isp_family, '') <> 'gmail'",
 		"q.last_click_at",
 		"q.last_open_at",
 		"q.next_touch_at - INTERVAL '24 hours'",
@@ -569,6 +574,18 @@ func TestColdSweepTouchesOnlyRealColumns(t *testing.T) {
 	body := string(src)
 	if strings.Contains(body, "updated_at") {
 		t.Error("partner_clean_queue has no updated_at column — every sweep statement would error")
+	}
+	// The sweep buckets ONLY gmail rows (non-gmail flows the full ladder).
+	i2 := strings.Index(body, "func (s *PartnerDripColdSweeper) markCold(")
+	if i2 < 0 {
+		t.Fatal("markCold not found")
+	}
+	mc := body[i2:]
+	if j := strings.Index(mc, "\n}\n"); j > 0 {
+		mc = mc[:j]
+	}
+	if !strings.Contains(mc, "isp_family = 'gmail'") {
+		t.Error("cold sweep must bucket gmail records only")
 	}
 	for _, col := range []string{"terminal_reason", "cold_at", "cold_touch", "next_touch_at"} {
 		if !strings.Contains(body, col) {

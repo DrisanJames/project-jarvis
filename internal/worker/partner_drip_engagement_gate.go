@@ -185,10 +185,19 @@ func engagementGateSQL(vertical, alias string) string {
 	}
 	// next_touch_at is NOT NULL on every row these call sites select (they all
 	// require next_touch_at <= NOW()), so the window start is well-defined.
+	//
+	// GMAIL-ONLY (operator 2026-08-25, Operating Plan v2): the engagement gate
+	// governs gmail records exclusively — "for all others we should allow data
+	// to flow through and go through the respective touchpoints." Non-gmail
+	// rows pass unconditionally; gmail rows need an open or click in the touch
+	// window. Grounding: gmail openers money-click at 7.6x non-openers
+	// (0.86/1k vs 0.11/1k, 10d n=105,030), so opens stay in the recipient
+	// gate; they are excluded from all domain-level pacing decisions.
 	window := fmt.Sprintf("(%snext_touch_at - INTERVAL '%d hours')", q, followupTouchGapHours)
 	return fmt.Sprintf(`
 			  AND (
-			        (%[1]slast_click_at IS NOT NULL AND %[1]slast_click_at >= %[2]s)
+			        COALESCE(%[1]sisp_family, '') <> 'gmail'
+			     OR (%[1]slast_click_at IS NOT NULL AND %[1]slast_click_at >= %[2]s)
 			     OR (%[1]slast_open_at  IS NOT NULL AND %[1]slast_open_at  >= %[2]s)
 			  )`, q, window)
 }
@@ -228,6 +237,7 @@ func engagementGateAnyVerticalSQL(alias string) string {
 	return fmt.Sprintf(`
 			  AND (
 			        NOT %[1]s
+			     OR COALESCE(%[2]sisp_family, '') <> 'gmail'
 			     OR (%[2]slast_click_at IS NOT NULL AND %[2]slast_click_at >= %[3]s)
 			     OR (%[2]slast_open_at  IS NOT NULL AND %[2]slast_open_at  >= %[3]s)
 			  )`, gated, q, window)
@@ -449,6 +459,7 @@ func (s *PartnerDripColdSweeper) markCold(ctx context.Context, prefixes []string
 			SELECT id FROM partner_clean_queue
 			WHERE status = 'mailed'
 			  AND %[2]s
+			  AND isp_family = 'gmail'
 			  AND terminal_reason IS NULL
 			  AND engaged_at IS NULL
 			  AND touch_count BETWEEN 1 AND $%[3]d

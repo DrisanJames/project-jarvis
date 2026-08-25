@@ -895,6 +895,13 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		if po.ctx.Err() != nil {
 			return
 		}
+		// AOL round-robin companion (Operating Plan v2): on the internal
+		// verticals, AOL introductions ship under a rotated estate brand.
+		if aolRotationActive(v.vertical) {
+			if err := po.processAOLRotated(po.ctx, v); err != nil {
+				log.Printf("[PartnerDripOrchestrator] aol_rotate vertical=%s: %v", v.vertical, err)
+			}
+		}
 		// Fire up to BrandsPerTick welcome waves per vertical per tick.
 		// Each call advances the brand round-robin pointer and processes
 		// a fresh per-ISP-capped wave for that brand.
@@ -1593,6 +1600,12 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	// claimed for these verticals; every other ISP is unaffected.
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		perISPCaps["apple"] = 0
+	}
+	// AOL round-robin: while the rotated companion pass owns AOL for this
+	// vertical, the roster brand's own wave leaves AOL alone — one path, so
+	// the lane's AOL volume spreads across domains instead of doubling.
+	if aolRotationActive(v.vertical) {
+		perISPCaps["aol"] = 0
 	}
 	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
 	if err != nil {
