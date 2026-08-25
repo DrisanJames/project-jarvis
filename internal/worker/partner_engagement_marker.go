@@ -400,7 +400,19 @@ func (m *PartnerEngagementMarker) gatedDripCampaigns(ctx context.Context, days i
 		return nil, nil
 	}
 	args = append(args, days)
-	rows, err := m.db.QueryContext(ctx, `
+	// Same raised local budget as the stamp batches: 0.95s standalone, but the
+	// app-default statement_timeout killed it under load spikes (2026-08-25
+	// 00:16 — "campaign enumeration failed", the one statement of this pipeline
+	// left on the default budget).
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL statement_timeout = '120s'"); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
 		SELECT id::text, split_part(name, ' ', 2) AS vertical
 		FROM mailing_campaigns
 		WHERE `+pred+`
