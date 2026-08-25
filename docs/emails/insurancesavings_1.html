@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Requested Auto Insurance Quotes</title>
+  <style>
+    /* Reset styles */
+    body,
+    html {
+      margin: 0;
+      padding: 0;
+      font-family: 'Arial', sans-serif;
+      background-color: #f9f9f9;
+    }
+
+    /* Container styles */
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+    }
+
+    /* Header styles */
+    .header {
+      padding: 20px;
+      text-align: center;
+      background-color: #f1f1f1;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      color: #333333;
+    }
+
+    /* Content styles */
+    .content {
+      padding: 20px;
+    }
+
+    .content p {
+      font-size: 16px;
+      color: #555555;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+
+    .cta-button {
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    .cta-button a {
+      display: inline-block;
+      background-color: #007bff;
+      color: #ffffff;
+      text-decoration: none;
+      padding: 12px 25px;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+
+    /* Footer styles */
+    .footer {
+      padding: 20px;
+      text-align: center;
+      font-size: 12px;
+      color: #888888;
+      background-color: #f1f1f1;
+    }
+
+    .footer a {
+      color: #007bff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+
+<body>{% assign fn = first_name | default: "there" %}{% assign city_g = custom.city | default: "your area" %}{% assign state_g = custom.state | default: "your state" %}{% assign veh = custom.vehicle | default: "vehicle" %}{% assign emd5 = custom.emd5 | default: "" %}{% assign tid = custom.tid | default: "" %}{% if brand.domain == "historythinking.com" or brand.domain == "quizfiesta.com" %}{% assign s12 = "2" %}{% else %}{% assign s12 = "3" %}{% endif %}
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>Your Quotes Are Ready, {{ fn }}</h1>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+      <p>Thank you for requesting insurance quotes in {{ city_g }}. We have processed your information and compiled personalized quotes just for you.</p>
+      <p>To review your quotes, please click the button below:</p>
+      <div class="cta-button">
+        <a href="https://insurance-savings-pro.com/success/?id=dbc1b8&s4=minr87&channel=REV&s11={{ emd5 }}&tokenid={{ tid }}&s12={{ s12 }}" style="color: #ffffff;">View Your Options</a>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <p>This email was sent to <a href="mailto:{{ email }}">{{ email }}</a>.</p>
+      <p>To unsubscribe from future emails, click <a href="https://www.samestoreteam.com/o-pjrz-t37-6b2b592d8838d02e969e2d1473276c67">here</a>.</p>
+      Insurance Savings Pro, LLC · 1401 NW 136th Ave Suite 401, Sunrise, FL 33323<br>
+    </div>
+  </div>
+</body>
+
+</html>
