@@ -1160,6 +1160,16 @@ func main() {
 			// were documented and never armed. Kill switch: LANE_SNAPSHOT_DISABLED.
 			laneSnapshot := worker.NewLaneSnapshotWorker(mailingDB, redisClient)
 			laneSnapshot.Start(ctx)
+			// ClickFunnelSnapshotWorker (2026-08-25): materializes the Click
+			// Funnels read model to S3 so the screen queries NEITHER Postgres
+			// nor Athena on the request path. Replaces ~4s of lane-list PG work
+			// plus ~13s per lane click (4.9s execution-log flow + two live
+			// Athena passes). Config/flow/state refresh every tick; the lake
+			// pass is throttled to 15m with an hourly 7d reconciliation,
+			// because open/click ingest lag has a ~6h floor regardless.
+			// Kill switch: CLICK_FUNNEL_SNAPSHOT_DISABLED.
+			clickFunnelSnapshot := worker.NewClickFunnelSnapshotWorker(mailingDB, redisClient)
+			clickFunnelSnapshot.Start(ctx)
 			// SESVDMSnapshotWorker: 6h leased UTC-day VDM identity telemetry
 			// into ses_vdm_daily (default AWS credential chain; region
 			// SES_REGION, default us-west-1). Kill switch:
@@ -2789,6 +2799,56 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// ── click-funnel retry hardening (2026-08-25) ──────────────────────
+		// Attempt state for the journey retry policy (internal/worker/
+		// journey_retry.go). Before this, a failing node retried on the claim
+		// lease alone: three mailboxes on offer 420 produced 26,908 attempts
+		// over 13 days. ADD COLUMN with a constant default is metadata-only in
+		// PG11+, so this is O(1) on the 143k-row table and fits the 5s budget.
+		// SEPARATE ENTRIES: migrationSkipProbe classifies by leading keywords,
+		// so a combined ALTER would be probed once and later columns would
+		// silently never land.
+		{"journey_enrollments_retry_node", `ALTER TABLE mailing_journey_enrollments ADD COLUMN IF NOT EXISTS retry_node_id TEXT`},
+		{"journey_enrollments_retry_attempts", `ALTER TABLE mailing_journey_enrollments ADD COLUMN IF NOT EXISTS retry_attempts INTEGER NOT NULL DEFAULT 0`},
+		{"journey_enrollments_retry_first_at", `ALTER TABLE mailing_journey_enrollments ADD COLUMN IF NOT EXISTS retry_first_at TIMESTAMPTZ`},
+
+		// ── orphan shadow-campaign repair (2026-08-25) ─────────────────────
+		// Nine click-drip shadow campaigns were inserted through the LEGACY
+		// (unstamped) path during the 2026-08-02 DDL landing window, between
+		// 01:38 and 02:31. Because the id is deterministic and the insert was
+		// ON CONFLICT (id) DO NOTHING, every later send collided and no-opped:
+		// those nodes could never self-repair and their touches were invisible
+		// to the funnel screen forever (offer 420 touch 2 had 3,051 sends and
+		// showed "not node-attributed").
+		//
+		// The mapping is proved CRYPTOGRAPHICALLY, not by parsing the name: the
+		// id is uuid_generate_v5(ns, 'click-drip-shadow-offer-<offer>-node-<node>'),
+		// so a row is only repaired when its OWN id equals the digest recomputed
+		// from the (offer, node) parsed out of its name. A name that does not
+		// reproduce the id is left alone. Guarded to NULL columns so a correct
+		// mapping can never be overwritten.
+		{"clickdrip_orphan_stamp_repair", `
+			UPDATE mailing_campaigns c
+			   SET journey_key      = COALESCE(c.journey_key, 'click-drip-4touch-72h'),
+			       journey_node_id  = m.node_id,
+			       journey_offer_id = m.offer_id,
+			       journey_wave_index = COALESCE(c.journey_wave_index,
+			           NULLIF(regexp_replace(m.node_id, '^email-', ''), '')::int)
+			  FROM (
+			      SELECT id,
+			             substring(name from 'offer ([0-9]+)')       AS offer_id,
+			             substring(name from '· (email-[0-9]+)$')    AS node_id
+			        FROM mailing_campaigns
+			       WHERE campaign_type = 'click_drip'
+			         AND (journey_node_id IS NULL OR journey_offer_id IS NULL)
+			         AND name ~ '· email-[0-9]+$'
+			  ) m
+			 WHERE c.id = m.id
+			   AND m.offer_id IS NOT NULL AND m.node_id IS NOT NULL
+			   AND (c.journey_node_id IS NULL OR c.journey_offer_id IS NULL)
+			   AND c.id = uuid_generate_v5(
+			         'a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5e6f'::uuid,
+			         'click-drip-shadow-offer-' || m.offer_id || '-node-' || m.node_id)`},
 		// Lane-stats daily rollup (2026-08-19). Precomputes the Property Ledger
 		// lane scoreboard so the screen is instant instead of converging over
 		// three 25s polls. REGISTERED AS TWO ENTRIES ON PURPOSE: migrationSkipProbe

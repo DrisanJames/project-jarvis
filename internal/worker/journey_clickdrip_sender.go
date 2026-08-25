@@ -108,6 +108,14 @@ type JourneyClickDripSender struct {
 	trackingURL    string // global fallback tracking base URL
 	trackingSecret string
 
+	// shadowIDCache memoizes resolveShadowCampaignID. The mapping from
+	// (offer, node, content hash) to a campaign id is IMMUTABLE once
+	// established — version 0 keeps the legacy id forever and a new version
+	// keeps whichever id it was first recorded under — so this is a pure
+	// memo, not a cache with staleness. It keeps the version-0 lookup off
+	// the per-send path after the first resolution.
+	shadowIDCache sync.Map // string -> string
+
 	// stampColsMissing latches when mailing_campaigns lacks the node-attribution
 	// columns, so ensureShadowCampaign falls back to the un-stamped INSERT
 	// instead of failing the send.
@@ -533,8 +541,80 @@ func normalizeTrackBase(d string) string {
 // is a primary-key lookup rather than a (campaign_type, name) sequential scan.
 // The prior name-scan version took ~27s on a 90k-row mailing_campaigns table
 // and tripped the executor's 30s context, failing every reminder send.
+
+// resolveShadowCampaignID picks the campaign id this touch's metrics belong to,
+// and is the whole reason wiring ContentHash did not detach production history.
+//
+// THE HAZARD: shadowCampaignID seeds a UUIDv5 with
+// "click-drip-shadow-offer-<offer>-node-<node>[-v-<hash>]". ContentHash was
+// never populated, so EVERY production campaign id was minted from the hashless
+// seed. Introducing the hash changes the seed, changes the UUID, and every
+// historical lake event stays bound to the id nothing points at any more — all
+// 22 lanes would have read zero on the next send.
+//
+// THE FIX: the hashless id is VERSION 0. The first version we ever record for a
+// (offer, node) adopts it, so metrics continue on the id the lake already has.
+// Only a LATER creative change — a hash we have not seen for this node — mints a
+// new versioned id and freezes the previous version's numbers, which is the
+// behaviour the versioning was designed for. See METRIC_CONTRACT.md §10.12.
+func (s *JourneyClickDripSender) resolveShadowCampaignID(ctx context.Context, p ClickDripSendParams) string {
+	legacyID := shadowCampaignID(p.EverflowOfferID, p.NodeID, "")
+	if p.ContentHash == "" || p.NodeID == "" || p.EverflowOfferID == "" {
+		return legacyID
+	}
+
+	memoKey := p.EverflowOfferID + "\x00" + p.NodeID + "\x00" + p.ContentHash
+	if v, ok := s.shadowIDCache.Load(memoKey); ok {
+		if id, _ := v.(string); id != "" {
+			return id
+		}
+	}
+	resolved := legacyID
+	memoize := true
+	defer func() {
+		if memoize {
+			s.shadowIDCache.Store(memoKey, resolved)
+		}
+	}()
+
+	// Has this (offer, node) ever recorded a version? If the registry is empty
+	// for it, this hash is version 0 and inherits the legacy id.
+	var seen int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_clickdrip_touch_versions
+		 WHERE everflow_offer_id = $1 AND node_id = $2
+	`, p.EverflowOfferID, p.NodeID).Scan(&seen)
+	if err != nil {
+		// Registry unavailable (pre-migration). The SAFE default is the legacy
+		// id: it keeps history attached. A missing split is recoverable, a
+		// detached three months of metrics is not. NOT memoized — a transient
+		// registry error must not pin this touch to the legacy id forever.
+		memoize = false
+		return legacyID
+	}
+	if seen == 0 {
+		return legacyID
+	}
+
+	// Known version for this node? Reuse whatever id it was first recorded
+	// under — including the legacy one for version 0.
+	var known sql.NullString
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT shadow_campaign_id::text FROM mailing_clickdrip_touch_versions
+		 WHERE everflow_offer_id = $1 AND node_id = $2 AND content_hash = $3
+	`, p.EverflowOfferID, p.NodeID, p.ContentHash).Scan(&known); err == nil &&
+		known.Valid && known.String != "" {
+		resolved = known.String
+		return resolved
+	}
+
+	// Genuinely new creative version -> its own campaign id.
+	resolved = shadowCampaignID(p.EverflowOfferID, p.NodeID, p.ContentHash)
+	return resolved
+}
+
 func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID string, p ClickDripSendParams) (string, error) {
-	campaignID := shadowCampaignID(p.EverflowOfferID, p.NodeID, p.ContentHash)
+	campaignID := s.resolveShadowCampaignID(ctx, p)
 	name := fmt.Sprintf("Click-Drip Reminder · offer %s", p.EverflowOfferID)
 	if p.NodeID != "" {
 		name = fmt.Sprintf("Click-Drip Reminder · offer %s · %s", p.EverflowOfferID, p.NodeID)
@@ -601,7 +681,13 @@ func (s *JourneyClickDripSender) ensureShadowCampaign(ctx context.Context, orgID
 			0, 0,
 			NOW(), NOW()
 		)
-		ON CONFLICT (id) DO NOTHING`
+		ON CONFLICT (id) DO UPDATE SET
+			journey_key      = COALESCE(mailing_campaigns.journey_key,      EXCLUDED.journey_key),
+			journey_node_id  = COALESCE(mailing_campaigns.journey_node_id,  EXCLUDED.journey_node_id),
+			journey_offer_id = COALESCE(mailing_campaigns.journey_offer_id, EXCLUDED.journey_offer_id),
+			journey_wave_index = COALESCE(mailing_campaigns.journey_wave_index, EXCLUDED.journey_wave_index)
+		WHERE mailing_campaigns.journey_node_id IS NULL
+		   OR mailing_campaigns.journey_offer_id IS NULL`
 	const legacyInsert = `
 		INSERT INTO mailing_campaigns (
 			id, organization_id, name, status,

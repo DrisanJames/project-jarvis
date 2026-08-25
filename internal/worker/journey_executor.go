@@ -346,8 +346,25 @@ func (je *JourneyExecutor) processEnrollment(ctx context.Context, enrollment Enr
 	result, err := je.executeNode(ctx, enrollment, currentNode)
 	if err != nil {
 		je.logExecution(ctx, enrollment, currentNode, "error", err.Error())
+
+		// RETRY POLICY (2026-08-25). Before this, an error returned here and the
+		// claim lease alone decided when to try again — a ~2-minute hot loop
+		// that ran for 13 days on three mailboxes and wrote 26,908 log rows.
+		// Now every failure is classified, backed off, and eventually ejected
+		// with a reason code. See journey_retry.go for the measured incident.
+		d := recordJourneySendFailure(ctx, je.db, enrollment.ID, currentNode.ID, err)
+		if d.Terminal {
+			ejectJourneyEnrollment(ctx, je.db, enrollment.ID, currentNode.ID, d.Reason, err)
+			je.logExecution(ctx, enrollment, currentNode, "terminal_failure", d.Reason+": "+err.Error())
+		} else {
+			deferJourneyEnrollment(ctx, je.db, enrollment.ID, d.NextDelay)
+		}
 		return err
 	}
+
+	// A node that executed clears its retry history — a lane that failed twice
+	// at touch 2 must not carry that count into touch 3.
+	clearJourneyRetry(ctx, je.db, enrollment.ID)
 
 	je.logExecution(ctx, enrollment, currentNode, result.Action, "")
 
@@ -703,6 +720,13 @@ func (je *JourneyExecutor) executeEmailNode(ctx context.Context, enrollment Enro
 			FromName:        fromName,
 			FromEmail:       fromEmail,
 			ProfileID:       sendingProfileID,
+			// ContentHash was computed but NEVER passed (verified 2026-08-25:
+			// mailing_clickdrip_touch_versions was empty estate-wide and every
+			// production shadow campaign carried the hashless id). Passing it
+			// makes creative versioning real. shadowCampaignID keeps the
+			// hashless id as version 0 so pre-cutover metrics stay attached —
+			// see ensureShadowCampaign.
+			ContentHash: touchContentVersion,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("click-drip send failed: %w", err)
