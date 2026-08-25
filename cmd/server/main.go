@@ -10339,6 +10339,16 @@ END $$`},
 		{"drip_gate_last_click_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS last_click_at TIMESTAMPTZ`},
 		{"drip_gate_cold_at", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS cold_at TIMESTAMPTZ`},
 		{"drip_gate_cold_touch", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS cold_touch INTEGER`},
+		// wcl_remail vertical (operator 2026-08-25): the burned wcl domain's
+		// 617k mailed-but-wasted records resurrected as a fenced lane on a
+		// full 16-domain rotation. The CHECK was extended directly in prod the
+		// same night; this keeps fresh installs coherent.
+		{"wcl_remail_vertical_check", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_vertical_check'
+				AND pg_get_constraintdef(oid) LIKE '%wcl_remail%') THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+			END IF;
+		END $$`},
 		// Cap-decision trace (§5.8): parent + DEFAULT partition ONLY — month
 		// partitions are the §10.6 xray_maintenance op's job, deployment-date-
 		// relative, never hardcoded here. Nothing emits rows until P6 (D6,
