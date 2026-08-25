@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -468,5 +469,33 @@ func TestJourneyRetryEject_HasAnIndependentKillSwitch(t *testing.T) {
 	t.Setenv("JOURNEY_RETRY_EJECT_DISABLED", "")
 	if journeyRetryEjectDisabled() {
 		t.Fatal("kill switch must default OFF")
+	}
+}
+
+// TestOrphanRepair_NamespaceMatchesTheSender — the repair proves its mapping by
+// recomputing the UUIDv5 in SQL, so its namespace literal MUST equal the one
+// the sender mints ids with. A drift would silently repair nothing (or, worse,
+// match the wrong row).
+func TestOrphanRepair_NamespaceMatchesTheSender(t *testing.T) {
+	if clickFunnelShadowNamespace != clickDripShadowNamespace.String() {
+		t.Fatalf("namespace drift: repair uses %s, sender uses %s",
+			clickFunnelShadowNamespace, clickDripShadowNamespace.String())
+	}
+	// And the digest it proves against is the one production actually carries.
+	if got := shadowCampaignID("420", "email-1", ""); got != "052acdeb-6656-5aa6-9ac8-46c445739985" {
+		t.Fatalf("offer 420 email-1 legacy id = %s, want the orphan id observed in prod", got)
+	}
+}
+
+// TestOrphanRepair_IsNotAMigration — the repair is a BACKFILL. It timed out and
+// was silently skipped when it shipped in the 5s startup-migration slice
+// (verified in prod 2026-08-25), so it must stay in the worker.
+func TestOrphanRepair_IsNotAMigration(t *testing.T) {
+	main, err := os.ReadFile("../../cmd/server/main.go")
+	if err != nil {
+		t.Skipf("cannot read main.go: %v", err)
+	}
+	if strings.Contains(string(main), "clickdrip_orphan_stamp_repair") {
+		t.Fatal("the orphan repair is registered as a startup migration again — the 5s budget drops backfills silently")
 	}
 }

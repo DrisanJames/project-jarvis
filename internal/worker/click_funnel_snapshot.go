@@ -451,6 +451,11 @@ func (w *ClickFunnelSnapshotWorker) RunOnce(ctx context.Context) {
 	pgCtx, cancel := context.WithTimeout(ctx, clickFunnelPGBudget)
 	defer cancel()
 
+	// Repair first: a node with no shadow campaign cannot be measured at all,
+	// so fixing attribution before gathering means this pass already reflects
+	// it. Idempotent — once repaired the statement matches zero rows.
+	w.repairOrphanNodeStamps(pgCtx)
+
 	lanes, err := w.gatherLanes(pgCtx)
 	if err != nil {
 		log.Printf("[ClickFunnelSnapshot] %v", err)

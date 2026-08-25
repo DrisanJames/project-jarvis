@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -526,4 +527,66 @@ func (w *ClickFunnelSnapshotWorker) gatherNodeCampaigns(ctx context.Context) (ma
 		out[k] = id
 	}
 	return out, rows.Err()
+}
+
+// ── orphan node-attribution repair ──────────────────────────────────────────
+
+// clickFunnelShadowNamespace mirrors clickDripShadowNamespace in
+// journey_clickdrip_sender.go. Kept as a literal here because the repair proves
+// its mapping in SQL, and pinned by a test so the two can never drift.
+const clickFunnelShadowNamespace = "a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5e6f"
+
+// repairOrphanNodeStamps re-attributes click-drip shadow campaigns that were
+// inserted through the LEGACY (unstamped) path.
+//
+// WHAT BROKE: nine campaigns were created between 01:38 and 02:31 on
+// 2026-08-02, inside the window where the node-attribution DDL had not yet
+// landed. The id is deterministic and the insert was ON CONFLICT (id) DO
+// NOTHING, so every later send collided and no-opped — those nodes could never
+// self-repair, and their touches were invisible to the funnel screen forever.
+// Offer 420's touch 2 had 3,051 sends and rendered "not node-attributed".
+//
+// WHY IT IS HERE AND NOT A MIGRATION: it is a backfill, and runStartupMigrations
+// runs each statement under a 5s budget that includes lock wait. Shipped there
+// first, it logged "TIMEOUT (skipped — will retry next boot)" on the first prod
+// boot — a silent absence. This runs inside the snapshot worker's lease, off the
+// request path, with a 120s budget, and retries every tick until it is a no-op.
+//
+// THE MAPPING IS PROVED, NOT PARSED. Campaign names are presentation strings.
+// A row is only repaired when its OWN id equals the UUIDv5 recomputed from the
+// (offer, node) parsed out of its name — a name that does not reproduce the id
+// is left alone. The write is guarded to NULL columns so a correct existing
+// mapping can never be overwritten.
+func (w *ClickFunnelSnapshotWorker) repairOrphanNodeStamps(ctx context.Context) {
+	res, err := w.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns c
+		   SET journey_key        = COALESCE(c.journey_key, 'click-drip-4touch-72h'),
+		       journey_node_id    = m.node_id,
+		       journey_offer_id   = m.offer_id,
+		       journey_wave_index = COALESCE(c.journey_wave_index,
+		           NULLIF(regexp_replace(m.node_id, '^email-', ''), '')::int)
+		  FROM (
+		      SELECT id,
+		             substring(name from 'offer ([0-9]+)')    AS offer_id,
+		             substring(name from '· (email-[0-9]+)$') AS node_id
+		        FROM mailing_campaigns
+		       WHERE campaign_type = 'click_drip'
+		         AND (journey_node_id IS NULL OR journey_offer_id IS NULL)
+		         AND name ~ '· email-[0-9]+$'
+		  ) m
+		 WHERE c.id = m.id
+		   AND m.offer_id IS NOT NULL AND m.node_id IS NOT NULL
+		   AND (c.journey_node_id IS NULL OR c.journey_offer_id IS NULL)
+		   AND c.id = uuid_generate_v5($1::uuid,
+		         'click-drip-shadow-offer-' || m.offer_id || '-node-' || m.node_id)
+	`, clickFunnelShadowNamespace)
+	if err != nil {
+		// Never fatal to the snapshot: an unrepaired node renders with an
+		// explicit "not measurable" alert, which is the honest state.
+		log.Printf("[ClickFunnelSnapshot] orphan stamp repair: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[ClickFunnelSnapshot] repaired node attribution on %d orphaned shadow campaign(s)", n)
+	}
 }

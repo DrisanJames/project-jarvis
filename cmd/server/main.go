@@ -2812,43 +2812,14 @@ func runStartupMigrations(db *sql.DB) {
 		{"journey_enrollments_retry_attempts", `ALTER TABLE mailing_journey_enrollments ADD COLUMN IF NOT EXISTS retry_attempts INTEGER NOT NULL DEFAULT 0`},
 		{"journey_enrollments_retry_first_at", `ALTER TABLE mailing_journey_enrollments ADD COLUMN IF NOT EXISTS retry_first_at TIMESTAMPTZ`},
 
-		// ── orphan shadow-campaign repair (2026-08-25) ─────────────────────
-		// Nine click-drip shadow campaigns were inserted through the LEGACY
-		// (unstamped) path during the 2026-08-02 DDL landing window, between
-		// 01:38 and 02:31. Because the id is deterministic and the insert was
-		// ON CONFLICT (id) DO NOTHING, every later send collided and no-opped:
-		// those nodes could never self-repair and their touches were invisible
-		// to the funnel screen forever (offer 420 touch 2 had 3,051 sends and
-		// showed "not node-attributed").
-		//
-		// The mapping is proved CRYPTOGRAPHICALLY, not by parsing the name: the
-		// id is uuid_generate_v5(ns, 'click-drip-shadow-offer-<offer>-node-<node>'),
-		// so a row is only repaired when its OWN id equals the digest recomputed
-		// from the (offer, node) parsed out of its name. A name that does not
-		// reproduce the id is left alone. Guarded to NULL columns so a correct
-		// mapping can never be overwritten.
-		{"clickdrip_orphan_stamp_repair", `
-			UPDATE mailing_campaigns c
-			   SET journey_key      = COALESCE(c.journey_key, 'click-drip-4touch-72h'),
-			       journey_node_id  = m.node_id,
-			       journey_offer_id = m.offer_id,
-			       journey_wave_index = COALESCE(c.journey_wave_index,
-			           NULLIF(regexp_replace(m.node_id, '^email-', ''), '')::int)
-			  FROM (
-			      SELECT id,
-			             substring(name from 'offer ([0-9]+)')       AS offer_id,
-			             substring(name from '· (email-[0-9]+)$')    AS node_id
-			        FROM mailing_campaigns
-			       WHERE campaign_type = 'click_drip'
-			         AND (journey_node_id IS NULL OR journey_offer_id IS NULL)
-			         AND name ~ '· email-[0-9]+$'
-			  ) m
-			 WHERE c.id = m.id
-			   AND m.offer_id IS NOT NULL AND m.node_id IS NOT NULL
-			   AND (c.journey_node_id IS NULL OR c.journey_offer_id IS NULL)
-			   AND c.id = uuid_generate_v5(
-			         'a7f3c2d1-9b8e-4c6a-8d5f-1e2b3c4d5e6f'::uuid,
-			         'click-drip-shadow-offer-' || m.offer_id || '-node-' || m.node_id)`},
+		// Orphan shadow-campaign repair does NOT live here. It is a BACKFILL,
+		// and this slice's 5s budget drops backfills silently — verified in
+		// production 2026-08-25, where this exact statement logged
+		// "TIMEOUT (skipped — will retry next boot)" on its first boot even
+		// though the same scan runs in 1.4s standalone (the budget went to lock
+		// wait against active sending on mailing_campaigns). It now runs in
+		// ClickFunnelSnapshotWorker.repairOrphanNodeStamps, off the request
+		// path with a 120s budget, retried every tick until it is a no-op.
 		// Lane-stats daily rollup (2026-08-19). Precomputes the Property Ledger
 		// lane scoreboard so the screen is instant instead of converging over
 		// three 25s polls. REGISTERED AS TWO ENTRIES ON PURPOSE: migrationSkipProbe
