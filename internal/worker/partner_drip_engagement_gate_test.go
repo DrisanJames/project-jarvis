@@ -645,3 +645,62 @@ func TestBackfillIsCampaignKeyed(t *testing.T) {
 		t.Error("stamp statement re-grew the campaigns JOIN — this is the timeout shape")
 	}
 }
+
+// CLICKER CONTINUATION (operator 2026-08-25): "Anyone who clicks the money
+// link progresses — they NEVER exit the sequence." Internal feeds drop the
+// engaged_at exit; partner lanes keep it (their Activation metrics and ladder
+// economics depend on exit-on-click).
+func TestEngagedExitSQL_InternalContinuesPartnerExits(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "")
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
+
+	if got := engagedExitSQL("internal_auto_insurance_v7", ""); got != "" {
+		t.Fatalf("internal clicker must not exit, got %q", got)
+	}
+	if got := engagedExitSQL("refi_heloc", ""); !strings.Contains(got, "engaged_at IS NULL") {
+		t.Fatalf("partner lane must keep clicker exit, got %q", got)
+	}
+	// kill switch restores exit everywhere
+	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "1")
+	if got := engagedExitSQL("internal_auto_insurance_v7", ""); !strings.Contains(got, "engaged_at IS NULL") {
+		t.Fatalf("kill switch inert, got %q", got)
+	}
+	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "")
+
+	any := engagedExitAnyVerticalSQL("q")
+	for _, want := range []string{"LOWER(q.vertical) LIKE 'internal_auto_insurance%'", "OR q.engaged_at IS NULL"} {
+		if !strings.Contains(any, want) {
+			t.Fatalf("cross-vertical exit missing %q:\n%s", want, any)
+		}
+	}
+}
+
+// No follow-up claim path may carry a hardcoded engaged_at exit anymore — it
+// must route through the builders, or internal clickers silently exit again.
+func TestNoHardcodedEngagedExitInFollowupPaths(t *testing.T) {
+	src, err := os.ReadFile("partner_drip_orchestrator.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	for _, fn := range []string{
+		"func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(",
+		"func (po *PartnerDripOrchestrator) expressFollowupBrands(",
+		"func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(",
+	} {
+		i := strings.Index(body, fn)
+		if i < 0 {
+			t.Fatalf("%s not found", fn)
+		}
+		f := body[i:]
+		if j := strings.Index(f, "\n}\n"); j > 0 {
+			f = f[:j]
+		}
+		if strings.Contains(f, "AND engaged_at IS NULL") || strings.Contains(f, "AND q.engaged_at IS NULL") {
+			t.Errorf("%s still hardcodes the clicker exit", fn)
+		}
+		if !strings.Contains(f, "engagedExit") {
+			t.Errorf("%s does not route through the engagedExit builders", fn)
+		}
+	}
+}

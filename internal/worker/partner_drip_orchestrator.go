@@ -4478,13 +4478,13 @@ func (po *PartnerDripOrchestrator) expressFollowupBrands(ctx context.Context, ve
 	// Same engagement gate as the claim, so the express pass only fires waves
 	// for brands that still hold ELIGIBLE due records on a gated vertical.
 	engGate := engagementGateSQL(vertical, "")
+	engagedExit := engagedExitSQL(vertical, "")
 	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT COALESCE(NULLIF(last_touch_brand, ''), mailed_brand) AS brand, COUNT(*) AS due
 			FROM partner_clean_queue
 			WHERE vertical = $1
-			  AND status = 'mailed'
-			  AND engaged_at IS NULL
+			  AND status = 'mailed'`+engagedExit+`
 			  AND terminal_reason IS NULL
 			  AND next_touch_at IS NOT NULL
 			  AND next_touch_at <= NOW()
@@ -4848,6 +4848,7 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 	// ENGAGEMENT-ELIGIBLE, so a fully-cold internal lane stops being visited
 	// every tick only to claim nothing.
 	engGate := engagementGateAnyVerticalSQL("q")
+	engagedExitAny := engagedExitAnyVerticalSQL("q")
 	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 		WITH due AS (
@@ -4856,14 +4857,12 @@ func (po *PartnerDripOrchestrator) followupVerticalsWithDueRecords(ctx context.C
 			       COUNT(*) FILTER (
 			           WHERE q.status = 'mailed'
 			             AND q.next_touch_at IS NOT NULL
-			             AND q.next_touch_at <= NOW()
-			             AND q.engaged_at IS NULL
+			             AND q.next_touch_at <= NOW()`+engagedExitAny+`
 			             AND q.terminal_reason IS NULL
 			             AND q.touch_count BETWEEN 1 AND $1
 			       ) AS due_total
 			FROM partner_clean_queue q
-			WHERE q.status = 'mailed'
-			  AND q.engaged_at IS NULL
+			WHERE q.status = 'mailed'`+engagedExitAny+`
 			  AND q.terminal_reason IS NULL
 			  AND q.touch_count BETWEEN 1 AND $1`+engGate+`
 			GROUP BY q.vertical, q.dataset_id
@@ -5150,6 +5149,10 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 	// SQL is byte-identical to the pre-gate behavior. See
 	// partner_drip_engagement_gate.go.
 	engGate := engagementGateSQL(vertical, "")
+	// Clicker continuation (operator 2026-08-25): on internal feeds a money-
+	// clicker NEVER exits — engagedExit is empty there, the exit predicate
+	// elsewhere. See engagedExitSQL.
+	engagedExit := engagedExitSQL(vertical, "")
 
 	// First pick the dominant touch_count for this vertical.
 	// On engagement-gated verticals the count is taken over ELIGIBLE rows only,
@@ -5185,8 +5188,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			WHERE status = 'mailed'
 			  AND vertical = $1
 			  AND touch_count BETWEEN 1 AND $2
-			  AND next_touch_at <= NOW()
-			  AND engaged_at IS NULL
+			  AND next_touch_at <= NOW()`+engagedExit+`
 			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
 			GROUP BY touch_count
 			ORDER BY touch_count ASC
@@ -5246,8 +5248,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			WHERE status = 'mailed'
 			  AND vertical = $1
 			  AND touch_count = $3
-			  AND next_touch_at <= NOW()
-			  AND engaged_at IS NULL
+			  AND next_touch_at <= NOW()`+engagedExit+`
 			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
 		),
 		caps(isp, cap) AS (
@@ -5266,8 +5267,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			WHERE id IN (SELECT id FROM eligible)
 			  AND status = 'mailed'
 			  AND touch_count = $3
-			  AND next_touch_at <= NOW()
-			  AND engaged_at IS NULL
+			  AND next_touch_at <= NOW()`+engagedExit+`
 			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
 			FOR UPDATE SKIP LOCKED
 		)

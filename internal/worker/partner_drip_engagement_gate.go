@@ -555,3 +555,64 @@ func verticalCampaignNamePredicate() (string, []interface{}) {
 	}
 	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
+
+// ---------------------------------------------------------------------------
+// Clicker continuation (operator 2026-08-25 correction): "Anyone who clicks
+// the money link progresses — they NEVER exit the sequence."
+//
+// Since 2026-06-22 a human money-click stamps engaged_at and every follow-up
+// claim filters engaged_at IS NULL — i.e. the platform EXITED clickers from
+// the ladder ("stop re-mailing proven clickers"). On the internal feeds that
+// is now inverted: a clicker is the best cohort and receives every remaining
+// touch (the engagement gate passes them by construction — their
+// last_click_at is fresh).
+//
+// Scope: gated-prefix (internal) verticals only. Partner lanes keep the exit
+// semantics — engaged_at feeds every data-partner Activation/Churn metric and
+// their ladder economics were built on clicker-exit.
+// Kill switch: PARTNER_DRIP_CLICKER_EXIT_RESTORED=1 restores exit-on-click.
+
+func clickerExitRestored() bool {
+	v := os.Getenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED")
+	return v == "1" || v == "true"
+}
+
+// engagedExitSQL returns the historical clicker-exit predicate for a vertical,
+// or "" when the operator's continuation rule applies (internal feeds).
+// `alias` qualifies the column ("" for unaliased).
+func engagedExitSQL(vertical, alias string) string {
+	q := ""
+	if alias != "" {
+		q = alias + "."
+	}
+	if !clickerExitRestored() {
+		lv := strings.ToLower(strings.TrimSpace(vertical))
+		for _, p := range gatedVerticalPrefixes() {
+			if strings.HasPrefix(lv, p) {
+				return "" // clickers continue: no engaged_at exit
+			}
+		}
+	}
+	return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
+}
+
+// engagedExitAnyVerticalSQL is the cross-vertical form: exits apply everywhere
+// EXCEPT the internal prefixes (uses inline literals, safe to concatenate).
+func engagedExitAnyVerticalSQL(alias string) string {
+	q := ""
+	if alias != "" {
+		q = alias + "."
+	}
+	if clickerExitRestored() {
+		return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
+	}
+	prefixes := gatedVerticalPrefixes()
+	if len(prefixes) == 0 {
+		return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
+	}
+	clauses := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		clauses = append(clauses, fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(p+"%")))
+	}
+	return "\n\t\t\t  AND (" + strings.Join(clauses, " OR ") + " OR " + q + "engaged_at IS NULL)"
+}
