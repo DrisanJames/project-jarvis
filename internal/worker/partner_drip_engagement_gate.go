@@ -166,6 +166,56 @@ func VerticalEngagementGated(vertical string) bool {
 	return false
 }
 
+// ---------------------------------------------------------------------------
+// GATE v3 (operator 2026-08-25, graduated-gate design):
+//
+//  1. A CLICK — ever — always progresses. "Anyone who clicks the money link
+//     progresses; they NEVER exit the sequence." The click clause therefore
+//     has no window: last_click_at IS NOT NULL is sufficient at every touch.
+//  2. An OPEN in the touch window progresses (unchanged).
+//  3. t1→t2 CONTINUATION HOLDOUT: a deterministic slice of no-signal gmail
+//     records still receives touch 2. This is the measurement instrument for
+//     "is the open signal we gate on actually causal?" — the cohort is stable
+//     per record (hashtext of id), so its downstream opens/clicks/converts can
+//     be compared to the gated majority at any time with the same predicate.
+//     t3+ has NO holdout — continuation past t2 requires evidence.
+//
+// PARTNER_DRIP_GATE_HOLDOUT_PCT tunes the slice (default 15, clamped 0–25;
+// 0 disables). Read per tick — no restart.
+
+const defaultGateHoldoutPct = 15
+
+func gateHoldoutPct() int {
+	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_GATE_HOLDOUT_PCT"))
+	if v == "" {
+		return defaultGateHoldoutPct
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return defaultGateHoldoutPct
+	}
+	if n < 0 {
+		return 0
+	}
+	if n > 25 {
+		return 25
+	}
+	return n
+}
+
+// gateHoldoutSQL returns the t1→t2 continuation-holdout disjunct ("" when the
+// holdout is off). hashtext() is signed; the &-mask keeps the modulus
+// non-negative. The predicate is pure on (id, touch_count), so the cohort is
+// identifiable post-hoc by running the identical expression.
+func gateHoldoutSQL(q string) string {
+	pct := gateHoldoutPct()
+	if pct <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+			     OR (%[1]stouch_count = 1 AND (hashtext(%[1]sid::text) & 2147483647) %% 100 < %[2]d)`, q, pct)
+}
+
 // engagementGateSQL is the predicate a row must satisfy to earn its next touch:
 // an open or a click landing at/after the moment its current touch was sent
 // (next_touch_at - the touch gap). `alias` qualifies the columns ("" for an
@@ -197,9 +247,9 @@ func engagementGateSQL(vertical, alias string) string {
 	return fmt.Sprintf(`
 			  AND (
 			        COALESCE(%[1]sisp_family, '') <> 'gmail'
-			     OR (%[1]slast_click_at IS NOT NULL AND %[1]slast_click_at >= %[2]s)
-			     OR (%[1]slast_open_at  IS NOT NULL AND %[1]slast_open_at  >= %[2]s)
-			  )`, q, window)
+			     OR %[1]slast_click_at IS NOT NULL
+			     OR (%[1]slast_open_at  IS NOT NULL AND %[1]slast_open_at  >= %[2]s)%[3]s
+			  )`, q, window, gateHoldoutSQL(q))
 }
 
 // engagementGateAnyVerticalSQL is the cross-vertical form of engagementGateSQL,
@@ -214,8 +264,9 @@ func engagementGateSQL(vertical, alias string) string {
 //
 // ⚠️ The output CONTAINS '%' (the LIKE wildcards). Concatenate it into a query
 // string passed straight to Query/Exec — NEVER into a fmt.Sprintf FORMAT string,
-// which would read '%” as a verb and corrupt the SQL. (engagementGateSQL above
-// is %-free and safe either way; this one is not.)
+// which would read '%” as a verb and corrupt the SQL. (Since gate v3 the
+// holdout clause puts a literal '%' in engagementGateSQL too — BOTH builders
+// are concatenation-only now; all three orchestrator call sites comply.)
 func engagementGateAnyVerticalSQL(alias string) string {
 	if engagementGateDisabled() {
 		return ""
@@ -238,9 +289,9 @@ func engagementGateAnyVerticalSQL(alias string) string {
 			  AND (
 			        NOT %[1]s
 			     OR COALESCE(%[2]sisp_family, '') <> 'gmail'
-			     OR (%[2]slast_click_at IS NOT NULL AND %[2]slast_click_at >= %[3]s)
-			     OR (%[2]slast_open_at  IS NOT NULL AND %[2]slast_open_at  >= %[3]s)
-			  )`, gated, q, window)
+			     OR %[2]slast_click_at IS NOT NULL
+			     OR (%[2]slast_open_at  IS NOT NULL AND %[2]slast_open_at  >= %[3]s)%[4]s
+			  )`, gated, q, window, gateHoldoutSQL(q))
 }
 
 // quoteSQLLiteral single-quotes a string literal for inline SQL, doubling any
@@ -466,15 +517,15 @@ func (s *PartnerDripColdSweeper) markCold(ctx context.Context, prefixes []string
 			  AND next_touch_at IS NOT NULL
 			  AND next_touch_at <= NOW() - make_interval(hours => $%[4]d)
 			  AND NOT (
-			        (last_click_at IS NOT NULL AND last_click_at >= next_touch_at - INTERVAL '%[6]d hours')
-			     OR (last_open_at  IS NOT NULL AND last_open_at  >= next_touch_at - INTERVAL '%[6]d hours')
+			        last_click_at IS NOT NULL
+			     OR (last_open_at  IS NOT NULL AND last_open_at  >= next_touch_at - INTERVAL '%[6]d hours')%[7]s
 			  )
 			ORDER BY next_touch_at ASC
 			LIMIT $%[5]d
 			FOR UPDATE SKIP LOCKED
 		) picked
 		WHERE q.id = picked.id
-	`, ColdTerminalReason, pred, next, next+1, next+2, followupTouchGapHours)
+	`, ColdTerminalReason, pred, next, next+1, next+2, followupTouchGapHours, gateHoldoutSQL(""))
 
 	return s.runBatched(ctx, "mark_cold", q, args)
 }

@@ -117,9 +117,18 @@ func TestEngagementGateSQL_WindowIsTouchGap(t *testing.T) {
 			t.Errorf("gate SQL missing %q\n%s", want, sql)
 		}
 	}
-	// Opens AND clicks both advance (operator: "openers and clickers").
-	if strings.Count(sql, ">=") != 2 {
-		t.Errorf("expected both open and click comparisons, got:\n%s", sql)
+	// GATE v3: a click EVER advances (no window on the click clause — money-
+	// link clickers never exit and always progress); opens stay windowed.
+	if strings.Count(sql, ">=") != 1 {
+		t.Errorf("expected exactly one windowed comparison (open), got:\n%s", sql)
+	}
+	if strings.Contains(sql, "last_click_at >=") {
+		t.Errorf("click clause must be windowless (click-ever advances):\n%s", sql)
+	}
+	// GATE v3: t1→t2 continuation holdout present at the default pct, on
+	// touch_count=1 only, deterministic per record.
+	if !strings.Contains(sql, "touch_count = 1 AND (hashtext(id::text) & 2147483647) % 100 < 15") {
+		t.Errorf("default 15%% t1→t2 continuation holdout missing:\n%s", sql)
 	}
 	// GMAIL-ONLY (Operating Plan v2): non-gmail rows must pass unconditionally.
 	if !strings.Contains(sql, "<> 'gmail'") {
@@ -702,5 +711,58 @@ func TestNoHardcodedEngagedExitInFollowupPaths(t *testing.T) {
 		if !strings.Contains(f, "engagedExit") {
 			t.Errorf("%s does not route through the engagedExit builders", fn)
 		}
+	}
+}
+
+// --- GATE v3 guards -------------------------------------------------------
+
+func TestGateHoldoutPct_EnvClampAndKill(t *testing.T) {
+	cases := map[string]int{"": 15, "10": 10, "25": 25, "40": 25, "-3": 0, "0": 0, "junk": 15}
+	for in, want := range cases {
+		t.Setenv("PARTNER_DRIP_GATE_HOLDOUT_PCT", in)
+		if got := gateHoldoutPct(); got != want {
+			t.Errorf("PARTNER_DRIP_GATE_HOLDOUT_PCT=%q → %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestGateHoldoutSQL_ZeroDisables(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_GATE_HOLDOUT_PCT", "0")
+	if got := gateHoldoutSQL(""); got != "" {
+		t.Errorf("pct=0 must emit no holdout clause, got %q", got)
+	}
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED", "")
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
+	if sql := engagementGateSQL("internal_auto_insurance_v7", ""); strings.Contains(sql, "hashtext") {
+		t.Errorf("pct=0 gate SQL must carry no holdout:\n%s", sql)
+	}
+}
+
+func TestGateHoldoutSQL_AliasQualified(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_GATE_HOLDOUT_PCT", "20")
+	got := gateHoldoutSQL("q.")
+	for _, want := range []string{"q.touch_count = 1", "hashtext(q.id::text)", "< 20"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("holdout clause missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// The cold sweep must be the gate's mirror: a row the gate would advance
+// (click ever, or t1 holdout member) must be un-bucketable.
+func TestMarkCold_MirrorsGateV3(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_GATE_HOLDOUT_PCT", "")
+	src, err := os.ReadFile("partner_drip_engagement_gate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(string(src), "func (s *PartnerDripColdSweeper) markCold")
+	j := strings.Index(string(src)[i:], "\nfunc ")
+	block := string(src)[i : i+j]
+	if strings.Contains(block, "last_click_at >=") {
+		t.Error("markCold still windows the click clause — a click-ever row would be bucketed while the gate advances it")
+	}
+	if !strings.Contains(block, "gateHoldoutSQL") {
+		t.Error("markCold does not exempt the t1→t2 continuation holdout — holdout rows would be cold-bucketed before their touch 2")
 	}
 }
