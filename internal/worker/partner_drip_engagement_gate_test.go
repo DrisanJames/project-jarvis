@@ -127,8 +127,15 @@ func TestEngagementGateSQL_WindowIsTouchGap(t *testing.T) {
 	}
 	// GATE v3: t1→t2 continuation holdout present at the default pct, on
 	// touch_count=1 only, deterministic per record.
-	if !strings.Contains(sql, "touch_count = 1 AND (hashtext(id::text) & 2147483647) % 100 < 15") {
+	if !strings.Contains(sql, "touch_count = 1 AND MOD(hashtext(id::text) & 2147483647, 100) < 15") {
 		t.Errorf("default 15%% t1→t2 continuation holdout missing:\n%s", sql)
+	}
+	// claimFollowupRecordsByISPCaps runs its query template THROUGH
+	// fmt.Sprintf, so this fragment must never contain a bare '%' — the
+	// 2026-08-26 01:55 outage: every gated follow-up claim died with
+	// pq: syntax error at or near "%!" for 40 minutes.
+	if strings.Contains(sql, "%") {
+		t.Errorf("engagementGateSQL output must be %%-free (Sprintf-format call sites):\n%s", sql)
 	}
 	// GMAIL-ONLY (Operating Plan v2): non-gmail rows must pass unconditionally.
 	if !strings.Contains(sql, "<> 'gmail'") {
@@ -742,6 +749,9 @@ func TestGateHoldoutSQL_AliasQualified(t *testing.T) {
 	t.Setenv("PARTNER_DRIP_GATE_HOLDOUT_PCT", "20")
 	got := gateHoldoutSQL("q.")
 	for _, want := range []string{"q.touch_count = 1", "hashtext(q.id::text)", "< 20"} {
+		_ = want
+	}
+	for _, want := range []string{"q.touch_count = 1", "MOD(hashtext(q.id::text)", "< 20"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("holdout clause missing %q:\n%s", want, got)
 		}

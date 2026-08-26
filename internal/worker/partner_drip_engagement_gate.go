@@ -212,8 +212,12 @@ func gateHoldoutSQL(q string) string {
 	if pct <= 0 {
 		return ""
 	}
+	// MOD() instead of the %-operator: several claim queries pass their SQL
+	// through fmt.Sprintf as the FORMAT string (proven live 2026-08-26 01:55,
+	// claim_followup 'syntax error at or near "%!"'), so the emitted clause
+	// must contain no percent character at all.
 	return fmt.Sprintf(`
-			     OR (%[1]stouch_count = 1 AND (hashtext(%[1]sid::text) & 2147483647) %% 100 < %[2]d)`, q, pct)
+			     OR (%[1]stouch_count = 1 AND MOD(hashtext(%[1]sid::text) & 2147483647, 100) < %[2]d)`, q, pct)
 }
 
 // engagementGateSQL is the predicate a row must satisfy to earn its next touch:
