@@ -37,7 +37,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -689,6 +691,14 @@ func (s *PMTACampaignService) HandleLaneTouchCopyEdit(w http.ResponseWriter, r *
 	}
 	actor := actorFromRequest(r)
 
+	// Reject template markup BEFORE any write: from-names are not rendered.
+	if req.FromName != nil {
+		if err := validateFromNameNoTemplate(*req.FromName); err != nil {
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	sets := []string{"updated_at = NOW()"}
 	args := []interface{}{}
 	arg := func(v interface{}) int {
@@ -888,4 +898,37 @@ func (s *PMTACampaignService) HandleLaneOfferSwap(w http.ResponseWriter, r *http
 // itoa keeps the dynamic-SET fragments above readable.
 func itoa(n int) string {
 	return strconv.Itoa(n)
+}
+
+// ── from-name template guard ────────────────────────────────────────────────
+
+// fromNameTemplateRe catches Liquid/Jinja delimiters in a FROM-NAME.
+//
+// WHY THIS EXISTS — production incident 2026-08-25. The drip send path renders
+// subject_line and the body through Liquid but NOT from_name, so a from-name
+// containing template markup ships VERBATIM. 38 campaigns went out with
+//
+//	From: "{{ custom.postal_code | default: \"Local\" }} - Insurance Savings Pro"
+//
+// across six lanes over ~8h before a seed mailbox caught it. Note the trap: the
+// `| default:` guard reads like it makes this safe. It does not — nothing
+// evaluates the expression, so the guard never runs. A bare token in an
+// unrendered field is worse than no guard, because it looks defended.
+//
+// subject_line and preheader are DELIBERATELY not covered: those ARE rendered,
+// and 36 production rows legitimately carry Liquid. Constraining them would
+// break working copy.
+//
+// This is the write-time half of the defence; the other half is the CHECK
+// constraint on both creative tables (cmd/server/main.go), which also catches
+// writers that never come through this handler.
+var fromNameTemplateRe = regexp.MustCompile(`\{\{|\{%`)
+
+// validateFromNameNoTemplate rejects a from-name the send path cannot render.
+func validateFromNameNoTemplate(v string) error {
+	if fromNameTemplateRe.MatchString(v) {
+		return fmt.Errorf("from_name must not contain template markup ({{ }} or {%% %%}) — "+
+			"the send path does not render from-names, so %q would reach the inbox verbatim", v)
+	}
+	return nil
 }

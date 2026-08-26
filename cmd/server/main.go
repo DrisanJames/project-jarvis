@@ -10365,6 +10365,38 @@ END $$`},
 						'converters_auto','converters_roofing','converters_life']));
 			END IF;
 		END $$`},
+		// ── from-name template guard (production incident 2026-08-25) ─────
+		// The drip send path renders subject_line and the body through Liquid
+		// but NOT from_name. 38 campaigns shipped
+		//   From: "{{ custom.postal_code | default: \"Local\" }} - Insurance Savings Pro"
+		// to real inboxes across six lanes before a seed mailbox caught it. The
+		// `| default:` guard is inert — nothing evaluates the expression.
+		//
+		// This is the structural half of the fix (the other is
+		// validateFromNameNoTemplate in property_lane_content.go): it catches
+		// every writer, including scripts and direct SQL, which is how these
+		// rows were authored in the first place.
+		//
+		// ⚠️ from_name ONLY. subject_line and preheader ARE rendered and 36
+		// production rows legitimately carry Liquid — constraining those would
+		// break working copy. Verified 2026-08-25: zero rows in either table
+		// (active or not) violate this, so it validates without a backfill.
+		{"aug26_drip_creatives_fromname_no_template", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint
+				WHERE conname='partner_drip_creatives_fromname_no_template') THEN
+				ALTER TABLE partner_drip_creatives
+					ADD CONSTRAINT partner_drip_creatives_fromname_no_template
+					CHECK (from_name !~ '[{][{]|[{][%]');
+			END IF;
+		END $$`},
+		{"aug26_drip_followup_creatives_fromname_no_template", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint
+				WHERE conname='partner_drip_followup_creatives_fromname_no_template') THEN
+				ALTER TABLE partner_drip_followup_creatives
+					ADD CONSTRAINT partner_drip_followup_creatives_fromname_no_template
+					CHECK (from_name !~ '[{][{]|[{][%]');
+			END IF;
+		END $$`},
 		// Cap-decision trace (§5.8): parent + DEFAULT partition ONLY — month
 		// partitions are the §10.6 xray_maintenance op's job, deployment-date-
 		// relative, never hardcoded here. Nothing emits rows until P6 (D6,
