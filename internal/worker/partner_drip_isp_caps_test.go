@@ -15,11 +15,11 @@ func TestIspCapForDrainHorizon(t *testing.T) {
 	const wavesPerDay = 384 // 96 ticks × 4 brands @ 15m cadence
 
 	tests := []struct {
-		name       string
-		ready      int
-		base       int
-		drainDays  int
-		want       int
+		name      string
+		ready     int
+		base      int
+		drainDays int
+		want      int
 	}{
 		{"gmail 3d refi backlog", 15591, 200, 3, 14},
 		{"gmail 3d system backlog", 51758, 200, 3, 45},
@@ -162,7 +162,6 @@ func TestResolvePerISPCaps_NoDatasetOverride(t *testing.T) {
 	assert.Equal(t, 8, caps["yahoo"], "no override -> global protective cap preserved")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
-
 
 // TestBrandISPSESProfiles + TestPartitionWaveBySESProfile cover the per-(brand,ISP)
 // SES tenant routing that replaced the HT→Microsoft block (operator 2026-06-16:
@@ -387,7 +386,7 @@ func TestClaimByISPCaps_UnknownISPBucketsToOther(t *testing.T) {
 		PerISPCapPerWave: map[string]int{"aol": 400, "other": 400},
 		MaxWaveSize:      5000,
 	}}
-	_, err = po.claimRecordsByISPCaps(context.Background(), "internal_auto_insurance",
+	_, err = po.claimRecordsByISPCaps(context.Background(), "internal_auto_insurance", "db",
 		map[string]int{"aol": 400, "other": 400}, 100)
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet(),

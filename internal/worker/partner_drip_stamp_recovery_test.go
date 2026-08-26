@@ -68,7 +68,7 @@ func TestMarkMailed_RetriesStatementTimeoutAndLands(t *testing.T) {
 	mock.ExpectCommit()
 
 	err := po.markMailed(context.Background(), recs("r1", "r2", "r3"),
-		"ff01ad90-e3fc-4d0e-bc55-239e8ce35d69", "tot")
+		"ff01ad90-e3fc-4d0e-bc55-239e8ce35d69", "tot", "consumer")
 	require.NoError(t, err, "a retryable timeout must not lose the ladder advance")
 
 	st := po.StampStats()
@@ -97,7 +97,7 @@ func TestMarkMailed_ChunksLargeWaves(t *testing.T) {
 	expectStampAttempt(mock).WillReturnResult(sqlmock.NewResult(0, 7))
 	mock.ExpectCommit()
 
-	require.NoError(t, po.markMailed(context.Background(), recs(ids...), "camp-1", "db"))
+	require.NoError(t, po.markMailed(context.Background(), recs(ids...), "camp-1", "db", "consumer"))
 	assert.Equal(t, int64(total), po.StampStats().RowsStamped)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -156,8 +156,8 @@ func TestMarkMailed_DoubleApplicationAdvancesOnce(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
-	require.NoError(t, po.markMailed(context.Background(), recs("r1", "r2", "r3"), campaign, "tot"))
-	require.NoError(t, po.markMailed(context.Background(), recs("r1", "r2", "r3"), campaign, "tot"))
+	require.NoError(t, po.markMailed(context.Background(), recs("r1", "r2", "r3"), campaign, "tot", "consumer"))
+	require.NoError(t, po.markMailed(context.Background(), recs("r1", "r2", "r3"), campaign, "tot", "consumer"))
 
 	st := po.StampStats()
 	assert.Equal(t, int64(3), st.RowsStamped, "touch_count must move for 3 rows exactly once, not 6")
@@ -185,7 +185,7 @@ func TestMarkMailed_PermanentFailureSurfacesAndRecords(t *testing.T) {
 		WithArgs("camp-x", "tot", int64(2), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := po.markMailed(context.Background(), recs("r1", "r2"), "camp-x", "tot")
+	err := po.markMailed(context.Background(), recs("r1", "r2"), "camp-x", "tot", "consumer")
 	require.Error(t, err, "a permanently failed stamp must NOT be swallowed")
 	assert.Contains(t, err.Error(), "unstamped")
 
@@ -450,7 +450,7 @@ func TestMarkMailed_ContextCancelDuringRetryAbortsCleanly(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	start := time.Now()
-	err := po.markMailed(ctx, recs("r1", "r2"), "camp-cancel", "tot")
+	err := po.markMailed(ctx, recs("r1", "r2"), "camp-cancel", "tot", "consumer")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, time.Since(start), 2*time.Second, "must abort on cancellation, not burn every attempt")
@@ -472,7 +472,7 @@ func TestMarkMailed_AlreadyCancelledContextDoesNothing(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO partner_drip_stamp_failures`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := po.markMailed(ctx, recs("r1"), "camp-dead", "tot")
+	err := po.markMailed(ctx, recs("r1"), "camp-dead", "tot", "consumer")
 	require.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

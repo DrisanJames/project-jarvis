@@ -1416,7 +1416,7 @@ func (po *PartnerDripOrchestrator) deployWaveGroup(ctx context.Context, v vertic
 	// in partner_drip_stamp_failures, and the always-on recovery pass replays it
 	// from mailing_message_log — the campaign is already live, so the wave itself
 	// is a success either way. Log the loss loudly with counts; never silent.
-	if err := po.markMailed(ctx, g.recs, campaignID, brand); err != nil {
+	if err := po.markMailed(ctx, g.recs, campaignID, brand, v.vertical); err != nil {
 		log.Printf("[PartnerDripOrchestrator] ALERT mark_mailed failed post-deploy campaign=%s brand=%s rows=%d — loss durably recorded (partner_drip_stamp_failures), stamp recovery replays it from mailing_message_log: %v",
 			campaignID, brand, len(g.recs), err)
 	}
@@ -1607,7 +1607,7 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	if aolRotationActive(v.vertical) {
 		perISPCaps["aol"] = 0
 	}
-	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, waveSize)
+	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, waveSize)
 	if err != nil {
 		return fmt.Errorf("claim_records: %w", err)
 	}
@@ -2916,7 +2916,8 @@ func zeroAllCaps(caps map[string]int) map[string]int {
 //
 // hardCap is a safety upper bound on total claim size (post-cap). Set to
 // MaxWaveSize so a single wave can never exceed that operational ceiling.
-func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, vertical string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, vertical, forBrand string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+	pin := homeBrandPinSQL(vertical, forBrand, "")
 	if len(perISPCaps) == 0 {
 		return nil, fmt.Errorf("perISPCaps is empty")
 	}
@@ -2972,7 +2973,7 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 			           WHEN COALESCE(NULLIF(isp_family, ''), 'other') IN (SELECT isp FROM caps)
 			           THEN COALESCE(NULLIF(isp_family, ''), 'other') ELSE 'other' END AS isp_bucket
 			FROM partner_clean_queue
-			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+`
+			WHERE status = 'ready' AND vertical = $1`+datasetNotEmergencyPausedSQL+pin+`
 		),
 		eligible AS (
 			SELECT r.id
@@ -2985,7 +2986,7 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 		picked AS (
 			SELECT id FROM partner_clean_queue
 			WHERE id IN (SELECT id FROM eligible)
-			  AND status = 'ready'`+datasetNotEmergencyPausedSQL+`
+			  AND status = 'ready'`+datasetNotEmergencyPausedSQL+pin+`
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q
@@ -4307,7 +4308,7 @@ func (po *PartnerDripOrchestrator) stampPartnerAttributionOnCampaign(ctx context
 // `last_touch_campaign_id IS DISTINCT FROM $2::uuid`, so a chunk that already
 // landed is a zero-row no-op on retry (one campaign == one touch, so this can
 // never suppress a legitimate second advance).
-func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claimedRecord, campaignID, brand string) error {
+func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claimedRecord, campaignID, brand, vertical string) error {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -4315,7 +4316,8 @@ func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claime
 	for i, r := range recs {
 		ids[i] = r.id
 	}
-	gap := time.Duration(followupTouchGapHours) * time.Hour
+	// Per-vertical cadence (converters run WEEKLY — touchGapHoursFor).
+	gap := time.Duration(touchGapHoursFor(vertical)) * time.Hour
 	// Computed ONCE for the whole wave so a retried chunk writes the same
 	// next_touch_at as its first attempt — the stamp stays deterministic.
 	nextTouchAt := time.Now().UTC().Add(gap)
@@ -4989,7 +4991,7 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	// cap of 0 for an ISP suppresses ALL touches to that ISP. Kill switch:
 	// PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED=1 restores the legacy behavior.
 	perISPCaps = po.applyFollowupDailyISPBudget(ctx, brand, v.datasetID, perISPCaps)
-	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, perISPCaps, hardCap)
+	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, hardCap)
 	if err != nil {
 		return fmt.Errorf("claim_followup: %w", err)
 	}
@@ -5136,7 +5138,8 @@ func claimedRecordIDs(recs []claimedRecord) []string {
 // Returns the claimed records with status flipped to 'claimed' (so they
 // won't be re-picked by a concurrent tick) and the wave_segment + deploy
 // pipeline can carry on. On failure the caller releases via releaseClaim.
-func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Context, vertical string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Context, vertical, forBrand string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+	pin := homeBrandPinSQL(vertical, forBrand, "")
 	if len(perISPCaps) == 0 {
 		return nil, fmt.Errorf("perISPCaps is empty")
 	}
@@ -5249,7 +5252,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND vertical = $1
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()`+engagedExit+`
-			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
+			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+pin+`
 		),
 		caps(isp, cap) AS (
 			VALUES %s
@@ -5268,7 +5271,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			  AND status = 'mailed'
 			  AND touch_count = $3
 			  AND next_touch_at <= NOW()`+engagedExit+`
-			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+`
+			  AND terminal_reason IS NULL`+datasetNotEmergencyPausedSQL+engGate+pin+`
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q

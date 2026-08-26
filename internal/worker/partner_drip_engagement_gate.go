@@ -587,6 +587,11 @@ func engagedExitSQL(vertical, alias string) string {
 	}
 	if !clickerExitRestored() {
 		lv := strings.ToLower(strings.TrimSpace(vertical))
+		// Converters share the continuation rule — a cross-sell click must
+		// never end their sequence (operator 2026-08-25).
+		if strings.HasPrefix(lv, convertersPrefix) {
+			return ""
+		}
 		for _, p := range gatedVerticalPrefixes() {
 			if strings.HasPrefix(lv, p) {
 				return "" // clickers continue: no engaged_at exit
@@ -610,9 +615,10 @@ func engagedExitAnyVerticalSQL(alias string) string {
 	if len(prefixes) == 0 {
 		return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
 	}
-	clauses := make([]string, 0, len(prefixes))
+	clauses := make([]string, 0, len(prefixes)+1)
 	for _, p := range prefixes {
 		clauses = append(clauses, fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(p+"%")))
 	}
+	clauses = append(clauses, fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(convertersPrefix+"%")))
 	return "\n\t\t\t  AND (" + strings.Join(clauses, " OR ") + " OR " + q + "engaged_at IS NULL)"
 }

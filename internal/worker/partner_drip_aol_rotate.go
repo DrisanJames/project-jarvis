@@ -119,7 +119,7 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 		return nil // brand exhausted/held for AOL this tick — next tick rotates on
 	}
 
-	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, perISPCaps, po.cfg.MaxWaveSize)
+	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, po.cfg.MaxWaveSize)
 	if err != nil {
 		return fmt.Errorf("aol_rotate claim: %w", err)
 	}
