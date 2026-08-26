@@ -172,14 +172,18 @@ func TestProcessUnsubscribe_BrandWriteFailureReturnsErrorForRetry(t *testing.T) 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestProcessUnsubscribe_NilSuppressorStillWritesLegacy(t *testing.T) {
-	c, mock := newConsumer(t) // no suppressor wired — wiring-regression path
+func TestProcessUnsubscribe_NilSuppressorReturnsMessageToSQS(t *testing.T) {
+	// 2026-08-26: an unsubscribe consumed before the hub wires must NOT be
+	// deleted with enforcement skipped (the boot-window defect). The error
+	// keeps the SQS message alive; redelivery lands after the late-pass
+	// wiring. Legacy writes are deferred to the successful redelivery.
+	c, mock := newConsumer(t) // no suppressor wired
 
 	expectUnsubPreamble(mock, "foo@gmail.com", "deals@em.discountblog.com")
-	expectLegacyUnsubWrites(mock)
+	// NO legacy-write expectations: processing must stop before them.
 
 	err := c.processUnsubscribe(context.Background(), unsubEvent(time.Now().UTC()))
-	require.NoError(t, err, "nil hub must not break unsubscribe processing (it is logged at error level)")
+	require.Error(t, err, "nil hub must return the message to SQS, not delete it unenforced")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

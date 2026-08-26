@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"log"
 	"strings"
@@ -434,11 +435,14 @@ func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) er
 		suppressor := c.getBrandSuppressor()
 		switch {
 		case suppressor == nil:
-			// Should never happen in production — main.go wires the hub
-			// right after constructing the consumer. Loud so a wiring
-			// regression is visible; the legacy writes below still run.
-			log.Printf("ERROR: PROCESS UNSUB brand suppression hub NOT wired — unsubscribe NOT enforced on send path: campaign=%s subscriber=%s md5=%s",
+			// Start now happens after wiring (main.go late pass), so this is
+			// a true wiring regression. Returning the error keeps the SQS
+			// message alive — redelivery retries until the hub attaches —
+			// instead of deleting it with enforcement silently skipped
+			// (the pre-2026-08-26 boot-window defect).
+			log.Printf("ERROR: PROCESS UNSUB brand suppression hub NOT wired — returning message to SQS for redelivery: campaign=%s subscriber=%s md5=%s",
 				campaignID, subscriberID, hashEmail(strings.ToLower(strings.TrimSpace(email))))
+			return fmt.Errorf("brand suppression hub not wired; unsubscribe for campaign %s not enforceable yet", campaignID)
 		case brandRoot == "":
 			// Campaign lookup failed or campaign has no from_email — the
 			// brand cannot be resolved, so the email-level suppression

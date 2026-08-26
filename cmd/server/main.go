@@ -620,9 +620,13 @@ func main() {
 					// server.GlobalHub here was the 2026-08-21 defect: nil on
 					// every boot, so every SQS unsubscribe skipped the
 					// enforced set for the life of the process.
-					log.Printf("SQS tracking consumer starting UNWIRED — suppression hub attaches after route registration (late pass)")
-					trackingConsumer.Start(ctx)
-					log.Printf("SQS Tracking Consumer started (queue=%s)", sqsQueueURL)
+					// Start is DEFERRED to the late-wiring pass below: every
+					// unsubscribe consumed before SetBrandSuppressor lands is
+					// deleted from SQS with the brand-scoped suppression
+					// silently skipped (observed 8×/24h on 2026-08-25, all
+					// clustered in the ~1–3 min post-boot window). SQS holds
+					// the backlog while SetMailingDB finishes; nothing is lost.
+					log.Printf("SQS tracking consumer constructed — start deferred until suppression hub wiring (late pass)")
 				}
 			}
 
@@ -640,6 +644,14 @@ func main() {
 				case <-mailingRoutesReady:
 				case <-time.After(20 * time.Minute):
 					log.Printf("ERROR: suppression late-wiring TIMED OUT waiting for mailing route registration — unsubscribes and hard-bounce suppression remain UNENFORCED until next boot")
+					if trackingConsumer != nil {
+						// Opens/clicks must not stall for the process lifetime;
+						// start unwired (the nil-suppressor guard in
+						// processUnsubscribe now returns the message to SQS
+						// instead of deleting it unenforced).
+						trackingConsumer.Start(ctx)
+						log.Printf("SQS Tracking Consumer started UNWIRED after late-wiring timeout (queue set at construction)")
+					}
 					return
 				}
 				if trackingConsumer != nil {
@@ -649,6 +661,10 @@ func main() {
 					} else {
 						log.Printf("ERROR: suppression hub STILL not wired to SQS tracking consumer after route registration — SQS unsubscribes NOT enforced")
 					}
+					// Wired (or loudly not) — only now begin consuming, so no
+					// unsubscribe can race the hub attachment.
+					trackingConsumer.Start(ctx)
+					log.Printf("SQS Tracking Consumer started (post-wiring)")
 				}
 				if hub, ok := server.GlobalHub.(worker.GlobalSuppressionChecker); ok {
 					sendWorkerPool.SetGlobalSuppressionHub(hub)
