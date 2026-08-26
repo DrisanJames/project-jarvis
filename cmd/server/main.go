@@ -10455,6 +10455,104 @@ END $$`},
 		// window) so the guard stays index-fast as samples accumulate.
 		{"pi_idx_raw_samples_dataset_time", `CREATE INDEX IF NOT EXISTS idx_pi_raw_samples_dataset_time
 			ON partner_ingest_raw_samples (dataset_id, captured_at DESC)`},
+		// 2026-08-26 PMTA yahoo-set migration (operator): 8 estate domains moved
+		// off KumoMTA onto PMTA A/B, 2 per 15-IP set, pilot pattern. MUST run
+		// LAST: phase19_delete_ovh_ips deletes the 15.204.22/38 ranges and the
+		// phase12/charter-trim migrations revert the re-homed 144.225.178 rows
+		// to ht/mh cold pools EVERY boot — this block re-asserts the yahoo-set
+		// truth after them. Deliberate pauses survive (only cold/retired/
+		// pending flip back to warmup); warmup_daily_limit is never clobbered
+		// on existing rows so ladder cap raises stick.
+		{"aug26_yahoo_set_ip_reassert", `DO $$
+DECLARE
+    org_id UUID := '00000000-0000-0000-0000-000000000001';
+    rec RECORD;
+    pool_id_val UUID;
+    server_id_val UUID;
+BEGIN
+    FOR rec IN
+        SELECT * FROM (VALUES
+            ('144.225.178.56', 'mta-bcc-yh1.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.57', 'mta-bcc-yh2.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.58', 'mta-bcc-yh3.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.59', 'mta-bcc-yh4.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.60', 'mta-bcc-yh5.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.61', 'mta-bcc-yh6.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.62', 'mta-bcc-yh7.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.63', 'mta-bcc-yh8.mail.em.bestcreditcare.com', 'bcc-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.121', 'mta-trb-yh1.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.122', 'mta-trb-yh2.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.123', 'mta-trb-yh3.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.124', 'mta-trb-yh4.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.125', 'mta-trb-yh5.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.126', 'mta-trb-yh6.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('144.225.178.127', 'mta-trb-yh7.mail.em.theretirementblog.com', 'trb-yahoo-pool', '15.204.101.125', '144.225.178.0/25'),
+            ('15.204.22.176', 'mta-hlj-yh1.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.177', 'mta-hlj-yh2.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.178', 'mta-hlj-yh3.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.179', 'mta-hlj-yh4.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.180', 'mta-hlj-yh5.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.181', 'mta-hlj-yh6.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.182', 'mta-hlj-yh7.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.183', 'mta-hlj-yh8.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.184', 'mta-htm-yh1.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.185', 'mta-htm-yh2.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.186', 'mta-htm-yh3.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.187', 'mta-htm-yh4.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.188', 'mta-htm-yh5.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.189', 'mta-htm-yh6.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.190', 'mta-htm-yh7.mail.em.hometracmortgage.com', 'htm-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.38.160', 'mta-fth-yh1.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.161', 'mta-fth-yh2.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.162', 'mta-fth-yh3.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.163', 'mta-fth-yh4.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.164', 'mta-fth-yh5.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.165', 'mta-fth-yh6.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.166', 'mta-fth-yh7.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.167', 'mta-fth-yh8.mail.em.firsttimebuyerhomeloan.com', 'fth-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.168', 'mta-usf-yh1.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.169', 'mta-usf-yh2.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.170', 'mta-usf-yh3.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.171', 'mta-usf-yh4.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.172', 'mta-usf-yh5.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.173', 'mta-usf-yh6.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.174', 'mta-usf-yh7.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('144.225.178.141', 'mta-yfb-yh1.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.159', 'mta-yfb-yh2.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.160', 'mta-yfb-yh3.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.161', 'mta-yfb-yh4.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.162', 'mta-yfb-yh5.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.163', 'mta-yfb-yh6.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.164', 'mta-yfb-yh7.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.180', 'mta-yfb-yh8.mail.em.yourfinancialblog.com', 'yfb-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.181', 'mta-pmd-yh1.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.182', 'mta-pmd-yh2.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.183', 'mta-pmd-yh3.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.184', 'mta-pmd-yh4.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.224', 'mta-pmd-yh5.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.225', 'mta-pmd-yh6.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25'),
+            ('144.225.178.226', 'mta-pmd-yh7.mail.em.paymydebit.com', 'pmd-yahoo-pool', '15.204.107.107', '144.225.178.128/25')
+        ) AS t(ip_addr, hostname, pool_name, server_host, cidr)
+    LOOP
+        SELECT id INTO pool_id_val FROM mailing_ip_pools WHERE name = rec.pool_name;
+        SELECT id INTO server_id_val FROM mailing_pmta_servers WHERE host = rec.server_host;
+        IF pool_id_val IS NOT NULL AND server_id_val IS NOT NULL THEN
+            INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
+                warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
+                cidr_block, rdns_verified, reputation_score, created_at, updated_at)
+            VALUES (gen_random_uuid(), org_id, rec.ip_addr::inet, rec.hostname, 'warmup', pool_id_val, server_id_val,
+                'early', 1, 150, NOW(), 'ovh', 'provider', rec.cidr, false, 0.00, NOW(), NOW())
+            ON CONFLICT (ip_address) DO UPDATE SET
+                hostname = EXCLUDED.hostname,
+                pool_id = EXCLUDED.pool_id,
+                pmta_server_id = EXCLUDED.pmta_server_id,
+                cidr_block = EXCLUDED.cidr_block,
+                status = CASE WHEN mailing_ip_addresses.status IN ('cold','retired','pending')
+                              THEN 'warmup' ELSE mailing_ip_addresses.status END,
+                updated_at = NOW();
+        END IF;
+    END LOOP;
+END $$`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
