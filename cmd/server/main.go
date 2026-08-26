@@ -10336,6 +10336,35 @@ END $$`},
 				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
 			END IF;
 		END $$`},
+		// internal_auto_insurance_v8..v12 (operator 2026-08-26): five new
+		// internal-auto feed lanes, created PARKED (dataset + key only, no
+		// roster/creatives/budgets) so a data partner can post while nothing
+		// mails. Extended directly in prod the same night; this keeps fresh
+		// installs coherent — and unlike its drop-only predecessor
+		// (wcl_remail_vertical_check) it RE-ADDS the constraint with the full
+		// current vocabulary, so a fresh install ends up constrained rather
+		// than silently unconstrained.
+		//
+		// ⚠️ The guard literal MUST name the NEWEST vertical (v12). Reusing an
+		// older one silently no-ops the whole DO block and the list never widens.
+		{"aug26_partner_datasets_vertical_internal_auto_v8_v12", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_vertical_check'
+				AND pg_get_constraintdef(oid) LIKE '%internal_auto_insurance_v12%') THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
+						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
+						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
+						'consumer','internal_auto_insurance',
+						'internal_auto_insurance_v2','internal_auto_insurance_v3','internal_auto_insurance_v4',
+						'internal_auto_insurance_v5','internal_auto_insurance_v6','internal_auto_insurance_v7',
+						'internal_auto_insurance_v8','internal_auto_insurance_v9','internal_auto_insurance_v10',
+						'internal_auto_insurance_v11','internal_auto_insurance_v12',
+						'internal_auto_insurance_gmail_v1','internal_auto_insurance_gmail_v2',
+						'wcl_remail','converters_sams','converters_loans','converters_heloc',
+						'converters_auto','converters_roofing','converters_life']));
+			END IF;
+		END $$`},
 		// Cap-decision trace (§5.8): parent + DEFAULT partition ONLY — month
 		// partitions are the §10.6 xray_maintenance op's job, deployment-date-
 		// relative, never hardcoded here. Nothing emits rows until P6 (D6,
