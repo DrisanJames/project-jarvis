@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // KumoLogRecord is the subset of a KumoMTA JSON log record we consume.
@@ -198,6 +201,72 @@ func feedbackRecipient(k KumoLogRecord) string {
 // record, a JSON array, or newline-delimited JSON; translates each to an
 // AccountingRecord and runs the existing accounting pipeline. Public endpoint;
 // when KUMO_EVENTS_TOKEN is set it requires a matching ?token= query param.
+// ── async kumo ingest (2026-08-27) ──────────────────────────────────────────
+// The handler used to run the FULL accounting pipeline synchronously before
+// responding: ~4.8s per POST × the box's ~3 hook connections ≈ 54k events/day
+// of ingest capacity against 120k+ generated — a permanent, growing backlog
+// (45k+ observed) that made every dashboard (PG, Tatami-adjacent views, the
+// ramp-ladder gate) hours-to-a-day stale while the mail itself was fine.
+//
+// Now: translate (pure, fast) → enqueue → 200 immediately. A small worker
+// pool drains the queue in batches through the SAME processAccountingWebhookBatch
+// pipeline (idempotent — duplicate events are no-ops, so an occasional
+// redelivery from a non-2xx is safe). If the queue is ever full the handler
+// falls back to SYNCHRONOUS processing — backpressure, never drop.
+// DrainKumoQueue gives shutdown a bounded window to flush in-flight events.
+
+const kumoAsyncQueueCap = 200000
+const kumoAsyncWorkers = 6
+const kumoAsyncBatch = 250
+
+var (
+	kumoAsyncOnce  sync.Once
+	kumoAsyncQueue chan AccountingRecord
+)
+
+func (ing *Ingestor) startKumoAsyncWorkers() {
+	kumoAsyncOnce.Do(func() {
+		kumoAsyncQueue = make(chan AccountingRecord, kumoAsyncQueueCap)
+		for i := 0; i < kumoAsyncWorkers; i++ {
+			go func() {
+				batch := make([]AccountingRecord, 0, kumoAsyncBatch)
+				flush := func() {
+					if len(batch) > 0 {
+						ing.processAccountingWebhookBatch(batch)
+						batch = batch[:0]
+					}
+				}
+				timer := time.NewTimer(2 * time.Second)
+				defer timer.Stop()
+				for {
+					select {
+					case rec, ok := <-kumoAsyncQueue:
+						if !ok {
+							flush()
+							return
+						}
+						batch = append(batch, rec)
+						if len(batch) >= kumoAsyncBatch {
+							flush()
+						}
+					case <-timer.C:
+						flush()
+						timer.Reset(2 * time.Second)
+					}
+				}
+			}()
+		}
+		go func() { // depth telemetry
+			for {
+				time.Sleep(60 * time.Second)
+				if n := len(kumoAsyncQueue); n > 1000 {
+					log.Printf("[kumo-ingest] async queue depth=%d", n)
+				}
+			}
+		}()
+	})
+}
+
 func (ing *Ingestor) HandleKumoWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -241,9 +310,26 @@ func (ing *Ingestor) HandleKumoWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	ing.startKumoAsyncWorkers()
 	processed := 0
 	if len(records) > 0 {
-		processed = ing.processAccountingWebhookBatch(records)
+		queued := true
+		for _, rec := range records {
+			select {
+			case kumoAsyncQueue <- rec:
+			default:
+				queued = false
+			}
+			if !queued {
+				break
+			}
+		}
+		if queued {
+			processed = len(records) // accepted for async processing
+		} else {
+			// queue full — process synchronously (backpressure, never drop)
+			processed = ing.processAccountingWebhookBatch(records)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
