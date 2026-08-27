@@ -662,32 +662,65 @@ func TestBackfillIsCampaignKeyed(t *testing.T) {
 	}
 }
 
-// CLICKER CONTINUATION (operator 2026-08-25): "Anyone who clicks the money
-// link progresses — they NEVER exit the sequence." Internal feeds drop the
-// engaged_at exit; partner lanes keep it (their Activation metrics and ladder
-// economics depend on exit-on-click).
-func TestEngagedExitSQL_InternalContinuesPartnerExits(t *testing.T) {
+// CLICKERS EXIT (operator 2026-08-27, supersedes the 2026-08-25 "clickers
+// continue" rule): the internal_auto family is paid on NET-NEW clicks only, so
+// a clicker exits the ladder exactly like a partner lane. Converters stay exempt.
+func TestEngagedExitSQL_InternalExitsConvertersContinue(t *testing.T) {
 	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "")
 	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
 
-	if got := engagedExitSQL("internal_auto_insurance_v7", ""); got != "" {
-		t.Fatalf("internal clicker must not exit, got %q", got)
+	if got := engagedExitSQL("internal_auto_insurance_v7", ""); !strings.Contains(got, "engaged_at IS NULL") {
+		t.Fatalf("internal clicker must exit, got %q", got)
 	}
 	if got := engagedExitSQL("refi_heloc", ""); !strings.Contains(got, "engaged_at IS NULL") {
 		t.Fatalf("partner lane must keep clicker exit, got %q", got)
 	}
-	// kill switch restores exit everywhere
-	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "1")
-	if got := engagedExitSQL("internal_auto_insurance_v7", ""); !strings.Contains(got, "engaged_at IS NULL") {
-		t.Fatalf("kill switch inert, got %q", got)
+	if got := engagedExitSQL("converters_sams", ""); got != "" {
+		t.Fatalf("converters must stay exempt, got %q", got)
 	}
-	t.Setenv("PARTNER_DRIP_CLICKER_EXIT_RESTORED", "")
-
 	any := engagedExitAnyVerticalSQL("q")
-	for _, want := range []string{"LOWER(q.vertical) LIKE 'internal_auto_insurance%'", "OR q.engaged_at IS NULL"} {
+	if strings.Contains(any, "internal_auto_insurance") {
+		t.Fatalf("cross-vertical exit must no longer exempt internal_auto:\n%s", any)
+	}
+	for _, want := range []string{"LOWER(q.vertical) LIKE 'converters_%'", "OR q.engaged_at IS NULL"} {
 		if !strings.Contains(any, want) {
 			t.Fatalf("cross-vertical exit missing %q:\n%s", want, any)
 		}
+	}
+}
+
+// The engagement gate itself refuses clicked rows for the gated family (belt to
+// the engaged_at braces: last_click_at and engaged_at are stamped together).
+func TestEngagementGateSQL_ClickedRowsNeverProgress(t *testing.T) {
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_DISABLED", "")
+	t.Setenv("PARTNER_DRIP_ENGAGEMENT_GATE_VERTICALS", "")
+	for _, sql := range []string{engagementGateSQL("internal_auto_insurance_v7", "q"), engagementGateAnyVerticalSQL("q")} {
+		if !strings.Contains(sql, "q.last_click_at IS NULL") {
+			t.Fatalf("gate must exclude clicked rows:\n%s", sql)
+		}
+		if strings.Contains(sql, "last_click_at IS NOT NULL") {
+			t.Fatalf("click-ever-advances clause must be gone:\n%s", sql)
+		}
+	}
+}
+
+// Sweeper: clicked rows are stamped terminal and the gated ladder closes at T2.
+func TestSweeperExitAndCeilingSQL(t *testing.T) {
+	pred, args := verticalPrefixPredicate([]string{"internal_auto_insurance"}, 1)
+	ex := exitClickersSQL(pred, len(args)+1)
+	for _, want := range []string{"terminal_reason = 'clicked_exit'", "next_touch_at   = NULL", "last_click_at IS NOT NULL", "status = 'mailed'", "$2"} {
+		if !strings.Contains(ex, want) {
+			t.Fatalf("exit SQL missing %q:\n%s", want, ex)
+		}
+	}
+	cl := closeAtCeilingSQL(pred, len(args)+1, len(args)+2)
+	for _, want := range []string{"terminal_reason = 'completed'", "COALESCE(touch_count, 0) >= $2", "LIMIT $3"} {
+		if !strings.Contains(cl, want) {
+			t.Fatalf("ceiling SQL missing %q:\n%s", want, cl)
+		}
+	}
+	if GatedMaxTouches != 2 || ClickedExitReason != "clicked_exit" {
+		t.Fatalf("constants drifted: %d %q", GatedMaxTouches, ClickedExitReason)
 	}
 }
 

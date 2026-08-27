@@ -248,12 +248,15 @@ func engagementGateSQL(vertical, alias string) string {
 	// (0.86/1k vs 0.11/1k, 10d n=105,030), so opens stay in the recipient
 	// gate; they are excluded from all domain-level pacing decisions.
 	window := fmt.Sprintf("(%snext_touch_at - INTERVAL '%d hours')", q, followupTouchGapHours)
+	// CLICKERS EXIT (operator 2026-08-27, internal_auto_insurance* only — paid on
+	// NET-NEW clicks, never on repeats): a row that has clicked is never claimed
+	// for another touch; the cold sweeper stamps it terminal ('clicked_exit').
+	// This supersedes gate v3's "click-ever advances" for the gated family.
 	return fmt.Sprintf(`
-			  AND (
+			  AND (%[1]slast_click_at IS NULL AND (
 			        COALESCE(%[1]sisp_family, '') <> 'gmail'
-			     OR %[1]slast_click_at IS NOT NULL
 			     OR (%[1]slast_open_at  IS NOT NULL AND %[1]slast_open_at  >= %[2]s)%[3]s
-			  )`, q, window, gateHoldoutSQL(q))
+			  ))`, q, window, gateHoldoutSQL(q))
 }
 
 // engagementGateAnyVerticalSQL is the cross-vertical form of engagementGateSQL,
@@ -292,9 +295,10 @@ func engagementGateAnyVerticalSQL(alias string) string {
 	return fmt.Sprintf(`
 			  AND (
 			        NOT %[1]s
-			     OR COALESCE(%[2]sisp_family, '') <> 'gmail'
-			     OR %[2]slast_click_at IS NOT NULL
-			     OR (%[2]slast_open_at  IS NOT NULL AND %[2]slast_open_at  >= %[3]s)%[4]s
+			     OR (%[2]slast_click_at IS NULL AND (
+			            COALESCE(%[2]sisp_family, '') <> 'gmail'
+			         OR (%[2]slast_open_at  IS NOT NULL AND %[2]slast_open_at  >= %[3]s)%[4]s
+			        ))
 			  )`, gated, q, window, gateHoldoutSQL(q))
 }
 
@@ -468,6 +472,18 @@ func (s *PartnerDripColdSweeper) sweepOnce(ctx context.Context) {
 	if len(prefixes) == 0 {
 		return
 	}
+	if !clickExitDisabled() {
+		if !progressionSignalsStamped.Load() {
+			log.Printf("[PartnerDripColdSweeper] clicker exit HELD — engagement marker has not stamped signals yet this process")
+		} else {
+			if n := s.exitClickers(ctx, prefixes); n > 0 {
+				log.Printf("[PartnerDripColdSweeper] exited %d clickers from the ladder (%s)", n, ClickedExitReason)
+			}
+			if n := s.closeAtCeiling(ctx, prefixes); n > 0 {
+				log.Printf("[PartnerDripColdSweeper] closed %d records at the gated ladder ceiling (touch >= %d)", n, GatedMaxTouches)
+			}
+		}
+	}
 	if !coldSweepDisabled() {
 		// Fail-CLOSED on the boot-window hazard: until the marker has written
 		// last_open_at/last_click_at at least once in this process, every row
@@ -483,6 +499,74 @@ func (s *PartnerDripColdSweeper) sweepOnce(ctx context.Context) {
 			log.Printf("[PartnerDripColdSweeper] revived %d cold records that engaged", n)
 		}
 	}
+}
+
+// ClickedExitReason is the terminal_reason stamped on a gated-lane record that
+// clicked: it has produced the only click that pays, so its ladder ends. The
+// cold revive pass keys on ColdTerminalReason only, so exited rows stay out.
+const ClickedExitReason = "clicked_exit"
+
+// GatedMaxTouches is the ladder ceiling for the gated (internal auto) family:
+// T1 + at most one follow-up (operator 2026-08-27). The estate-wide
+// MaxTouchCount is untouched; the ceiling is enforced by the sweeper closing
+// any gated row at touch_count >= GatedMaxTouches.
+const GatedMaxTouches = 2
+
+func clickExitDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("PARTNER_DRIP_CLICK_EXIT_DISABLED")), "1")
+}
+
+// exitClickersSQL / closeAtCeilingSQL are exposed for tests; both are batched.
+func exitClickersSQL(pred string, limitArg int) string {
+	return fmt.Sprintf(`
+		UPDATE partner_clean_queue q
+		SET next_touch_at   = NULL,
+		    terminal_reason = '%[1]s',
+		    extra_metadata  = COALESCE(q.extra_metadata, '{}'::jsonb)
+		                      || jsonb_build_object('ladder_exit', '%[1]s', 'ladder_exit_at', NOW()::text)
+		FROM (
+			SELECT id FROM partner_clean_queue
+			WHERE status = 'mailed'
+			  AND %[2]s
+			  AND next_touch_at IS NOT NULL
+			  AND last_click_at IS NOT NULL
+			LIMIT $%[3]d
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE q.id = picked.id
+	`, ClickedExitReason, pred, limitArg)
+}
+
+func closeAtCeilingSQL(pred string, ceilingArg, limitArg int) string {
+	return fmt.Sprintf(`
+		UPDATE partner_clean_queue q
+		SET next_touch_at   = NULL,
+		    terminal_reason = 'completed',
+		    extra_metadata  = COALESCE(q.extra_metadata, '{}'::jsonb)
+		                      || jsonb_build_object('ladder_exit', 'gated_ceiling', 'ladder_exit_at', NOW()::text)
+		FROM (
+			SELECT id FROM partner_clean_queue
+			WHERE status = 'mailed'
+			  AND %[1]s
+			  AND next_touch_at IS NOT NULL
+			  AND COALESCE(touch_count, 0) >= $%[2]d
+			LIMIT $%[3]d
+			FOR UPDATE SKIP LOCKED
+		) picked
+		WHERE q.id = picked.id
+	`, pred, ceilingArg, limitArg)
+}
+
+func (s *PartnerDripColdSweeper) exitClickers(ctx context.Context, prefixes []string) int64 {
+	pred, args := verticalPrefixPredicate(prefixes, 1)
+	args = append(args, s.batchSize)
+	return s.runBatched(ctx, "clicked_exit", exitClickersSQL(pred, len(args)), args)
+}
+
+func (s *PartnerDripColdSweeper) closeAtCeiling(ctx context.Context, prefixes []string) int64 {
+	pred, args := verticalPrefixPredicate(prefixes, 1)
+	args = append(args, GatedMaxTouches, s.batchSize)
+	return s.runBatched(ctx, "gated_ceiling", closeAtCeilingSQL(pred, len(args)-1, len(args)), args)
 }
 
 // verticalPrefixPredicate builds an OR of prefix matches over `vertical`,
@@ -640,24 +724,22 @@ func engagedExitSQL(vertical, alias string) string {
 	if alias != "" {
 		q = alias + "."
 	}
+	// Exit-on-click is the estate default. Converters lanes are the one exemption
+	// (their journey is the cross-sell, not a single click). The internal_auto
+	// family USED to be exempt ("clickers continue", 2026-08-25); operator ruling
+	// 2026-08-27 reversed that — those lanes are paid on net-new clicks only, so
+	// a clicker exits. PARTNER_DRIP_CLICKER_EXIT_RESTORED=1 forces exit everywhere.
 	if !clickerExitRestored() {
 		lv := strings.ToLower(strings.TrimSpace(vertical))
-		// Converters share the continuation rule — a cross-sell click must
-		// never end their sequence (operator 2026-08-25).
 		if strings.HasPrefix(lv, convertersPrefix) {
 			return ""
-		}
-		for _, p := range gatedVerticalPrefixes() {
-			if strings.HasPrefix(lv, p) {
-				return "" // clickers continue: no engaged_at exit
-			}
 		}
 	}
 	return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
 }
 
 // engagedExitAnyVerticalSQL is the cross-vertical form: exits apply everywhere
-// EXCEPT the internal prefixes (uses inline literals, safe to concatenate).
+// EXCEPT the converters prefix (uses inline literals, safe to concatenate).
 func engagedExitAnyVerticalSQL(alias string) string {
 	q := ""
 	if alias != "" {
@@ -666,14 +748,6 @@ func engagedExitAnyVerticalSQL(alias string) string {
 	if clickerExitRestored() {
 		return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
 	}
-	prefixes := gatedVerticalPrefixes()
-	if len(prefixes) == 0 {
-		return "\n\t\t\t  AND " + q + "engaged_at IS NULL"
-	}
-	clauses := make([]string, 0, len(prefixes)+1)
-	for _, p := range prefixes {
-		clauses = append(clauses, fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(p+"%")))
-	}
-	clauses = append(clauses, fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(convertersPrefix+"%")))
-	return "\n\t\t\t  AND (" + strings.Join(clauses, " OR ") + " OR " + q + "engaged_at IS NULL)"
+	// Only the converters family is exempt (see engagedExitSQL).
+	return "\n\t\t\t  AND (" + fmt.Sprintf("LOWER(%svertical) LIKE %s", q, quoteSQLLiteral(convertersPrefix+"%")) + " OR " + q + "engaged_at IS NULL)"
 }
