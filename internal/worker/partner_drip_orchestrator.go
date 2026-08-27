@@ -2916,6 +2916,39 @@ func zeroAllCaps(caps map[string]int) map[string]int {
 //
 // hardCap is a safety upper bound on total claim size (post-cap). Set to
 // MaxWaveSize so a single wave can never exceed that operational ceiling.
+// capsValuesClauses renders perISPCaps as the VALUES rows of the claim CTE.
+//
+// EVERY known ISP class is emitted — including the ones whose cap is 0 — so the
+// bucket CASE in the claim SQL (`isp_family IN (SELECT isp FROM caps) … ELSE
+// 'other'`) keeps a zero-capped class in ITS OWN bucket, where `rn <= 0`
+// excludes it. Before 2026-08-27 zero caps were dropped from the list, which
+// made the 2026-08-11 unknown-ISP fallback re-admit every zero-capped class
+// through the 'other' bucket at the 'other' cap: a brand-budget HOLD, a dataset
+// daily_cap=0, gmail brand routing and budget exhaustion all leaked (measured:
+// 17,781 db×gmail intros in the 24h AFTER the db/gmail hold tripped; ≥200k
+// gmail intros since 08-11 on datasets with gmail daily_cap=0). The 'other'
+// fallback is for classes that have NO caps entry at all, and only those.
+// Returns the clauses, the flat (isp, cap, isp, cap …) args starting at $startIdx,
+// and how many classes carry a positive cap (0 ⇒ nothing is claimable).
+func capsValuesClauses(perISPCaps map[string]int, startIdx int) ([]string, []interface{}, int) {
+	clauses := make([]string, 0, len(perISPCaps))
+	args := make([]interface{}, 0, 2*len(perISPCaps))
+	positive := 0
+	idx := startIdx
+	for ispName, capValue := range perISPCaps {
+		if capValue < 0 {
+			capValue = 0
+		}
+		if capValue > 0 {
+			positive++
+		}
+		clauses = append(clauses, fmt.Sprintf("($%d::text, $%d::int)", idx, idx+1))
+		args = append(args, ispName, capValue)
+		idx += 2
+	}
+	return clauses, args, positive
+}
+
 func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, vertical, forBrand string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
 	pin := homeBrandPinSQL(vertical, forBrand, "")
 	if len(perISPCaps) == 0 {
@@ -2928,17 +2961,9 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 	// Build a VALUES list (isp, cap) for the caps CTE. Args:
 	//   $1 = vertical, $2 = hardCap, then $3.. = isp, cap, isp, cap, ...
 	args := []interface{}{vertical, hardCap}
-	valueClauses := make([]string, 0, len(perISPCaps))
-	idx := 3
-	for ispName, capValue := range perISPCaps {
-		if capValue <= 0 {
-			continue
-		}
-		valueClauses = append(valueClauses, fmt.Sprintf("($%d::text, $%d::int)", idx, idx+1))
-		args = append(args, ispName, capValue)
-		idx += 2
-	}
-	if len(valueClauses) == 0 {
+	valueClauses, capArgs, positive := capsValuesClauses(perISPCaps, 3)
+	args = append(args, capArgs...)
+	if positive == 0 {
 		return nil, fmt.Errorf("perISPCaps has no positive entries")
 	}
 
@@ -5226,17 +5251,9 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 
 	// Build VALUES list for caps CTE.
 	args := []interface{}{vertical, hardCap, targetTouchCount}
-	valueClauses := make([]string, 0, len(perISPCaps))
-	idx := 4
-	for ispName, capValue := range perISPCaps {
-		if capValue <= 0 {
-			continue
-		}
-		valueClauses = append(valueClauses, fmt.Sprintf("($%d::text, $%d::int)", idx, idx+1))
-		args = append(args, ispName, capValue)
-		idx += 2
-	}
-	if len(valueClauses) == 0 {
+	valueClauses, capArgs, positive := capsValuesClauses(perISPCaps, 4)
+	args = append(args, capArgs...)
+	if positive == 0 {
 		return nil, fmt.Errorf("perISPCaps has no positive entries")
 	}
 
