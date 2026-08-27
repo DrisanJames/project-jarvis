@@ -24,15 +24,15 @@ type VerificationResult struct {
 // It uses local MX lookup as a free pre-filter, then delegates to a
 // third-party provider for definitive verification.
 type EmailVerifier struct {
-	db           *sql.DB
-	provider     EmailVerificationProvider
-	batchSize    int
-	interval     time.Duration
-	ratePerMin   int
-	ctx          context.Context
-	cancel       context.CancelFunc
-	lastRunAt    time.Time
-	healthy      bool
+	db         *sql.DB
+	provider   EmailVerificationProvider
+	batchSize  int
+	interval   time.Duration
+	ratePerMin int
+	ctx        context.Context
+	cancel     context.CancelFunc
+	lastRunAt  time.Time
+	healthy    bool
 }
 
 func NewEmailVerifier(db *sql.DB, provider EmailVerificationProvider) *EmailVerifier {
@@ -73,7 +73,7 @@ func (v *EmailVerifier) Stop() {
 	}
 }
 
-func (v *EmailVerifier) IsHealthy() bool { return v.healthy }
+func (v *EmailVerifier) IsHealthy() bool      { return v.healthy }
 func (v *EmailVerifier) LastRunAt() time.Time { return v.lastRunAt }
 
 func (v *EmailVerifier) runOnce() {

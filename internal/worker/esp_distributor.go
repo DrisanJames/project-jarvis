@@ -19,8 +19,8 @@ import (
 // Handles failover when an ESP goes down and tracks distribution statistics.
 
 var (
-	ErrNoHealthyESPs     = errors.New("no healthy ESP profiles available")
-	ErrInvalidQuotas     = errors.New("ESP quotas must sum to 100%")
+	ErrNoHealthyESPs      = errors.New("no healthy ESP profiles available")
+	ErrInvalidQuotas      = errors.New("ESP quotas must sum to 100%")
 	ErrNoQuotasConfigured = errors.New("no ESP quotas configured")
 )
 
@@ -32,18 +32,18 @@ type ESPQuota struct {
 
 // ESPHealth tracks the health status of an ESP
 type ESPHealth struct {
-	ProfileID       string
-	FailureCount    int
-	LastFailure     time.Time
+	ProfileID        string
+	FailureCount     int
+	LastFailure      time.Time
 	ConsecutiveFails int
-	IsHealthy       bool
+	IsHealthy        bool
 }
 
 // DistributionStats tracks send distribution per campaign
 type DistributionStats struct {
-	ProfileID   string `json:"profile_id"`
-	SentCount   int64  `json:"sent_count"`
-	FailedCount int64  `json:"failed_count"`
+	ProfileID   string  `json:"profile_id"`
+	SentCount   int64   `json:"sent_count"`
+	FailedCount int64   `json:"failed_count"`
 	Percentage  float64 `json:"actual_percentage"`
 }
 
@@ -52,8 +52,8 @@ type ESPDistributor struct {
 	redis *redis.Client
 
 	// Health tracking
-	mu       sync.RWMutex
-	health   map[string]*ESPHealth
+	mu        sync.RWMutex
+	health    map[string]*ESPHealth
 	lastReset map[string]time.Time
 
 	// Configuration

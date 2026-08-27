@@ -148,8 +148,8 @@ type JourneyClickTrackingEnroller struct {
 	// scan then runs without the pre-enrollment verdict gate for the life of
 	// the process (cron backstop still applies). Single tick goroutine.
 	verdictFnMissing bool
-	stopChan   chan struct{}
-	stopOnce   sync.Once
+	stopChan         chan struct{}
+	stopOnce         sync.Once
 
 	totalScanned int64
 	totalQueued  int64

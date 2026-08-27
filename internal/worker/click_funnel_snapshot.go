@@ -164,7 +164,9 @@ func cfNormPrefix(p string) string {
 }
 
 // ClickFunnelCatalogKey / ClickFunnelLaneKey are the published object keys.
-func ClickFunnelCatalogKey(prefix string) string { return cfNormPrefix(prefix) + "catalog/current.json" }
+func ClickFunnelCatalogKey(prefix string) string {
+	return cfNormPrefix(prefix) + "catalog/current.json"
+}
 func ClickFunnelLaneKey(prefix, offerID string) string {
 	return cfNormPrefix(prefix) + "lanes/" + cfSafeOffer(offerID) + "/current.json"
 }

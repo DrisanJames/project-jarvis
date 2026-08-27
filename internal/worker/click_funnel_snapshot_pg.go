@@ -56,10 +56,10 @@ const clickFunnelDefaultLookbackHours = 72.0
 // ── lane configuration ──────────────────────────────────────────────────────
 
 type cfLaneRow struct {
-	OfferID, OfferName, JourneyID, JourneyName string
-	Enabled                                    bool
+	OfferID, OfferName, JourneyID, JourneyName              string
+	Enabled                                                 bool
 	PayoutType, RoutingState, RedirectOffer, Recommendation string
-	SlugInlets                                 int
+	SlugInlets                                              int
 }
 
 // gatherLanes reads lane config. Deliberately NO per-lane correlated
@@ -266,15 +266,15 @@ func (w *ClickFunnelSnapshotWorker) gatherAwaiting(ctx context.Context) (map[cfF
 // ── cohort ──────────────────────────────────────────────────────────────────
 
 type cfCohort struct {
-	Total           int
-	Active          int
-	InFlight        int // immature — reported separately, never in a rate
-	MatureEnrolled  int
-	MatureCompleted int
-	ExitsBehavioral int
-	ExitsAdmin      int
-	ExitsConverted  int
-	GoalReached     int
+	Total                 int
+	Active                int
+	InFlight              int // immature — reported separately, never in a rate
+	MatureEnrolled        int
+	MatureCompleted       int
+	ExitsBehavioral       int
+	ExitsAdmin            int
+	ExitsConverted        int
+	GoalReached           int
 	MedianEnrollToConv    sql.NullFloat64
 	MedianFirstSendToConv sql.NullFloat64
 }
@@ -448,10 +448,10 @@ func (w *ClickFunnelSnapshotWorker) gatherNodeConversions(ctx context.Context, l
 // ── copy + Creative Studio ──────────────────────────────────────────────────
 
 type cfCopy struct {
-	Subject, Preheader, FromOverride       string
-	ProofID, ProofName, ProofApproval      string
-	ProofActive, Enabled, HasBodySnapshot  bool
-	UpdatedAt                              time.Time
+	Subject, Preheader, FromOverride      string
+	ProofID, ProofName, ProofApproval     string
+	ProofActive, Enabled, HasBodySnapshot bool
+	UpdatedAt                             time.Time
 }
 
 type cfCopyKey struct {

@@ -14,10 +14,10 @@ import (
 
 func TestNamesFromExtra(t *testing.T) {
 	cases := []struct {
-		name        string
-		extra       string
-		wantFirst   string
-		wantLast    string
+		name      string
+		extra     string
+		wantFirst string
+		wantLast  string
 	}{
 		{"both present", `{"first_name":"Derek","last_name":"Delfino","state":"FL"}`, "Derek", "Delfino"},
 		{"api door empty strings", `{"first_name":"","last_name":"","zip":"","metadata":null}`, "", ""},

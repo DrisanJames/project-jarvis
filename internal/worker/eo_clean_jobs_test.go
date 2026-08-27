@@ -120,7 +120,7 @@ func TestApplyCleanOutcomeProgressAccounting(t *testing.T) {
 		{eoOutcome{kind: outcomeReady, resultID: 7, result: "Complainer"}, 0, eoCleanActionDone},
 		{eoOutcome{kind: outcomeSuppress, resultID: 4, result: "Undeliverable"}, 0, eoCleanActionDone},
 		{eoOutcome{kind: outcomeSuppress, resultID: 5, result: "Bot"}, 0, eoCleanActionDone},
-		{eoOutcome{kind: outcomeRetry, resultID: 0, result: "Retry"}, 0, eoCleanActionRetry},   // attempt 1 of 3 — stays pending
+		{eoOutcome{kind: outcomeRetry, resultID: 0, result: "Retry"}, 0, eoCleanActionRetry},     // attempt 1 of 3 — stays pending
 		{eoOutcome{kind: outcomeRetry, resultID: 11, result: "Unknown"}, 2, eoCleanActionFailed}, // attempt 3 of 3 — exhausted
 	}
 	for i, s := range steps {

@@ -45,11 +45,11 @@ const (
 
 // SegmentCleanupWorker handles automatic cleanup of unused segments
 type SegmentCleanupWorker struct {
-	db              *sql.DB
-	checkInterval   time.Duration
-	emailSender     EmailSender
-	stopChan        chan struct{}
-	running         bool
+	db            *sql.DB
+	checkInterval time.Duration
+	emailSender   EmailSender
+	stopChan      chan struct{}
+	running       bool
 
 	// Per-cycle registry-consent skip counters (REQ-C16). Written only from
 	// the single run() goroutine — reset in processAllOrganizations, folded

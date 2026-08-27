@@ -144,8 +144,8 @@ var synonymPairs = []struct{ A, B string }{
 var brandEmojiPools = map[string][]string{
 	"discountblog":    {"💰", "🛒", "🔥", "✨", "💵", "🎯", "💸", "🏷️"},
 	"historythinking": {"📜", "🏛️", "⚔️", "🗺️", "🔍", "🏺", "📚", "🎭"},
-	"quizfiesta":     {"🧠", "🎯", "❓", "🏆", "⭐", "🎪", "🤔", "💡"},
-	"projectjarvis":  {"🚀", "⚡", "🔧", "💻", "🤖", "✨", "🎯", "📊"},
+	"quizfiesta":      {"🧠", "🎯", "❓", "🏆", "⭐", "🎪", "🤔", "💡"},
+	"projectjarvis":   {"🚀", "⚡", "🔧", "💻", "🤖", "✨", "🎯", "📊"},
 }
 
 var reLiquidTag = regexp.MustCompile(`\{\{[^}]*\}\}`)

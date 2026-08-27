@@ -76,16 +76,16 @@ type PipelineNotifier interface {
 
 // PipelineReport is the summary sent to the admin after each run.
 type PipelineReport struct {
-	RunID           string
-	StartedAt       time.Time
-	CompletedAt     time.Time
-	FilesProcessed  int
-	EmailsTotal     int
-	EmailsVerified  int
+	RunID            string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	FilesProcessed   int
+	EmailsTotal      int
+	EmailsVerified   int
 	EmailsSuppressed int
-	EmailsDeduped   int
-	DomainBreakdown []DomainStat
-	Errors          []string
+	EmailsDeduped    int
+	DomainBreakdown  []DomainStat
+	Errors           []string
 }
 
 type DomainStat struct {

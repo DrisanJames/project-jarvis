@@ -32,11 +32,11 @@ type EOValidator interface {
 
 // PartnerValidatorConfig knobs.
 type PartnerValidatorConfig struct {
-	BatchSize     int           // records per cycle (default 500)
-	PollInterval  time.Duration // default 30s
-	Concurrency   int           // EO calls in parallel (default 10)
-	MaxRetries    int           // before giving up (default 3)
-	OrganizationID string       // used for global suppression inserts (must match GlobalSuppressionHub orgID)
+	BatchSize      int           // records per cycle (default 500)
+	PollInterval   time.Duration // default 30s
+	Concurrency    int           // EO calls in parallel (default 10)
+	MaxRetries     int           // before giving up (default 3)
+	OrganizationID string        // used for global suppression inserts (must match GlobalSuppressionHub orgID)
 }
 
 // PartnerValidator drains pending_eo rows.
@@ -289,10 +289,11 @@ func (pv *PartnerValidator) callEO(ctx context.Context, rec pendingRecord) eoOut
 // EOCleanJobWorker (mailing_eo_clean_items) — one EO client call path, one
 // outcome vocabulary (factored out 2026-07-26; behavior byte-stable with the
 // original PartnerValidator.callEO). The mapping mirrors the spec in the plan:
-//   REJECT shape (account suppression) → suppress (terminal, same class as Undeliverable)
-//   1 (Verified), 7 (Complainer) → ready (mailable)
-//   0 (Retry), 11 (Unknown)      → retry next cycle
-//   any other ResultID           → suppress
+//
+//	REJECT shape (account suppression) → suppress (terminal, same class as Undeliverable)
+//	1 (Verified), 7 (Complainer) → ready (mailable)
+//	0 (Retry), 11 (Unknown)      → retry next cycle
+//	any other ResultID           → suppress
 func callEOValidation(ctx context.Context, client EOValidator, email string) eoOutcome {
 	resp, err := client.Validate(ctx, email)
 	if err != nil {

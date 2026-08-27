@@ -25,36 +25,36 @@ import (
 // Uses the normalized queue schema (no HTML storage in queue)
 // Content is fetched from campaigns table and merged with substitution data
 type SendWorkerPoolV2 struct {
-	db              *sql.DB
-	workerID        string
-	numWorkers      int
-	batchSize       int
-	pollInterval    time.Duration
+	db           *sql.DB
+	workerID     string
+	numWorkers   int
+	batchSize    int
+	pollInterval time.Duration
 
 	// Stats
-	totalSent       int64
-	totalFailed     int64
-	totalSkipped    int64
+	totalSent    int64
+	totalFailed  int64
+	totalSkipped int64
 
 	// Control
-	ctx             context.Context
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
-	running         bool
-	mu              sync.RWMutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running bool
+	mu      sync.RWMutex
 
 	// Rate limiter (optional)
-	rateLimiter     *RateLimiter
+	rateLimiter *RateLimiter
 
 	// Campaign content cache (reduces DB queries)
-	contentCache    map[string]*CampaignContent
-	cacheMu         sync.RWMutex
+	contentCache map[string]*CampaignContent
+	cacheMu      sync.RWMutex
 
 	// Profile-based sender
-	profileSender   *ProfileBasedSender
+	profileSender *ProfileBasedSender
 
 	// Redis client for agent decision lookups
-	redis           *redis.Client
+	redis *redis.Client
 
 	// Agent preprocessor (optional — enables AI-driven send decisions)
 	agentPreprocessor *AgentPreprocessor
@@ -76,19 +76,19 @@ type CampaignContent struct {
 
 // QueueItemV2 represents an item from the normalized queue
 type QueueItemV2 struct {
-	ID              uuid.UUID
-	CampaignID      uuid.UUID
-	SubscriberID    uuid.UUID
-	Email           string
+	ID               uuid.UUID
+	CampaignID       uuid.UUID
+	SubscriberID     uuid.UUID
+	Email            string
 	SubstitutionData map[string]interface{}
-	Priority        int
+	Priority         int
 }
 
 // AgentDecisionCache is the Redis-cached decision for a single recipient.
 // Populated by the agent preprocessor pipeline, read by the send worker.
 type AgentDecisionCache struct {
 	Classification  string `json:"classification"`   // suppress, defer, send_now, send_later
-	ContentStrategy string `json:"content_strategy"`  // text_personalized, text_generic, image_personalized, image_generic
+	ContentStrategy string `json:"content_strategy"` // text_personalized, text_generic, image_personalized, image_generic
 	Priority        int    `json:"priority"`
 	OptimalSendHour int    `json:"optimal_send_hour"`
 }
@@ -559,7 +559,7 @@ func (p *SendWorkerPoolV2) applySubstitutions(template string, data map[string]i
 	for key, value := range data {
 		placeholder := fmt.Sprintf("{{ %s }}", key)
 		result = replaceAll(result, placeholder, fmt.Sprintf("%v", value))
-		
+
 		// Also handle without spaces
 		placeholder2 := fmt.Sprintf("{{%s}}", key)
 		result = replaceAll(result, placeholder2, fmt.Sprintf("%v", value))

@@ -405,7 +405,7 @@ func TestUploadChunk(t *testing.T) {
 	ctx := context.Background()
 
 	// Create session
-	fileSize := int64(30 * 1024 * 1024) // 30MB
+	fileSize := int64(30 * 1024 * 1024)  // 30MB
 	chunkSize := int64(10 * 1024 * 1024) // 10MB chunks
 
 	session, _ := service.InitUploadSession(ctx, "org-123", "list-456", "test.csv", fileSize, chunkSize)

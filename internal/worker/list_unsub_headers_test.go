@@ -22,11 +22,11 @@ func TestBuildListUnsubscribeHeaders_PerDomainURLs(t *testing.T) {
 		brandRoot string
 		fromEmail string
 	}{
-		{"quizfiesta.com", "news@em.quizfiesta.com"},           // the Postmaster example domain
-		{"discountblog.com", "deals@em.discountblog.com"},      // legacy PMTA brand
-		{"myownhealth.net", "health@em.myownhealth.net"},       // server B brand
-		{"bestcreditcare.com", "team@em.bestcreditcare.com"},   // kumo warmup property
-		{"us-finance.com", "finance@em.us-finance.com"},        // kumo, hyphenated apex
+		{"quizfiesta.com", "news@em.quizfiesta.com"},                     // the Postmaster example domain
+		{"discountblog.com", "deals@em.discountblog.com"},                // legacy PMTA brand
+		{"myownhealth.net", "health@em.myownhealth.net"},                 // server B brand
+		{"bestcreditcare.com", "team@em.bestcreditcare.com"},             // kumo warmup property
+		{"us-finance.com", "finance@em.us-finance.com"},                  // kumo, hyphenated apex
 		{"homewarrantyservices.org", "hank@em.homewarrantyservices.org"}, // non-.com TLD
 	}
 	for _, tc := range cases {

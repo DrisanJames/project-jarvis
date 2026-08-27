@@ -153,8 +153,8 @@ func (w *EngineSignalsArchiver) runOnce(ctx context.Context) {
 		len(buckets), cutoff.Format("2006-01-02"))
 
 	var (
-		ok       int
-		skipped  int
+		ok        int
+		skipped   int
 		rowsMoved int64
 	)
 	for _, b := range buckets {
@@ -331,8 +331,8 @@ func (w *EngineSignalsArchiver) findUnarchivedBuckets(
 func (w *EngineSignalsArchiver) archiveBucket(
 	ctx context.Context, b signalBucket,
 ) (int64, error) {
-	startAt := b.Date                             // inclusive
-	endAt := b.Date.Add(24 * time.Hour)           // exclusive
+	startAt := b.Date                   // inclusive
+	endAt := b.Date.Add(24 * time.Hour) // exclusive
 
 	// Phase 1 — stream rows out of Postgres into a gzipped JSONL buffer.
 	// We hold the buffer in memory; measured 200K rows compresses to
@@ -373,8 +373,8 @@ func (w *EngineSignalsArchiver) archiveBucket(
 	}
 
 	var (
-		rowCount      int64
-		minAt, maxAt  time.Time
+		rowCount     int64
+		minAt, maxAt time.Time
 	)
 	for rows.Next() {
 		var r signalRow

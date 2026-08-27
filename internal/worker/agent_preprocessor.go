@@ -68,25 +68,25 @@ type agentCampaign struct {
 
 // inboxProfile mirrors the columns we read from mailing_inbox_profiles.
 type inboxProfile struct {
-	EmailHash            string
-	EngagementScore      float64
-	EngagementTrend      sql.NullString
-	TotalSends           int
-	TotalOpens           int
-	TotalClicks          int
-	TotalBounces         int
-	TotalComplaints      int
-	OptimalSendHour      int
-	PrefTextScore        float64
-	PrefImageScore       float64
+	EmailHash             string
+	EngagementScore       float64
+	EngagementTrend       sql.NullString
+	TotalSends            int
+	TotalOpens            int
+	TotalClicks           int
+	TotalBounces          int
+	TotalComplaints       int
+	OptimalSendHour       int
+	PrefTextScore         float64
+	PrefImageScore        float64
 	PrefPersonalizedScore float64
-	InboxHealth          sql.NullString
-	SendSuspendedUntil   sql.NullTime
-	MonthlyEngagement    json.RawMessage
-	RevenueTotal         float64
-	ConsecutiveBounces   int
-	LastOpenAt           sql.NullTime
-	LastClickAt          sql.NullTime
+	InboxHealth           sql.NullString
+	SendSuspendedUntil    sql.NullTime
+	MonthlyEngagement     json.RawMessage
+	RevenueTotal          float64
+	ConsecutiveBounces    int
+	LastOpenAt            sql.NullTime
+	LastClickAt           sql.NullTime
 }
 
 // decisionRedisPayload is the slim JSON stored per-recipient in Redis.
@@ -701,15 +701,15 @@ func (ap *AgentPreprocessor) insertDecisionBatch(ctx context.Context, agentID, c
 			argIdx, argIdx+1, argIdx+2, argIdx+3, argIdx+4, argIdx+5, argIdx+6, argIdx+7, argIdx+8))
 
 		args = append(args,
-			uuid.New(),         // id
-			agentID,            // agent_id
-			campaignID,         // campaign_id
-			d.EmailHash,        // email_hash
-			d.Classification,   // classification
-			d.ContentStrategy,  // content_strategy
-			optimalAt,          // optimal_send_at
-			d.Priority,         // priority
-			reasoningJSON,      // reasoning
+			uuid.New(),        // id
+			agentID,           // agent_id
+			campaignID,        // campaign_id
+			d.EmailHash,       // email_hash
+			d.Classification,  // classification
+			d.ContentStrategy, // content_strategy
+			optimalAt,         // optimal_send_at
+			d.Priority,        // priority
+			reasoningJSON,     // reasoning
 		)
 		argIdx += 9
 	}

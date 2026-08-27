@@ -444,9 +444,9 @@ func TestLifecycle_MultiISPNonDivisible(t *testing.T) {
 	numBatches := 10
 	plan := ComputeBatchPlan(quotas, numBatches)
 
-	assert.Equal(t, 11, plan["gmail"])  // ceil(103/10)
-	assert.Equal(t, 5, plan["yahoo"])   // ceil(47/10)
-	assert.Equal(t, 3, plan["att"])     // ceil(25/10)
+	assert.Equal(t, 11, plan["gmail"]) // ceil(103/10)
+	assert.Equal(t, 5, plan["yahoo"])  // ceil(47/10)
+	assert.Equal(t, 3, plan["att"])    // ceil(25/10)
 
 	remaining := make(map[string]int, len(quotas))
 	for k, v := range quotas {

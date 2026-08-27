@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"strings"
 	"sync"
 	"time"
@@ -103,13 +103,13 @@ type AdvancedThrottleManager struct {
 	checkBackoffScript *redis.Script
 
 	// Local cache for throttle configs
-	configCache     map[string]*AdvancedThrottleConfig
-	configCacheMu   sync.RWMutex
-	configCacheTTL  time.Duration
+	configCache    map[string]*AdvancedThrottleConfig
+	configCacheMu  sync.RWMutex
+	configCacheTTL time.Duration
 
 	// Metrics tracking
-	metricsCache    map[string]*throttleMetrics
-	metricsCacheMu  sync.RWMutex
+	metricsCache   map[string]*throttleMetrics
+	metricsCacheMu sync.RWMutex
 }
 
 // throttleMetrics tracks recent metrics for auto-adjustment
@@ -179,16 +179,16 @@ type ThrottleDecision struct {
 
 // Redis key patterns
 const (
-	keyDomainHourly   = "throttle:%s:domain:%s:hourly:%s"   // org_id, domain, hour
-	keyDomainDaily    = "throttle:%s:domain:%s:daily:%s"    // org_id, domain, date
-	keyISPHourly      = "throttle:%s:isp:%s:hourly:%s"      // org_id, isp, hour
-	keyISPDaily       = "throttle:%s:isp:%s:daily:%s"       // org_id, isp, date
-	keyISPBurst       = "throttle:%s:isp:%s:burst:%d"       // org_id, isp, minute
-	keyBackoff        = "throttle:%s:backoff:%s"            // org_id, domain
-	keyBounceCounter  = "throttle:%s:bounces:%s:%s"         // org_id, domain, hour
+	keyDomainHourly     = "throttle:%s:domain:%s:hourly:%s" // org_id, domain, hour
+	keyDomainDaily      = "throttle:%s:domain:%s:daily:%s"  // org_id, domain, date
+	keyISPHourly        = "throttle:%s:isp:%s:hourly:%s"    // org_id, isp, hour
+	keyISPDaily         = "throttle:%s:isp:%s:daily:%s"     // org_id, isp, date
+	keyISPBurst         = "throttle:%s:isp:%s:burst:%d"     // org_id, isp, minute
+	keyBackoff          = "throttle:%s:backoff:%s"          // org_id, domain
+	keyBounceCounter    = "throttle:%s:bounces:%s:%s"       // org_id, domain, hour
 	keyComplaintCounter = "throttle:%s:complaints:%s:%s"    // org_id, domain, hour
-	keySentCounter    = "throttle:%s:sent:%s:%s"            // org_id, domain, hour
-	keyConfigCache    = "throttle:%s:config"                // org_id
+	keySentCounter      = "throttle:%s:sent:%s:%s"          // org_id, domain, hour
+	keyConfigCache      = "throttle:%s:config"              // org_id
 )
 
 // Lua script for atomic check-and-increment

@@ -28,15 +28,15 @@ type RealtimeMetricsWorker struct {
 	redis *redis.Client
 
 	// Configuration
-	pollInterval       time.Duration
+	pollInterval         time.Duration
 	optimizationInterval time.Duration
-	
+
 	// State
-	running    bool
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	
+	running bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+
 	// Optimization tracking (campaign_id -> last optimization time)
 	lastOptimization   map[string]time.Time
 	lastOptimizationMu sync.Mutex
@@ -58,12 +58,12 @@ func (w *RealtimeMetricsWorker) Start() {
 	if w.running {
 		return
 	}
-	
+
 	w.running = true
 	w.ctx, w.cancel = context.WithCancel(context.Background())
-	
+
 	log.Printf("[RealtimeMetricsWorker] Starting with poll interval %v", w.pollInterval)
-	
+
 	w.wg.Add(1)
 	go w.runLoop()
 }
@@ -73,7 +73,7 @@ func (w *RealtimeMetricsWorker) Stop() {
 	if !w.running {
 		return
 	}
-	
+
 	log.Println("[RealtimeMetricsWorker] Stopping...")
 	w.cancel()
 	w.wg.Wait()
@@ -83,10 +83,10 @@ func (w *RealtimeMetricsWorker) Stop() {
 
 func (w *RealtimeMetricsWorker) runLoop() {
 	defer w.wg.Done()
-	
+
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -100,27 +100,27 @@ func (w *RealtimeMetricsWorker) runLoop() {
 func (w *RealtimeMetricsWorker) collectMetrics() {
 	ctx, cancel := context.WithTimeout(w.ctx, 25*time.Second)
 	defer cancel()
-	
+
 	// Get all active campaigns (status = 'sending')
 	campaigns, err := w.getActiveCampaigns(ctx)
 	if err != nil {
 		log.Printf("[RealtimeMetricsWorker] Error getting active campaigns: %v", err)
 		return
 	}
-	
+
 	if len(campaigns) == 0 {
 		return
 	}
-	
+
 	log.Printf("[RealtimeMetricsWorker] Processing %d active campaigns", len(campaigns))
-	
+
 	for _, campaignID := range campaigns {
 		// Record metrics
 		if err := w.recordCampaignMetrics(ctx, campaignID); err != nil {
 			log.Printf("[RealtimeMetricsWorker] Error recording metrics for %s: %v", campaignID, err)
 			continue
 		}
-		
+
 		// Check if AI optimization is due
 		w.maybeRunOptimization(ctx, campaignID)
 	}
@@ -137,7 +137,7 @@ func (w *RealtimeMetricsWorker) getActiveCampaigns(ctx context.Context) ([]uuid.
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var campaigns []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID
@@ -146,7 +146,7 @@ func (w *RealtimeMetricsWorker) getActiveCampaigns(ctx context.Context) ([]uuid.
 		}
 		campaigns = append(campaigns, id)
 	}
-	
+
 	return campaigns, nil
 }
 
@@ -154,7 +154,7 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 	// Get current campaign stats
 	var sentCount, deliveredCount, openCount, uniqueOpenCount int
 	var clickCount, uniqueClickCount, bounceCount, complaintCount, unsubscribeCount int
-	
+
 	err := w.db.QueryRowContext(ctx, `
 		SELECT COALESCE(sent_count, 0), COALESCE(delivered_count, 0), 
 		       COALESCE(open_count, 0), COALESCE(unique_open_count, 0),
@@ -170,7 +170,7 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 	if err != nil {
 		return fmt.Errorf("get campaign stats: %w", err)
 	}
-	
+
 	// Get previous cumulative totals
 	var prevSent, prevOpens, prevClicks, prevBounces, prevComplaints int
 	err = w.db.QueryRowContext(ctx, `
@@ -188,7 +188,7 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 	} else if err != nil {
 		return fmt.Errorf("get previous metrics: %w", err)
 	}
-	
+
 	// Get current throttle rate from AI settings
 	var currentThrottleRate int = 10000
 	err = w.db.QueryRowContext(ctx, `
@@ -199,7 +199,7 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 	if err != nil && err != sql.ErrNoRows {
 		log.Printf("[RealtimeMetricsWorker] Error getting throttle rate: %v", err)
 	}
-	
+
 	// Calculate rates
 	var openRate, clickRate, bounceRate, complaintRate float64
 	if sentCount > 0 {
@@ -208,7 +208,7 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 		bounceRate = float64(bounceCount) / float64(sentCount)
 		complaintRate = float64(complaintCount) / float64(sentCount)
 	}
-	
+
 	// Calculate throttle utilization
 	intervalSent := sentCount - prevSent
 	var throttleUtilization float64
@@ -219,10 +219,10 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 			throttleUtilization = float64(intervalSent) / float64(throttlePer30Sec)
 		}
 	}
-	
+
 	now := time.Now()
 	intervalStart := now.Add(-30 * time.Second)
-	
+
 	// Insert metrics record
 	_, err = w.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaign_realtime_metrics (
@@ -253,14 +253,14 @@ func (w *RealtimeMetricsWorker) recordCampaignMetrics(ctx context.Context, campa
 		bounceCount, complaintCount,
 		currentThrottleRate, throttleUtilization,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("insert metrics: %w", err)
 	}
-	
+
 	// Also update Redis for real-time dashboard access
 	w.updateRedisMetrics(ctx, campaignID, sentCount, openCount, clickCount, bounceCount, complaintCount)
-	
+
 	return nil
 }
 
@@ -268,7 +268,7 @@ func (w *RealtimeMetricsWorker) updateRedisMetrics(ctx context.Context, campaign
 	if w.redis == nil {
 		return
 	}
-	
+
 	key := fmt.Sprintf("campaign:%s:realtime", campaignID.String())
 	metrics := map[string]interface{}{
 		"sent":       sent,
@@ -278,7 +278,7 @@ func (w *RealtimeMetricsWorker) updateRedisMetrics(ctx context.Context, campaign
 		"complaints": complaints,
 		"updated_at": time.Now().Unix(),
 	}
-	
+
 	data, _ := json.Marshal(metrics)
 	w.redis.Set(ctx, key, data, 5*time.Minute)
 }
@@ -287,11 +287,11 @@ func (w *RealtimeMetricsWorker) maybeRunOptimization(ctx context.Context, campai
 	w.lastOptimizationMu.Lock()
 	lastRun, exists := w.lastOptimization[campaignID.String()]
 	w.lastOptimizationMu.Unlock()
-	
+
 	if exists && time.Since(lastRun) < w.optimizationInterval {
 		return
 	}
-	
+
 	// Check if AI optimization is enabled
 	var enabled bool
 	err := w.db.QueryRowContext(ctx, `
@@ -299,25 +299,25 @@ func (w *RealtimeMetricsWorker) maybeRunOptimization(ctx context.Context, campai
 		FROM mailing_campaign_ai_settings
 		WHERE campaign_id = $1
 	`, campaignID).Scan(&enabled)
-	
+
 	if err != nil || !enabled {
 		return
 	}
-	
+
 	// Run optimization
 	log.Printf("[RealtimeMetricsWorker] Running AI optimization for campaign %s", campaignID)
-	
+
 	result, err := w.runThrottleOptimization(ctx, campaignID)
 	if err != nil {
 		log.Printf("[RealtimeMetricsWorker] Optimization error for %s: %v", campaignID, err)
 		return
 	}
-	
+
 	if result.NewRate != result.PreviousRate {
 		log.Printf("[RealtimeMetricsWorker] Throttle adjusted for %s: %d -> %d (%s)",
 			campaignID, result.PreviousRate, result.NewRate, result.Reason)
 	}
-	
+
 	w.lastOptimizationMu.Lock()
 	w.lastOptimization[campaignID.String()] = time.Now()
 	w.lastOptimizationMu.Unlock()
@@ -334,21 +334,21 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 	// Get current settings
 	var currentRate, minRate, maxRate int
 	var complaintThreshold, bounceThreshold float64
-	
+
 	err := w.db.QueryRowContext(ctx, `
 		SELECT current_throttle_rate, min_throttle_rate, max_throttle_rate,
 		       complaint_threshold, bounce_threshold
 		FROM mailing_campaign_ai_settings
 		WHERE campaign_id = $1
 	`, campaignID).Scan(&currentRate, &minRate, &maxRate, &complaintThreshold, &bounceThreshold)
-	
+
 	if err == sql.ErrNoRows {
 		currentRate, minRate, maxRate = 10000, 1000, 50000
 		complaintThreshold, bounceThreshold = 0.001, 0.05
 	} else if err != nil {
 		return nil, err
 	}
-	
+
 	// Get recent metrics (last 15 minutes)
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT cumulative_sent, cumulative_bounces, cumulative_complaints, cumulative_opens
@@ -361,7 +361,7 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var totalSent, totalBounces, totalComplaints, totalOpens int
 	count := 0
 	for rows.Next() {
@@ -376,7 +376,7 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 		}
 		count++
 	}
-	
+
 	if totalSent == 0 {
 		return &ThrottleOptimizationResult{
 			PreviousRate: currentRate,
@@ -384,13 +384,13 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 			Reason:       "No data for optimization",
 		}, nil
 	}
-	
+
 	bounceRate := float64(totalBounces) / float64(totalSent)
 	complaintRate := float64(totalComplaints) / float64(totalSent)
 	openRate := float64(totalOpens) / float64(totalSent)
-	
+
 	result := &ThrottleOptimizationResult{PreviousRate: currentRate}
-	
+
 	// Decision logic
 	if complaintRate > complaintThreshold*2 {
 		result.NewRate = 0
@@ -413,13 +413,13 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 		result.NewRate = currentRate
 		result.Reason = "Metrics acceptable - maintaining rate"
 	}
-	
+
 	// Apply limits
 	if result.NewRate > 0 {
 		result.NewRate = max(result.NewRate, minRate)
 		result.NewRate = min(result.NewRate, maxRate)
 	}
-	
+
 	// Update rate if changed
 	if result.NewRate != currentRate && result.NewRate > 0 {
 		_, err = w.db.ExecContext(ctx, `
@@ -430,11 +430,11 @@ func (w *RealtimeMetricsWorker) runThrottleOptimization(ctx context.Context, cam
 		if err != nil {
 			log.Printf("[RealtimeMetricsWorker] Failed to update throttle: %v", err)
 		}
-		
+
 		// Log decision
 		w.logAIDecision(ctx, campaignID, result)
 	}
-	
+
 	return result, nil
 }
 
@@ -444,19 +444,19 @@ func (w *RealtimeMetricsWorker) pauseCampaign(ctx context.Context, campaignID uu
 		SET status = 'paused', updated_at = NOW()
 		WHERE id = $1
 	`, campaignID)
-	
+
 	if err != nil {
 		log.Printf("[RealtimeMetricsWorker] Failed to pause campaign: %v", err)
 		return
 	}
-	
+
 	// Create alert
 	_, err = w.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaign_alerts (
 			campaign_id, alert_type, severity, title, message, auto_action_taken
 		) VALUES ($1, 'high_complaint', 'critical', 'Campaign Auto-Paused', $2, 'paused')
 	`, campaignID, reason)
-	
+
 	if err != nil {
 		log.Printf("[RealtimeMetricsWorker] Failed to create alert: %v", err)
 	}
@@ -469,7 +469,7 @@ func (w *RealtimeMetricsWorker) logAIDecision(ctx context.Context, campaignID uu
 	} else if result.NewRate < result.PreviousRate {
 		decisionType = "throttle_decrease"
 	}
-	
+
 	_, err := w.db.ExecContext(ctx, `
 		INSERT INTO mailing_ai_decisions (
 			campaign_id, decision_type, decision_reason, old_value, new_value,
@@ -477,7 +477,7 @@ func (w *RealtimeMetricsWorker) logAIDecision(ctx context.Context, campaignID uu
 		) VALUES ($1, $2, $3, $4, $5, '{}', 'rules-based', 0.8, true, NOW())
 	`, campaignID, decisionType, result.Reason,
 		fmt.Sprintf("%d", result.PreviousRate), fmt.Sprintf("%d", result.NewRate))
-	
+
 	if err != nil {
 		log.Printf("[RealtimeMetricsWorker] Failed to log AI decision: %v", err)
 	}
@@ -491,10 +491,10 @@ func (w *RealtimeMetricsWorker) logAIDecision(ctx context.Context, campaignID uu
 type ABTestWorker struct {
 	db    *sql.DB
 	redis *redis.Client
-	
+
 	// Configuration
 	checkInterval time.Duration
-	
+
 	// State
 	running bool
 	ctx     context.Context
@@ -516,12 +516,12 @@ func (w *ABTestWorker) Start() {
 	if w.running {
 		return
 	}
-	
+
 	w.running = true
 	w.ctx, w.cancel = context.WithCancel(context.Background())
-	
+
 	log.Println("[ABTestWorker] Starting")
-	
+
 	w.wg.Add(1)
 	go w.runLoop()
 }
@@ -531,7 +531,7 @@ func (w *ABTestWorker) Stop() {
 	if !w.running {
 		return
 	}
-	
+
 	log.Println("[ABTestWorker] Stopping...")
 	w.cancel()
 	w.wg.Wait()
@@ -541,10 +541,10 @@ func (w *ABTestWorker) Stop() {
 
 func (w *ABTestWorker) runLoop() {
 	defer w.wg.Done()
-	
+
 	ticker := time.NewTicker(w.checkInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -558,7 +558,7 @@ func (w *ABTestWorker) runLoop() {
 func (w *ABTestWorker) checkABTests() {
 	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
 	defer cancel()
-	
+
 	// Get campaigns with A/B tests in progress
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT DISTINCT campaign_id
@@ -571,13 +571,13 @@ func (w *ABTestWorker) checkABTests() {
 		return
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var campaignID uuid.UUID
 		if err := rows.Scan(&campaignID); err != nil {
 			continue
 		}
-		
+
 		w.analyzeABTest(ctx, campaignID)
 	}
 }
@@ -588,13 +588,13 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 	var confidenceThreshold float64
 	var minSampleSize int
 	var targetMetric string
-	
+
 	err := w.db.QueryRowContext(ctx, `
 		SELECT enable_ab_auto_winner, ab_confidence_threshold, ab_min_sample_size, target_metric
 		FROM mailing_campaign_ai_settings
 		WHERE campaign_id = $1
 	`, campaignID).Scan(&autoWinner, &confidenceThreshold, &minSampleSize, &targetMetric)
-	
+
 	if err == sql.ErrNoRows {
 		autoWinner = true
 		confidenceThreshold = 0.95
@@ -603,11 +603,11 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 	} else if err != nil {
 		return
 	}
-	
+
 	if !autoWinner {
 		return
 	}
-	
+
 	// Get all variants for this campaign
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT id, variant_name, is_control, sent_count, open_count, click_count, conversion_count
@@ -619,7 +619,7 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 		return
 	}
 	defer rows.Close()
-	
+
 	type variant struct {
 		ID              uuid.UUID
 		Name            string
@@ -629,18 +629,18 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 		ClickCount      int
 		ConversionCount int
 	}
-	
+
 	var variants []variant
 	for rows.Next() {
 		var v variant
 		rows.Scan(&v.ID, &v.Name, &v.IsControl, &v.SentCount, &v.OpenCount, &v.ClickCount, &v.ConversionCount)
 		variants = append(variants, v)
 	}
-	
+
 	if len(variants) < 2 {
 		return
 	}
-	
+
 	// Find control
 	var control *variant
 	for i := range variants {
@@ -652,20 +652,20 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 	if control == nil {
 		control = &variants[0]
 	}
-	
+
 	// Check minimum sample size
 	for _, v := range variants {
 		if v.SentCount < minSampleSize {
 			return // Not enough data yet
 		}
 	}
-	
+
 	// Calculate Z-scores for each variant against control
 	for i := range variants {
 		if variants[i].ID == control.ID {
 			continue
 		}
-		
+
 		var controlConversions, variantConversions int
 		switch targetMetric {
 		case "clicks":
@@ -678,22 +678,22 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 			controlConversions = control.OpenCount
 			variantConversions = variants[i].OpenCount
 		}
-		
+
 		zScore := calculateZScore(
 			controlConversions, control.SentCount,
 			variantConversions, variants[i].SentCount,
 		)
-		
+
 		pValue := zScoreToPValue(zScore)
 		confidence := 1 - pValue
-		
+
 		// Update variant with statistical data
 		w.db.ExecContext(ctx, `
 			UPDATE mailing_campaign_ab_variants
 			SET z_score = $2, p_value = $3, confidence_level = $4, updated_at = NOW()
 			WHERE id = $1
 		`, variants[i].ID, zScore, pValue, confidence)
-		
+
 		// Check if we have a winner
 		if confidence >= confidenceThreshold && zScore > 0 {
 			// This variant wins
@@ -713,7 +713,7 @@ func (w *ABTestWorker) analyzeABTest(ctx context.Context, campaignID uuid.UUID) 
 func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, controlID uuid.UUID, confidence float64, metric string) {
 	log.Printf("[ABTestWorker] Declaring winner for campaign %s: variant %s with %.2f%% confidence",
 		campaignID, winnerID, confidence*100)
-	
+
 	// Mark winner
 	_, err := w.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_ab_variants
@@ -724,7 +724,7 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 		log.Printf("[ABTestWorker] Error marking winner: %v", err)
 		return
 	}
-	
+
 	// Mark control/others as losers
 	_, err = w.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_ab_variants
@@ -734,7 +734,7 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 	if err != nil {
 		log.Printf("[ABTestWorker] Error marking losers: %v", err)
 	}
-	
+
 	// Get winner details for routing
 	var winnerValue, winnerType string
 	w.db.QueryRowContext(ctx, `
@@ -742,7 +742,7 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 		FROM mailing_campaign_ab_variants
 		WHERE id = $1
 	`, winnerID).Scan(&winnerValue, &winnerType)
-	
+
 	// Route remaining sends to winner
 	// This updates the campaign with the winning variant's content.
 	// Skip for content-locked campaigns: strict advertisers require the
@@ -768,7 +768,7 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 			`, campaignID, winnerValue)
 		}
 	}
-	
+
 	// Log AI decision
 	_, err = w.db.ExecContext(ctx, `
 		INSERT INTO mailing_ai_decisions (
@@ -784,11 +784,11 @@ func (w *ABTestWorker) declareWinner(ctx context.Context, campaignID, winnerID, 
 		winnerID.String(),
 		confidence,
 	)
-	
+
 	if err != nil {
 		log.Printf("[ABTestWorker] Error logging decision: %v", err)
 	}
-	
+
 	// Create alert/notification
 	w.db.ExecContext(ctx, `
 		INSERT INTO mailing_campaign_alerts (
@@ -802,25 +802,25 @@ func calculateZScore(control, controlTotal, variant, variantTotal int) float64 {
 	if controlTotal == 0 || variantTotal == 0 {
 		return 0
 	}
-	
+
 	p1 := float64(control) / float64(controlTotal)
 	p2 := float64(variant) / float64(variantTotal)
-	
+
 	pPooled := float64(control+variant) / float64(controlTotal+variantTotal)
-	
+
 	se := math.Sqrt(pPooled * (1 - pPooled) * (1.0/float64(controlTotal) + 1.0/float64(variantTotal)))
-	
+
 	if se == 0 {
 		return 0
 	}
-	
+
 	return (p2 - p1) / se
 }
 
 // zScoreToPValue converts Z-score to approximate P-value
 func zScoreToPValue(z float64) float64 {
 	absZ := math.Abs(z)
-	
+
 	if absZ > 3.5 {
 		return 0.00001
 	}

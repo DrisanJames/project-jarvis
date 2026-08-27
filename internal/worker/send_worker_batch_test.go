@@ -132,17 +132,17 @@ func TestBatchGrouper_GroupIntoBatches(t *testing.T) {
 	grouper := NewBatchGrouper()
 
 	tests := []struct {
-		name           string
-		itemCount      int
-		espType        string
+		name            string
+		itemCount       int
+		espType         string
 		expectedBatches int
 	}{
-		{"sparkpost_small", 100, "sparkpost", 1},      // 100 items, batch size 2000 = 1 batch
-		{"sparkpost_large", 5000, "sparkpost", 3},     // 5000 items, batch size 2000 = 3 batches
-		{"ses_small", 30, "ses", 1},                   // 30 items, batch size 50 = 1 batch
-		{"ses_exact", 50, "ses", 1},                   // 50 items, batch size 50 = 1 batch
-		{"ses_large", 150, "ses", 3},                  // 150 items, batch size 50 = 3 batches
-		{"mailgun_medium", 1500, "mailgun", 2},        // 1500 items, batch size 1000 = 2 batches
+		{"sparkpost_small", 100, "sparkpost", 1},  // 100 items, batch size 2000 = 1 batch
+		{"sparkpost_large", 5000, "sparkpost", 3}, // 5000 items, batch size 2000 = 3 batches
+		{"ses_small", 30, "ses", 1},               // 30 items, batch size 50 = 1 batch
+		{"ses_exact", 50, "ses", 1},               // 50 items, batch size 50 = 1 batch
+		{"ses_large", 150, "ses", 3},              // 150 items, batch size 50 = 3 batches
+		{"mailgun_medium", 1500, "mailgun", 2},    // 1500 items, batch size 1000 = 2 batches
 		{"empty", 0, "sparkpost", 0},
 	}
 

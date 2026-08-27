@@ -36,7 +36,8 @@ func decodeSubjectSecretForTest(encoded string) string {
 // TestEncodeSubjectSecret_ByteExact pins the exact byte sequence against a
 // hand-computed reference so the Go port cannot silently drift from encode.py.
 // Public "Ab", secret "A" (0x41 = 0100 0001):
-//   result = 'A' + [zwZero zwOne zwZero zwZero  zwZero zwZero zwZero zwOne] + 'b'
+//
+//	result = 'A' + [zwZero zwOne zwZero zwZero  zwZero zwZero zwZero zwOne] + 'b'
 func TestEncodeSubjectSecret_ByteExact(t *testing.T) {
 	got := encodeSubjectSecret("Ab", "A")
 	z, o := string(zwZero), string(zwOne)

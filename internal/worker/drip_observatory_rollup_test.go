@@ -169,9 +169,9 @@ func TestDripObservatoryISPNormalization(t *testing.T) {
 		{"gmail", "gmail"},
 		{"Gmail ", "gmail"},
 		{"comcast", "comcast"},
-		{"", "other"},          // orchestrator NULLIF fallback
-		{"msft", "other"},      // pool-suffix style value, not vocabulary
-		{"notanisp", "other"},  // long-tail bucket
+		{"", "other"},         // orchestrator NULLIF fallback
+		{"msft", "other"},     // pool-suffix style value, not vocabulary
+		{"notanisp", "other"}, // long-tail bucket
 		{"other", "other"},
 	}
 	for _, tc := range cases {

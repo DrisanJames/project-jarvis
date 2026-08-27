@@ -12,59 +12,59 @@ import (
 
 // JourneyMetrics provides real-time and historical journey analytics
 type JourneyMetrics struct {
-	db         *sql.DB
-	mu         sync.RWMutex
-	
+	db *sql.DB
+	mu sync.RWMutex
+
 	// Cached metrics (updated periodically)
 	cache      map[string]*JourneyStats
 	lastUpdate time.Time
-	
+
 	// Cache configuration
-	cacheTTL   time.Duration
+	cacheTTL time.Duration
 }
 
 // JourneyStats contains comprehensive journey statistics
 type JourneyStats struct {
-	JourneyID             string        `json:"journey_id"`
-	Name                  string        `json:"name"`
-	Description           string        `json:"description,omitempty"`
-	Status                string        `json:"status"`
-	
+	JourneyID   string `json:"journey_id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status"`
+
 	// Enrollment stats
-	TotalEnrolled         int64         `json:"total_enrolled"`
-	ActiveEnrollments     int64         `json:"active_enrollments"`
-	CompletedEnrollments  int64         `json:"completed_enrollments"`
-	ConvertedEnrollments  int64         `json:"converted_enrollments"`
-	
+	TotalEnrolled        int64 `json:"total_enrolled"`
+	ActiveEnrollments    int64 `json:"active_enrollments"`
+	CompletedEnrollments int64 `json:"completed_enrollments"`
+	ConvertedEnrollments int64 `json:"converted_enrollments"`
+
 	// Time-based stats
-	EnrolledToday         int64         `json:"enrolled_today"`
-	EnrolledThisWeek      int64         `json:"enrolled_this_week"`
-	CompletedToday        int64         `json:"completed_today"`
-	
+	EnrolledToday    int64 `json:"enrolled_today"`
+	EnrolledThisWeek int64 `json:"enrolled_this_week"`
+	CompletedToday   int64 `json:"completed_today"`
+
 	// Node-level stats
-	NodeStats             []NodeStat    `json:"node_stats"`
-	
+	NodeStats []NodeStat `json:"node_stats"`
+
 	// Performance metrics
 	AvgCompletionTime     time.Duration `json:"avg_completion_time"`
 	AvgCompletionTimeSecs float64       `json:"avg_completion_time_secs"` // For JSON serialization
 	ConversionRate        float64       `json:"conversion_rate"`
 	DropOffRate           float64       `json:"drop_off_rate"`
-	
+
 	// Email metrics (aggregated from journey emails)
-	EmailsSent            int64         `json:"emails_sent"`
-	EmailsOpened          int64         `json:"emails_opened"`
-	EmailsClicked         int64         `json:"emails_clicked"`
-	EmailsBounced         int64         `json:"emails_bounced"`
-	OpenRate              float64       `json:"open_rate"`
-	ClickRate             float64       `json:"click_rate"`
-	
+	EmailsSent    int64   `json:"emails_sent"`
+	EmailsOpened  int64   `json:"emails_opened"`
+	EmailsClicked int64   `json:"emails_clicked"`
+	EmailsBounced int64   `json:"emails_bounced"`
+	OpenRate      float64 `json:"open_rate"`
+	ClickRate     float64 `json:"click_rate"`
+
 	// Segment breakdown
-	SegmentStats          []SegmentStat `json:"segment_stats,omitempty"`
-	
+	SegmentStats []SegmentStat `json:"segment_stats,omitempty"`
+
 	// Journey metadata
-	CreatedAt             time.Time     `json:"created_at"`
-	ActivatedAt           *time.Time    `json:"activated_at,omitempty"`
-	UpdatedAt             time.Time     `json:"updated_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ActivatedAt *time.Time `json:"activated_at,omitempty"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // NodeStat contains statistics for a single journey node
@@ -83,29 +83,29 @@ type NodeStat struct {
 
 // SegmentStat contains performance metrics for a segment within a journey
 type SegmentStat struct {
-	SegmentID      string  `json:"segment_id"`
-	SegmentName    string  `json:"segment_name"`
-	EnrolledCount  int64   `json:"enrolled_count"`
-	ActiveCount    int64   `json:"active_count"`
-	CompletedCount int64   `json:"completed_count"`
-	ConvertedCount int64   `json:"converted_count"`
-	ConversionRate float64 `json:"conversion_rate"`
+	SegmentID        string  `json:"segment_id"`
+	SegmentName      string  `json:"segment_name"`
+	EnrolledCount    int64   `json:"enrolled_count"`
+	ActiveCount      int64   `json:"active_count"`
+	CompletedCount   int64   `json:"completed_count"`
+	ConvertedCount   int64   `json:"converted_count"`
+	ConversionRate   float64 `json:"conversion_rate"`
 	AvgTimeToConvert float64 `json:"avg_time_to_convert_hours"`
 }
 
 // DailyTrend contains daily metrics for trend analysis
 type DailyTrend struct {
-	Date               time.Time `json:"date"`
-	DateStr            string    `json:"date_str"`
-	Enrolled           int64     `json:"enrolled"`
-	Completed          int64     `json:"completed"`
-	Converted          int64     `json:"converted"`
-	EmailsSent         int64     `json:"emails_sent"`
-	EmailsOpened       int64     `json:"emails_opened"`
-	EmailsClicked      int64     `json:"emails_clicked"`
-	ConversionRate     float64   `json:"conversion_rate"`
-	OpenRate           float64   `json:"open_rate"`
-	ClickRate          float64   `json:"click_rate"`
+	Date           time.Time `json:"date"`
+	DateStr        string    `json:"date_str"`
+	Enrolled       int64     `json:"enrolled"`
+	Completed      int64     `json:"completed"`
+	Converted      int64     `json:"converted"`
+	EmailsSent     int64     `json:"emails_sent"`
+	EmailsOpened   int64     `json:"emails_opened"`
+	EmailsClicked  int64     `json:"emails_clicked"`
+	ConversionRate float64   `json:"conversion_rate"`
+	OpenRate       float64   `json:"open_rate"`
+	ClickRate      float64   `json:"click_rate"`
 }
 
 // JourneyNode represents a node definition (for parsing journey config)
@@ -141,11 +141,11 @@ func (jm *JourneyMetrics) GetJourneyStats(ctx context.Context, journeyID string)
 		return stats, nil
 	}
 	jm.mu.RUnlock()
-	
+
 	stats := &JourneyStats{
 		JourneyID: journeyID,
 	}
-	
+
 	// Get journey basic info
 	var description sql.NullString
 	var activatedAt sql.NullTime
@@ -168,7 +168,7 @@ func (jm *JourneyMetrics) GetJourneyStats(ctx context.Context, journeyID string)
 	if activatedAt.Valid {
 		stats.ActivatedAt = &activatedAt.Time
 	}
-	
+
 	// Get enrollment statistics
 	err = jm.db.QueryRowContext(ctx, `
 		SELECT
@@ -193,11 +193,11 @@ func (jm *JourneyMetrics) GetJourneyStats(ctx context.Context, journeyID string)
 	if err != nil && err != sql.ErrNoRows {
 		log.Printf("JourneyMetrics: Error getting enrollment stats for %s: %v", journeyID, err)
 	}
-	
+
 	// Calculate performance metrics
 	if stats.TotalEnrolled > 0 {
 		stats.ConversionRate = float64(stats.ConvertedEnrollments) / float64(stats.TotalEnrolled) * 100
-		
+
 		// Drop-off rate: enrollments that neither completed nor converted (excluding active)
 		finishedCount := stats.CompletedEnrollments + stats.ConvertedEnrollments
 		if stats.TotalEnrolled > stats.ActiveEnrollments {
@@ -205,7 +205,7 @@ func (jm *JourneyMetrics) GetJourneyStats(ctx context.Context, journeyID string)
 			stats.DropOffRate = float64(notFinished) / float64(stats.TotalEnrolled-stats.ActiveEnrollments) * 100
 		}
 	}
-	
+
 	// Get average completion time
 	var avgCompletionSeconds sql.NullFloat64
 	err = jm.db.QueryRowContext(ctx, `
@@ -217,19 +217,19 @@ func (jm *JourneyMetrics) GetJourneyStats(ctx context.Context, journeyID string)
 		stats.AvgCompletionTime = time.Duration(avgCompletionSeconds.Float64) * time.Second
 		stats.AvgCompletionTimeSecs = avgCompletionSeconds.Float64
 	}
-	
+
 	// Get node-level statistics
 	stats.NodeStats, _ = jm.GetNodeFunnelStats(ctx, journeyID)
-	
+
 	// Get email metrics from execution log and message tracking
 	jm.populateEmailMetrics(ctx, stats, journeyID)
-	
+
 	// Update cache
 	jm.mu.Lock()
 	jm.cache[journeyID] = stats
 	jm.lastUpdate = time.Now()
 	jm.mu.Unlock()
-	
+
 	return stats, nil
 }
 
@@ -244,7 +244,7 @@ func (jm *JourneyMetrics) populateEmailMetrics(ctx context.Context, stats *Journ
 	if err != nil {
 		log.Printf("JourneyMetrics: Error getting email sent count: %v", err)
 	}
-	
+
 	// Get email engagement metrics from tracking events
 	// This joins on subscriber email from enrollments to find related tracking events
 	err = jm.db.QueryRowContext(ctx, `
@@ -267,7 +267,7 @@ func (jm *JourneyMetrics) populateEmailMetrics(ctx context.Context, stats *Journ
 	if err != nil && err != sql.ErrNoRows {
 		log.Printf("JourneyMetrics: Error getting email engagement: %v", err)
 	}
-	
+
 	// Calculate rates
 	if stats.EmailsSent > 0 {
 		stats.OpenRate = float64(stats.EmailsOpened) / float64(stats.EmailsSent) * 100
@@ -287,7 +287,7 @@ func (jm *JourneyMetrics) GetAllJourneysStats(ctx context.Context, orgID string)
 		return nil, fmt.Errorf("failed to fetch journeys: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var journeyIDs []string
 	for rows.Next() {
 		var id string
@@ -296,7 +296,7 @@ func (jm *JourneyMetrics) GetAllJourneysStats(ctx context.Context, orgID string)
 		}
 		journeyIDs = append(journeyIDs, id)
 	}
-	
+
 	// Get stats for each journey
 	var allStats []*JourneyStats
 	for _, id := range journeyIDs {
@@ -307,7 +307,7 @@ func (jm *JourneyMetrics) GetAllJourneysStats(ctx context.Context, orgID string)
 		}
 		allStats = append(allStats, stats)
 	}
-	
+
 	return allStats, nil
 }
 
@@ -321,18 +321,18 @@ func (jm *JourneyMetrics) GetNodeFunnelStats(ctx context.Context, journeyID stri
 	if err != nil {
 		return nil, fmt.Errorf("journey not found: %w", err)
 	}
-	
+
 	var nodes []JourneyNodeDef
 	if nodesJSON.Valid {
 		json.Unmarshal([]byte(nodesJSON.String), &nodes)
 	}
-	
+
 	// Build node ID to name/type mapping
 	nodeInfo := make(map[string]JourneyNodeDef)
 	for _, node := range nodes {
 		nodeInfo[node.ID] = node
 	}
-	
+
 	// Query execution log for node-level stats
 	rows, err := jm.db.QueryContext(ctx, `
 		SELECT 
@@ -351,7 +351,7 @@ func (jm *JourneyMetrics) GetNodeFunnelStats(ctx context.Context, journeyID stri
 		return nil, fmt.Errorf("failed to get node stats: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var nodeStats []NodeStat
 	position := 0
 	for rows.Next() {
@@ -361,7 +361,7 @@ func (jm *JourneyMetrics) GetNodeFunnelStats(ctx context.Context, journeyID stri
 		if err != nil {
 			continue
 		}
-		
+
 		// Get node name from config
 		if info, ok := nodeInfo[stat.NodeID]; ok {
 			if name, ok := info.Config["name"].(string); ok {
@@ -372,17 +372,17 @@ func (jm *JourneyMetrics) GetNodeFunnelStats(ctx context.Context, journeyID stri
 				stat.NodeName = fmt.Sprintf("%s Node", stat.NodeType)
 			}
 		}
-		
+
 		if successRate.Valid {
 			stat.SuccessRate = successRate.Float64
 		}
-		
+
 		stat.Position = position
 		position++
-		
+
 		nodeStats = append(nodeStats, stat)
 	}
-	
+
 	// Calculate average time in each node
 	for i := range nodeStats {
 		var avgTimeSecs sql.NullFloat64
@@ -399,13 +399,13 @@ func (jm *JourneyMetrics) GetNodeFunnelStats(ctx context.Context, journeyID stri
 			FROM node_times
 			WHERE exit_time IS NOT NULL
 		`, journeyID, nodeStats[i].NodeID).Scan(&avgTimeSecs)
-		
+
 		if avgTimeSecs.Valid {
 			nodeStats[i].AvgTimeInNode = time.Duration(avgTimeSecs.Float64) * time.Second
 			nodeStats[i].AvgTimeSecs = avgTimeSecs.Float64
 		}
 	}
-	
+
 	return nodeStats, nil
 }
 
@@ -417,7 +417,7 @@ func (jm *JourneyMetrics) GetJourneyTrends(ctx context.Context, journeyID string
 	if days > 365 {
 		days = 365
 	}
-	
+
 	rows, err := jm.db.QueryContext(ctx, `
 		WITH date_series AS (
 			SELECT generate_series(
@@ -467,12 +467,12 @@ func (jm *JourneyMetrics) GetJourneyTrends(ctx context.Context, journeyID string
 		LEFT JOIN email_stats em ON em.date = d.date
 		ORDER BY d.date ASC
 	`, journeyID, days)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get journey trends: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var trends []DailyTrend
 	for rows.Next() {
 		var trend DailyTrend
@@ -486,20 +486,20 @@ func (jm *JourneyMetrics) GetJourneyTrends(ctx context.Context, journeyID string
 		if err != nil {
 			continue
 		}
-		
+
 		trend.DateStr = trend.Date.Format("2006-01-02")
-		
+
 		// Calculate rates
 		if trend.Enrolled > 0 {
 			trend.ConversionRate = float64(trend.Converted) / float64(trend.Enrolled) * 100
 		}
-		
+
 		trends = append(trends, trend)
 	}
-	
+
 	// Fill in email engagement metrics from tracking events
 	jm.populateTrendEmailEngagement(ctx, trends, journeyID)
-	
+
 	return trends, nil
 }
 
@@ -508,16 +508,16 @@ func (jm *JourneyMetrics) populateTrendEmailEngagement(ctx context.Context, tren
 	if len(trends) == 0 {
 		return
 	}
-	
+
 	startDate := trends[0].Date
 	endDate := trends[len(trends)-1].Date.Add(24 * time.Hour)
-	
+
 	// Create a map for quick lookup
 	trendMap := make(map[string]*DailyTrend)
 	for i := range trends {
 		trendMap[trends[i].DateStr] = &trends[i]
 	}
-	
+
 	// Query engagement events
 	rows, err := jm.db.QueryContext(ctx, `
 		WITH journey_subscribers AS (
@@ -535,25 +535,25 @@ func (jm *JourneyMetrics) populateTrendEmailEngagement(ctx context.Context, tren
 		WHERE te.event_at >= $2 AND te.event_at < $3
 		GROUP BY te.event_at::date
 	`, journeyID, startDate, endDate)
-	
+
 	if err != nil {
 		log.Printf("JourneyMetrics: Error getting trend engagement: %v", err)
 		return
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var date time.Time
 		var opens, clicks int64
 		if err := rows.Scan(&date, &opens, &clicks); err != nil {
 			continue
 		}
-		
+
 		dateStr := date.Format("2006-01-02")
 		if trend, ok := trendMap[dateStr]; ok {
 			trend.EmailsOpened = opens
 			trend.EmailsClicked = clicks
-			
+
 			if trend.EmailsSent > 0 {
 				trend.OpenRate = float64(opens) / float64(trend.EmailsSent) * 100
 				trend.ClickRate = float64(clicks) / float64(trend.EmailsSent) * 100
@@ -570,7 +570,7 @@ func (jm *JourneyMetrics) GetTopPerformingJourneys(ctx context.Context, orgID st
 	if limit > 100 {
 		limit = 100
 	}
-	
+
 	rows, err := jm.db.QueryContext(ctx, `
 		WITH journey_metrics AS (
 			SELECT 
@@ -596,12 +596,12 @@ func (jm *JourneyMetrics) GetTopPerformingJourneys(ctx context.Context, orgID st
 		ORDER BY conversion_rate DESC, total_enrolled DESC
 		LIMIT $2
 	`, orgID, limit)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get top journeys: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var journeyIDs []string
 	for rows.Next() {
 		var id string
@@ -610,7 +610,7 @@ func (jm *JourneyMetrics) GetTopPerformingJourneys(ctx context.Context, orgID st
 		}
 		journeyIDs = append(journeyIDs, id)
 	}
-	
+
 	// Get full stats for each journey
 	var topJourneys []*JourneyStats
 	for _, id := range journeyIDs {
@@ -620,7 +620,7 @@ func (jm *JourneyMetrics) GetTopPerformingJourneys(ctx context.Context, orgID st
 		}
 		topJourneys = append(topJourneys, stats)
 	}
-	
+
 	return topJourneys, nil
 }
 
@@ -631,7 +631,7 @@ func (jm *JourneyMetrics) GetSegmentPerformance(ctx context.Context, journeyID s
 	jm.db.QueryRowContext(ctx, `
 		SELECT segment_id FROM mailing_journeys WHERE id = $1
 	`, journeyID).Scan(&segmentID)
-	
+
 	// Query segment-based enrollment stats
 	// This joins enrollments with subscribers and their segment memberships
 	rows, err := jm.db.QueryContext(ctx, `
@@ -672,12 +672,12 @@ func (jm *JourneyMetrics) GetSegmentPerformance(ctx context.Context, journeyID s
 		GROUP BY segment_id, segment_name
 		ORDER BY conversion_rate DESC
 	`, journeyID)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get segment performance: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var segmentStats []SegmentStat
 	for rows.Next() {
 		var stat SegmentStat
@@ -700,7 +700,7 @@ func (jm *JourneyMetrics) GetSegmentPerformance(ctx context.Context, journeyID s
 		}
 		segmentStats = append(segmentStats, stat)
 	}
-	
+
 	return segmentStats, nil
 }
 
@@ -708,14 +708,14 @@ func (jm *JourneyMetrics) GetSegmentPerformance(ctx context.Context, journeyID s
 func (jm *JourneyMetrics) RefreshCache() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	
+
 	// Get all journey IDs
 	rows, err := jm.db.QueryContext(ctx, `SELECT id FROM mailing_journeys`)
 	if err != nil {
 		return fmt.Errorf("failed to fetch journeys for cache refresh: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var journeyIDs []string
 	for rows.Next() {
 		var id string
@@ -724,12 +724,12 @@ func (jm *JourneyMetrics) RefreshCache() error {
 		}
 		journeyIDs = append(journeyIDs, id)
 	}
-	
+
 	// Clear existing cache
 	jm.mu.Lock()
 	jm.cache = make(map[string]*JourneyStats)
 	jm.mu.Unlock()
-	
+
 	// Refresh stats for each journey
 	for _, id := range journeyIDs {
 		_, err := jm.GetJourneyStats(ctx, id)
@@ -737,7 +737,7 @@ func (jm *JourneyMetrics) RefreshCache() error {
 			log.Printf("JourneyMetrics: Error refreshing cache for journey %s: %v", id, err)
 		}
 	}
-	
+
 	log.Printf("JourneyMetrics: Cache refreshed for %d journeys", len(journeyIDs))
 	return nil
 }
@@ -745,7 +745,7 @@ func (jm *JourneyMetrics) RefreshCache() error {
 // GetJourneyComparison compares multiple journeys side by side
 func (jm *JourneyMetrics) GetJourneyComparison(ctx context.Context, journeyIDs []string) ([]*JourneyStats, error) {
 	var comparison []*JourneyStats
-	
+
 	for _, id := range journeyIDs {
 		stats, err := jm.GetJourneyStats(ctx, id)
 		if err != nil {
@@ -753,7 +753,7 @@ func (jm *JourneyMetrics) GetJourneyComparison(ctx context.Context, journeyIDs [
 		}
 		comparison = append(comparison, stats)
 	}
-	
+
 	return comparison, nil
 }
 
@@ -763,19 +763,19 @@ func (jm *JourneyMetrics) GetNodeDropOffAnalysis(ctx context.Context, journeyID 
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Calculate drop-off between consecutive nodes
 	for i := 1; i < len(nodeStats); i++ {
 		prevEntries := nodeStats[i-1].EntriesCount
 		currEntries := nodeStats[i].EntriesCount
-		
+
 		if prevEntries > 0 {
 			dropOff := float64(prevEntries-currEntries) / float64(prevEntries) * 100
 			// Store drop-off in success rate as inverse (retention rate)
 			nodeStats[i].SuccessRate = 100 - dropOff
 		}
 	}
-	
+
 	return nodeStats, nil
 }
 
@@ -791,7 +791,7 @@ func (jm *JourneyMetrics) GetActiveEnrollmentsByNode(ctx context.Context, journe
 		return nil, fmt.Errorf("failed to get active enrollments by node: %w", err)
 	}
 	defer rows.Close()
-	
+
 	result := make(map[string]int64)
 	for rows.Next() {
 		var nodeID string
@@ -801,7 +801,7 @@ func (jm *JourneyMetrics) GetActiveEnrollmentsByNode(ctx context.Context, journe
 		}
 		result[nodeID] = count
 	}
-	
+
 	return result, nil
 }
 
@@ -810,7 +810,7 @@ func (jm *JourneyMetrics) GetRecentErrors(ctx context.Context, journeyID string,
 	if limit <= 0 {
 		limit = 50
 	}
-	
+
 	rows, err := jm.db.QueryContext(ctx, `
 		SELECT 
 			l.id, l.enrollment_id, l.node_id, l.node_type, 
@@ -822,23 +822,23 @@ func (jm *JourneyMetrics) GetRecentErrors(ctx context.Context, journeyID string,
 		ORDER BY l.executed_at DESC
 		LIMIT $2
 	`, journeyID, limit)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recent errors: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var errors []map[string]interface{}
 	for rows.Next() {
 		var id, enrollmentID, nodeID, nodeType, action string
 		var errorMessage, subscriberEmail sql.NullString
 		var executedAt time.Time
-		
+
 		err := rows.Scan(&id, &enrollmentID, &nodeID, &nodeType, &action, &errorMessage, &executedAt, &subscriberEmail)
 		if err != nil {
 			continue
 		}
-		
+
 		errorInfo := map[string]interface{}{
 			"id":            id,
 			"enrollment_id": enrollmentID,
@@ -853,7 +853,7 @@ func (jm *JourneyMetrics) GetRecentErrors(ctx context.Context, journeyID string,
 		}
 		errors = append(errors, errorInfo)
 	}
-	
+
 	return errors, nil
 }
 
@@ -862,7 +862,7 @@ func (jm *JourneyMetrics) StartBackgroundRefresh(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			if err := jm.RefreshCache(); err != nil {
 				log.Printf("JourneyMetrics: Background refresh error: %v", err)

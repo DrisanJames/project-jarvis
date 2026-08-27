@@ -17,8 +17,8 @@ type BackpressureMonitor struct {
 	maxQueueDepth int64 // default 100,000
 	checkInterval time.Duration
 	paused        bool
-	hasV2Table    bool   // whether mailing_campaign_queue_v2 exists
-	v2Checked     bool   // whether we've probed for v2 yet
+	hasV2Table    bool // whether mailing_campaign_queue_v2 exists
+	v2Checked     bool // whether we've probed for v2 yet
 	mu            sync.RWMutex
 }
 

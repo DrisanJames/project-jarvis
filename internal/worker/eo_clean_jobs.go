@@ -392,9 +392,9 @@ func (w *EOCleanJobWorker) maybeFinishJob(ctx context.Context, jobID string) {
 type eoCleanItemAction int
 
 const (
-	eoCleanActionRetry eoCleanItemAction = iota // stays pending, attempts+1
-	eoCleanActionDone                           // terminal verdict → eo_validation + item done
-	eoCleanActionFailed                         // attempts exhausted, NO verdict → item failed
+	eoCleanActionRetry  eoCleanItemAction = iota // stays pending, attempts+1
+	eoCleanActionDone                            // terminal verdict → eo_validation + item done
+	eoCleanActionFailed                          // attempts exhausted, NO verdict → item failed
 )
 
 // eoCleanDelta accumulates one batch's job-counter changes.

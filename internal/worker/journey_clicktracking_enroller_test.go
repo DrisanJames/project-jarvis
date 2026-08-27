@@ -8,18 +8,18 @@ import (
 // dictionary mirrors the production seed (slug → everflow offer id).
 func testSlugDict() map[string]string {
 	return map[string]string{
-		"KW3Q1DJ": "9539", // Get Metal Roofing
-		"K62P438": "9135", // Affordable Windows
-		"CL38PFR": "5990", // CarShield
-		"J876SLX": "8614", // AmeriSave HELOC
-		"J345SSD": "8511", // Optima Tax
-		"93W8N2N": "4575", // Quicken Loans
-		"GK847MZ": "7667", // NDR legacy cratoolpro slug (mapped to journey 7667)
-		"7N8NS1K": "3776", // Renewal by Andersen
-		"PS8241":  "420", // Sam's Club Membership — PS8241 is affiliate URL slug; Everflow offer 420
-		"2HH43PB": "7667",   // NDR eos57ytf slug (migrated off cratoolpro 2026-06-11)
-		"J78S2MD": "9539",   // Metal Roofing new cratoolpro slug (2026-06-11)
-		"K86F3PC": "9178",   // SBLI Quick Quote
+		"KW3Q1DJ":  "9539",   // Get Metal Roofing
+		"K62P438":  "9135",   // Affordable Windows
+		"CL38PFR":  "5990",   // CarShield
+		"J876SLX":  "8614",   // AmeriSave HELOC
+		"J345SSD":  "8511",   // Optima Tax
+		"93W8N2N":  "4575",   // Quicken Loans
+		"GK847MZ":  "7667",   // NDR legacy cratoolpro slug (mapped to journey 7667)
+		"7N8NS1K":  "3776",   // Renewal by Andersen
+		"PS8241":   "420",    // Sam's Club Membership — PS8241 is affiliate URL slug; Everflow offer 420
+		"2HH43PB":  "7667",   // NDR eos57ytf slug (migrated off cratoolpro 2026-06-11)
+		"J78S2MD":  "9539",   // Metal Roofing new cratoolpro slug (2026-06-11)
+		"K86F3PC":  "9178",   // SBLI Quick Quote
 		"XF1SR2CS": "417791", // Empire Today Flooring — xnonu network
 		"XLRZDZ8K": "421060", // Home Repairly Roofing — muqes network
 	}

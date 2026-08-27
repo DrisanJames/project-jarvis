@@ -107,9 +107,9 @@ func TestDomainThroughputTracker_MultipleDomains(t *testing.T) {
 
 	snap := tr.Snapshot()
 	want := map[string]int{
-		"em.discountblog.com":     3,
-		"em.historythinking.com":  2,
-		"em.myownhealth.net":      1,
+		"em.discountblog.com":    3,
+		"em.historythinking.com": 2,
+		"em.myownhealth.net":     1,
 	}
 	for d, c := range want {
 		if got := snap[d]; got != c {

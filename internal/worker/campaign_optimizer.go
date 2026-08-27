@@ -71,7 +71,7 @@ type ISPMetrics struct {
 
 // OptimizationDecision represents an AI decision
 type OptimizationDecision struct {
-	Type       string  // throughput_increase, throughput_decrease, pause, rotate_creative, etc.
+	Type       string // throughput_increase, throughput_decrease, pause, rotate_creative, etc.
 	Reason     string
 	OldValue   string
 	NewValue   string

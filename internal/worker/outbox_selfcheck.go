@@ -60,8 +60,8 @@ const (
 	// Invariant thresholds. Chosen to be wide enough that the self-check
 	// doesn't cry wolf during normal peak sends, but tight enough that an
 	// actual outage trips within one interval.
-	submittingStuckThresholdSec    = 600   // 10 minutes
-	deadLetterRatePerHourThreshold = 500   // permanent fails / hr / system
+	submittingStuckThresholdSec    = 600 // 10 minutes
+	deadLetterRatePerHourThreshold = 500 // permanent fails / hr / system
 	queuedBacklogThreshold         = 150000
 	oldestQueuedAgeThresholdSec    = 3600 // 1 hour
 
@@ -113,10 +113,10 @@ const liveQueuedClause = `
 type selfCheckInvariantKey string
 
 const (
-	invSubmittingStuck    selfCheckInvariantKey = "submitting_stuck"
-	invDeadLetterSpike    selfCheckInvariantKey = "dead_letter_spike"
-	invQueuedBacklog      selfCheckInvariantKey = "queued_backlog"
-	invOldestQueuedStuck  selfCheckInvariantKey = "oldest_queued_stuck"
+	invSubmittingStuck   selfCheckInvariantKey = "submitting_stuck"
+	invDeadLetterSpike   selfCheckInvariantKey = "dead_letter_spike"
+	invQueuedBacklog     selfCheckInvariantKey = "queued_backlog"
+	invOldestQueuedStuck selfCheckInvariantKey = "oldest_queued_stuck"
 )
 
 // OutboxSelfCheck evaluates durable-outbox invariants on a ticker and pages

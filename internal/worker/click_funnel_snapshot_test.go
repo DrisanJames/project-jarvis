@@ -24,10 +24,10 @@ func TestRoundPct_RoundsInsteadOfTruncating(t *testing.T) {
 		want      float64
 		truncated float64
 	}{
-		{0.018648, 0.02, 0.01},  // offer 420 touch 1 conversion rate
-		{0.086377, 0.09, 0.08},  // touch 2
-		{0.096117, 0.10, 0.09},  // touch 3
-		{3.356563, 3.36, 3.35},  // touch 4 step-through
+		{0.018648, 0.02, 0.01}, // offer 420 touch 1 conversion rate
+		{0.086377, 0.09, 0.08}, // touch 2
+		{0.096117, 0.10, 0.09}, // touch 3
+		{3.356563, 3.36, 3.35}, // touch 4 step-through
 		{31.923601, 31.92, 31.92},
 	}
 	for _, c := range cases {

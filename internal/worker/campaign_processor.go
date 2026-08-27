@@ -41,15 +41,15 @@ type CampaignProcessor struct {
 	batchSize  int
 
 	// Stats
-	totalSent   int64
-	totalFailed int64
+	totalSent    int64
+	totalFailed  int64
 	totalSkipped int64
 
 	// Control
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	mu     sync.RWMutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	mu      sync.RWMutex
 	running bool
 }
 
@@ -173,17 +173,17 @@ func (p *CampaignProcessor) worker(workerNum int) {
 
 // ProcessorQueueItem represents an item from the campaign queue for background processing
 type ProcessorQueueItem struct {
-	ID              uuid.UUID
-	CampaignID      uuid.UUID
-	SubscriberID    uuid.UUID
-	Email           string
-	Subject         string
-	HTMLContent     string
-	PlainContent    string
-	ProfileID       sql.NullString
-	ESPQuotas       []ESPQuota
+	ID               uuid.UUID
+	CampaignID       uuid.UUID
+	SubscriberID     uuid.UUID
+	Email            string
+	Subject          string
+	HTMLContent      string
+	PlainContent     string
+	ProfileID        sql.NullString
+	ESPQuotas        []ESPQuota
 	SubstitutionData map[string]interface{}
-	Priority        int
+	Priority         int
 }
 
 // claimBatch claims a batch of queue items for processing
@@ -232,7 +232,7 @@ func (p *CampaignProcessor) claimBatch() ([]ProcessorQueueItem, error) {
 		var item ProcessorQueueItem
 		var profileID sql.NullString
 		var espQuotasJSON string
-		
+
 		err := rows.Scan(
 			&item.ID,
 			&item.CampaignID,
@@ -250,7 +250,7 @@ func (p *CampaignProcessor) claimBatch() ([]ProcessorQueueItem, error) {
 		}
 
 		item.ProfileID = profileID
-		
+
 		// Parse ESP quotas
 		if espQuotasJSON != "" && espQuotasJSON != "[]" {
 			json.Unmarshal([]byte(espQuotasJSON), &item.ESPQuotas)
@@ -277,7 +277,7 @@ func (p *CampaignProcessor) processItem(item ProcessorQueueItem) error {
 	err := p.db.QueryRowContext(ctx, `
 		SELECT status FROM mailing_campaigns WHERE id = $1
 	`, item.CampaignID).Scan(&campaignStatus)
-	
+
 	if err != nil || campaignStatus != "sending" {
 		// Campaign no longer active, return item to queue or skip
 		if campaignStatus == "paused" {
@@ -358,7 +358,7 @@ func (p *CampaignProcessor) processItem(item ProcessorQueueItem) error {
 	p.distributor.RecordSend(ctx, item.CampaignID.String(), profileID)
 	p.distributor.RecordSuccess(ctx, profileID)
 	atomic.AddInt64(&p.totalSent, 1)
-	
+
 	return p.markSent(ctx, item.ID, item.CampaignID, result.MessageID)
 }
 
@@ -381,7 +381,7 @@ func (p *CampaignProcessor) selectESP(ctx context.Context, item ProcessorQueueIt
 		WHERE is_default = true AND status = 'active'
 		LIMIT 1
 	`).Scan(&defaultProfileID)
-	
+
 	if err != nil {
 		return "", fmt.Errorf("no sending profile available")
 	}
@@ -397,7 +397,7 @@ func (p *CampaignProcessor) applyThrottle(ctx context.Context, campaignID string
 
 	// Use Redis for distributed rate limiting
 	key := fmt.Sprintf("throttle:campaign:%s", campaignID)
-	
+
 	// Simple token bucket implementation
 	script := `
 		local key = KEYS[1]
@@ -461,7 +461,7 @@ func (p *CampaignProcessor) markSent(ctx context.Context, itemID, campaignID uui
 		    plain_content = NULL
 		WHERE id = $1
 	`, itemID, messageID)
-	
+
 	if err == nil {
 		// Update campaign sent count
 		p.db.ExecContext(ctx, `
@@ -470,7 +470,7 @@ func (p *CampaignProcessor) markSent(ctx context.Context, itemID, campaignID uui
 			WHERE id = $1
 		`, campaignID)
 	}
-	
+
 	return err
 }
 
@@ -619,11 +619,11 @@ func EnqueueCampaign(ctx context.Context, db *sql.DB, campaignID string) (string
 	err = db.QueryRowContext(ctx, `
 		SELECT status, list_id, segment_id FROM mailing_campaigns WHERE id = $1
 	`, campUUID).Scan(&status, &listID, &segmentID)
-	
+
 	if err != nil {
 		return "", fmt.Errorf("campaign not found")
 	}
-	
+
 	if status != "draft" && status != "scheduled" {
 		return "", fmt.Errorf("cannot send campaign in %s status", status)
 	}
@@ -634,7 +634,7 @@ func EnqueueCampaign(ctx context.Context, db *sql.DB, campaignID string) (string
 		SET status = 'sending', started_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND status IN ('draft', 'scheduled')
 	`, campUUID)
-	
+
 	if err != nil {
 		return "", fmt.Errorf("failed to start campaign: %w", err)
 	}
@@ -673,7 +673,7 @@ func enqueueSubscribersForCampaign(ctx context.Context, db *sql.DB, campaignID u
 	var subject, htmlContent, plainContent string
 	var maxRecipients sql.NullInt64
 	var throttleSpeed string
-	
+
 	db.QueryRowContext(ctx, `
 		SELECT subject, COALESCE(html_content, ''), COALESCE(plain_content, ''),
 			   max_recipients, COALESCE(throttle_speed, 'gentle')
@@ -696,7 +696,7 @@ func enqueueSubscribersForCampaign(ctx context.Context, db *sql.DB, campaignID u
 	// Build subscriber query
 	var query string
 	var args []interface{}
-	
+
 	if segmentID.Valid && segmentID.String != "" {
 		query = `
 			SELECT s.id, s.email FROM mailing_subscribers s
@@ -797,7 +797,10 @@ func enqueueSubscribersForCampaign(ctx context.Context, db *sql.DB, campaignID u
 	log.Printf("[EnqueueCampaign] Campaign %s: queued %d subscribers", campaignID, queued)
 }
 
-func insertQueueBatch(ctx context.Context, db *sql.DB, campaignID uuid.UUID, batch []struct{ ID uuid.UUID; Email string }, subject, html, plain string, priority int) int {
+func insertQueueBatch(ctx context.Context, db *sql.DB, campaignID uuid.UUID, batch []struct {
+	ID    uuid.UUID
+	Email string
+}, subject, html, plain string, priority int) int {
 	inserted := 0
 	for _, sub := range batch {
 		queueID := uuid.New()
@@ -808,7 +811,7 @@ func insertQueueBatch(ctx context.Context, db *sql.DB, campaignID uuid.UUID, bat
 			) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, NOW(), NOW())
 			ON CONFLICT DO NOTHING
 		`, queueID, campaignID, sub.ID, subject, html, plain, priority)
-		
+
 		if err == nil {
 			inserted++
 		}

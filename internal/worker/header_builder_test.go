@@ -52,10 +52,10 @@ func TestMIMEEncodeHeader_NonASCII(t *testing.T) {
 
 func TestBuildFromHeader(t *testing.T) {
 	tests := []struct {
-		name        string
-		displayName string
-		email       string
-		wantContain string
+		name           string
+		displayName    string
+		email          string
+		wantContain    string
 		wantNotContain string
 	}{
 		{
@@ -103,8 +103,8 @@ func TestBuildFromHeader(t *testing.T) {
 
 func TestBuildSubjectHeader(t *testing.T) {
 	tests := []struct {
-		name    string
-		subject string
+		name      string
+		subject   string
 		wantExact string
 	}{
 		{

@@ -98,8 +98,8 @@ func TestSlimAcceptedQueueHTML_MissingTableIsSafe(t *testing.T) {
 
 func TestPrimaryBusy_Thresholds(t *testing.T) {
 	tests := []struct {
-		name    string
-		ioWait  int
+		name     string
+		ioWait   int
 		wantTrue bool
 	}{
 		{"below threshold proceeds", slimMaxIOWaitBackends - 1, false},

@@ -22,10 +22,10 @@ import (
 // Brand-specificity is critical: a subscriber exhausted on Discount Blog can
 // still be mailed by Quiz Fiesta. Suppression is per-brand, not global.
 type SuppressionListWorker struct {
-	db               *sql.DB
-	interval         time.Duration
-	minSends         int
-	lookbackDays     int
+	db                *sql.DB
+	interval          time.Duration
+	minSends          int
+	lookbackDays      int
 	circuitBreakerPct float64
 }
 

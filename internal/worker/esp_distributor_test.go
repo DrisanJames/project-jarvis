@@ -127,11 +127,11 @@ func TestESPDistributor_SelectESP(t *testing.T) {
 	campaignID := "test-campaign-1"
 
 	tests := []struct {
-		name       string
-		quotas     []ESPQuota
-		setup      func() // Run before selection
-		wantErr    bool
-		wantESP    string // Expected ESP (empty means any valid)
+		name    string
+		quotas  []ESPQuota
+		setup   func() // Run before selection
+		wantErr bool
+		wantESP string // Expected ESP (empty means any valid)
 	}{
 		{
 			name:    "no quotas configured",
@@ -228,7 +228,7 @@ func TestESPDistributor_HealthTracking(t *testing.T) {
 
 	// Record success - should reset consecutive fails
 	distributor.RecordSuccess(ctx, profileID)
-	
+
 	if !distributor.IsHealthy(profileID) {
 		t.Error("Profile should be healthy after success")
 	}
@@ -364,10 +364,10 @@ func TestThrottleManager_SetAndGet(t *testing.T) {
 	campaignID := "test-throttle-campaign"
 
 	tests := []struct {
-		name         string
-		rate         ThrottleRate
-		customRate   int
-		wantRate     int
+		name       string
+		rate       ThrottleRate
+		customRate int
+		wantRate   int
 	}{
 		{"instant", ThrottleInstant, 0, 1000},
 		{"gentle", ThrottleGentle, 0, 100},

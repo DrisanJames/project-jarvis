@@ -36,14 +36,14 @@ import (
 // - Batch database inserts for performance
 
 var (
-	ErrNoHeaders            = errors.New("no headers detected in CSV file")
-	ErrEmptyFile            = errors.New("file is empty")
-	ErrInvalidCSV           = errors.New("invalid CSV format")
-	ErrMissingEmailColumn   = errors.New("email column mapping is required")
-	ErrUploadNotFound       = errors.New("upload session not found")
-	ErrUploadExpired        = errors.New("upload session has expired")
-	ErrChunkMismatch        = errors.New("chunk number mismatch")
-	ErrInvalidChunkSize     = errors.New("invalid chunk size")
+	ErrNoHeaders             = errors.New("no headers detected in CSV file")
+	ErrEmptyFile             = errors.New("file is empty")
+	ErrInvalidCSV            = errors.New("invalid CSV format")
+	ErrMissingEmailColumn    = errors.New("email column mapping is required")
+	ErrUploadNotFound        = errors.New("upload session not found")
+	ErrUploadExpired         = errors.New("upload session has expired")
+	ErrChunkMismatch         = errors.New("chunk number mismatch")
+	ErrInvalidChunkSize      = errors.New("invalid chunk size")
 	ErrUploadAlreadyComplete = errors.New("upload already complete")
 )
 
@@ -53,19 +53,19 @@ var (
 
 const (
 	// Upload limits
-	MaxFileSize        = 10 * 1024 * 1024 * 1024 // 10GB
-	MaxChunkSize       = 50 * 1024 * 1024        // 50MB chunks
-	MinChunkSize       = 1 * 1024 * 1024         // 1MB minimum
-	DefaultChunkSize   = 10 * 1024 * 1024        // 10MB default
+	MaxFileSize      = 10 * 1024 * 1024 * 1024 // 10GB
+	MaxChunkSize     = 50 * 1024 * 1024        // 50MB chunks
+	MinChunkSize     = 1 * 1024 * 1024         // 1MB minimum
+	DefaultChunkSize = 10 * 1024 * 1024        // 10MB default
 
 	// Processing settings
-	BatchInsertSize    = 5000                    // Rows per batch insert
-	ProgressUpdateFreq = 1000                    // Update progress every N rows
-	UploadSessionTTL   = 24 * time.Hour          // Session expiry
-	TempUploadDir      = "/tmp/mailing-uploads"  // Temporary upload directory
+	BatchInsertSize    = 5000                   // Rows per batch insert
+	ProgressUpdateFreq = 1000                   // Update progress every N rows
+	UploadSessionTTL   = 24 * time.Hour         // Session expiry
+	TempUploadDir      = "/tmp/mailing-uploads" // Temporary upload directory
 
 	// Header detection
-	MinHeaderConfidence = 0.6                    // 60% confidence threshold
+	MinHeaderConfidence = 0.6 // 60% confidence threshold
 )
 
 // SystemFields defines the standard fields that can be mapped
@@ -131,53 +131,53 @@ type FieldMapping struct {
 
 // HeaderDetectionResult contains the results of header analysis
 type HeaderDetectionResult struct {
-	HasHeaders         bool              `json:"has_headers"`
-	Confidence         float64           `json:"confidence"`
-	Headers            []string          `json:"headers"`
-	SuggestedMappings  []FieldMapping    `json:"suggested_mappings"`
-	SampleRows         [][]string        `json:"sample_rows"`
-	TotalColumns       int               `json:"total_columns"`
-	DetectionMethod    string            `json:"detection_method"`
-	RejectionReason    string            `json:"rejection_reason,omitempty"`
+	HasHeaders        bool           `json:"has_headers"`
+	Confidence        float64        `json:"confidence"`
+	Headers           []string       `json:"headers"`
+	SuggestedMappings []FieldMapping `json:"suggested_mappings"`
+	SampleRows        [][]string     `json:"sample_rows"`
+	TotalColumns      int            `json:"total_columns"`
+	DetectionMethod   string         `json:"detection_method"`
+	RejectionReason   string         `json:"rejection_reason,omitempty"`
 }
 
 // UploadSession tracks a chunked upload in progress
 type UploadSession struct {
-	ID              string            `json:"id"`
-	OrganizationID  string            `json:"organization_id"`
-	ListID          string            `json:"list_id"`
-	Filename        string            `json:"filename"`
-	FileSize        int64             `json:"file_size"`
-	ChunkSize       int64             `json:"chunk_size"`
-	TotalChunks     int               `json:"total_chunks"`
-	UploadedChunks  []int             `json:"uploaded_chunks"`
-	FieldMapping    []FieldMapping    `json:"field_mapping"`
-	UpdateExisting  bool              `json:"update_existing"`
-	TempFilePath    string            `json:"temp_file_path"`
-	CreatedAt       time.Time         `json:"created_at"`
-	ExpiresAt       time.Time         `json:"expires_at"`
-	Status          string            `json:"status"` // pending, uploading, processing, completed, failed
-	Error           string            `json:"error,omitempty"`
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organization_id"`
+	ListID         string         `json:"list_id"`
+	Filename       string         `json:"filename"`
+	FileSize       int64          `json:"file_size"`
+	ChunkSize      int64          `json:"chunk_size"`
+	TotalChunks    int            `json:"total_chunks"`
+	UploadedChunks []int          `json:"uploaded_chunks"`
+	FieldMapping   []FieldMapping `json:"field_mapping"`
+	UpdateExisting bool           `json:"update_existing"`
+	TempFilePath   string         `json:"temp_file_path"`
+	CreatedAt      time.Time      `json:"created_at"`
+	ExpiresAt      time.Time      `json:"expires_at"`
+	Status         string         `json:"status"` // pending, uploading, processing, completed, failed
+	Error          string         `json:"error,omitempty"`
 }
 
 // UploadProgress tracks processing progress
 type UploadProgress struct {
-	SessionID       string    `json:"session_id"`
-	Status          string    `json:"status"`
-	Phase           string    `json:"phase"` // uploading, validating, importing
-	TotalRows       int64     `json:"total_rows"`
-	ProcessedRows   int64     `json:"processed_rows"`
-	ImportedCount   int64     `json:"imported_count"`
-	UpdatedCount    int64     `json:"updated_count"`
-	SkippedCount    int64     `json:"skipped_count"`
-	ErrorCount      int64     `json:"error_count"`
-	BytesUploaded   int64     `json:"bytes_uploaded"`
-	TotalBytes      int64     `json:"total_bytes"`
-	CurrentRate     float64   `json:"current_rate"`     // rows per second
-	EstimatedETA    int64     `json:"estimated_eta"`    // seconds remaining
-	StartedAt       time.Time `json:"started_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	Errors          []string  `json:"errors,omitempty"` // Sample of errors
+	SessionID     string    `json:"session_id"`
+	Status        string    `json:"status"`
+	Phase         string    `json:"phase"` // uploading, validating, importing
+	TotalRows     int64     `json:"total_rows"`
+	ProcessedRows int64     `json:"processed_rows"`
+	ImportedCount int64     `json:"imported_count"`
+	UpdatedCount  int64     `json:"updated_count"`
+	SkippedCount  int64     `json:"skipped_count"`
+	ErrorCount    int64     `json:"error_count"`
+	BytesUploaded int64     `json:"bytes_uploaded"`
+	TotalBytes    int64     `json:"total_bytes"`
+	CurrentRate   float64   `json:"current_rate"`  // rows per second
+	EstimatedETA  int64     `json:"estimated_eta"` // seconds remaining
+	StartedAt     time.Time `json:"started_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	Errors        []string  `json:"errors,omitempty"` // Sample of errors
 }
 
 // ImportResult contains final import statistics

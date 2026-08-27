@@ -107,17 +107,17 @@ const (
 // converters whose SafeLinks/proxy/egress clicks verdict as machine. So the
 // verdict gate is DROPPED entirely and replaced by two positive-action inlets:
 //
-//   (a) a CLICK on this brand's sends — event_type='clicked' on the brand's
-//       sending_domain, EXCLUDING tracked-unsub clicks (link_url
-//       '/track/unsubscribe%'): a footer unsub click is a leaving signal, not a
-//       human-to-retain one (unsub-click-ring-inflation). NO verdict filter — any
-//       real click is a positive human action.
-//   (b) a CONVERSION — a mailing_offer_suppressions row (reason ~* 'convert').
-//       Conversions carry NO sending_domain, and offers fan out across brands, so
-//       a conversion is NOT cleanly brand-scopable; per operator direction we
-//       ledger EVER-CONVERTED GLOBALLY (any brand's ledger admits a subscriber who
-//       converted in-window). Windowed by suppressed_at on the same [from,to)
-//       coverage cursor as (a) so the chunked/resumable/backfill model is preserved.
+//	(a) a CLICK on this brand's sends — event_type='clicked' on the brand's
+//	    sending_domain, EXCLUDING tracked-unsub clicks (link_url
+//	    '/track/unsubscribe%'): a footer unsub click is a leaving signal, not a
+//	    human-to-retain one (unsub-click-ring-inflation). NO verdict filter — any
+//	    real click is a positive human action.
+//	(b) a CONVERSION — a mailing_offer_suppressions row (reason ~* 'convert').
+//	    Conversions carry NO sending_domain, and offers fan out across brands, so
+//	    a conversion is NOT cleanly brand-scopable; per operator direction we
+//	    ledger EVER-CONVERTED GLOBALLY (any brand's ledger admits a subscriber who
+//	    converted in-window). Windowed by suppressed_at on the same [from,to)
+//	    coverage cursor as (a) so the chunked/resumable/backfill model is preserved.
 //
 // OPENS NO LONGER QUALIFY: an open is liveness/silver, not a positive human
 // action, so it never by itself ledgers a subscriber into the HUMAN core.

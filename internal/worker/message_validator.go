@@ -13,8 +13,8 @@ import (
 type ValidatorMode int
 
 const (
-	ValidatorAudit  ValidatorMode = iota // Log only, never block
-	ValidatorEnforce                     // Block sends on hard failures
+	ValidatorAudit   ValidatorMode = iota // Log only, never block
+	ValidatorEnforce                      // Block sends on hard failures
 )
 
 // ValidationSeverity indicates how serious a validation issue is.

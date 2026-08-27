@@ -22,7 +22,7 @@ const (
 	DefaultStorageGuardInterval = 5 * time.Minute
 	DefaultStorageGuardReAlert  = 30 * time.Minute
 
-	walRetainedWarnBytes  = int64(10 * 1024 * 1024 * 1024)   // 10 GB
+	walRetainedWarnBytes  = int64(10 * 1024 * 1024 * 1024)  // 10 GB
 	walRetainedSev1Bytes  = int64(100 * 1024 * 1024 * 1024) // 100 GB
 	queueAcceptedHTMLWarn = int64(1_000_000)
 	queueTerminalAgedWarn = int64(100_000)
@@ -32,13 +32,13 @@ const (
 type storageGuardInvariantKey string
 
 const (
-	sgInvUnexpectedSlot   storageGuardInvariantKey = "unexpected_slot"
-	sgInvInactiveSlot     storageGuardInvariantKey = "inactive_slot"
-	sgInvWALRetainedWarn  storageGuardInvariantKey = "wal_retained_warn"
-	sgInvWALRetainedSev1  storageGuardInvariantKey = "wal_retained_sev1"
+	sgInvUnexpectedSlot    storageGuardInvariantKey = "unexpected_slot"
+	sgInvInactiveSlot      storageGuardInvariantKey = "inactive_slot"
+	sgInvWALRetainedWarn   storageGuardInvariantKey = "wal_retained_warn"
+	sgInvWALRetainedSev1   storageGuardInvariantKey = "wal_retained_sev1"
 	sgInvQueueAcceptedHTML storageGuardInvariantKey = "queue_accepted_html"
 	sgInvQueueTerminalAged storageGuardInvariantKey = "queue_terminal_aged"
-	sgInvAcctRawBacklog   storageGuardInvariantKey = "acct_raw_backlog"
+	sgInvAcctRawBacklog    storageGuardInvariantKey = "acct_raw_backlog"
 )
 
 // StorageSnapshot is the last evaluated storage guard state, exposed on

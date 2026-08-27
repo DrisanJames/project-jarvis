@@ -141,8 +141,8 @@ type journeyRetryDecision struct {
 // eject could never land, and the policy was inert on exactly the enrollments
 // it exists for:
 //
-//   [JourneyRetry] bookkeeping failed (enrollment=enroll-clk-7d40ce26 node=email-3): context deadline exceeded
-//   [JourneyRetry] defer failed (enrollment=enroll-clk-7d40ce26): context deadline exceeded
+//	[JourneyRetry] bookkeeping failed (enrollment=enroll-clk-7d40ce26 node=email-3): context deadline exceeded
+//	[JourneyRetry] defer failed (enrollment=enroll-clk-7d40ce26): context deadline exceeded
 //
 // enroll-clk-7d40ce26 is one of the three mailboxes that had been retrying every
 // ~2 minutes for 13 days. A gate that no-ops is worse than no gate.

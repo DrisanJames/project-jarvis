@@ -19,13 +19,13 @@ import (
 // encode.py's decode_secret.
 //
 // The mechanism is gated three ways and is OFF by default:
-//   1. Global kill switch  — DISABLE_SUBJECT_ZW_ENCODE=true short-circuits.
-//   2. Yahoo only          — applied solely when the RECIPIENT classifies to
-//                            the "yahoo" ISP group (per-message, per-recipient).
-//   3. Per-sending-domain  — the sending profile must have
-//                            mailing_sending_profiles.subject_zw_encode=TRUE and
-//                            a non-empty subject_zw_secret (the parameterized
-//                            input). Every other profile is untouched.
+//  1. Global kill switch  — DISABLE_SUBJECT_ZW_ENCODE=true short-circuits.
+//  2. Yahoo only          — applied solely when the RECIPIENT classifies to
+//     the "yahoo" ISP group (per-message, per-recipient).
+//  3. Per-sending-domain  — the sending profile must have
+//     mailing_sending_profiles.subject_zw_encode=TRUE and
+//     a non-empty subject_zw_secret (the parameterized
+//     input). Every other profile is untouched.
 const (
 	zwZero = '\u200b' // zero-width space      -> binary 0
 	zwOne  = '\u200c' // zero-width non-joiner -> binary 1

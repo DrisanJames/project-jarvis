@@ -57,18 +57,18 @@ type SESEvent struct {
 
 // SNSMessage represents an AWS SNS notification wrapper
 type SNSMessage struct {
-	Type             string `json:"Type"`
-	SubscribeURL     string `json:"SubscribeURL"`
-	Message          string `json:"Message"`
-	MessageId        string `json:"MessageId"`
-	TopicArn         string `json:"TopicArn"`
+	Type         string `json:"Type"`
+	SubscribeURL string `json:"SubscribeURL"`
+	Message      string `json:"Message"`
+	MessageId    string `json:"MessageId"`
+	TopicArn     string `json:"TopicArn"`
 }
 
 // MailgunEvent represents a Mailgun webhook event
 type MailgunEvent struct {
 	EventData struct {
-		Event     string `json:"event"`
-		MessageID string `json:"message-id"`
+		Event     string  `json:"event"`
+		MessageID string  `json:"message-id"`
 		Timestamp float64 `json:"timestamp"`
 	} `json:"event-data"`
 }
@@ -172,13 +172,13 @@ func (w *WebhookReceiver) HandleSESWebhook(rw http.ResponseWriter, r *http.Reque
 
 	// Parse the actual SES event from the SNS message
 	var sesNotification struct {
-		NotificationType string    `json:"notificationType"`
+		NotificationType string `json:"notificationType"`
 		Mail             struct {
 			MessageID string `json:"messageId"`
 		} `json:"mail"`
-		Bounce   *struct{} `json:"bounce,omitempty"`
+		Bounce    *struct{} `json:"bounce,omitempty"`
 		Complaint *struct{} `json:"complaint,omitempty"`
-		Delivery *struct{} `json:"delivery,omitempty"`
+		Delivery  *struct{} `json:"delivery,omitempty"`
 	}
 
 	if err := json.Unmarshal([]byte(snsMessage.Message), &sesNotification); err != nil {

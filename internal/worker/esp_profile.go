@@ -17,9 +17,9 @@ import (
 // Sender instances are cached per profile ID so that PMTA's SMTP
 // connection pool and VMTA cache are reused across messages.
 type ProfileBasedSender struct {
-	db              *sql.DB
-	senderCache     map[string]ESPSender
-	mu              sync.RWMutex
+	db               *sql.DB
+	senderCache      map[string]ESPSender
+	mu               sync.RWMutex
 	ipChangeCallback OnIPsChangedFunc
 }
 

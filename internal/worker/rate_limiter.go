@@ -15,7 +15,7 @@ type RateLimiter struct {
 	redis *redis.Client
 
 	// Pre-compiled Lua scripts for atomicity
-	multiLimitScript *redis.Script
+	multiLimitScript  *redis.Script
 	domainLimitScript *redis.Script
 }
 

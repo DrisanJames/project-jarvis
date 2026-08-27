@@ -425,7 +425,7 @@ func TestJourneyEventEnroller_Tick_HappyPath_EnrollsAndMarksProcessed(t *testing
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_journey_enrollments`)).
 		WithArgs(sqlmock.AnyArg(), "jrn-001", "user@example.com", "delay1h", sqlmock.AnyArg(), "EV-001").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`) + `.*` + regexp.QuoteMeta(`SET status='processed'`)).
 		WithArgs("trig-happy").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -482,7 +482,7 @@ func TestJourneyEventEnroller_Tick_BatchOfThree_MixedOutcomes(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_journey_enrollments`)).
 		WithArgs(sqlmock.AnyArg(), "jrn-happy", "happy@example.com", "email1", sqlmock.AnyArg(), "EV-OK").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`) + `.*` + regexp.QuoteMeta(`SET status='processed'`)).
 		WithArgs("trig-happy").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -651,7 +651,7 @@ func TestJourneyEventEnroller_Tick_ExitedPastCooldown_Rearms(t *testing.T) {
 				`"prior_passes"`, `"EV-ANCIENT"`, `"EV-OLD"`, `"no_engagement"`, `"click_postback_rearm"`,
 			}}).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`) + `.*` + regexp.QuoteMeta(`SET status='processed'`)).
 		WithArgs("trig-rearm").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -723,7 +723,7 @@ func TestJourneyEventEnroller_Tick_ConvertedCrossOffer_RearmsAndClearsConvertedA
 				`"prior_passes"`, `"EV-OLD"`, `"converted"`, `"converted_at"`,
 			}}).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`)+`.*`+regexp.QuoteMeta(`SET status='processed'`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mailing_journey_event_triggers`) + `.*` + regexp.QuoteMeta(`SET status='processed'`)).
 		WithArgs("trig-xsell").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

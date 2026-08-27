@@ -45,19 +45,18 @@ type VMTAInfo struct {
 // ISP pool suffix (e.g. "gmail", "yahoo", "general").
 type OnIPsChangedFunc func(prefix string, ispGroups map[string][]VMTAInfo)
 
-
 type vmtaPool struct {
 	mu           sync.RWMutex
 	ips          []vmtaEntry            // all IPs (fallback for legacy profiles)
 	ispGroups    map[string][]vmtaEntry // keyed by pool suffix: "gmail", "yahoo", etc.
 	strictPools  map[string]bool        // pool suffixes with strict isolation (no fallback)
 	idx          uint64
-	ispIdx       map[string]*uint64     // per-ISP round-robin counters
+	ispIdx       map[string]*uint64 // per-ISP round-robin counters
 	loadedAt     time.Time
 	ttl          time.Duration
 	db           *sql.DB
-	poolPrefix   string                 // set at construction from profile's pool_prefix
-	onIPsChanged OnIPsChangedFunc       // optional: fired when IP set composition changes
+	poolPrefix   string           // set at construction from profile's pool_prefix
+	onIPsChanged OnIPsChangedFunc // optional: fired when IP set composition changes
 }
 
 func newVMTAPool(db *sql.DB, poolPrefix string) *vmtaPool {

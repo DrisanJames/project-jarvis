@@ -13,8 +13,8 @@ func TestApexFromSendingDomain(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"m.ratesbazar.com", "ratesbazar.com"},    // the SES relay host that regressed
-		{"em.ratesbazar.com", "ratesbazar.com"},   // dedicated host
+		{"m.ratesbazar.com", "ratesbazar.com"},  // the SES relay host that regressed
+		{"em.ratesbazar.com", "ratesbazar.com"}, // dedicated host
 		{"em.discountblog.com", "discountblog.com"},
 		{"mail.example.com", "example.com"},
 		{"send.example.com", "example.com"},

@@ -293,7 +293,7 @@ type engagementFamilySpec struct {
 	apex        string
 	category    string
 	insertSQL   string
-	windowDays  int  // 0 = all-time (kumoAllTimeEpoch lower bound)
+	windowDays  int // 0 = all-time (kumoAllTimeEpoch lower bound)
 	allTime     bool
 }
 

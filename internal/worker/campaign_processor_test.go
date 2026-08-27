@@ -282,14 +282,14 @@ func TestCampaignProcessor_ThrottleRespected(t *testing.T) {
 	ratePerMinute := 60 // 1 per second
 
 	start := time.Now()
-	
+
 	// Make multiple calls - they should be throttled
 	for i := 0; i < 3; i++ {
 		processor.applyThrottle(ctx, campaignID, ratePerMinute)
 	}
 
 	elapsed := time.Since(start)
-	
+
 	// With 60/min rate, 3 calls should take at least 2 seconds
 	// But since we're using token bucket, first call is instant
 	// We just verify it doesn't take too long (< 5 seconds)
@@ -421,7 +421,7 @@ func TestCampaignProcessor_ZeroSubscribers(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ctx := context.Background()
-	enqueueSubscribersForCampaign(ctx, db, campaignID, 
+	enqueueSubscribersForCampaign(ctx, db, campaignID,
 		sql.NullString{String: listID, Valid: true},
 		sql.NullString{Valid: false})
 

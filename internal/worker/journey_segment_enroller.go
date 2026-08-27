@@ -64,12 +64,12 @@ const DefaultSegmentEnrollerBatchLimit = 5000
 // NewJourneySegmentEnroller, then Start(ctx) once at boot. Stop() is
 // safe to call multiple times.
 type JourneySegmentEnroller struct {
-	db          *sql.DB
-	engine      *segmentation.Engine
-	interval    time.Duration
-	batchLimit  int
-	stopChan    chan struct{}
-	stopOnce    sync.Once
+	db            *sql.DB
+	engine        *segmentation.Engine
+	interval      time.Duration
+	batchLimit    int
+	stopChan      chan struct{}
+	stopOnce      sync.Once
 	totalEnrolled int64
 	totalErrors   int64
 }
@@ -139,10 +139,10 @@ func (w *JourneySegmentEnroller) Stats() (enrolled, errors int64) {
 // activeSegmentJourney is one row from the journey scan: the bits we
 // need to resolve a subscriber set and find the first executable node.
 type activeSegmentJourney struct {
-	JourneyID    string
-	SegmentID    string
-	FirstNodeID  string
-	OrgID        string
+	JourneyID   string
+	SegmentID   string
+	FirstNodeID string
+	OrgID       string
 }
 
 // tick runs a single enrollment pass. Public-ish so tests can call it

@@ -29,14 +29,14 @@ import (
 
 // ESP batch size limits
 const (
-	SparkPostBatchSize     = 2000
-	SparkPostMaxPayloadMB  = 5
+	SparkPostBatchSize       = 2000
+	SparkPostMaxPayloadMB    = 5
 	SparkPostMaxPayloadBytes = 5 * 1024 * 1024
-	SESBatchSize           = 50
-	MailgunBatchSize       = 1000
-	SendGridBatchSize      = 1000
-	DefaultBatchSize       = 100
-	DefaultBatchTimeout    = 60 * time.Second
+	SESBatchSize             = 50
+	MailgunBatchSize         = 1000
+	SendGridBatchSize        = 1000
+	DefaultBatchSize         = 100
+	DefaultBatchTimeout      = 60 * time.Second
 )
 
 // BatchSendWorker processes emails in large batches using ESP-specific batch APIs
@@ -111,7 +111,7 @@ type BatchItemResult struct {
 // BatchGrouper groups messages into optimal batches per ESP
 // Supports both count-based and size-based batching limits
 type BatchGrouper struct {
-	espBatchSizes   map[string]int
+	espBatchSizes    map[string]int
 	espPayloadLimits map[string]int // Maximum payload size in bytes per ESP
 }
 
@@ -260,9 +260,9 @@ func NewBatchSendWorker(db *sql.DB, redisClient *redis.Client) *BatchSendWorker 
 		redis:        redisClient,
 		workerID:     fmt.Sprintf("batch-worker-%s", uuid.New().String()[:8]),
 		batchGrouper: NewBatchGrouper(),
-		claimSize:    1000,                     // Claim 1000 items at once
-		pollInterval: 50 * time.Millisecond,    // Fast polling for low latency
-		numWorkers:   4,                        // 4 concurrent batch processors
+		claimSize:    1000,                  // Claim 1000 items at once
+		pollInterval: 50 * time.Millisecond, // Fast polling for low latency
+		numWorkers:   4,                     // 4 concurrent batch processors
 		contentCache: make(map[string]*CampaignContent),
 	}
 }

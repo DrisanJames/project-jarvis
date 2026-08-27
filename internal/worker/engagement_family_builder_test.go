@@ -200,12 +200,12 @@ func TestEngagementFamilyBuilder_WindowMath(t *testing.T) {
 func TestEngagementFamilyBuilder_EnsureSegmentShape(t *testing.T) {
 	sqlText := engagementFamilyEnsureSegmentSQL
 	for _, want := range []string{
-		"WHERE NOT EXISTS",              // idempotent per (org, name)
-		"m.name = $1",                   // keyed by deterministic name
-		"'static'",                      // out of the dynamic-only materializer
-		"TRUE, $4",                      // keep_active=TRUE → cleanup-proof
+		"WHERE NOT EXISTS", // idempotent per (org, name)
+		"m.name = $1",      // keyed by deterministic name
+		"'static'",         // out of the dynamic-only materializer
+		"TRUE, $4",         // keep_active=TRUE → cleanup-proof
 		"SELECT DISTINCT organization_id FROM mailing_segments", // org-scoped
-		"'sending_domain'",              // scope condition readable by tooling
+		"'sending_domain'", // scope condition readable by tooling
 	} {
 		if !strings.Contains(sqlText, want) {
 			t.Fatalf("ensure-segment SQL missing %q:\n%s", want, sqlText)

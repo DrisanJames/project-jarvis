@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
 	sespkg "github.com/ignite/sparkpost-monitor/internal/ses"
+	_ "github.com/lib/pq"
 )
 
 const propertyLedgerWorkerTestDSN = "postgres://apex_user:apex_password@localhost:5432/apex_db?sslmode=disable"
@@ -301,7 +301,7 @@ func TestPropertyLedgerP4VDMCatchupAndFinalization(t *testing.T) {
 	// Immutability: the upsert is a NO-OP on the finalized row.
 	row := &vdmCanonicalRow{isp: "gmail", rawISPs: []string{"Gmail"},
 		values: map[string]int64{sespkg.MetricSend: 999999}, complete: true}
-	day := utcMidnight(now.Add(-49 * time.Hour).AddDate(0, 0, -1))
+	day := utcMidnight(now.Add(-49*time.Hour).AddDate(0, 0, -1))
 	n, err := w.upsertCell(ctx, day.Format("2006-01-02"), "fin-49h.test", row,
 		day, day.AddDate(0, 0, 1))
 	if err != nil {

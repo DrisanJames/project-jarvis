@@ -32,11 +32,11 @@ func NewBulkEnqueuer(db *sql.DB) *BulkEnqueuer {
 
 // Subscriber represents a subscriber to be enqueued
 type EnqueueSubscriber struct {
-	ID              uuid.UUID
-	Email           string
-	FirstName       string
-	LastName        string
-	CustomFields    map[string]interface{}
+	ID           uuid.UUID
+	Email        string
+	FirstName    string
+	LastName     string
+	CustomFields map[string]interface{}
 }
 
 // EnqueueCampaign bulk-inserts subscribers into the queue using COPY
@@ -89,15 +89,15 @@ func (e *BulkEnqueuer) EnqueueCampaign(ctx context.Context, campaignID uuid.UUID
 		}
 
 		_, err = stmt.Exec(
-			uuid.New(),     // id
-			campaignID,     // campaign_id
-			sub.ID,         // subscriber_id
-			sub.Email,      // email
+			uuid.New(),          // id
+			campaignID,          // campaign_id
+			sub.ID,              // subscriber_id
+			sub.Email,           // email
 			string(subDataJSON), // substitution_data
-			"queued",       // status
-			priority,       // priority
-			now,            // scheduled_at
-			now,            // created_at
+			"queued",            // status
+			priority,            // priority
+			now,                 // scheduled_at
+			now,                 // created_at
 		)
 		if err != nil {
 			log.Printf("[BulkEnqueuer] Warning: failed to exec for %s: %v", logger.RedactEmail(sub.Email), err)

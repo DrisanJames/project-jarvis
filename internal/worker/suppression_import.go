@@ -37,15 +37,15 @@ import (
 const (
 	// SuppImport limits
 	SuppMaxFileSize      = 10 * 1024 * 1024 * 1024 // 10 GB
-	SuppMaxChunkSize     = 50 * 1024 * 1024         // 50 MB
-	SuppDefaultChunkSize = 50 * 1024 * 1024         // 50 MB (was 10 MB — larger chunks = fewer HTTP requests)
-	SuppMinChunkSize     = 1 * 1024 * 1024          // 1 MB
+	SuppMaxChunkSize     = 50 * 1024 * 1024        // 50 MB
+	SuppDefaultChunkSize = 50 * 1024 * 1024        // 50 MB (was 10 MB — larger chunks = fewer HTTP requests)
+	SuppMinChunkSize     = 1 * 1024 * 1024         // 1 MB
 
 	// Processing — tuned for 50M+ row suppression files
-	SuppBatchSize        = 50000             // Rows per COPY batch (was 5000 — COPY protocol handles large batches efficiently)
-	SuppProgressInterval = 50000             // Update progress every N rows (was 2500 — less frequent = less Redis overhead)
-	SuppWriterWorkers    = 4                 // Parallel DB writer goroutines for pipelined inserts
-	SuppChannelBuffer    = 8                 // Buffered channel depth between reader and writers
+	SuppBatchSize        = 50000 // Rows per COPY batch (was 5000 — COPY protocol handles large batches efficiently)
+	SuppProgressInterval = 50000 // Update progress every N rows (was 2500 — less frequent = less Redis overhead)
+	SuppWriterWorkers    = 4     // Parallel DB writer goroutines for pipelined inserts
+	SuppChannelBuffer    = 8     // Buffered channel depth between reader and writers
 	SuppTempDir          = "/tmp/mailing-suppression-imports"
 	SuppSessionTTL       = 24 * time.Hour
 
@@ -59,15 +59,15 @@ const (
 
 // SuppImportJob represents a background suppression import job
 type SuppImportJob struct {
-	ID              string    `json:"id"`
-	ListID          string    `json:"list_id"`
-	Filename        string    `json:"filename"`
-	FileSize        int64     `json:"file_size"`
-	TempFilePath    string    `json:"temp_file_path"`
-	Status          string    `json:"status"` // pending, uploading, processing, completed, failed
-	Error           string    `json:"error,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	ExpiresAt       time.Time `json:"expires_at"`
+	ID           string    `json:"id"`
+	ListID       string    `json:"list_id"`
+	Filename     string    `json:"filename"`
+	FileSize     int64     `json:"file_size"`
+	TempFilePath string    `json:"temp_file_path"`
+	Status       string    `json:"status"` // pending, uploading, processing, completed, failed
+	Error        string    `json:"error,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
 
 	// Chunked upload tracking
 	ChunkSize      int64 `json:"chunk_size"`

@@ -18,29 +18,29 @@ type RSSPoller struct {
 	rssSvc *mailing.RSSCampaignService
 
 	// Configuration
-	pollInterval    time.Duration
-	maxConcurrent   int
-	enableAutoSend  bool
+	pollInterval   time.Duration
+	maxConcurrent  int
+	enableAutoSend bool
 
 	// Stats
-	totalPolls       int64
-	totalItemsFound  int64
-	totalCampaigns   int64
-	totalErrors      int64
+	totalPolls      int64
+	totalItemsFound int64
+	totalCampaigns  int64
+	totalErrors     int64
 
 	// Control
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	mu       sync.RWMutex
-	running  bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	mu      sync.RWMutex
+	running bool
 }
 
 // RSSPollerConfig holds configuration for the RSS poller
 type RSSPollerConfig struct {
-	PollInterval    time.Duration // How often to check for feeds due for polling
-	MaxConcurrent   int           // Maximum concurrent feed fetches
-	EnableAutoSend  bool          // Whether to auto-send generated campaigns
+	PollInterval   time.Duration // How often to check for feeds due for polling
+	MaxConcurrent  int           // Maximum concurrent feed fetches
+	EnableAutoSend bool          // Whether to auto-send generated campaigns
 }
 
 // DefaultRSSPollerConfig returns default configuration
@@ -146,11 +146,11 @@ func (p *RSSPoller) PollSingleFeed(ctx context.Context, campaignID string) (*Pol
 
 // PollResult contains the result of polling a single feed
 type PollResult struct {
-	CampaignID    string   `json:"campaign_id"`
-	ItemsFound    int      `json:"items_found"`
-	NewItems      int      `json:"new_items"`
-	CampaignsCreated int   `json:"campaigns_created"`
-	Errors        []string `json:"errors,omitempty"`
+	CampaignID       string   `json:"campaign_id"`
+	ItemsFound       int      `json:"items_found"`
+	NewItems         int      `json:"new_items"`
+	CampaignsCreated int      `json:"campaigns_created"`
+	Errors           []string `json:"errors,omitempty"`
 }
 
 // pollLoop is the main polling loop

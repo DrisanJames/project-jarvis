@@ -499,7 +499,7 @@ func TestBatchGrouper_GetPayloadLimit(t *testing.T) {
 func TestBatchGrouper_GroupIntoBatches_ByCount(t *testing.T) {
 	grouper := NewBatchGrouper()
 	// Use SES which has max 50 recipients for easier testing
-	
+
 	messages := make([]BatchQueueItem, 120)
 	for i := range messages {
 		messages[i] = BatchQueueItem{
