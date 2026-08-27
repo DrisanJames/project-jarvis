@@ -71,6 +71,9 @@ const (
 	predispatchVerifyEvery  = 10 * time.Second
 	predispatchVerifyMax    = 8 * time.Minute
 	predispatchStampKey     = "predispatch_refresh"
+	// predispatchDoubleSendGuard: an un-adoptable sibling this close to its
+	// anchor is cancelled so the original mails alone.
+	predispatchDoubleSendGuard = 10 * time.Minute
 )
 
 type predispatchCell struct {
@@ -541,15 +544,15 @@ func (s *PMTACampaignService) predispatchSwap(ctx context.Context, d predispatch
 	stampJSON, _ := json.Marshal(stamp)
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE mailing_campaigns
-		SET name = $2,
+		SET name = $2::text,
 		    pmta_config = jsonb_set(
 		        jsonb_set(
 		            jsonb_set(COALESCE(pmta_config,'{}'::jsonb), '{campaign_input,name}', to_jsonb($2::text), true),
 		            '{rebuilt_from}', to_jsonb($3::text), true),
-		        $4, $5::jsonb, true),
+		        ARRAY['predispatch_refresh']::text[], $4::jsonb, true),
 		    updated_at = NOW()
-		WHERE id = $1
-	`, sibID, c.Name, c.ID, pq.Array([]string{predispatchStampKey}), string(stampJSON)); err != nil {
+		WHERE id = $1::uuid
+	`, sibID, c.Name, c.ID, string(stampJSON)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -581,7 +584,7 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, organization_id::text, name, status, COALESCE(total_recipients,0),
 		       (SELECT count(*) FROM mailing_campaign_waves w WHERE w.campaign_id = c.id),
-		       created_at
+		       created_at, scheduled_at
 		FROM mailing_campaigns c
 		WHERE name LIKE '%' || $1 AND status IN ('scheduled','failed','finalizing_audience','preparing')
 	`, predispatchSiblingSfx)
@@ -593,11 +596,12 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 		id, org, name, status string
 		recips, waves         int
 		created               time.Time
+		anchor                sql.NullTime
 	}
 	var orphans []orphan
 	for rows.Next() {
 		var o orphan
-		if err := rows.Scan(&o.id, &o.org, &o.name, &o.status, &o.recips, &o.waves, &o.created); err == nil {
+		if err := rows.Scan(&o.id, &o.org, &o.name, &o.status, &o.recips, &o.waves, &o.created, &o.anchor); err == nil {
 			orphans = append(orphans, o)
 		}
 	}
@@ -622,6 +626,13 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 			c := predispatchCell{ID: origID, OrgID: o.org, Name: orig, Recipients: origRecips}
 			if err := s.predispatchSwap(ctx, d, c, o.id, o.recips, map[string]predispatchSegment{}); err != nil {
 				log.Printf("[PreDispatch] orphan %q adopt failed: %v", o.name, err)
+				// Last resort: a sibling and its original must never BOTH reach
+				// the anchor (double send). Inside the guard window the
+				// original wins and the sibling is discarded.
+				if o.anchor.Valid && o.anchor.Time.Before(d.now().Add(predispatchDoubleSendGuard)) {
+					log.Printf("[PreDispatch] orphan %q inside double-send guard — sibling cancelled, original mails", o.name)
+					s.predispatchCancel(ctx, o.id)
+				}
 			} else {
 				log.Printf("[PreDispatch] orphan %q adopted as %q", o.name, orig)
 			}
@@ -630,9 +641,9 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 		if oerr == sql.ErrNoRows && o.status == "scheduled" && o.recips > 0 && o.waves > 0 {
 			// Original already cancelled (crash after cancel, before rename): just take the name.
 			if _, err := s.db.ExecContext(ctx, `
-				UPDATE mailing_campaigns SET name = $2,
+				UPDATE mailing_campaigns SET name = $2::text,
 				    pmta_config = jsonb_set(COALESCE(pmta_config,'{}'::jsonb), '{campaign_input,name}', to_jsonb($2::text), true),
-				    updated_at = NOW() WHERE id = $1
+				    updated_at = NOW() WHERE id = $1::uuid
 			`, o.id, orig); err == nil {
 				log.Printf("[PreDispatch] orphan %q renamed to %q (original already cancelled)", o.name, orig)
 			}
