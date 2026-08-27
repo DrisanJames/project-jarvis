@@ -1600,6 +1600,9 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// completes. Idempotent — segments with members are skipped.
 			go segMaterializer.MaterializeEngagementCatalog(workerCtx)
 			pmtaCampaignAPI.StartAudienceWorker(workerCtx)
+			// Pre-dispatch audience refresh (operator 2026-08-27: "rebuild an
+			// hour before campaign dispatch"). See predispatch_refresh.go.
+			pmtaCampaignAPI.StartPreDispatchRefresher(workerCtx, s.redisClient)
 
 			// SDS Graduation Job (per-domain engagement engine, SA-1).
 			// Nightly cleanup at 02:00 UTC: cold pass on

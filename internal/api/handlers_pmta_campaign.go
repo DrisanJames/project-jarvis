@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
@@ -73,6 +75,12 @@ type PMTACampaignService struct {
 	// reservation TX that sqlmock cannot carry). Nil means use the real
 	// s.deployFromInput. Same seam posture as preflightFn/gateEvalFn.
 	dayCardsDeployFn func(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, bool, error)
+
+	// Pre-dispatch audience refresh (predispatch_refresh.go): single-writer
+	// lock client + test seams for the clock and the segment builder.
+	predispatchRedis         *redis.Client
+	predispatchNowFn         func() time.Time
+	predispatchMaterializeFn func(ctx context.Context, seg predispatchSegment) (int, error)
 
 	// vdmMetrics overrides the shared SES VDM reader (vdm_metrics.go) for
 	// day-cards tests. Nil means use sharedVDMReader.
