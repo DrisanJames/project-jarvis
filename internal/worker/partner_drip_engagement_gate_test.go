@@ -714,6 +714,10 @@ func TestSweeperExitAndCeilingSQL(t *testing.T) {
 		}
 	}
 	cl := closeAtCeilingSQL(pred, len(args)+1, len(args)+2)
+	// The T2 ceiling is GMAIL-ONLY (operator 2026-08-28): non-gmail runs T1-T5.
+	if !strings.Contains(cl, "COALESCE(isp_family, '') = 'gmail'") {
+		t.Fatalf("ceiling must be gmail-scoped so non-gmail runs the full ladder:\n%s", cl)
+	}
 	for _, want := range []string{"terminal_reason = 'completed'", "COALESCE(touch_count, 0) >= $2", "LIMIT $3"} {
 		if !strings.Contains(cl, want) {
 			t.Fatalf("ceiling SQL missing %q:\n%s", want, cl)

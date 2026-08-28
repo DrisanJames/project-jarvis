@@ -506,10 +506,15 @@ func (s *PartnerDripColdSweeper) sweepOnce(ctx context.Context) {
 // cold revive pass keys on ColdTerminalReason only, so exited rows stay out.
 const ClickedExitReason = "clicked_exit"
 
-// GatedMaxTouches is the ladder ceiling for the gated (internal auto) family:
-// T1 + at most one follow-up (operator 2026-08-27). The estate-wide
-// MaxTouchCount is untouched; the ceiling is enforced by the sweeper closing
-// any gated row at touch_count >= GatedMaxTouches.
+// GatedMaxTouches is the ladder ceiling for GMAIL rows on the gated (internal
+// auto) family: T1 + at most one follow-up (operator 2026-08-27).
+//
+// NON-GMAIL RUNS THE FULL LADDER (operator 2026-08-28: "we should be mailing
+// all non-Gmail from T1-5 … we should not be delaying. If they click they
+// should be exited."). Non-gmail rows therefore close only at the estate-wide
+// MaxTouchCount, exactly like every other lane; the clicked_exit pass is what
+// takes a producer out. Gmail keeps the tight ceiling because its gate already
+// refuses non-openers and its reputation cost per touch is the constraint.
 const GatedMaxTouches = 2
 
 func clickExitDisabled() bool {
@@ -549,6 +554,7 @@ func closeAtCeilingSQL(pred string, ceilingArg, limitArg int) string {
 			WHERE status = 'mailed'
 			  AND %[1]s
 			  AND next_touch_at IS NOT NULL
+			  AND COALESCE(isp_family, '') = 'gmail'
 			  AND COALESCE(touch_count, 0) >= $%[2]d
 			LIMIT $%[3]d
 			FOR UPDATE SKIP LOCKED
