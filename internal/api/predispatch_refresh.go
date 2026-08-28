@@ -106,6 +106,20 @@ type predispatchDeps struct {
 	deploy      func(ctx context.Context, orgID string, input engine.PMTACampaignInput) (string, string, bool, error)
 }
 
+// predispatchExcludeNameRe: programs whose audience is NOT the engagement grid
+// and must never be rebound — KUMO-WARM (specially mined tranches; a rebind
+// finalizes to 0 and the pre-stage freeze doctrine forbids rebuilding them)
+// and the ad-hoc AUTO-REMAIL/HELD/APPLE-RETRY static-segment one-shots.
+// Override with PREDISPATCH_EXCLUDE_NAME_RE.
+const predispatchExcludeNameReDflt = `KUMO-WARM|AUTO-REMAIL|HELD12|APPLE-RETRY`
+
+func predispatchExcludeNameRe() string {
+	if v := strings.TrimSpace(os.Getenv("PREDISPATCH_EXCLUDE_NAME_RE")); v != "" {
+		return v
+	}
+	return predispatchExcludeNameReDflt
+}
+
 func predispatchDisabled() bool {
 	return strings.EqualFold(os.Getenv("DISABLE_PREDISPATCH_REFRESH"), "true")
 }
@@ -245,7 +259,8 @@ func (s *PMTACampaignService) runPreDispatchPass(ctx context.Context, d predispa
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := s.predispatchRebind(ctx, d, c, segs); err != nil {
-				log.Printf("[PreDispatch] REBIND FAILED %q (original untouched): %v", c.Name, err)
+				log.Printf("[PreDispatch] REBIND FAILED %q (original untouched, will not retry): %v", c.Name, err)
+				s.predispatchStampFailure(ctx, c.ID, err.Error())
 				mu.Lock()
 				failed++
 				mu.Unlock()
@@ -340,8 +355,9 @@ func (s *PMTACampaignService) predispatchLoadCells(ctx context.Context, from, to
 		  AND c.scheduled_at > $1 AND c.scheduled_at <= $2
 		  AND (c.pmta_config->$3) IS NULL
 		  AND c.name NOT LIKE '%' || $4
+		  AND c.name !~ $5
 		ORDER BY c.scheduled_at, c.name
-	`, from, to, predispatchStampKey, predispatchSiblingSfx)
+	`, from, to, predispatchStampKey, predispatchSiblingSfx, predispatchExcludeNameRe())
 	if err != nil {
 		return nil, err
 	}
@@ -651,5 +667,22 @@ func (s *PMTACampaignService) predispatchRecoverOrphans(ctx context.Context, d p
 		}
 		log.Printf("[PreDispatch] orphan %q (%s recips=%d waves=%d) discarded", o.name, o.status, o.recips, o.waves)
 		s.predispatchCancel(ctx, o.id)
+	}
+}
+
+// predispatchStampFailure records a failed rebind on the ORIGINAL row so the
+// cell is not retried every tick (the stamp key excludes it from the window
+// query). The original mails as it was; the reason is visible in pmta_config.
+func (s *PMTACampaignService) predispatchStampFailure(ctx context.Context, campaignID, reason string) {
+	stamp, _ := json.Marshal(map[string]string{
+		"failed_at": time.Now().UTC().Format(time.RFC3339), "error": reason,
+	})
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE mailing_campaigns
+		SET pmta_config = jsonb_set(COALESCE(pmta_config,'{}'::jsonb), ARRAY['predispatch_refresh']::text[], $2::jsonb, true),
+		    updated_at = NOW()
+		WHERE id = $1::uuid
+	`, campaignID, string(stamp)); err != nil {
+		log.Printf("[PreDispatch] failure stamp on %s failed: %v", campaignID, err)
 	}
 }
