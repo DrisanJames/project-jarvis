@@ -2866,6 +2866,10 @@ func runStartupMigrations(db *sql.DB) {
 		{"aug21_seg_refresh_req_open_slot", worker.SegmentRefreshRequestsOpenSlotDDL},
 		{"aug21_seg_refresh_req_segment_idx", worker.SegmentRefreshRequestsDoneIdxDDL},
 		{"aug21_seg_refresh_req_lock_timeout_reset", worker.SegmentGridLockTimeoutResetDDL},
+		// Per-sending-domain × ISP global recovery governor (operator 2026-08-27,
+		// gmail on db/ht/qf/mh). Two entries: table, then idempotent seed.
+		{"aug27_domain_isp_governor", worker.PartnerDripDomainGovernorDDL},
+		{"aug27_domain_isp_governor_seed", worker.PartnerDripDomainGovernorSeedDDL},
 		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
 		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
 		// merges). FOUR DDL entries in their own SET/RESET lock_timeout

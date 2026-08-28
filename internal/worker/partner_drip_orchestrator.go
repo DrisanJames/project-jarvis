@@ -490,6 +490,9 @@ type PartnerDripOrchestrator struct {
 	// Once warm, a read error keeps the previous value. Guarded by brandBudgetMu.
 	brandBudgetMu    sync.RWMutex
 	brandBudgetCache map[string]map[string]brandBudgetRow
+	// domainGov: per-sending-domain × ISP global recovery caps
+	// (partner_drip_domain_governor.go), refreshed by loadDomainGovernor each tick.
+	domainGov domainGovernorState
 	globalHold       *bool
 
 	// throttleCache is the per-tick snapshot of mailing_isp_throttle_state
@@ -849,6 +852,7 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	po.loadBrandDomains(po.ctx)
 	po.loadVerticalRosters(po.ctx)
 	po.loadBrandBudgets(po.ctx)
+	po.loadDomainGovernor(po.ctx)
 	// Throttle snapshot for this tick — applyThroughputSafety runs once per WAVE
 	// and used to re-read mailing_isp_throttle_state on every call.
 	po.loadThrottledISPs(po.ctx)
@@ -1586,6 +1590,9 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 		// pin the vertical for the rest of the day.
 		preBudget := perISPCaps
 		perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)
+		// Per-sending-domain × ISP GLOBAL recovery cap (operator 2026-08-27):
+		// board spends it first, allowed drips get the remainder, rate-limited.
+		perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, "welcome", perISPCaps)
 		if capsAnyPositive(preBudget) && !capsAnyPositive(perISPCaps) {
 			if err := po.advanceBrandRotation(ctx, pc.stateKey, newIdx); err != nil {
 				log.Printf("[PartnerDripOrchestrator] advance rotation past budget-exhausted brand=%s vertical=%s: %v", brand, v.vertical, err)
@@ -5001,6 +5008,9 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	// from that ISP (gmail -> mature-4; apple -> lpl/wfy HM08 ban). Run the
 	// same full brand routing as the welcome path.
 	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
+	// Per-sending-domain × ISP global recovery cap — follow-ups count too
+	// (the 15-min lane throttle must see every touch).
+	perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, "followup", perISPCaps)
 	// Apple-banned verticals (operator 2026-06-16): same Fidelity term-life → Apple ban as the
 	// welcome path — follow-up touches must not ship term-life to Apple either.
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
