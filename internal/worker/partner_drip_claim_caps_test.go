@@ -1,8 +1,13 @@
 package worker
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A zero-capped KNOWN ISP class must stay in the caps CTE so the claim SQL keeps
@@ -44,4 +49,45 @@ func TestCapsValuesClauses_NoPositiveMeansNothingClaimable(t *testing.T) {
 	if len(clauses) != 2 {
 		t.Fatalf("zero-cap rows must still be emitted, got %d", len(clauses))
 	}
+}
+
+// End-to-end on the built statement: a zero-capped KNOWN isp must reach the
+// caps CTE, so the bucket CASE (IN (SELECT isp FROM caps)) keeps it in its own
+// partition and `rn <= c.cap` with cap 0 admits nothing — instead of the class
+// falling through to the 'other' bucket and claiming at the 'other' cap.
+func TestClaimRecordsByISPCaps_ZeroCapKnownISPKeepsItsOwnBucket(t *testing.T) {
+	var gotSQL string
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(
+		sqlmock.QueryMatcherFunc(func(expectedSQL, actualSQL string) error {
+			if strings.Contains(actualSQL, "WITH caps") {
+				gotSQL = actualSQL
+			}
+			return nil
+		})))
+	require.NoError(t, err)
+	defer db.Close()
+	po := &PartnerDripOrchestrator{db: db}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`WITH caps`).WillReturnRows(sqlmock.NewRows(
+		[]string{"id", "email", "email_md5", "isp_family", "dataset_id", "partner_id", "batch_id", "extra_metadata"}))
+	mock.ExpectCommit()
+
+	// gmail held at 0 alongside a live aol cap — the exact shape the AOL
+	// companion pass produces once the domain governor zeroes a cell.
+	_, err = po.claimRecordsByISPCaps(context.Background(), "internal_auto_insurance_aol_rotate", "ht",
+		map[string]int{"gmail": 0, "aol": 200}, 500)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	require.NotEmpty(t, gotSQL, "claim query was never issued")
+	for _, ph := range []string{"$3", "$4", "$5", "$6"} {
+		assert.Contains(t, gotSQL, ph, "both caps rows (including the zero-capped gmail) must be in the VALUES list")
+	}
+	assert.NotContains(t, gotSQL, "$7", "only the two supplied classes may be bound")
+	assert.Contains(t, gotSQL, "IN (SELECT isp FROM caps)",
+		"a class present in caps must bucket to itself, never to 'other'")
+	assert.Contains(t, gotSQL, "r.rn <= c.cap",
+		"a cap of 0 must exclude the class by rank, which is what makes the zero row load-bearing")
 }

@@ -114,6 +114,13 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 	perISPCaps = po.applyNewRecordDailyBudget(ctx, brand, v.datasetID, perISPCaps)
 	perISPCaps = po.applyISPBrandRouting(brand, perISPCaps)
 	perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)
+	// Per-sending-domain × ISP GLOBAL recovery cap (operator 2026-08-27), same
+	// chain position it holds in the welcome pass. Required here, not optional:
+	// partner_drip_orchestrator.go:1614 zeroes the roster wave's AOL cap while
+	// aolRotationActive(vertical) — true for every gated-prefix (internal
+	// insurance) lane — so this companion pass is the ONLY AOL path for those
+	// verticals. Without it every governed AOL send is ungoverned.
+	perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, "aol_rotate", perISPCaps)
 	perISPCaps = keepOnlyISPCaps(perISPCaps, "aol")
 	if !capsAnyPositive(perISPCaps) {
 		return nil // brand exhausted/held for AOL this tick — next tick rotates on

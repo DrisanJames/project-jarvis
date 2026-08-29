@@ -2870,6 +2870,12 @@ func runStartupMigrations(db *sql.DB) {
 		// gmail on db/ht/qf/mh). Two entries: table, then idempotent seed.
 		{"aug27_domain_isp_governor", worker.PartnerDripDomainGovernorDDL},
 		{"aug27_domain_isp_governor_seed", worker.PartnerDripDomainGovernorSeedDDL},
+		// Governor DECISION LEDGER (2026-08-28) — makes the shadow-mode
+		// decisions queryable so phase 2 (shadow→enforce) can be sized before
+		// it is flipped. Bare CREATE TABLE, empty at creation, PK index only:
+		// O(1), inside the 5s budget. ONE entry — migrationSkipProbe
+		// classifies by LEADING keyword (migration_skip.go:41).
+		{"aug28_domain_governor_decisions", worker.PartnerDripDomainGovernorDecisionsDDL},
 		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
 		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
 		// merges). FOUR DDL entries in their own SET/RESET lock_timeout

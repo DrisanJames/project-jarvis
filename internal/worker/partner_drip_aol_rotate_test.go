@@ -70,3 +70,27 @@ func readOrchestratorSource() (string, error) {
 	b, err := os.ReadFile("partner_drip_orchestrator.go")
 	return string(b), err
 }
+
+// The rotated companion pass is the ONLY AOL path for the gated verticals
+// (the roster wave zeroes its AOL cap while rotation is active), so it must
+// run the per-domain x ISP governor in the same chain position the welcome
+// pass does: after applyBrandIntroBudgets, before keepOnlyISPCaps.
+func TestAOLRotatedRunsDomainGovernorInChainOrder(t *testing.T) {
+	b, err := os.ReadFile("partner_drip_aol_rotate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	intro := strings.Index(src, "perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)")
+	gov := strings.Index(src, `po.applyDomainGovernor(ctx, brand, v.vertical, "aol_rotate", perISPCaps)`)
+	keep := strings.Index(src, `perISPCaps = keepOnlyISPCaps(perISPCaps, "aol")`)
+	if gov < 0 {
+		t.Fatal("processAOLRotated does not apply the domain governor — the gated lanes' AOL volume is ungoverned")
+	}
+	if intro < 0 || keep < 0 {
+		t.Fatal("aol_rotate cap chain no longer matches the welcome pass")
+	}
+	if !(intro < gov && gov < keep) {
+		t.Fatalf("governor out of chain order: intro=%d gov=%d keep=%d", intro, gov, keep)
+	}
+}

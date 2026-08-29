@@ -75,6 +75,92 @@ SELECT v.brand, 'gmail', v.daily, v.cold, 'operator-2026-08-27-gmail-recovery'
 FROM (VALUES ('db',41000,0), ('ht',36000,4000), ('qf',37000,4000), ('mh',34000,0)) AS v(brand,daily,cold)
 WHERE NOT EXISTS (SELECT 1 FROM partner_drip_domain_isp_governor g WHERE g.brand=v.brand AND g.isp='gmail')`
 
+// PartnerDripDomainGovernorDecisionsDDL is the governor's DECISION LEDGER —
+// the answer to "why did this lane get 0 today?", which until now existed only
+// as a log line that scrolled away. One row per Denver day ×
+// (brand, isp, vertical, pass), folded in place by
+// domainGovernorDecisionUpsertSQL: counters accumulate, cap_in/cap_out keep
+// their min/max envelope, and the binding reason + spend components hold the
+// most recent decision. Phase 2 flips mode shadow→enforce; this table is how
+// that flip is sized BEFORE it happens (a shadow row's cap_out is the cap the
+// wave WOULD have got).
+//
+// Bare CREATE TABLE with a natural PK and no secondary index: it is one
+// statement, its PK index is created with it, and the table is empty at
+// creation, so it is O(1) and comfortably inside the 5s per-statement startup
+// budget (CLAUDE.md §4 — an over-budget statement is skipped silently and
+// forever). Registered as ONE entry because migrationSkipProbe classifies by
+// LEADING keyword (cmd/server/migration_skip.go:41): a combined
+// CREATE TABLE + CREATE INDEX string would be probed as CREATE TABLE and the
+// index would never land.
+//
+// No organization_id, deliberately — same as the ledger it observes
+// (partner_drip_domain_isp_governor, PRIMARY KEY (brand, isp)) and its sibling
+// partner_drip_brand_budgets (cmd/server/main.go:4095). The drip orchestrator
+// is a single-tenant worker with no request org context; brand IS the tenant
+// axis here, and adding a column the writer can only ever fill with one
+// constant would invite a false multi-tenant read of the data.
+const PartnerDripDomainGovernorDecisionsDDL = `
+CREATE TABLE IF NOT EXISTS partner_drip_domain_governor_decisions (
+    day             DATE NOT NULL,
+    brand           TEXT NOT NULL,
+    isp             TEXT NOT NULL,
+    vertical        TEXT NOT NULL,
+    pass            TEXT NOT NULL,
+    mode            TEXT NOT NULL DEFAULT 'shadow',
+    decisions       INTEGER NOT NULL DEFAULT 0,
+    cap_in_min      INTEGER,
+    cap_in_max      INTEGER,
+    cap_out_min     INTEGER,
+    cap_out_max     INTEGER,
+    clamped         INTEGER NOT NULL DEFAULT 0,
+    zeroed          INTEGER NOT NULL DEFAULT 0,
+    binding_reason  TEXT,
+    board_spend     INTEGER,
+    drip_spend      INTEGER,
+    lane_today      INTEGER,
+    lane_window     INTEGER,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (day, brand, isp, vertical, pass)
+)`
+
+// domainGovernorDecisionUpsertSQL folds one decision into its (day, brand, isp,
+// vertical, pass) row. ONE statement, so it is atomic on its own: two ECS tasks
+// deciding the same cell in the same instant serialise on the PK row lock and
+// both increments land (counters are `col + EXCLUDED.col`, never a read-modify-
+// write in Go). Nothing here reads a prior value into the application, so there
+// is no lost-update window.
+//
+// LEAST/GREATEST ignore NULLs, so the first insert and any NULL spend component
+// fold correctly. Spend components use COALESCE(EXCLUDED, existing): a decision
+// taken WITHOUT a spend read (the fail-closed path, where the read is what
+// failed) must not erase the last known-good numbers with zeros.
+const domainGovernorDecisionUpsertSQL = `
+INSERT INTO partner_drip_domain_governor_decisions
+    (day, brand, isp, vertical, pass, mode, decisions,
+     cap_in_min, cap_in_max, cap_out_min, cap_out_max,
+     clamped, zeroed, binding_reason,
+     board_spend, drip_spend, lane_today, lane_window, updated_at)
+VALUES ($1::date, $2, $3, $4, $5, $6, 1,
+        $7, $7, $8, $8,
+        $9, $10, $11,
+        $12, $13, $14, $15, NOW())
+ON CONFLICT (day, brand, isp, vertical, pass) DO UPDATE SET
+    mode           = EXCLUDED.mode,
+    decisions      = partner_drip_domain_governor_decisions.decisions + EXCLUDED.decisions,
+    cap_in_min     = LEAST(partner_drip_domain_governor_decisions.cap_in_min, EXCLUDED.cap_in_min),
+    cap_in_max     = GREATEST(partner_drip_domain_governor_decisions.cap_in_max, EXCLUDED.cap_in_max),
+    cap_out_min    = LEAST(partner_drip_domain_governor_decisions.cap_out_min, EXCLUDED.cap_out_min),
+    cap_out_max    = GREATEST(partner_drip_domain_governor_decisions.cap_out_max, EXCLUDED.cap_out_max),
+    clamped        = partner_drip_domain_governor_decisions.clamped + EXCLUDED.clamped,
+    zeroed         = partner_drip_domain_governor_decisions.zeroed + EXCLUDED.zeroed,
+    binding_reason = EXCLUDED.binding_reason,
+    board_spend    = COALESCE(EXCLUDED.board_spend, partner_drip_domain_governor_decisions.board_spend),
+    drip_spend     = COALESCE(EXCLUDED.drip_spend, partner_drip_domain_governor_decisions.drip_spend),
+    lane_today     = COALESCE(EXCLUDED.lane_today, partner_drip_domain_governor_decisions.lane_today),
+    lane_window    = COALESCE(EXCLUDED.lane_window, partner_drip_domain_governor_decisions.lane_window),
+    updated_at     = NOW()`
+
 type domainGovernorRow struct {
 	brand, isp    string
 	dailyCap      int
@@ -252,6 +338,50 @@ func (po *PartnerDripOrchestrator) domainGovernorSpendToday(ctx context.Context,
 	return sp, err
 }
 
+// recordDomainGovernorDecision writes one decision to the ledger. It is
+// OBSERVABILITY ONLY: it returns nothing, it is called AFTER the cap is
+// decided, and every failure path is a log line — a wave must never be
+// deferred, resized or aborted because a bookkeeping row would not write.
+// Bounded by the same po.withDBTimeout envelope as the governor's own spend
+// reads, so it cannot outlive the tick's budget. sp == nil means "no spend read
+// happened" (the fail-closed path); the components are then left NULL rather
+// than written as zeros.
+func (po *PartnerDripOrchestrator) recordDomainGovernorDecision(ctx context.Context, row domainGovernorRow, vertical, pass string, capIn, capOut int, reason string, sp *domainGovernorSpend) {
+	mode := "shadow"
+	if row.enforce {
+		mode = "enforce"
+	}
+	clamped, zeroed := 0, 0
+	if capOut < capIn {
+		clamped = 1
+	}
+	if capOut == 0 && capIn > 0 {
+		zeroed = 1
+	}
+	var board, drips, laneToday, laneWindow sql.NullInt64
+	if sp != nil {
+		board = sql.NullInt64{Int64: int64(sp.board), Valid: true}
+		drips = sql.NullInt64{Int64: int64(sp.drips), Valid: true}
+		laneToday = sql.NullInt64{Int64: int64(sp.laneToday), Valid: true}
+		laneWindow = sql.NullInt64{Int64: int64(sp.laneWindow), Valid: true}
+	}
+	// Denver day from the file's own helper — never re-derive the boundary.
+	day := domainGovernorDayStart(time.Now()).Format("2006-01-02")
+	err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		_, e := tx.ExecContext(ctx, domainGovernorDecisionUpsertSQL,
+			day, row.brand, row.isp, vertical, pass, mode,
+			capIn, capOut, clamped, zeroed, reason,
+			board, drips, laneToday, laneWindow)
+		return e
+	})
+	if err != nil && !strings.Contains(err.Error(), "does not exist") {
+		// "does not exist" = table not migrated yet; silent by design, the
+		// governor itself degrades the same way (loadDomainGovernor).
+		log.Printf("[DomainGovernor] decision ledger write failed %s/%s %s pass=%s (%v) — decision unaffected",
+			row.brand, row.isp, vertical, pass, err)
+	}
+}
+
 // applyDomainGovernor clamps a wave's per-ISP caps to the domain's recovery
 // ceiling. Shadow mode logs the decision and returns caps unchanged.
 func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, brand, vertical, pass string, caps map[string]int) map[string]int {
@@ -275,9 +405,13 @@ func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, bran
 		if err != nil {
 			log.Printf("[DomainGovernor] %s/%s %s spend read failed (%v) — %s", brand, isp, vertical, err,
 				map[bool]string{true: "FAIL-CLOSED cap=0", false: "shadow: cap unchanged"}[row.enforce])
+			capOut := capIn
 			if row.enforce {
 				out[isp] = 0
+				capOut = 0
 			}
+			po.recordDomainGovernorDecision(ctx, row, vertical, pass, capIn, capOut,
+				"spend read failed: "+err.Error(), nil)
 			continue
 		}
 		allowed, why := domainGovernorDecide(row, vertical, capIn, sp)
@@ -288,6 +422,9 @@ func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, bran
 			log.Printf("[DomainGovernor] %s %s/%s %s pass=%s cap %d → %d (%s)",
 				map[bool]string{true: "ENFORCE", false: "SHADOW"}[row.enforce], brand, isp, vertical, pass, capIn, allowed, why)
 		}
+		// Recorded for BOTH modes: in shadow, `allowed` is the cap the wave
+		// WOULD have been given, which is exactly what phase 2 needs to size.
+		po.recordDomainGovernorDecision(ctx, row, vertical, pass, capIn, allowed, why, &sp)
 		if row.enforce {
 			out[isp] = allowed
 		}
