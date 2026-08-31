@@ -313,6 +313,17 @@ func (ts *TemplateService) registerCustomFilters() {
 		return fmt.Sprintf("https://www.gravatar.com/avatar/%x?d=identicon&s=80", hash)
 	})
 
+	// Lowercased-trimmed MD5 of an email: {{ email | email_md5 }} — the {{token}}
+	// the RateKick / Savings Finders money links carry (operator 2026-08-31,
+	// internal auto v8/v9: "a hashed emd5 number specific to user").
+	ts.engine.RegisterFilter("email_md5", func(email string) string {
+		email = strings.ToLower(strings.TrimSpace(email))
+		if email == "" {
+			return ""
+		}
+		return fmt.Sprintf("%x", md5.Sum([]byte(email)))
+	})
+
 	// Extract domain from email: {{ email | email_domain }}
 	ts.engine.RegisterFilter("email_domain", func(email string) string {
 		parts := strings.Split(email, "@")
