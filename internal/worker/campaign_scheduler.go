@@ -150,6 +150,41 @@ func (cs *CampaignScheduler) preparationLoop() {
 	}
 }
 
+// campaignLandedGateClause is the produced-vs-landed completion gate (REQ-082).
+//
+// Completing a campaign on queue-row ABSENCE is only sound when every recipient
+// the dispatcher accounted for has actually reached mailing_campaign_queue. That
+// stopped being true when the wave dispatcher gained a Kafka route: a routed wave
+// is marked 'completed' with its full enqueued_recipients at PRODUCE time
+// (pmta_wave_dispatcher.go), so with the backlog parked in the broker the queue
+// is empty, every "no active rows" predicate is satisfied, and the campaign flips
+// terminal with 0-40% of its audience still in flight. The OutboxSelfCheck
+// janitor then cancels each of those rows as it lands, and the send worker's
+// claim requires camp.status='sending', so not one of them can ever send.
+// Measured cost on 2026-09-01: 80,514 recipients cancelled under 24 'sent' board
+// campaigns.
+//
+// The gate therefore requires produced <= landed before any completion:
+//
+//	produced = SUM(mailing_campaign_waves.enqueued_recipients) for the campaign
+//	landed   = COUNT(mailing_campaign_queue rows)              for the campaign
+//
+// It must appear at BOTH completion sites — here and complete_finished_campaigns
+// in cmd/server/main.go — or a boot re-runs what the runtime refused. `landed` is
+// supplied by the caller as the SQL expression that counts the campaign's queue
+// rows in that query's own shape (COUNT(q.id) here, a scalar subquery in main.go).
+//
+// INTERIM: this infers `landed` from a row count. REQ-089 adds
+// mailing_campaign_waves.landed_recipients, written back by the queue-writer
+// consumer; when it lands, both sites compare the two columns directly and this
+// count goes away.
+func campaignLandedGateClause(landedExpr string) string {
+	return `
+		   AND COALESCE((SELECT SUM(w2.enqueued_recipients)
+		                   FROM mailing_campaign_waves w2
+		                  WHERE w2.campaign_id = c.id), 0) <= ` + landedExpr
+}
+
 // checkCompletedCampaigns checks for 'sending' campaigns where all queue items are processed
 func (cs *CampaignScheduler) checkCompletedCampaigns() {
 	ctx, cancel := context.WithTimeout(cs.ctx, 30*time.Second)
@@ -174,7 +209,7 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		       WHERE w.campaign_id = c.id
 		         AND w.status NOT IN ('completed','cancelled','failed','dead_letter')
 		   )
-		   AND COUNT(q.id) > 0
+		   AND COUNT(q.id) > 0`+campaignLandedGateClause("COUNT(q.id)")+`
 	`)
 	if err != nil {
 		return
@@ -231,7 +266,7 @@ func (cs *CampaignScheduler) checkCompletedCampaigns() {
 		       WHERE w.campaign_id = c.id
 		         AND w.status NOT IN ('completed','cancelled','failed','dead_letter')
 		   )
-		   AND COUNT(q.id) > 0
+		   AND COUNT(q.id) > 0`+campaignLandedGateClause("COUNT(q.id)")+`
 	`)
 	if preRows != nil {
 		for preRows.Next() {
