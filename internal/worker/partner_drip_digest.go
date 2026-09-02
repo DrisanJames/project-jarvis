@@ -23,6 +23,10 @@ import (
 	"github.com/lib/pq"
 )
 
+// digestTopISPs bounds the ISP pockets named in the digest body so the message
+// stays inside the standard's 6-line body cap (docs/SLACK_MESSAGE_STANDARD.md).
+const digestTopISPs = 3
+
 // PartnerDripDigestMonitor posts a periodic digest for one vertical.
 type PartnerDripDigestMonitor struct {
 	db       *sql.DB
@@ -179,32 +183,40 @@ func (m *PartnerDripDigestMonitor) digestOnce(ctx context.Context) {
 
 	sort.Slice(data, func(i, j int) bool { return data[i].remaining > data[j].remaining })
 
-	status := "PAUSED (no drip_state row)"
+	status := "PAUSED"
 	if live {
 		status = "LIVE"
 	}
-	headline := fmt.Sprintf("%s — %s · remaining *%s* (ready %s · hold %s)",
-		m.label, status, comma(totRemaining), comma(totReady), comma(totRemaining-totReady))
 
+	// Standard shape (docs/SLACK_MESSAGE_STANDARD.md): headline = lane + state +
+	// the one number; body = ≤6 `Label: value` lines carrying the lane id, the
+	// counts and the top ISP pockets. No "as of" line — the time is now.
 	var b strings.Builder
-	fmt.Fprintf(&b, "mailed total: %s  ·  sent last 24h: %s\n", comma(totMailed), comma(totSent24))
+	fmt.Fprintf(&b, "Lane: `%s`\n", m.vertical)
+	fmt.Fprintf(&b, "Ready: %s · Hold: %s\n", comma(totReady), comma(totRemaining-totReady))
+	fmt.Fprintf(&b, "Sent 24h: %s · Mailed total: %s\n", comma(totSent24), comma(totMailed))
 	if totSent24 > 0 {
 		etaDays := (totRemaining + totSent24 - 1) / totSent24
-		fmt.Fprintf(&b, "drain ETA at last-24h rate: ~%d days\n", etaDays)
+		fmt.Fprintf(&b, "Drain ETA: %d days\n", etaDays)
 	}
-	b.WriteString("\nby ISP (remaining · sent 24h):\n")
+	tops := make([]string, 0, digestTopISPs)
 	for _, r := range data {
 		if r.remaining == 0 && r.sent24h == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "  %-10s %10s   (24h: %s)\n", r.isp, comma(r.remaining), comma(r.sent24h))
+		if len(tops) == digestTopISPs {
+			break
+		}
+		tops = append(tops, fmt.Sprintf("%s %s (24h %s)", r.isp, comma(r.remaining), comma(r.sent24h)))
+	}
+	if len(tops) > 0 {
+		fmt.Fprintf(&b, "Top ISPs: %s\n", strings.Join(tops, " · "))
 	}
 
 	msg := notify.Message{
-		Tier:     notify.TierDigest,
-		Scope:    "Sam's Club drip",
-		Headline: headline,
-		Context:  fmt.Sprintf("as of %s", time.Now().Format("Jan 2, 2006 3:04 PM MST")),
+		Tier:     notify.TierEvent,
+		Scope:    notify.ScopeDrip,
+		Headline: fmt.Sprintf("%s %s · remaining *%s*", m.label, status, comma(totRemaining)),
 		Body:     b.String(),
 	}
 	if err := notify.Deliver(m.notifier, msg); err != nil {

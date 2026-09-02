@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 )
@@ -35,7 +36,7 @@ func NewSlackAlerter(n notify.Notifier, title string) *SlackAlerter {
 // tier is the severity. An empty scope defaults to "Project Jarvis alert".
 func NewSlackAlerterTiered(n notify.Notifier, scope string, tier notify.Tier) *SlackAlerter {
 	if scope == "" {
-		scope = "Project Jarvis alert"
+		scope = notify.ScopeSend
 	}
 	if tier == "" {
 		tier = notify.TierAlert
@@ -43,16 +44,21 @@ func NewSlackAlerterTiered(n notify.Notifier, scope string, tier notify.Tier) *S
 	return &SlackAlerter{notifier: n, scope: scope, tier: tier}
 }
 
-// SendSMS satisfies SMSAlerter by posting body to Slack via the house-style
-// renderer. The `ctx` and `to` arguments are unused (notify has its own timeout;
-// the channel is fixed). The monitor's body string becomes the message Headline.
-// On success it returns the sentinel id "slack" so callers that treat a non-empty
-// id as "delivered" behave the same as with the Twilio SID.
+// SendSMS satisfies SMSAlerter by posting body to Slack via the standard
+// renderer (docs/SLACK_MESSAGE_STANDARD.md). The `ctx` and `to` arguments are
+// unused (notify has its own timeout; the channel is fixed).
+//
+// The pagers compose their alert as "<headline>\n<Label: value>…", so the first
+// line becomes Message.Headline and the remainder becomes Message.Body — which
+// notify then caps at 6 lines. On success it returns the sentinel id "slack" so
+// callers that treat a non-empty id as "delivered" behave the same as with the
+// Twilio SID.
 func (s *SlackAlerter) SendSMS(_ context.Context, _ string, body string) (string, error) {
 	if s == nil || s.notifier == nil {
 		return "", fmt.Errorf("slack alerter: nil notifier")
 	}
-	msg := notify.Message{Tier: s.tier, Scope: s.scope, Headline: body}
+	headline, detail, _ := strings.Cut(strings.TrimSpace(body), "\n")
+	msg := notify.Message{Tier: s.tier, Scope: s.scope, Headline: headline, Body: detail}
 	if err := notify.Deliver(s.notifier, msg); err != nil {
 		return "", err
 	}

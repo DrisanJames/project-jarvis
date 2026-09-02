@@ -367,6 +367,68 @@ func (c *OutboxSelfCheck) runWithTimeout(parent context.Context, fn func(ctx con
 	return tx.Commit()
 }
 
+// selfCheckSampleLimit bounds how many identifiers an alert body names. The
+// standard wants the identifier and the number, not a list dump.
+const selfCheckSampleLimit = 3
+
+// sampleIdentifiers runs a bounded single-column query and returns up to
+// selfCheckSampleLimit backticked labels for an alert body, so a page names the
+// campaign/wave an operator has to open rather than only a count
+// (docs/SLACK_MESSAGE_STANDARD.md). It is called ONLY on a breach — never on the
+// healthy path — so it adds no steady-state load. On error it returns "" and the
+// alert still fires with its counts.
+func (c *OutboxSelfCheck) sampleIdentifiers(ctx context.Context, key selfCheckInvariantKey, query string, args ...any) string {
+	if !c.alertArmed(key) {
+		return ""
+	}
+	var labels []string
+	err := c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s sql.NullString
+			if err := rows.Scan(&s); err != nil {
+				return err
+			}
+			if v := strings.TrimSpace(s.String); v != "" {
+				labels = append(labels, "`"+v+"`")
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		log.Printf("[OutboxSelfCheck] identifier sample failed: %v", err)
+		return ""
+	}
+	return strings.Join(labels, ", ")
+}
+
+// alertArmed reports whether maybeAlert would actually page for key right now:
+// a transport is configured AND the re-alert window has elapsed. The identifier
+// sample is skipped when it is false, so a sustained breach costs one sample
+// query per re-alert window, not one per tick.
+func (c *OutboxSelfCheck) alertArmed(key selfCheckInvariantKey) bool {
+	if c.alerter == nil || len(c.recipients) == 0 {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	last, seen := c.lastAlerts[key]
+	return !seen || time.Since(last) >= c.reAlert
+}
+
+// identifierLine formats the sampled identifiers as one body line, or "" when
+// the sample came back empty.
+func identifierLine(label, sample string) string {
+	if sample == "" {
+		return ""
+	}
+	return "\n" + label + ": " + sample
+}
+
 // cancelTerminalParentQueued sweeps a bounded batch of abandoned 'queued' rows
 // and marks them 'cancelled'. A row is abandoned ONLY when its parent CAMPAIGN
 // reached a terminal state (completed/cancelled/failed/sent) but leftover queue
@@ -628,8 +690,8 @@ func (c *OutboxSelfCheck) checkSubmittingStuck(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[Project Jarvis] Outbox invariant breach: %d row(s) stuck in submitting state (oldest %ds). Reconciler may be failing; check /api/outbox/summary and logs.",
-		count, oldestSec,
+		"queue rows stuck submitting · *%s* rows\nOldest: %ds\nGrace: 10m\nRun: `curl -s $HOST/api/outbox/summary`",
+		comma(int(count)), oldestSec,
 	)
 	c.maybeAlert(ctx, invSubmittingStuck, msg)
 }
@@ -657,8 +719,8 @@ func (c *OutboxSelfCheck) checkDeadLetterSpike(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[Project Jarvis] Outbox invariant breach: %d permanent failures in the last hour (threshold %d). Likely broken template, auth failure, or DNS regression.",
-		count, deadLetterRatePerHourThreshold,
+		"permanent send failures · *%s* in 1h\nThreshold: %s/h",
+		comma(int(count)), comma(deadLetterRatePerHourThreshold),
 	)
 	c.maybeAlert(ctx, invDeadLetterSpike, msg)
 }
@@ -688,8 +750,8 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) selfCheckCount
 		return selfCheckCount{value: count}
 	}
 	msg := fmt.Sprintf(
-		"[Project Jarvis] Outbox invariant breach: queued backlog %d (threshold %d). Send workers may be stalled or backpressure saturated.",
-		count, queuedBacklogThreshold,
+		"queued backlog · *%s* rows\nThreshold: %s",
+		comma(int(count)), comma(queuedBacklogThreshold),
 	)
 	c.maybeAlert(ctx, invQueuedBacklog, msg)
 	return selfCheckCount{value: count}
@@ -719,7 +781,7 @@ func (c *OutboxSelfCheck) checkOldestQueuedStuck(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"[Project Jarvis] Outbox invariant breach: oldest queued row is %ds old (threshold %ds). Scheduler or send worker pool may be stalled.",
+		"oldest queued row · *%ds* old\nThreshold: %ds",
 		ageSec, oldestQueuedAgeThresholdSec,
 	)
 	c.maybeAlert(ctx, invOldestQueuedStuck, msg)
@@ -790,9 +852,34 @@ func (c *OutboxSelfCheck) checkWaveUnlanded(ctx context.Context, snap *SendLiven
 	if waves == 0 {
 		return
 	}
+	// Same bounded `cand` shape as the check above — the candidate set MUST be
+	// LIMITed before the queue anti-join runs. Measured on prod 2026-09-01:
+	// 44.7s without the bound vs 0.9s with it, same connection, minutes apart.
+	sample := c.sampleIdentifiers(ctx, invWaveUnlanded, `
+		WITH cand AS (
+			SELECT w.id, w.completed_at,
+			       GREATEST(w.produced_recipients - w.landed_recipients, 0) AS unlanded
+			FROM mailing_campaign_waves w
+			WHERE (
+			        (w.status = 'produced'  AND w.produced_recipients > w.landed_recipients)
+			     OR (w.status = 'completed' AND w.enqueued_recipients > 0)
+			      )
+			  AND w.completed_at >= NOW() - INTERVAL '6 hours'
+			  AND w.completed_at <= NOW() - INTERVAL '5 minutes'
+			ORDER BY w.completed_at DESC
+			LIMIT $1
+		)
+		SELECT cand.id::text
+		FROM cand
+		WHERE cand.unlanded > 0
+		   OR NOT EXISTS (
+			SELECT 1 FROM mailing_campaign_queue q WHERE q.wave_id = cand.id
+		)
+		ORDER BY cand.completed_at DESC
+		LIMIT $2`, waveUnlandedScanLimit, selfCheckSampleLimit)
 	msg := fmt.Sprintf(
-		"[Project Jarvis] SEND LIVENESS breach: %d wave(s) completed with %d recipients but ZERO queue rows landed (5m-6h window). The send-queue consumer or the enqueue path is wedged — check /health send_liveness and event_bus.send_queue.",
-		waves, recipients,
+		"waves unlanded · *%s* waves · %s recipients%s\nWindow: 5m–6h\nRun: `curl -s $HOST/health | jq .send_liveness`",
+		comma(int(waves)), comma(int(recipients)), identifierLine("Waves", sample),
 	)
 	c.maybeAlert(ctx, invWaveUnlanded, msg)
 }
@@ -823,9 +910,19 @@ func (c *OutboxSelfCheck) checkCampaignNoSend(ctx context.Context) {
 	if count == 0 {
 		return
 	}
+	sample := c.sampleIdentifiers(ctx, invCampaignNoSend, fmt.Sprintf(`
+		SELECT c.name
+		FROM mailing_campaigns c
+		WHERE c.status = 'sending'
+		  AND COALESCE(c.queued_count, 0) > 0
+		  AND COALESCE(c.sent_count, 0) = 0
+		  AND c.started_at IS NOT NULL
+		  AND c.started_at < NOW() - INTERVAL '%d minutes'
+		ORDER BY c.started_at ASC
+		LIMIT $1`, campaignNoSendGraceMin), selfCheckSampleLimit)
 	msg := fmt.Sprintf(
-		"[Project Jarvis] SEND LIVENESS breach: %d campaign(s) 'sending' with queued recipients and sent_count=0 for over %dm. Transport (PMTA/SES/Kumo) or the send worker pool is wedged.",
-		count, campaignNoSendGraceMin,
+		"campaigns sending, nothing sent · *%s* campaigns%s\nStalled: >%dm",
+		comma(int(count)), identifierLine("Campaigns", sample), campaignNoSendGraceMin,
 	)
 	c.maybeAlert(ctx, invCampaignNoSend, msg)
 }
@@ -863,9 +960,16 @@ func (c *OutboxSelfCheck) checkFailedBurst(ctx context.Context) {
 	if current < failedBurstFloor || float64(current) <= failedBurstMultiple*median {
 		return
 	}
+	sample := c.sampleIdentifiers(ctx, invFailedBurst, `
+		SELECT c.name
+		FROM mailing_campaigns c
+		WHERE c.status = 'failed'
+		  AND COALESCE(c.completed_at, c.updated_at) > NOW() - INTERVAL '1 hour'
+		ORDER BY COALESCE(c.completed_at, c.updated_at) DESC
+		LIMIT $1`, selfCheckSampleLimit)
 	msg := fmt.Sprintf(
-		"[Project Jarvis] SEND LIVENESS breach: %d campaign(s) moved to 'failed' in the last hour vs a 7-day hourly median of %.1f (threshold %.0fx, floor %d). Likely a planner/deploy regression failing campaigns en masse.",
-		current, median, failedBurstMultiple, failedBurstFloor,
+		"campaign failure burst · *%s* failed in 1h%s\n7d hourly median: %.1f\nThreshold: %.0fx median, floor %d",
+		comma(int(current)), identifierLine("Campaigns", sample), median, failedBurstMultiple, failedBurstFloor,
 	)
 	c.maybeAlert(ctx, invFailedBurst, msg)
 }
@@ -899,9 +1003,21 @@ func (c *OutboxSelfCheck) checkScheduledDead(ctx context.Context) {
 	if zeroRecipients == 0 && noWave == 0 {
 		return
 	}
+	sample := c.sampleIdentifiers(ctx, invScheduledDead, fmt.Sprintf(`
+		SELECT c.name
+		FROM mailing_campaigns c
+		WHERE c.status = 'scheduled'
+		  AND c.scheduled_at >= NOW() - INTERVAL '24 hours'
+		  AND c.scheduled_at <= NOW() - INTERVAL '%d minutes'
+		  AND (
+		        COALESCE(c.total_recipients, 0) = 0
+		     OR NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id)
+		      )
+		ORDER BY c.scheduled_at DESC
+		LIMIT $1`, campaignNoSendGraceMin), selfCheckSampleLimit)
 	msg := fmt.Sprintf(
-		"[Project Jarvis] SEND LIVENESS breach: %d scheduled campaign(s) past send time with 0 recipients and %d with no wave (last 24h). Deploy produced a campaign that cannot mail — check the planner payload.",
-		zeroRecipients, noWave,
+		"scheduled campaigns cannot mail · *%s* zero-recipient, %s no-wave%s\nWindow: last 24h",
+		comma(int(zeroRecipients)), comma(int(noWave)), identifierLine("Campaigns", sample),
 	)
 	c.maybeAlert(ctx, invScheduledDead, msg)
 }
@@ -941,7 +1057,9 @@ func (c *OutboxSelfCheck) sampleSendThroughput(ctx context.Context, snap *SendLi
 // fires so CloudWatch reflects every breach; the SMS only fires if the
 // suppression window has elapsed.
 func (c *OutboxSelfCheck) maybeAlert(ctx context.Context, key selfCheckInvariantKey, msg string) {
-	log.Println(msg)
+	// The Slack text is the standard's shape; the log line keeps a stable,
+	// greppable prefix + invariant key for CloudWatch filters.
+	log.Printf("[OutboxSelfCheck] BREACH %s: %s", key, strings.ReplaceAll(msg, "\n", " · "))
 
 	if c.alerter == nil || len(c.recipients) == 0 {
 		return

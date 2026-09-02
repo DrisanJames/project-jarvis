@@ -163,7 +163,7 @@ func TestCheckLateCampaigns_FiresSMSAndStampsDedup(t *testing.T) {
 
 	require.Len(t, alerter.calls, 1, "expected one SMS")
 	assert.Equal(t, "+18777804236", alerter.calls[0].To)
-	assert.Contains(t, alerter.calls[0].Body, "did not send at scheduled time")
+	assert.Contains(t, alerter.calls[0].Body, "campaign late")
 	assert.Contains(t, alerter.calls[0].Body, "camp-late-1")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }

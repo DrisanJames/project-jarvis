@@ -163,7 +163,31 @@ const (
 	reFailedBurst    = `WITH hourly`
 	reScheduledDead  = `FILTER \(WHERE COALESCE\(c\.total_recipients`
 	reThroughput     = `FROM mailing_message_log`
+
+	// The bounded identifier samples the four liveness invariants run ONLY on a
+	// breach, so the alert names the wave/campaign an operator must open
+	// (docs/SLACK_MESSAGE_STANDARD.md).
+	reWaveSample           = `WITH cand[\s\S]*cand\.id::text`
+	reCampaignNoSendSample = `SELECT c\.name[\s\S]*'sending'`
+	reFailedBurstSample    = `SELECT c\.name[\s\S]*'failed'`
+	reScheduledDeadSample  = `SELECT c\.name[\s\S]*'scheduled'`
 )
+
+// expectSampleTx registers the identifier-sample transaction that follows a
+// breaching liveness check.
+func expectSampleTx(mock sqlmock.Sqlmock, queryRe string, labels []string) {
+	rows := sqlmock.NewRows([]string{"label"})
+	for _, l := range labels {
+		rows.AddRow(l)
+	}
+	expectCheckTx(mock, queryRe, rows)
+}
+
+// livenessSamples carries the identifiers each breaching invariant is expected
+// to sample. A nil slice means "this invariant stays clean, no sample query".
+type livenessSamples struct {
+	wave, noSend, burst, dead []string
+}
 
 // expectHealthyTick registers a full healthy runOnce: janitor + four checks,
 // each returning a benign value. Callers override individual checks by passing
@@ -210,8 +234,8 @@ func TestSelfCheck_SubmittingStuckFiresSMS(t *testing.T) {
 	sc.runOnce(context.Background())
 	got := alerter.drain()
 	require.Len(t, got, 2, "each recipient must get one SMS")
-	require.Contains(t, got[0].Body, "stuck in submitting")
-	require.Contains(t, got[0].Body, "42 row")
+	require.Contains(t, got[0].Body, "queue rows stuck submitting")
+	require.Contains(t, got[0].Body, "*42* rows")
 }
 
 // TestSelfCheck_DeadLetterSpikeFiresSMS — permanent-failure rate over the
@@ -232,7 +256,7 @@ func TestSelfCheck_DeadLetterSpikeFiresSMS(t *testing.T) {
 	sc.runOnce(context.Background())
 	got := alerter.drain()
 	require.Len(t, got, 1)
-	require.Contains(t, got[0].Body, "1500 permanent failures")
+	require.Contains(t, got[0].Body, "permanent send failures · *1,500* in 1h")
 }
 
 // TestSelfCheck_ReAlertSuppression — the same invariant should not fire twice
@@ -297,7 +321,7 @@ func TestSelfCheck_ContinuesAfterQueryError(t *testing.T) {
 
 	got := alerter.drain()
 	require.Len(t, got, 1, "dead-letter alert must fire even though submitting query failed")
-	require.Contains(t, got[0].Body, "1500 permanent failures")
+	require.Contains(t, got[0].Body, "permanent send failures · *1,500* in 1h")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -443,6 +467,11 @@ func TestSelfCheck_JanitorKillSwitch(t *testing.T) {
 // sample, so each test below exercises exactly one firing path.
 func selfCheckTickWith(t *testing.T, wave, noSend, burst, dead, thru *sqlmock.Rows) []capturedSMS {
 	t.Helper()
+	return selfCheckTickWithSamples(t, livenessSamples{}, wave, noSend, burst, dead, thru)
+}
+
+func selfCheckTickWithSamples(t *testing.T, samples livenessSamples, wave, noSend, burst, dead, thru *sqlmock.Rows) []capturedSMS {
+	t.Helper()
 	db, mock := newSelfCheckMockDB(t)
 	expectJanitorTx(mock, 0)
 	expectCheckTx(mock, reSubmitting, sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
@@ -450,9 +479,21 @@ func selfCheckTickWith(t *testing.T, wave, noSend, burst, dead, thru *sqlmock.Ro
 	expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
 	expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
 	expectCheckTx(mock, reWaveUnlanded, wave)
+	if samples.wave != nil {
+		expectSampleTx(mock, reWaveSample, samples.wave)
+	}
 	expectCheckTx(mock, reCampaignNoSend, noSend)
+	if samples.noSend != nil {
+		expectSampleTx(mock, reCampaignNoSendSample, samples.noSend)
+	}
 	expectCheckTx(mock, reFailedBurst, burst)
+	if samples.burst != nil {
+		expectSampleTx(mock, reFailedBurstSample, samples.burst)
+	}
 	expectCheckTx(mock, reScheduledDead, dead)
+	if samples.dead != nil {
+		expectSampleTx(mock, reScheduledDeadSample, samples.dead)
+	}
 	expectCheckTx(mock, reThroughput, thru)
 
 	alerter := &capturingAlerter{}
@@ -483,33 +524,42 @@ func cleanThru() *sqlmock.Rows {
 // recipients, zero queue rows landed. This is the alert that would have paged at
 // T+5min on 2026-09-01 instead of a human noticing at T+90min.
 func TestSelfCheckInvariantWaveUnlanded(t *testing.T) {
-	got := selfCheckTickWith(t,
+	got := selfCheckTickWithSamples(t,
+		livenessSamples{wave: []string{"wave-a", "wave-b"}},
 		sqlmock.NewRows([]string{"waves", "recips"}).AddRow(int64(16296), int64(219237)),
 		cleanNoSend(), cleanBurst(), cleanDead(), cleanThru())
 	require.Len(t, got, 1, "unlanded waves must page")
-	require.Contains(t, got[0].Body, "16296 wave")
-	require.Contains(t, got[0].Body, "219237 recipients")
+	require.Contains(t, got[0].Body, "waves unlanded")
+	require.Contains(t, got[0].Body, "*16,296* waves")
+	require.Contains(t, got[0].Body, "219,237 recipients")
+	require.Contains(t, got[0].Body, "Waves: `wave-a`, `wave-b`")
 }
 
 // TestSelfCheckInvariantCampaignNoSend — a wedge BELOW the queue: rows landed,
 // nothing sent. Catches PMTA/SES/Kumo being down, which the wave invariant
 // cannot see because the rows are present and correct.
 func TestSelfCheckInvariantCampaignNoSend(t *testing.T) {
-	got := selfCheckTickWith(t, cleanWave(),
+	got := selfCheckTickWithSamples(t,
+		livenessSamples{noSend: []string{"Sep01 DB OFR-CLK"}},
+		cleanWave(),
 		sqlmock.NewRows([]string{"c"}).AddRow(int64(7)),
 		cleanBurst(), cleanDead(), cleanThru())
 	require.Len(t, got, 1, "sending campaigns with zero sends must page")
-	require.Contains(t, got[0].Body, "7 campaign")
+	require.Contains(t, got[0].Body, "campaigns sending, nothing sent · *7* campaigns")
+	require.Contains(t, got[0].Body, "Campaigns: `Sep01 DB OFR-CLK`")
 }
 
 // TestSelfCheckInvariantFailedBurst — relative threshold, both directions.
 func TestSelfCheckInvariantFailedBurst(t *testing.T) {
 	t.Run("fires_above_multiple_and_floor", func(t *testing.T) {
-		got := selfCheckTickWith(t, cleanWave(), cleanNoSend(),
+		got := selfCheckTickWithSamples(t,
+			livenessSamples{burst: []string{"Sep01 MH OFR-ENG"}},
+			cleanWave(), cleanNoSend(),
 			sqlmock.NewRows([]string{"cur", "med"}).AddRow(int64(385), float64(3)),
 			cleanDead(), cleanThru())
 		require.Len(t, got, 1, "385/h against a median of 3 must page")
-		require.Contains(t, got[0].Body, "385 campaign")
+		require.Contains(t, got[0].Body, "campaign failure burst · *385* failed in 1h")
+		require.Contains(t, got[0].Body, "Campaigns: `Sep01 MH OFR-ENG`")
 	})
 
 	t.Run("silent_at_normal_rate", func(t *testing.T) {
@@ -536,17 +586,22 @@ func TestSelfCheckInvariantFailedBurst(t *testing.T) {
 // zero recipients or produced no wave.
 func TestSelfCheckInvariantScheduledDead(t *testing.T) {
 	t.Run("zero_recipients_fires", func(t *testing.T) {
-		got := selfCheckTickWith(t, cleanWave(), cleanNoSend(), cleanBurst(),
+		got := selfCheckTickWithSamples(t,
+			livenessSamples{dead: []string{"Sep01 HT OFR-ALL"}},
+			cleanWave(), cleanNoSend(), cleanBurst(),
 			sqlmock.NewRows([]string{"z", "n"}).AddRow(int64(105), int64(0)), cleanThru())
 		require.Len(t, got, 1)
-		require.Contains(t, got[0].Body, "105 scheduled campaign")
+		require.Contains(t, got[0].Body, "scheduled campaigns cannot mail · *105* zero-recipient")
+		require.Contains(t, got[0].Body, "Campaigns: `Sep01 HT OFR-ALL`")
 	})
 
 	t.Run("no_wave_fires_on_its_own", func(t *testing.T) {
-		got := selfCheckTickWith(t, cleanWave(), cleanNoSend(), cleanBurst(),
+		got := selfCheckTickWithSamples(t,
+			livenessSamples{dead: []string{"Sep01 QF OFR-ALL"}},
+			cleanWave(), cleanNoSend(), cleanBurst(),
 			sqlmock.NewRows([]string{"z", "n"}).AddRow(int64(0), int64(29)), cleanThru())
 		require.Len(t, got, 1, "no-wave alone must page even when recipients look planned")
-		require.Contains(t, got[0].Body, "29 with no wave")
+		require.Contains(t, got[0].Body, "29 no-wave")
 	})
 }
 
@@ -563,6 +618,8 @@ func TestSelfCheckSendLivenessSnapshot(t *testing.T) {
 		expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(140639)))
 		expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
 		expectCheckTx(mock, reWaveUnlanded, sqlmock.NewRows([]string{"waves", "recips"}).AddRow(int64(3), int64(4200)))
+		// No alerter is wired here, so alertArmed is false and the bounded
+		// identifier sample is skipped — the gauge still publishes.
 		expectCheckTx(mock, reCampaignNoSend, cleanNoSend())
 		expectCheckTx(mock, reFailedBurst, cleanBurst())
 		expectCheckTx(mock, reScheduledDead, cleanDead())

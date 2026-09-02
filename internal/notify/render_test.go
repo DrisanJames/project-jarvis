@@ -2,6 +2,7 @@ package notify
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -15,14 +16,17 @@ func blockTypes(blocks []any) []string {
 	return out
 }
 
+func headText(blocks []any) string {
+	return blocks[0].(map[string]any)["text"].(map[string]any)["text"].(string)
+}
+
 func TestRenderAnatomyAndNoAlertBlock(t *testing.T) {
 	m := Message{
-		Tier: TierAlert, Scope: "OUTBOX",
-		Headline: "queued backlog *214,003* (threshold 150k)",
-		Context:  "as of 14:05 UTC · prod · live queue depth",
-		Body:     "Send workers may be stalled.",
-		Action:   "→ <https://x/api/outbox/summary|Outbox summary>",
-		Footer:   "live prod state",
+		Tier: TierAlert, Scope: ScopeSend,
+		Headline: "queued backlog *214,003* rows",
+		Context:  "12:05 MT · prod",
+		Body:     "Threshold: 150,000",
+		Action:   "Run: `curl -s $HOST/api/outbox/summary`",
 	}
 	blocks := Render(m)
 	types := blockTypes(blocks)
@@ -35,31 +39,40 @@ func TestRenderAnatomyAndNoAlertBlock(t *testing.T) {
 			t.Fatal("Render emitted the modal-only alert block — rejected by chat.postMessage")
 		}
 	}
-	if types[len(types)-1] != "context" { // footer last
-		t.Fatalf("last block = %q, want context", types[len(types)-1])
+	if got, want := len(types), 4; got != want {
+		t.Fatalf("block count = %d (%v), want %d", got, types, want)
 	}
-	// severity emoji present on the headline
-	head := blocks[0].(map[string]any)["text"].(map[string]any)["text"].(string)
-	if got := []rune(head)[0]; got != '\U0001F534' {
-		t.Fatalf("headline missing 🔴 severity emoji, got %q", string(got))
+	if head := headText(blocks); !strings.HasPrefix(head, "\U0001F6A8 ALERT · Send · ") {
+		t.Fatalf("headline = %q, want 🚨 ALERT · Send · … prefix", head)
 	}
 }
 
-func TestFallbackHasEmoji(t *testing.T) {
-	if got := Fallback(Message{Tier: TierResolved, Scope: "OUTBOX", Headline: "cleared"}); []rune(got)[0] != '✅' {
-		t.Fatalf("fallback = %q, want leading ✅", got)
+func TestFallbackCarriesTierMark(t *testing.T) {
+	got := Fallback(Message{Tier: TierOK, Scope: ScopeSend, Headline: "queued backlog cleared"})
+	if want := "✅ OK · Send · queued backlog cleared"; got != want {
+		t.Fatalf("fallback = %q, want %q", got, want)
 	}
 }
 
-// fakeBlockNotifier records the last blocks call.
+func TestEventTierHasNoMark(t *testing.T) {
+	got := Fallback(Message{Tier: TierEvent, Scope: ScopeConversion, Headline: "Sam's Club (EF 8241) · payout *$27.50*"})
+	if want := "Conversion · Sam's Club (EF 8241) · payout *$27.50*"; got != want {
+		t.Fatalf("fallback = %q, want %q", got, want)
+	}
+}
+
+// fakeBlockNotifier records the last blocks call. Transport is faked: these
+// tests never touch the network.
 type fakeBlockNotifier struct {
 	blocks   []any
 	fallback string
 	err      error
 }
 
-func (f *fakeBlockNotifier) Notify(title, body string) error { return errors.New("should not be called") }
-func (f *fakeBlockNotifier) Name() string                    { return "fake" }
+func (f *fakeBlockNotifier) Notify(title, body string) error {
+	return errors.New("should not be called")
+}
+func (f *fakeBlockNotifier) Name() string { return "fake" }
 func (f *fakeBlockNotifier) NotifyBlocks(b []any, fb string) error {
 	f.blocks, f.fallback = b, fb
 	return f.err
@@ -67,7 +80,7 @@ func (f *fakeBlockNotifier) NotifyBlocks(b []any, fb string) error {
 
 func TestDeliverUsesBlocksWhenSupported(t *testing.T) {
 	f := &fakeBlockNotifier{}
-	if err := Deliver(f, Message{Tier: TierWatch, Scope: "STORAGE", Headline: "WAL ~12 GB"}); err != nil {
+	if err := Deliver(f, Message{Tier: TierWarn, Scope: ScopeDB, Headline: "retained WAL *12.4 GB*"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.blocks) == 0 || f.fallback == "" {
@@ -77,7 +90,7 @@ func TestDeliverUsesBlocksWhenSupported(t *testing.T) {
 
 func TestDeliverFallsBackToNotify(t *testing.T) {
 	// NoopNotifier implements Notify but not BlockNotifier -> legacy path, no panic.
-	if err := Deliver(NoopNotifier{}, Message{Tier: TierEvent, Scope: "x", Headline: "y"}); err != nil {
+	if err := Deliver(NoopNotifier{}, Message{Tier: TierEvent, Scope: ScopeReport, Headline: "y"}); err != nil {
 		t.Fatal(err)
 	}
 }

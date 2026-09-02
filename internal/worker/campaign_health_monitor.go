@@ -550,11 +550,13 @@ func (m *CampaignHealthMonitor) checkLateCampaigns() {
 		if name == "" {
 			name = lc.ID
 		}
+		// Standard shape (docs/SLACK_MESSAGE_STANDARD.md): first line is the
+		// headline, the rest is the ≤6-line body. SlackAlerter splits on it.
 		body := fmt.Sprintf(
-			"[Project Jarvis] Campaign %q did not send at scheduled time (%s UTC, +%s late). id=%s",
+			"campaign late · `%s` · *+%s*\nScheduled: %s UTC\nCampaign id: `%s`",
 			truncateName(name, 48),
-			lc.ScheduledAt.UTC().Format("2006-01-02 15:04"),
 			delay,
+			lc.ScheduledAt.UTC().Format("2006-01-02 15:04"),
 			lc.ID,
 		)
 

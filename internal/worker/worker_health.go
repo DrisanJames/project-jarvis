@@ -273,11 +273,10 @@ func (m *WorkerHealthMonitor) checkOnce(ctx context.Context) {
 	for _, s := range mutes {
 		age := time.Since(s.lastBeat).Round(time.Hour)
 		msg := notify.Message{
-			Tier:     notify.TierWatch,
-			Scope:    "Worker stall",
-			Headline: fmt.Sprintf("🔕 *%s* muted — stalled %s (> %s), presumed retired", s.name, age, m.muteAfter),
-			Body: "no further stall alerts for this worker · restarting it auto-resumes monitoring · " +
-				"if it is truly retired, delete its row from mailing_worker_heartbeats",
+			Tier:     notify.TierWarn,
+			Scope:    notify.ScopeCron,
+			Headline: fmt.Sprintf("worker muted · `%s` · idle *%s*", s.name, age),
+			Body:     fmt.Sprintf("Mute after: %s\nResume: restart the worker", m.muteAfter),
 		}
 		if err := notify.Deliver(m.notifier, msg); err != nil {
 			log.Printf("[WorkerHealthMonitor] mute notice failed for %s: %v", s.name, err)
@@ -320,9 +319,9 @@ func (m *WorkerHealthMonitor) checkOnce(ctx context.Context) {
 		age := time.Since(s.lastBeat).Round(time.Minute)
 		msg := notify.Message{
 			Tier:     notify.TierAlert,
-			Scope:    "Worker stall",
-			Headline: fmt.Sprintf("*%s* no heartbeat for %s (expected %ds)", s.name, age, s.interval),
-			Body:     fmt.Sprintf("last_status=%s%s", s.status, errSuffix(s.errMsg)),
+			Scope:    notify.ScopeCron,
+			Headline: fmt.Sprintf("worker stalled · `%s` · no heartbeat *%s*", s.name, age),
+			Body:     fmt.Sprintf("Expected: %ds\nStatus: %s%s", s.interval, s.status, errSuffix(s.errMsg)),
 		}
 		if err := notify.Deliver(m.notifier, msg); err != nil {
 			log.Printf("[WorkerHealthMonitor] alert send failed for %s: %v", s.name, err)
@@ -339,5 +338,5 @@ func errSuffix(e string) string {
 	if len(e) > 300 {
 		e = e[:300] + "…"
 	}
-	return " err=" + e
+	return "\nError: " + e
 }

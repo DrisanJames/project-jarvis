@@ -37,11 +37,14 @@ func TestSlackAlerter_SendSMS_PostsAndReturnsSentinel(t *testing.T) {
 		t.Fatalf("expected exactly 1 Notify call, got %d", fn.calls)
 	}
 	// fakeNotifier implements only Notify, so Deliver takes the legacy
-	// title/body path: title = "<scope> — <headline>", body holds the rest
-	// (empty here). The scope is the title passed to the constructor and the
-	// headline is the monitor's body string.
-	if fn.lastTitle != "Campaign lateness — campaign X is late" {
-		t.Fatalf("expected title %q, got %q", "Campaign lateness — campaign X is late", fn.lastTitle)
+	// title/body path. Title is the standard headline
+	// "<tier mark> · <Scope> · <what happened>" (docs/SLACK_MESSAGE_STANDARD.md);
+	// the constructor's label is normalised onto the scope vocabulary
+	// ("Campaign lateness" -> "Send"), and the monitor's first line is the
+	// headline. There is no second line here, so the legacy body is empty.
+	const wantTitle = "\U0001F6A8 ALERT · Send · campaign X is late"
+	if fn.lastTitle != wantTitle {
+		t.Fatalf("expected title %q, got %q", wantTitle, fn.lastTitle)
 	}
 	if fn.lastBody != "" {
 		t.Fatalf("expected empty legacy body, got %q", fn.lastBody)
@@ -65,5 +68,23 @@ func TestSlackAlerter_NilNotifier_Errors(t *testing.T) {
 	a := NewSlackAlerter(nil, "")
 	if _, err := a.SendSMS(context.Background(), "", "x"); err == nil {
 		t.Fatal("expected error for nil notifier")
+	}
+}
+
+// TestSlackAlerter_SplitsHeadlineFromBody — the pagers compose
+// "<headline>\n<Label: value>…"; the first line must become the headline and the
+// remainder the body (docs/SLACK_MESSAGE_STANDARD.md).
+func TestSlackAlerter_SplitsHeadlineFromBody(t *testing.T) {
+	fn := &fakeNotifier{}
+	a := NewSlackAlerterTiered(fn, "DB", "WARN")
+
+	if _, err := a.SendSMS(context.Background(), "", "retained WAL · *12.4 GB*\nThreshold: 10 GB"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "\u26A0\uFE0F WARN · DB · retained WAL · *12.4 GB*"; fn.lastTitle != want {
+		t.Fatalf("title = %q, want %q", fn.lastTitle, want)
+	}
+	if want := "Threshold: 10 GB"; fn.lastBody != want {
+		t.Fatalf("body = %q, want %q", fn.lastBody, want)
 	}
 }

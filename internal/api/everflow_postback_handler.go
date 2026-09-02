@@ -240,11 +240,9 @@ func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uu
 
 		offer := conversionOfferLabel(ctx, db, efOfferID)
 
-		when := time.Now()
-		if loc, err := time.LoadLocation("America/Denver"); err == nil {
-			when = when.In(loc)
-		}
-
+		// Standard shape (docs/SLACK_MESSAGE_STANDARD.md): headline carries the
+		// offer + the amount, body carries the recipient and the ids. No "as of"
+		// context line — the time is now.
 		body := fmt.Sprintf("Email: %s\nOffer: %s", email, offer)
 		if strings.TrimSpace(txnID) != "" {
 			body += "\nTransaction: " + txnID
@@ -252,9 +250,8 @@ func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uu
 
 		msg := notify.Message{
 			Tier:     notify.TierEvent,
-			Scope:    "Conversion",
+			Scope:    notify.ScopeConversion,
 			Headline: fmt.Sprintf("%s · payout *$%.2f*", offer, payout),
-			Context:  fmt.Sprintf("as of %s · Everflow", when.Format("Jan 2, 2006 3:04 PM MST")),
 			Body:     body,
 		}
 		if err := notify.Deliver(notifier, msg); err != nil {
