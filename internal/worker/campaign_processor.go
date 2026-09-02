@@ -577,13 +577,14 @@ func SetPackageBackpressure(bp *BackpressureMonitor) {
 // EnqueueCampaign adds a campaign to the background queue for async processing
 // Returns immediately with a job ID
 func EnqueueCampaign(ctx context.Context, db *sql.DB, campaignID string) (string, error) {
-	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
-	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This legacy
-	// campaign-processor path (only reachable via the dormant RSS poller) INSERTs
-	// directly (insertQueueBatch); BLOCK it loudly so any unexpected use is a
-	// visible, Kafka-attributable failure rather than a silent bypass. Dark
+	// SK-5 HARD SEND PATH: when recipients are actually ROUTED through Kafka, the
+	// consumer is the ONLY thing permitted to INSERT into mailing_campaign_queue.
+	// This legacy campaign-processor path (only reachable via the dormant RSS
+	// poller) INSERTs directly (insertQueueBatch); BLOCK it loudly so any
+	// unexpected use is a visible, Kafka-attributable failure rather than a silent
+	// bypass. REQ-090: keyed on the ROUTING predicate, not the wiring flag. Dark
 	// default (routing OFF): no-op, byte-identical to today.
-	if sendqueue.SendRouteEnabled() {
+	if sendqueue.SendRoutingActive() {
 		log.Printf("[kafka-route] BLOCKED direct enqueue at worker.EnqueueCampaign — Kafka routing is ON; this path must be routed")
 		return "", fmt.Errorf("kafka-route: direct enqueue at worker.EnqueueCampaign is disabled while Kafka send-routing is ON")
 	}

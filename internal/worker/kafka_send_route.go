@@ -18,7 +18,6 @@ package worker
 import (
 	"context"
 	"database/sql"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -88,42 +87,32 @@ func getKafkaSendProducer() eventbus.Producer {
 // KafkaRoutedWaves returns the count of waves routed to Kafka (for /health).
 func KafkaRoutedWaves() uint64 { return kafkaRoutedWaves }
 
-// kafkaRouteWave is THE routing check (the dark-default guard). It returns true
-// ONLY when the operator has explicitly opted this wave/campaign in:
+// kafkaRouteWave is the wave dispatcher's routing decision. It delegates the
+// WHOLE policy question to the canonical routing predicate
+// (sendqueue.SendRouteMatches — KAFKA_SEND_QUEUE_ALL / _WAVES / _CAMPAIGNS, plus
+// the Redis kafka:flag:send_route kill switch) and adds exactly one condition of
+// its own: a producer must be wired. A routing flag set without a producer
+// (mis-config) safely returns false so nothing is ever lost.
 //
-//   - KAFKA_SEND_QUEUE_ALL=1 (or true): route every wave; OR
-//   - KAFKA_SEND_QUEUE_WAVES contains waveID; OR
-//   - KAFKA_SEND_QUEUE_CAMPAIGNS contains campaignID.
-//
-// Allowlists are comma/space-separated. With all three unset/empty it returns
-// false — the byte-identical dark default. It ALSO requires a producer to be
-// wired; a routing flag set without a producer (mis-config) safely returns false
-// so nothing is ever lost.
+// It deliberately does NOT consult KAFKA_SEND_QUEUE_ENABLED — that is the
+// WIRING gate (KafkaSendQueueEnabled), and routing on ENABLED alone is the
+// 2026-09-01 half-off state REQ-090 removes. With every routing env unset this
+// returns false: the byte-identical dark default.
 func kafkaRouteWave(waveID, campaignID string) bool {
 	if getKafkaSendProducer() == nil {
 		return false // no transport wired → never route (dark)
 	}
-	if envTruthy(os.Getenv("KAFKA_SEND_QUEUE_ALL")) {
-		return true
-	}
-	if listContains(os.Getenv("KAFKA_SEND_QUEUE_WAVES"), waveID) {
-		return true
-	}
-	if listContains(os.Getenv("KAFKA_SEND_QUEUE_CAMPAIGNS"), campaignID) {
-		return true
-	}
-	return false
+	return sendqueue.SendRouteMatches(waveID, campaignID)
 }
 
-// KafkaSendQueueEnabled reports whether ANY routing is configured (the wiring
-// gate): KAFKA_SEND_QUEUE_ENABLED truthy, OR any allowlist/ALL env non-empty.
-// cmd/server uses it to decide whether to EnsureTopics + start the consumer +
-// install the producer. It does NOT consult the producer (the wiring sets the
-// producer based on this), so it is a pure env read.
+// KafkaSendQueueEnabled reports whether the send-queue transport should be WIRED
+// (producer installed, QueueWriterConsumer + LedgerReconciler started):
+// KAFKA_SEND_QUEUE_ENABLED truthy, OR any routing env set. cmd/server uses it in
+// wireSendQueue. It is a pure env read and is NOT a routing decision — ENABLED=1
+// with ALL=0 wires a consumer that drains a backlog while nothing new routes.
 func KafkaSendQueueEnabled() bool {
-	// Delegate to the canonical low-level gate (sendqueue.SendRouteEnabled) so the
-	// wiring gate here and the bypass-blocking gate in api/mailing/repository can
-	// never drift — same env names, same semantics, one implementation.
+	// Delegate to the canonical wiring gate so "should this process wire the
+	// transport?" has exactly one implementation.
 	return sendqueue.SendRouteEnabled()
 }
 
@@ -194,17 +183,6 @@ func envTruthy(s string) bool {
 	return false
 }
 
-// listContains reports whether the comma/space-separated allowlist contains the
-// target id (case-insensitive, trimmed). An empty list never matches.
-func listContains(list, target string) bool {
-	if strings.TrimSpace(list) == "" || target == "" {
-		return false
-	}
-	target = strings.ToLower(strings.TrimSpace(target))
-	for _, f := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' }) {
-		if strings.ToLower(strings.TrimSpace(f)) == target {
-			return true
-		}
-	}
-	return false
-}
+// (allowlist matching moved to sendqueue.listContains — the routing predicate
+// owns it now, so there is exactly one parser for KAFKA_SEND_QUEUE_WAVES /
+// _CAMPAIGNS.)

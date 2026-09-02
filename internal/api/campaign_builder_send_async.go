@@ -116,12 +116,14 @@ func (cb *CampaignBuilder) HandleSendCampaignAsync(w http.ResponseWriter, r *htt
 	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
-	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
-	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This legacy
-	// list/segment async-enqueue path INSERTs directly (enqueueCampaignAsync);
-	// BLOCK it loudly so any unexpected use is a visible, Kafka-attributable
-	// failure rather than a silent bypass. Dark default (routing OFF): no-op.
-	if sendqueue.SendRouteEnabled() {
+	// SK-5 HARD SEND PATH: when recipients are actually ROUTED through Kafka, the
+	// consumer is the ONLY thing permitted to INSERT into mailing_campaign_queue.
+	// This legacy list/segment async-enqueue path INSERTs directly
+	// (enqueueCampaignAsync); BLOCK it loudly so any unexpected use is a visible,
+	// Kafka-attributable failure rather than a silent bypass. REQ-090: keyed on
+	// the ROUTING predicate, not the wiring flag — ENABLED=1/ALL=0 routes nothing
+	// and must not 409 this path. Dark default (routing OFF): no-op.
+	if sendqueue.SendRoutingActive() {
 		log.Printf("[kafka-route] BLOCKED direct enqueue at api.HandleSendCampaignAsync — Kafka routing is ON; this path must be routed")
 		http.Error(w, `{"error":"kafka send-routing is ON: legacy async enqueue is disabled; sends route through the Kafka send path"}`, http.StatusConflict)
 		return
@@ -315,8 +317,9 @@ func (cb *CampaignBuilder) enqueueCampaignAsync(campaignID string, listID, segme
 	// SK-5 defensive guard: should be unreachable because HandleSendCampaignAsync
 	// blocks at entry when routing is ON, but if this background enqueuer is ever
 	// invoked while Kafka is the hard send path, refuse to direct-INSERT — fail the
-	// campaign loudly instead of silently bypassing Kafka.
-	if sendqueue.SendRouteEnabled() {
+	// campaign loudly instead of silently bypassing Kafka. REQ-090: same ROUTING
+	// predicate as the entry guard, so the two can never disagree.
+	if sendqueue.SendRoutingActive() {
 		log.Printf("[kafka-route] BLOCKED direct enqueue at api.enqueueCampaignAsync — Kafka routing is ON; this path must be routed")
 		cb.db.ExecContext(ctx, `UPDATE mailing_campaigns SET status = 'failed' WHERE id = $1`, campaignID)
 		return

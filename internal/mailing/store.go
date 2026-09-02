@@ -464,13 +464,14 @@ func (s *Store) EnqueueEmails(ctx context.Context, items []*QueueItem) error {
 		return nil
 	}
 
-	// SK-5 HARD SEND PATH: when Kafka send-routing is ON, the Kafka consumer is
-	// the ONLY thing permitted to INSERT into mailing_campaign_queue. This legacy
-	// Store.EnqueueEmails path (CampaignSender.PrepareCampaign, not wired into the
-	// live PMTA wave flow) INSERTs directly; BLOCK it loudly so any unexpected use
-	// is a visible, Kafka-attributable failure rather than a silent bypass. Dark
+	// SK-5 HARD SEND PATH: when recipients are actually ROUTED through Kafka, the
+	// consumer is the ONLY thing permitted to INSERT into mailing_campaign_queue.
+	// This legacy Store.EnqueueEmails path (CampaignSender.PrepareCampaign, not
+	// wired into the live PMTA wave flow) INSERTs directly; BLOCK it loudly so any
+	// unexpected use is a visible, Kafka-attributable failure rather than a silent
+	// bypass. REQ-090: keyed on the ROUTING predicate, not the wiring flag. Dark
 	// default (routing OFF): no-op, byte-identical to today.
-	if sendqueue.SendRouteEnabled() {
+	if sendqueue.SendRoutingActive() {
 		return fmt.Errorf("kafka-route: BLOCKED direct enqueue at mailing.Store.EnqueueEmails — Kafka routing is ON; this path must be routed")
 	}
 

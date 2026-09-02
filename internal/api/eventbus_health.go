@@ -76,6 +76,41 @@ type EventBusSendQueueStatus struct {
 	// RetainedPartitions > 0 means a record could be neither handled nor DLQ'd
 	// and that partition's offset is deliberately frozen behind it.
 	RetainedPartitions int `json:"retained_partitions"`
+
+	// Routing (REQ-090) is the four routing envs VERBATIM plus the resolved
+	// predicate. `enabled` above answers "is the transport wired?"; only
+	// routing.active answers "is anything being routed?" — the distinction that
+	// made the 2026-09-01 zero-send invisible on this endpoint.
+	Routing EventBusSendQueueRouting `json:"routing"`
+
+	// KillSwitches lists every send-path env lever EXPLICITLY SET in this
+	// process, name → value. Empty map = pure code defaults. The inventory is
+	// sourced from one Go list (sendqueue.SendPathEnvNames), cross-checked
+	// against deploy/env.manifest.json by cmd/server's EnvManifest tests — there
+	// is no second hand-typed list to drift.
+	KillSwitches map[string]string `json:"kill_switches"`
+}
+
+// EventBusSendQueueRouting is /health.event_bus.send_queue.routing: the four
+// KAFKA_SEND_QUEUE_* values as this process sees them, plus the three resolved
+// answers. Verbatim strings (not booleans) on purpose — "0", "false" and unset
+// are three different operator intents and the audit could not tell them apart
+// from /health.
+type EventBusSendQueueRouting struct {
+	All       string `json:"all"`
+	Enabled   string `json:"enabled"`
+	Waves     string `json:"waves"`
+	Campaigns string `json:"campaigns"`
+
+	// Active is the routing predicate (sendqueue.SendRoutingActive): are
+	// recipients routed to Kafka right now? THIS is the field to read.
+	Active bool `json:"active"`
+	// WiringEnabled is sendqueue.SendRouteEnabled(): is the producer/consumer
+	// wired? True with ENABLED=1 even when nothing routes.
+	WiringEnabled bool `json:"wiring_enabled"`
+	// FlagOpen is the runtime kill switch (Redis kafka:flag:send_route, else the
+	// env default). False = routing vetoed regardless of the envs above.
+	FlagOpen bool `json:"flag_open"`
 }
 
 // EventBusStatus is the whole /health "event_bus" block.
@@ -88,11 +123,17 @@ type EventBusStatus struct {
 	SendQueue  EventBusSendQueueStatus `json:"send_queue"`
 }
 
-// EventBusFlags surfaces the three per-flow producer flags as plain booleans.
+// EventBusFlags surfaces the per-flow producer flags as plain booleans, plus the
+// send-path routing kill switch.
 type EventBusFlags struct {
 	Lake     bool `json:"lake"`
 	Ingest   bool `json:"ingest"`
 	Suppress bool `json:"suppress"`
+	// SendRoute (REQ-090) is the resolved "send_route" FlagGate: Redis
+	// kafka:flag:send_route when the key is present, else the send-routing env
+	// predicate. FALSE while routing envs are on means an operator has pulled the
+	// runtime kill switch — one Redis SET, no task-def roll.
+	SendRoute bool `json:"send_route"`
 }
 
 // eventBusStatusProvider is a func that returns the current snapshot. The boot

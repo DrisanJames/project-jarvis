@@ -33,6 +33,14 @@ type FlagGate struct {
 	rdb      *redis.Client
 	interval time.Duration
 
+	// envSource optionally REPLACES the plain os.LookupEnv(envKey) layer. It is
+	// used by the "send_route" gate (REQ-090), whose deploy-time default is not
+	// one variable but the send-routing predicate (KAFKA_SEND_QUEUE_ALL / _WAVES
+	// / _CAMPAIGNS — sendqueue.SendRouteEnvConfigured). It returns (value,
+	// present); present=false falls through to the plain env key, then to false.
+	// nil (every other gate) = today's behaviour exactly.
+	envSource func() (bool, bool)
+
 	// value holds the current resolved flag as an atomic bool (0/1).
 	value atomic.Bool
 
@@ -59,6 +67,22 @@ func NewFlagGate(name string, rdb *redis.Client, interval time.Duration) *FlagGa
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
+	g.value.Store(g.evaluate(context.Background()))
+	return g
+}
+
+// WithEnvSource replaces the gate's ENV layer with fn, which returns (value,
+// present). Redis still wins when its key is present, so the kill-switch
+// contract is unchanged: `SET kafka:flag:<name> 0` beats whatever fn says.
+// Returns the gate for chaining; it re-evaluates immediately so Enabled() is
+// correct before Start(). Passing nil restores the plain env-key layer.
+//
+// The one caller is the send_route gate (cmd/server/eventbus_wiring.go): its
+// deploy-time default is the send-routing env predicate rather than a single
+// KAFKA_FLAG_SEND_ROUTE variable, so that "no Redis key" means "env decides,
+// exactly as before this gate existed".
+func (g *FlagGate) WithEnvSource(fn func() (bool, bool)) *FlagGate {
+	g.envSource = fn
 	g.value.Store(g.evaluate(context.Background()))
 	return g
 }
@@ -112,11 +136,22 @@ func (g *FlagGate) evaluate(ctx context.Context) bool {
 		// env. We do NOT treat a Redis outage as "flip on"; the env default (or
 		// false) governs, keeping the safe legacy path.
 	}
+	// Env layer: the custom source when one is installed (send_route), else the
+	// plain KAFKA_FLAG_<NAME> variable.
+	if g.envSource != nil {
+		if v, present := g.envSource(); present {
+			return v
+		}
+	}
 	if val, ok := os.LookupEnv(g.envKey); ok {
 		return truthy(val)
 	}
 	return false
 }
+
+// Name returns the flag's short identifier ("produce_lake", "send_route"), for
+// /health listings and log lines.
+func (g *FlagGate) Name() string { return g.name }
 
 // Stop terminates the background loop (bounded wait). Safe to call once.
 func (g *FlagGate) Stop() {
