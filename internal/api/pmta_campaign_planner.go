@@ -339,6 +339,19 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 		return pmtaNormalizedCampaign{}, fmt.Errorf("send_mode must be 'immediate' or 'scheduled'")
 	}
 
+	// Brand × ISP bans (REQ-083, isp_bans.go). Applied FIRST, on the local
+	// copy of input, so both the ISPPlans branch and the legacy TargetISPs
+	// branch below build from an already-filtered set — and so every caller of
+	// this function inherits the ban: the HTTP deploy and the PreDispatch
+	// sibling rebind through deployFromInput, and the audience finalizer,
+	// which re-normalizes the persisted blob before planning. A banned ISP
+	// therefore never reaches normalized.Plans, which is what
+	// mailing_campaign_isp_plans / _plan_recipients / _waves are built from.
+	// Fails CLOSED: an unreadable ban table refuses the deploy.
+	if err := applyISPBansForOrg("", &input); err != nil {
+		return pmtaNormalizedCampaign{}, err
+	}
+
 	// Segment reserves (REQ-C17): validate at the door so a malformed
 	// reservation is a 400 at deploy, never a silent no-op at plan time.
 	// Absent/empty slice = zero iterations = today's behavior untouched.
