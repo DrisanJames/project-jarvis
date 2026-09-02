@@ -156,8 +156,14 @@ var kumoAllTimeBrands = []engagementBrand{
 const engagementClickNonNavSQL = `(COALESCE(te.link_url,'') = ''
 	  OR te.link_url ~* 'unsub|optout|opt-out|preference|/privacy'
 	  OR te.link_url ~* '^everflow-import:'
-	  OR te.link_url ~* '^https?://t\.em\.')`
+	  OR (te.link_url ~* '^https?://t\.em\.' AND te.link_url !~* '^https?://(t|trk)\.e?m\.[^/]+/o/'))`
 
+// The scanner-safe money-link redirect (/o/<brand>/..., cmd/tracking
+// HandleOfferRedirect) records the TRACKER host as link_url, so the t.em
+// self-reference rule swallowed every money-link click on t.em-tracked brands
+// (2026-07-22 → 2026-09-01; 138 clickers in 30d had no other qualifying
+// click). A /o/ path is a proven navigation to the offer — it is an ACTION
+// click. Mirrors agents/dbknowledge/_db.py PG_CLICK_NONNAV.
 // PG_CLICK_ASSET: asset/resource fetches — file-extension or known asset/CDN
 // host. ~93% of raw 'clicked' events (fonts.googleapis.com dominates).
 const engagementClickAssetSQL = `(te.link_url ~* '\.(css|js|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)([?#]|$)'
