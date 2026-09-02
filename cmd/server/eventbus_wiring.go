@@ -21,6 +21,7 @@ import (
 	"log"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -66,12 +67,16 @@ type eventBusHandle struct {
 	// Only constructed when the bus is enabled AND worker.KafkaSendQueueEnabled()
 	// (a routing allowlist / KAFKA_SEND_QUEUE_ENABLED is set). Default: nil/false,
 	// so EnqueuePMTAWave routes nothing → byte-identical to today.
-	sendQueueProd      eventbus.Producer
-	queueWriter        *sendqueue.QueueWriterConsumer
-	ledgerReconciler   *sendqueue.LedgerReconciler
-	reconcilerCancel   context.CancelFunc
-	sendQueueEnabled   bool
-	queueWriterRunning bool
+	sendQueueProd    eventbus.Producer
+	queueWriter      *sendqueue.QueueWriterConsumer
+	ledgerReconciler *sendqueue.LedgerReconciler
+	reconcilerCancel context.CancelFunc
+	sendQueueEnabled bool
+	// queueWriterStarted records only that Start() returned nil at boot. It is
+	// NOT liveness and must never be published as consumer_running again — that
+	// boot boolean is exactly what reported healthy through the 2026-09-01 SK-4
+	// wedge. Liveness comes from queueWriter.Snapshot().Running.
+	queueWriterStarted bool
 	reconcilerRunning  bool
 }
 
@@ -287,14 +292,22 @@ func wireSendQueue(ctx context.Context, h *eventBusHandle, db *sql.DB, cfg event
 		FlagPollInterval: cfg.FlagPollInterval,
 	}).WithStatHook(func(inserted, conflicts, failed uint64) {
 		setSendQueueCounters(inserted, conflicts, failed)
+	}).WithDLQHook(func(dlqRecords uint64) {
+		sendQueueDLQRecords.Store(dlqRecords)
 	})
 	dlq := consumers.NewProducerDLQ(h.prod)
 	if err := qw.Start(ctx, dlq); err != nil {
 		log.Printf("[eventbus] send-queue QueueWriterConsumer start failed: %v", err)
 	} else {
 		h.queueWriter = qw
-		h.queueWriterRunning = true
-		log.Println("[eventbus] send-queue QueueWriterConsumer started (group=ignite-send-queue-writer, topic=send.commands.v1) — INSERTs into mailing_campaign_queue; send path UNCHANGED")
+		h.queueWriterStarted = true
+		// Register the LIVE liveness snapshot. This is what makes
+		// eventbus.SendQueueHealth() real for BOTH /health (internal/api, via
+		// setEventBusStatus below) and the send-path monitors (internal/worker
+		// OutboxSelfCheck, REQ-087). Without it both read the never-ran zero.
+		eventbus.SetSendQueueHealthProvider(qw.Snapshot)
+		log.Printf("[eventbus] send-queue QueueWriterConsumer started (group=ignite-send-queue-writer, topic=send.commands.v1, task_id=%s) — INSERTs into mailing_campaign_queue; send path UNCHANGED",
+			eventbus.TaskID())
 	}
 
 	// LedgerReconciler: re-drives any stranded ledger rows by re-producing the
@@ -375,9 +388,10 @@ func eventBusInstanceID() string {
 // atomic loads. They are package-level (not on the handle) because the hook
 // closure outlives a single wireEventBus call and there is one bus per process.
 var (
-	sendQueueInserted  atomic.Uint64
-	sendQueueConflicts atomic.Uint64
-	sendQueueFailed    atomic.Uint64
+	sendQueueInserted   atomic.Uint64
+	sendQueueConflicts  atomic.Uint64
+	sendQueueFailed     atomic.Uint64
+	sendQueueDLQRecords atomic.Uint64
 )
 
 // setSendQueueCounters stores the latest running counts (the hook passes
@@ -419,16 +433,48 @@ func setEventBusStatus(h *eventBusHandle) {
 				SuppressionMode:    h.suppMode,
 				LakeRunning:        h.lakeRunning,
 			},
-			SendQueue: api.EventBusSendQueueStatus{
-				Enabled:             h.sendQueueEnabled,
-				ConsumerRunning:     h.queueWriterRunning,
-				ReconcilerRunning:   h.reconcilerRunning,
-				RoutedWaves:         worker.KafkaRoutedWaves(),
-				QueueWritesInsert:   sendQueueInserted.Load(),
-				QueueWritesConflict: sendQueueConflicts.Load(),
-				QueueWritesFailed:   sendQueueFailed.Load(),
-			},
+			SendQueue: sendQueueStatus(h),
 		}
 		return st
 	})
+}
+
+// sendQueueStatus renders the SK-4 send-queue block from the LIVE consumer
+// snapshot (eventbus.SendQueueHealth) rather than boot booleans.
+//
+// Read this block as a whole, never one field:
+//   - consumer_running=false        -> the loop has exited; this task consumes nothing.
+//   - running=true, in_flight>0 and seconds_since_last_handled large -> WEDGED
+//     inside the handler (the 2026-09-01 signature).
+//   - lag_max is only meaningful when seconds_since_last_poll is small: it is
+//     derived from the fetches this loop received (no kadm — see health.go), so
+//     a consumer that stopped polling FREEZES its lag reading.
+//   - every counter is PER TASK; task_id says which task answered.
+func sendQueueStatus(h *eventBusHandle) api.EventBusSendQueueStatus {
+	snap := eventbus.SendQueueHealth()
+	st := api.EventBusSendQueueStatus{
+		Enabled:              h.sendQueueEnabled,
+		ConsumerStarted:      h.queueWriterStarted,
+		ConsumerRunning:      snap.Running,
+		ReconcilerRunning:    h.reconcilerRunning,
+		RoutedWaves:          worker.KafkaRoutedWaves(),
+		QueueWritesInsert:    sendQueueInserted.Load(),
+		QueueWritesConflict:  sendQueueConflicts.Load(),
+		QueueWritesFailed:    sendQueueFailed.Load(),
+		QueueDLQRecords:      sendQueueDLQRecords.Load(),
+		TaskID:               snap.TaskID,
+		InFlight:             snap.InFlight,
+		LagMax:               snap.LagMax,
+		LagKnown:             snap.LagKnown,
+		RetainedPartitions:   snap.RetainedPartitions,
+		SecondsSinceLastPoll: snap.SecondsSinceLastPoll(),
+		SecondsSinceHandled:  snap.SecondsSinceLastHandled(),
+	}
+	if !snap.LastPollAt.IsZero() {
+		st.LastPollAt = snap.LastPollAt.UTC().Format(time.RFC3339)
+	}
+	if !snap.LastHandledAt.IsZero() {
+		st.LastHandledAt = snap.LastHandledAt.UTC().Format(time.RFC3339)
+	}
+	return st
 }

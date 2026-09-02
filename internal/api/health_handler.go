@@ -36,14 +36,14 @@ var deliveryBuildFlags = map[string]bool{
 
 // HealthStatus represents the overall health of the system.
 type HealthStatus struct {
-	Status     string                    `json:"status"` // "healthy", "degraded", "unhealthy"
-	Version    string                    `json:"version"`
-	Uptime     string                    `json:"uptime"`
-	Build      buildinfo.Info            `json:"build"`
-	Checks     map[string]ComponentCheck `json:"checks"`
-	EventBus      EventBusStatus       `json:"event_bus"`
-	SESWebhook    SESWebhookStatus     `json:"ses_webhook"`
-	SESEngagement SESEngagementStatus  `json:"ses_engagement"`
+	Status        string                    `json:"status"` // "healthy", "degraded", "unhealthy"
+	Version       string                    `json:"version"`
+	Uptime        string                    `json:"uptime"`
+	Build         buildinfo.Info            `json:"build"`
+	Checks        map[string]ComponentCheck `json:"checks"`
+	EventBus      EventBusStatus            `json:"event_bus"`
+	SESWebhook    SESWebhookStatus          `json:"ses_webhook"`
+	SESEngagement SESEngagementStatus       `json:"ses_engagement"`
 }
 
 // ComponentCheck represents the health of a single component.
@@ -91,12 +91,30 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime":    formatUptime(time.Since(hc.startTime)),
 		"build":     buildinfo.Current(),
 		"event_bus": CurrentEventBusStatus(),
+		// Both of these register on a BACKGROUND goroutine that can take >10
+		// minutes (mailing_routes_readiness.go). /health stays an unconditional
+		// 200 for the ALB, but the operator and the deploy scripts need to see
+		// the two wirings the send path depends on: the /api/mailing/* tree, and
+		// the global suppression hub every send pipeline consults.
+		"mailing_routes":  map[string]interface{}{"registered": MailingRoutesReady()},
+		"suppression_hub": map[string]interface{}{"wired": SuppressionHubWired()},
 		// SES webhook ingest health — non-zero failed/rejected/engagement_failed
 		// means SES delivery/open/click telemetry was lost for that window.
 		"ses_webhook": CurrentSESWebhookStatus(),
 		// Counter batching — fold_ratio is how many hot-row lock acquisitions
 		// were collapsed into one write.
 		"ses_engagement": CurrentSESEngagementStatus(),
+		// Send liveness (REQ-087). Published by the OutboxSelfCheck tick every
+		// 5 min; read lock-free here so /health stays a no-DB fast path. The
+		// SK-4 signature is unlanded_recipients > 0 with sent_last_15m == 0.
+		// checked_at == null means the first tick has not completed — read that
+		// as "not yet measured", never as healthy.
+		"send_liveness": worker.CurrentSendLiveness(),
+		// Startup-migration outcome for THIS boot (REQ-092) — see
+		// migrations_health.go. failed > 0 means DDL this build assumes did
+		// not land; ran == false means this task lost the advisory lock to its
+		// sibling, so read the other task.
+		"migrations": CurrentMigrationsStatus(),
 		// Send-Day Gate C reads this — see deliveryBuildFlags.
 		"build_contains": deliveryBuildFlags,
 	})
@@ -107,11 +125,11 @@ func (hc *HealthChecker) HandleDetailed(w http.ResponseWriter, r *http.Request) 
 	checks := hc.runAllChecks(r.Context())
 	overall := determineOverallStatus(checks)
 	respondJSON(w, http.StatusOK, HealthStatus{
-		Status:     overall,
-		Version:    healthVersion,
-		Uptime:     formatUptime(time.Since(hc.startTime)),
-		Build:      buildinfo.Current(),
-		Checks:     checks,
+		Status:        overall,
+		Version:       healthVersion,
+		Uptime:        formatUptime(time.Since(hc.startTime)),
+		Build:         buildinfo.Current(),
+		Checks:        checks,
 		EventBus:      CurrentEventBusStatus(),
 		SESWebhook:    CurrentSESWebhookStatus(),
 		SESEngagement: CurrentSESEngagementStatus(),

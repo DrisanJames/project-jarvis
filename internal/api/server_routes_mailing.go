@@ -1796,6 +1796,8 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 
 			// Export for main.go to wire to the send worker pool
 			s.GlobalHub = globalHub
+			// Make the wiring observable on /health (suppression_hub.wired).
+			MarkSuppressionHubWired()
 
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)

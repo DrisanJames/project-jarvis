@@ -28,6 +28,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -209,6 +211,14 @@ type QueueWriterConsumer struct {
 	conflicts uint64
 	failed    uint64
 	statHook  func(inserted, conflicts, failed uint64)
+
+	// dlqRecords counts RECORDS durably parked on send.commands.v1.dlq. It is a
+	// DIFFERENT quantity from `failed`, which counts INSERT ATTEMPTS: four
+	// failed attempts on one record is failed=4, dlqRecords=1. Reading only
+	// `failed` (as /health did) makes the number of lost RECIPIENTS
+	// underivable — "failed=45" could be 45 recipients or 11.
+	dlqRecords atomic.Uint64
+	dlqHook    func(dlqRecords uint64)
 }
 
 // NewQueueWriterConsumer constructs the consumer. db is the mailing primary
@@ -226,9 +236,46 @@ func (c *QueueWriterConsumer) WithStatHook(fn func(inserted, conflicts, failed u
 	return c
 }
 
+// WithDLQHook installs a callback invoked after every record parked in the DLQ,
+// with the running record count. Optional; used by the /health wiring.
+func (c *QueueWriterConsumer) WithDLQHook(fn func(dlqRecords uint64)) *QueueWriterConsumer {
+	c.dlqHook = fn
+	return c
+}
+
 // Stats returns the running counters (inserted, conflicts, failed).
 func (c *QueueWriterConsumer) Stats() (inserted, conflicts, failed uint64) {
 	return c.inserted, c.conflicts, c.failed
+}
+
+// DLQRecords returns the number of records durably parked in the DLQ.
+func (c *QueueWriterConsumer) DLQRecords() uint64 { return c.dlqRecords.Load() }
+
+// Running reports whether the underlying consumer LOOP is executing right now.
+// This is the value /health must publish. The previous boot boolean in
+// cmd/server was set once, after Start returned nil, and stayed true through the
+// 2026-09-01 wedge in which the loop held its partitions and inserted nothing.
+func (c *QueueWriterConsumer) Running() bool {
+	return c.consumer != nil && c.consumer.Running()
+}
+
+// Snapshot is THE liveness reading for send.commands.v1: the loop's running
+// flag, last poll / last successful handle timestamps, in-flight count, observed
+// lag, retained-partition count, DLQ record count, and the ECS task id (the
+// counters are per-task; the ALB picks a task per /health call, so without the
+// id two tasks' numbers are indistinguishable).
+//
+// cmd/server registers this func with eventbus.SetSendQueueHealthProvider, which
+// makes it readable as eventbus.SendQueueHealth() from BOTH internal/api (the
+// /health block) and internal/worker (OutboxSelfCheck) with no import cycle.
+func (c *QueueWriterConsumer) Snapshot() eventbus.ConsumerSnapshot {
+	if c.consumer == nil {
+		return eventbus.ConsumerSnapshot{Name: "send-queue-writer", TaskID: eventbus.TaskID()}
+	}
+	s := c.consumer.Snapshot()
+	s.Name = "send-queue-writer"
+	s.DLQRecords = c.dlqRecords.Load()
+	return s
 }
 
 // Handle is the eventbus.Handler: unmarshal the SendCommand and run the SAME
@@ -314,13 +361,43 @@ func (c *QueueWriterConsumer) Start(ctx context.Context, dlq eventbus.DLQ) error
 	if len(cfg.Topics) == 0 {
 		cfg.Topics = []string{TopicQueueWrites}
 	}
-	con, err := eventbus.NewConsumer(cfg, c.Handle, dlq, eventbus.ConsumerOptions{})
+	// HandleTimeout is left at the eventbus default (30s == the prod
+	// statement_timeout): a queue INSERT that cannot finish inside the budget
+	// the database would kill it at must not hold the partition open forever.
+	con, err := eventbus.NewConsumer(cfg, c.Handle, dlq, eventbus.ConsumerOptions{
+		OnDLQ: c.onDLQPark,
+	})
 	if err != nil {
 		return fmt.Errorf("sendqueue/queuewriter: consumer: %w", err)
 	}
 	c.consumer = con
-	go func() { _ = con.Run(ctx) }()
+	go func() {
+		// The loop's exit was previously DISCARDED (`_ = con.Run(ctx)`), so a
+		// consumer that died left /health reporting consumer_running:true
+		// forever. Run now flips its own running flag on exit; log the reason
+		// so the exit is greppable in CloudWatch too.
+		err := con.Run(ctx)
+		log.Printf("[sendqueue/queuewriter] consumer loop EXITED (running=false, send.commands.v1 no longer consumed by this task): %v", err)
+	}()
 	return nil
+}
+
+// onDLQPark is the per-record DLQ hook. It decodes just enough of the command to
+// name the recipient's campaign and wave — the generic consumer loop only sees
+// opaque bytes, so without this a parked record is an anonymous byte slice.
+func (c *QueueWriterConsumer) onDLQPark(topic string, key, value []byte, attempts int, cause error) {
+	n := c.dlqRecords.Add(1)
+	var cmd SendCommand
+	if err := json.Unmarshal(value, &cmd); err != nil {
+		log.Printf("[sendqueue/queuewriter] DLQ PARK topic=%s key=%q campaign=? wave=? attempts=%d (undecodable payload: %v): %v",
+			topic, string(key), attempts, err, cause)
+	} else {
+		log.Printf("[sendqueue/queuewriter] DLQ PARK topic=%s key=%s campaign=%s wave=%s subscriber=%s attempts=%d dlq_records=%d: %v",
+			topic, cmd.IdempotencyKey, cmd.CampaignID, cmd.WaveID, cmd.SubscriberID, attempts, n, cause)
+	}
+	if c.dlqHook != nil {
+		c.dlqHook(n)
+	}
 }
 
 // Stop closes the consumer. Safe when never started.
