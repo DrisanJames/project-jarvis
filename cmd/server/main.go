@@ -2379,6 +2379,22 @@ var criticalSendPathDDL = []struct {
 				WHERE status = 'completed' AND enqueued_recipients > 0;
 		END IF;
 	END $$`},
+	// ---- Wave produced-vs-landed state machine (REQ-089, 2026-09-01) ----
+	// A Kafka-routed wave is no longer marked 'completed' at PRODUCE time; it
+	// completes to 'produced' carrying produced_recipients, and the
+	// QueueWriterConsumer increments landed_recipients as each row actually
+	// reaches mailing_campaign_queue. Promotion 'produced' -> 'completed'
+	// happens when landed >= produced.
+	//
+	// criticalSendPathDDL, not the 5s background slice: EnqueuePMTAWave writes
+	// produced_recipients UNCONDITIONALLY on every routed wave and the consumer
+	// writes landed_recipients on every landed row — both reference the columns
+	// with no env guard, so a boot where these are absent fails every routed
+	// wave enqueue (the 2026-06-10 schema-after-binary rule). Nullable-with-
+	// default INTEGER, matching cap_skip_count / reserve_used_count: on PG 11+
+	// ADD COLUMN ... DEFAULT is a catalog-only change, no table rewrite.
+	{"add_waves_produced_recipients", `ALTER TABLE mailing_campaign_waves ADD COLUMN IF NOT EXISTS produced_recipients INTEGER NOT NULL DEFAULT 0`},
+	{"add_waves_landed_recipients", `ALTER TABLE mailing_campaign_waves ADD COLUMN IF NOT EXISTS landed_recipients INTEGER NOT NULL DEFAULT 0`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
@@ -2660,6 +2676,33 @@ var concurrentIndexSpecs = []struct {
 	// Heap Fetches ≈ 0). Lives here because the build scans the full
 	// multi-M-row pcq heap — far beyond the migration runner's 5s budget.
 	{"idx_pcq_dataset_status_mailed", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_dataset_status_mailed ON partner_clean_queue (dataset_id, status, mailed_at)`},
+
+	// ---- REQ-094 (2026-09-01): three indexes re-vehicled out of the 5s slice ----
+	// All three were CREATE INDEX IF NOT EXISTS entries in runStartupMigrations
+	// that were cancelled at the 5s budget on every boot for weeks, so none of
+	// them exists in prod (`pg_indexes` → 0 rows for each, checked 2026-09-01).
+	// Each build scans a heap far past that budget while holding a SHARE lock
+	// that blocks writes; CONCURRENTLY in a calm-IO window is the vehicle they
+	// always needed.
+	//
+	// idx_mte_click_verdict is the one with a live consequence: without it
+	// backfillClickVerdict's pre-check (`… WHERE event_type='clicked' AND
+	// click_verdict IS NULL LIMIT 1`, datacenter_classifier.go:340) hits
+	// statement timeout on BOTH instances every boot, so the click-verdict
+	// backfill has never run since the classifier shipped.
+	// NOTE: mailing_tracking_events is PARTITIONED, and PostgreSQL 16 refuses
+	// CREATE INDEX CONCURRENTLY on a partitioned table. ensureConcurrentIndexes
+	// therefore runs this one through concurrentIndexPlan (migration_skip.go),
+	// which expands it into per-partition CONCURRENTLY builds + an ON ONLY
+	// parent index + ATTACH — the only non-blocking route PG supports.
+	// Derived from the canonical DDL (datacenter_classifier.go:242) rather than
+	// retyped, so the two can never drift apart.
+	{"idx_mte_click_verdict", strings.Replace(clickVerdictIndexDDL,
+		"CREATE INDEX IF NOT EXISTS", "CREATE INDEX CONCURRENTLY IF NOT EXISTS", 1)},
+	// Audience enumeration over the 18.4M-row subscriber heap.
+	{"idx_subscribers_audience_scan", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_audience_scan ON mailing_subscribers (list_id, status, created_at, id) WHERE status IN ('active','confirmed')`},
+	// GIN over an 18.4M-row JSONB column — the most expensive build in the set.
+	{"idx_subscribers_source_metadata_gin", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_source_metadata_gin ON mailing_subscribers USING gin (source_metadata)`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2727,10 +2770,22 @@ func ensureConcurrentIndexes(db *sql.DB) {
 		}
 		start := time.Now()
 		log.Printf("[ConcurrentIndex] building %s (CONCURRENTLY — writes unblocked) ...", spec.name)
-		if _, err := conn.ExecContext(context.Background(), spec.sql); err != nil {
+		// concurrentIndexPlan is the identity for an ordinary table and expands
+		// to per-partition builds + ON ONLY parent + ATTACH for a partitioned
+		// one (REQ-094): PostgreSQL 16 rejects CREATE INDEX CONCURRENTLY on a
+		// partitioned table outright, so idx_mte_click_verdict would otherwise
+		// just move its guaranteed failure to a new vehicle.
+		var buildErr error
+		for _, stmt := range concurrentIndexPlan(db, spec.sql) {
+			if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
+				buildErr = err
+				break
+			}
+		}
+		if buildErr != nil {
 			// An interrupted CONCURRENTLY build leaves an INVALID index;
 			// the validity probe above cleans it up on the next boot.
-			log.Printf("[ConcurrentIndex] %s build FAILED after %s: %v", spec.name, time.Since(start).Round(time.Second), err)
+			log.Printf("[ConcurrentIndex] %s build FAILED after %s: %v", spec.name, time.Since(start).Round(time.Second), buildErr)
 		} else {
 			log.Printf("[ConcurrentIndex] %s built in %s", spec.name, time.Since(start).Round(time.Second))
 		}
@@ -2845,6 +2900,13 @@ func runStartupMigrations(db *sql.DB) {
 	if lockConn != nil {
 		defer lockConn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockID)
 	}
+	// ADD COLUMNs whose target is a PARTITIONED parent cannot be won inside the
+	// 5s slice — the parent ALTER needs ACCESS EXCLUSIVE on the parent AND all
+	// 11 partitions at once, and a queued request barricades the table for the
+	// whole wait (REQ-094, memory `startup-migration-lock-barricade`). They run
+	// here instead: catalog-probed, lock_timeout-bounded, retried, and inside
+	// the advisory lock so the two ECS tasks cannot race the same ALTER.
+	ensurePartitionedColumns(db)
 	migrations := []struct {
 		name string
 		sql  string
@@ -3715,24 +3777,18 @@ func runStartupMigrations(db *sql.DB) {
 		// Ensure tracking events table has all required columns
 		// Ensure partition exists for current month
 		{"create_tracking_partition_mar26", `CREATE TABLE IF NOT EXISTS mailing_tracking_events_2026_03 PARTITION OF mailing_tracking_events FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')`},
-		{"ensure_tracking_email_col", `DO $$
-		DECLARE
-			part regclass;
-		BEGIN
-			BEGIN
-				ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS email TEXT;
-			EXCEPTION WHEN OTHERS THEN
-				NULL; -- partitioned table: column must be added per-partition
-			END;
-			FOR part IN
-				SELECT inhrelid::regclass
-				FROM pg_inherits
-				WHERE inhparent = 'public.mailing_tracking_events'::regclass
-			LOOP
-				EXECUTE format('ALTER TABLE %s ADD COLUMN IF NOT EXISTS email TEXT', part);
-			END LOOP;
-		END $$`},
-		{"add_tracking_event_time_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW(); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
+		// RE-VEHICLED (REQ-094, 2026-09-01): ensure_tracking_email_col and
+		// add_tracking_event_time_col now live in partitionedColumnSpecs
+		// (migration_skip.go), applied by ensurePartitionedColumns() above with
+		// an explicit lock_timeout and retries.
+		// Why they could never work here: mailing_tracking_events is
+		// PARTITION BY RANGE with 11 partitions; PostgreSQL rejects ADD COLUMN
+		// on a partition ("cannot add column to a partition"), so the loop in
+		// the old DO block was dead code and the only route — the parent ALTER
+		// — needs ACCESS EXCLUSIVE on 12 relations at once. The 5s budget never
+		// granted it: prod on 2026-09-01 had `email` on 0/12 relations after
+		// weeks of "TIMEOUT (skipped — will retry next boot)", while the queued
+		// lock barricaded the table for the full 5s on every boot.
 		{"add_tracking_metadata_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		{"add_tracking_is_unique_col", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_unique BOOLEAN DEFAULT false; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		// Drop restrictive event_type constraint so hard_bounce, soft_bounce, delivered etc. can be stored
@@ -3743,7 +3799,11 @@ func runStartupMigrations(db *sql.DB) {
 		{"drop_status_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
 		{"drop_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_campaign_type_check`},
 		{"drop_send_type_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_send_type_check`},
-		{"widen_status_col", `DO $$ BEGIN ALTER TABLE mailing_campaigns ALTER COLUMN status TYPE TEXT; EXCEPTION WHEN OTHERS THEN NULL; END $$`},
+		// PRUNED (REQ-094, 2026-09-01): widen_status_col.
+		// `mailing_campaigns.status` is character varying in prod and every
+		// reader treats it as text; the ALTER changed nothing but still took
+		// ACCESS EXCLUSIVE on a 401k-row / multi-GB hot table and was cancelled
+		// at the 5s budget on every boot.
 		// readd_status_chk whitelist MUST include 'finalizing_audience' because
 		// reserveCampaignForDeploy() inserts new campaigns with that status
 		// (see handlers_pmta_campaign.go). Every boot this runs after
@@ -3756,7 +3816,18 @@ func runStartupMigrations(db *sql.DB) {
 		// and every PMTA campaign POST threw 23514. Adding 'finalizing_audience'
 		// here makes the early-boot path self-sufficient regardless of how
 		// far down the migration list the runner actually gets.
-		{"readd_status_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','finalizing_audience','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+		//
+		// PRUNED (REQ-094, 2026-09-01) — readd_status_chk, and its twin
+		// readd_status_chk_v2 ~3600 lines below. The premise above is no longer
+		// true: prod has NO `mailing_campaigns_status_check` at all
+		// (`pg_constraint` → 0 rows, checked 2026-09-01), so there is no stale
+		// whitelist to repair and no 23514 to prevent. ADD CONSTRAINT ... CHECK
+		// validates every existing row under ACCESS EXCLUSIVE — 401k rows on a
+		// multi-GB heap — so it can never finish inside 5s; it has been erroring
+		// on every boot while the preceding drop_status_chk keeps the table
+		// clean. Deleting it removes an ACCESS EXCLUSIVE attempt on a send-path
+		// table per boot and changes nothing about the live schema. If the
+		// constraint is ever wanted back it must be added NOT VALID, out of band.
 		{"add_queued_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS queued_count INTEGER DEFAULT 0`},
 		{"add_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS list_ids JSONB DEFAULT '[]'`},
 		{"add_suppression_list_ids", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS suppression_list_ids JSONB DEFAULT '[]'`},
@@ -3764,7 +3835,10 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_isp_quotas", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS isp_quotas JSONB DEFAULT '{}'`},
 		{"add_execution_mode", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS execution_mode TEXT DEFAULT 'standard'`},
 		{"drop_execution_mode_chk", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_execution_mode_check`},
-		{"readd_execution_mode_chk", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_execution_mode_check CHECK (execution_mode IN ('standard', 'pmta_isp_wave'))`},
+		// PRUNED (REQ-094): same shape and same evidence as readd_status_chk —
+		// `mailing_campaigns_execution_mode_check` is absent in prod and the
+		// validating ADD CONSTRAINT cannot complete in 5s. drop_execution_mode_chk
+		// immediately above stays, so the end state is unchanged.
 		{"add_hard_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS hard_bounce_count INTEGER DEFAULT 0`},
 		{"add_soft_bounce_count", `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS soft_bounce_count INTEGER DEFAULT 0`},
 		{"create_automation_workflows", `CREATE TABLE IF NOT EXISTS mailing_automation_workflows (
@@ -3868,13 +3942,14 @@ func runStartupMigrations(db *sql.DB) {
 		// gated behind OutboxMode=durable which ships legacy by default — so
 		// expanding the constraint now is harmless and unblocks the flip.
 		{"outbox_drop_old_status_chk", `ALTER TABLE mailing_campaign_queue DROP CONSTRAINT IF EXISTS mailing_campaign_queue_status_check`},
-		{"outbox_add_expanded_status_chk", `ALTER TABLE mailing_campaign_queue ADD CONSTRAINT mailing_campaign_queue_status_check CHECK (
-			status::text IN (
-				'queued','claimed','sending','sent','failed','skipped','dead_letter',
-				'submitting','accepted','failed_retryable','failed_permanent',
-				'dead_letter_strict','pending','processing'
-			)
-		)`},
+		// PRUNED (REQ-094, 2026-09-01): outbox_add_expanded_status_chk.
+		// `mailing_campaign_queue_status_check` is absent in prod
+		// (`pg_constraint` → 0 rows), so the expansion this entry describes has
+		// already been achieved by outbox_drop_old_status_chk above and nothing
+		// blocks the durable-outbox flip. The ADD CONSTRAINT itself validates
+		// the entire multi-million-row queue under ACCESS EXCLUSIVE — the
+		// hottest table on the send path — and was cancelled at 5s on every
+		// boot since it shipped.
 		{"create_pmta_isp_plans", `CREATE TABLE IF NOT EXISTS mailing_campaign_isp_plans (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			campaign_id UUID NOT NULL REFERENCES mailing_campaigns(id) ON DELETE CASCADE,
@@ -4027,21 +4102,30 @@ func runStartupMigrations(db *sql.DB) {
 		// PRODUCE time: on 2026-09-01 that flipped 24 board campaigns terminal with
 		// 0-40% of their audience still in the broker, and the self-check janitor
 		// cancelled 80,514 recipients as they landed.
+		//
+		// 'produced' (REQ-089) is an ACTIVE wave status and must appear in the
+		// active-wave list below: a Kafka-routed wave sits in 'produced' from the
+		// moment its recipients are handed to the broker until the last one lands
+		// in mailing_campaign_queue. Omitting it would re-open exactly the hole
+		// REQ-082 closed — the campaign flips 'sent' while the wave is still
+		// landing, and the self-check janitor cancels every row that arrives after.
 		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
 			WHERE id IN (
 				SELECT c.id FROM mailing_campaigns c
 				WHERE c.status = 'sending'
 				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = c.id AND q.status IN ('queued','sending','claimed'))
-				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched'))
+				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched','produced'))
 				AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = c.id AND w2.status = 'completed')
 				AND COALESCE((SELECT SUM(w3.enqueued_recipients) FROM mailing_campaign_waves w3 WHERE w3.campaign_id = c.id), 0)
 				    <= (SELECT COUNT(*) FROM mailing_campaign_queue q2 WHERE q2.campaign_id = c.id)
 				FOR UPDATE OF c SKIP LOCKED
 			)`},
+		// 'produced' is active here too (REQ-089): cancelling a campaign whose wave
+		// is still landing would abandon every recipient still in the broker.
 		{"reset_orphaned_sending_v3", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
 			WHERE status = 'sending'
 			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = mailing_campaigns.id AND q.status IN ('queued','sending','claimed'))
-			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = mailing_campaigns.id AND w.status IN ('planned','enqueuing','dispatched'))
+			AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = mailing_campaigns.id AND w.status IN ('planned','enqueuing','dispatched','produced'))
 			AND started_at < NOW() - INTERVAL '24 hours'`},
 		{"unstick_locked_queue_items", `UPDATE mailing_campaign_queue SET status = 'queued', worker_id = NULL, locked_at = NULL WHERE status = 'sending' AND locked_at < NOW() - INTERVAL '10 minutes'`},
 		// Seed IP pools and warmup IPs (originally in migration 030, may not exist in production RDS)
@@ -4894,8 +4978,11 @@ func runStartupMigrations(db *sql.DB) {
 			WHERE organization_id = '00000000-0000-0000-0000-000000000001'
 			  AND name IN ('Quiz Fiesta (SES Tenant)', 'History Thinking (SES Tenant)', 'My Own Health (SES Tenant)')
 			  AND status <> 'active'`},
-		// Ensure seed/test subscribers have first_name populated
-		{"set_test_subscriber_names", `UPDATE mailing_subscribers SET first_name = 'Drisan', last_name = 'James', updated_at = NOW() WHERE email IN ('drisanjames@gmail.com','drisanjames@yahoo.com','drisanjames@outlook.com','drisanjames@att.net') AND (first_name IS NULL OR first_name = '')`},
+		// PRUNED (REQ-094, 2026-09-01): set_test_subscriber_names. A cosmetic
+		// seed for four personal test mailboxes, run as an unindexed predicate
+		// (`email IN (...)`; the only email index on the 18.4M-row
+		// mailing_subscribers is on lower(TRIM(email))), so it is a full heap
+		// scan that has never finished inside 5s.
 		// --- AWS SES via PMTA relay: m.discountblog.com ---
 		// Required DNS records for m.discountblog.com:
 		//   DKIM: 3 CNAMEs provided by SES (o2c4nzw6..., q25q7twp..., zq53za2a...)
@@ -5066,21 +5153,13 @@ func runStartupMigrations(db *sql.DB) {
 				WHERE domain = 'em.myownhealth.net'
 				  AND organization_id = '00000000-0000-0000-0000-000000000001'
 			)`},
-		// Fix list_ids that contain list names instead of UUIDs (campaigns stuck as scheduled)
-		{"fix_list_ids_names_to_uuids", `
-			UPDATE mailing_campaigns c
-			SET list_ids = (
-				SELECT jsonb_agg(l.id::text)
-				FROM mailing_lists l,
-				     jsonb_array_elements_text(c.list_ids) AS name_val
-				WHERE l.organization_id = c.organization_id
-				  AND l.name = name_val
-			), updated_at = NOW()
-			WHERE c.status IN ('scheduled','preparing')
-			  AND jsonb_typeof(c.list_ids) = 'array'
-			  AND jsonb_array_length(c.list_ids) > 0
-			  AND (c.list_ids->>0) !~ '^[0-9a-f]{8}-'
-		`},
+		// PRUNED (REQ-094, 2026-09-01): fix_list_ids_names_to_uuids — a one-time
+		// repair that CANNOT succeed. Boot log 2026-09-01 18:52:43Z:
+		// `ERROR pq: cannot get array length of a scalar`. The
+		// jsonb_typeof(...)='array' guard sits in the WHERE clause while
+		// jsonb_array_length()/jsonb_array_elements_text() are evaluated on rows
+		// the planner has not yet filtered, so a single scalar list_ids row
+		// aborts the statement — every boot, since it shipped.
 		{"reset_emergency_agents", `UPDATE mailing_engine_agent_state SET status = 'active', updated_at = NOW() WHERE agent_type = 'emergency' AND status = 'firing'`},
 		{"add_tracking_sending_domain", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_domain VARCHAR(255); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
 		{"add_tracking_sending_ip", `DO $$ BEGIN ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS sending_ip VARCHAR(45); EXCEPTION WHEN OTHERS THEN NULL; END $$`},
@@ -5136,16 +5215,13 @@ func runStartupMigrations(db *sql.DB) {
 			ON CONFLICT DO NOTHING;
 		EXCEPTION WHEN OTHERS THEN NULL; END $$
 		`},
-		{"consolidate_suppression_legacy", `
-			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
-			SELECT gen_random_uuid(), (SELECT id FROM organizations LIMIT 1),
-				LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email))),
-				COALESCE(s.reason, 'manual'), COALESCE(s.source, 'legacy_migration'),
-				COALESCE(s.created_at, NOW())
-			FROM mailing_suppressions s WHERE s.active = TRUE
-			AND NOT EXISTS (SELECT 1 FROM mailing_global_suppressions g WHERE g.md5_hash = MD5(LOWER(TRIM(s.email))))
-			ON CONFLICT DO NOTHING
-		`},
+		// PRUNED (REQ-094, 2026-09-01): consolidate_suppression_legacy. A
+		// one-time legacy consolidation whose anti-join computes
+		// MD5(LOWER(TRIM(email))) per row over the whole mailing_suppressions
+		// table against the multi-million-row global hub — no index can serve
+		// it, and it has been cancelled at 5s every boot. A backfill of this
+		// size belongs behind the suppression worker's own budget, never the
+		// migration slice (memory `startup-migration-footguns` §4).
 		{"cleanup_global_entries_from_legacy", `DELETE FROM mailing_suppression_entries WHERE is_global = TRUE`},
 		// System segments: companion table (owned by ignite) to avoid ALTER on apex_admin-owned mailing_segments
 		{"create_system_segments_table", `CREATE TABLE IF NOT EXISTS mailing_system_segments (
@@ -5216,18 +5292,14 @@ func runStartupMigrations(db *sql.DB) {
 		`},
 		{"add_is_machine_open_col", `ALTER TABLE mailing_tracking_events ADD COLUMN IF NOT EXISTS is_machine_open BOOLEAN DEFAULT FALSE`},
 		{"add_idx_mte_machine_open", `CREATE INDEX IF NOT EXISTS idx_mte_machine_open ON mailing_tracking_events (campaign_id, is_machine_open) WHERE event_type = 'opened' AND is_machine_open = TRUE`},
-		{"backfill_mpp_opens_sent_v3", `
-			UPDATE mailing_tracking_events o
-			SET is_machine_open = TRUE
-			FROM mailing_tracking_events s
-			WHERE o.event_type = 'opened'
-			  AND o.is_machine_open = FALSE
-			  AND s.event_type = 'sent'
-			  AND o.subscriber_id = s.subscriber_id
-			  AND o.campaign_id = s.campaign_id
-			  AND o.event_at >= s.event_at
-			  AND o.event_at <= s.event_at + INTERVAL '120 seconds'
-		`},
+		// PRUNED (REQ-094, 2026-09-01): backfill_mpp_opens_sent_v3 — an
+		// unbounded self-join of mailing_tracking_events against itself across
+		// all 11 partitions, with no time bound at all. It cannot complete in
+		// 5s at any point in this table's life, and every attempt writes to the
+		// hottest table on the platform. Forward classification is already done
+		// at ingest (`is_machine_open` is set by the tracking path); a
+		// historical fill, if still wanted, belongs in a calm-IO worker pass
+		// like backfillClickVerdict.
 
 		{"create_wave_content_cache", `CREATE TABLE IF NOT EXISTS mailing_wave_content_cache (
 			id            SERIAL PRIMARY KEY,
@@ -5273,18 +5345,12 @@ func runStartupMigrations(db *sql.DB) {
 		{"add_list_mailed_to", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`},
 		{"add_list_last_refreshed_at", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`},
 		{"add_list_is_visible", `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS is_visible BOOLEAN DEFAULT true`},
-		{"hide_duplicate_lists", `
-			UPDATE mailing_lists SET is_visible = false
-			WHERE id IN (
-				'482e2ac2-06ee-4bf0-9c4c-4596c035292b',
-				'7863cda8-a5c8-4bf3-9277-39f154e472d7',
-				'a0379e54-11ba-4b57-9787-4da4c2eb223b',
-				'580cea39-9560-4753-a078-78b0aa080fcd',
-				'ed49d5cf-50f2-4200-9821-41bde46950dd',
-				'da2970f4-b652-4251-aa19-19e7e7309ca9',
-				'45a37870-dd25-4c7c-986e-8f42425720df',
-				'2902c0f5-b9a3-4771-93a9-2387f1a5d10b'
-			)`},
+		// PRUNED (REQ-094, 2026-09-01): hide_duplicate_lists — a one-time
+		// cosmetic hide of 8 named lists, already applied: prod has 0 of those
+		// 8 rows with is_visible = true. The UPDATE re-runs unconditionally
+		// (no WHERE is_visible), so it takes row locks on mailing_lists and
+		// fires trigger_update_list_counts on every boot, and was cancelled at
+		// 5s on 2026-09-01.
 
 		// Fast O(1) subscriber count trigger — replaces the old O(n) COUNT(*) trigger.
 		// Moved here from the runtime goroutine in NewMailingService so schema
@@ -5318,7 +5384,14 @@ func runStartupMigrations(db *sql.DB) {
 						FOR EACH ROW EXECUTE FUNCTION update_list_counts_fast();
 				END IF;
 			END $$`},
-		{"drop_old_list_counts_fn", `DROP FUNCTION IF EXISTS update_list_counts() CASCADE`},
+		// PRUNED (REQ-094, 2026-09-01): drop_old_list_counts_fn — impossible for
+		// this connection. `update_list_counts()` is owned by `apex_admin`, the
+		// app connects as `ignite`, and DROP FUNCTION requires ownership: boot
+		// log `ERROR pq: must be owner of function update_list_counts`. It is
+		// also inert — trigger_update_list_counts already executes
+		// update_list_counts_fast() (pg_get_triggerdef, 2026-09-01) — so the old
+		// function is an orphan, not a live O(n) trigger. Dropping it is an
+		// apex_admin task (runAdminMigrations, which no-ops in prod).
 
 		{"add_subscriber_isp_col", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS isp VARCHAR(20) DEFAULT ''`},
 		{"idx_subscriber_isp", `CREATE INDEX IF NOT EXISTS idx_subscribers_isp ON mailing_subscribers(isp) WHERE isp != ''`},
@@ -5348,26 +5421,25 @@ func runStartupMigrations(db *sql.DB) {
 		//    excludes bots at the BuildSegmentWhereClause layer, so this
 		//    is just a one-time cleanup of state accumulated before the
 		//    filter existed.
-		{"bot_backstop_purge_segment_members", `
-			DELETE FROM mailing_segment_members sm
-			USING mailing_subscribers s
-			WHERE sm.subscriber_id = s.id
-			  AND s.is_bot = true
-		`},
+		// PRUNED (REQ-094, 2026-09-01): bot_backstop_purge_segment_members —
+		// a DELETE joining the ~47M-row mailing_segment_members to the 18.4M-row
+		// mailing_subscribers with no bounding predicate. Cancelled at 5s every
+		// boot since it shipped, so the "one-time cleanup" has never run once
+		// (prod still has matching rows). The comment above is the disposition:
+		// BuildSegmentWhereClause already excludes bots at materialisation, so
+		// the residue drains as segments rebuild. A bounded sweep, if wanted,
+		// belongs in segment_cleanup.go with that worker's own budget.
 		// 3) Zero out lingering inflated score_local values on SDS rows for
 		//    bots. RecomputeSDSScoreLocal will continue to write 0 for bots
 		//    on every future engagement event, but historical scores need
 		//    to be explicitly cleared or the planner's ORDER BY
 		//    sds.score_local DESC will keep picking them until something
 		//    else triggers a recompute on that (subscriber, domain) pair.
-		{"bot_backstop_reset_score_local", `
-			UPDATE mailing_subscriber_domain_state sds
-			SET score_local = 0, updated_at = NOW()
-			FROM mailing_subscribers s
-			WHERE s.id = sds.subscriber_id
-			  AND s.is_bot = true
-			  AND sds.score_local > 0
-		`},
+		// PRUNED (REQ-094, 2026-09-01): bot_backstop_reset_score_local — same
+		// shape, same evidence: an unbounded join across mailing_subscriber_
+		// domain_state and the 18.4M-row subscriber heap, cancelled at 5s on
+		// every boot. RecomputeSDSScoreLocal (the comment above) is the live
+		// mechanism; this fill never ran.
 
 		{"add_subscriber_eo_validated_at", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS eo_validated_at TIMESTAMPTZ`},
 
@@ -5393,25 +5465,14 @@ func runStartupMigrations(db *sql.DB) {
 			)
 			ON CONFLICT (organization_id, md5_hash) DO NOTHING
 		`},
-		{"sync_bot_clickers_to_global_supp", `
-			INSERT INTO mailing_global_suppressions (id, organization_id, email, md5_hash, reason, source, created_at)
-			SELECT DISTINCT gen_random_uuid(), s.organization_id, s.email, MD5(LOWER(TRIM(s.email))), 'bot_clicker', 'status_sync', NOW()
-			FROM mailing_subscribers s
-			WHERE s.status = 'confirmed'
-			AND EXISTS (
-				SELECT 1 FROM mailing_tracking_events e
-				WHERE e.subscriber_id = s.id AND e.event_type = 'opened' AND e.is_machine_open = TRUE
-			)
-			AND NOT EXISTS (
-				SELECT 1 FROM mailing_tracking_events e2
-				WHERE e2.subscriber_id = s.id AND e2.event_type = 'opened' AND (e2.is_machine_open = FALSE OR e2.is_machine_open IS NULL)
-			)
-			AND NOT EXISTS (
-				SELECT 1 FROM mailing_global_suppressions g
-				WHERE g.organization_id = s.organization_id AND g.md5_hash = MD5(LOWER(TRIM(s.email)))
-			)
-			ON CONFLICT (organization_id, md5_hash) DO NOTHING
-		`},
+		// PRUNED (REQ-094, 2026-09-01): sync_bot_clickers_to_global_supp — three
+		// correlated subqueries against the partitioned mailing_tracking_events
+		// for every one of the 18.4M subscriber rows. Cancelled at 5s on every
+		// boot, so it has never suppressed anyone. Keeping it is also a
+		// correctness hazard, not just a cost: it writes GLOBAL suppressions
+		// from a machine-open heuristic, and the standing doctrine is that the
+		// scanner verdict never defines or gates an audience (CLAUDE.md §6).
+		// Any revival needs an explicit operator decision and a bounded worker.
 
 		{"startup_warmup_limits_10k", `UPDATE mailing_ip_addresses SET warmup_daily_limit = 10000 WHERE warmup_daily_limit < 10000 AND status IN ('active', 'warmup')`},
 		{"drop_ip_status_check", `ALTER TABLE mailing_ip_addresses DROP CONSTRAINT IF EXISTS mailing_ip_addresses_status_check`},
@@ -6086,47 +6147,33 @@ END $$`},
 		EXCEPTION WHEN OTHERS THEN NULL;
 		END $$`},
 
-		{"purge_besmed_tracking_events", `DELETE FROM mailing_tracking_events WHERE LOWER(sending_domain) LIKE '%besmed%'`},
+		// PRUNED (REQ-094, 2026-09-01): purge_besmed_tracking_events. The three
+		// sibling purges below are cheap and stay; this one is an unindexed
+		// LOWER(...) LIKE scan across all 11 partitions of the platform's
+		// largest table, cancelled at 5s on every boot since the 2026-03-12
+		// open-relay cleanup. It has therefore never deleted a row, and the
+		// campaigns/profiles it was cleaning up after are already gone.
 		{"purge_besmed_queue", `DELETE FROM mailing_campaign_queue WHERE campaign_id IN (SELECT id FROM mailing_campaigns WHERE LOWER(from_email) LIKE '%besmed%')`},
 		{"purge_besmed_campaigns", `DELETE FROM mailing_campaigns WHERE LOWER(from_email) LIKE '%besmed%'`},
 		{"purge_besmed_sending_profiles", `DELETE FROM mailing_sending_profiles WHERE LOWER(sending_domain) LIKE '%besmed%'`},
 
-		{"ensure_pgcrypto", `CREATE EXTENSION IF NOT EXISTS pgcrypto`},
+		// PRUNED (REQ-094, 2026-09-01): ensure_pgcrypto. Boot log
+		// `ERROR pq: permission denied to create extension "pgcrypto"` — the
+		// app role is not superuser and never will be. It is also unnecessary:
+		// prod is PostgreSQL 16.13, where gen_random_uuid() is a core builtin
+		// (verified by calling it on prod as `ignite` with pg_extension showing
+		// only pg_trgm / plpgsql / uuid-ossp). Every gen_random_uuid() in this
+		// file already works without the extension.
 
-		{"backfill_inbox_profile_counts_v1", `
-			UPDATE mailing_inbox_profiles p SET
-				total_sends = COALESCE(agg.delivered, 0),
-				total_bounces = COALESCE(agg.bounced, 0),
-				total_complaints = COALESCE(agg.complained, 0),
-				updated_at = NOW()
-			FROM (
-				SELECT LOWER(s.email) as email,
-					COUNT(*) FILTER (WHERE e.event_type = 'delivered') as delivered,
-					COUNT(*) FILTER (WHERE e.event_type = 'bounced') as bounced,
-					COUNT(*) FILTER (WHERE e.event_type = 'complained') as complained
-				FROM mailing_tracking_events e
-				JOIN mailing_subscribers s ON e.subscriber_id = s.id
-				WHERE s.email IS NOT NULL
-				GROUP BY LOWER(s.email)
-			) agg
-			WHERE LOWER(p.email) = agg.email
-		`},
-
-		{"backfill_inbox_profile_engagement_v1", `
-			UPDATE mailing_inbox_profiles SET
-				engagement_score = LEAST(
-					CASE WHEN COALESCE(total_sends, 0) = 0 THEN 0.50
-					ELSE
-						(CAST(COALESCE(total_opens, 0) AS FLOAT) / total_sends * 0.6) +
-						(CAST(COALESCE(total_clicks, 0) AS FLOAT) / total_sends * 0.4) +
-						CASE WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '7 days' THEN 0.20
-							 WHEN last_open_at IS NOT NULL AND last_open_at > NOW() - INTERVAL '30 days' THEN 0.10
-							 ELSE 0 END
-					END,
-					1.0
-				)
-			WHERE total_sends > 0
-		`},
+		// PRUNED (REQ-094, 2026-09-01): backfill_inbox_profile_counts_v1 and
+		// backfill_inbox_profile_engagement_v1. The first aggregates the ENTIRE
+		// partitioned mailing_tracking_events joined to the 18.4M-row subscriber
+		// heap and groups by LOWER(email); the second is a whole-table UPDATE
+		// that depends on the first having landed. Both were cancelled at 5s on
+		// every boot, so neither has ever produced a number — and the second
+		// would write the 0–1 `mailing_inbox_profiles.engagement_score` scale,
+		// which nothing may compute from the 0–100 subscriber scale (CLAUDE.md
+		// §9). A rebuild of these counters belongs in the rollup worker family.
 
 		// Image CDN: hosted images storage
 		{"create_mailing_hosted_images", `CREATE TABLE IF NOT EXISTS mailing_hosted_images (
@@ -6864,25 +6911,17 @@ ON CONFLICT (brand_root) DO NOTHING`},
 			created_at TIMESTAMPTZ DEFAULT NOW(),
 			UNIQUE(sending_domain, isp)
 		)`},
-		{"seed_pipeline_domain_lists", `
-			INSERT INTO data_pipeline_domain_lists (sending_domain, isp, list_id)
-			SELECT v.sending_domain, v.isp, l.id
-			FROM (VALUES
-				('em.discountblog.com', 'gmail', 'Google - Active - 1 03052026'),
-				('em.discountblog.com', 'yahoo', 'Yahoo - Clickers - 0 03052026'),
-				('em.discountblog.com', 'microsoft', 'Microsoft - Active - 1 03052026'),
-				('em.discountblog.com', 'apple', 'Apple - Active - 1 03052026'),
-				('em.discountblog.com', 'comcast', 'Comcast - Active - 1 03052026'),
-				('em.discountblog.com', 'charter', 'Charter - Active - 2 03092026'),
-				('em.discountblog.com', 'att', 'ATT - Active -1 03052026'),
-				('em.discountblog.com', 'cox', 'Cox - Active - 1 03052026')
-			) AS v(sending_domain, isp, list_name)
-			JOIN mailing_lists l ON l.name = v.list_name
-			WHERE NOT EXISTS (
-				SELECT 1 FROM data_pipeline_domain_lists dl
-				WHERE dl.sending_domain = v.sending_domain AND dl.isp = v.isp
-			)
-		`},
+		// PRUNED (REQ-094, 2026-09-01): seed_pipeline_domain_lists. It has never
+		// landed a row (prod `data_pipeline_domain_lists` has 25 rows, ZERO for
+		// em.discountblog.com) and it cannot land as written: 6 of the 8 list
+		// names it joins on are DUPLICATED in mailing_lists (e.g. two
+		// 'Apple - Active - 1 03052026'), so the join yields two rows per
+		// (sending_domain, isp) against this table's UNIQUE(sending_domain, isp)
+		// with no ON CONFLICT clause. The sibling seed below
+		// (seed_pipeline_domain_lists_mh_ht) works only because its names are
+		// unique. Reviving this needs a deterministic list pick (id, not name)
+		// plus ON CONFLICT DO NOTHING — an operator data decision, not a
+		// migration edit.
 		{"seed_pipeline_domain_lists_mh_ht", `
 			INSERT INTO data_pipeline_domain_lists (sending_domain, isp, list_id)
 			SELECT v.sending_domain, v.isp, l.id
@@ -6955,7 +6994,11 @@ ON CONFLICT (brand_root) DO NOTHING`},
 		// List dashboard performance indexes
 		{"idx_subscribers_list_status", `CREATE INDEX IF NOT EXISTS idx_subscribers_list_status ON mailing_subscribers (list_id, status)`},
 		{"idx_lists_visible_created", `CREATE INDEX IF NOT EXISTS idx_lists_visible_created ON mailing_lists (created_at DESC) WHERE COALESCE(is_visible, true) = true`},
-		{"idx_subscribers_audience_scan", `CREATE INDEX IF NOT EXISTS idx_subscribers_audience_scan ON mailing_subscribers (list_id, status, created_at, id) WHERE status IN ('active','confirmed')`},
+		// RE-VEHICLED (REQ-094, 2026-09-01): idx_subscribers_audience_scan now
+		// lives in concurrentIndexSpecs. It is a 4-column partial index over the
+		// 18.4M-row mailing_subscribers heap — absent in prod (`pg_indexes` → 0)
+		// because the in-line build was cancelled at 5s on every boot while
+		// holding a SHARE lock that blocks writes to the subscriber table.
 
 		{"create_audience_metrics_table", `
 			CREATE TABLE IF NOT EXISTS mailing_audience_metrics (
@@ -7224,19 +7267,17 @@ END $$`},
 		{"idx_subscriber_events_recon", `CREATE INDEX IF NOT EXISTS idx_subscriber_events_recon ON subscriber_events (subscriber_id, source, event_at) WHERE source IN ('site','site_beacon')`},
 		{"idx_tracking_events_recon", `CREATE INDEX IF NOT EXISTS idx_tracking_events_recon ON mailing_tracking_events (subscriber_id, event_type, event_at)`},
 
-		{"seed_ghost_visitor_segment_row", `
-			INSERT INTO mailing_segments (
-				id, organization_id, name, description, segment_type, conditions,
-				status, subscriber_count, created_at, updated_at
-			)
-			SELECT gen_random_uuid(), id, 'Ghost Visitors (System)',
-				'Subscribers with confirmed site visits but zero ISP-reported email clicks in the last 30 days. Strong signal of ISP metric suppression — prime re-engagement candidates.',
-				'system', '[]'::jsonb, 'active', 0, NOW(), NOW()
-			FROM organizations
-			WHERE NOT EXISTS (
-				SELECT 1 FROM mailing_segments WHERE name = 'Ghost Visitors (System)' AND organization_id = organizations.id
-			)
-		`},
+		// PRUNED (REQ-094, 2026-09-01): seed_ghost_visitor_segment_row — it can
+		// never succeed. It inserts segment_type 'system', but
+		// `mailing_segments_segment_type_check` allows only ('dynamic','static')
+		// (pg_get_constraintdef, prod 2026-09-01), so every boot logs
+		// `ERROR pq: new row for relation "mailing_segments" violates check
+		// constraint "mailing_segments_segment_type_check"` and prod has 0 rows
+		// named 'Ghost Visitors (System)'. The companion entry below is
+		// therefore also inert (it selects that segment by name). Fixing the
+		// feature means widening the CHECK — and mailing_segments is owned by
+		// apex_admin, so that is not this connection's to do (CLAUDE.md §4
+		// companion-table pattern).
 		{"seed_ghost_visitor_segment_query", `
 			INSERT INTO mailing_system_segments (segment_id, system_query)
 			SELECT ms.id,
@@ -7341,7 +7382,11 @@ END $$`},
 
 		// ── Audience architecture refactor: add finalizing_audience status ──
 		{"drop_status_chk_v2", `ALTER TABLE mailing_campaigns DROP CONSTRAINT IF EXISTS mailing_campaigns_status_check`},
-		{"readd_status_chk_v2", `ALTER TABLE mailing_campaigns ADD CONSTRAINT mailing_campaigns_status_check CHECK (status IN ('draft','scheduled','preparing','finalizing_audience','sending','paused','completed','completed_with_errors','cancelled','failed','deleted','sent'))`},
+		// PRUNED (REQ-094, 2026-09-01): readd_status_chk_v2 — the v2 twin of
+		// readd_status_chk (~3600 lines above); identical statement, identical
+		// evidence (constraint absent in prod, validating ADD CONSTRAINT on a
+		// 401k-row hot table cancelled at 5s every boot). drop_status_chk_v2
+		// immediately above stays, so the end state is unchanged.
 
 		// ── Segment pre-materialization table ──
 		{"create_segment_members", `CREATE TABLE IF NOT EXISTS mailing_segment_members (
@@ -7738,19 +7783,14 @@ END $$`},
 		// On re-run after a successful first pass the WHERE check returns
 		// non-zero rows and the UPDATE is skipped. This pattern avoids the
 		// need for a separate _migration_log row.
-		{"sds_state_backfill_from_history", `DO $backfill$
-		BEGIN
-			IF (SELECT COUNT(*) FROM mailing_subscriber_domain_state
-				WHERE state != 'probe' OR state_updated_at != created_at) = 0 THEN
-				UPDATE mailing_subscriber_domain_state
-				SET state = CASE
-					WHEN total_opens > 0 OR total_clicks > 0 THEN 'engaged'
-					WHEN total_sent >= 4 THEN 'cold'
-					ELSE 'probe'
-				END,
-				state_updated_at = COALESCE(last_open_at, last_click_at, last_mailed_at, NOW());
-			END IF;
-		END $backfill$`},
+		// PRUNED (REQ-094, 2026-09-01): sds_state_backfill_from_history. The
+		// sentinel above is already satisfied in prod — rows exist with
+		// state <> 'probe' (EXISTS probe, 2026-09-01) — so the UPDATE is a
+		// permanent no-op. What still runs is the sentinel itself: an
+		// unbounded COUNT(*) over the whole mailing_subscriber_domain_state
+		// table, which is what gets cancelled at 5s on every boot. A "guard"
+		// that costs more than the work it guards is the anti-pattern; the
+		// correct shape (if ever revived) is EXISTS ... LIMIT 1.
 
 		// === Machine-click classifier (per-domain engagement engine, 2026-05-09) ===
 		//
@@ -7795,7 +7835,15 @@ END $$`},
 		{"create_ignite_verdict_is_human_fn", igniteVerdictIsHumanDDL},
 		{"create_ignite_verdict_version_fn", igniteVerdictVersionDDL},
 		{"add_click_verdict_col", clickVerdictColumnDDL},
-		{"add_idx_mte_click_verdict", clickVerdictIndexDDL},
+		// RE-VEHICLED (REQ-094, 2026-09-01): add_idx_mte_click_verdict now lives
+		// in concurrentIndexSpecs (clickVerdictConcurrentIndexDDL). It is a
+		// partial index over every 'clicked' row of the partitioned
+		// mailing_tracking_events; the in-line build was cancelled at 5s on
+		// every boot, so `pg_indexes ~ 'click_verdict'` returned 0 rows on
+		// 2026-09-01 and backfillClickVerdict's pre-check has timed out on both
+		// instances ever since the classifier shipped. Ordering is preserved:
+		// the column (add_click_verdict_col, above) still lands here, before the
+		// trigger that writes it — only the INDEX moved.
 		{"create_ignite_set_click_verdict_fn", igniteSetClickVerdictFnDDL},
 		{"create_trg_set_click_verdict", igniteSetClickVerdictTriggerDDL},
 
@@ -7834,7 +7882,11 @@ END $$`},
 		// stay in place for one release as a kill switch. After the release
 		// that ships this migration we expect zero campaigns to run with the
 		// flag off; the follow-up deploy deletes the legacy code.
-		{"phase21_default_use_master_selection_true", `ALTER TABLE mailing_campaigns ALTER COLUMN use_master_selection SET DEFAULT true`},
+		// PRUNED (REQ-094, 2026-09-01): phase21_default_use_master_selection_true
+		// — already applied. prod `information_schema.columns` reports
+		// mailing_campaigns.use_master_selection column_default = 'true'. The
+		// re-run is a pure no-op that still takes ACCESS EXCLUSIVE on a
+		// send-path table and was cancelled at 5s on every boot.
 		// P6: hide the 40+ brand×ISP lists from the UI. They are no longer
 		// the selection driver — SDS is. Lists remain in the DB for
 		// historical queries and as ingestion targets, but the campaign
@@ -7903,28 +7955,24 @@ END $$`},
 		{"phase21_idx_source_system", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_system ON mailing_subscribers (source_system) WHERE source_system IS NOT NULL`},
 		{"phase21_idx_source_detail", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_detail ON mailing_subscribers (source_detail) WHERE source_detail IS NOT NULL`},
 		{"phase21_idx_imported_at", `CREATE INDEX IF NOT EXISTS idx_subscribers_imported_at ON mailing_subscribers (imported_at DESC) WHERE imported_at IS NOT NULL`},
-		{"phase21_idx_source_metadata_gin", `CREATE INDEX IF NOT EXISTS idx_subscribers_source_metadata_gin ON mailing_subscribers USING gin (source_metadata)`},
-		// Backfill only rows that haven't been stamped yet. Capped by NOT EXISTS
-		// so the UPDATE is idempotent across server restarts.
-		{"phase21_backfill_source_system", `
-			UPDATE mailing_subscribers
-			SET source_system = CASE
-			  WHEN source IS NOT NULL AND source <> '' THEN 'legacy_import'
-			  ELSE 'unknown'
-			END
-			WHERE source_system IS NULL`},
-		{"phase21_backfill_source_detail", `
-			UPDATE mailing_subscribers
-			SET source_detail = LEFT(source, 200)
-			WHERE source_detail IS NULL AND source IS NOT NULL AND source <> ''`},
-		{"phase21_backfill_imported_at", `
-			UPDATE mailing_subscribers
-			SET imported_at = COALESCE(subscribed_at, created_at)
-			WHERE imported_at IS NULL`},
-		{"phase21_backfill_imported_from_list_id", `
-			UPDATE mailing_subscribers
-			SET imported_from_list_id = list_id
-			WHERE imported_from_list_id IS NULL AND list_id IS NOT NULL`},
+		// RE-VEHICLED (REQ-094, 2026-09-01): phase21_idx_source_metadata_gin now
+		// lives in concurrentIndexSpecs. A GIN index over an 18.4M-row JSONB
+		// column is one of the most expensive builds in this schema; it is
+		// absent in prod (`pg_indexes` → 0) because the in-line build was
+		// cancelled at 5s on every boot.
+		//
+		// PRUNED (REQ-094, 2026-09-01): the four phase21_backfill_* entries
+		// (source_system, source_detail, imported_at, imported_from_list_id).
+		// The "capped by NOT EXISTS so it is idempotent" note above is true but
+		// beside the point: each is an unbounded UPDATE over the 18.4M-row
+		// mailing_subscribers heap and each was cancelled at 5s on every boot —
+		// verified still-unfilled in prod on 2026-09-01 (rows remain with
+		// source_system / source_detail / imported_at / imported_from_list_id
+		// NULL), so none has ever committed a row. Per memory
+		// `startup-migration-footguns` §4 a backfill does not belong in this
+		// slice at all; a resumable, batched pass belongs in a worker with its
+		// own budget (the ClickFunnelSnapshotWorker.repairOrphanNodeStamps
+		// precedent).
 		// ---------------------------------------------------------------------
 		// Master List Migration P8 — canonical segments.
 		//
@@ -8897,20 +8945,16 @@ END $$`},
 		// exclusion_segments arrays. Terminal statuses ('sent','cancelled',
 		// 'failed') don't matter for future scheduling.
 		// =====================================================================
-		{"may29_seg_archive_stale_partner_waves", `UPDATE mailing_segments s
-			SET status = 'archived', updated_at = NOW()
-			WHERE s.status NOT IN ('archived','inactive')
-			  AND s.category = 'partner_wave_static'
-			  AND s.created_at < NOW() - INTERVAL '7 days'
-			  AND NOT EXISTS (
-			    SELECT 1 FROM mailing_campaigns c
-			    WHERE c.status IN ('scheduled','sending','preparing','finalizing_audience','paused')
-			      AND (
-			        c.segment_id = s.id
-			        OR c.pmta_config->'campaign_input'->'inclusion_segments' @> to_jsonb(s.id::text)
-			        OR c.pmta_config->'campaign_input'->'exclusion_segments' @> to_jsonb(s.id::text)
-			      )
-			  )`},
+		// PRUNED (REQ-094, 2026-09-01): may29_seg_archive_stale_partner_waves.
+		// This is recurring hygiene, not a migration, and it has never run: the
+		// anti-join evaluates two JSONB `@>` containment tests against
+		// mailing_campaigns for every candidate segment with no index able to
+		// serve them, so it was cancelled at 5s on every boot — which is why the
+		// 11k+ segment backlog described above still exists. Its live owner is
+		// SegmentCleanupWorker (internal/worker/segment_cleanup.go), whose
+		// Phase-2 self-pruning archives unreferenced segments on an hourly
+		// ticker with a real budget. The cheaper legacy_snapshot sibling below
+		// stays.
 		{"may29_seg_archive_stale_legacy_snapshots", `UPDATE mailing_segments s
 			SET status = 'archived', updated_at = NOW()
 			WHERE s.status NOT IN ('archived','inactive')
@@ -9872,13 +9916,29 @@ END $$`},
 		// The canonical drawable reservoir — the ONLY sanctioned read of S0. Mirrors
 		// _db.PG_S0_HOT. ISP-family filter applied by consumers (draw/gate) via _isp_case;
 		// this view is the clean channel+EO+ready superset. EO-null Sam's Club excluded here.
-		{"create_partner_fresh_drawable_view", `CREATE OR REPLACE VIEW partner_fresh_drawable AS
-			SELECT q.*, d.source_channel, d.slug AS dataset_slug, d.vertical AS dataset_vertical
-			FROM partner_clean_queue q
-			JOIN partner_datasets d ON d.id = q.dataset_id
-			WHERE d.source_channel IN ('api_feed','flat_file')
-			  AND q.eo_result IN ('Verified','Complainer')
-			  AND q.status = 'ready'`},
+		// REQ-094 (2026-09-01): existence-guarded, was CREATE OR REPLACE.
+		// CREATE OR REPLACE VIEW cannot renumber or rename an existing view's
+		// columns, and `q.*` expands to whatever partner_clean_queue happens to
+		// have: once that table gained columns, the replace tried to rename
+		// position 25 and every boot logged
+		// `ERROR pq: cannot change name of view column "source_channel" to
+		// "last_pushed_at"`. The view is present and correct in prod (29
+		// columns, source_channel/dataset_slug/dataset_vertical at 27-29), so
+		// the only thing this entry still needs to do is create it on a fresh
+		// or DR database. Changing the definition later requires an explicit
+		// DROP VIEW + CREATE VIEW, out of band — `q.*` makes in-place REPLACE
+		// structurally unreliable.
+		{"create_partner_fresh_drawable_view", `DO $$ BEGIN
+			IF to_regclass('public.partner_fresh_drawable') IS NULL THEN
+				EXECUTE $v$CREATE VIEW partner_fresh_drawable AS
+					SELECT q.*, d.source_channel, d.slug AS dataset_slug, d.vertical AS dataset_vertical
+					FROM partner_clean_queue q
+					JOIN partner_datasets d ON d.id = q.dataset_id
+					WHERE d.source_channel IN ('api_feed','flat_file')
+					  AND q.eo_result IN ('Verified','Complainer')
+					  AND q.status = 'ready'$v$;
+			END IF;
+		END $$`},
 		// ---- auto_coverage feed → its own vertical (operator 2026-08-08,
 		// renamed to the operator's wording 2026-08-09) ----
 		// "Attribits - Internal Car Insurance" (the auto_coverage feed) was
@@ -11212,7 +11272,17 @@ END $$`},
 	// checkLateCampaigns). Stamped only after a successful SMS; suppresses
 	// repeat alerts within alerting.campaign_lateness.realert_after_hours.
 	// ---------------------------------------------------------------------
-	if _, err := db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS late_alert_sent_at TIMESTAMPTZ`); err != nil {
+	// REQ-094 (2026-09-01): probe-guarded. This statement lives OUTSIDE the
+	// migration slice, so it never got the catalog fast path — and on a hot
+	// mailing_campaigns a no-op ADD COLUMN still queues for ACCESS EXCLUSIVE
+	// and dies at the statement timeout. It was the last surviving
+	// "[StartupMigration] … ERROR" line of the Sep 1 boot
+	// (19:00:18Z, `canceling statement due to statement timeout`) even though
+	// the column has been present in prod all along.
+	const lateAlertSentAtDDL = `ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS late_alert_sent_at TIMESTAMPTZ`
+	if migrationSkipProbe(db, lateAlertSentAtDDL) {
+		log.Println("[StartupMigration] add_campaigns_late_alert_sent_at: skipped (already applied)")
+	} else if _, err := db.Exec(lateAlertSentAtDDL); err != nil {
 		log.Printf("[StartupMigration] add_campaigns_late_alert_sent_at: ERROR %v", err)
 	} else {
 		log.Println("[StartupMigration] add_campaigns_late_alert_sent_at: OK")

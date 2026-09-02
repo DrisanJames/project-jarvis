@@ -38,6 +38,11 @@ func setBasedTestParams() waveEnqueueParams {
 		baseSubject:  "Best deals today",
 		plainContent: "plain body",
 		brandKey:     "discountblog",
+		// REQ-089: routed waves BUFFER their commands here; EnqueuePMTAWave
+		// produces the buffer once, after COMMIT. A routed enqueue with a nil
+		// buffer is a programming error and fails loudly, so every test params
+		// value carries one.
+		produceBuf: &waveProduceBuffer{},
 	}
 }
 

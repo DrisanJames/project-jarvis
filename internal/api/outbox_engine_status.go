@@ -805,7 +805,7 @@ func engineWaveSection(ctx context.Context, db *sql.DB) EngineWaveSection {
 		SELECT
 			COUNT(*) FILTER (WHERE status = 'planned' AND scheduled_at <= NOW()),
 			COUNT(*) FILTER (WHERE status = 'planned' AND scheduled_at >  NOW()),
-			COUNT(*) FILTER (WHERE status IN ('dispatched','enqueuing')),
+			COUNT(*) FILTER (WHERE status IN ('dispatched','enqueuing','produced')),
 			COUNT(*) FILTER (WHERE status IN ('sending','running')),
 			COUNT(*) FILTER (WHERE status = 'completed' AND COALESCE(completed_at, updated_at) > NOW() - INTERVAL '24 hours'),
 			COALESCE(SUM(COALESCE(planned_recipients, 0)) FILTER (WHERE status = 'completed' AND COALESCE(completed_at, updated_at) > NOW() - INTERVAL '24 hours'), 0),
@@ -870,7 +870,7 @@ func engineWaveFamilySections(ctx context.Context, db *sql.DB) (broadcast, partn
 			CASE WHEN `+partnerDripFamilySQL+` THEN 'partner' ELSE 'broadcast' END AS family,
 			COUNT(*) FILTER (WHERE w.status = 'planned' AND w.scheduled_at <= NOW()),
 			COUNT(*) FILTER (WHERE w.status = 'planned' AND w.scheduled_at >  NOW()),
-			COUNT(*) FILTER (WHERE w.status IN ('dispatched','enqueuing')),
+			COUNT(*) FILTER (WHERE w.status IN ('dispatched','enqueuing','produced')),
 			COUNT(*) FILTER (WHERE w.status IN ('sending','running')),
 			COUNT(*) FILTER (WHERE w.status = 'completed' AND COALESCE(w.completed_at, w.updated_at) > NOW() - INTERVAL '24 hours'),
 			COALESCE(SUM(COALESCE(w.planned_recipients, 0)) FILTER (WHERE w.status = 'completed' AND COALESCE(w.completed_at, w.updated_at) > NOW() - INTERVAL '24 hours'), 0),

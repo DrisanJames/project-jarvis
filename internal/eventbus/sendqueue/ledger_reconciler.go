@@ -11,9 +11,29 @@ import (
 )
 
 // =============================================================================
-// LEDGER RECONCILER — closes the crash window in the claim -> send -> record
-// sequence, mirroring worker/outbox_reconciler.go but keyed on the send ledger
-// instead of mailing_campaign_queue.
+// LEDGER RECONCILER — SK-2 ONLY. NOT WIRED. NOT ON THE LIVE SEND PATH.
+// =============================================================================
+// UNWIRED 2026-09-01 (REQ-089). This reconciler is the partner of
+// KafkaSendConsumer/processSend (consumer.go) — the SK-2 "send the mail FROM
+// Kafka" prototype, which is constructed nowhere outside tests. It was
+// nevertheless STARTED by cmd/server against the live SK-4 deployment, where
+// nothing writes mailing_send_ledger: it ticked every 60s over an empty table
+// for 18h while 219,237 produced-but-not-landed recipients sat invisible to it,
+// and reported reconciler_running:true the whole time (send-transport SEV-1 #4).
+//
+// cmd/server now starts UnlandedWaveSweeper (reconciler.go) instead — the
+// reconciler the SK-4 queue-writer path actually needs, which reconciles against
+// mailing_campaign_plan_recipients and needs no ledger at all.
+//
+// Writer (processSend/reclaim) and reader (this file) are unwired TOGETHER, so
+// the ledger is a coherent dormant subsystem rather than a half-state. Do not
+// re-wire this without also wiring KafkaSendConsumer.
+//
+// Below is the original SK-2 documentation, unchanged.
+//
+// It closes the crash window in the claim -> send -> record sequence, mirroring
+// worker/outbox_reconciler.go but keyed on the send ledger instead of
+// mailing_campaign_queue.
 // =============================================================================
 // processSend's one unavoidable crash window: the process can die AFTER the
 // sink accepted the message but BEFORE the RECORD (claimed -> sent) commits. A

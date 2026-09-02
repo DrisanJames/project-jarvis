@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
@@ -159,8 +160,14 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		return 0, err
 	}
 
+	// Terminal for re-dispatch. 'produced' (REQ-089) belongs here: a routed wave
+	// has already handed every recipient to Kafka and moved its plan_recipients
+	// to 'queued', so a second EnqueuePMTAWave on it (scheduler re-fire, ECS
+	// bounce, operator trigger-send) must be a NO-OP, not a second produce. The
+	// landed count is closed out by the QueueWriterConsumer / UnlandedWaveSweeper,
+	// never by re-running the dispatcher.
 	switch waveStatus {
-	case "completed", "cancelled", "failed", "dead_letter":
+	case "completed", "produced", "cancelled", "failed", "dead_letter":
 		return 0, tx.Commit()
 	}
 
@@ -293,7 +300,12 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		perWaveCap = 0
 	}
 
+	// REQ-089: a routed wave's commands are BUFFERED here and produced ONCE,
+	// AFTER tx.Commit() — see waveProduceBuffer.
+	produceBuf := &waveProduceBuffer{}
+
 	params := waveEnqueueParams{
+		produceBuf:     produceBuf,
 		waveID:         waveID,
 		waveUUID:       waveUUID,
 		campaignID:     campaignID,
@@ -330,16 +342,39 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 			waveID, capSkippedCount, reserveUsedCount, queuedCount, remaining)
 	}
 
+	// REQ-089 — the wave state machine. A wave that INSERTED its rows directly
+	// is 'completed' with enqueued_recipients (unchanged, byte-for-byte, from
+	// before). A wave that ROUTED its rows to Kafka has only PRODUCED them:
+	// nothing is in mailing_campaign_queue yet, so it completes to 'produced'
+	// with produced_recipients and enqueued_recipients STAYS 0 — that column
+	// means "rows in the queue" to every reader (the REQ-082 completion gate,
+	// OutboxSelfCheck, the board verify), and crediting it at produce time is
+	// exactly the lie that flipped 24 campaigns 'sent' on 2026-09-01 with 0-40%
+	// of their audience still in the broker. The QueueWriterConsumer increments
+	// landed_recipients per landed row and promotes the wave to 'completed'
+	// (setting enqueued_recipients = landed_recipients) when landed >= produced;
+	// UnlandedWaveSweeper is the backstop for records that never land.
+	//
+	// queuedCount == 0 on a routed wave: nothing was produced, so there is
+	// nothing to land — complete it immediately rather than parking it in
+	// 'produced' forever waiting for a record that will never come.
+	waveStatusAfter := "completed"
+	producedDelta, enqueuedDelta := 0, queuedCount
+	if routeToKafka && queuedCount > 0 {
+		waveStatusAfter = "produced"
+		producedDelta, enqueuedDelta = queuedCount, 0
+	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE mailing_campaign_waves
 		SET enqueued_recipients = enqueued_recipients + $2,
 		    cap_skip_count = cap_skip_count + $3,
 		    reserve_used_count = reserve_used_count + $4,
-		    status = 'completed',
+		    produced_recipients = produced_recipients + $5,
+		    status = $6,
 		    completed_at = NOW(),
 		    updated_at = NOW()
 		WHERE id = $1
-	`, waveID, queuedCount, capSkippedCount, reserveUsedCount); err != nil {
+	`, waveID, enqueuedDelta, capSkippedCount, reserveUsedCount, producedDelta, waveStatusAfter); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -362,7 +397,102 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		return 0, err
 	}
 
-	return queuedCount, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	// REQ-089 — PRODUCE AFTER COMMIT, ONCE PER WAVE.
+	//
+	// Every produce used to happen per-recipient INSIDE this transaction, which
+	// held the wave/campaign/isp_plan row locks (FOR UPDATE, above) for N
+	// synchronous broker round trips. Two consequences, both measured or
+	// derivable: (a) a wave large enough to exceed WAVE_PROCESSOR_TIMEOUT_SECONDS
+	// (120s in prod) rolled the whole TX back while the acked Kafka records
+	// stayed durable, so the scheduler re-produced the entire wave every 15s,
+	// forever (send-transport SEV-2); (b) once landed_recipients exists, the
+	// consumer's per-row UPDATE of the wave row would block on THIS transaction's
+	// FOR UPDATE lock for the life of the enqueue — past the consumer's 30s
+	// HandleTimeout, into its retry budget, and on to the DLQ.
+	//
+	// So the broker is touched only after COMMIT, when no lock is held and the
+	// wave row already reads 'produced' with its produced_recipients — which also
+	// makes the consumer's landed/promotion UPDATE race-free by construction.
+	//
+	// A produce failure here does NOT lose recipients and does NOT roll anything
+	// back: the wave is 'produced', its plan_recipients are 'queued', and the
+	// rows it could not produce have no queue row — precisely the shape
+	// UnlandedWaveSweeper rebuilds (via the same idempotency key, so a record
+	// that lands later is a no-op conflict). The error is returned so the
+	// scheduler logs it; the wave is NOT re-dispatched (status 'produced' is
+	// terminal above), which is what stops the re-produce loop.
+	if n := produceBuf.len(); n > 0 {
+		if perr := flushWaveProduce(ctx, waveID, produceBuf); perr != nil {
+			log.Printf("[kafka-route] POST-COMMIT PRODUCE FAILED wave=%s produced_recipients=%d: %v — wave is 'produced'; UnlandedWaveSweeper will rebuild the rows that never landed",
+				waveID, n, perr)
+			return queuedCount, fmt.Errorf("kafka-route: post-commit produce failed for wave %s: %w", waveID, perr)
+		}
+	}
+
+	return queuedCount, nil
+}
+
+// =============================================================================
+// waveProduceBuffer (REQ-089) — the routed wave's commands, held until COMMIT.
+// =============================================================================
+// The buffer is per-wave, single-goroutine (the enqueue runs inside one wave
+// transaction), so it needs no locking.
+//
+// BOUND: the buffer is capped by BYTES, not rows, because the two enqueue paths
+// carry wildly different payloads — the set-based path leaves html/plain empty
+// (body lives in the content snapshot, ~300B/command) while the legacy
+// row-at-a-time path inlines the full per-recipient creative (tens of KB). A
+// wave that would exceed the cap fails its enqueue BEFORE committing anything,
+// so the wave rolls back to 'planned' and is re-dispatched, rather than the
+// server OOMing mid-wave. 256 MB is ~800k set-based commands: far above any
+// real wave (largest observed 2026-09-01: 45,559) and far below the task's
+// memory.
+type waveProduceBuffer struct {
+	cmds  []sendqueue.SendCommand
+	bytes int
+}
+
+// maxDeferredProduceBytes bounds one wave's buffered commands.
+const maxDeferredProduceBytes = 256 << 20
+
+// add appends a command, returning an error if the wave's payload exceeds the
+// bound (which fails the enqueue inside the TX — nothing commits).
+func (b *waveProduceBuffer) add(cmd sendqueue.SendCommand) error {
+	// ~256B of fixed-width uuid/int/string fields plus the variable payload.
+	b.bytes += 256 + len(cmd.Subject) + len(cmd.HTMLContent) + len(cmd.PlainContent)
+	if b.bytes > maxDeferredProduceBytes {
+		return fmt.Errorf("kafka-route: wave produce buffer exceeded %d bytes at %d commands — wave too large to route; roll back and re-dispatch",
+			maxDeferredProduceBytes, len(b.cmds)+1)
+	}
+	b.cmds = append(b.cmds, cmd)
+	return nil
+}
+
+func (b *waveProduceBuffer) len() int {
+	if b == nil {
+		return 0
+	}
+	return len(b.cmds)
+}
+
+// flushWaveProduce is the ONE produce call per wave (DoD item 4's "one flush per
+// wave"): it hands the whole buffer to EnqueueSendCommandsBatch, which uses the
+// producer's batch API when it has one (a single franz-go ProduceSync per chunk
+// instead of one per recipient) and otherwise falls back to the per-record loop.
+func flushWaveProduce(ctx context.Context, waveID string, b *waveProduceBuffer) error {
+	if b.len() == 0 {
+		return nil
+	}
+	prod := getKafkaSendProducer()
+	if prod == nil {
+		return errNoKafkaProducer
+	}
+	log.Printf("[kafka-route] wave %s: flushing %d buffered commands to %s (post-commit, one flush)", waveID, len(b.cmds), sendqueue.TopicQueueWrites)
+	return sendqueue.EnqueueSendCommandsBatch(ctx, prod, b.cmds)
 }
 
 // waveEnqueueParams carries the per-wave context both enqueue paths need.
@@ -383,6 +513,12 @@ type waveEnqueueParams struct {
 	// routeToKafka (SK-4) routes this wave's queue rows through Kafka
 	// (send.commands.v1) instead of the direct INSERT. Default false (dark).
 	routeToKafka bool
+	// produceBuf collects the routed commands so EnqueuePMTAWave can produce
+	// them ONCE, AFTER the wave transaction commits (REQ-089). Never nil when
+	// EnqueuePMTAWave is the caller; a nil buffer with routeToKafka=true is a
+	// programming error and the enqueue paths fail loudly rather than silently
+	// dropping a recipient.
+	produceBuf *waveProduceBuffer
 	// waveSlotBucket identifies this wave's slot (campaign.scheduled_at
 	// bucketed to perWaveWindowHours); shared by every campaign in the wave.
 	// perWaveCap is the max touches per subscriber per slot (0 = disabled).
@@ -551,24 +687,25 @@ func enqueueWaveRowAtATime(ctx context.Context, tx *sql.Tx, capChecker *mailing.
 		idempotencyKey := outboxIdempotencyKey(p.campaignID, rec.subscriberID, p.waveUUID)
 		queueID := uuid.New()
 
-		// SK-5 HARD SEND PATH: when this wave is routed to Kafka, PRODUCE the
-		// full-row command to send.commands.v1 INSTEAD of inserting directly; the
-		// QueueWriterConsumer runs the SAME INSERT. Kafka is now the HARD send path:
-		// on ANY produce failure we DO NOT fall back to a direct INSERT — we fail
-		// the wave enqueue loudly. The surrounding transaction rolls back (no
-		// partial INSERTs land), the plan_recipients stay 'selected', and the
-		// PMTAWaveScheduler re-dispatches the wave. No recipient is dropped; the
-		// row is simply written later, via Kafka. When NOT routed (the default,
-		// dark path), the direct INSERT below runs exactly as before.
+		// SK-5 HARD SEND PATH: when this wave is routed to Kafka, BUFFER the
+		// full-row command instead of inserting directly; EnqueuePMTAWave
+		// produces the whole buffer once, AFTER commit (REQ-089 — see
+		// waveProduceBuffer). The QueueWriterConsumer then runs the SAME INSERT.
+		// Kafka is still the HARD send path: no direct-INSERT fallback. When NOT
+		// routed (the default, dark path), the direct INSERT below runs exactly
+		// as before.
 		if p.routeToKafka {
+			if p.produceBuf == nil {
+				return 0, 0, 0, 0, fmt.Errorf("kafka-route: wave %s routed with no produce buffer", p.waveID)
+			}
 			cmd := buildSendCommand(
 				queueID, p.campaignID, rec.subscriberID, p.waveUUID, p.ispPlanID, idempotencyKey,
 				recipientSubject, recipientHTML, p.plainContent, rec.recipientISP, rec.audienceSourceType, sourceIDString(sourceID),
 				rec.selectionRank, p.scheduledAt, uuid.Nil, uuid.Nil,
 			)
-			if perr := produceQueueCommand(ctx, cmd); perr != nil {
-				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)
-				return 0, 0, 0, 0, fmt.Errorf("kafka-route: produce failed for wave %s key %s: %w", p.waveID, idempotencyKey, perr)
+			if berr := p.produceBuf.add(cmd); berr != nil {
+				log.Printf("[kafka-route] BUFFER BOUND HIT wave=%s key=%s: %v — failing wave enqueue for re-dispatch (nothing committed)", p.waveID, idempotencyKey, berr)
+				return 0, 0, 0, 0, berr
 			}
 		} else {
 			// offer_id/creative_id/subject_line_id inherit from the campaign's
@@ -785,17 +922,17 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 			reserveUsedCount++
 		}
 
-		// SK-5 HARD SEND PATH: when routed, PRODUCE the full-row command to
-		// send.commands.v1 (the set-based path leaves HTML/plain empty and carries
-		// content_snapshot_id, exactly like the direct INSERT's NULL,NULL + $5).
-		// Kafka is now the HARD send path: on ANY produce failure we DO NOT fall
-		// back to a direct INSERT — we fail the wave enqueue loudly. The
-		// surrounding transaction rolls back (the batched INSERT below never runs,
-		// no partial rows land), the plan_recipients stay 'selected', and the
-		// PMTAWaveScheduler re-dispatches the wave. No recipient is dropped; the
-		// rows are written later, via Kafka. When NOT routed (default), every
-		// recipient goes to the direct-INSERT arrays unchanged.
+		// SK-5 HARD SEND PATH: when routed, BUFFER the full-row command (the
+		// set-based path leaves HTML/plain empty and carries content_snapshot_id,
+		// exactly like the direct INSERT's NULL,NULL + $5). EnqueuePMTAWave
+		// produces the whole buffer once, AFTER commit (REQ-089 — see
+		// waveProduceBuffer). Kafka is still the HARD send path: no direct-INSERT
+		// fallback. When NOT routed (default), every recipient goes to the
+		// direct-INSERT arrays unchanged.
 		if p.routeToKafka {
+			if p.produceBuf == nil {
+				return 0, 0, 0, 0, fmt.Errorf("kafka-route: wave %s routed with no produce buffer", p.waveID)
+			}
 			rowSnap, rowCreative := snapshotID, uuid.Nil
 			if len(abVariants) > 0 {
 				v := abVariants[pickWaveABVariant(rec.subscriberID, abVariants)]
@@ -806,11 +943,11 @@ func enqueueWaveSetBased(ctx context.Context, tx *sql.Tx, db *sql.DB, capChecker
 				recipientSubject, "", "", rec.recipientISP, rec.audienceSourceType, nullStringToSource(normSource),
 				rec.selectionRank, p.scheduledAt, rowSnap, rowCreative,
 			)
-			if perr := produceQueueCommand(ctx, cmd); perr != nil {
-				log.Printf("[kafka-route] PRODUCE FAILED wave=%s key=%s (%v) — NOT falling back; Kafka is the hard send path. Failing wave enqueue for re-dispatch.", p.waveID, idempotencyKey, perr)
-				return 0, 0, 0, 0, fmt.Errorf("kafka-route: produce failed for wave %s key %s: %w", p.waveID, idempotencyKey, perr)
+			if berr := p.produceBuf.add(cmd); berr != nil {
+				log.Printf("[kafka-route] BUFFER BOUND HIT wave=%s key=%s: %v — failing wave enqueue for re-dispatch (nothing committed)", p.waveID, idempotencyKey, berr)
+				return 0, 0, 0, 0, berr
 			}
-			continue // written to Kafka; skip the direct-INSERT arrays
+			continue // buffered for Kafka; skip the direct-INSERT arrays
 		}
 
 		sourceIDs = append(sourceIDs, normSource)

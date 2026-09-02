@@ -50,6 +50,12 @@ type eventBusHandle struct {
 	ingestGate   *eventbus.FlagGate
 	suppressGate *eventbus.FlagGate
 
+	// sendRouteGate (REQ-090) is the RUNTIME kill switch for send routing:
+	// `SET kafka:flag:send_route 0` in Redis turns routing off fleet-wide within
+	// ~15s with no task-def roll. Its env layer is the send-routing predicate, so
+	// with no Redis key present it resolves to exactly what the envs already say.
+	sendRouteGate *eventbus.FlagGate
+
 	ingestConsumer *consumers.IngestShadowConsumer
 	suppProjector  *consumers.SuppressionProjector
 	lakeSink       *consumers.LakeShadowSink
@@ -67,9 +73,12 @@ type eventBusHandle struct {
 	// Only constructed when the bus is enabled AND worker.KafkaSendQueueEnabled()
 	// (a routing allowlist / KAFKA_SEND_QUEUE_ENABLED is set). Default: nil/false,
 	// so EnqueuePMTAWave routes nothing → byte-identical to today.
-	sendQueueProd    eventbus.Producer
-	queueWriter      *sendqueue.QueueWriterConsumer
-	ledgerReconciler *sendqueue.LedgerReconciler
+	sendQueueProd eventbus.Producer
+	queueWriter   *sendqueue.QueueWriterConsumer
+	// unlandedSweeper replaced the LedgerReconciler here 2026-09-01 (REQ-089):
+	// the ledger reconciler read a table nothing on this path writes. See
+	// sendqueue/reconciler.go.
+	unlandedSweeper  *sendqueue.UnlandedWaveSweeper
 	reconcilerCancel context.CancelFunc
 	sendQueueEnabled bool
 	// queueWriterStarted records only that Start() returned nil at boot. It is
@@ -147,11 +156,24 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 		h.lakeGate, h.ingestGate, h.suppressGate,
 	)
 
+	// REQ-090: the send-path routing kill switch. Its ENV layer is the routing
+	// predicate itself (sendqueue.SendRouteEnvConfigured), so:
+	//   - no Redis key           → identical to env-only behaviour (no change);
+	//   - kafka:flag:send_route 0 → routing OFF fleet-wide, no deploy;
+	//   - kafka:flag:send_route 1 → env still decides WHICH waves route (the
+	//     predicate ANDs the two) — a kill switch never adds send volume.
+	// Installed for the whole process, so the five direct-enqueue guards and the
+	// wave dispatcher observe the same veto.
+	h.sendRouteGate = eventbus.NewFlagGate("send_route", rdb, cfg.FlagPollInterval).
+		WithEnvSource(func() (bool, bool) { return sendqueue.SendRouteEnvConfigured(), true })
+	sendqueue.SetSendRouteFlag(h.sendRouteGate)
+
 	// Start the FlagGate background pollers so a kill-switch can flip without a
 	// redeploy.
 	h.lakeGate.Start()
 	h.ingestGate.Start()
 	h.suppressGate.Start()
+	h.sendRouteGate.Start()
 
 	log.Printf("[eventbus] producer taps wired (lake/ingest/suppress) — each flag-gated, defaults OFF (lake=%v ingest=%v suppress=%v)",
 		h.lakeGate.Enabled(), h.ingestGate.Enabled(), h.suppressGate.Enabled())
@@ -247,13 +269,31 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 
 // wireSendQueue is the SK-4 dark-gated wiring. Preconditions: the bus is enabled
 // (KAFKA_BROKERS set, producer built). It is a no-op unless the operator opted in
-// via env. On opt-in it: (a) ensures send.commands.v1 (+ .dlq); (b) installs the
-// durable producer into the wave dispatcher (worker.SetKafkaSendProducer) so a
-// routed wave can PRODUCE; (c) starts the QueueWriterConsumer (INSERTs the same
-// queue row) and the LedgerReconciler. Any construction failure leaves the
+// via env, EXCEPT for the UnlandedWaveSweeper, which starts unconditionally (it
+// is the recovery path for waves a previous routed deploy stranded, so it must
+// survive routing being turned off). On opt-in it also: (a) ensures
+// send.commands.v1 (+ .dlq); (b) installs the durable producer into the wave
+// dispatcher (worker.SetKafkaSendProducer) so a routed wave can PRODUCE;
+// (c) starts the QueueWriterConsumer (INSERTs the same
+// queue row). Any construction failure leaves the
 // producer UNINSTALLED so kafkaRouteWave stays false (the dispatcher falls back
 // to the direct INSERT) — no recipient is ever lost.
 func wireSendQueue(ctx context.Context, h *eventBusHandle, db *sql.DB, cfg eventbus.Config) {
+	// UnlandedWaveSweeper starts BEFORE the routing gate, deliberately (REQ-089).
+	// It is a pure DB janitor — no Kafka, no producer, no ledger — and it is the
+	// RECOVERY path for waves already stranded in 'produced'. Starting it inside
+	// the gate would mean that turning routing off (the rollback move) also turns
+	// off the only thing that can finish the waves the last routed deploy left
+	// behind. With no 'produced' waves it is one indexed query per minute
+	// (EXPLAIN cost 8.59 on prod, status-indexed) and logs nothing.
+	rctx, cancel := context.WithCancel(ctx)
+	h.reconcilerCancel = cancel
+	sweeper := sendqueue.NewUnlandedWaveSweeper(db, 0, 0)
+	h.unlandedSweeper = sweeper
+	h.reconcilerRunning = true
+	go sweeper.Start(rctx)
+	log.Println("[eventbus] send-queue UnlandedWaveSweeper started (rebuilds produced-but-unlanded rows from plan_recipients; promotes produced->completed)")
+
 	if !worker.KafkaSendQueueEnabled() {
 		log.Println("[eventbus] send-queue (SK-4) DARK — KAFKA_SEND_QUEUE_* unset; EnqueuePMTAWave routes nothing, send path unchanged")
 		return
@@ -310,15 +350,12 @@ func wireSendQueue(ctx context.Context, h *eventBusHandle, db *sql.DB, cfg event
 			eventbus.TaskID())
 	}
 
-	// LedgerReconciler: re-drives any stranded ledger rows by re-producing the
-	// stored command. Runs in its own cancellable goroutine.
-	rctx, cancel := context.WithCancel(ctx)
-	h.reconcilerCancel = cancel
-	rec := sendqueue.NewLedgerReconcilerWithProducer(db, h.sendQueueProd, 0, 0)
-	h.ledgerReconciler = rec
-	h.reconcilerRunning = true
-	go rec.Start(rctx)
-	log.Println("[eventbus] send-queue LedgerReconciler started (re-drives stranded commands)")
+	// (UnlandedWaveSweeper is started at the TOP of this function, before the
+	// routing gate — see the comment there. It REPLACED
+	// NewLedgerReconcilerWithProducer, which re-drove mailing_send_ledger: a
+	// table NOTHING on this path writes, 0 rows after 18h of routing on
+	// 2026-09-01, reporting reconciler_running:true while 219,237 recipients
+	// were stranded.)
 }
 
 // Stop gracefully tears down everything the handle owns: it stops the consumers,
@@ -356,6 +393,11 @@ func (h *eventBusHandle) Stop() {
 	}
 	if h.suppressGate != nil {
 		h.suppressGate.Stop()
+	}
+	if h.sendRouteGate != nil {
+		// Uninstall before stopping so no gated path reads a frozen value.
+		sendqueue.SetSendRouteFlag(nil)
+		h.sendRouteGate.Stop()
 	}
 	// Each Tap.Close flushes its buffer; they share one producer, so closing the
 	// last tap also closes the producer. Closing in sequence is safe.
@@ -426,6 +468,10 @@ func setEventBusStatus(h *eventBusHandle) {
 				Lake:     ps.Lake.FlagOn,
 				Ingest:   ps.Ingest.FlagOn,
 				Suppress: ps.Suppress.FlagOn,
+				// REQ-090: reads the live gate (Redis-backed), or true when no
+				// gate is installed — "open" is the honest answer there, since
+				// nothing is vetoing routing.
+				SendRoute: sendqueue.SendRouteFlagOpen(),
 			},
 			Consumers: api.EventBusConsumerStatus{
 				IngestRunning:      h.ingestRunning,
@@ -476,5 +522,25 @@ func sendQueueStatus(h *eventBusHandle) api.EventBusSendQueueStatus {
 	if !snap.LastHandledAt.IsZero() {
 		st.LastHandledAt = snap.LastHandledAt.UTC().Format(time.RFC3339)
 	}
+
+	// REQ-090: the four routing envs VERBATIM + the resolved predicate, and the
+	// send-path env levers that are explicitly set. Both come from ONE inventory
+	// in internal/eventbus/sendqueue (cross-checked against
+	// deploy/env.manifest.json by cmd/server's EnvManifest tests), so /health can
+	// never disagree with the manifest about what a lever is called.
+	//
+	// enabled=true with routing.active=false is the legitimate DRAIN state: the
+	// consumer is wired and finishing a backlog while nothing new is routed.
+	r := sendqueue.RoutingSnapshot()
+	st.Routing = api.EventBusSendQueueRouting{
+		All:           r.All,
+		Enabled:       r.Enabled,
+		Waves:         r.Waves,
+		Campaigns:     r.Campaigns,
+		Active:        r.Active,
+		WiringEnabled: r.WiringEnabled,
+		FlagOpen:      r.FlagOpen,
+	}
+	st.KillSwitches = sendqueue.SendPathKillSwitches()
 	return st
 }

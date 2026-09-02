@@ -52,3 +52,52 @@ func EnqueueSendCommands(ctx context.Context, prod eventbus.Producer, cmds []Sen
 	}
 	return nil
 }
+
+// batchProduceChunk bounds one ProduceBatch call so a very large wave cannot
+// hand franz-go more records than its default buffer wants in flight at once.
+const batchProduceChunk = 1000
+
+// EnqueueSendCommandsBatch is EnqueueSendCommands for a WHOLE wave: same topic,
+// same idempotency-key keying, same marshalling — but when the producer
+// implements eventbus.BatchProducer it issues ONE ProduceSync per chunk instead
+// of one per command. A 45k-recipient wave is 45 broker round trips instead of
+// 45,000 (REQ-089 DoD 4).
+//
+// Producers without the batch extension (eventbus.FakeProducer in unit tests)
+// fall through to EnqueueSendCommands, so behaviour and per-record test
+// assertions are unchanged.
+func EnqueueSendCommandsBatch(ctx context.Context, prod eventbus.Producer, cmds []SendCommand) error {
+	if prod == nil {
+		return fmt.Errorf("sendqueue: EnqueueSendCommandsBatch called with nil producer")
+	}
+	bp, ok := prod.(eventbus.BatchProducer)
+	if !ok {
+		return EnqueueSendCommands(ctx, prod, cmds)
+	}
+	for start := 0; start < len(cmds); start += batchProduceChunk {
+		end := start + batchProduceChunk
+		if end > len(cmds) {
+			end = len(cmds)
+		}
+		keys := make([][]byte, 0, end-start)
+		values := make([][]byte, 0, end-start)
+		for i := start; i < end; i++ {
+			cmd := cmds[i]
+			if cmd.IdempotencyKey == uuid.Nil {
+				return fmt.Errorf("sendqueue: command %d has a zero idempotency_key", i)
+			}
+			value, err := json.Marshal(cmd)
+			if err != nil {
+				return fmt.Errorf("sendqueue: marshal command %d (key=%s): %w", i, cmd.IdempotencyKey, err)
+			}
+			key := make([]byte, len(cmd.IdempotencyKey))
+			copy(key, cmd.IdempotencyKey[:])
+			keys = append(keys, key)
+			values = append(values, value)
+		}
+		if err := bp.ProduceBatch(ctx, TopicSendCommands, keys, values); err != nil {
+			return fmt.Errorf("sendqueue: produce batch [%d,%d): %w", start, end, err)
+		}
+	}
+	return nil
+}

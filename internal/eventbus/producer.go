@@ -22,6 +22,25 @@ type Producer interface {
 	Close() error
 }
 
+// BatchProducer is the OPTIONAL batching extension of Producer: one broker
+// round trip for many records instead of one per record. Callers type-assert
+// for it and fall back to a Produce loop when the concrete producer does not
+// implement it (eventbus.FakeProducer, for instance, does not — its per-record
+// capture is what the unit tests assert on).
+//
+// It exists for the SK-4 wave route (REQ-089): a routed wave hands its whole
+// recipient set over at once, and N sequential ProduceSync calls at ~1-3ms each
+// is minutes of wall clock for a 45k-recipient wave.
+type BatchProducer interface {
+	Producer
+
+	// ProduceBatch publishes len(values) records to topic in ONE flush. keys
+	// must be the same length as values (keys[i] may be nil). It returns the
+	// first error; partial success is possible, which is safe for the send
+	// path because every command is idempotent on its key.
+	ProduceBatch(ctx context.Context, topic string, keys, values [][]byte) error
+}
+
 // kgoProducer is the franz-go-backed Producer. It is configured as an
 // idempotent producer (acks=all to all in-sync replicas) so duplicate-free,
 // ordered delivery per partition is guaranteed at the broker. Idempotency is
@@ -93,6 +112,26 @@ func (p *kgoProducer) Produce(ctx context.Context, topic string, key, value []by
 	rec := &kgo.Record{Topic: topic, Key: key, Value: value}
 	return p.client.ProduceSync(ctx, rec).FirstErr()
 }
+
+// ProduceBatch publishes many records in ONE ProduceSync: franz-go batches them
+// into as few broker requests as the partitioner allows and waits for all acks.
+// Same durability posture as Produce (idempotent producer, acks=all).
+func (p *kgoProducer) ProduceBatch(ctx context.Context, topic string, keys, values [][]byte) error {
+	if len(values) == 0 {
+		return nil
+	}
+	if len(keys) != len(values) {
+		return fmt.Errorf("eventbus: ProduceBatch keys/values length mismatch (%d vs %d)", len(keys), len(values))
+	}
+	recs := make([]*kgo.Record, 0, len(values))
+	for i := range values {
+		recs = append(recs, &kgo.Record{Topic: topic, Key: keys[i], Value: values[i]})
+	}
+	return p.client.ProduceSync(ctx, recs...).FirstErr()
+}
+
+// compile-time assertion: the real producer implements the batch extension.
+var _ BatchProducer = (*kgoProducer)(nil)
 
 // Close flushes buffered records and closes the underlying client.
 func (p *kgoProducer) Close() error {

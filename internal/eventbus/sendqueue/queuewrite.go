@@ -198,11 +198,6 @@ type QueueWriterConsumer struct {
 	db  queueExecer
 	cfg eventbus.Config
 
-	// ledger, when non-nil, records each accepted command in the sendqueue
-	// ledger for observability/redrive. It is OPTIONAL: the authoritative dedup
-	// is the mailing_campaign_queue unique index, not the ledger. nil = skip.
-	ledger ledgerDB
-
 	consumer *eventbus.Consumer
 
 	// metrics (atomic via the wiring's status reader); plain ints guarded by the
@@ -305,44 +300,91 @@ func (c *QueueWriterConsumer) Handle(ctx context.Context, _, value []byte) error
 	}
 	if inserted {
 		c.inserted++
+		// REQ-089: a NEW row landed → this is the ONE place the wave's landed
+		// count moves. A conflict must NOT count: it is a redelivery of a row
+		// that was already counted when it first landed, and counting it twice
+		// would promote a wave to 'completed' with recipients still in flight —
+		// the exact failure this column exists to stop.
+		c.markLanded(ctx, cmd)
 	} else {
 		c.conflicts++ // redelivery / duplicate — the idempotent no-op
 	}
 
-	// OPTIONAL ledger record (observability only; the queue unique index is the
-	// authoritative dedup). A ledger error never blocks the offset commit.
-	if c.ledger != nil {
-		c.recordLedger(ctx, cmd)
-	}
 	c.fireHook()
 	return nil // INSERT committed → commit offset
 }
 
-// recordLedger best-effort claims the key in mailing_send_ledger for
-// observability/redrive parity. Errors are swallowed (logged by the caller of
-// the consumer if desired) because the queue unique index is authoritative.
-func (c *QueueWriterConsumer) recordLedger(ctx context.Context, cmd SendCommand) {
-	cmdJSON, mErr := json.Marshal(cmd)
-	if mErr != nil {
-		return
+// markLandedSQL is the wave write-back: one row, by primary key, doing three
+// things atomically under that row's lock.
+//
+//  1. landed_recipients += 1 — the per-wave lag metric. Only ever incremented by
+//     an INSERT that actually created a row (see Handle) and by
+//     UnlandedWaveSweeper's rebuild, so it can never exceed produced_recipients.
+//
+//  2. PROMOTION 'produced' -> 'completed' when landed >= produced. Promotion
+//     lives HERE rather than in a sweep because the last landing record is the
+//     event, and doing it in the same statement as the increment makes it free
+//     and race-free: two ECS tasks (or two partitions) serialise on the row
+//     lock, each re-reads landed_recipients under that lock, and only the
+//     statement that observes landed+1 >= produced flips the status. The guard
+//     `status = 'produced'` makes every later record a no-op on the status.
+//     UnlandedWaveSweeper is the BACKSTOP for waves whose last records never
+//     land at all (DLQ, produce failure, consumer wedge).
+//
+//  3. enqueued_recipients = landed_recipients at promotion. That column means
+//     "rows in mailing_campaign_queue" to every reader (the REQ-082 completion
+//     gate, OutboxSelfCheck, the board verify); the dispatcher deliberately
+//     leaves it 0 for a routed wave, and this is where it becomes true.
+//
+// completed_at is left alone: the dispatcher stamps it when the wave finished
+// producing, which is the timestamp the unlanded monitors window on.
+const markLandedSQL = `
+UPDATE mailing_campaign_waves
+SET landed_recipients = landed_recipients + 1,
+    status = CASE WHEN status = 'produced' AND landed_recipients + 1 >= produced_recipients
+                  THEN 'completed' ELSE status END,
+    enqueued_recipients = CASE WHEN status = 'produced' AND landed_recipients + 1 >= produced_recipients
+                               THEN landed_recipients + 1 ELSE enqueued_recipients END,
+    updated_at = NOW()
+WHERE id = $1`
+
+// markLanded runs markLandedSQL for the command's wave. It is BEST-EFFORT by
+// design: the queue row is already committed, so returning an error here would
+// re-deliver the record, hit the ON CONFLICT no-op, and never increment the
+// counter at all. A missed increment leaves the wave in 'produced' with
+// landed < produced, which UnlandedWaveSweeper resolves (it finds no missing
+// queue rows and promotes the wave). Logged so a systematic failure is visible.
+func (c *QueueWriterConsumer) markLanded(ctx context.Context, cmd SendCommand) {
+	if cmd.WaveID == uuid.Nil {
+		return // not a wave-routed row (nothing to account against)
 	}
-	// 'sent' is wrong here (we did not send); 'claimed' would invite the
-	// reconciler to redrive a row that is already in the queue. Record as
-	// 'requeued' so it is informational and the reconciler's grace guard leaves
-	// it alone unless it genuinely strands. ON CONFLICT DO NOTHING keeps it idempotent.
-	_, _ = c.ledger.ExecContext(ctx, `
-INSERT INTO mailing_send_ledger
-    (idempotency_key, campaign_id, subscriber_id, wave_id, status, worker_id, claimed_at, attempts, command)
-VALUES ($1, $2, $3, $4, 'requeued', 'queue-writer', NOW(), 0, $5)
-ON CONFLICT (idempotency_key) DO NOTHING`,
-		cmd.IdempotencyKey, nullUUID(cmd.CampaignID), nullUUID(cmd.SubscriberID), nullUUID(cmd.WaveID), cmdJSON)
+	if _, err := c.db.ExecContext(ctx, markLandedSQL, cmd.WaveID); err != nil {
+		log.Printf("[sendqueue/queuewriter] landed write-back FAILED wave=%s key=%s: %v (row IS in the queue; UnlandedWaveSweeper will promote the wave)",
+			cmd.WaveID, cmd.IdempotencyKey, err)
+	}
 }
 
-// WithLedger installs the optional ledger seam (see recordLedger).
-func (c *QueueWriterConsumer) WithLedger(l ledgerDB) *QueueWriterConsumer {
-	c.ledger = l
-	return c
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// The mailing_send_ledger writer that used to live here (recordLedger /
+// WithLedger) was DELETED 2026-09-01 (REQ-089 DoD 3). It was never wired —
+// cmd/server/eventbus_wiring.go never called WithLedger — so the table held 0
+// rows after 18h of SK-4 routing while a LedgerReconciler ticked over it,
+// reporting reconciler_running:true. That half-state is what made 219,237
+// produced-not-landed recipients invisible (send-transport SEV-1 #4).
+//
+// It is not replaced by a second bookkeeping table: the authoritative dedup is
+// the mailing_campaign_queue partial unique index on idempotency_key, and the
+// authoritative "did it land" record is now waves.landed_recipients (above),
+// written on the same path that writes the row. Anything that did not land can
+// be rebuilt from mailing_campaign_plan_recipients by UnlandedWaveSweeper
+// (reconciler.go), which needs no ledger and no Kafka.
+//
+// mailing_send_ledger itself survives ONLY as the store for the SK-2
+// full-send-over-Kafka prototype (consumer.go processSend/KafkaSendConsumer),
+// which is wired NOWHERE (grep NewKafkaSendConsumer outside tests → 0 hits).
+// Writer and reader for that path are both unwired, together, which is a
+// coherent dormant subsystem rather than a half-state.
+// ─────────────────────────────────────────────────────────────────────────────
 
 func (c *QueueWriterConsumer) fireHook() {
 	if c.statHook != nil {

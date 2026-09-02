@@ -153,9 +153,13 @@ func TestEnqueuePMTAWave_CapAwareClaim_ReplacesCappedWithReserve(t *testing.T) {
 		WithArgs(planRecB, waveID.String()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	// 10. final wave update with cap_skip_count=1, reserve_used_count=1
+	// 10. final wave update with cap_skip_count=1, reserve_used_count=1.
+	// REQ-089 arg contract for the DIRECT (un-routed) path — this is the
+	// regression guard that the live path is unchanged: $2 enqueued_recipients
+	// delta = 1 (the row IS in the queue), $5 produced_recipients delta = 0
+	// (nothing was handed to a broker), $6 status = 'completed' (NOT 'produced').
 	mock.ExpectExec(`UPDATE mailing_campaign_waves\s+SET enqueued_recipients`).
-		WithArgs(waveID.String(), 1, 1, 1).
+		WithArgs(waveID.String(), 1, 1, 1, 0, "completed").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	// 11. isp_plan counters
 	mock.ExpectExec(`UPDATE mailing_campaign_isp_plans\s+SET enqueued_count`).

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ignite/sparkpost-monitor/internal/eventbus"
+	"github.com/ignite/sparkpost-monitor/internal/eventbus/sendqueue"
 )
 
 // THE DARK-DEFAULT GUARD. With no producer wired and no routing env set,
@@ -80,14 +81,18 @@ func TestKafkaRouteWave_AllSwitch(t *testing.T) {
 	}
 }
 
-// SK-5 HARD SEND PATH: a routed set-based wave whose producer FAILS must NOT
-// fall back to a direct INSERT — it must return an error so the surrounding
-// transaction rolls back and the wave is re-dispatched (no recipient dropped;
-// the rows are written later, via Kafka). We wire a failing producer, route the
-// wave, and assert: (a) an error is returned, and (b) NO direct INSERT into
-// mailing_campaign_queue runs (no INSERT expectation is registered, so the mock
-// would error if one were attempted).
-func TestEnqueueWaveSetBased_RoutedProducerFailure_NoFallbackErrors(t *testing.T) {
+// SK-5 HARD SEND PATH + REQ-089: a routed set-based wave must NOT fall back to a
+// direct INSERT, and — since 2026-09-01 — must not touch the BROKER at all while
+// the wave transaction is open. The commands are buffered; EnqueuePMTAWave
+// produces them once, after COMMIT (see TestEnqueuePMTAWave_KafkaRoute_* for the
+// post-commit contract and the failure path).
+//
+// This test wires a producer that would FAIL if it were called, and asserts:
+// (a) no error — the enqueue never reaches the broker; (b) the producer was
+// never invoked; (c) the command is in the wave's buffer; (d) NO direct INSERT
+// into mailing_campaign_queue runs (no INSERT expectation is registered, so the
+// mock errors if one is attempted).
+func TestEnqueueWaveSetBased_RoutedBuffersAndDoesNotTouchBroker(t *testing.T) {
 	failing := &eventbus.FakeProducer{Err: context.DeadlineExceeded}
 	SetKafkaSendProducer(failing)
 	t.Cleanup(func() { SetKafkaSendProducer(nil) })
@@ -109,23 +114,30 @@ func TestEnqueueWaveSetBased_RoutedProducerFailure_NoFallbackErrors(t *testing.T
 		WillReturnRows(sqlmock.NewRows(claimColumns).
 			AddRow(uuid.New().String(), uuid.New().String(), "a@gmail.com", "gmail", 1, "segment", nil, "selected", "active", false))
 
-	// NO INSERT expectation and NO queued-UPDATE expectation: produce failed, so
-	// the function returns the error immediately. If any INSERT were attempted the
-	// sqlmock would fail the test (unexpected exec).
+	// NO INSERT expectation: the row is destined for Kafka. Only the
+	// plan_recipient queued-transition runs inside the TX.
+	mock.ExpectExec(`SET status = 'queued', queued_at = NOW\(\)`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	queued, _, _, _, err := enqueueWaveSetBased(context.Background(), tx, db, nil, p)
-	if err == nil {
-		t.Fatal("routed produce-failure MUST return an error (Kafka is the hard send path; no fallback)")
+	if err != nil {
+		t.Fatalf("routed enqueue must not touch the broker (and so cannot fail on it): %v", err)
 	}
-	if queued != 0 {
-		t.Fatalf("want queued=0 on produce-failure, got %d", queued)
+	if queued != 1 {
+		t.Fatalf("want queued=1, got %d", queued)
+	}
+	if failing.Count() != 0 {
+		t.Fatalf("producer must NOT be called inside the wave TX, got %d records", failing.Count())
+	}
+	if got := p.produceBuf.len(); got != 1 {
+		t.Fatalf("want 1 buffered command awaiting the post-commit flush, got %d", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet/unexpected (no direct INSERT must run on produce-failure): %v", err)
+		t.Fatalf("unmet/unexpected (no direct INSERT must run on a routed wave): %v", err)
 	}
 }
 
@@ -170,19 +182,29 @@ func TestEnqueueWaveSetBased_RoutedProducerSuccess_NoDirectInsert(t *testing.T) 
 	if queued != 1 {
 		t.Fatalf("want queued=1, got %d", queued)
 	}
+	// REQ-089: nothing is produced inside the TX — the command is buffered and
+	// flushed once after COMMIT. Flushing here proves the buffered command is
+	// the one that reaches the topic.
+	if ok.Count() != 0 {
+		t.Fatalf("producer must not be called inside the TX, got %d records", ok.Count())
+	}
+	if err := flushWaveProduce(context.Background(), p.waveID, p.produceBuf); err != nil {
+		t.Fatalf("flushWaveProduce: %v", err)
+	}
 	if ok.Count() != 1 {
-		t.Fatalf("producer must have captured exactly 1 routed command, got %d", ok.Count())
+		t.Fatalf("producer must have captured exactly 1 routed command after the flush, got %d", ok.Count())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet (a direct INSERT must NOT have run): %v", err)
 	}
 }
 
-// SK-5 HARD SEND PATH (legacy row-at-a-time path): a routed wave whose producer
-// FAILS must return an error and run NO direct INSERT — same no-fallback contract
-// as the set-based path. We drive enqueueWaveRowAtATime (DISABLE_SETBASED_ENQUEUE
-// path) with a failing producer and a single compliant recipient.
-func TestEnqueueWaveRowAtATime_RoutedProducerFailure_NoFallbackErrors(t *testing.T) {
+// SK-5 HARD SEND PATH + REQ-089 (legacy row-at-a-time path): identical contract
+// to the set-based path — no direct-INSERT fallback, and no broker call inside
+// the wave transaction. The command is buffered for the post-commit flush. We
+// drive enqueueWaveRowAtATime (DISABLE_SETBASED_ENQUEUE path) with a producer
+// that would fail if called, and a single compliant recipient.
+func TestEnqueueWaveRowAtATime_RoutedBuffersAndDoesNotTouchBroker(t *testing.T) {
 	failing := &eventbus.FakeProducer{Err: context.DeadlineExceeded}
 	SetKafkaSendProducer(failing)
 	t.Cleanup(func() { SetKafkaSendProducer(nil) })
@@ -214,31 +236,44 @@ func TestEnqueueWaveRowAtATime_RoutedProducerFailure_NoFallbackErrors(t *testing
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("active"))
 	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM mailing_global_suppressions`).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	// NO INSERT expectation: produce fails → error returned, no fallback INSERT.
+	// NO INSERT expectation: the row is destined for Kafka. The legacy path's
+	// per-row plan_recipient transition still runs inside the TX.
+	mock.ExpectExec(`UPDATE mailing_campaign_plan_recipients\s+SET status = 'queued'`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	queued, _, _, _, err := enqueueWaveRowAtATime(context.Background(), tx, nil, p)
-	if err == nil {
-		t.Fatal("routed produce-failure MUST return an error (no fallback INSERT)")
+	if err != nil {
+		t.Fatalf("routed enqueue must not touch the broker (and so cannot fail on it): %v", err)
 	}
-	if queued != 0 {
-		t.Fatalf("want queued=0 on produce-failure, got %d", queued)
+	if queued != 1 {
+		t.Fatalf("want queued=1, got %d", queued)
+	}
+	if failing.Count() != 0 {
+		t.Fatalf("producer must NOT be called inside the wave TX, got %d records", failing.Count())
+	}
+	if got := p.produceBuf.len(); got != 1 {
+		t.Fatalf("want 1 buffered command awaiting the post-commit flush, got %d", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet/unexpected (no direct INSERT must run on produce-failure): %v", err)
+		t.Fatalf("unmet/unexpected (no direct INSERT must run on a routed wave): %v", err)
 	}
 }
 
 // SK-5 BLOCK: a bypass enqueue path (worker.EnqueueCampaign, the legacy
-// campaign-processor path) must error WITHOUT touching the DB when Kafka routing
-// is ON. We turn routing on via env and assert the kafka-route block fires before
-// any DB access (db is nil — if the block did not fire, the function would panic
-// or error differently).
+// campaign-processor path) must error WITHOUT touching the DB when recipients
+// are actually ROUTED to Kafka. Routing is turned on with KAFKA_SEND_QUEUE_ALL
+// (REQ-090: the ROUTING lever — KAFKA_SEND_QUEUE_ENABLED is wiring only), and we
+// assert the kafka-route block fires before any DB access (db is nil — if the
+// block did not fire, the function would panic or error differently).
 func TestEnqueueCampaign_BlockedWhenRoutingOn(t *testing.T) {
-	t.Setenv("KAFKA_SEND_QUEUE_ENABLED", "1")
+	t.Setenv("KAFKA_SEND_QUEUE_ENABLED", "")
+	t.Setenv("KAFKA_SEND_QUEUE_ALL", "1")
+	t.Setenv("KAFKA_SEND_QUEUE_WAVES", "")
+	t.Setenv("KAFKA_SEND_QUEUE_CAMPAIGNS", "")
 	_, err := EnqueueCampaign(context.Background(), nil, uuid.New().String())
 	if err == nil {
 		t.Fatal("EnqueueCampaign must be BLOCKED (error) when Kafka routing is ON")
@@ -302,6 +337,11 @@ func TestRoutedCommand_CarriesDispatcherIdempotencyKey(t *testing.T) {
 	if _, _, _, _, err := enqueueWaveSetBased(context.Background(), tx, db, nil, p); err != nil {
 		t.Fatalf("enqueueWaveSetBased: %v", err)
 	}
+	// REQ-089: the command is buffered inside the TX and produced by the
+	// post-commit flush. Flush here to inspect the record that reaches Kafka.
+	if err := flushWaveProduce(context.Background(), p.waveID, p.produceBuf); err != nil {
+		t.Fatalf("flushWaveProduce: %v", err)
+	}
 
 	recs := ok.Records()
 	if len(recs) != 1 {
@@ -313,3 +353,69 @@ func TestRoutedCommand_CarriesDispatcherIdempotencyKey(t *testing.T) {
 		t.Fatal("produced record key must be the dispatcher's idempotency-key bytes")
 	}
 }
+
+// =============================================================================
+// REQ-090 — the :1077 half-off state
+// =============================================================================
+
+// KAFKA_SEND_QUEUE_ENABLED=1 with ALL=0 wires the transport but routes NOTHING.
+// The wave dispatcher must not route, and the SK-5 bypass guard must be OPEN —
+// this is exactly the state that had five paths answering 409 on 2026-09-01
+// while zero recipients travelled through Kafka.
+func TestKafkaRouteWave_EnabledOnlyDoesNotRoute(t *testing.T) {
+	ok := &eventbus.FakeProducer{}
+	SetKafkaSendProducer(ok) // transport wired, as ENABLED=1 makes it
+	t.Cleanup(func() { SetKafkaSendProducer(nil) })
+
+	t.Setenv("KAFKA_SEND_QUEUE_ENABLED", "1")
+	t.Setenv("KAFKA_SEND_QUEUE_ALL", "0")
+	t.Setenv("KAFKA_SEND_QUEUE_WAVES", "")
+	t.Setenv("KAFKA_SEND_QUEUE_CAMPAIGNS", "")
+
+	if kafkaRouteWave("wave-1", "camp-1") {
+		t.Error("ENABLED=1 with ALL=0 must route NOTHING")
+	}
+	if !KafkaSendQueueEnabled() {
+		t.Error("ENABLED=1 must still WIRE the transport (the consumer drains the backlog)")
+	}
+}
+
+// The same state must leave the direct-enqueue guard OPEN: EnqueueCampaign
+// proceeds past the SK-5 block and fails downstream on the invalid id instead.
+func TestEnqueueCampaign_RouteGate_EnabledOnlyNotBlocked(t *testing.T) {
+	t.Setenv("KAFKA_SEND_QUEUE_ENABLED", "1")
+	t.Setenv("KAFKA_SEND_QUEUE_ALL", "0")
+	t.Setenv("KAFKA_SEND_QUEUE_WAVES", "")
+	t.Setenv("KAFKA_SEND_QUEUE_CAMPAIGNS", "")
+
+	_, err := EnqueueCampaign(context.Background(), nil, "not-a-uuid")
+	if err == nil {
+		t.Fatal("expected the downstream invalid-id error, got nil")
+	}
+	if strings.Contains(err.Error(), "kafka-route") {
+		t.Fatalf("ENABLED=1/ALL=0 routes nothing, so the guard must NOT block; got: %v", err)
+	}
+}
+
+// The Redis kill switch reaches the dispatcher too: routing ON via env, gate
+// closed => no wave routes, without a redeploy.
+func TestKafkaRouteWave_KillSwitchVetoes(t *testing.T) {
+	ok := &eventbus.FakeProducer{}
+	SetKafkaSendProducer(ok)
+	t.Cleanup(func() { SetKafkaSendProducer(nil) })
+
+	t.Setenv("KAFKA_SEND_QUEUE_ALL", "1")
+	if !kafkaRouteWave("w", "c") {
+		t.Fatal("precondition: ALL=1 with a producer must route")
+	}
+
+	sendqueue.SetSendRouteFlag(routeFlagStub{on: false})
+	t.Cleanup(func() { sendqueue.SetSendRouteFlag(nil) })
+	if kafkaRouteWave("w", "c") {
+		t.Error("kafka:flag:send_route=0 must stop the dispatcher routing")
+	}
+}
+
+type routeFlagStub struct{ on bool }
+
+func (r routeFlagStub) Enabled() bool { return r.on }

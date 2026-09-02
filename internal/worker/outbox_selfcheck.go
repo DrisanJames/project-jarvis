@@ -754,19 +754,28 @@ func (c *OutboxSelfCheck) checkWaveUnlanded(ctx context.Context, snap *SendLiven
 	err := c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `
 		WITH cand AS (
-			SELECT w.id, w.enqueued_recipients
+			SELECT w.id,
+			       GREATEST(w.produced_recipients - w.landed_recipients, 0) AS unlanded,
+			       w.enqueued_recipients
 			FROM mailing_campaign_waves w
-			WHERE w.status = 'completed'
-			  AND w.enqueued_recipients > 0
+			WHERE (
+			        -- REQ-089: a routed wave parks in 'produced' until every
+			        -- command lands; the gap is exact, no queue probe needed.
+			        (w.status = 'produced'  AND w.produced_recipients > w.landed_recipients)
+			        -- pre-REQ-089 shape: waves the previous binary marked
+			        -- 'completed' at produce time during the rollout window.
+			     OR (w.status = 'completed' AND w.enqueued_recipients > 0)
+			      )
 			  AND w.completed_at >= NOW() - INTERVAL '6 hours'
 			  AND w.completed_at <= NOW() - INTERVAL '5 minutes'
 			ORDER BY w.completed_at DESC
 			LIMIT $1
 		)
 		SELECT COALESCE(COUNT(*), 0)::bigint,
-		       COALESCE(SUM(cand.enqueued_recipients), 0)::bigint
+		       COALESCE(SUM(GREATEST(cand.unlanded, cand.enqueued_recipients)), 0)::bigint
 		FROM cand
-		WHERE NOT EXISTS (
+		WHERE cand.unlanded > 0
+		   OR NOT EXISTS (
 			SELECT 1 FROM mailing_campaign_queue q WHERE q.wave_id = cand.id
 		)
 	`, waveUnlandedScanLimit).Scan(&waves, &recipients)
