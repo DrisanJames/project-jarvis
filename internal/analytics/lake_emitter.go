@@ -291,6 +291,13 @@ func CanonicalEventType(in string) string {
 		return "click"
 	case "sent":
 		return "attempted"
+	case "ses_accepted":
+		// The SES `Send` notification's Postgres spelling (REQ-086). It is a
+		// distinct PG event_type so it stays out of every `event_type='sent'`
+		// denominator, but in the lake it is the same fact as before — the
+		// source='ses' raw attempted row — so the mapping keeps
+		// reader_lane_snapshot / reader_audience unchanged.
+		return "attempted"
 	case "deferred":
 		return "delivery_delay"
 	case "complained":

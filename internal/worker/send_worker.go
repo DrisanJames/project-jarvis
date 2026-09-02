@@ -2415,6 +2415,13 @@ func (p *SendWorkerPool) markSent(ctx context.Context, item QueueItem, messageID
 		metaJSON, _ := json.Marshal(map[string]string{"vmta": vmta})
 		meta = string(metaJSON)
 	}
+	// THIS IS THE CANONICAL `sent` WRITER (METRIC_CONTRACT.md §2.1, REQ-086).
+	// One row per message, at submission, for EVERY transport (the ESP switch
+	// above dispatches pmta/kumo/ses/sparkpost/mailgun/sendgrid all through
+	// here). Nothing else may write event_type='sent' on this path — the SES
+	// `Send` notification used to, and gave SES-relayed mail two rows per
+	// message; it now records 'ses_accepted' (handlers_ses_events.go).
+	//
 	// offer_id/creative_id/subject_line_id carry the campaign's deploy-time
 	// attribution stamp onto the sent event; NULL for unstamped campaigns.
 	// partner_dataset_id mirrors the message-log stamp (REQ-034 parity).

@@ -46,6 +46,82 @@ identically (616=616) in `ses` and `app`. Therefore:
   → >100% rates). If a filter applies to the denominator but the numerator's source can't honor
   it, SUPPRESS the rate and label the mismatch.
 
+### 2.1 The `sent` writer — ONE, and it is the send worker (2026-09-01, REQ-086)
+
+**`mailing_tracking_events.event_type='sent'` has exactly one writer on the campaign send path:
+`SendWorkerPool.markSent`** (`internal/worker/send_worker.go`, the `trackSQL` INSERT). It writes
+one row per message, at submission, for **every** transport — the ESP switch above it dispatches
+`pmta`/`kumo`/`ses`/`sparkpost`/`mailgun`/`sendgrid` into the same `markSent`. That is what makes
+`sent` a denominator you may compare across lanes.
+
+**Nothing else may write `sent` for a queue-dispatched message.** In particular the SES `Send`
+event notification does **not**: `handlers_ses_events.go` records it as **`ses_accepted`**, an
+event type nothing divides by. Why not the obvious alternatives:
+
+- *Keep it as `sent`* — it existed only for SES, arrived minutes after submission, and was dropped
+  outright when the `campaign_id` MessageTag was absent (`persistSESEvent` returns early on an
+  empty campaign tag). A row that exists for one transport and silently vanishes without a tag
+  cannot be a denominator; and writing it alongside the worker's row double-counted every
+  SES-relayed message (see the break below).
+- *Re-type it `relayed_to_ses`* — **wrong**: `internal/engine/ingest.go` already emits
+  `relayed_to_ses` from the PMTA accounting files for the PMTA→SES handoff, and
+  `mailing_campaign_summary.go` counts it. Reusing that type would have moved the double-count
+  rather than removed it.
+
+**Lake identity is unchanged.** `analytics.CanonicalEventType` maps both `sent` and `ses_accepted`
+to the lake's `attempted`, so `source='ses'` raw-attempted rows look exactly as they did
+(`reader_lane_snapshot`, `reader_audience` first-touch). Per §2 that raw stream is still **not** a
+denominator — attempted stays DERIVED.
+
+Two writers that are NOT on this path and are NOT duplicates (each is the only writer for its own
+message): the synchronous Campaign-Center send loop (`campaign_builder_send_sync.go`) and the
+legacy SparkPost path (`mailing_sending.go`). The `backfill_sent_from_queue_v2` startup migration
+is `NOT EXISTS`-guarded.
+
+#### KNOWN BREAK — the `sent` double-count window, 2026-06-05 → 2026-09-01 (not backfilled)
+
+From commit `c81916b` (2026-06-05), which first persisted the SES `Send` notification as a
+tracking event, until the deploy of REQ-086, **every SES-relayed or SES-direct message with a
+`campaign_id` MessageTag has TWO `sent` rows** — one from the send worker (`gen_random_uuid`, a
+v4 id, carries `metadata`/`offer_id`/`partner_dataset_id`) and one from the SES handler
+(a deterministic **v5** id, no offer/dataset stamp, arriving seconds-to-minutes later).
+
+Measured on prod (`substring(id::text,15,1)` = the UUID version, the exact writer discriminator):
+
+| Denver day | worker rows (v4) | SES rows (v5) |
+|---|---|---|
+| 2026-06-04 (pre) | 856,681 | 48 |
+| 2026-06-06 | 160,113 | 125,387 |
+| 2026-07-15 | 501,128 | 482,287 |
+| 2026-08-15 | 996,025 | 945,185 |
+| 2026-08-31 | 1,982,282 | 1,771,963 |
+
+Last 24 h to 2026-09-01: 1,503,347 (subscriber × campaign) pairs carried BOTH rows, 374,999 the
+worker row only (non-SES lanes), 4,300 the SES row only — of which 99.2% were window-boundary
+artifacts (the worker row fell outside the window) and 25 were genuine orphans (0.0017%).
+
+**Consequence for historical reads.** Any figure whose denominator is a raw
+`COUNT(*) WHERE event_type='sent'` over that window is inflated on SES-routed mail by up to 2×,
+so the rates built on it (open %, click %, delivery %, click-rate pacing) read up to ~50% low.
+Affected surfaces (all read the same column; none distinguished the writer):
+`agents/reporting/ecosystem_status.py`, `auto_lane_daily.py`, `auto_lane_money_clicks.py`,
+`partner_lane_report.py`, `drip_lane_isp_report.py`, `agents/jobs/scanner_weed.py`,
+`warm_touch_history_stamp.py`, `partner_burned_record_salvage.py`, and the portal handlers in
+`mailing_analytics*.go`, `metrics.go`, `campaign_timeseries.go`, `campaign_builder_analytics.go`,
+`handlers_offer_alignment.go`, `offer_center_handlers.go`, `outbox_engine_status.go`,
+`governance_handlers.go`, `property_lane_stats.go`, `send_baselines.go`,
+`audience_cadence_by_cell.go`, `site_events_handler.go`, `marketing_agent_tool_dispatch.go`.
+
+Counts that use `COUNT(DISTINCT subscriber_id)` or `bool_or(event_type='sent')` were **never**
+affected (`partner_lane_report.py`, `drip_lane_isp_report.py`, `property_lane_stats.go`,
+`mailing_campaign_summary.go`, `mailing_analytics_promoted.go`), and neither was the
+send-liveness gate (`agents/jobs/scaffold.verify_send_liveness`), which is a `count(*) > 0`
+presence check the worker row satisfies first.
+
+**No backfill** — the duplicate rows are left in place unless the operator asks for a purge. To
+read that window correctly, add `AND substring(id::text,15,1)='4'` (worker rows only), or count
+`COUNT(DISTINCT subscriber_id)`.
+
 ## 3. Bounce taxonomy (read-time reclassification)
 
 Lake reads re-derive bounce classes from `bounce_cat` + `dsn_diag` (`eventTypeExpr`, reader.go):
@@ -401,3 +477,9 @@ journey state; neither is queried on the request path. Emitting journey state in
   denominators, the four click-quality values (is_machine_click re-verified inert), step-through
   denominator, errors as enrollments, round-not-truncate, measured ingest-lag freshness floor,
   creative-version identity + the ContentHash migration hazard, and the snapshot-only read rule.
+- 2026-09-01: §2.1 The `sent` writer (REQ-086) — `SendWorkerPool.markSent` named the single
+  canonical writer of `event_type='sent'`; the SES `Send` notification re-typed to `ses_accepted`
+  (`relayed_to_ses` rejected: `engine/ingest.go` already owns it for the PMTA→SES handoff);
+  `CanonicalEventType` maps `ses_accepted` → lake `attempted` so the `source='ses'` lake stream is
+  unchanged; the 2026-06-05 → 2026-09-01 double-count documented as a known break with the
+  affected-surface list and the `substring(id::text,15,1)='4'` read-around. No backfill.

@@ -373,7 +373,27 @@ func (h *SESEventsHandler) dispatchNotification(ctx context.Context, env snsEnve
 		}
 		log.Printf("[ses-events] CLICK config_set=%s tenant=%s link=%s ip=%s", tagConfig, tagTenant, note.Click.Link, note.Click.IPAddress)
 	case "Send":
-		if err := h.persistSESEvent(ctx, "sent", note, tagCampaign, tagSubscriber, tagSendID,
+		// NOT 'sent' — see METRIC_CONTRACT.md §2.1 "The `sent` writer".
+		//
+		// The send worker is the SINGLE canonical writer of a `sent` tracking
+		// event (send_worker.go:2423, markSent): it fires once per message for
+		// EVERY transport (pmta/kumo/ses/sparkpost/mailgun/sendgrid — the
+		// switch at send_worker.go:2186) at submission. This SES notification
+		// exists only for SES, arrives minutes later, and is dropped entirely
+		// when the campaign_id MessageTag is absent (persistSESEvent :470), so
+		// it can never be a comparable denominator.
+		//
+		// Writing it as 'sent' too gave every SES-relayed message TWO `sent`
+		// rows (2026-06-05 … this deploy), halving every rate whose
+		// denominator is `event_type='sent'`. It is now recorded under its own
+		// type, which nothing divides by. Note 'relayed_to_ses' would have been
+		// WRONG here: engine/ingest.go:355 already emits that from the PMTA
+		// accounting files for the PMTA→SES handoff, so reusing it would just
+		// move the double-count (mailing_campaign_summary.go:606).
+		//
+		// CanonicalEventType maps it back to the lake's 'attempted' so the
+		// source='ses' lake stream is byte-identical to before.
+		if err := h.persistSESEvent(ctx, "ses_accepted", note, tagCampaign, tagSubscriber, tagSendID,
 			firstRecipient(note.Mail.CommonHeaders.To), "", "", "", "", "", "", note.Mail.Timestamp); err != nil {
 			return err
 		}

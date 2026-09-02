@@ -14,6 +14,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 )
 
@@ -720,5 +721,66 @@ func TestSESEvents_ValidationSuppression_LabeledAndReasonPersisted(t *testing.T)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// TestSESEvents_SendNotification_IsNotTypedSent is the REQ-086 regression
+// guard: the SES `Send` notification must NEVER persist event_type='sent'.
+//
+// The send worker (send_worker.go markSent) is the single canonical `sent`
+// writer — one row per message for every transport, at submission. Between
+// 2026-06-05 and this fix the SES notification wrote a second `sent` row for
+// every SES-relayed message, so every rate whose denominator is
+// `event_type='sent'` read ~2x low on SES lanes. If this test fails because
+// someone re-typed the Send notification back to "sent", that regression is
+// back — do not "fix" the test.
+func TestSESEvents_SendNotification_IsNotTypedSent(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Arg 5 is event_type in persistSESEvent's INSERT. Assert the literal.
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"ses_accepted",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Send",
+		"mail": map[string]interface{}{
+			"timestamp": "2026-09-01T20:12:46.830Z",
+			"source":    "news@em.discountblog.com",
+			"tags": map[string][]string{
+				"campaign_id":       {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id":     {"22222222-2222-2222-2222-222222222222"},
+				"recipient_send_id": {"rs-req086-1"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@hotmail.com"}},
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+// TestSESAccepted_MapsToLakeAttempted pins the other half of the ruling: the
+// PG re-type must NOT change what the lake sees. persistSESEvent emits the
+// lake row as analytics.CanonicalEventType(eventType), so 'ses_accepted' has
+// to canonicalize to 'attempted' — otherwise reader_lane_snapshot's
+// source='ses' attempted column silently drops to zero.
+func TestSESAccepted_MapsToLakeAttempted(t *testing.T) {
+	if got := analytics.CanonicalEventType("ses_accepted"); got != "attempted" {
+		t.Errorf("CanonicalEventType(\"ses_accepted\") = %q, want \"attempted\"", got)
+	}
+	if got := analytics.CanonicalEventType("sent"); got != "attempted" {
+		t.Errorf("CanonicalEventType(\"sent\") = %q, want \"attempted\"", got)
 	}
 }
