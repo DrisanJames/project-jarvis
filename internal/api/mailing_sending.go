@@ -640,13 +640,26 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	syntheticReq.Header = r.Header
 	svc.HandleSendTestEmail(rec, syntheticReq)
 
-	// Record tracking event
+	// Record tracking event.
+	//
+	// REQ-094 (2026-09-01): the error used to be discarded. It was not
+	// hypothetical — `mailing_tracking_events.email` was absent on the parent
+	// and all 11 partitions in prod (its migration entry timed out on every
+	// boot for weeks), so every transactional send here recorded NOTHING and
+	// the failure was invisible. The column now lands via
+	// ensurePartitionedColumns (cmd/server/migration_skip.go); this log is the
+	// guard that keeps a schema gap from being silent again. Not fatal: the
+	// message has already been handed to the ESP above, so failing the request
+	// would misreport a send that did happen.
 	eventID := uuid.New()
 	tagsJSON, _ := json.Marshal(input.Tags)
-	svc.db.ExecContext(ctx, `
+	if _, err := svc.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events (id, organization_id, email, event_type, metadata, event_at)
 		VALUES ($1, $2, $3, 'sent', $4, NOW())
-	`, eventID, orgID, email, string(tagsJSON))
+	`, eventID, orgID, email, string(tagsJSON)); err != nil {
+		log.Printf("ERROR HandleSendTransactional: tracking 'sent' row NOT recorded for %s (org %s, event %s): %v",
+			email, orgID, eventID, err)
+	}
 
 	for k, v := range rec.header {
 		for _, val := range v {
