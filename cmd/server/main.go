@@ -479,6 +479,13 @@ func main() {
 				// REPLACEs them, so a boot never silently reverts a hot-patch.
 				checkVerdictFunctionDrift(mailingDB)
 				runStartupMigrations(mailingDB)
+				// Arm the brand×ISP ban registry (REQ-083) only AFTER the
+				// migration that creates + seeds mailing_isp_bans: the
+				// registry fails CLOSED on a read error, so arming it before
+				// the table exists would refuse every deploy for the length
+				// of the migration slice. Until this call the registry is
+				// inert and deploys behave exactly as before.
+				api.SetISPBanDB(mailingDB)
 				seedProcessDefaultOrgID(mailingDB)
 				// Long-running CONCURRENTLY builds live outside the
 				// 5s-per-statement migration runner: they wait for a
@@ -2345,6 +2352,33 @@ var criticalSendPathDDL = []struct {
 			ALTER TABLE mailing_bounces ALTER COLUMN bounce_type TYPE varchar(64);
 		END IF;
 	END $$`},
+	// ---- Send-liveness invariant support (REQ-087, 2026-09-01) ----
+	// OutboxSelfCheck.checkWaveUnlanded scans completed waves newest-first inside
+	// a 5min-6h window every 5 minutes. Without this index that candidate scan is
+	// a parallel seq scan over all 9.3M waves: measured on prod 2026-09-01 at
+	// 31.9s unbounded / 791ms with the query's own LIMIT 5000, of which 698ms was
+	// the seq scan. The index turns it into a backward range read.
+	//
+	// Guarded by a pg_indexes catalog check (the idx_queue_active_by_campaign
+	// precedent) AND by a size check, because the two are load-bearing for
+	// different reasons: the catalog check keeps the prod skip path from taking a
+	// SHARE lock on a constantly-written table, and the size check keeps a boot on
+	// a large existing DB from ever attempting a blocking in-line build inside the
+	// 8s lock_timeout / 20s statement_timeout budget. On prod that means this
+	// entry is a pure catalog read and the index is built out-of-band with CREATE
+	// INDEX CONCURRENTLY — an operator step, exactly as idx_queue_active_by_campaign
+	// and idx_waves_active_by_campaign were. On a fresh/DR database the table is
+	// small or empty and the build is instant.
+	//
+	// The invariant is correct without the index (791ms measured), so a DB that
+	// never gets the out-of-band build degrades in cost, not in coverage.
+	{"idx_waves_completed_at", `DO $$ BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_waves_completed_at')
+		   AND COALESCE((SELECT reltuples FROM pg_class WHERE relname = 'mailing_campaign_waves'), 0) < 1000000 THEN
+			CREATE INDEX idx_waves_completed_at ON mailing_campaign_waves(status, completed_at)
+				WHERE status = 'completed' AND enqueued_recipients > 0;
+		END IF;
+	END $$`},
 }
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
@@ -3983,6 +4017,16 @@ func runStartupMigrations(db *sql.DB) {
 		// caught on a later boot. Without it the UPDATE waited >5s on row locks and got cancelled
 		// every boot (the "canceling statement due to user request" we saw); idempotent + eventually
 		// consistent across boots.
+		//
+		// The last predicate is the produced-vs-landed gate (REQ-082, 2026-09-01) and
+		// MUST stay in lockstep with campaignLandedGateClause in
+		// internal/worker/campaign_scheduler.go — the runtime sweep and this boot sweep
+		// are the two sites that flip a campaign 'sent', and gating only one of them
+		// means the next ECS bounce re-does what the runtime refused. Absence of queue
+		// rows is not proof of delivery once a wave can be marked 'completed' at Kafka
+		// PRODUCE time: on 2026-09-01 that flipped 24 board campaigns terminal with
+		// 0-40% of their audience still in the broker, and the self-check janitor
+		// cancelled 80,514 recipients as they landed.
 		{"complete_finished_campaigns", `UPDATE mailing_campaigns SET status = 'sent', completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
 			WHERE id IN (
 				SELECT c.id FROM mailing_campaigns c
@@ -3990,6 +4034,8 @@ func runStartupMigrations(db *sql.DB) {
 				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_queue q WHERE q.campaign_id = c.id AND q.status IN ('queued','sending','claimed'))
 				AND NOT EXISTS (SELECT 1 FROM mailing_campaign_waves w WHERE w.campaign_id = c.id AND w.status IN ('planned','enqueuing','dispatched'))
 				AND EXISTS (SELECT 1 FROM mailing_campaign_waves w2 WHERE w2.campaign_id = c.id AND w2.status = 'completed')
+				AND COALESCE((SELECT SUM(w3.enqueued_recipients) FROM mailing_campaign_waves w3 WHERE w3.campaign_id = c.id), 0)
+				    <= (SELECT COUNT(*) FROM mailing_campaign_queue q2 WHERE q2.campaign_id = c.id)
 				FOR UPDATE OF c SKIP LOCKED
 			)`},
 		{"reset_orphaned_sending_v3", `UPDATE mailing_campaigns SET status = 'cancelled', completed_at = NOW(), updated_at = NOW()
@@ -10625,6 +10671,34 @@ BEGIN
         END IF;
     END LOOP;
 END $$`},
+
+		// ── brand × ISP ban registry (REQ-083, 2026-09-01) ────────────────
+		// Operator ruling 2026-08-30: WFY/RB/RRU/TOT/CP/LPL/YIH/CI must never
+		// mail gmail (uniform 5.7.1 domain blocks). Enforcement moved out of
+		// the nightly Python wave-cancel — which the PreDispatch rebind undid
+		// every day, 3,416 gmail sends on 09-01 alone — and into
+		// normalizePMTACampaignInput via internal/api/isp_bans.go.
+		// brand_code values are the canonical internal/pkg/brandident codes
+		// (warrantyforyou.com = 'wf', refinanceratesusa.com = 'rr', …), NOT
+		// the board-name tokens (WFY/RRU): the planner resolves the code from
+		// the sending domain through brand.Root + brandident.CodeForApex.
+		// TWO ENTRIES ON PURPOSE — migrationSkipProbe classifies by leading
+		// keyword, so a combined CREATE+INSERT would be probed as a CREATE and
+		// the seed would silently never land. Both are O(1) inside the 5s
+		// budget (8 rows). Rollback = DELETE the rows; the gate is data.
+		{"create_mailing_isp_bans", `CREATE TABLE IF NOT EXISTS mailing_isp_bans (
+			organization_id UUID NOT NULL,
+			brand_code      TEXT NOT NULL,
+			isp             TEXT NOT NULL,
+			reason          TEXT NOT NULL DEFAULT '',
+			banned_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			banned_by       TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (organization_id, brand_code, isp)
+		)`},
+		{"seed_gmail_bans_2026_08_30", `INSERT INTO mailing_isp_bans (organization_id, brand_code, isp, reason, banned_by)
+			SELECT '00000000-0000-0000-0000-000000000001'::uuid, code, 'gmail', 'operator 2026-08-30 gmail ban', 'REQ-083'
+			FROM unnest(ARRAY['wf','rb','rr','tt','cp','lp','yi','ci']) AS code
+			ON CONFLICT (organization_id, brand_code, isp) DO NOTHING`},
 	}
 
 	// Use a dedicated connection with a short statement timeout so heavy
@@ -10657,6 +10731,16 @@ END $$`},
 	}
 
 	var ok, fail, skip, alreadyApplied int
+	// REQ-092: the outcome of this slice is published on /health.migrations.
+	// Before that it lived only in CloudWatch, which is how 41 entries failed
+	// on every boot for weeks unnoticed.
+	migStart := time.Now()
+	failedNames := []string{}
+	noteFailure := func(name string) {
+		if len(failedNames) < 60 { // migrationsFailedNamesCap in internal/api
+			failedNames = append(failedNames, name)
+		}
+	}
 	for _, m := range migrations {
 		// Catalog probe: skip recognized idempotent DDL whose effect already
 		// exists, so a boot does not replay hundreds of lock-taking no-ops
@@ -10671,15 +10755,26 @@ END $$`},
 			if strings.Contains(errStr, "statement timeout") {
 				log.Printf("[StartupMigration] %s: TIMEOUT (skipped — will retry next boot)", m.name)
 				skip++
+				noteFailure(m.name + " (timeout)")
 			} else {
 				log.Printf("[StartupMigration] %s: ERROR %v", m.name, err)
 				fail++
+				noteFailure(m.name)
 			}
 		} else {
 			ok++
 		}
 	}
 	log.Printf("[StartupMigration] Complete: %d OK, %d errors, %d timeouts, %d skipped (already applied)", ok, fail, skip, alreadyApplied)
+	publishMigrationsStatus(api.MigrationsStatus{
+		Ran:         true,
+		OK:          ok,
+		Skipped:     alreadyApplied,
+		Timeout:     skip,
+		Failed:      fail,
+		FailedNames: failedNames,
+		DurationMS:  time.Since(migStart).Milliseconds(),
+	})
 
 	// Diagnostic: check for invalid indexes (can happen if CREATE INDEX CONCURRENTLY fails mid-way)
 	var invalidCount int

@@ -20,6 +20,15 @@ type Info struct {
 	ImageURI    string `json:"image_uri,omitempty"`
 	ImageDigest string `json:"image_digest,omitempty"`
 	GoVersion   string `json:"go_version"`
+	// EnvManifestSHA is the sha256 of deploy/env.manifest.json that rendered
+	// this task definition (REQ-092). git_sha answers "which code"; this
+	// answers "which config" — the two move independently, and 10 of the last
+	// ~90 revisions changed only the config.
+	EnvManifestSHA string `json:"env_manifest_sha,omitempty"`
+	// TreeDirty is "1" when the image was built from a working tree with
+	// uncommitted changes (DEPLOY_ALLOW_DIRTY=1). Without it, two different
+	// trees ship under one git_sha and both "verify".
+	TreeDirty string `json:"tree_dirty,omitempty"`
 }
 
 func Current() Info {
@@ -36,6 +45,9 @@ func Current() Info {
 		ImageURI:    imageURI,
 		ImageDigest: imageDigest,
 		GoVersion:   runtime.Version(),
+
+		EnvManifestSHA: os.Getenv("APP_ENV_MANIFEST_SHA"),
+		TreeDirty:      os.Getenv("APP_TREE_DIRTY"),
 	}
 }
 
