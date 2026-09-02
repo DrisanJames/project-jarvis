@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"errors"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +78,82 @@ func (c *Consumer) getBrandSuppressor() BrandSuppressor {
 	c.wiringMu.RLock()
 	defer c.wiringMu.RUnlock()
 	return c.brandSuppressor
+}
+
+// SingleTenantFallbackOrgID mirrors api.SingleTenantFallbackOrgID
+// (internal/api/org_context.go:260) — the hardcoded last-resort organization id
+// for this single-tenant deployment (`organizations` has exactly one row,
+// James Ventures Corp). It is DUPLICATED rather than imported because
+// internal/api already imports internal/tracking (handlers_ses_events.go:32,
+// mailing_tracking.go:31), so importing back would be a cycle — and cmd/tracking
+// must stay a small standalone binary that does not link the API surface.
+// Keep the two literals identical.
+const SingleTenantFallbackOrgID = "00000000-0000-0000-0000-000000000001"
+
+// defaultOrgID is the resolved fallback organization, mirroring steps 4 and 6 of
+// api.GetOrgIDFromRequest: the DEFAULT_ORG_ID env var when it parses, else the
+// single-tenant constant. Resolved once — this sits on the consumer's hot
+// fan-out path (16 workers x 10-msg batches).
+var defaultOrgID = resolveDefaultOrgID()
+
+func resolveDefaultOrgID() uuid.UUID {
+	if v := strings.TrimSpace(os.Getenv("DEFAULT_ORG_ID")); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			return id
+		}
+		log.Printf("tracking: DEFAULT_ORG_ID=%q is not a UUID — using %s", v, SingleTenantFallbackOrgID)
+	}
+	return uuid.MustParse(SingleTenantFallbackOrgID)
+}
+
+// Rate limiter for the org-fallback log line: one line per minute per process,
+// carrying how many further events were folded into it. Without the limiter a
+// producer that omits org_id (the 2026-07-23 /o/ offer-redirect defect below)
+// would emit one log line per click — ~8k/day — and drown the signal.
+var (
+	orgFallbackMu         sync.Mutex
+	orgFallbackLastLogged time.Time
+	orgFallbackSuppressed int64
+)
+
+// resolveOrgID turns an event's org_id string into the org the row is written
+// under. An empty or malformed value resolves to defaultOrgID — NEVER uuid.Nil.
+//
+// Why this matters (REQ-085b): the previous form was `orgID, _ := uuid.Parse(
+// evt.OrgID)`, which discards the error and leaves orgID = uuid.Nil. Every such
+// row landed in mailing_tracking_events with
+// organization_id = '00000000-0000-0000-0000-000000000000', and every consumer
+// that scopes by the real org id silently dropped it — including the nightly
+// lake loader (backfill_to_lake.py --source tracking, which filters
+// organization_id = '…0001'). On 2026-08-31 that was 7,909 of 57,152 clicked
+// rows (13.8%) — real human clicks, missing from the lake.
+//
+// The producer defect is fixed at source in handler.go (HandleOfferRedirect),
+// but this stays as defense in depth: SQS is a public-ish ingress and any
+// future producer that omits org_id must degrade to the right org, not to Nil.
+func resolveOrgID(raw string, eventType EventType) uuid.UUID {
+	id, err := uuid.Parse(strings.TrimSpace(raw))
+	if err == nil && id != uuid.Nil {
+		return id
+	}
+	logOrgFallback(raw, eventType, err)
+	return defaultOrgID
+}
+
+func logOrgFallback(raw string, eventType EventType, err error) {
+	orgFallbackMu.Lock()
+	defer orgFallbackMu.Unlock()
+
+	now := time.Now()
+	if !orgFallbackLastLogged.IsZero() && now.Sub(orgFallbackLastLogged) < time.Minute {
+		orgFallbackSuppressed++
+		return
+	}
+	suppressed := orgFallbackSuppressed
+	orgFallbackSuppressed = 0
+	orgFallbackLastLogged = now
+	log.Printf("tracking: unusable org_id %q on %s event (%v) — writing under %s (%d similar suppressed in the last minute)",
+		raw, eventType, err, defaultOrgID, suppressed)
 }
 
 // pollWorkers controls how many concurrent SQS receive loops run per task.
@@ -174,7 +251,7 @@ func (c *Consumer) processEvent(ctx context.Context, evt TrackingEvent) error {
 }
 
 func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
-	orgID, _ := uuid.Parse(evt.OrgID)
+	orgID := resolveOrgID(evt.OrgID, EventOpen)
 	campaignID, _ := uuid.Parse(evt.CampaignID)
 	subscriberID, _ := uuid.Parse(evt.SubscriberID)
 	emailID, _ := uuid.Parse(evt.EmailID)
@@ -320,7 +397,7 @@ func clickDeterministicID(campaignID, subscriberID uuid.UUID, ts time.Time, link
 }
 
 func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
-	orgID, _ := uuid.Parse(evt.OrgID)
+	orgID := resolveOrgID(evt.OrgID, EventClick)
 	campaignID, _ := uuid.Parse(evt.CampaignID)
 	subscriberID, _ := uuid.Parse(evt.SubscriberID)
 	clickID := clickDeterministicID(campaignID, subscriberID, evt.Timestamp, evt.LinkURL)
@@ -408,7 +485,7 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 }
 
 func (c *Consumer) processUnsubscribe(ctx context.Context, evt TrackingEvent) error {
-	orgID, _ := uuid.Parse(evt.OrgID)
+	orgID := resolveOrgID(evt.OrgID, EventUnsubscribe)
 	campaignID, _ := uuid.Parse(evt.CampaignID)
 	subscriberID, _ := uuid.Parse(evt.SubscriberID)
 

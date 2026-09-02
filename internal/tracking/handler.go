@@ -328,8 +328,22 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		label = "machine"
 	}
 	h.pub.Publish(r.Context(), TrackingEvent{
-		EventType:    EventClick,
-		OrgID:        "", // not carried in the path contract
+		EventType: EventClick,
+		// REQ-085b: the /o/ path contract carries brand/subscriber/hash/campaign
+		// and NO org — every link already in an inbox has that shape, so the
+		// contract cannot be widened retroactively. This used to publish
+		// OrgID: "", which the SQS consumer parsed into uuid.Nil and wrote as
+		// organization_id = '00000000-0000-0000-0000-000000000000'. Those rows
+		// are invisible to every org-scoped reader, including the nightly lake
+		// loader: 7,909 of 57,152 clicked rows on 2026-08-31 (13.8%), all of
+		// them /o/ redirects (verified: 100% carry the renderOfferDestination
+		// source_id=email signature). Started 2026-07-23, the day after this
+		// handler shipped (05d5a17).
+		// The org is not ambiguous — this is a single-tenant deployment and
+		// every one of those rows' campaigns belongs to …0001 — so stamp the
+		// resolved default here, at the producer, and let the consumer's
+		// resolveOrgID stay as defense in depth.
+		OrgID:        defaultOrgID.String(),
 		CampaignID:   campaign,
 		SubscriberID: subscriber,
 		LinkURL:      dest,
