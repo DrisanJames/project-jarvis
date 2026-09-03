@@ -6,6 +6,17 @@
 // reason text, the dispatch + inventory contracts with version history and
 // "schedule for tomorrow", and manual revenue entry.
 //
+// The RECORD FLOW pane draws where the lane's records actually are: the pcq
+// status flow in flow order, dead ends drawn as dead ends and the stranded
+// orphan bucket called out. It is nullable by design — the classification is a
+// full scan of the lane's queue rows and can exceed the statement budget — so a
+// null flow renders the API's degraded note, never an empty diagram.
+//
+// The flow is CACHED server-side (10 min for a scan, 2 min for a failure), so
+// it carries its own `as_of` + `cache_age_seconds` that differ from the
+// response's as_of. Both are printed on the diagram: a stalled ladder read off
+// a ten-minute-old shape is still a ten-minute-old claim.
+//
 // This pane does NOT poll: it is the study surface. The ecosystem pane is the
 // in-motion one (60s). A manual Refresh is always available.
 
@@ -13,14 +24,14 @@ import React from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   faArrowLeft, faRotate, faScaleBalanced, faTruckRampBox, faSackDollar,
-  faStopwatch, faFileContract, faPenToSquare,
+  faStopwatch, faFileContract, faPenToSquare, faDiagramProject,
 } from '@fortawesome/free-solid-svg-icons'
 import { colors, alpha } from '../shared/theme'
 import { Panel, SectionHeader, SectionError, EmptyState, Pill } from '../shared/ui'
 import { useToast } from '../shared/ToastSystem'
 import {
-  LaneResponse, EcosystemLaneRow, SupplyError,
-  supplyGet, supplyPost, Num, LabelChip, HeaderStrip, LoadingRow, ScrollX, Reason,
+  LaneResponse, EcosystemLaneRow, RecordFlow, RecordFlowBucket, SupplyError,
+  supplyGet, supplyPost, Num, Unknown, LabelChip, HeaderStrip, LoadingRow, ScrollX, Reason,
   fmtUSD, fmtTime, healthColor,
   tableStyle, thStyle, tdStyle, numTd, numTh,
 } from './supplyShared'
@@ -208,6 +219,9 @@ export const SupplyLane: React.FC<{
               </ScrollX>
             )}
           </Panel>
+
+          {/* ── Record flow — where this lane's records actually are ── */}
+          <RecordFlowPanel flow={data.record_flow} degraded={data.degraded ?? []} />
 
           {/* ── Capacity ledger by domain×ISP ────────────────────────── */}
           <Panel style={{ marginBottom: 14 }}>
@@ -408,6 +422,165 @@ export const SupplyLane: React.FC<{
           <SupplyLedger day={day} lane={lane} title={`Ledger drill-through — ${lane}`} />
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * RecordFlowPanel — the lane's pcq status flow, in flow order.
+ *
+ * Four display rules, all load-bearing:
+ *   · Dead ends are drawn as dead ends. `cold`, `exited`, `completed`,
+ *     `suppressed_eo`, `dead_letter` and the orphan bucket never move again on
+ *     their own; drawing them as pass-through nodes is how a stalled ladder
+ *     reads as a working one.
+ *   · The ORPHAN bucket is highlighted in red — a claimed row with no campaign
+ *     behind it is stranded capacity, not a stage of the ladder.
+ *   · `unclassified` is shown whenever it is > 0: a pcq status the flow order
+ *     does not name is reported as a number, never dropped, or the buckets
+ *     would stop summing to the total and the diagram would lie by omission.
+ *   · A NULL flow is "could not measure", not "empty" — the API's reason is
+ *     printed verbatim.
+ *
+ * Every count here is a MEASURED number (each bucket is emitted even at 0);
+ * only the median age is nullable, and that renders as unknown.
+ */
+const RecordFlowPanel: React.FC<{ flow: RecordFlow | null; degraded: string[] }> = ({ flow, degraded }) => {
+  // The API reports a lost/absent flow through `degraded`; those lines are the
+  // honest explanation of the missing diagram, so surface them here as well as
+  // in the header strip.
+  const notes = degraded.filter(d => d.toLowerCase().includes('record_flow'))
+  return (
+    <Panel style={{ marginBottom: 14 }}>
+      <SectionHeader
+        title="Record flow — where this lane's records are right now"
+        icon={faDiagramProject}
+        right={
+          flow ? (
+            <span style={{ fontSize: 11, color: colors.textFaint }}>
+              {flow.total.toLocaleString()} records · {flow.dataset_ids.length} dataset{flow.dataset_ids.length === 1 ? '' : 's'} · age = {flow.age_basis}
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: colors.warningText }}>not measured</span>
+          )
+        }
+      />
+      {!flow ? (
+        <div>
+          <EmptyState
+            title="Record flow could not be measured"
+            hint="This is UNKNOWN, not an empty pipeline. The classification is a full scan of the lane's queue rows and runs in its own transaction so the rest of this pane survives; when it exceeds the statement budget — or the lane has no active partner_datasets — the API returns no flow and says why."
+          />
+          {notes.map((n, i) => (
+            <div key={i} style={{ fontSize: 11, color: colors.warningText, marginTop: 6 }}>could not measure: {n}</div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <FlowScanAge flow={flow} />
+          <ScrollX>
+            <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, padding: '4px 0 2px', minWidth: 'min-content' }}>
+              {flow.buckets.map((b, i) => (
+                <React.Fragment key={b.bucket}>
+                  <FlowNode bucket={b} total={flow.total} ageBasis={flow.age_basis} />
+                  {/* No arrow leaves a dead end, and none leaves the last node. */}
+                  {!b.terminal && i < flow.buckets.length - 1 && (
+                    <div style={{ display: 'flex', alignItems: 'center', color: colors.textFaint, fontSize: 14, padding: '0 5px' }} aria-hidden>
+                      →
+                    </div>
+                  )}
+                  {b.terminal && i < flow.buckets.length - 1 && (
+                    <div style={{ width: 11 }} aria-hidden />
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          </ScrollX>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 10, fontSize: 11, color: colors.textFaint, alignItems: 'center' }}>
+            <span title="Nothing leaves a dead end on its own — the record's ladder is over.">
+              <span style={{ color: colors.idle, fontWeight: 700 }}>⊣</span> dead end
+            </span>
+            <span title="Claimed with neither a mailed nor a last-touch campaign behind it: capacity held by nothing.">
+              <span style={{ color: colors.danger, fontWeight: 700 }}>■</span> stranded orphan
+            </span>
+            <span title="Every bucket is emitted even at 0 — a scanned set containing none of a status is a MEASURED zero, not an unknown.">
+              0 here is measured, not unknown
+            </span>
+            {flow.unclassified > 0 && (
+              <span
+                style={{ color: colors.warningText, fontWeight: 700 }}
+                title="Rows in a pcq status the flow order does not name (a new status, or a suppressed / engaged tail). Counted here rather than dropped, so the buckets still sum to the total."
+              >
+                unclassified {flow.unclassified.toLocaleString()}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </Panel>
+  )
+}
+
+/**
+ * FlowScanAge — when the SCAN behind this diagram ran, and how stale it is.
+ *
+ * The flow is served from a server-side cache (10 minutes for a successful
+ * scan), so the diagram is routinely older than the pane's own `as_of`. Showing
+ * only the pane's as_of would date the diagram to the click that fetched it,
+ * which is the one reading that is definitely wrong. Fresh (age 0) is stated as
+ * fresh rather than left blank — "no cache line" would be indistinguishable
+ * from "the field is missing".
+ */
+const FlowScanAge: React.FC<{ flow: RecordFlow }> = ({ flow }) => {
+  const age = flow.cache_age_seconds
+  const stale = age >= 300
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
+      <span title="When the classification scan actually ran (record_flow.as_of), in Denver time. This is NOT the pane's as_of — the flow is cached, so the two differ by the cache age.">
+        scanned <strong style={{ color: colors.heading }}>{fmtTime(flow.as_of)}</strong>
+      </span>
+      <span
+        style={{ color: stale ? colors.warningText : colors.textFaint }}
+        title="How long ago that scan ran. A successful flow is reused for up to 10 minutes; a failed one for 2. Records have moved between buckets since — read the shape, not the last digit."
+      >
+        {age <= 0 ? 'fresh scan (0s old)' : `cached ${age}s ago`}
+      </span>
+    </div>
+  )
+}
+
+const FlowNode: React.FC<{ bucket: RecordFlowBucket; total: number; ageBasis: string }> = ({ bucket, total, ageBasis }) => {
+  const tone = bucket.orphan ? colors.danger : bucket.terminal ? colors.idle : colors.indigo400
+  const share = total > 0 ? (bucket.count / total) * 100 : null
+  return (
+    <div
+      title={`${bucket.label} — ${bucket.count.toLocaleString()} record(s)`
+        + (share != null ? `, ${share.toFixed(1)}% of the ${total.toLocaleString()} scanned` : '')
+        + (bucket.terminal ? ' · DEAD END: nothing leaves this bucket' : '')
+        + (bucket.orphan ? ' · STRANDED: claimed with no campaign behind it' : '')}
+      style={{
+        minWidth: 122, maxWidth: 152, flex: '0 0 auto',
+        border: `1px solid ${alpha(tone, bucket.orphan && bucket.count > 0 ? '66' : '33')}`,
+        background: bucket.orphan && bucket.count > 0 ? alpha(colors.danger, '14') : alpha(tone, '0d'),
+        borderRadius: 8, padding: '7px 9px',
+        // A dead end is drawn as a dead end: flat right edge, closed off.
+        borderRightWidth: bucket.terminal ? 3 : 1,
+        borderRightColor: bucket.terminal ? tone : alpha(tone, '33'),
+        display: 'flex', flexDirection: 'column', gap: 3,
+      }}
+    >
+      <div style={{ fontSize: 10, color: colors.textMuted, lineHeight: 1.25, minHeight: 25 }}>{bucket.label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: bucket.orphan && bucket.count > 0 ? colors.dangerText : colors.heading, fontVariantNumeric: 'tabular-nums' }}>
+        {bucket.count.toLocaleString()}
+      </div>
+      <div style={{ fontSize: 10, color: colors.textFaint, fontVariantNumeric: 'tabular-nums' }} title={`Median age, ${ageBasis}`}>
+        {bucket.median_age_hours == null
+          ? <Unknown hint="no rows in this bucket to take a median age of" />
+          : `median ${bucket.median_age_hours.toFixed(1)}h`}
+      </div>
+      <div style={{ fontSize: 9, letterSpacing: 0.4, textTransform: 'uppercase', color: tone, fontWeight: 700 }}>
+        {bucket.orphan ? '■ stranded' : bucket.terminal ? '⊣ dead end' : `${share == null ? '' : `${share.toFixed(1)}%`}`}
+      </div>
     </div>
   )
 }

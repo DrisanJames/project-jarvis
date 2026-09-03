@@ -5,11 +5,14 @@
 // still open or met. Click through to the per-ISP token buckets, the day's
 // capacity-ledger entries for that domain, and the domain contract form.
 //
-// GAP against §6 (reported, not invented): the API's /supply/domains rows carry
-// NO ramp stage and NO health band — those live in sending_domain_cards and are
-// not part of this response — and there is no reject endpoint for a scheduled
-// contract version. This pane therefore shows what the API measures and says so,
-// rather than rendering a stage it cannot source.
+// RAMP STAGE + HEALTH BAND are now contract POLICY, and the rows carry them:
+// they are projected from the domain's ACTIVE drip_domain_contracts row along
+// with the version they came from. The band is displayed, never re-derived —
+// green / amber / red map straight onto theme tokens, and the governor that
+// ACTS on the band (amber halves a cell, red takes it to 0) lives server-side.
+// A null band/stage means the domain has NO active domain contract: it renders
+// as "unknown" and the mediator fails closed on that domain — which the API's
+// degraded notes in the header strip say verbatim.
 
 import React from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
@@ -17,8 +20,8 @@ import { faArrowLeft, faRotate, faGlobe, faGaugeHigh } from '@fortawesome/free-s
 import { colors, alpha } from '../shared/theme'
 import { Panel, SectionHeader, SectionError, EmptyState, Pill } from '../shared/ui'
 import {
-  DomainsResponse, DomainResponse,
-  supplyGet, Num, HeaderStrip, LoadingRow, ScrollX, Reason,
+  DomainsResponse, DomainResponse, DomainRow, HEALTH_BAND_EFFECT,
+  supplyGet, Num, Unknown, HeaderStrip, LoadingRow, ScrollX, Reason, healthColor,
   fmtClock,
   tableStyle, thStyle, tdStyle, numTd, numTh,
 } from './supplyShared'
@@ -60,10 +63,16 @@ export const SupplyDomains: React.FC<{
   }, [domain, day, nonce])
 
   if (domain) {
+    // The band/stage/version live on the LIST row (the detail response does not
+    // carry them), so the selected row is handed down rather than re-fetched.
+    // Absent — a deep link, or a domain with no capacity balance today — the
+    // detail header says unknown instead of inventing a band.
+    const row = (list?.domains ?? []).find(d => d.sending_domain === domain) ?? null
     return (
       <DomainDetail
         day={day}
         domain={domain}
+        row={row}
         data={detail}
         error={detailErr}
         loading={detailLoading}
@@ -115,6 +124,9 @@ export const SupplyDomains: React.FC<{
               <thead>
                 <tr>
                   <th style={thStyle}>Sending domain</th>
+                  <th style={thStyle} title="The health band on the domain's ACTIVE contract — POLICY, not an inferred verdict. green = no band ceiling · amber = the governor halves every cell · red = the governor takes every cell to 0. Displayed as the API sends it; the rule is server-side.">Health band</th>
+                  <th style={thStyle} title="Free text from the ramp job or the operator, carried on the active domain contract. Display only — no mediator reads it.">Ramp stage</th>
+                  <th style={numTh} title="The ACTIVE domain-contract version the band and stage were read from. Unknown = no active contract, and the mediator fails closed on the domain.">Contract v</th>
                   <th style={numTh} title="Number of ISP cells (buckets) this domain has today.">ISP cells</th>
                   <th style={numTh} title="Sum of the domain contract's daily_max_by_isp over the day's cells (contracted).">Contracted</th>
                   <th style={numTh} title="Contracted after governors reduced it (effective). The reason is the most common binding governor across the domain's cells.">Effective</th>
@@ -135,9 +147,10 @@ export const SupplyDomains: React.FC<{
           </ScrollX>
         )}
         <div style={{ marginTop: 10, fontSize: 11, color: colors.textFaint }}>
-          Ramp stage and ISP health band are not in this response — they live in <code>sending_domain_cards</code> and reach
-          the supply chain only as governor inputs (they reduce <em>effective</em>, and the reduction shows in the effective
-          reason). Read them on Domain Agents / Domain Center.
+          Health band and ramp stage are read from the domain's ACTIVE <code>drip_domain_contracts</code> row — contract
+          policy, projected without token verification so this view survives a missing contract key. The governor that ACTS
+          on the band still verifies, and its reduction shows in <em>effective</em> and its reason. Edit both on the domain's
+          contract form (click a row). <strong>Unknown</strong> means no active contract, not a missing display.
         </div>
       </Panel>
     </div>
@@ -160,6 +173,15 @@ const DomainRowView: React.FC<{
       title="Open this domain's per-ISP buckets, ledger and contract"
     >
       <td style={tdStyle}><strong style={{ color: colors.heading }}>{row.sending_domain}</strong></td>
+      <td style={tdStyle}><HealthBandChip band={row.health_band} /></td>
+      <td style={{ ...tdStyle, fontSize: 11, color: colors.textMuted, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.ramp_stage ?? undefined}>
+        {row.ramp_stage ?? <Unknown hint="no ramp stage on this domain's active contract — or there is no active contract at all" />}
+      </td>
+      <td style={numTd}>
+        {row.domain_contract_version == null
+          ? <Unknown hint="no ACTIVE domain contract for this domain — the mediator SKIPS it (skipped:no_contract), so the band being unknown is the least of it" />
+          : <span title="The active domain-contract version the band and stage came from.">v{row.domain_contract_version}</span>}
+      </td>
       <td style={numTd}>{row.isp_cells}</td>
       <td style={numTd}><Num value={row.contracted} label={labels['contracted']} what="Domain contract daily max, summed over ISPs" /></td>
       <td style={numTd}>
@@ -185,15 +207,43 @@ const DomainRowView: React.FC<{
   )
 }
 
+/**
+ * HealthBandChip — a straight MAP of the API's band string onto theme tokens
+ * (§6: a verdict computed server-side is displayed, not recomputed). It reuses
+ * healthColor, which is the ONE place a green/amber/red string becomes a colour
+ * on this screen.
+ */
+const HealthBandChip: React.FC<{ band: string | null }> = ({ band }) => {
+  if (band == null) {
+    return <Unknown hint="no ACTIVE domain contract for this domain — the band is unknown, and the mediator fails closed on the domain" />
+  }
+  const tone = healthColor(band)
+  return (
+    <span
+      title={HEALTH_BAND_EFFECT[band] ?? `health_band ${band} — not one of green / amber / red; the contract's Validate() is the gate on this vocabulary`}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        background: alpha(tone, '22'), border: `1px solid ${alpha(tone, '66')}`,
+        color: tone, borderRadius: 999, padding: '2px 9px', fontSize: 10, fontWeight: 700,
+        textTransform: 'uppercase', letterSpacing: 0.4,
+      }}
+    >
+      <span style={{ width: 7, height: 7, borderRadius: 999, background: tone }} />
+      {band}
+    </span>
+  )
+}
+
 const DomainDetail: React.FC<{
   day: string
   domain: string
+  row: DomainRow | null
   data: DomainResponse | null
   error: string | null
   loading: boolean
   onBack: () => void
   onRefresh: () => void
-}> = ({ day, domain, data, error, loading, onBack, onRefresh }) => {
+}> = ({ day, domain, row, data, error, loading, onBack, onRefresh }) => {
   const labels = data?.labels ?? {}
   const seed = React.useMemo(() => {
     const out: Record<string, number | null> = {}
@@ -215,6 +265,24 @@ const DomainDetail: React.FC<{
           <FontAwesomeIcon icon={faArrowLeft} /> All domains
         </button>
         <h2 style={{ margin: 0, fontSize: 18, color: colors.heading }}>{domain}</h2>
+        {row ? (
+          <>
+            <HealthBandChip band={row.health_band} />
+            <span style={{ fontSize: 11, color: colors.textMuted }} title="Free text on the active domain contract — display only.">
+              ramp stage {row.ramp_stage ?? <Unknown hint="no ramp stage on this domain's active contract" />}
+            </span>
+            <span style={{ fontSize: 11, color: colors.textMuted }} title="The ACTIVE domain-contract version the band and stage were read from.">
+              contract{' '}
+              {row.domain_contract_version == null
+                ? <Unknown hint="no ACTIVE domain contract — the mediator skips this domain (skipped:no_contract)" />
+                : <strong style={{ color: colors.indigo200 }}>v{row.domain_contract_version}</strong>}
+            </span>
+          </>
+        ) : (
+          <span style={{ fontSize: 11, color: colors.textFaint, fontStyle: 'italic' }} title="This domain has no row in the day's capacity table, so its band, ramp stage and contract version were not projected — unknown, not green.">
+            band / ramp stage unknown — no capacity row for this domain today
+          </span>
+        )}
         <button
           type="button"
           onClick={onRefresh}

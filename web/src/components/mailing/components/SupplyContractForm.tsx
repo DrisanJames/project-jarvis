@@ -18,21 +18,31 @@
 // that value is unknown the control REFUSES to resolve and blocks the save
 // instead of substituting 0.
 //
-// KNOWN API GAP (reported, not worked around): GET /supply/contracts/{kind}/
-// {subject} returns version metadata but NOT the policy body. Scalar policy
-// fields therefore start at the schema defaults, and the banner says so. Only
-// the per-ISP map can be seeded from live data (the balances / lane demand the
-// active contract produced).
+// PREFILL: GET /supply/contracts/{kind}/{subject} now returns each version's
+// policy `body` (Contract.TokenBody — the exact set of fields POST accepts), so
+// the editor opens on WHAT IS RUNNING, not on schema defaults. The prefill
+// source is the ACTIVE version, else the scheduled one, else the newest version
+// that carries a body; the pane names which. The schema-defaults banner is
+// shown ONLY when no body could be sourced — i.e. no version exists at all (or
+// the API could not re-read one), which is the only case where the fields below
+// really are defaults.
+//
+// REJECT: a draft / approved / scheduled version can be rejected from the
+// version history (status → superseded, reason appended to notes). `active` and
+// `superseded` are refused by the API with 409 and that message is shown
+// VERBATIM — a live contract is replaced by scheduling its successor, never
+// rejected out from under the estate.
 
 import React from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-import { faFileContract, faCircleCheck, faTriangleExclamation } from '@fortawesome/free-solid-svg-icons'
+import { faFileContract, faCircleCheck, faTriangleExclamation, faBan } from '@fortawesome/free-solid-svg-icons'
 import { colors, alpha } from '../shared/theme'
 import { SectionError, Pill } from '../shared/ui'
 import { useToast } from '../shared/ToastSystem'
 import {
-  ContractKind, ContractsResponse, SupplyError, ISP_CLASSES,
-  supplyGet, supplyPost, Unknown, ScrollX, fmtTime,
+  ContractKind, ContractsResponse, ContractVersionRow, ContractBody, SupplyError, ISP_CLASSES,
+  HEALTH_BANDS, HEALTH_BAND_EFFECT,
+  supplyGet, supplyPost, Unknown, ScrollX, fmtTime, healthColor,
   tableStyle, thStyle, tdStyle,
 } from './supplyShared'
 
@@ -40,7 +50,7 @@ import {
 // FIELD SPECS — one row per policy field, mirroring the Go struct tags
 // ═══════════════════════════════════════════════════════════════════════════
 
-type FieldType = 'int' | 'nullable-int' | 'num' | 'text' | 'bool' | 'time' | 'select' | 'csv'
+type FieldType = 'int' | 'nullable-int' | 'num' | 'text' | 'bool' | 'time' | 'select' | 'csv' | 'band'
 
 interface FieldSpec {
   key: string
@@ -59,6 +69,8 @@ const DOMAIN_FIELDS: FieldSpec[] = [
   { key: 'interval_minutes', label: 'interval_minutes', help: 'Bucket refill interval. refill = effective_daily ÷ ((end − start) ÷ interval). Must be > 0 — bucket.go divides by it.', type: 'int', def: '15', width: 80 },
   { key: 'max_burst_intervals', label: 'max_burst_intervals', help: 'Ceiling on accumulated tokens, in intervals. Bounds the catch-up burst after scheduler downtime. Must be ≥ 1.', type: 'int', def: '2', width: 80 },
   { key: 'ramp_source', label: 'ramp_source', help: 'Who proposes this domain\'s ramp: the sending-domain cards job, or the operator. Blank leaves it unset.', type: 'select', def: '', options: ['', 'sending_domain_cards', 'operator'] },
+  { key: 'health_band', label: 'health_band', help: 'POLICY, not an inferred verdict. green = no band ceiling · amber = the governor halves every cell · red = the governor takes every cell to 0. Moving off green requires notes naming the operator ruling, and a band change re-issues the integrity token.', type: 'band', def: 'green' },
+  { key: 'ramp_stage', label: 'ramp_stage', help: 'Free text from the ramp job or the operator — display only. No mediator reads it; it never changes a number.', type: 'text', def: '', width: 160 },
 ]
 
 const DISPATCH_FIELDS: FieldSpec[] = [
@@ -124,6 +136,56 @@ const KIND_BLURB: Record<ContractKind, string> = {
   dispatch: 'What this lane WANTS: desired intros per ISP, which domains it may take capacity from, its ladder, and its guardrails.',
   inventory: 'How this lane REPLENISHES: which sources it accepts, its verdict window, its EO budget and coverage band, and its remail policy. No sending target lives here.',
   source: 'What one source supplies: record class, eligible ISPs, intake cap, arrival shape and unit acquisition cost.',
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PREFILL — the form opens on the running policy, not on schema defaults
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Which version the editor prefills from: the ACTIVE one (what the mediators
+ * are honouring right now), else the scheduled one (what takes over at the next
+ * Denver midnight), else the newest version that actually carries a body.
+ *
+ * A version whose `body` is null is SKIPPED, never treated as an empty policy —
+ * the API leaves it null when the row could not be re-read, and prefilling
+ * zeroes off that would be a silent estate edit.
+ */
+const pickPrefillSource = (versions: ContractVersionRow[]): ContractVersionRow | null => {
+  const withBody = versions.filter(v => v.body != null)
+  return withBody.find(v => v.status === 'active')
+    ?? withBody.find(v => v.status === 'scheduled')
+    ?? withBody.reduce<ContractVersionRow | null>((best, v) => (best == null || v.version > best.version ? v : best), null)
+}
+
+/** One policy value → the string the matching input renders. */
+const bodyToFormValue = (spec: FieldSpec, raw: unknown): string => {
+  switch (spec.type) {
+    case 'bool':
+      return raw === true ? 'true' : 'false'
+    case 'csv':
+      return Array.isArray(raw) ? raw.map(v => String(v)).join(', ') : ''
+    case 'nullable-int':
+      return raw == null ? '' : String(raw)
+    case 'time':
+      // The Go side normalises a clock to HH:MM (normClock) precisely so the
+      // token survives the round trip; <input type="time"> wants the same.
+      return typeof raw === 'string' ? raw.slice(0, 5) : ''
+    default:
+      return raw == null ? '' : String(raw)
+  }
+}
+
+/** The per-ISP map out of a policy body, or null when the body carries none. */
+const bodyISPMap = (body: ContractBody, mapKey: string): Record<string, number> | null => {
+  const raw = body[mapKey]
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const out: Record<string, number> = {}
+  Object.entries(raw as Record<string, unknown>).forEach(([isp, v]) => {
+    const n = typeof v === 'number' ? v : Number(v)
+    if (Number.isFinite(n)) out[isp] = n
+  })
+  return out
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -274,7 +336,56 @@ export const SupplyContractForm: React.FC<{
     return () => ctrl.abort()
   }, [kind, subject, nonce])
 
+  // ── Prefill from the running policy ──────────────────────────────────────
+  // The source version is re-picked on every refresh, but the fields are seeded
+  // only when that source CHANGES (`seededFrom`), so a background refresh can
+  // never wipe half-typed operator edits.
+  const prefillSource = React.useMemo(
+    () => pickPrefillSource(versions?.versions ?? []),
+    [versions],
+  )
+  const [seededFrom, setSeededFrom] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    if (!prefillSource || prefillSource.body == null) return
+    const key = `${kind}|${subject}|${prefillSource.id}`
+    if (seededFrom === key) return
+    const body = prefillSource.body
+    setValues(Object.fromEntries(specs.map(s => [
+      s.key,
+      Object.prototype.hasOwnProperty.call(body, s.key) ? bodyToFormValue(s, body[s.key]) : s.def,
+    ])))
+    if (mapKey) {
+      const m = bodyISPMap(body, mapKey)
+      if (m) {
+        setCaps(Object.fromEntries(ISP_CLASSES.map(isp => {
+          const v = m[isp]
+          // A domain contract carries every ISP explicitly; an ISP absent from a
+          // dispatch contract means "not wanted" (0 desired) — which is Off, not
+          // an explicit 0. Keeping the two apart is the whole point of the control.
+          if (v == null) return [isp, { mode: 'off' as CapMode, n: '' }]
+          if (v === 0 && kind !== 'domain') return [isp, { mode: 'off' as CapMode, n: '' }]
+          return [isp, { mode: 'n' as CapMode, n: String(v) }]
+        })))
+      }
+    }
+    // notes is deliberately NOT prefilled: it is this version's justification,
+    // and an amber/red band or gmail > 0 must be re-argued, not inherited.
+    setSeededFrom(key)
+  }, [prefillSource, seededFrom, kind, subject, specs, mapKey])
+
   const bad = (f: string) => badFields.includes(f)
+
+  /**
+   * The band's notes rule, mirrored from DomainContract.Validate: amber/red
+   * require notes naming the operator ruling, and the API rejects with
+   * field `health_band`. Shown inline so the operator learns it before the
+   * round trip — the API stays the authority that enforces it.
+   */
+  const bandNeedsNotes =
+    kind === 'domain'
+    && (values['health_band'] === 'amber' || values['health_band'] === 'red')
+    && notes.trim() === ''
 
   // A "Lane target" cell with no live value, or an "N" cell with an empty box,
   // is not a number — the save is blocked rather than silently posting 0.
@@ -372,7 +483,42 @@ export const SupplyContractForm: React.FC<{
     } finally { setBusy(false) }
   }
 
+  /**
+   * Reject a draft / approved / scheduled version: status → superseded, the
+   * reason appended to notes, and a scheduled version never activates.
+   *
+   * The API refuses `active` and `superseded` with 409 and an explanation of
+   * WHY; that message is surfaced verbatim rather than being re-worded here —
+   * the server owns the rule, this pane displays it.
+   */
+  const reject = async (version: number, status: string) => {
+    const ok = window.confirm(
+      `Reject ${kind} contract ${subject} v${version} (currently ${status})?\n\n`
+      + 'It is marked SUPERSEDED, the rejection is appended to its notes, and a scheduled '
+      + 'version will never activate. This cannot be undone — file a new draft instead.',
+    )
+    if (!ok) return
+    setBusy(true); setErr(null); setBadFields([])
+    try {
+      await supplyPost(`/contracts/${kind}/${encodeURIComponent(subject)}/${version}/reject`, {})
+      toast.addToast({
+        type: 'success',
+        title: `${KIND_TITLE[kind]} v${version} rejected`,
+        message: 'Marked superseded. It will never activate.',
+      })
+      if (savedVersion === version) setSavedVersion(null)
+      setNonce(n => n + 1)
+      onChanged?.()
+    } catch (e) {
+      // 409 (active / superseded) carries the API's own explanation — verbatim.
+      if (e instanceof SupplyError) { setErr(e.message); setBadFields(e.fields) }
+      else setErr(e instanceof Error ? e.message : String(e))
+    } finally { setBusy(false) }
+  }
+
   const drafts = (versions?.versions ?? []).filter(v => v.status === 'draft')
+  /** The three lifecycle states the API accepts a rejection from (dripRejectableStatuses). */
+  const rejectable = (status: string) => status === 'draft' || status === 'approved' || status === 'scheduled'
 
   return (
     <div style={{ border: `1px solid ${colors.hairline}`, borderRadius: 8, padding: '12px 14px' }}>
@@ -414,24 +560,68 @@ export const SupplyContractForm: React.FC<{
 
       {open && (
         <div style={{ marginTop: 12 }}>
-          <div
-            style={{
-              fontSize: 11, color: colors.warningText, background: 'rgba(245,158,11,0.08)',
-              border: '1px solid rgba(245,158,11,0.25)', borderRadius: 6, padding: '7px 10px', marginBottom: 12,
-            }}
-          >
-            <FontAwesomeIcon icon={faTriangleExclamation} style={{ marginRight: 6 }} />
-            The contracts endpoint returns version metadata, not the policy body, so the scalar fields below start at the
-            SCHEMA DEFAULTS — not at what is running today. Read the current values off this pane's tables and set every
-            field deliberately before you save. Drafting is safe: nothing mails differently until a version is approved
-            AND the next Denver midnight passes.
-          </div>
+          {prefillSource ? (
+            <div
+              style={{
+                fontSize: 11, color: colors.indigo200, background: alpha(colors.indigo500, '0d'),
+                border: `1px solid ${alpha(colors.indigo500, '33')}`, borderRadius: 6, padding: '7px 10px', marginBottom: 12,
+              }}
+              title="The policy body of that version — the exact field set its integrity token covers — as returned by GET /supply/contracts."
+            >
+              <FontAwesomeIcon icon={faFileContract} style={{ marginRight: 6 }} />
+              Prefilled from <strong>v{prefillSource.version}</strong> ({prefillSource.status}) — the fields below are the
+              policy that version carries, not schema defaults. Edit what you mean to change; everything else is filed
+              again unchanged. Nothing mails differently until a version is approved AND the next Denver midnight passes.
+              {' '}<span style={{ color: colors.textFaint }}>notes are not carried over — this version needs its own.</span>
+            </div>
+          ) : (
+            <div
+              style={{
+                fontSize: 11, color: colors.warningText, background: 'rgba(245,158,11,0.08)',
+                border: '1px solid rgba(245,158,11,0.25)', borderRadius: 6, padding: '7px 10px', marginBottom: 12,
+              }}
+            >
+              <FontAwesomeIcon icon={faTriangleExclamation} style={{ marginRight: 6 }} />
+              {(versions?.versions ?? []).length === 0
+                ? 'No version of this contract exists yet, so the fields below are the SCHEMA DEFAULTS — nothing is running to prefill from. Set every field deliberately.'
+                : 'No version could be re-read for its policy body, so the fields below fell back to the SCHEMA DEFAULTS — they are NOT what is running today. Refresh, and set every field deliberately before you save.'}
+              {' '}Drafting is safe: nothing mails differently until a version is approved AND the next Denver midnight passes.
+            </div>
+          )}
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
             {specs.map(s => (
               <label key={s.key} style={fieldLabelStyle} title={s.help}>
                 {s.label}
-                {s.type === 'bool' ? (
+                {s.type === 'band' ? (
+                  <div>
+                    <div style={{ display: 'inline-flex', background: colors.appBgSolid, border: `1px solid ${bad(s.key) ? colors.danger : colors.panelBorderStrong}`, borderRadius: 6, overflow: 'hidden' }}>
+                      {HEALTH_BANDS.map(b => (
+                        <button
+                          key={b}
+                          type="button"
+                          style={segBtn((values[s.key] ?? s.def) === b, healthColor(b))}
+                          onClick={() => setValues(v => ({ ...v, [s.key]: b }))}
+                          title={HEALTH_BAND_EFFECT[b]}
+                        >
+                          {b}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4, textTransform: 'none', letterSpacing: 0, maxWidth: 420 }}>
+                      {HEALTH_BAND_EFFECT[values[s.key] ?? s.def] ?? ''}
+                    </div>
+                    {bandNeedsNotes && (
+                      <div
+                        style={{ fontSize: 10, color: colors.dangerText, marginTop: 3, textTransform: 'none', letterSpacing: 0, maxWidth: 420, fontWeight: 700 }}
+                        title="DomainContract.Validate rejects this with field health_band."
+                      >
+                        health_band &quot;{values[s.key]}&quot; requires notes naming the operator ruling — the API will reject
+                        this draft on field <code>health_band</code> until notes are filled in below.
+                      </div>
+                    )}
+                  </div>
+                ) : s.type === 'bool' ? (
                   <div style={{ display: 'inline-flex', background: colors.appBgSolid, border: `1px solid ${bad(s.key) ? colors.danger : colors.panelBorderStrong}`, borderRadius: 6, overflow: 'hidden' }}>
                     <button type="button" style={segBtn(values[s.key] === 'true', colors.success)} onClick={() => setValues(v => ({ ...v, [s.key]: 'true' }))}>On</button>
                     <button type="button" style={segBtn(values[s.key] !== 'true', colors.idle)} onClick={() => setValues(v => ({ ...v, [s.key]: 'false' }))}>Off</button>
@@ -456,14 +646,16 @@ export const SupplyContractForm: React.FC<{
                 )}
               </label>
             ))}
-            <label style={{ ...fieldLabelStyle, flex: '1 1 320px' }} title="Required when a domain contract opens gmail above 0 — name the operator ruling. Always carried into the version history.">
+            <label style={{ ...fieldLabelStyle, flex: '1 1 320px' }} title="Required when a domain contract opens gmail above 0, and when its health_band leaves green — name the operator ruling. Always carried into the version history, and appended to (never overwritten) if the version is later rejected.">
               notes
               <input
                 type="text"
                 value={notes}
                 onChange={e => setNotes(e.target.value)}
-                placeholder="why this version exists (required to open gmail > 0)"
-                style={{ ...inputStyle, ...(bad('notes') ? { borderColor: colors.danger } : {}) }}
+                placeholder={bandNeedsNotes
+                  ? `required: the operator ruling behind health_band ${values['health_band']}`
+                  : 'why this version exists (required to open gmail > 0)'}
+                style={{ ...inputStyle, ...(bad('notes') || bandNeedsNotes ? { borderColor: colors.danger } : {}) }}
               />
             </label>
           </div>
@@ -539,7 +731,7 @@ export const SupplyContractForm: React.FC<{
                   <th style={thStyle} title="A scheduled/active contract carries an HMAC over its policy body. LoadActive REFUSES a contract whose token does not match — a hand-edited row cannot be honoured. The value itself is never sent to the browser.">Token</th>
                   <th style={thStyle} title="The change-ledger id this version was written under.">Change ledger</th>
                   <th style={thStyle}>Notes</th>
-                  <th style={thStyle} />
+                  <th style={thStyle} title="Approve schedules a draft for the next Denver midnight. Reject marks a draft/approved/scheduled version superseded — active and superseded versions are refused by the API with 409.">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -568,7 +760,7 @@ export const SupplyContractForm: React.FC<{
                     <td style={{ ...tdStyle, fontSize: 11, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.notes}>
                       {v.notes || '—'}
                     </td>
-                    <td style={tdStyle}>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
                       {v.status === 'draft' && (
                         <button
                           type="button"
@@ -583,6 +775,30 @@ export const SupplyContractForm: React.FC<{
                           Schedule for tomorrow
                         </button>
                       )}
+                      {rejectable(v.status) ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => { void reject(v.version, v.status) }}
+                          style={{
+                            background: alpha(colors.danger, '22'), border: `1px solid ${alpha(colors.danger, '66')}`,
+                            color: colors.dangerText, borderRadius: 5, padding: '3px 9px', fontSize: 10, fontWeight: 700,
+                            cursor: 'pointer', marginLeft: v.status === 'draft' ? 6 : 0,
+                          }}
+                          title="Mark this version superseded. A scheduled version rejected here never activates. The reason is appended to its notes; the version itself is never deleted."
+                        >
+                          <FontAwesomeIcon icon={faBan} /> Reject
+                        </button>
+                      ) : (
+                        <span
+                          style={{ fontSize: 10, color: colors.textFaint }}
+                          title={v.status === 'active'
+                            ? 'An ACTIVE contract is replaced by scheduling its successor, never rejected out from under the estate — a subject with no active contract is a hard stop (skipped:no_contract).'
+                            : 'Already terminal — re-rejecting would move superseded_at and rewrite history.'}
+                        >
+                          not rejectable
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -595,6 +811,10 @@ export const SupplyContractForm: React.FC<{
             {drafts.length} unapproved draft{drafts.length === 1 ? '' : 's'} — a draft changes nothing until it is scheduled.
           </div>
         )}
+        {/* A reject fired from the history above happens with the drawer closed,
+            so its error (the 409 in particular) needs a home out here — printed
+            verbatim, because the API owns the rule it is quoting. */}
+        {!open && err && <div style={{ marginTop: 8 }}><SectionError label="Contract" error={err} /></div>}
       </div>
     </div>
   )

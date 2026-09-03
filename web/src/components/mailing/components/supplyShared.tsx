@@ -199,6 +199,62 @@ export interface ContractSummary {
   effective_at: string
   token_present: boolean
   metadata: ContractMetaBlock
+  /** The version's POLICY body (Contract.TokenBody). null = could not be re-read — NOT an empty policy. */
+  body?: ContractBody | null
+}
+
+/**
+ * A contract's policy body — exactly what POST /contracts/{kind}/{subject}
+ * accepts, and exactly what the integrity token covers. Lifecycle fields
+ * (status / effective_at / notes / approvals) are NOT in here; they live on the
+ * version row. `null` means the row could not be re-read (drip_supply_handlers.go
+ * dripHydrateBodies leaves it nil rather than `{}`), and the editor must not
+ * render that as "the policy is empty".
+ */
+export type ContractBody = Record<string, unknown>
+
+/**
+ * One node of the lane's record flow (dripFlowBucket). `count` is always a
+ * measured number — every bucket in dripFlowOrder is emitted even at 0, because
+ * a scanned set containing none of a status is a measured zero. Only the median
+ * age is nullable (no rows to take a median of).
+ */
+export interface RecordFlowBucket {
+  bucket: string
+  label: string
+  count: number
+  median_age_hours: number | null
+  /** A DEAD END: nothing leaves this bucket on its own. */
+  terminal: boolean
+  /** The stranded-claim bucket — claimed with no campaign behind it. */
+  orphan: boolean
+}
+
+/**
+ * The lane's record flow (dripRecordFlow). The WHOLE object is nullable on
+ * LaneResponse: the classification is a full scan and may exceed the statement
+ * budget, in which case the API leaves it null and names why in `degraded[]`.
+ * Null is "could not measure", never "the flow is empty".
+ */
+export interface RecordFlow {
+  dataset_ids: string[]
+  total: number
+  buckets: RecordFlowBucket[]
+  age_basis: string
+  /** Rows whose pcq status the flow order does not name — reported, never dropped. */
+  unclassified: number
+  /**
+   * When the SCAN ran — NOT when the response was built. The flow is cached for
+   * up to 10 minutes (a failed/timed-out scan for 2), so this and the response's
+   * own `as_of` legitimately differ, and the difference is the whole reason both
+   * are shown: a stalled ladder read off a ten-minute-old shape is still a
+   * ten-minute-old claim.
+   */
+  as_of: string
+  /** 0 on a fresh scan, counting up to the cache TTL. */
+  cache_age_seconds: number
+  /** Present only if a future API revision moves the notes onto the flow itself. */
+  degraded?: string[]
 }
 
 export interface LaneResponse extends SupplyMeta {
@@ -212,10 +268,21 @@ export interface LaneResponse extends SupplyMeta {
   tick_outcomes_24h: TickOutcomeRow[]
   contracts: ContractSummary[]
   dispatch_value: DispatchValue
+  /** null = the classification could not be computed; the reason is in `degraded`. */
+  record_flow: RecordFlow | null
 }
 
 export interface DomainRow {
   sending_domain: string
+  /**
+   * ramp_stage / health_band / domain_contract_version are projected from the
+   * domain's ACTIVE drip_domain_contracts row (dripBandSourceNote). null means
+   * the domain has NO active domain contract — the mediator fails closed on it
+   * — never "we could not be bothered to look".
+   */
+  ramp_stage: string | null
+  health_band: string | null
+  domain_contract_version: number | null
   contracted: number | null
   effective: number | null
   effective_reason: string
@@ -320,6 +387,13 @@ export interface ContractVersionRow {
   token_present: boolean
   token_issued_at: string | null
   metadata: ContractMetaBlock
+  /**
+   * The version's POLICY body — the same JSON shape POST accepts, so the editor
+   * prefills from what is actually running instead of from schema defaults.
+   * null means the row could not be re-read; that is NOT an empty policy and
+   * the form falls back to the defaults banner.
+   */
+  body: ContractBody | null
 }
 
 export interface ContractsResponse extends SupplyMeta {
@@ -331,6 +405,21 @@ export interface ContractsResponse extends SupplyMeta {
 }
 
 export type ContractKind = 'domain' | 'dispatch' | 'inventory' | 'source'
+
+/**
+ * The three legal health bands, in the same order as dripsupply.HealthBands()
+ * (worst first). The band is CONTRACT POLICY, not an inferred verdict: it lives
+ * in DomainContract.TokenBody, so a hand-edited band does not verify.
+ */
+export const HEALTH_BANDS = ['red', 'amber', 'green'] as const
+export type HealthBand = (typeof HEALTH_BANDS)[number]
+
+/** What each band does to a domain×ISP cell (dripsupply.HealthBandCeiling). */
+export const HEALTH_BAND_EFFECT: Record<string, string> = {
+  green: 'green — no ceiling from the band; the cell runs at its contracted daily max.',
+  amber: 'amber — the governor halves the cell: effective = 50% of contracted. Requires notes naming the operator ruling.',
+  red: 'red — the governor takes the cell to 0. The domain sends nothing on this contract. Requires notes naming the operator ruling.',
+}
 
 /**
  * The 12 canonical ISP classes — the SAME list, in the same order, as
