@@ -451,6 +451,14 @@ type DomainContract struct {
 	IntervalMinutes   int            `json:"interval_minutes"`
 	MaxBurstIntervals int            `json:"max_burst_intervals"`
 	RampSource        string         `json:"ramp_source,omitempty"`
+
+	// HealthBand is POLICY on the contract, not an inferred governor (operator
+	// ruling 2026-09-03). red => 0, amber => 50% of contracted. Because it can
+	// silence a domain, moving off green requires the ruling named in notes,
+	// and a band change re-issues the token (it is part of TokenBody).
+	HealthBand string `json:"health_band"`
+	// RampStage is free text from the ramp job or the operator, displayed only.
+	RampStage string `json:"ramp_stage"`
 }
 
 func (c *DomainContract) Kind() ContractKind { return KindDomain }
@@ -462,6 +470,31 @@ const (
 	RampSourceCards    = "sending_domain_cards"
 	RampSourceOperator = "operator"
 )
+
+// The three health bands (operator ruling 2026-09-03). The column is
+// NOT NULL DEFAULT 'green' with a CHECK on these three values.
+const (
+	HealthBandGreen = "green"
+	HealthBandAmber = "amber"
+	HealthBandRed   = "red"
+)
+
+// HealthBands lists the legal bands, worst-first.
+func HealthBands() []string {
+	return []string{HealthBandRed, HealthBandAmber, HealthBandGreen}
+}
+
+// Band is the contract's effective health band. An empty value resolves to
+// green, mirroring the column's NOT NULL DEFAULT: a contract inserted without
+// a band is stored as 'green' and read back as 'green', so the token must be
+// computed over the same resolved value on both sides or it would break on the
+// first round trip (the same hazard normClock covers for the time columns).
+func (c *DomainContract) Band() string {
+	if strings.TrimSpace(c.HealthBand) == "" {
+		return HealthBandGreen
+	}
+	return c.HealthBand
+}
 
 // Validate implements §1.1: every one of the 12 ISP classes present, integer
 // values >= 0, and gmail > 0 only with notes naming the operator ruling.
@@ -547,6 +580,19 @@ func (c *DomainContract) Validate() error {
 		add("ramp_source", fmt.Sprintf("must be %q or %q", RampSourceCards, RampSourceOperator))
 	}
 
+	// health_band is policy: it can throttle or silence a domain, so leaving
+	// green is an operator act that must name its ruling — same rule shape as
+	// gmail > 0.
+	switch c.Band() {
+	case HealthBandGreen:
+	case HealthBandAmber, HealthBandRed:
+		if strings.TrimSpace(c.Notes) == "" {
+			add("health_band", fmt.Sprintf("%q requires notes naming the operator ruling", c.Band()))
+		}
+	default:
+		add("health_band", fmt.Sprintf("must be one of %s", strings.Join(HealthBands(), ", ")))
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}
@@ -567,6 +613,10 @@ func (c *DomainContract) TokenBody() any {
 		"interval_minutes":    c.IntervalMinutes,
 		"max_burst_intervals": c.MaxBurstIntervals,
 		"ramp_source":         c.RampSource,
+		// A band change re-issues the token: a hand-edited health_band must not
+		// verify. Band() (not the raw field) so "" and "green" agree.
+		"health_band": c.Band(),
+		"ramp_stage":  c.RampStage,
 	}
 }
 
@@ -574,8 +624,8 @@ func (c *DomainContract) insertSQL() string {
 	return `INSERT INTO drip_domain_contracts
         (id, version, status, effective_at, created_by, created_at, change_ledger_id, notes,
          sending_domain, brand_code, daily_max_by_isp, active_window_start, active_window_end,
-         interval_minutes, max_burst_intervals, ramp_source, metadata, token)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+         interval_minutes, max_burst_intervals, ramp_source, health_band, ramp_stage, metadata, token)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`
 }
 
 func (c *DomainContract) insertArgs(id uuid.UUID, version int) []any {
@@ -584,6 +634,10 @@ func (c *DomainContract) insertArgs(id uuid.UUID, version int) []any {
 		id, version, string(StatusDraft), nullTime(c.EffectiveAt), c.CreatedBy, c.ChangeLedgerID, c.Notes,
 		c.SendingDomain, c.BrandCode, string(raw), c.ActiveWindowStart, c.ActiveWindowEnd,
 		c.IntervalMinutes, c.MaxBurstIntervals, nullString(c.RampSource),
+		// Band(), never the raw field: the column CHECKs the three values, so
+		// writing "" would violate it (NOT NULL DEFAULT only fires when the
+		// column is omitted, and this INSERT names it).
+		c.Band(), c.RampStage,
 		c.Metadata, c.Token,
 	}
 }
@@ -1197,7 +1251,8 @@ func sortedMapKeys[V any](m map[string]V) []string {
 }
 
 const domainSelectBody = `SELECT ` + metaCols + `, sending_domain, brand_code, daily_max_by_isp,
-       active_window_start, active_window_end, interval_minutes, max_burst_intervals, ramp_source
+       active_window_start, active_window_end, interval_minutes, max_burst_intervals, ramp_source,
+       health_band, ramp_stage
   FROM drip_domain_contracts`
 
 const domainSelect = domainSelectBody + activeWhere
@@ -1212,7 +1267,8 @@ func scanDomain(rows *sql.Rows) (*DomainContract, error) {
 	)
 	dests := append(ms.dests(),
 		&c.SendingDomain, &c.BrandCode, &raw,
-		&c.ActiveWindowStart, &c.ActiveWindowEnd, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp)
+		&c.ActiveWindowStart, &c.ActiveWindowEnd, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp,
+		&c.HealthBand, &c.RampStage)
 	if err := rows.Scan(dests...); err != nil {
 		return nil, fmt.Errorf("dripsupply: scan domain contract: %w", err)
 	}

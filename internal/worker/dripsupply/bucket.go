@@ -591,42 +591,82 @@ func (g *SESQuotaGovernor) store(v int) {
 }
 
 // -----------------------------------------------------------------------------
-// HealthBandGovernor — BLOCKED, still inert. See the report to the lead.
+// HealthBandGovernor — REAL, and it is CONTRACT POLICY, not an inferred verdict
 // -----------------------------------------------------------------------------
 
-// HealthBandGovernor is NOT implemented, deliberately: there is no health band
-// to read. Verified 2026-09-03 against the tree —
-//
-//   - there is no `sending_domain_cards` table; the only Go references to that
-//     string are this comment and drip_domain_contracts.ramp_source's enum value;
-//   - internal/domainagent/scorecard.go persists mailing_domain_agent_scorecard,
-//     which is RAW COUNTERS per domain×ISP×day (sends, delivered, human_opens,
-//     bounces, complaints…) and carries no band;
-//   - mailing_isp_doctrines.health_bands is free-text markdown keyed by ISP, not
-//     by sending domain — operator prose the portal renders in an editor;
-//   - agents/reporting/sending_domain_report_card.py writes Markdown to the
-//     operator's Desktop and a JSON history to .scratch/; it never writes to
-//     Postgres and contains no red/amber/green vocabulary at all.
-//
-// Implementing red→0 / amber→50% would mean inventing the classifier AND its
-// thresholds inside a capacity governor — deliverability doctrine, decided here,
-// silently halving or zeroing a domain. That is the opposite of "never invent a
-// ceiling", so it is not being guessed. It stays inert (NoLimit) and logs once.
-//
-// To unblock, one of these has to exist first (lead/operator call):
-//  1. a persisted band per sending domain (a `band` column on a daily
-//     domain-health row) written by whoever owns the deliverability verdict; or
-//  2. an operator-set band on the domain CONTRACT itself, which makes it policy
-//     under §1.1 versioning and audit rather than an inferred governor.
-type HealthBandGovernor struct{ warnOnce sync.Once }
+// AmberShare is the fraction of contracted capacity an amber domain may use.
+// The band constants and HealthBands() live in contracts.go (WP2) — the
+// vocabulary belongs to the contract, this file only prices it.
+const AmberShare = 0.5
 
+// HealthBandCeiling turns a band into a ceiling on one domain×ISP cell:
+//
+//	red         → 0
+//	amber       → floor(0.5 × contracted)
+//	green, ""   → no ceiling
+//
+// ok=false means "no opinion" — the caller must not append a ceiling at all.
+//
+// This is a PURE function of the contract. The band is operator policy carried
+// on drip_domain_contracts (§1.1), which is why it is versioned, approved and
+// audited like every other number there — rather than a verdict this governor
+// infers from traffic. The earlier WP3 report blocked on exactly that
+// distinction; the operator ruled the band is policy, and this is the
+// implementation of that ruling.
+//
+// An UNRECOGNISED band yields no ceiling and logs once: WP2's Validate() is the
+// gate on the vocabulary, and a value that slips past it is drift, not a licence
+// for this function to invent a number.
+func HealthBandCeiling(band string, contracted int) (GovernorCeiling, bool) {
+	b := strings.ToLower(strings.TrimSpace(band))
+	switch b {
+	case "", HealthBandGreen:
+		return GovernorCeiling{}, false
+	case HealthBandRed:
+		return GovernorCeiling{Name: "health_band:" + HealthBandRed, Limit: 0}, true
+	case HealthBandAmber:
+		if contracted < 0 {
+			contracted = 0
+		}
+		limit := int(math.Floor(AmberShare * float64(contracted)))
+		if limit > contracted {
+			// Unreachable for AmberShare <= 1, and asserted by
+			// TestHealthBand_AmberNeverExceedsContracted. Kept because a
+			// governor that RAISED capacity would be the one bug ApplyGovernors
+			// cannot catch on its own if the share were ever mis-set.
+			limit = contracted
+		}
+		return GovernorCeiling{Name: "health_band:" + HealthBandAmber, Limit: limit}, true
+	default:
+		unknownBandOnce.Do(func() {
+			log.Printf("[DripSupply] health_band %q is not one of %v — applying NO ceiling; the contract's Validate() is the gate on this vocabulary", band, HealthBands())
+		})
+		return GovernorCeiling{}, false
+	}
+}
+
+var unknownBandOnce sync.Once
+
+// HealthBandGovernor applies the domain contract's band.
+//
+// It is NOT a GovernorReader: that interface is handed (day, domain, isp,
+// window) and never the contract, so a band read through it would need a DB
+// round-trip per cell for a value the caller is already holding. RefillDomain
+// applies it directly from the *DomainContract it already has (see
+// RefillDomain), which is also what keeps the band a pure contract read with no
+// query and no cache to go stale.
+type HealthBandGovernor struct{}
+
+// NewHealthBandGovernor is retained for symmetry with the other governors and
+// for any caller that wants the band applied explicitly.
 func NewHealthBandGovernor() *HealthBandGovernor { return &HealthBandGovernor{} }
 
-func (g *HealthBandGovernor) Ceilings(context.Context, time.Time, string, string, Window) ([]GovernorCeiling, error) {
-	g.warnOnce.Do(func() {
-		log.Printf("[DripSupply] governor \"health_band\" NOT WIRED — no persisted band exists for a sending domain (see HealthBandGovernor doc); effective capacity ignores domain health")
-	})
-	return []GovernorCeiling{{Name: "health_band", Limit: NoLimit}}, nil
+// CeilingFor is the contract-aware entry point. A nil contract has no opinion.
+func (g *HealthBandGovernor) CeilingFor(c *DomainContract, contracted int) (GovernorCeiling, bool) {
+	if c == nil {
+		return GovernorCeiling{}, false
+	}
+	return HealthBandCeiling(c.Band(), contracted)
 }
 
 // -----------------------------------------------------------------------------
@@ -759,6 +799,15 @@ func (s *Service) RefillDomain(ctx context.Context, day time.Time, c *DomainCont
 		if gerr != nil {
 			log.Printf("[DripSupply] refill %s/%s: %v — leaving effective UNCHANGED (fail closed)", c.SendingDomain, n, gerr)
 			continue
+		}
+		// The health band comes off the contract we are already holding — no
+		// query, no cache, no inference (operator ruling: the band is POLICY on
+		// drip_domain_contracts, not a verdict derived from traffic).
+		// c.Band() resolves an empty band to green exactly as the column's
+		// NOT NULL DEFAULT does, so this reads the same value on both sides of
+		// a round trip.
+		if bandCeiling, ok := HealthBandCeiling(c.Band(), contracted); ok {
+			ceilings = append(ceilings, bandCeiling)
 		}
 		effective, boundBy := ApplyGovernors(contracted, ceilings)
 		r, rerr := s.refillOne(ctx, day, c.SendingDomain, n, contracted, effective, boundBy, w, now)

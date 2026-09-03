@@ -104,6 +104,8 @@ func validDomain() *dripsupply.DomainContract {
 		IntervalMinutes:   15,
 		MaxBurstIntervals: 2,
 		RampSource:        dripsupply.RampSourceCards,
+		HealthBand:        dripsupply.HealthBandGreen,
+		RampStage:         "mature",
 	}
 }
 
@@ -237,6 +239,46 @@ func TestDomainContractValidate(t *testing.T) {
 		}},
 		{name: "unknown status", field: "status", mut: func(c *dripsupply.DomainContract) {
 			c.Status = dripsupply.ContractStatus("live")
+		}},
+
+		// health_band is POLICY (operator ruling 2026-09-03).
+		{name: "empty health_band resolves to green", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = ""
+			c.Notes = "" // green needs no ruling note
+		}},
+		{name: "green needs no note", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = dripsupply.HealthBandGreen
+			c.Notes = ""
+		}},
+		{name: "amber without notes", field: "health_band", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = dripsupply.HealthBandAmber
+			c.Notes = "   "
+		}},
+		{name: "amber with notes", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = dripsupply.HealthBandAmber
+			c.Notes = "operator ruling 2026-09-03: HT amber pending Microsoft recovery"
+		}},
+		{name: "red without notes", field: "health_band", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = dripsupply.HealthBandRed
+			c.Notes = ""
+		}},
+		{name: "red with notes", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = dripsupply.HealthBandRed
+			c.Notes = "operator ruling 2026-09-03: HT held at red after the 5.7.1 block"
+		}},
+		{name: "unknown band", field: "health_band", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = "yellow"
+			c.Notes = "a note does not make up a band"
+		}},
+		{name: "band is case sensitive", field: "health_band", mut: func(c *dripsupply.DomainContract) {
+			c.HealthBand = "RED"
+			c.Notes = "operator ruling 2026-09-03"
+		}},
+		{name: "ramp_stage is free text", mut: func(c *dripsupply.DomainContract) {
+			c.RampStage = "week 3 / step 4"
+		}},
+		{name: "empty ramp_stage is allowed", mut: func(c *dripsupply.DomainContract) {
+			c.RampStage = ""
 		}},
 	}
 
@@ -604,7 +646,18 @@ func newActiveFixture(eff time.Time) *activeFixture {
 // expect queues the four LoadActive queries. domainMaxOverride, when non-nil,
 // is written into the ROW without re-signing — a tampered body.
 func (f *activeFixture) expect(t *testing.T, mock sqlmock.Sqlmock, dayEnd time.Time, domainMaxOverride map[string]int, tokenColOverride *string) {
+	f.expectWithBand(t, mock, dayEnd, domainMaxOverride, tokenColOverride, "")
+}
+
+// expectWithBand additionally allows the row's health_band to be written
+// WITHOUT re-signing — the hand-edited-band case.
+func (f *activeFixture) expectWithBand(t *testing.T, mock sqlmock.Sqlmock, dayEnd time.Time, domainMaxOverride map[string]int, tokenColOverride *string, bandOverride string) {
 	t.Helper()
+
+	bandCol := f.dom.Band()
+	if bandOverride != "" {
+		bandCol = bandOverride
+	}
 
 	domMeta, domTok := blockFor(t, f.id, f.dom, f.dom.Version)
 	domMax := f.dom.DailyMaxByISP
@@ -622,14 +675,16 @@ func (f *activeFixture) expect(t *testing.T, mock sqlmock.Sqlmock, dayEnd time.T
 
 	domCols := append(metaColNames(),
 		"sending_domain", "brand_code", "daily_max_by_isp",
-		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source",
+		"health_band", "ramp_stage")
 	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE status = 'active' AND effective_at < $1")).
 		WithArgs(dayEnd).
 		WillReturnRows(sqlmock.NewRows(domCols).AddRow(append(metaRow(f.id, f.eff, f.dom.Version, domMeta, domTokCol),
 			f.dom.SendingDomain, f.dom.BrandCode, domMaxJSON,
 			// PostgreSQL returns a `time` column as HH:MM:SS while the contract
 			// was written as HH:MM. The token must survive that round trip.
-			"01:00:00", "20:00:00", f.dom.IntervalMinutes, f.dom.MaxBurstIntervals, f.dom.RampSource)...))
+			"01:00:00", "20:00:00", f.dom.IntervalMinutes, f.dom.MaxBurstIntervals, f.dom.RampSource,
+			bandCol, f.dom.RampStage)...))
 
 	dispMeta, dispTok := blockFor(t, f.id, f.disp, f.disp.Version)
 	dispDesired, err := json.Marshal(f.disp.DesiredDailyIntros)
@@ -1212,7 +1267,8 @@ func TestContractStatusScanAndValidity(t *testing.T) {
 func approvedDomainRow(id uuid.UUID, c *dripsupply.DomainContract, version int) *sqlmock.Rows {
 	cols := append(metaColNames(),
 		"sending_domain", "brand_code", "daily_max_by_isp",
-		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source",
+		"health_band", "ramp_stage")
 	raw, _ := json.Marshal(c.DailyMaxByISP)
 	meta := []driver.Value{
 		id.String(), version, "approved", issuedAt, nil,
@@ -1221,7 +1277,8 @@ func approvedDomainRow(id uuid.UUID, c *dripsupply.DomainContract, version int) 
 	}
 	return sqlmock.NewRows(cols).AddRow(append(meta,
 		c.SendingDomain, c.BrandCode, raw,
-		"01:00:00", "20:00:00", c.IntervalMinutes, c.MaxBurstIntervals, c.RampSource)...)
+		"01:00:00", "20:00:00", c.IntervalMinutes, c.MaxBurstIntervals, c.RampSource,
+		c.Band(), c.RampStage)...)
 }
 
 func TestSchedule_IssuesTokenAndMovesApprovedToScheduled(t *testing.T) {
@@ -1278,13 +1335,15 @@ func TestSchedule_RefusesASecondIssue(t *testing.T) {
 	// same row, already scheduled
 	cols := append(metaColNames(),
 		"sending_domain", "brand_code", "daily_max_by_isp",
-		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source",
+		"health_band", "ramp_stage")
 	raw, _ := json.Marshal(c.DailyMaxByISP)
 	scheduled := sqlmock.NewRows(cols).AddRow(append([]driver.Value{
 		id.String(), 4, "scheduled", issuedAt, nil,
 		"operator", issuedAt, "operator", issuedAt,
 		"chg-0001", c.Notes, []byte("{}"), "abc123",
-	}, c.SendingDomain, c.BrandCode, raw, "01:00:00", "20:00:00", 15, 2, c.RampSource)...)
+	}, c.SendingDomain, c.BrandCode, raw, "01:00:00", "20:00:00", 15, 2, c.RampSource,
+		c.Band(), c.RampStage)...)
 	_ = rows
 
 	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
@@ -1449,5 +1508,242 @@ func TestInsertDraft_StampsMetadataAndNoToken(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// health_band is POLICY on the contract (operator ruling 2026-09-03)
+// ---------------------------------------------------------------------------
+
+// Flipping the band in the ROW without re-issuing the token must be refused —
+// this is the whole point of putting the band on the contract instead of
+// inferring it: red means 0 and amber means half, so a hand-edited band is a
+// silent volume change.
+func TestLoadActive_RefusesHandEditedHealthBand(t *testing.T) {
+	for _, band := range []string{
+		dripsupply.HealthBandAmber, // would halve the domain
+		dripsupply.HealthBandRed,   // would silence it
+	} {
+		t.Run(band, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			defer db.Close()
+
+			day, dayEnd, eff := denverDay()
+			f := newActiveFixture(eff) // signed at green
+			f.expectWithBand(t, mock, dayEnd, nil, nil, band)
+
+			set, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey)
+			if set != nil {
+				t.Fatal("a hand-edited band must fail the whole load")
+			}
+			var mm *dripsupply.ErrTokenMismatch
+			if !errors.As(err, &mm) {
+				t.Fatalf("expected *ErrTokenMismatch, got %T: %v", err, err)
+			}
+			if mm.Kind != dripsupply.KindDomain || mm.Subject != "em.historythinking.com" {
+				t.Fatalf("ErrTokenMismatch{%s,%s} wrong", mm.Kind, mm.Subject)
+			}
+		})
+	}
+
+	// Negative control: writing the band it was SIGNED with still verifies.
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	day, dayEnd, eff := denverDay()
+	f := newActiveFixture(eff)
+	f.expectWithBand(t, mock, dayEnd, nil, nil, dripsupply.HealthBandGreen)
+	if _, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey); err != nil {
+		t.Fatalf("the signed band must still verify: %v", err)
+	}
+}
+
+// The band and the ramp stage are both inside the token: changing either
+// changes the digest, so a band change forces a re-issue.
+func TestDomainTokenBody_CoversBandAndRampStage(t *testing.T) {
+	base := validDomain()
+	base.Notes = "operator ruling 2026-09-03"
+	canon := func(c *dripsupply.DomainContract) string {
+		return string(contractmeta.Canonical(c.TokenBody(), "domain", c.SendingDomain, 1))
+	}
+	baseline := canon(base)
+
+	amber := validDomain()
+	amber.Notes = base.Notes
+	amber.HealthBand = dripsupply.HealthBandAmber
+	if canon(amber) == baseline {
+		t.Fatal("health_band is not covered by the token — a band flip would verify")
+	}
+
+	red := validDomain()
+	red.Notes = base.Notes
+	red.HealthBand = dripsupply.HealthBandRed
+	if canon(red) == canon(amber) {
+		t.Fatal("amber and red produce the same token")
+	}
+
+	stage := validDomain()
+	stage.Notes = base.Notes
+	stage.RampStage = "week 4 / step 2"
+	if canon(stage) == baseline {
+		t.Fatal("ramp_stage is not covered by the token")
+	}
+
+	// "" and "green" are the SAME contract: the column is NOT NULL DEFAULT
+	// 'green', so a contract inserted with "" is read back as 'green' and must
+	// still verify against the token issued before the round trip.
+	empty := validDomain()
+	empty.Notes = base.Notes
+	empty.HealthBand = ""
+	if canon(empty) != baseline {
+		t.Fatalf("empty band and green produce different tokens — every defaulted\ncontract would fail verification after its first round trip")
+	}
+	if empty.Band() != dripsupply.HealthBandGreen {
+		t.Fatalf("Band() on an empty field = %q, want green", empty.Band())
+	}
+}
+
+// Schedule signs the band that the row actually carries.
+func TestSchedule_TokenCoversTheRowsBand(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	c := validDomain()
+	c.HealthBand = dripsupply.HealthBandAmber
+	c.Notes = "operator ruling 2026-09-03: amber pending Microsoft recovery"
+	id := uuid.New()
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 5).
+		WillReturnRows(approvedDomainRow(id, c, 5))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE drip_domain_contracts SET status = 'scheduled'")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	tok, err := dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 5, testKey, issuedAt)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	loadedAmber := validDomain()
+	loadedAmber.HealthBand = dripsupply.HealthBandAmber
+	loadedAmber.Notes = c.Notes
+	loadedAmber.ActiveWindowStart, loadedAmber.ActiveWindowEnd = "01:00:00", "20:00:00"
+	if tok.Value != issueFor(loadedAmber, 5).Value {
+		t.Fatal("token was not computed over the row's amber band")
+	}
+
+	loadedGreen := validDomain()
+	loadedGreen.Notes = c.Notes
+	loadedGreen.ActiveWindowStart, loadedGreen.ActiveWindowEnd = "01:00:00", "20:00:00"
+	if tok.Value == issueFor(loadedGreen, 5).Value {
+		t.Fatal("the amber and green tokens are identical")
+	}
+}
+
+// A domain contract cannot be scheduled off green without the ruling in notes,
+// so an unexplained band change can never acquire a token at all.
+func TestSchedule_RefusesUnexplainedBandChange(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	c := validDomain()
+	c.HealthBand = dripsupply.HealthBandRed
+	c.Notes = "" // no ruling named
+	id := uuid.New()
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 5).
+		WillReturnRows(approvedDomainRow(id, c, 5))
+	// No ExpectExec: nothing may be written.
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 5, testKey, issuedAt)
+	var verrs dripsupply.ValidationErrors
+	if !errors.As(err, &verrs) || !verrs.HasField("health_band") {
+		t.Fatalf("expected a health_band validation failure, got %T: %v", err, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("Schedule wrote an unexplained band change: %v", err)
+	}
+}
+
+// The band survives the round trip out of the database.
+func TestLoadActive_ReadsBandAndRampStage(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	day, dayEnd, eff := denverDay()
+	f := newActiveFixture(eff)
+	f.dom.HealthBand = dripsupply.HealthBandAmber
+	f.dom.RampStage = "week 3 / step 4"
+	f.dom.Notes = "operator ruling 2026-09-03: amber"
+	f.expect(t, mock, dayEnd, nil, nil)
+
+	set, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey)
+	if err != nil {
+		t.Fatalf("LoadActiveWithKey: %v", err)
+	}
+	dom, err := set.Domain("em.historythinking.com")
+	if err != nil {
+		t.Fatalf("Domain: %v", err)
+	}
+	if dom.HealthBand != dripsupply.HealthBandAmber || dom.Band() != dripsupply.HealthBandAmber {
+		t.Fatalf("health_band = %q", dom.HealthBand)
+	}
+	if dom.RampStage != "week 3 / step 4" {
+		t.Fatalf("ramp_stage = %q", dom.RampStage)
+	}
+	if err := dom.Validate(); err != nil {
+		t.Fatalf("loaded amber contract fails validation: %v", err)
+	}
+}
+
+// InsertDraft writes the RESOLVED band, never "" — the column CHECKs the three
+// values and this INSERT names the column, so the DDL default cannot fire.
+func TestInsertDraft_WritesResolvedBand(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	c := validDomain()
+	c.HealthBand = "" // caller left it unset
+	c.RampStage = ""
+	c.Notes = ""
+	c.CreatedBy = "operator"
+	c.ChangeLedgerID = "chg-1"
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) + 1 FROM drip_domain_contracts")).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO drip_domain_contracts")).
+		WithArgs(
+			sqlmock.AnyArg(), 1, "draft", sqlmock.AnyArg(), "operator", "chg-1", "",
+			c.SendingDomain, c.BrandCode, sqlmock.AnyArg(), "01:00", "20:00", 15, 2,
+			dripsupply.RampSourceCards,
+			// the assertion: 'green', not ''
+			dripsupply.HealthBandGreen, "",
+			sqlmock.AnyArg(), "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if _, _, err := dripsupply.InsertDraft(context.Background(), db, c); err != nil {
+		t.Fatalf("InsertDraft: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet — the INSERT did not carry the resolved band: %v", err)
 	}
 }

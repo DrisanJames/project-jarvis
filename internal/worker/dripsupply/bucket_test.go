@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -294,35 +295,244 @@ func TestThrottleGovernor_ReadsTheRealTable(t *testing.T) {
 func TestUnconfiguredGovernors_NeverInventACeiling(t *testing.T) {
 	ctx := context.Background()
 	day := testDay(t)
-	inert := []GovernorReader{
-		NewHealthBandGovernor(),          // no band source exists (see its doc)
-		NewSESQuotaGovernor(nil),         // no quota reader wired
-		&GmailHoldGovernor{ISP: "gmail"}, // no DB — but see the note below
+
+	// A quota governor with no reader wired must be INERT, never a decider.
+	g := NewSESQuotaGovernor(nil)
+	cs, err := g.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow())
+	if err != nil {
+		t.Fatalf("unwired ses_quota: %v", err)
 	}
-	for _, g := range inert[:2] {
-		cs, err := g.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow())
-		if err != nil {
-			t.Fatalf("%T: %v", g, err)
-		}
-		for _, c := range cs {
-			if c.Limit != NoLimit {
-				t.Fatalf("%T returned a real ceiling (%+v) — an unwired governor must not decide capacity", g, c)
-			}
-		}
-		if eff, bound := ApplyGovernors(5000, cs); eff != 5000 || bound != "" {
-			t.Fatalf("%T changed effective to %d (bound=%q) — an unwired governor must be inert", g, eff, bound)
-		}
+	if len(cs) != 0 {
+		t.Fatalf("an unwired ses_quota produced %+v, want no ceiling", cs)
 	}
-	// The gmail hold is the deliberate exception: with no ban registry to read it
-	// still enforces the ALLOW-LIST, because failing open on gmail is the SEV-1
-	// REQ-083 exists to prevent. A mature brand passes; a non-mature one does not.
-	gh := inert[2]
+	if eff, bound := ApplyGovernors(5000, cs); eff != 5000 || bound != "" {
+		t.Fatalf("effective %d (bound=%q), want the contract untouched", eff, bound)
+	}
+
+	// The gmail hold is the deliberate exception: with no ban registry to read
+	// it still enforces the ALLOW-LIST, because failing open on gmail is the
+	// SEV-1 REQ-083 exists to prevent.
+	gh := &GmailHoldGovernor{ISP: "gmail"}
 	if cs, err := gh.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow()); err != nil || len(cs) != 0 {
 		t.Fatalf("gmail hold on a mature brand gave %+v (err=%v), want no ceiling", cs, err)
 	}
 	if cs, err := gh.Ceilings(ctx, day, "em.warrantyforyou.com", "gmail", DefaultWindow()); err != nil || len(cs) != 1 || cs[0].Limit != 0 {
 		t.Fatalf("gmail hold on a non-mature brand gave %+v (err=%v), want a ceiling of 0", cs, err)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// HealthBandGovernor — contract policy (operator ruling 2026-09-03)
+// -----------------------------------------------------------------------------
+
+func TestHealthBandCeiling_BandPricing(t *testing.T) {
+	cases := []struct {
+		band       string
+		contracted int
+		wantOK     bool
+		wantLimit  int
+		wantName   string
+	}{
+		{HealthBandRed, 7600, true, 0, "health_band:red"},
+		{HealthBandAmber, 7600, true, 3800, "health_band:amber"},
+		{HealthBandAmber, 7601, true, 3800, "health_band:amber"}, // floor, never round up
+		{HealthBandAmber, 1, true, 0, "health_band:amber"},
+		{HealthBandAmber, 0, true, 0, "health_band:amber"},
+		{HealthBandGreen, 7600, false, 0, ""},
+		{"", 7600, false, 0, ""},          // empty resolves to green
+		{"  GREEN  ", 7600, false, 0, ""}, // case/space normalised
+		{"  Red ", 7600, true, 0, "health_band:red"},
+		{"chartreuse", 7600, false, 0, ""}, // unknown: no opinion, never invented
+	}
+	for _, tc := range cases {
+		t.Run(tc.band+"/"+fmt.Sprint(tc.contracted), func(t *testing.T) {
+			got, ok := HealthBandCeiling(tc.band, tc.contracted)
+			if ok != tc.wantOK {
+				t.Fatalf("HealthBandCeiling(%q,%d) ok=%v, want %v (got %+v)", tc.band, tc.contracted, ok, tc.wantOK, got)
+			}
+			if !ok {
+				return
+			}
+			if got.Limit != tc.wantLimit || got.Name != tc.wantName {
+				t.Fatalf("HealthBandCeiling(%q,%d) = %+v, want {%s %d}", tc.band, tc.contracted, got, tc.wantName, tc.wantLimit)
+			}
+		})
+	}
+}
+
+// TestHealthBand_AmberNeverExceedsContracted is the parity the ruling asked for:
+// amber REDUCES, always. Swept across the whole range including the awkward
+// small values where a rounding bug would surface.
+func TestHealthBand_AmberNeverExceedsContracted(t *testing.T) {
+	for _, contracted := range []int{0, 1, 2, 3, 7, 99, 100, 101, 999, 7600, 250000, 1000001} {
+		c, ok := HealthBandCeiling(HealthBandAmber, contracted)
+		if !ok {
+			t.Fatalf("amber gave no ceiling at contracted=%d", contracted)
+		}
+		if c.Limit > contracted {
+			t.Fatalf("amber ceiling %d EXCEEDS contracted %d — a governor must reduce, never raise", c.Limit, contracted)
+		}
+		if c.Limit < 0 {
+			t.Fatalf("amber ceiling %d is negative at contracted=%d", c.Limit, contracted)
+		}
+		// And ApplyGovernors must agree: amber binds below the contract.
+		eff, bound := ApplyGovernors(contracted, []GovernorCeiling{c})
+		if eff > contracted {
+			t.Fatalf("effective %d > contracted %d under amber", eff, contracted)
+		}
+		if contracted >= 2 && bound != "health_band:amber" {
+			t.Fatalf("amber did not bind at contracted=%d (effective=%d, bound=%q)", contracted, eff, bound)
+		}
+	}
+	// A red band is the same guarantee at the floor.
+	for _, contracted := range []int{0, 1, 7600} {
+		c, _ := HealthBandCeiling(HealthBandRed, contracted)
+		if c.Limit != 0 {
+			t.Fatalf("red ceiling = %d at contracted=%d, want 0", c.Limit, contracted)
+		}
+	}
+}
+
+// TestHealthBand_NegativeControl_GreenNeverBinds is the negative case: a healthy
+// domain must reach its whole contract. A governor that returned a ceiling for
+// every band would pass every red/amber assertion above.
+func TestHealthBand_NegativeControl_GreenNeverBinds(t *testing.T) {
+	for _, band := range []string{HealthBandGreen, "", "GREEN", " green "} {
+		if c, ok := HealthBandCeiling(band, 7600); ok {
+			t.Fatalf("band %q produced a ceiling %+v — green must not bind", band, c)
+		}
+	}
+	// Through the full stack: a green contract keeps its contracted number.
+	eff, bound := ApplyGovernors(7600, nil)
+	if eff != 7600 || bound != "" {
+		t.Fatalf("effective = %d (bound=%q) with no ceilings, want 7600", eff, bound)
+	}
+}
+
+func TestHealthBandGovernor_CeilingForReadsTheContract(t *testing.T) {
+	g := NewHealthBandGovernor()
+	if c, ok := g.CeilingFor(nil, 7600); ok {
+		t.Fatalf("a nil contract produced %+v — it must have no opinion", c)
+	}
+	dc := domainContract("em.historythinking.com", 1, map[string]int{"aol": 7600})
+
+	// A contract with no band set resolves to green through DomainContract.Band().
+	if c, ok := g.CeilingFor(dc, 7600); ok {
+		t.Fatalf("an unset band produced %+v, want no ceiling (it resolves to green)", c)
+	}
+	dc.HealthBand = HealthBandAmber
+	c, ok := g.CeilingFor(dc, 7600)
+	if !ok || c.Limit != 3800 {
+		t.Fatalf("amber contract gave %+v (ok=%v), want a 3800 ceiling", c, ok)
+	}
+	dc.HealthBand = HealthBandRed
+	if c, ok := g.CeilingFor(dc, 7600); !ok || c.Limit != 0 {
+		t.Fatalf("red contract gave %+v (ok=%v), want a 0 ceiling", c, ok)
+	}
+}
+
+// TestRefillDomain_AppliesTheContractBand proves the band reaches the persisted
+// balance through RefillDomain — with NO governor injected and NO database read
+// for the band, which is the whole point of it being contract policy.
+func TestRefillDomain_AppliesTheContractBand(t *testing.T) {
+	ctx := context.Background()
+	day := testDay(t)
+	at := func() time.Time { return dayOf(day).Add(2 * time.Hour) }
+
+	t.Run("amber halves and names itself", func(t *testing.T) {
+		db := newTestDB(t)
+		dc, _ := seedDay(t, db, day, 7600, 5000)
+		dc.HealthBand = HealthBandAmber
+		svc := NewService(db, WithClock(at)) // no governors injected at all
+		if _, err := svc.RefillDomain(ctx, day, dc); err != nil {
+			t.Fatalf("refill: %v", err)
+		}
+		bal := readBalance(t, db, day, "em.historythinking.com", "aol")
+		if bal.Effective != 3800 {
+			t.Fatalf("effective = %d under amber, want 3800", bal.Effective)
+		}
+		if bal.Contracted != 7600 {
+			t.Fatalf("contracted = %d — the band MUTATED the contract", bal.Contracted)
+		}
+		if got := readEffectiveReason(t, db, day, "em.historythinking.com", "aol"); got != "health_band:amber" {
+			t.Fatalf("effective_reason = %q, want health_band:amber", got)
+		}
+		// And a reservation reports the band as the binding reason. Tokens are
+		// made slack first: at 02:00 the bucket holds only one burst ceiling's
+		// worth, and pacing would otherwise be the smaller term — a true answer,
+		// but not the one this case is about.
+		setBalance(t, db, day, "em.historythinking.com", "aol", bal.Effective, 1_000_000)
+		res, err := svc.Reserve(ctx, baseReq(day, "wave-1", 100_000))
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		if res.BindingReason != ReasonGovernor+":health_band:amber" {
+			t.Fatalf("binding_reason = %q, want %s:health_band:amber", res.BindingReason, ReasonGovernor)
+		}
+		if res.Granted != 3800 {
+			t.Fatalf("granted %d, want the amber ceiling 3800", res.Granted)
+		}
+	})
+
+	t.Run("red stops the domain", func(t *testing.T) {
+		db := newTestDB(t)
+		dc, _ := seedDay(t, db, day, 7600, 5000)
+		dc.HealthBand = HealthBandRed
+		svc := NewService(db, WithClock(at))
+		if _, err := svc.RefillDomain(ctx, day, dc); err != nil {
+			t.Fatalf("refill: %v", err)
+		}
+		bal := readBalance(t, db, day, "em.historythinking.com", "aol")
+		if bal.Effective != 0 || bal.Contracted != 7600 {
+			t.Fatalf("balance = %+v under red, want effective 0 / contracted 7600", bal)
+		}
+		res, err := svc.Reserve(ctx, baseReq(day, "wave-1", 100))
+		if err != nil {
+			t.Fatalf("reserve: %v", err)
+		}
+		if res.Granted != 0 || res.BindingReason != ReasonGovernor+":health_band:red" {
+			t.Fatalf("reserve = %+v, want granted 0 with reason %s:health_band:red", res, ReasonGovernor)
+		}
+	})
+
+	// Negative control: green leaves the domain on its full contract. Without
+	// this, a RefillDomain that halved every domain would pass both cases above.
+	t.Run("green is untouched", func(t *testing.T) {
+		db := newTestDB(t)
+		dc, _ := seedDay(t, db, day, 7600, 5000)
+		dc.HealthBand = HealthBandGreen
+		svc := NewService(db, WithClock(at))
+		if _, err := svc.RefillDomain(ctx, day, dc); err != nil {
+			t.Fatalf("refill: %v", err)
+		}
+		bal := readBalance(t, db, day, "em.historythinking.com", "aol")
+		if bal.Effective != 7600 {
+			t.Fatalf("effective = %d under green, want the full contract 7600", bal.Effective)
+		}
+		if got := readEffectiveReason(t, db, day, "em.historythinking.com", "aol"); got != "" {
+			t.Fatalf("effective_reason = %q under green, want empty", got)
+		}
+	})
+
+	// The band is a governor among governors: the LOWEST ceiling still wins.
+	t.Run("a harder governor still outranks amber", func(t *testing.T) {
+		db := newBanTestDB(t)
+		dc, _ := seedDay(t, db, day, 7600, 5000)
+		dc.HealthBand = HealthBandAmber
+		if _, err := db.Exec(`INSERT INTO mailing_isp_throttle_state (isp, msgs_per_hour) VALUES ('aol', 0)`); err != nil {
+			t.Fatalf("seed throttle: %v", err)
+		}
+		svc := NewService(db, WithGovernors(Governors{ThrottleGovernor{DB: db}}), WithClock(at))
+		if _, err := svc.RefillDomain(ctx, day, dc); err != nil {
+			t.Fatalf("refill: %v", err)
+		}
+		if bal := readBalance(t, db, day, "em.historythinking.com", "aol"); bal.Effective != 0 {
+			t.Fatalf("effective = %d, want 0 — a throttle of 0 must outrank amber's 3800", bal.Effective)
+		}
+		if got := readEffectiveReason(t, db, day, "em.historythinking.com", "aol"); got != "throttle" {
+			t.Fatalf("effective_reason = %q, want throttle (the lower ceiling)", got)
+		}
+	})
 }
 
 // -----------------------------------------------------------------------------
