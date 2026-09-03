@@ -29,6 +29,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
+	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
 )
 
 // ---------------------------------------------------------------------------
@@ -281,6 +283,38 @@ func (e *ErrNoActiveContract) Error() string {
 	return fmt.Sprintf("dripsupply: no active %s contract for %q", e.Kind, e.Subject)
 }
 
+// ErrTokenMismatch means an active contract's integrity token does not match
+// its body (§1.5 rule 2) — the row was edited outside the sanctioned path, or
+// the signing key changed without re-issuing. It fails the WHOLE ActiveSet
+// load: the caller skips its work and alerts. It is never recoverable in code.
+type ErrTokenMismatch struct {
+	Kind    ContractKind
+	Subject string
+	Version int
+	Err     error
+}
+
+func (e *ErrTokenMismatch) Error() string {
+	return fmt.Sprintf("dripsupply: %s contract %q v%d failed token verification: %v", e.Kind, e.Subject, e.Version, e.Err)
+}
+
+func (e *ErrTokenMismatch) Unwrap() error { return e.Err }
+
+// ErrNotApproved is returned by Schedule when the target row is not in
+// `approved`. It is what makes token issue exactly-once: a second Schedule for
+// the same version finds `scheduled` and refuses rather than re-stamping.
+type ErrNotApproved struct {
+	Kind    ContractKind
+	Subject string
+	Version int
+	Status  ContractStatus
+}
+
+func (e *ErrNotApproved) Error() string {
+	return fmt.Sprintf("dripsupply: cannot schedule %s contract %q v%d: status is %q, want %q",
+		e.Kind, e.Subject, e.Version, e.Status, StatusApproved)
+}
+
 // ErrDuplicateActive is returned when the database refuses to hold two active
 // rows for one subject — i.e. the §1.1 partial unique index did its job.
 type ErrDuplicateActive struct {
@@ -312,9 +346,16 @@ type Meta struct {
 	ApprovedAt     *time.Time     `json:"approved_at,omitempty"`
 	ChangeLedgerID string         `json:"change_ledger_id"`
 	Notes          string         `json:"notes"`
+
+	// Metadata is the standard contract metadata block (§1.5): refs, mutation
+	// and the integrity token. Written by InsertDraft and Schedule.
+	Metadata contractmeta.Block `json:"metadata"`
+	// Token duplicates Metadata.Token.Value for indexing (§1.5). LoadActive
+	// refuses a contract whose column and block disagree.
+	Token string `json:"token"`
 }
 
-const metaCols = `id, version, status, effective_at, superseded_at, created_by, created_at, approved_by, approved_at, change_ledger_id, notes`
+const metaCols = `id, version, status, effective_at, superseded_at, created_by, created_at, approved_by, approved_at, change_ledger_id, notes, metadata, token`
 
 type metaScan struct {
 	id             uuid.UUID
@@ -328,13 +369,15 @@ type metaScan struct {
 	approvedAt     sql.NullTime
 	changeLedgerID sql.NullString
 	notes          sql.NullString
+	metadata       contractmeta.Block
+	token          sql.NullString
 }
 
 func (s *metaScan) dests() []any {
 	return []any{
 		&s.id, &s.version, &s.status, &s.effectiveAt, &s.supersededAt,
 		&s.createdBy, &s.createdAt, &s.approvedBy, &s.approvedAt,
-		&s.changeLedgerID, &s.notes,
+		&s.changeLedgerID, &s.notes, &s.metadata, &s.token,
 	}
 }
 
@@ -360,6 +403,8 @@ func (s *metaScan) into(m *Meta) {
 	}
 	m.ChangeLedgerID = s.changeLedgerID.String
 	m.Notes = s.notes.String
+	m.Metadata = s.metadata
+	m.Token = s.token.String
 }
 
 // Contract is the behaviour every contract kind shares. The unexported methods
@@ -371,6 +416,12 @@ type Contract interface {
 	Subject() string
 	// Validate returns nil or ValidationErrors listing every broken rule.
 	Validate() error
+	// TokenBody returns ONLY the policy fields the integrity token covers.
+	// It deliberately excludes every lifecycle field (status, effective_at,
+	// superseded_at, approvals, metadata, the token itself): those change as a
+	// contract moves scheduled -> active -> superseded, and a token computed
+	// over them would break at the first activation.
+	TokenBody() any
 
 	metaPtr() *Meta
 	insertSQL() string
@@ -502,12 +553,29 @@ func (c *DomainContract) Validate() error {
 	return errs
 }
 
+// TokenBody is the domain contract's POLICY body — what the integrity token
+// covers. Clock strings are normalised to HH:MM because PostgreSQL returns a
+// `time` column as HH:MM:SS: without this the token issued at Schedule would
+// never verify after the row round-trips through the database.
+func (c *DomainContract) TokenBody() any {
+	return map[string]any{
+		"sending_domain":      c.SendingDomain,
+		"brand_code":          c.BrandCode,
+		"daily_max_by_isp":    normIntMap(c.DailyMaxByISP),
+		"active_window_start": normClock(c.ActiveWindowStart),
+		"active_window_end":   normClock(c.ActiveWindowEnd),
+		"interval_minutes":    c.IntervalMinutes,
+		"max_burst_intervals": c.MaxBurstIntervals,
+		"ramp_source":         c.RampSource,
+	}
+}
+
 func (c *DomainContract) insertSQL() string {
 	return `INSERT INTO drip_domain_contracts
         (id, version, status, effective_at, created_by, created_at, change_ledger_id, notes,
          sending_domain, brand_code, daily_max_by_isp, active_window_start, active_window_end,
-         interval_minutes, max_burst_intervals, ramp_source)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+         interval_minutes, max_burst_intervals, ramp_source, metadata, token)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
 }
 
 func (c *DomainContract) insertArgs(id uuid.UUID, version int) []any {
@@ -516,6 +584,7 @@ func (c *DomainContract) insertArgs(id uuid.UUID, version int) []any {
 		id, version, string(StatusDraft), nullTime(c.EffectiveAt), c.CreatedBy, c.ChangeLedgerID, c.Notes,
 		c.SendingDomain, c.BrandCode, string(raw), c.ActiveWindowStart, c.ActiveWindowEnd,
 		c.IntervalMinutes, c.MaxBurstIntervals, nullString(c.RampSource),
+		c.Metadata, c.Token,
 	}
 }
 
@@ -649,13 +718,31 @@ func (c *DispatchContract) Validate() error {
 	return errs
 }
 
+// TokenBody is the dispatch contract's POLICY body (see DomainContract.TokenBody).
+func (c *DispatchContract) TokenBody() any {
+	return map[string]any{
+		"lane":                   c.Lane,
+		"operator_priority_tier": c.OperatorPriorityTier,
+		"desired_daily_intros":   normIntMap(c.DesiredDailyIntros),
+		"demand_mode":            c.DemandMode,
+		"daily_ceiling":          normIntPtr(c.DailyCeiling),
+		"allowed_domains":        normStrings(c.AllowedDomains),
+		"isp_exclusions":         normStrings(c.ISPExclusions),
+		"ladder_touches":         c.LadderTouches,
+		"ladder_gap_hours":       c.LadderGapHours,
+		"followups_committed":    c.FollowupsCommitted,
+		"max_intro_share":        c.MaxIntroShare,
+		"exploration_share":      c.ExplorationShare,
+	}
+}
+
 func (c *DispatchContract) insertSQL() string {
 	return `INSERT INTO drip_dispatch_contracts
         (id, version, status, effective_at, created_by, created_at, change_ledger_id, notes,
          lane, operator_priority_tier, desired_daily_intros, demand_mode, daily_ceiling,
          allowed_domains, isp_exclusions, ladder_touches, ladder_gap_hours, followups_committed,
-         max_intro_share, exploration_share)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`
+         max_intro_share, exploration_share, metadata, token)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`
 }
 
 func (c *DispatchContract) insertArgs(id uuid.UUID, version int) []any {
@@ -669,6 +756,7 @@ func (c *DispatchContract) insertArgs(id uuid.UUID, version int) []any {
 		c.Lane, c.OperatorPriorityTier, string(raw), c.DemandMode, ceiling,
 		pq.Array(c.AllowedDomains), pq.Array(c.ISPExclusions), c.LadderTouches, c.LadderGapHours,
 		c.FollowupsCommitted, c.MaxIntroShare, c.ExplorationShare,
+		c.Metadata, c.Token,
 	}
 }
 
@@ -768,13 +856,32 @@ func (c *InventoryContract) Validate() error {
 	return errs
 }
 
+// TokenBody is the inventory contract's POLICY body (see DomainContract.TokenBody).
+func (c *InventoryContract) TokenBody() any {
+	return map[string]any{
+		"lane":                   c.Lane,
+		"accepted_sources":       normStrings(c.AcceptedSources),
+		"verdict_valid_days":     c.VerdictValidDays,
+		"eo_enabled":             c.EOEnabled,
+		"max_daily_eo_spend_usd": c.MaxDailyEOSpendUSD,
+		"min_eo_order":           c.MinEOOrder,
+		"min_coverage_hours":     c.MinCoverageHours,
+		"target_coverage_hours":  c.TargetCoverageHours,
+		"max_coverage_hours":     c.MaxCoverageHours,
+		"remail_enabled":         c.RemailEnabled,
+		"remail_after_days":      c.RemailAfterDays,
+		"remail_mode":            c.RemailMode,
+		"max_remail_share":       c.MaxRemailShare,
+	}
+}
+
 func (c *InventoryContract) insertSQL() string {
 	return `INSERT INTO drip_inventory_contracts
         (id, version, status, effective_at, created_by, created_at, change_ledger_id, notes,
          lane, accepted_sources, verdict_valid_days, eo_enabled, max_daily_eo_spend_usd, min_eo_order,
          min_coverage_hours, target_coverage_hours, max_coverage_hours, remail_enabled,
-         remail_after_days, remail_mode, max_remail_share)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`
+         remail_after_days, remail_mode, max_remail_share, metadata, token)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
 }
 
 func (c *InventoryContract) insertArgs(id uuid.UUID, version int) []any {
@@ -783,6 +890,7 @@ func (c *InventoryContract) insertArgs(id uuid.UUID, version int) []any {
 		c.Lane, pq.Array(c.AcceptedSources), c.VerdictValidDays, c.EOEnabled, c.MaxDailyEOSpendUSD, c.MinEOOrder,
 		c.MinCoverageHours, c.TargetCoverageHours, c.MaxCoverageHours, c.RemailEnabled,
 		c.RemailAfterDays, c.RemailMode, c.MaxRemailShare,
+		c.Metadata, c.Token,
 	}
 }
 
@@ -861,12 +969,26 @@ func (c *SourceContract) Validate() error {
 	return errs
 }
 
+// TokenBody is the source contract's POLICY body (see DomainContract.TokenBody).
+func (c *SourceContract) TokenBody() any {
+	return map[string]any{
+		"source_slug":           c.SourceSlug,
+		"record_class":          c.RecordClass,
+		"eligible_isps":         normStrings(c.EligibleISPs),
+		"max_daily_intake":      normIntPtr(c.MaxDailyIntake),
+		"arrival_cadence":       c.ArrivalCadence,
+		"validated_on_arrival":  c.ValidatedOnArrival,
+		"record_max_age_days":   normIntPtr(c.RecordMaxAgeDays),
+		"unit_acquisition_cost": c.UnitAcquisitionCost,
+	}
+}
+
 func (c *SourceContract) insertSQL() string {
 	return `INSERT INTO drip_source_contracts
         (id, version, status, effective_at, created_by, created_at, change_ledger_id, notes,
          source_slug, record_class, eligible_isps, max_daily_intake, arrival_cadence,
-         validated_on_arrival, record_max_age_days, unit_acquisition_cost)
-        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
+         validated_on_arrival, record_max_age_days, unit_acquisition_cost, metadata, token)
+        VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
 }
 
 func (c *SourceContract) insertArgs(id uuid.UUID, version int) []any {
@@ -881,6 +1003,7 @@ func (c *SourceContract) insertArgs(id uuid.UUID, version int) []any {
 		id, version, string(StatusDraft), nullTime(c.EffectiveAt), c.CreatedBy, c.ChangeLedgerID, c.Notes,
 		c.SourceSlug, c.RecordClass, pq.Array(c.EligibleISPs), intake, c.ArrivalCadence,
 		c.ValidatedOnArrival, maxAge, c.UnitAcquisitionCost,
+		c.Metadata, c.Token,
 	}
 }
 
@@ -956,6 +1079,7 @@ type ContractRowQueryer interface {
 // InsertDraft needs.
 type ContractExecer interface {
 	ContractRowQueryer
+	ContractQueryer
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
@@ -980,6 +1104,17 @@ const activeWhere = ` WHERE status = 'active' AND effective_at < $1`
 // day ended; an active row with a NULL effective_at is deliberately invisible
 // (fail closed) rather than silently assumed to apply.
 func LoadActive(ctx context.Context, db ContractQueryer, day time.Time) (*ActiveSet, error) {
+	key, err := contractmeta.KeyFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("dripsupply: load active contracts: %w", err)
+	}
+	return LoadActiveWithKey(ctx, db, day, key)
+}
+
+// LoadActiveWithKey is LoadActive with the HMAC key supplied instead of read
+// from the environment. Callers that already hold the key (and tests) use this;
+// everything else uses LoadActive.
+func LoadActiveWithKey(ctx context.Context, db ContractQueryer, day time.Time, key []byte) (*ActiveSet, error) {
 	_, dayEnd := dayWindow(day)
 
 	set := &ActiveSet{
@@ -1003,12 +1138,93 @@ func LoadActive(ctx context.Context, db ContractQueryer, day time.Time) (*Active
 	if err := loadSources(ctx, db, dayEnd, set); err != nil {
 		return nil, err
 	}
+
+	// §1.5 rule 2: every active contract's token is verified against its body,
+	// and ONE bad token fails the whole load. A partial set would let the
+	// executor mail under the contracts that happened to verify while a
+	// hand-edited one silently disappeared — the caller must see an outage and
+	// alert, not a quietly smaller estate.
+	for _, subject := range sortedMapKeys(set.Domains) {
+		if err := VerifyContract(key, set.Domains[subject]); err != nil {
+			return nil, err
+		}
+	}
+	for _, subject := range sortedMapKeys(set.Dispatches) {
+		if err := VerifyContract(key, set.Dispatches[subject]); err != nil {
+			return nil, err
+		}
+	}
+	for _, subject := range sortedMapKeys(set.Inventories) {
+		if err := VerifyContract(key, set.Inventories[subject]); err != nil {
+			return nil, err
+		}
+	}
+	for _, subject := range sortedMapKeys(set.SourcesBySlug) {
+		if err := VerifyContract(key, set.SourcesBySlug[subject]); err != nil {
+			return nil, err
+		}
+	}
 	return set, nil
 }
 
-const domainSelect = `SELECT ` + metaCols + `, sending_domain, brand_code, daily_max_by_isp,
+// VerifyContract checks one contract's integrity token against its policy body
+// and against the duplicated `token` column (§1.5). Any disagreement is an
+// *ErrTokenMismatch.
+func VerifyContract(key []byte, c Contract) error {
+	m := c.metaPtr()
+	canon := contractmeta.Canonical(c.TokenBody(), string(c.Kind()), c.Subject(), m.Version)
+	if err := contractmeta.Verify(key, canon, m.Metadata.Token); err != nil {
+		return &ErrTokenMismatch{Kind: c.Kind(), Subject: c.Subject(), Version: m.Version, Err: err}
+	}
+	// The token column duplicates metadata.token.value for indexing; if the two
+	// disagree, one of them was edited by hand.
+	if m.Token != m.Metadata.Token.Value {
+		return &ErrTokenMismatch{
+			Kind: c.Kind(), Subject: c.Subject(), Version: m.Version,
+			Err: errors.New("token column does not match metadata.token.value"),
+		}
+	}
+	return nil
+}
+
+func sortedMapKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+const domainSelectBody = `SELECT ` + metaCols + `, sending_domain, brand_code, daily_max_by_isp,
        active_window_start, active_window_end, interval_minutes, max_burst_intervals, ramp_source
-  FROM drip_domain_contracts` + activeWhere
+  FROM drip_domain_contracts`
+
+const domainSelect = domainSelectBody + activeWhere
+const domainSelectOne = domainSelectBody + ` WHERE sending_domain = $1 AND version = $2`
+
+func scanDomain(rows *sql.Rows) (*DomainContract, error) {
+	var (
+		ms   metaScan
+		c    DomainContract
+		raw  []byte
+		ramp sql.NullString
+	)
+	dests := append(ms.dests(),
+		&c.SendingDomain, &c.BrandCode, &raw,
+		&c.ActiveWindowStart, &c.ActiveWindowEnd, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp)
+	if err := rows.Scan(dests...); err != nil {
+		return nil, fmt.Errorf("dripsupply: scan domain contract: %w", err)
+	}
+	ms.into(&c.Meta)
+	c.RampSource = ramp.String
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &c.DailyMaxByISP); err != nil {
+			return nil, fmt.Errorf("dripsupply: decode daily_max_by_isp for %q: %w", c.SendingDomain, err)
+		}
+	}
+	return &c, nil
+}
 
 func loadDomains(ctx context.Context, db ContractQueryer, dayEnd time.Time, set *ActiveSet) error {
 	rows, err := db.QueryContext(ctx, domainSelect, dayEnd)
@@ -1017,27 +1233,11 @@ func loadDomains(ctx context.Context, db ContractQueryer, dayEnd time.Time, set 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var (
-			ms   metaScan
-			c    DomainContract
-			raw  []byte
-			ramp sql.NullString
-		)
-		dests := append(ms.dests(),
-			&c.SendingDomain, &c.BrandCode, &raw,
-			&c.ActiveWindowStart, &c.ActiveWindowEnd, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp)
-		if err := rows.Scan(dests...); err != nil {
-			return fmt.Errorf("dripsupply: scan domain contract: %w", err)
+		c, err := scanDomain(rows)
+		if err != nil {
+			return err
 		}
-		ms.into(&c.Meta)
-		c.RampSource = ramp.String
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &c.DailyMaxByISP); err != nil {
-				return fmt.Errorf("dripsupply: decode daily_max_by_isp for %q: %w", c.SendingDomain, err)
-			}
-		}
-		cp := c
-		set.Domains[c.SendingDomain] = &cp
+		set.Domains[c.SendingDomain] = c
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("dripsupply: iterate domain contracts: %w", err)
@@ -1045,10 +1245,41 @@ func loadDomains(ctx context.Context, db ContractQueryer, dayEnd time.Time, set 
 	return nil
 }
 
-const dispatchSelect = `SELECT ` + metaCols + `, lane, operator_priority_tier, desired_daily_intros,
+const dispatchSelectBody = `SELECT ` + metaCols + `, lane, operator_priority_tier, desired_daily_intros,
        demand_mode, daily_ceiling, allowed_domains, isp_exclusions, ladder_touches, ladder_gap_hours,
        followups_committed, max_intro_share, exploration_share
-  FROM drip_dispatch_contracts` + activeWhere
+  FROM drip_dispatch_contracts`
+
+const dispatchSelect = dispatchSelectBody + activeWhere
+const dispatchSelectOne = dispatchSelectBody + ` WHERE lane = $1 AND version = $2`
+
+func scanDispatch(rows *sql.Rows) (*DispatchContract, error) {
+	var (
+		ms      metaScan
+		c       DispatchContract
+		raw     []byte
+		ceiling sql.NullInt64
+	)
+	dests := append(ms.dests(),
+		&c.Lane, &c.OperatorPriorityTier, &raw, &c.DemandMode, &ceiling,
+		pq.Array(&c.AllowedDomains), pq.Array(&c.ISPExclusions),
+		&c.LadderTouches, &c.LadderGapHours, &c.FollowupsCommitted,
+		&c.MaxIntroShare, &c.ExplorationShare)
+	if err := rows.Scan(dests...); err != nil {
+		return nil, fmt.Errorf("dripsupply: scan dispatch contract: %w", err)
+	}
+	ms.into(&c.Meta)
+	if ceiling.Valid {
+		v := int(ceiling.Int64)
+		c.DailyCeiling = &v
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &c.DesiredDailyIntros); err != nil {
+			return nil, fmt.Errorf("dripsupply: decode desired_daily_intros for %q: %w", c.Lane, err)
+		}
+	}
+	return &c, nil
+}
 
 func loadDispatches(ctx context.Context, db ContractQueryer, dayEnd time.Time, set *ActiveSet) error {
 	rows, err := db.QueryContext(ctx, dispatchSelect, dayEnd)
@@ -1057,32 +1288,11 @@ func loadDispatches(ctx context.Context, db ContractQueryer, dayEnd time.Time, s
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var (
-			ms      metaScan
-			c       DispatchContract
-			raw     []byte
-			ceiling sql.NullInt64
-		)
-		dests := append(ms.dests(),
-			&c.Lane, &c.OperatorPriorityTier, &raw, &c.DemandMode, &ceiling,
-			pq.Array(&c.AllowedDomains), pq.Array(&c.ISPExclusions),
-			&c.LadderTouches, &c.LadderGapHours, &c.FollowupsCommitted,
-			&c.MaxIntroShare, &c.ExplorationShare)
-		if err := rows.Scan(dests...); err != nil {
-			return fmt.Errorf("dripsupply: scan dispatch contract: %w", err)
+		c, err := scanDispatch(rows)
+		if err != nil {
+			return err
 		}
-		ms.into(&c.Meta)
-		if ceiling.Valid {
-			v := int(ceiling.Int64)
-			c.DailyCeiling = &v
-		}
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &c.DesiredDailyIntros); err != nil {
-				return fmt.Errorf("dripsupply: decode desired_daily_intros for %q: %w", c.Lane, err)
-			}
-		}
-		cp := c
-		set.Dispatches[c.Lane] = &cp
+		set.Dispatches[c.Lane] = c
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("dripsupply: iterate dispatch contracts: %w", err)
@@ -1090,10 +1300,29 @@ func loadDispatches(ctx context.Context, db ContractQueryer, dayEnd time.Time, s
 	return nil
 }
 
-const inventorySelect = `SELECT ` + metaCols + `, lane, accepted_sources, verdict_valid_days, eo_enabled,
+const inventorySelectBody = `SELECT ` + metaCols + `, lane, accepted_sources, verdict_valid_days, eo_enabled,
        max_daily_eo_spend_usd, min_eo_order, min_coverage_hours, target_coverage_hours, max_coverage_hours,
        remail_enabled, remail_after_days, remail_mode, max_remail_share
-  FROM drip_inventory_contracts` + activeWhere
+  FROM drip_inventory_contracts`
+
+const inventorySelect = inventorySelectBody + activeWhere
+const inventorySelectOne = inventorySelectBody + ` WHERE lane = $1 AND version = $2`
+
+func scanInventory(rows *sql.Rows) (*InventoryContract, error) {
+	var (
+		ms metaScan
+		c  InventoryContract
+	)
+	dests := append(ms.dests(),
+		&c.Lane, pq.Array(&c.AcceptedSources), &c.VerdictValidDays, &c.EOEnabled,
+		&c.MaxDailyEOSpendUSD, &c.MinEOOrder, &c.MinCoverageHours, &c.TargetCoverageHours,
+		&c.MaxCoverageHours, &c.RemailEnabled, &c.RemailAfterDays, &c.RemailMode, &c.MaxRemailShare)
+	if err := rows.Scan(dests...); err != nil {
+		return nil, fmt.Errorf("dripsupply: scan inventory contract: %w", err)
+	}
+	ms.into(&c.Meta)
+	return &c, nil
+}
 
 func loadInventories(ctx context.Context, db ContractQueryer, dayEnd time.Time, set *ActiveSet) error {
 	rows, err := db.QueryContext(ctx, inventorySelect, dayEnd)
@@ -1102,20 +1331,11 @@ func loadInventories(ctx context.Context, db ContractQueryer, dayEnd time.Time, 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var (
-			ms metaScan
-			c  InventoryContract
-		)
-		dests := append(ms.dests(),
-			&c.Lane, pq.Array(&c.AcceptedSources), &c.VerdictValidDays, &c.EOEnabled,
-			&c.MaxDailyEOSpendUSD, &c.MinEOOrder, &c.MinCoverageHours, &c.TargetCoverageHours,
-			&c.MaxCoverageHours, &c.RemailEnabled, &c.RemailAfterDays, &c.RemailMode, &c.MaxRemailShare)
-		if err := rows.Scan(dests...); err != nil {
-			return fmt.Errorf("dripsupply: scan inventory contract: %w", err)
+		c, err := scanInventory(rows)
+		if err != nil {
+			return err
 		}
-		ms.into(&c.Meta)
-		cp := c
-		set.Inventories[c.Lane] = &cp
+		set.Inventories[c.Lane] = c
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("dripsupply: iterate inventory contracts: %w", err)
@@ -1123,9 +1343,37 @@ func loadInventories(ctx context.Context, db ContractQueryer, dayEnd time.Time, 
 	return nil
 }
 
-const sourceSelect = `SELECT ` + metaCols + `, source_slug, record_class, eligible_isps, max_daily_intake,
+const sourceSelectBody = `SELECT ` + metaCols + `, source_slug, record_class, eligible_isps, max_daily_intake,
        arrival_cadence, validated_on_arrival, record_max_age_days, unit_acquisition_cost
-  FROM drip_source_contracts` + activeWhere
+  FROM drip_source_contracts`
+
+const sourceSelect = sourceSelectBody + activeWhere
+const sourceSelectOne = sourceSelectBody + ` WHERE source_slug = $1 AND version = $2`
+
+func scanSource(rows *sql.Rows) (*SourceContract, error) {
+	var (
+		ms     metaScan
+		c      SourceContract
+		intake sql.NullInt64
+		maxAge sql.NullInt64
+	)
+	dests := append(ms.dests(),
+		&c.SourceSlug, &c.RecordClass, pq.Array(&c.EligibleISPs), &intake,
+		&c.ArrivalCadence, &c.ValidatedOnArrival, &maxAge, &c.UnitAcquisitionCost)
+	if err := rows.Scan(dests...); err != nil {
+		return nil, fmt.Errorf("dripsupply: scan source contract: %w", err)
+	}
+	ms.into(&c.Meta)
+	if intake.Valid {
+		v := int(intake.Int64)
+		c.MaxDailyIntake = &v
+	}
+	if maxAge.Valid {
+		v := int(maxAge.Int64)
+		c.RecordMaxAgeDays = &v
+	}
+	return &c, nil
+}
 
 func loadSources(ctx context.Context, db ContractQueryer, dayEnd time.Time, set *ActiveSet) error {
 	rows, err := db.QueryContext(ctx, sourceSelect, dayEnd)
@@ -1134,29 +1382,11 @@ func loadSources(ctx context.Context, db ContractQueryer, dayEnd time.Time, set 
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var (
-			ms     metaScan
-			c      SourceContract
-			intake sql.NullInt64
-			maxAge sql.NullInt64
-		)
-		dests := append(ms.dests(),
-			&c.SourceSlug, &c.RecordClass, pq.Array(&c.EligibleISPs), &intake,
-			&c.ArrivalCadence, &c.ValidatedOnArrival, &maxAge, &c.UnitAcquisitionCost)
-		if err := rows.Scan(dests...); err != nil {
-			return fmt.Errorf("dripsupply: scan source contract: %w", err)
+		c, err := scanSource(rows)
+		if err != nil {
+			return err
 		}
-		ms.into(&c.Meta)
-		if intake.Valid {
-			v := int(intake.Int64)
-			c.MaxDailyIntake = &v
-		}
-		if maxAge.Valid {
-			v := int(maxAge.Int64)
-			c.RecordMaxAgeDays = &v
-		}
-		cp := c
-		set.SourcesBySlug[c.SourceSlug] = &cp
+		set.SourcesBySlug[c.SourceSlug] = c
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("dripsupply: iterate source contracts: %w", err)
@@ -1346,7 +1576,16 @@ func InsertDraft(ctx context.Context, tx ContractExecer, c Contract) (uuid.UUID,
 	if err != nil {
 		return uuid.Nil, 0, err
 	}
+	// §1.5 rule 4: mutation is written on every version and mirrors the change
+	// ledger id. Refs the caller resolved (contractmeta.ResolveRefs) are kept;
+	// identity and mutation are stamped here so no caller can forget them.
+	// No token: a draft has none — it is issued at approved -> scheduled.
 	id := uuid.New()
+	m.Metadata.StampIdentity(id.String(), string(c.Kind()), version)
+	m.Metadata.StampMutation(time.Now().UTC(), m.CreatedBy, m.ChangeLedgerID, version-1)
+	m.Metadata.Token = contractmeta.Token{}
+	m.Token = ""
+
 	if _, err := tx.ExecContext(ctx, c.insertSQL(), c.insertArgs(id, version)...); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("dripsupply: insert %s draft for %q: %w", c.Kind(), c.Subject(), err)
 	}
@@ -1354,6 +1593,134 @@ func InsertDraft(ctx context.Context, tx ContractExecer, c Contract) (uuid.UUID,
 	m.Version = version
 	m.Status = StatusDraft
 	return id, version, nil
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling + token issue
+// ---------------------------------------------------------------------------
+
+// ErrContractNotFound means no row exists at that (kind, subject, version).
+type ErrContractNotFound struct {
+	Kind    ContractKind
+	Subject string
+	Version int
+}
+
+func (e *ErrContractNotFound) Error() string {
+	return fmt.Sprintf("dripsupply: no %s contract %q at version %d", e.Kind, e.Subject, e.Version)
+}
+
+func selectOneFor(kind ContractKind) (string, error) {
+	switch kind {
+	case KindDomain:
+		return domainSelectOne, nil
+	case KindDispatch:
+		return dispatchSelectOne, nil
+	case KindInventory:
+		return inventorySelectOne, nil
+	case KindSource:
+		return sourceSelectOne, nil
+	}
+	return "", fmt.Errorf("dripsupply: unknown contract kind %q", kind)
+}
+
+// LoadOne reads exactly one contract row by (kind, subject, version), whatever
+// its status. Unlike LoadActive it does NOT verify the token — it is the reader
+// Schedule uses to compute one.
+func LoadOne(ctx context.Context, db ContractQueryer, kind ContractKind, subject string, version int) (Contract, error) {
+	q, err := selectOneFor(kind)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, q, subject, version)
+	if err != nil {
+		return nil, fmt.Errorf("dripsupply: load %s contract %q v%d: %w", kind, subject, version, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("dripsupply: load %s contract %q v%d: %w", kind, subject, version, err)
+		}
+		return nil, &ErrContractNotFound{Kind: kind, Subject: subject, Version: version}
+	}
+	switch kind {
+	case KindDomain:
+		return scanDomain(rows)
+	case KindDispatch:
+		return scanDispatch(rows)
+	case KindInventory:
+		return scanInventory(rows)
+	case KindSource:
+		return scanSource(rows)
+	}
+	return nil, fmt.Errorf("dripsupply: unknown contract kind %q", kind)
+}
+
+func scheduleSQL(spec kindSpec) string {
+	return fmt.Sprintf(`UPDATE %s SET status = 'scheduled', metadata = $1, token = $2
+ WHERE id = $3 AND status = 'approved'`, spec.Table)
+}
+
+// Schedule moves an `approved` contract to `scheduled` and issues its integrity
+// token in the same statement (§1.5 rule 1: a contract is issued a token ONLY
+// on this transition).
+//
+// The token is HMAC-SHA256 over Canonical(policy body, kind, subject, version)
+// — see Contract.TokenBody for why the lifecycle fields are excluded. It is
+// written to both `metadata.token` and the duplicated `token` column, and
+// LoadActive later refuses any active contract where those disagree or where
+// the MAC does not match the body.
+//
+// Exactly-once: the UPDATE is guarded on `status = 'approved'`, so a second
+// Schedule of the same version finds `scheduled` and returns *ErrNotApproved
+// rather than re-stamping with a fresh issued_at. Fail-closed: with no key
+// nothing is issued and nothing moves.
+func Schedule(ctx context.Context, tx ContractExecer, kind ContractKind, subject string, version int, key []byte, now time.Time) (contractmeta.Token, error) {
+	spec, ok := kindSpecs[kind]
+	if !ok {
+		return contractmeta.Token{}, fmt.Errorf("dripsupply: unknown contract kind %q", kind)
+	}
+	if len(key) == 0 {
+		return contractmeta.Token{}, fmt.Errorf("dripsupply: schedule %s %q v%d: %w", kind, subject, version, contractmeta.ErrNoKey)
+	}
+
+	c, err := LoadOne(ctx, tx, kind, subject, version)
+	if err != nil {
+		return contractmeta.Token{}, err
+	}
+	m := c.metaPtr()
+	if m.Status != StatusApproved {
+		return contractmeta.Token{}, &ErrNotApproved{Kind: kind, Subject: subject, Version: version, Status: m.Status}
+	}
+	// A contract that cannot pass its own validation is never given a token —
+	// otherwise an invalid row becomes permanently "verified".
+	if err := c.Validate(); err != nil {
+		return contractmeta.Token{}, fmt.Errorf("dripsupply: refusing to schedule invalid %s contract %q v%d: %w", kind, subject, version, err)
+	}
+
+	canon := contractmeta.Canonical(c.TokenBody(), string(kind), subject, version)
+	tok := contractmeta.Issue(key, canon, now)
+	if !tok.Issued() {
+		return contractmeta.Token{}, fmt.Errorf("dripsupply: schedule %s %q v%d: %w", kind, subject, version, contractmeta.ErrNoKey)
+	}
+
+	blk := m.Metadata
+	blk.StampIdentity(m.ID.String(), string(kind), version)
+	blk.Token = tok
+
+	res, err := tx.ExecContext(ctx, scheduleSQL(spec), blk, tok.Value, m.ID)
+	if err != nil {
+		return contractmeta.Token{}, fmt.Errorf("dripsupply: schedule %s contract %q v%d: %w", kind, subject, version, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		// Lost the race: another writer moved it out of `approved`.
+		return contractmeta.Token{}, &ErrNotApproved{Kind: kind, Subject: subject, Version: version, Status: m.Status}
+	}
+
+	m.Status = StatusScheduled
+	m.Metadata = blk
+	m.Token = tok.Value
+	return tok, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,6 +1772,39 @@ func firstDuplicate(vals []string) string {
 		seen[v] = struct{}{}
 	}
 	return ""
+}
+
+// normClock renders a clock string as HH:MM so "01:00" and "01:00:00" — the
+// form written and the form PostgreSQL returns — canonicalise identically.
+func normClock(s string) string {
+	mins, err := parseClock(s)
+	if err != nil {
+		return strings.TrimSpace(s)
+	}
+	return fmt.Sprintf("%02d:%02d", mins/60, mins%60)
+}
+
+// normStrings makes a nil slice and an empty slice canonicalise identically
+// (PostgreSQL returns '{}' as an empty non-nil slice; a Go zero value is nil).
+func normStrings(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+func normIntMap(v map[string]int) map[string]int {
+	if v == nil {
+		return map[string]int{}
+	}
+	return v
+}
+
+func normIntPtr(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func nullTime(t time.Time) any {

@@ -3,6 +3,7 @@ package dripsupply_test
 import (
 	"context"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"sort"
@@ -14,9 +15,40 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/ignite/sparkpost-monitor/internal/worker/dripsupply"
 )
+
+// testKey is a fixed HMAC key. It is >= contractmeta.MinKeyLen so KeyFromEnv
+// would accept it; the tests inject it directly rather than touching the
+// process environment.
+var testKey = []byte("test-contract-token-key-0123456789abcdef")
+
+var issuedAt = time.Date(2026, 9, 3, 6, 0, 0, 0, time.UTC)
+
+// issueFor computes the token a correctly-scheduled row would carry.
+func issueFor(c dripsupply.Contract, version int) contractmeta.Token {
+	canon := contractmeta.Canonical(c.TokenBody(), string(c.Kind()), c.Subject(), version)
+	return contractmeta.Issue(testKey, canon, issuedAt)
+}
+
+// blockFor builds the metadata JSON an issued row carries.
+func blockFor(t *testing.T, id uuid.UUID, c dripsupply.Contract, version int) ([]byte, contractmeta.Token) {
+	t.Helper()
+	tok := issueFor(c, version)
+	blk := contractmeta.Block{
+		Refs:     contractmeta.Refs{SendingDomainID: "11111111-1111-1111-1111-111111111111"},
+		Mutation: contractmeta.Mutation{At: issuedAt, By: "operator", ChangeLedgerID: "chg-0001", PriorVersion: version - 1},
+		Token:    tok,
+	}
+	blk.StampIdentity(id.String(), string(c.Kind()), version)
+	raw, err := json.Marshal(blk)
+	if err != nil {
+		t.Fatalf("marshal block: %v", err)
+	}
+	return raw, tok
+}
 
 // ---------------------------------------------------------------------------
 // ONE SOURCE for the ISP class list
@@ -523,12 +555,128 @@ func TestActiveIndexDDLIsWhatActivationReliesOn(t *testing.T) {
 // LoadActive
 // ---------------------------------------------------------------------------
 
-func metaRow(id uuid.UUID, effective time.Time) []driver.Value {
+func metaRow(id uuid.UUID, effective time.Time, version int, metadata []byte, token string) []driver.Value {
 	return []driver.Value{
-		id.String(), 3, "active", effective, nil,
+		id.String(), version, "active", effective, nil,
 		"operator", effective, "operator", effective,
-		"chg-0001", "operator ruling 2026-09-03",
+		"chg-0001", "operator ruling 2026-09-03", metadata, token,
 	}
+}
+
+// signedRows builds the four active-contract result sets from real contracts,
+// each carrying the token a correct Schedule would have issued. Returning the
+// contracts too lets a test tamper with one row's BODY while leaving its token
+// untouched, which is the hand-edit LoadActive must refuse.
+type activeFixture struct {
+	dom  *dripsupply.DomainContract
+	disp *dripsupply.DispatchContract
+	inv  *dripsupply.InventoryContract
+	src  *dripsupply.SourceContract
+	id   uuid.UUID
+	eff  time.Time
+}
+
+func newActiveFixture(eff time.Time) *activeFixture {
+	f := &activeFixture{id: uuid.New(), eff: eff}
+	f.dom = validDomain()
+	f.dom.DailyMaxByISP = map[string]int{
+		"aol": 4900, "apple": 0, "att": 0, "charter": 0, "comcast": 0, "cox": 0,
+		"gmail": 0, "microsoft": 0, "other": 0, "sbcglobal": 0, "verizon": 0, "yahoo": 17000,
+	}
+	f.dom.Version = 3
+
+	f.disp = validDispatch()
+	f.disp.OperatorPriorityTier = 1
+	f.disp.DesiredDailyIntros = map[string]int{"aol": 5500}
+	f.disp.DemandMode = dripsupply.DemandModeConsumeAvailable
+	f.disp.DailyCeiling = intp(208000)
+	f.disp.Version = 3
+
+	f.inv = validInventory()
+	f.inv.Version = 3
+
+	f.src = validSource()
+	f.src.RecordMaxAgeDays = intp(90)
+	f.src.Version = 3
+	return f
+}
+
+// expect queues the four LoadActive queries. domainMaxOverride, when non-nil,
+// is written into the ROW without re-signing — a tampered body.
+func (f *activeFixture) expect(t *testing.T, mock sqlmock.Sqlmock, dayEnd time.Time, domainMaxOverride map[string]int, tokenColOverride *string) {
+	t.Helper()
+
+	domMeta, domTok := blockFor(t, f.id, f.dom, f.dom.Version)
+	domMax := f.dom.DailyMaxByISP
+	if domainMaxOverride != nil {
+		domMax = domainMaxOverride
+	}
+	domMaxJSON, err := json.Marshal(domMax)
+	if err != nil {
+		t.Fatalf("marshal daily_max_by_isp: %v", err)
+	}
+	domTokCol := domTok.Value
+	if tokenColOverride != nil {
+		domTokCol = *tokenColOverride
+	}
+
+	domCols := append(metaColNames(),
+		"sending_domain", "brand_code", "daily_max_by_isp",
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE status = 'active' AND effective_at < $1")).
+		WithArgs(dayEnd).
+		WillReturnRows(sqlmock.NewRows(domCols).AddRow(append(metaRow(f.id, f.eff, f.dom.Version, domMeta, domTokCol),
+			f.dom.SendingDomain, f.dom.BrandCode, domMaxJSON,
+			// PostgreSQL returns a `time` column as HH:MM:SS while the contract
+			// was written as HH:MM. The token must survive that round trip.
+			"01:00:00", "20:00:00", f.dom.IntervalMinutes, f.dom.MaxBurstIntervals, f.dom.RampSource)...))
+
+	dispMeta, dispTok := blockFor(t, f.id, f.disp, f.disp.Version)
+	dispDesired, err := json.Marshal(f.disp.DesiredDailyIntros)
+	if err != nil {
+		t.Fatalf("marshal desired: %v", err)
+	}
+	dispCols := append(metaColNames(),
+		"lane", "operator_priority_tier", "desired_daily_intros", "demand_mode", "daily_ceiling",
+		"allowed_domains", "isp_exclusions", "ladder_touches", "ladder_gap_hours",
+		"followups_committed", "max_intro_share", "exploration_share")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_dispatch_contracts WHERE status = 'active' AND effective_at < $1")).
+		WithArgs(dayEnd).
+		WillReturnRows(sqlmock.NewRows(dispCols).AddRow(append(metaRow(f.id, f.eff, f.disp.Version, dispMeta, dispTok.Value),
+			f.disp.Lane, f.disp.OperatorPriorityTier, dispDesired, f.disp.DemandMode, int64(*f.disp.DailyCeiling),
+			"{"+strings.Join(f.disp.AllowedDomains, ",")+"}", "{"+strings.Join(f.disp.ISPExclusions, ",")+"}",
+			f.disp.LadderTouches, f.disp.LadderGapHours, f.disp.FollowupsCommitted,
+			f.disp.MaxIntroShare, f.disp.ExplorationShare)...))
+
+	invMeta, invTok := blockFor(t, f.id, f.inv, f.inv.Version)
+	invCols := append(metaColNames(),
+		"lane", "accepted_sources", "verdict_valid_days", "eo_enabled", "max_daily_eo_spend_usd",
+		"min_eo_order", "min_coverage_hours", "target_coverage_hours", "max_coverage_hours",
+		"remail_enabled", "remail_after_days", "remail_mode", "max_remail_share")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_inventory_contracts WHERE status = 'active' AND effective_at < $1")).
+		WithArgs(dayEnd).
+		WillReturnRows(sqlmock.NewRows(invCols).AddRow(append(metaRow(f.id, f.eff, f.inv.Version, invMeta, invTok.Value),
+			f.inv.Lane, "{"+strings.Join(f.inv.AcceptedSources, ",")+"}", f.inv.VerdictValidDays, f.inv.EOEnabled,
+			f.inv.MaxDailyEOSpendUSD, f.inv.MinEOOrder, f.inv.MinCoverageHours, f.inv.TargetCoverageHours,
+			f.inv.MaxCoverageHours, f.inv.RemailEnabled, f.inv.RemailAfterDays, f.inv.RemailMode, f.inv.MaxRemailShare)...))
+
+	srcMeta, srcTok := blockFor(t, f.id, f.src, f.src.Version)
+	srcCols := append(metaColNames(),
+		"source_slug", "record_class", "eligible_isps", "max_daily_intake",
+		"arrival_cadence", "validated_on_arrival", "record_max_age_days", "unit_acquisition_cost")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_source_contracts WHERE status = 'active' AND effective_at < $1")).
+		WithArgs(dayEnd).
+		WillReturnRows(sqlmock.NewRows(srcCols).AddRow(append(metaRow(f.id, f.eff, f.src.Version, srcMeta, srcTok.Value),
+			f.src.SourceSlug, f.src.RecordClass, "{"+strings.Join(f.src.EligibleISPs, ",")+"}", nil,
+			f.src.ArrivalCadence, f.src.ValidatedOnArrival, int64(*f.src.RecordMaxAgeDays), f.src.UnitAcquisitionCost)...))
+}
+
+func denverDay() (time.Time, time.Time, time.Time) {
+	denver := time.FixedZone("MDT", -6*3600)
+	day := time.Date(2026, 9, 3, 13, 45, 0, 0, denver)
+	dayEnd := time.Date(2026, 9, 4, 0, 0, 0, 0, denver)
+	eff := time.Date(2026, 9, 3, 0, 0, 0, 0, denver)
+	return day, dayEnd, eff
 }
 
 func TestLoadActive_BuildsMapsAndMissesFailClosed(t *testing.T) {
@@ -538,52 +686,13 @@ func TestLoadActive_BuildsMapsAndMissesFailClosed(t *testing.T) {
 	}
 	defer db.Close()
 
-	denver := time.FixedZone("MDT", -6*3600)
-	day := time.Date(2026, 9, 3, 13, 45, 0, 0, denver)
-	dayEnd := time.Date(2026, 9, 4, 0, 0, 0, 0, denver)
-	eff := time.Date(2026, 9, 3, 0, 0, 0, 0, denver)
-	id := uuid.New()
+	day, dayEnd, eff := denverDay()
+	f := newActiveFixture(eff)
+	f.expect(t, mock, dayEnd, nil, nil)
 
-	domCols := append(metaColNames(),
-		"sending_domain", "brand_code", "daily_max_by_isp",
-		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
-	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE status = 'active' AND effective_at < $1")).
-		WithArgs(dayEnd).
-		WillReturnRows(sqlmock.NewRows(domCols).AddRow(append(metaRow(id, eff),
-			"em.historythinking.com", "HT",
-			[]byte(`{"aol":4900,"apple":0,"att":0,"charter":0,"comcast":0,"cox":0,"gmail":0,"microsoft":0,"other":0,"sbcglobal":0,"verizon":0,"yahoo":17000}`),
-			"01:00:00", "20:00:00", 15, 2, "sending_domain_cards")...))
-
-	dispCols := append(metaColNames(),
-		"lane", "operator_priority_tier", "desired_daily_intros", "demand_mode", "daily_ceiling",
-		"allowed_domains", "isp_exclusions", "ladder_touches", "ladder_gap_hours",
-		"followups_committed", "max_intro_share", "exploration_share")
-	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_dispatch_contracts WHERE status = 'active' AND effective_at < $1")).
-		WithArgs(dayEnd).
-		WillReturnRows(sqlmock.NewRows(dispCols).AddRow(append(metaRow(id, eff),
-			"wcl_remail", 1, []byte(`{"aol":5500}`), "consume_available", int64(208000),
-			"{HT,DB}", "{gmail}", 5, 24, true, 0.40, 0.0)...))
-
-	invCols := append(metaColNames(),
-		"lane", "accepted_sources", "verdict_valid_days", "eo_enabled", "max_daily_eo_spend_usd",
-		"min_eo_order", "min_coverage_hours", "target_coverage_hours", "max_coverage_hours",
-		"remail_enabled", "remail_after_days", "remail_mode", "max_remail_share")
-	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_inventory_contracts WHERE status = 'active' AND effective_at < $1")).
-		WithArgs(dayEnd).
-		WillReturnRows(sqlmock.NewRows(invCols).AddRow(append(metaRow(id, eff),
-			"wcl_remail", "{wcl_abandon}", 60, true, 50.0, 1000, 8, 16, 36, false, 7, "full_ladder", 0.25)...))
-
-	srcCols := append(metaColNames(),
-		"source_slug", "record_class", "eligible_isps", "max_daily_intake",
-		"arrival_cadence", "validated_on_arrival", "record_max_age_days", "unit_acquisition_cost")
-	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_source_contracts WHERE status = 'active' AND effective_at < $1")).
-		WithArgs(dayEnd).
-		WillReturnRows(sqlmock.NewRows(srcCols).AddRow(append(metaRow(id, eff),
-			"wcl_abandon", "mortgage", "{aol,yahoo}", nil, "continuous", false, int64(90), 0.0)...))
-
-	set, err := dripsupply.LoadActive(context.Background(), db, day)
+	set, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey)
 	if err != nil {
-		t.Fatalf("LoadActive: %v", err)
+		t.Fatalf("LoadActiveWithKey: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet: %v", err)
@@ -602,8 +711,24 @@ func TestLoadActive_BuildsMapsAndMissesFailClosed(t *testing.T) {
 	if dom.Version != 3 || dom.Status != dripsupply.StatusActive || dom.ChangeLedgerID != "chg-0001" {
 		t.Fatalf("meta decoded wrong: %+v", dom.Meta)
 	}
-	// A loaded active contract must itself be valid — the loader is not a
-	// second place where a bad contract becomes usable.
+	// The metadata block round-trips out of JSONB, and the token column
+	// duplicates metadata.token.value (§1.5).
+	if dom.Metadata.Kind != "domain" || dom.Metadata.Version != 3 {
+		t.Fatalf("metadata identity decoded wrong: %+v", dom.Metadata)
+	}
+	if dom.Metadata.Mutation.ChangeLedgerID != "chg-0001" || dom.Metadata.Mutation.PriorVersion != 2 {
+		t.Fatalf("metadata mutation decoded wrong: %+v", dom.Metadata.Mutation)
+	}
+	if dom.Metadata.Refs.SendingDomainID != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("metadata refs decoded wrong: %+v", dom.Metadata.Refs)
+	}
+	if dom.Token == "" || dom.Token != dom.Metadata.Token.Value {
+		t.Fatalf("token column %q != metadata.token.value %q", dom.Token, dom.Metadata.Token.Value)
+	}
+	// The window came back as HH:MM:SS and still verified — normClock works.
+	if dom.ActiveWindowStart != "01:00:00" {
+		t.Fatalf("window not read back in PG form: %q", dom.ActiveWindowStart)
+	}
 	if err := dom.Validate(); err != nil {
 		t.Fatalf("loaded domain contract fails its own validation: %v", err)
 	}
@@ -667,11 +792,104 @@ func TestLoadActive_BuildsMapsAndMissesFailClosed(t *testing.T) {
 	}
 }
 
+// §1.5 rule 2: a row whose BODY was hand-edited after issue no longer matches
+// its token, and the WHOLE ActiveSet load fails — not just that contract.
+func TestLoadActive_RefusesTamperedBody(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	day, dayEnd, eff := denverDay()
+	f := newActiveFixture(eff)
+
+	// One field changed in the row, token left as issued: gmail 0 -> 400,
+	// exactly the edit the gmail ban exists to prevent.
+	tampered := map[string]int{}
+	for k, v := range f.dom.DailyMaxByISP {
+		tampered[k] = v
+	}
+	tampered["gmail"] = 400
+	f.expect(t, mock, dayEnd, tampered, nil)
+
+	set, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey)
+	if set != nil {
+		t.Fatal("a tampered contract must fail the whole load, not return a partial set")
+	}
+	var mm *dripsupply.ErrTokenMismatch
+	if !errors.As(err, &mm) {
+		t.Fatalf("expected *ErrTokenMismatch, got %T: %v", err, err)
+	}
+	if mm.Kind != dripsupply.KindDomain || mm.Subject != "em.historythinking.com" || mm.Version != 3 {
+		t.Fatalf("ErrTokenMismatch{%s,%s,v%d} wrong", mm.Kind, mm.Subject, mm.Version)
+	}
+	if !errors.Is(err, contractmeta.ErrTokenMismatch) {
+		t.Fatal("the contractmeta sentinel must stay wrapped")
+	}
+}
+
+// The token column duplicates metadata.token.value for indexing. If someone
+// edits one and not the other, the contract is refused.
+func TestLoadActive_RefusesTokenColumnDrift(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	day, dayEnd, eff := denverDay()
+	f := newActiveFixture(eff)
+	drifted := "deadbeef"
+	f.expect(t, mock, dayEnd, nil, &drifted)
+
+	_, err = dripsupply.LoadActiveWithKey(context.Background(), db, day, testKey)
+	var mm *dripsupply.ErrTokenMismatch
+	if !errors.As(err, &mm) {
+		t.Fatalf("expected *ErrTokenMismatch for token-column drift, got %T: %v", err, err)
+	}
+}
+
+// Fail closed on a missing key: no key, no contracts, no sending.
+func TestLoadActive_NoKeyFailsClosed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	day, _, _ := denverDay()
+	if _, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, nil); err == nil {
+		t.Fatal("LoadActiveWithKey accepted an empty key")
+	}
+	// No query was queued: it must refuse before reading, or after reading but
+	// never returning a set. Either way nothing is honoured.
+	if _, err := dripsupply.LoadActiveWithKey(context.Background(), db, day, nil); err == nil {
+		t.Fatal("second call also must refuse")
+	}
+	_ = mock
+}
+
+func TestLoadActive_QueryErrorIsWrapped(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	boom := errors.New("relation does not exist")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts")).WillReturnError(boom)
+
+	if _, err := dripsupply.LoadActiveWithKey(context.Background(), db, time.Now(), testKey); !errors.Is(err, boom) {
+		t.Fatalf("expected the driver error to be wrapped with %%w, got %v", err)
+	}
+}
+
 func metaColNames() []string {
 	return []string{
 		"id", "version", "status", "effective_at", "superseded_at",
 		"created_by", "created_at", "approved_by", "approved_at",
-		"change_ledger_id", "notes",
+		"change_ledger_id", "notes", "metadata", "token",
 	}
 }
 
@@ -685,21 +903,6 @@ func TestActiveSetNilFailsClosed(t *testing.T) {
 	var nac *dripsupply.ErrNoActiveContract
 	if _, err := empty.Dispatch("wcl_remail"); !errors.As(err, &nac) {
 		t.Fatalf("empty ActiveSet: want *ErrNoActiveContract, got %v", err)
-	}
-}
-
-func TestLoadActive_QueryErrorIsWrapped(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer db.Close()
-
-	boom := errors.New("relation does not exist")
-	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts")).WillReturnError(boom)
-
-	if _, err := dripsupply.LoadActive(context.Background(), db, time.Now()); !errors.Is(err, boom) {
-		t.Fatalf("expected the driver error to be wrapped with %%w, got %v", err)
 	}
 }
 
@@ -997,5 +1200,254 @@ func TestContractStatusScanAndValidity(t *testing.T) {
 	}
 	if dripsupply.ContractStatus("live").Valid() {
 		t.Fatal("bogus status reported valid")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §1.5 addendum — Schedule issues the token, exactly once, fail-closed
+// ---------------------------------------------------------------------------
+
+// approvedDomainRow is one `approved` domain row with no token yet — the state
+// a contract is in immediately before Schedule.
+func approvedDomainRow(id uuid.UUID, c *dripsupply.DomainContract, version int) *sqlmock.Rows {
+	cols := append(metaColNames(),
+		"sending_domain", "brand_code", "daily_max_by_isp",
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+	raw, _ := json.Marshal(c.DailyMaxByISP)
+	meta := []driver.Value{
+		id.String(), version, "approved", issuedAt, nil,
+		"operator", issuedAt, "operator", issuedAt,
+		"chg-0001", c.Notes, []byte("{}"), "",
+	}
+	return sqlmock.NewRows(cols).AddRow(append(meta,
+		c.SendingDomain, c.BrandCode, raw,
+		"01:00:00", "20:00:00", c.IntervalMinutes, c.MaxBurstIntervals, c.RampSource)...)
+}
+
+func TestSchedule_IssuesTokenAndMovesApprovedToScheduled(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	id := uuid.New()
+	c := validDomain()
+	c.Version = 4
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 4).
+		WillReturnRows(approvedDomainRow(id, c, 4))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE drip_domain_contracts SET status = 'scheduled', metadata = $1, token = $2 WHERE id = $3 AND status = 'approved'")).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), id).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	tok, err := dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 4, testKey, issuedAt)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
+	}
+	if tok.Alg != "hmac-sha256" || tok.IssuedBy != "system" || !tok.IssuedAt.Equal(issuedAt) {
+		t.Fatalf("token header wrong: %+v", tok)
+	}
+	// The value must be exactly the HMAC over the loaded row's policy body —
+	// the same computation LoadActive verifies with.
+	loaded := validDomain()
+	loaded.ActiveWindowStart = "01:00:00"
+	loaded.ActiveWindowEnd = "20:00:00"
+	want := issueFor(loaded, 4)
+	if tok.Value != want.Value {
+		t.Fatalf("token value %q, want %q (HMAC over the policy body)", tok.Value, want.Value)
+	}
+}
+
+// Exactly-once: the row is already `scheduled`, so a second Schedule refuses
+// instead of re-stamping with a fresh issued_at, and issues no UPDATE at all.
+func TestSchedule_RefusesASecondIssue(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	id := uuid.New()
+	c := validDomain()
+	rows := approvedDomainRow(id, c, 4)
+	// same row, already scheduled
+	cols := append(metaColNames(),
+		"sending_domain", "brand_code", "daily_max_by_isp",
+		"active_window_start", "active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source")
+	raw, _ := json.Marshal(c.DailyMaxByISP)
+	scheduled := sqlmock.NewRows(cols).AddRow(append([]driver.Value{
+		id.String(), 4, "scheduled", issuedAt, nil,
+		"operator", issuedAt, "operator", issuedAt,
+		"chg-0001", c.Notes, []byte("{}"), "abc123",
+	}, c.SendingDomain, c.BrandCode, raw, "01:00:00", "20:00:00", 15, 2, c.RampSource)...)
+	_ = rows
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 4).
+		WillReturnRows(scheduled)
+	// No ExpectExec: the UPDATE must never be issued.
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 4, testKey, issuedAt)
+	var na *dripsupply.ErrNotApproved
+	if !errors.As(err, &na) {
+		t.Fatalf("expected *ErrNotApproved, got %T: %v", err, err)
+	}
+	if na.Status != dripsupply.StatusScheduled {
+		t.Fatalf("ErrNotApproved.Status = %q, want scheduled", na.Status)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("Schedule wrote on a second issue: %v", err)
+	}
+}
+
+// A concurrent writer moved the row out of `approved` between the read and the
+// UPDATE: the guarded UPDATE affects 0 rows and Schedule refuses.
+func TestSchedule_LostRaceAffectsZeroRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	id := uuid.New()
+	c := validDomain()
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 4).
+		WillReturnRows(approvedDomainRow(id, c, 4))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE drip_domain_contracts SET status = 'scheduled'")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 4, testKey, issuedAt)
+	var na *dripsupply.ErrNotApproved
+	if !errors.As(err, &na) {
+		t.Fatalf("expected *ErrNotApproved on a 0-row UPDATE, got %T: %v", err, err)
+	}
+}
+
+// No key, no issue — and no database traffic at all.
+func TestSchedule_RefusesWithoutKey(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, "em.historythinking.com", 4, nil, issuedAt)
+	if !errors.Is(err, contractmeta.ErrNoKey) {
+		t.Fatalf("expected contractmeta.ErrNoKey, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("Schedule touched the database without a key: %v", err)
+	}
+	// Negative control: with a key it gets as far as the read.
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1")).
+		WillReturnError(errors.New("reached the read"))
+	if _, err := dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, "em.historythinking.com", 4, testKey, issuedAt); err == nil {
+		t.Fatal("expected the read to be attempted with a key")
+	}
+}
+
+// An invalid contract is never given a token: otherwise the invalid row would
+// verify forever afterwards.
+func TestSchedule_RefusesInvalidContract(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	id := uuid.New()
+	c := validDomain()
+	delete(c.DailyMaxByISP, "sbcglobal") // missing ISP class
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_domain_contracts WHERE sending_domain = $1 AND version = $2")).
+		WithArgs(c.SendingDomain, 4).
+		WillReturnRows(approvedDomainRow(id, c, 4))
+	// No ExpectExec.
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDomain, c.SendingDomain, 4, testKey, issuedAt)
+	var verrs dripsupply.ValidationErrors
+	if !errors.As(err, &verrs) {
+		t.Fatalf("expected ValidationErrors, got %T: %v", err, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("Schedule wrote an invalid contract: %v", err)
+	}
+}
+
+func TestSchedule_ContractNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	cols := append(metaColNames(), "lane", "operator_priority_tier", "desired_daily_intros",
+		"demand_mode", "daily_ceiling", "allowed_domains", "isp_exclusions", "ladder_touches",
+		"ladder_gap_hours", "followups_committed", "max_intro_share", "exploration_share")
+	mock.ExpectQuery(regexp.QuoteMeta("FROM drip_dispatch_contracts WHERE lane = $1 AND version = $2")).
+		WithArgs("nope", 9).
+		WillReturnRows(sqlmock.NewRows(cols))
+
+	_, err = dripsupply.Schedule(context.Background(), db, dripsupply.KindDispatch, "nope", 9, testKey, issuedAt)
+	var nf *dripsupply.ErrContractNotFound
+	if !errors.As(err, &nf) {
+		t.Fatalf("expected *ErrContractNotFound, got %T: %v", err, err)
+	}
+}
+
+// InsertDraft stamps identity + mutation (§1.5 rule 4) and leaves the token
+// unset — a draft has no token; it is issued at approved -> scheduled.
+func TestInsertDraft_StampsMetadataAndNoToken(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	c := validDomain()
+	c.CreatedBy = "operator"
+	c.ChangeLedgerID = "chg-2026-09-03-07"
+	c.Metadata.Refs = contractmeta.Refs{
+		SendingDomainID: "aaaaaaaa-0000-0000-0000-000000000001",
+		OwnedDomainID:   "historythinking.com",
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) + 1 FROM drip_domain_contracts")).
+		WithArgs(c.SendingDomain).
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(12))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO drip_domain_contracts")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	id, version, err := dripsupply.InsertDraft(context.Background(), db, c)
+	if err != nil {
+		t.Fatalf("InsertDraft: %v", err)
+	}
+	if c.Metadata.ContractID != id.String() || c.Metadata.Kind != "domain" || c.Metadata.Version != version {
+		t.Fatalf("identity not stamped: %+v", c.Metadata)
+	}
+	if c.Metadata.Mutation.By != "operator" || c.Metadata.Mutation.ChangeLedgerID != "chg-2026-09-03-07" {
+		t.Fatalf("mutation not stamped: %+v", c.Metadata.Mutation)
+	}
+	if c.Metadata.Mutation.PriorVersion != 11 {
+		t.Fatalf("prior_version = %d, want 11", c.Metadata.Mutation.PriorVersion)
+	}
+	if c.Metadata.Mutation.At.IsZero() {
+		t.Fatal("mutation.at not stamped")
+	}
+	// Caller-resolved refs survive.
+	if c.Metadata.Refs.OwnedDomainID != "historythinking.com" {
+		t.Fatalf("refs clobbered: %+v", c.Metadata.Refs)
+	}
+	// A draft carries NO token.
+	if c.Token != "" || c.Metadata.Token.Issued() {
+		t.Fatalf("draft was given a token: col=%q blk=%+v", c.Token, c.Metadata.Token)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet: %v", err)
 	}
 }
