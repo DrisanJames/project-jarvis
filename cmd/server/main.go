@@ -3106,7 +3106,8 @@ var dripSupplyMigrations = []struct {
 		status                    TEXT NOT NULL
 			CHECK (status IN ('reserved','committed','released','expired')),
 		campaign_id               UUID,
-		binding_reason            TEXT NOT NULL,                 -- domain_tokens|lane_demand|supply|governor:<name>|plan_share
+		binding_reason            TEXT NOT NULL,                 -- domain_tokens|lane_demand|supply|governor:<name>|plan_share|requested|reserve_timeout|outside_window|no_balance|no_lane_balance
+		release_reason            TEXT,                          -- set by Release()/ExpireStale(); binding_reason stays the grant's record
 		domain_balance_after      INT  NOT NULL,
 		lane_unfilled_after       INT  NOT NULL,
 		created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -3115,7 +3116,7 @@ var dripSupplyMigrations = []struct {
 	{"req118_idx_dcl_day_domain_isp", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_day_domain_isp ON drip_capacity_ledger (day, sending_domain, isp)`},
 	{"req118_idx_dcl_day_lane_isp", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_day_lane_isp ON drip_capacity_ledger (day, lane, isp)`},
 	{"req118_idx_dcl_campaign", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_campaign ON drip_capacity_ledger (campaign_id)`},
-	{"req118_idx_dcl_reserved", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_reserved ON drip_capacity_ledger (status) WHERE status = 'reserved'`},
+	{"req118_idx_dcl_reserved", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_reserved ON drip_capacity_ledger (created_at) WHERE status = 'reserved'`},
 	// The lockable running balance. This table exists for exactly one
 	// reason (§1.2): so reserve() can SELECT … FOR UPDATE ONE row. Lock
 	// order is domain balance then lane balance, always (§1.2).
@@ -3125,6 +3126,7 @@ var dripSupplyMigrations = []struct {
 		isp              TEXT NOT NULL,
 		contracted       INT  NOT NULL DEFAULT 0,   -- from the active domain contract
 		effective        INT  NOT NULL DEFAULT 0,   -- min(contracted, governors), recomputed each tick
+		effective_reason TEXT NOT NULL DEFAULT '',  -- which governor bound effective (empty = none); persisted so every instance/API sees it
 		tokens           NUMERIC NOT NULL DEFAULT 0,
 		reserved         INT  NOT NULL DEFAULT 0,
 		committed        INT  NOT NULL DEFAULT 0,
