@@ -84,6 +84,14 @@ func (a *SuppressionAgent) ProcessRecord(ctx context.Context, rec AccountingReco
 		reason = "fbl-complaint"
 
 	case "t": // transient failure
+		// CAPACITY deferrals are not evidence about the address (operator 2026-09-03):
+		// Yahoo TSS04 (per-IP volume throttle), SES 454 (our relay send-rate cap),
+		// relay timeouts and dropped sessions say the PATH is busy, not that the
+		// mailbox is bad. Counting them suppressed 12.7k engaged yahoo openers in
+		// three days on kumo and 635k SES-throttled addresses in the engine store.
+		if isCapacityTransient(rec.DSNDiag) {
+			return
+		}
 		if a.checkTransientThreshold(email) {
 			shouldSuppress = true
 			reason = "repeated-transient"
@@ -173,6 +181,29 @@ func (a *SuppressionAgent) ProcessRecord(ctx context.Context, rec AccountingReco
 
 	// Check velocity thresholds for cross-agent alerts
 	a.checkVelocity(ctx, now)
+}
+
+// capacityTransientMarkers are transient diagnostics that describe throttling
+// or transport contention rather than the recipient. They never count toward
+// the repeated-transient threshold.
+var capacityTransientMarkers = []string{
+	"TSS04",                       // Yahoo: temporarily deferred due to unexpected volume or user complaints
+	"Throttling failure",          // SES 454: Maximum sending rate exceeded
+	"4.4.2",                       // SES/PMTA relay: Timeout waiting for data from client
+	"Connection closed by peer",   // KumoMTA internal: remote dropped the session
+	"no sources for",              // KumoMTA internal: all sources suspended / at rate rail
+	"4.7.0 [TS",                   // Yahoo TSS family (TSS01/02/03/05) — policy/velocity, not mailbox
+}
+
+// isCapacityTransient reports whether a transient diagnostic is a capacity or
+// transport signal (see capacityTransientMarkers).
+func isCapacityTransient(diag string) bool {
+	for _, m := range capacityTransientMarkers {
+		if strings.Contains(diag, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkTransientThreshold returns true if this email has 2+ transient
