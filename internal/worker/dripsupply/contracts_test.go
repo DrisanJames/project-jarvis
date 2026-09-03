@@ -2,9 +2,11 @@ package dripsupply_test
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -681,9 +683,9 @@ func (f *activeFixture) expectWithBand(t *testing.T, mock sqlmock.Sqlmock, dayEn
 		WithArgs(dayEnd).
 		WillReturnRows(sqlmock.NewRows(domCols).AddRow(append(metaRow(f.id, f.eff, f.dom.Version, domMeta, domTokCol),
 			f.dom.SendingDomain, f.dom.BrandCode, domMaxJSON,
-			// PostgreSQL returns a `time` column as HH:MM:SS while the contract
-			// was written as HH:MM. The token must survive that round trip.
-			"01:00:00", "20:00:00", f.dom.IntervalMinutes, f.dom.MaxBurstIntervals, f.dom.RampSource,
+			// domainSelectBody renders the two `time` columns with
+			// to_char(...,'HH24:MI'), so the driver hands back exactly this.
+			"01:00", "20:00", f.dom.IntervalMinutes, f.dom.MaxBurstIntervals, f.dom.RampSource,
 			bandCol, f.dom.RampStage)...))
 
 	dispMeta, dispTok := blockFor(t, f.id, f.disp, f.disp.Version)
@@ -780,9 +782,17 @@ func TestLoadActive_BuildsMapsAndMissesFailClosed(t *testing.T) {
 	if dom.Token == "" || dom.Token != dom.Metadata.Token.Value {
 		t.Fatalf("token column %q != metadata.token.value %q", dom.Token, dom.Metadata.Token.Value)
 	}
-	// The window came back as HH:MM:SS and still verified — normClock works.
-	if dom.ActiveWindowStart != "01:00:00" {
-		t.Fatalf("window not read back in PG form: %q", dom.ActiveWindowStart)
+	// The window comes back in canonical HH:MM — NOT the RFC3339 form a bare
+	// string scan of a `time` column produces ("0000-01-01T01:00:00Z"), which
+	// parseClock rejects and which broke Schedule on the real server.
+	if dom.ActiveWindowStart != "01:00" || dom.ActiveWindowEnd != "20:00" {
+		t.Fatalf("window read back as %q/%q, want 01:00/20:00", dom.ActiveWindowStart, dom.ActiveWindowEnd)
+	}
+	if strings.Contains(dom.ActiveWindowStart, "T") || strings.Contains(dom.ActiveWindowStart, "Z") {
+		t.Fatalf("window came back as a formatted timestamp: %q", dom.ActiveWindowStart)
+	}
+	if _, err := dripsupply.WindowOf(dom); err != nil {
+		t.Fatalf("WindowOf could not parse the loaded window: %v", err)
 	}
 	if err := dom.Validate(); err != nil {
 		t.Fatalf("loaded domain contract fails its own validation: %v", err)
@@ -1277,7 +1287,7 @@ func approvedDomainRow(id uuid.UUID, c *dripsupply.DomainContract, version int) 
 	}
 	return sqlmock.NewRows(cols).AddRow(append(meta,
 		c.SendingDomain, c.BrandCode, raw,
-		"01:00:00", "20:00:00", c.IntervalMinutes, c.MaxBurstIntervals, c.RampSource,
+		"01:00", "20:00", c.IntervalMinutes, c.MaxBurstIntervals, c.RampSource,
 		c.Band(), c.RampStage)...)
 }
 
@@ -1312,8 +1322,6 @@ func TestSchedule_IssuesTokenAndMovesApprovedToScheduled(t *testing.T) {
 	// The value must be exactly the HMAC over the loaded row's policy body —
 	// the same computation LoadActive verifies with.
 	loaded := validDomain()
-	loaded.ActiveWindowStart = "01:00:00"
-	loaded.ActiveWindowEnd = "20:00:00"
 	want := issueFor(loaded, 4)
 	if tok.Value != want.Value {
 		t.Fatalf("token value %q, want %q (HMAC over the policy body)", tok.Value, want.Value)
@@ -1342,7 +1350,7 @@ func TestSchedule_RefusesASecondIssue(t *testing.T) {
 		id.String(), 4, "scheduled", issuedAt, nil,
 		"operator", issuedAt, "operator", issuedAt,
 		"chg-0001", c.Notes, []byte("{}"), "abc123",
-	}, c.SendingDomain, c.BrandCode, raw, "01:00:00", "20:00:00", 15, 2, c.RampSource,
+	}, c.SendingDomain, c.BrandCode, raw, "01:00", "20:00", 15, 2, c.RampSource,
 		c.Band(), c.RampStage)...)
 	_ = rows
 
@@ -1636,14 +1644,12 @@ func TestSchedule_TokenCoversTheRowsBand(t *testing.T) {
 	loadedAmber := validDomain()
 	loadedAmber.HealthBand = dripsupply.HealthBandAmber
 	loadedAmber.Notes = c.Notes
-	loadedAmber.ActiveWindowStart, loadedAmber.ActiveWindowEnd = "01:00:00", "20:00:00"
 	if tok.Value != issueFor(loadedAmber, 5).Value {
 		t.Fatal("token was not computed over the row's amber band")
 	}
 
 	loadedGreen := validDomain()
 	loadedGreen.Notes = c.Notes
-	loadedGreen.ActiveWindowStart, loadedGreen.ActiveWindowEnd = "01:00:00", "20:00:00"
 	if tok.Value == issueFor(loadedGreen, 5).Value {
 		t.Fatal("the amber and green tokens are identical")
 	}
@@ -1745,5 +1751,498 @@ func TestInsertDraft_WritesResolvedBand(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet — the INSERT did not carry the resolved band: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// REAL POSTGRES: draft -> Schedule -> activate -> LoadActive round trip
+// ---------------------------------------------------------------------------
+//
+// These pin the one thing sqlmock structurally cannot: how the DRIVER decodes
+// the columns. `active_window_start/end` are `time without time zone`; lib/pq
+// decodes that OID into a time.Time and database/sql then formats it RFC3339
+// into a string destination — "0000-01-01T01:00:00Z" — which parseClock
+// rejects. That made Validate fail inside Schedule (HTTP 500 at approve), so no
+// domain contract could ever be issued a token and LoadActive fail-closed the
+// entire domain side. Found by WP11 on a real server; the fix is the to_char in
+// domainSelectBody, and THIS is its proof.
+//
+// They run against the LOCAL apex-postgres container in scratch database
+// `req118_res`, one throwaway schema per test, and SKIP (never fail, never fall
+// back) when it is unreachable. Nothing here can reach production.
+
+const (
+	pgAdminDSNEnv     = "DRIPSUPPLY_TEST_ADMIN_DSN"
+	pgDefaultAdminDSN = "postgres://apex_user:apex_password@localhost:5432/apex_db?sslmode=disable"
+	pgScratchDB       = "req118_res"
+)
+
+func pgAdminDSN() string {
+	if v := strings.TrimSpace(os.Getenv(pgAdminDSNEnv)); v != "" {
+		return v
+	}
+	return pgDefaultAdminDSN
+}
+
+func pgScratchDSN(t *testing.T) string {
+	t.Helper()
+	dsn := pgAdminDSN()
+	i := strings.LastIndex(dsn, "/")
+	if i < 0 {
+		t.Skipf("cannot derive a scratch DSN from %q", dsn)
+	}
+	tail := dsn[i+1:]
+	q := ""
+	if j := strings.Index(tail, "?"); j >= 0 {
+		q = tail[j:]
+	}
+	return dsn[:i+1] + pgScratchDB + q
+}
+
+// contractTableDDL mirrors the four CREATE TABLEs in cmd/server/main.go
+// (req118_create_drip_*_contracts, :3116 onward). They are restated here
+// because main.go is `package main` and cannot be imported, so a WP1 drift
+// shows up as a failure of these tests rather than as a 3am NOT NULL violation.
+// All four are needed even for a domain-only test: ActivateScheduled walks
+// every kind in one transaction.
+const domainContractsDDL = `CREATE TABLE IF NOT EXISTS drip_domain_contracts (
+	id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	sending_domain      TEXT NOT NULL,
+	brand_code          TEXT NOT NULL DEFAULT '',
+	version             INT  NOT NULL DEFAULT 1,
+	status              TEXT NOT NULL DEFAULT 'draft'
+		CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+	effective_at        TIMESTAMPTZ NOT NULL,
+	superseded_at       TIMESTAMPTZ,
+	created_by          TEXT NOT NULL DEFAULT '',
+	created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	approved_by         TEXT,
+	approved_at         TIMESTAMPTZ,
+	change_ledger_id    TEXT NOT NULL DEFAULT '',
+	notes               TEXT NOT NULL DEFAULT '',
+	metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+	token               TEXT  NOT NULL DEFAULT '',
+	daily_max_by_isp    JSONB NOT NULL,
+	active_window_start TIME NOT NULL DEFAULT '01:00',
+	active_window_end   TIME NOT NULL DEFAULT '20:00',
+	interval_minutes    INT  NOT NULL DEFAULT 15,
+	max_burst_intervals INT  NOT NULL DEFAULT 2,
+	ramp_source         TEXT,
+	health_band         TEXT NOT NULL DEFAULT 'green'
+		CHECK (health_band IN ('green','amber','red')),
+	ramp_stage          TEXT NOT NULL DEFAULT ''
+)`
+
+const dispatchContractsDDL = `CREATE TABLE IF NOT EXISTS drip_dispatch_contracts (
+	id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	lane                   TEXT NOT NULL,
+	version                INT  NOT NULL DEFAULT 1,
+	status                 TEXT NOT NULL DEFAULT 'draft'
+		CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+	effective_at           TIMESTAMPTZ NOT NULL,
+	superseded_at          TIMESTAMPTZ,
+	created_by             TEXT NOT NULL DEFAULT '',
+	created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	approved_by            TEXT,
+	approved_at            TIMESTAMPTZ,
+	change_ledger_id       TEXT NOT NULL DEFAULT '',
+	notes                  TEXT NOT NULL DEFAULT '',
+	metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
+	token                  TEXT  NOT NULL DEFAULT '',
+	operator_priority_tier INT  NOT NULL DEFAULT 2,
+	desired_daily_intros   JSONB NOT NULL,
+	demand_mode            TEXT NOT NULL DEFAULT 'target'
+		CHECK (demand_mode IN ('target','consume_available')),
+	daily_ceiling          INT,
+	allowed_domains        TEXT[] NOT NULL,
+	isp_exclusions         TEXT[] NOT NULL DEFAULT '{}',
+	ladder_touches         INT  NOT NULL DEFAULT 5,
+	ladder_gap_hours       INT  NOT NULL DEFAULT 24,
+	followups_committed    BOOLEAN NOT NULL DEFAULT TRUE,
+	max_intro_share        NUMERIC NOT NULL DEFAULT 0.40,
+	exploration_share      NUMERIC NOT NULL DEFAULT 0
+)`
+
+const inventoryContractsDDL = `CREATE TABLE IF NOT EXISTS drip_inventory_contracts (
+	id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	lane                   TEXT NOT NULL,
+	version                INT  NOT NULL DEFAULT 1,
+	status                 TEXT NOT NULL DEFAULT 'draft'
+		CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+	effective_at           TIMESTAMPTZ NOT NULL,
+	superseded_at          TIMESTAMPTZ,
+	created_by             TEXT NOT NULL DEFAULT '',
+	created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	approved_by            TEXT,
+	approved_at            TIMESTAMPTZ,
+	change_ledger_id       TEXT NOT NULL DEFAULT '',
+	notes                  TEXT NOT NULL DEFAULT '',
+	metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
+	token                  TEXT  NOT NULL DEFAULT '',
+	accepted_sources       TEXT[] NOT NULL,
+	verdict_valid_days     INT  NOT NULL DEFAULT 60,
+	eo_enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+	max_daily_eo_spend_usd NUMERIC NOT NULL DEFAULT 50,
+	min_eo_order           INT  NOT NULL DEFAULT 1000,
+	min_coverage_hours     INT  NOT NULL DEFAULT 8,
+	target_coverage_hours  INT  NOT NULL DEFAULT 16,
+	max_coverage_hours     INT  NOT NULL DEFAULT 36,
+	remail_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+	remail_after_days      INT  NOT NULL DEFAULT 7,
+	remail_mode            TEXT NOT NULL DEFAULT 'full_ladder'
+		CHECK (remail_mode IN ('full_ladder','single_touch')),
+	max_remail_share       NUMERIC NOT NULL DEFAULT 0.25
+)`
+
+const sourceContractsDDL = `CREATE TABLE IF NOT EXISTS drip_source_contracts (
+	id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	source_slug           TEXT NOT NULL,
+	version               INT  NOT NULL DEFAULT 1,
+	status                TEXT NOT NULL DEFAULT 'draft'
+		CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+	effective_at          TIMESTAMPTZ NOT NULL,
+	superseded_at         TIMESTAMPTZ,
+	created_by            TEXT NOT NULL DEFAULT '',
+	created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	approved_by           TEXT,
+	approved_at           TIMESTAMPTZ,
+	change_ledger_id      TEXT NOT NULL DEFAULT '',
+	notes                 TEXT NOT NULL DEFAULT '',
+	metadata              JSONB NOT NULL DEFAULT '{}'::jsonb,
+	token                 TEXT  NOT NULL DEFAULT '',
+	record_class          TEXT NOT NULL,
+	eligible_isps         TEXT[] NOT NULL,
+	max_daily_intake      INT,
+	arrival_cadence       TEXT NOT NULL DEFAULT 'continuous',
+	validated_on_arrival  BOOLEAN NOT NULL DEFAULT FALSE,
+	record_max_age_days   INT,
+	unit_acquisition_cost NUMERIC NOT NULL DEFAULT 0
+)`
+
+// newContractPG returns a pool pinned to a throwaway schema via a CONNECTION
+// parameter (not `SET search_path`, which would apply to one pooled connection
+// and leave the rest resolving names elsewhere).
+func newContractPG(t *testing.T) *sql.DB {
+	t.Helper()
+
+	admin, err := sql.Open("postgres", pgAdminDSN())
+	if err != nil {
+		t.Skipf("cannot open admin DSN: %v", err)
+	}
+	defer admin.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := admin.PingContext(ctx); err != nil {
+		t.Skipf("local postgres unreachable (%v) — set %s to run the dripsupply PG tests", err, pgAdminDSNEnv)
+	}
+	var exists bool
+	if err := admin.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)`, pgScratchDB).Scan(&exists); err != nil {
+		t.Skipf("cannot list databases: %v", err)
+	}
+	if !exists {
+		if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+pgScratchDB); err != nil &&
+			!strings.Contains(err.Error(), "already exists") {
+			t.Skipf("cannot create scratch database %s: %v", pgScratchDB, err)
+		}
+	}
+
+	schema := "ct" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+	bootstrap, err := sql.Open("postgres", pgScratchDSN(t))
+	if err != nil {
+		t.Skipf("cannot open scratch DSN: %v", err)
+	}
+	defer bootstrap.Close()
+	if err := bootstrap.PingContext(ctx); err != nil {
+		t.Skipf("scratch database unreachable: %v", err)
+	}
+	if _, err := bootstrap.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
+
+	dsn := pgScratchDSN(t)
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	db, err := sql.Open("postgres", dsn+sep+"search_path="+schema)
+	if err != nil {
+		t.Fatalf("open scratch: %v", err)
+	}
+	t.Cleanup(func() {
+		db.Close()
+		if clean, err := sql.Open("postgres", pgScratchDSN(t)); err == nil {
+			_, _ = clean.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+			clean.Close()
+		}
+	})
+
+	stmts := []string{domainContractsDDL, dispatchContractsDDL, inventoryContractsDDL, sourceContractsDDL}
+	// The indexes come from ActiveIndexDDL, so these tests also prove the DDL
+	// this package hands WP1 is valid and does what its name says.
+	for _, kind := range dripsupply.AllKinds() {
+		ddl, err := dripsupply.ActiveIndexDDL(kind)
+		if err != nil {
+			t.Fatalf("ActiveIndexDDL(%s): %v", kind, err)
+		}
+		stmts = append(stmts, ddl)
+	}
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("ddl failed: %v\n%s", err, stmt)
+		}
+	}
+	return db
+}
+
+// approve moves a draft to `approved` — the operator step between InsertDraft
+// and Schedule, which this package does not own.
+func approve(t *testing.T, db *sql.DB, id uuid.UUID) {
+	t.Helper()
+	if _, err := db.Exec(
+		`UPDATE drip_domain_contracts SET status='approved', approved_by='operator', approved_at=NOW() WHERE id=$1`, id); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
+// The whole lifecycle on real Postgres: draft -> approved -> Schedule (issues
+// the token) -> ActivateScheduled -> LoadActiveWithKey (verifies it).
+func TestPG_DomainContractRoundTripVerifies(t *testing.T) {
+	db := newContractPG(t)
+	ctx := context.Background()
+
+	denver := time.FixedZone("MDT", -6*3600)
+	day := time.Date(2026, 9, 4, 9, 0, 0, 0, denver)
+	effective := time.Date(2026, 9, 4, 0, 0, 0, 0, denver)
+
+	c := validDomain()
+	c.CreatedBy = "operator"
+	c.ChangeLedgerID = "chg-pg-1"
+	c.EffectiveAt = effective
+	c.HealthBand = dripsupply.HealthBandAmber
+	c.RampStage = "week 3 / step 4"
+	c.Notes = "operator ruling 2026-09-03: amber pending Microsoft recovery"
+	c.Metadata.Refs = contractmeta.Refs{OwnedDomainID: "historythinking.com"}
+
+	id, version, err := dripsupply.InsertDraft(ctx, db, c)
+	if err != nil {
+		t.Fatalf("InsertDraft: %v", err)
+	}
+	if version != 1 {
+		t.Fatalf("version = %d, want 1", version)
+	}
+
+	// The row really did land with the window we asked for.
+	var startTxt, endTxt, bandTxt string
+	if err := db.QueryRow(
+		`SELECT to_char(active_window_start,'HH24:MI'), to_char(active_window_end,'HH24:MI'), health_band
+		   FROM drip_domain_contracts WHERE id=$1`, id).Scan(&startTxt, &endTxt, &bandTxt); err != nil {
+		t.Fatalf("read back the draft: %v", err)
+	}
+	if startTxt != "01:00" || endTxt != "20:00" || bandTxt != "amber" {
+		t.Fatalf("draft stored %s/%s band=%s", startTxt, endTxt, bandTxt)
+	}
+
+	// THE REGRESSION: reading the row through the package must not blow up on
+	// the time columns. Before the fix LoadOne returned "0000-01-01T01:00:00Z"
+	// here and Validate rejected it.
+	loaded, err := dripsupply.LoadOne(ctx, db, dripsupply.KindDomain, c.SendingDomain, version)
+	if err != nil {
+		t.Fatalf("LoadOne: %v", err)
+	}
+	ld := loaded.(*dripsupply.DomainContract)
+	if ld.ActiveWindowStart != "01:00" || ld.ActiveWindowEnd != "20:00" {
+		t.Fatalf("LoadOne window = %q/%q, want 01:00/20:00 — the time columns are being formatted, not rendered",
+			ld.ActiveWindowStart, ld.ActiveWindowEnd)
+	}
+	if err := ld.Validate(); err != nil {
+		t.Fatalf("a row this package just wrote fails its own validation: %v", err)
+	}
+	if _, err := dripsupply.WindowOf(ld); err != nil {
+		t.Fatalf("WindowOf on a real row: %v", err)
+	}
+
+	approve(t, db, id)
+
+	tok, err := dripsupply.Schedule(ctx, db, dripsupply.KindDomain, c.SendingDomain, version, testKey, issuedAt)
+	if err != nil {
+		t.Fatalf("Schedule (the HTTP 500 at approve): %v", err)
+	}
+	if !tok.Issued() {
+		t.Fatal("Schedule returned an unissued token")
+	}
+
+	// The token column and metadata.token.value both landed.
+	var colTok, metaTok string
+	if err := db.QueryRow(
+		`SELECT token, metadata->'token'->>'value' FROM drip_domain_contracts WHERE id=$1`, id).Scan(&colTok, &metaTok); err != nil {
+		t.Fatalf("read back the token: %v", err)
+	}
+	if colTok != tok.Value || metaTok != tok.Value {
+		t.Fatalf("token col=%q meta=%q, want %q", colTok, metaTok, tok.Value)
+	}
+
+	res, err := dripsupply.ActivateScheduled(ctx, db, effective)
+	if err != nil {
+		t.Fatalf("ActivateScheduled: %v", err)
+	}
+	if res.Activated[dripsupply.KindDomain] != 1 {
+		t.Fatalf("activated %d domain contracts, want 1", res.Activated[dripsupply.KindDomain])
+	}
+
+	set, err := dripsupply.LoadActiveWithKey(ctx, db, day, testKey)
+	if err != nil {
+		t.Fatalf("LoadActiveWithKey after activation: %v", err)
+	}
+	got, err := set.Domain(c.SendingDomain)
+	if err != nil {
+		t.Fatalf("Domain: %v", err)
+	}
+	if got.ActiveWindowStart != "01:00" || got.ActiveWindowEnd != "20:00" {
+		t.Fatalf("active window = %q/%q", got.ActiveWindowStart, got.ActiveWindowEnd)
+	}
+	if got.HealthBand != dripsupply.HealthBandAmber || got.RampStage != "week 3 / step 4" {
+		t.Fatalf("band/stage = %q/%q", got.HealthBand, got.RampStage)
+	}
+	if got.Metadata.Refs.OwnedDomainID != "historythinking.com" {
+		t.Fatalf("refs lost through JSONB: %+v", got.Metadata.Refs)
+	}
+	if got.DailyMaxByISP["yahoo"] != 1000 {
+		t.Fatalf("daily_max_by_isp lost through JSONB: %v", got.DailyMaxByISP)
+	}
+	if err := dripsupply.VerifyContract(testKey, got); err != nil {
+		t.Fatalf("the token this package issued does not verify after the round trip: %v", err)
+	}
+}
+
+// Negative controls on the same real schema: an UPDATE that changes the body
+// without re-issuing must make LoadActive fail closed.
+func TestPG_HandEditedRowFailsClosed(t *testing.T) {
+	cases := []struct {
+		name   string
+		update string
+		args   []any
+	}{
+		{"window widened", `UPDATE drip_domain_contracts SET active_window_start='00:00' WHERE id=$1`, nil},
+		{"band flipped", `UPDATE drip_domain_contracts SET health_band='green' WHERE id=$1`, nil},
+		{"gmail opened", `UPDATE drip_domain_contracts SET daily_max_by_isp = jsonb_set(daily_max_by_isp,'{gmail}','400') WHERE id=$1`, nil},
+		{"ramp stage edited", `UPDATE drip_domain_contracts SET ramp_stage='hand edited' WHERE id=$1`, nil},
+		{"token column blanked", `UPDATE drip_domain_contracts SET token='' WHERE id=$1`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newContractPG(t)
+			ctx := context.Background()
+			denver := time.FixedZone("MDT", -6*3600)
+			day := time.Date(2026, 9, 4, 9, 0, 0, 0, denver)
+			effective := time.Date(2026, 9, 4, 0, 0, 0, 0, denver)
+
+			c := validDomain()
+			c.CreatedBy = "operator"
+			c.ChangeLedgerID = "chg-pg-2"
+			c.EffectiveAt = effective
+			c.HealthBand = dripsupply.HealthBandAmber
+			c.Notes = "operator ruling 2026-09-03"
+
+			id, version, err := dripsupply.InsertDraft(ctx, db, c)
+			if err != nil {
+				t.Fatalf("InsertDraft: %v", err)
+			}
+			approve(t, db, id)
+			if _, err := dripsupply.Schedule(ctx, db, dripsupply.KindDomain, c.SendingDomain, version, testKey, issuedAt); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+			if _, err := dripsupply.ActivateScheduled(ctx, db, effective); err != nil {
+				t.Fatalf("ActivateScheduled: %v", err)
+			}
+
+			// Positive control FIRST: it verifies before the edit.
+			if _, err := dripsupply.LoadActiveWithKey(ctx, db, day, testKey); err != nil {
+				t.Fatalf("the contract must verify before the hand edit: %v", err)
+			}
+
+			args := append([]any{id}, tc.args...)
+			if _, err := db.ExecContext(ctx, tc.update, args...); err != nil {
+				t.Fatalf("hand edit: %v", err)
+			}
+
+			set, err := dripsupply.LoadActiveWithKey(ctx, db, day, testKey)
+			if set != nil {
+				t.Fatal("a hand-edited contract was honoured")
+			}
+			var mm *dripsupply.ErrTokenMismatch
+			if !errors.As(err, &mm) {
+				t.Fatalf("expected *ErrTokenMismatch, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// The partial unique index really does make two actives impossible on real PG,
+// and ActivateScheduled's supersede-then-promote order never trips it.
+func TestPG_ActivationNeverHoldsTwoActives(t *testing.T) {
+	db := newContractPG(t)
+	ctx := context.Background()
+	denver := time.FixedZone("MDT", -6*3600)
+	day1 := time.Date(2026, 9, 4, 0, 0, 0, 0, denver)
+	day2 := time.Date(2026, 9, 5, 0, 0, 0, 0, denver)
+
+	mk := func(effective time.Time, band, notes string) uuid.UUID {
+		c := validDomain()
+		c.CreatedBy = "operator"
+		c.ChangeLedgerID = "chg-pg-3"
+		c.EffectiveAt = effective
+		c.HealthBand = band
+		c.Notes = notes
+		id, version, err := dripsupply.InsertDraft(ctx, db, c)
+		if err != nil {
+			t.Fatalf("InsertDraft: %v", err)
+		}
+		approve(t, db, id)
+		if _, err := dripsupply.Schedule(ctx, db, dripsupply.KindDomain, c.SendingDomain, version, testKey, issuedAt); err != nil {
+			t.Fatalf("Schedule v%d: %v", version, err)
+		}
+		return id
+	}
+
+	mk(day1, dripsupply.HealthBandGreen, "")
+	if _, err := dripsupply.ActivateScheduled(ctx, db, day1); err != nil {
+		t.Fatalf("activate day1: %v", err)
+	}
+	mk(day2, dripsupply.HealthBandAmber, "operator ruling 2026-09-03: stepping down")
+
+	res, err := dripsupply.ActivateScheduled(ctx, db, day2)
+	if err != nil {
+		t.Fatalf("activate day2 (supersede-then-promote must not trip the index): %v", err)
+	}
+	if res.Activated[dripsupply.KindDomain] != 1 || res.Superseded[dripsupply.KindDomain] != 1 {
+		t.Fatalf("day2 activated=%d superseded=%d, want 1/1", res.Activated[dripsupply.KindDomain], res.Superseded[dripsupply.KindDomain])
+	}
+
+	var actives int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM drip_domain_contracts WHERE status='active'`).Scan(&actives); err != nil {
+		t.Fatalf("count actives: %v", err)
+	}
+	if actives != 1 {
+		t.Fatalf("%d active rows for one subject", actives)
+	}
+
+	// The NEW version is the one in force, and its token verifies.
+	set, err := dripsupply.LoadActiveWithKey(ctx, db, day2, testKey)
+	if err != nil {
+		t.Fatalf("LoadActiveWithKey: %v", err)
+	}
+	got, _ := set.Domain(validDomain().SendingDomain)
+	if got.Version != 2 || got.HealthBand != dripsupply.HealthBandAmber {
+		t.Fatalf("in force: v%d band=%s, want v2 amber", got.Version, got.HealthBand)
+	}
+
+	// Negative control: the index is genuinely there and genuinely refuses.
+	_, err = db.ExecContext(ctx, `UPDATE drip_domain_contracts SET status='active' WHERE version=1`)
+	if err == nil {
+		t.Fatal("a second active row was accepted — the partial unique index is missing")
+	}
+	if !strings.Contains(err.Error(), dripsupply.ActiveIndexDomain) {
+		t.Fatalf("refused by something other than %s: %v", dripsupply.ActiveIndexDomain, err)
 	}
 }

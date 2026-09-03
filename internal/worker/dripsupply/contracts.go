@@ -1250,8 +1250,22 @@ func sortedMapKeys[V any](m map[string]V) []string {
 	return out
 }
 
+// active_window_start/end are `time without time zone`. lib/pq decodes that
+// OID into a time.Time, and database/sql then formats it RFC3339 when the
+// destination is a string — "0000-01-01T01:00:00Z". parseClock rejects that
+// ("hour out of range"), so Validate failed at Schedule, no domain contract
+// could ever be issued a token, and LoadActive fail-closed the whole domain
+// side. WindowOf (bucket.go) parses the same strings and broke with it.
+//
+// to_char renders the value as TEXT in the exact canonical HH:MM form, so the
+// round trip is driver-independent: what InsertDraft writes is what Schedule
+// signs is what LoadActive verifies. Found by WP11 on a real server + real
+// Postgres; reproduced locally 2026-09-03 (SELECT '01:00'::time into a string
+// yields "0000-01-01T01:00:00Z", into to_char yields "01:00").
 const domainSelectBody = `SELECT ` + metaCols + `, sending_domain, brand_code, daily_max_by_isp,
-       active_window_start, active_window_end, interval_minutes, max_burst_intervals, ramp_source,
+       to_char(active_window_start, 'HH24:MI') AS active_window_start,
+       to_char(active_window_end, 'HH24:MI') AS active_window_end,
+       interval_minutes, max_burst_intervals, ramp_source,
        health_band, ramp_stage
   FROM drip_domain_contracts`
 
@@ -1260,19 +1274,25 @@ const domainSelectOne = domainSelectBody + ` WHERE sending_domain = $1 AND versi
 
 func scanDomain(rows *sql.Rows) (*DomainContract, error) {
 	var (
-		ms   metaScan
-		c    DomainContract
-		raw  []byte
-		ramp sql.NullString
+		ms    metaScan
+		c     DomainContract
+		raw   []byte
+		ramp  sql.NullString
+		start sql.NullString
+		end   sql.NullString
 	)
+	// start/end arrive as to_char TEXT (see domainSelectBody), never as a time
+	// value; NullString so a NULL column cannot fail the scan.
 	dests := append(ms.dests(),
 		&c.SendingDomain, &c.BrandCode, &raw,
-		&c.ActiveWindowStart, &c.ActiveWindowEnd, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp,
+		&start, &end, &c.IntervalMinutes, &c.MaxBurstIntervals, &ramp,
 		&c.HealthBand, &c.RampStage)
 	if err := rows.Scan(dests...); err != nil {
 		return nil, fmt.Errorf("dripsupply: scan domain contract: %w", err)
 	}
 	ms.into(&c.Meta)
+	c.ActiveWindowStart = normClock(start.String)
+	c.ActiveWindowEnd = normClock(end.String)
 	c.RampSource = ramp.String
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &c.DailyMaxByISP); err != nil {
