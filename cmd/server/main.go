@@ -2395,7 +2395,62 @@ var criticalSendPathDDL = []struct {
 	// ADD COLUMN ... DEFAULT is a catalog-only change, no table rewrite.
 	{"add_waves_produced_recipients", `ALTER TABLE mailing_campaign_waves ADD COLUMN IF NOT EXISTS produced_recipients INTEGER NOT NULL DEFAULT 0`},
 	{"add_waves_landed_recipients", `ALTER TABLE mailing_campaign_waves ADD COLUMN IF NOT EXISTS landed_recipients INTEGER NOT NULL DEFAULT 0`},
+	// ---- Drip Supply Chain reservation binding (REQ-118 §1.3, 2026-09-03) ----
+	// partner_clean_queue is the drip send path's claim table: nothing may
+	// move a row to status='claimed' without a capacity allocation
+	// (non-negotiable 1). The transition service writes both columns on every
+	// claim UNCONDITIONALLY, so they must exist before the drip orchestrator's
+	// first tick — the 2026-06-10 schema-before-binary rule, and the same
+	// failure MODE as the click-drip incident above: a 5s-slice ALTER that
+	// loses a lock race against the claim traffic logs "skipped" and the
+	// binary comes up referencing a column that is not there.
+	//
+	// Both are NULLABLE with NO DEFAULT, which on PG 11+ is a catalog-only
+	// change: no rewrite and no scan of the 13.7M-row / 14 GB queue, so the
+	// statement is O(1) regardless of table size. What it still needs is the
+	// brief ACCESS EXCLUSIVE lock against constant claim/UPDATE traffic —
+	// which is exactly why it is here (8s lock_timeout, 20s statement_timeout,
+	// 3 attempts) and not in the 5s slice.
+	{"req118_pcq_capacity_allocation_id", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS capacity_allocation_id UUID`},
+	{"req118_pcq_supply_reservation_id", `ALTER TABLE partner_clean_queue ADD COLUMN IF NOT EXISTS supply_reservation_id UUID`},
+	// The enforcement. NOT VALID so the ~1.41M legacy claimed rows are not
+	// scanned at boot: PostgreSQL applies a NOT VALID CHECK to new and
+	// updated rows immediately but skips the verification pass over existing
+	// ones, so this is catalog-only too — the pre-cutover claimed_at escape
+	// hatch is what makes the legacy rows legal rather than grandfathered by
+	// a missing check. VALIDATE CONSTRAINT is an operator step after the §7
+	// step-5 inventory migration, never a boot step.
+	// ADD CONSTRAINT has no IF NOT EXISTS, so it is wrapped in the
+	// pg_constraint DO guard (the widen_tracking_bounce_type idiom): every
+	// post-application boot is a pure catalog read and no lock is re-taken.
+	// The fence date is a Go constant (pcqAllocationFence) that ships FAR IN
+	// THE FUTURE: a NOT VALID CHECK still applies to every NEW row, so a fence
+	// in the past would reject the legacy claim path the moment this binary
+	// boots with DRIP_SUPPLY_CHAIN_MODE=off. The §7 step-3 canary deploy
+	// moves the constant to the cutover day; the guard below detects a
+	// definition that no longer carries the current fence and re-adds it
+	// (drop + add NOT VALID are both catalog-only).
+	{"req118_pcq_claim_requires_allocation", `DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pcq_claim_requires_allocation')
+		   AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'pcq_claim_requires_allocation')) NOT LIKE '%` + pcqAllocationFence + `%' THEN
+			ALTER TABLE partner_clean_queue DROP CONSTRAINT pcq_claim_requires_allocation;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pcq_claim_requires_allocation') THEN
+			ALTER TABLE partner_clean_queue ADD CONSTRAINT pcq_claim_requires_allocation
+				CHECK (status <> 'claimed' OR capacity_allocation_id IS NOT NULL OR claimed_at < '` + pcqAllocationFence + `') NOT VALID;
+		END IF;
+	END $$`},
 }
+
+// pcqAllocationFence is the timestamptz literal (UTC) from which every
+// partner_clean_queue row entering status='claimed' must carry a
+// capacity_allocation_id (REQ-118 §1.3). It ships in the far future so the
+// legacy claim path keeps working while DRIP_SUPPLY_CHAIN_MODE=off; the §7
+// step-3 canary deploy sets it to the cutover day's Denver midnight expressed
+// in UTC (e.g. '2026-09-10 06:00:00+00'). Changing it here is the ONLY way the
+// constraint moves; the DO guard above re-creates the constraint when the
+// stored definition no longer contains this literal.
+const pcqAllocationFence = "2099-01-01 00:00:00+00"
 
 // ensureSendPathSchema applies criticalSendPathDDL synchronously with bounded
 // retries. Returns true when every statement is verified applied. On false,
@@ -2703,6 +2758,16 @@ var concurrentIndexSpecs = []struct {
 	{"idx_subscribers_audience_scan", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_audience_scan ON mailing_subscribers (list_id, status, created_at, id) WHERE status IN ('active','confirmed')`},
 	// GIN over an 18.4M-row JSONB column — the most expensive build in the set.
 	{"idx_subscribers_source_metadata_gin", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscribers_source_metadata_gin ON mailing_subscribers USING gin (source_metadata)`},
+
+	// ---- Drip Supply Chain reservation binding (REQ-118 §1.3, 2026-09-03) ----
+	// Reverse lookup allocation -> claimed rows: the transition service's
+	// commit/release path and the nightly "reserved older than 45 min = 0"
+	// invariant (§8.3) both probe partner_clean_queue BY allocation. Partial
+	// on the bound rows only, so the 13.7M-row unbound majority costs
+	// nothing and the index stays small. Lives here, never the 5s slice:
+	// even a partial build reads the full 14 GB queue heap, and a
+	// lock-taking CREATE INDEX on this table is the 2026-08-20 barricade.
+	{"idx_pcq_alloc", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_alloc ON partner_clean_queue (capacity_allocation_id) WHERE capacity_allocation_id IS NOT NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2869,6 +2934,317 @@ BEGIN
               'sbcglobal','cox','verizon','protonmail','zoho','other')));
     END IF;
 END $mig$;`
+
+// dripSupplyMigrations are the REQ-118 Drip Supply Chain schema entries
+// (docs/DRIP_SUPPLY_CHAIN_DESIGN.md §1), appended to the 5s-budget slice in
+// runStartupMigrations. They live at package level, rather than inline in
+// that slice's literal, for the same reason dobWidenISPVocabOtherSQL and
+// observatoryISPVocabSQL do: a unit test parses the entries themselves
+// (TestDripSupplyMigrationsAreIdempotentInForm) to pin that every statement
+// is idempotent and singly-classifiable, with no database in the loop.
+//
+// ONE STATEMENT PER ENTRY, ALWAYS: migrationSkipProbe classifies an entry by
+// its LEADING keywords (migration_skip.go:41), so a single string holding
+// CREATE TABLE then CREATE INDEX is probed as CREATE TABLE — and once the
+// table exists the probe skips the whole entry, so the index would silently
+// never land. Every index and every seed is therefore its own entry.
+//
+// All of this is NEW-TABLE DDL plus one five-row seed: no existing table is
+// touched here (the two partner_clean_queue columns and their constraint are
+// send-path-adjacent and live in criticalSendPathDDL; idx_pcq_alloc scans the
+// 13.7M-row queue heap and lives in concurrentIndexSpecs). CREATE TABLE on a
+// table that does not exist takes no lock anything else can contend for and
+// is O(1) catalog work, so every entry here is far inside the 5s budget on a
+// prod-sized database, and every post-application boot is a to_regclass /
+// pg_class catalog read via the skip probe.
+//
+// Ships DARK: nothing reads or writes these tables until the WP2+ services
+// land behind DRIP_SUPPLY_CHAIN_MODE (§7 cutover, default off).
+var dripSupplyMigrations = []struct {
+	name string
+	sql  string
+}{
+	// ── §1.1 Static contracts (four tables, one shape) ─────────────────
+	// Shared columns: id/version/status/effective_at/superseded_at/
+	// created_by/created_at/approved_by/approved_at/change_ledger_id/notes.
+	// effective_at carries NO default on purpose — §1.1's rule is "missing
+	// is a save error, never a default"; the contract writer sets the
+	// Denver-midnight boundary explicitly (§7 step 1).
+	//
+	// NOT org-scoped, matching §1's rule "organization_id is omitted where
+	// the sibling table omits it": verified 2026-09-03 against prod —
+	// neither partner_clean_queue nor partner_datasets carries an
+	// organization_id column, and lane/source subjects are their keys.
+	{"req118_create_drip_domain_contracts", `CREATE TABLE IF NOT EXISTS drip_domain_contracts (
+		id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		sending_domain      TEXT NOT NULL,                       -- subject, e.g. 'em.discountblog.com'
+		brand_code          TEXT NOT NULL DEFAULT '',
+		version             INT  NOT NULL DEFAULT 1,
+		status              TEXT NOT NULL DEFAULT 'draft'
+			CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+		effective_at        TIMESTAMPTZ NOT NULL,
+		superseded_at       TIMESTAMPTZ,
+		created_by          TEXT NOT NULL DEFAULT '',
+		created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		approved_by         TEXT,
+		approved_at         TIMESTAMPTZ,
+		change_ledger_id    TEXT NOT NULL DEFAULT '',
+		notes               TEXT NOT NULL DEFAULT '',
+		daily_max_by_isp    JSONB NOT NULL,                      -- every ISP class present; validated in Go (WP2)
+		active_window_start TIME NOT NULL DEFAULT '01:00',
+		active_window_end   TIME NOT NULL DEFAULT '20:00',
+		interval_minutes    INT  NOT NULL DEFAULT 15,
+		max_burst_intervals INT  NOT NULL DEFAULT 2,
+		ramp_source         TEXT                                 -- 'sending_domain_cards' | 'operator'
+	)`},
+	{"req118_create_drip_dispatch_contracts", `CREATE TABLE IF NOT EXISTS drip_dispatch_contracts (
+		id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		lane                   TEXT NOT NULL,                    -- subject = partner_datasets.vertical
+		version                INT  NOT NULL DEFAULT 1,
+		status                 TEXT NOT NULL DEFAULT 'draft'
+			CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+		effective_at           TIMESTAMPTZ NOT NULL,
+		superseded_at          TIMESTAMPTZ,
+		created_by             TEXT NOT NULL DEFAULT '',
+		created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		approved_by            TEXT,
+		approved_at            TIMESTAMPTZ,
+		change_ledger_id       TEXT NOT NULL DEFAULT '',
+		notes                  TEXT NOT NULL DEFAULT '',
+		operator_priority_tier INT  NOT NULL DEFAULT 2,          -- 1 first, 3 last, 9 test/exploration
+		desired_daily_intros   JSONB NOT NULL,                   -- absent ISP = 0 (not wanted)
+		demand_mode            TEXT NOT NULL DEFAULT 'target'
+			CHECK (demand_mode IN ('target','consume_available')),
+		daily_ceiling          INT,
+		allowed_domains        TEXT[] NOT NULL,
+		isp_exclusions         TEXT[] NOT NULL DEFAULT '{}',
+		ladder_touches         INT  NOT NULL DEFAULT 5,
+		ladder_gap_hours       INT  NOT NULL DEFAULT 24,
+		followups_committed    BOOLEAN NOT NULL DEFAULT TRUE,
+		max_intro_share        NUMERIC NOT NULL DEFAULT 0.40,
+		exploration_share      NUMERIC NOT NULL DEFAULT 0
+	)`},
+	{"req118_create_drip_inventory_contracts", `CREATE TABLE IF NOT EXISTS drip_inventory_contracts (
+		id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		lane                   TEXT NOT NULL,                    -- subject; NO sending target (replenishes to awards)
+		version                INT  NOT NULL DEFAULT 1,
+		status                 TEXT NOT NULL DEFAULT 'draft'
+			CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+		effective_at           TIMESTAMPTZ NOT NULL,
+		superseded_at          TIMESTAMPTZ,
+		created_by             TEXT NOT NULL DEFAULT '',
+		created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		approved_by            TEXT,
+		approved_at            TIMESTAMPTZ,
+		change_ledger_id       TEXT NOT NULL DEFAULT '',
+		notes                  TEXT NOT NULL DEFAULT '',
+		accepted_sources       TEXT[] NOT NULL,                  -- partner_datasets.slug values
+		verdict_valid_days     INT  NOT NULL DEFAULT 60,
+		eo_enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+		max_daily_eo_spend_usd NUMERIC NOT NULL DEFAULT 50,
+		min_eo_order           INT  NOT NULL DEFAULT 1000,
+		min_coverage_hours     INT  NOT NULL DEFAULT 8,
+		target_coverage_hours  INT  NOT NULL DEFAULT 16,
+		max_coverage_hours     INT  NOT NULL DEFAULT 36,
+		remail_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+		remail_after_days      INT  NOT NULL DEFAULT 7,
+		remail_mode            TEXT NOT NULL DEFAULT 'full_ladder'
+			CHECK (remail_mode IN ('full_ladder','single_touch')),
+		max_remail_share       NUMERIC NOT NULL DEFAULT 0.25
+	)`},
+	{"req118_create_drip_source_contracts", `CREATE TABLE IF NOT EXISTS drip_source_contracts (
+		id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		source_slug           TEXT NOT NULL,                     -- subject = partner_datasets.slug
+		version               INT  NOT NULL DEFAULT 1,
+		status                TEXT NOT NULL DEFAULT 'draft'
+			CHECK (status IN ('draft','approved','scheduled','active','superseded')),
+		effective_at          TIMESTAMPTZ NOT NULL,
+		superseded_at         TIMESTAMPTZ,
+		created_by            TEXT NOT NULL DEFAULT '',
+		created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		approved_by           TEXT,
+		approved_at           TIMESTAMPTZ,
+		change_ledger_id      TEXT NOT NULL DEFAULT '',
+		notes                 TEXT NOT NULL DEFAULT '',
+		record_class          TEXT NOT NULL,                     -- 'auto_insurance' | 'mortgage' | ...
+		eligible_isps         TEXT[] NOT NULL,
+		max_daily_intake      INT,
+		arrival_cadence       TEXT NOT NULL DEFAULT 'continuous',
+		validated_on_arrival  BOOLEAN NOT NULL DEFAULT FALSE,
+		record_max_age_days   INT,
+		unit_acquisition_cost NUMERIC NOT NULL DEFAULT 0
+	)`},
+	// "Exactly one row per subject may be active at a time" (§1.1). A PARTIAL
+	// UNIQUE index is the enforcement — superseded/draft history stays.
+	{"req118_uq_drip_domain_contracts_active", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_domain_contracts_active ON drip_domain_contracts (sending_domain) WHERE status = 'active'`},
+	{"req118_uq_drip_dispatch_contracts_active", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_dispatch_contracts_active ON drip_dispatch_contracts (lane) WHERE status = 'active'`},
+	{"req118_uq_drip_inventory_contracts_active", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_inventory_contracts_active ON drip_inventory_contracts (lane) WHERE status = 'active'`},
+	{"req118_uq_drip_source_contracts_active", `CREATE UNIQUE INDEX IF NOT EXISTS uq_drip_source_contracts_active ON drip_source_contracts (source_slug) WHERE status = 'active'`},
+
+	// ── §1.2 Dynamic records ───────────────────────────────────────────
+	// The capacity ledger is APPEND-ONLY and counts MESSAGES, one row per
+	// wave-level allocation — never per subscriber. idempotency_key is the
+	// UNIQUE that makes acceptance test 2 ("a duplicate key returns the
+	// existing allocation and consumes nothing") a database fact rather
+	// than an application convention.
+	{"req118_create_drip_capacity_ledger", `CREATE TABLE IF NOT EXISTS drip_capacity_ledger (
+		allocation_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		idempotency_key           TEXT NOT NULL UNIQUE,          -- domain|isp|lane|wave_key|domain_ver|dispatch_ver
+		day                       DATE NOT NULL,                 -- Denver
+		tick                      TIMESTAMPTZ NOT NULL,
+		sending_domain            TEXT NOT NULL,
+		isp                       TEXT NOT NULL,
+		lane                      TEXT NOT NULL,
+		touch_class               TEXT NOT NULL
+			CHECK (touch_class IN ('intro','followup','remail')),
+		domain_contract_version   INT  NOT NULL,
+		dispatch_contract_version INT  NOT NULL,
+		requested                 INT  NOT NULL,
+		reserved                  INT  NOT NULL,
+		committed                 INT  NOT NULL DEFAULT 0,
+		released                  INT  NOT NULL DEFAULT 0,
+		status                    TEXT NOT NULL
+			CHECK (status IN ('reserved','committed','released','expired')),
+		campaign_id               UUID,
+		binding_reason            TEXT NOT NULL,                 -- domain_tokens|lane_demand|supply|governor:<name>|plan_share
+		domain_balance_after      INT  NOT NULL,
+		lane_unfilled_after       INT  NOT NULL,
+		created_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`},
+	{"req118_idx_dcl_day_domain_isp", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_day_domain_isp ON drip_capacity_ledger (day, sending_domain, isp)`},
+	{"req118_idx_dcl_day_lane_isp", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_day_lane_isp ON drip_capacity_ledger (day, lane, isp)`},
+	{"req118_idx_dcl_campaign", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_campaign ON drip_capacity_ledger (campaign_id)`},
+	{"req118_idx_dcl_reserved", `CREATE INDEX IF NOT EXISTS idx_drip_capacity_ledger_reserved ON drip_capacity_ledger (status) WHERE status = 'reserved'`},
+	// The lockable running balance. This table exists for exactly one
+	// reason (§1.2): so reserve() can SELECT … FOR UPDATE ONE row. Lock
+	// order is domain balance then lane balance, always (§1.2).
+	{"req118_create_drip_capacity_balance", `CREATE TABLE IF NOT EXISTS drip_capacity_balance (
+		day              DATE NOT NULL,
+		sending_domain   TEXT NOT NULL,
+		isp              TEXT NOT NULL,
+		contracted       INT  NOT NULL DEFAULT 0,   -- from the active domain contract
+		effective        INT  NOT NULL DEFAULT 0,   -- min(contracted, governors), recomputed each tick
+		tokens           NUMERIC NOT NULL DEFAULT 0,
+		reserved         INT  NOT NULL DEFAULT 0,
+		committed        INT  NOT NULL DEFAULT 0,
+		released         INT  NOT NULL DEFAULT 0,
+		last_refill_tick TIMESTAMPTZ,
+		PRIMARY KEY (day, sending_domain, isp)
+	)`},
+	{"req118_create_drip_lane_balance", `CREATE TABLE IF NOT EXISTS drip_lane_balance (
+		day                 DATE NOT NULL,
+		lane                TEXT NOT NULL,
+		isp                 TEXT NOT NULL,
+		desired             INT NOT NULL DEFAULT 0,
+		awarded_firm        INT NOT NULL DEFAULT 0,
+		awarded_provisional INT NOT NULL DEFAULT 0,
+		reserved            INT NOT NULL DEFAULT 0,
+		committed           INT NOT NULL DEFAULT 0,
+		unfilled            INT NOT NULL DEFAULT 0,
+		PRIMARY KEY (day, lane, isp)
+	)`},
+	// Append-only, batch-grained, counts RECORDS (never messages — the two
+	// ledgers are in different units and must never be added together).
+	{"req118_create_drip_supply_ledger", `CREATE TABLE IF NOT EXISTS drip_supply_ledger (
+		entry_id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		occurred_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		lane                       TEXT NOT NULL,
+		source_slug                TEXT NOT NULL,
+		isp                        TEXT NOT NULL,
+		event                      TEXT NOT NULL CHECK (event IN (
+			'RECEIVED','PRECHECK_PASSED','SUPPRESSED','INTERNAL_INVALID',
+			'VALIDATION_ORDERED','VALIDATION_VALID','VALIDATION_INVALID','VALIDATION_NO_VERDICT',
+			'MAILABLE','REMAIL_ELIGIBLE','RESERVED_FOR_INTRO','CONSUMED','EXPIRED','RELEASED')),
+		quantity                   INT NOT NULL,
+		unit_cost                  NUMERIC NOT NULL DEFAULT 0,
+		total_cost                 NUMERIC NOT NULL DEFAULT 0,
+		batch_id                   UUID,                          -- partner_inbound_batches.id or an EO order id
+		reservation_id             UUID,
+		reason                     TEXT,
+		source_contract_version    INT,
+		inventory_contract_version INT
+	)`},
+	// The planner's frozen output, one row per day×lane×ISP×domain.
+	{"req118_create_drip_daily_plan", `CREATE TABLE IF NOT EXISTS drip_daily_plan (
+		day                 DATE NOT NULL,
+		lane                TEXT NOT NULL,
+		isp                 TEXT NOT NULL,
+		sending_domain      TEXT NOT NULL,
+		award_firm          INT NOT NULL DEFAULT 0,
+		award_provisional   INT NOT NULL DEFAULT 0,
+		followups_reserved  INT NOT NULL DEFAULT 0,
+		plan_share          NUMERIC NOT NULL DEFAULT 0,
+		rank                INT NOT NULL DEFAULT 0,
+		rank_reason         TEXT NOT NULL DEFAULT '',
+		frozen_at           TIMESTAMPTZ,
+		PRIMARY KEY (day, lane, isp, sending_domain)
+	)`},
+	// "Nothing is silent" (§1.2 / non-negotiable 2): one row per
+	// tick×lane×pass, for EVERY lane, on EVERY tick. The grain is the
+	// primary key so a retried tick updates its row instead of doubling it.
+	{"req118_create_drip_tick_outcomes", `CREATE TABLE IF NOT EXISTS drip_tick_outcomes (
+		tick        TIMESTAMPTZ NOT NULL,
+		lane        TEXT NOT NULL,
+		pass        TEXT NOT NULL,
+		outcome     TEXT NOT NULL CHECK (outcome IN ('fired','skipped','zero','failed')),
+		reason      TEXT NOT NULL DEFAULT '',
+		caps_seen   JSONB NOT NULL DEFAULT '{}'::jsonb,
+		claimed     INT NOT NULL DEFAULT 0,
+		campaign_id UUID,
+		created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (tick, lane, pass)
+	)`},
+	// Audited operator entries for lanes whose revenue lives outside
+	// Everflow. revision_of points at the row this one supersedes; entries
+	// are never edited in place, so the audit trail survives.
+	{"req118_create_drip_manual_revenue", `CREATE TABLE IF NOT EXISTS drip_manual_revenue (
+		id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		lane               TEXT NOT NULL,
+		revenue_date       DATE NOT NULL,
+		attribution_start  DATE NOT NULL,
+		attribution_end    DATE NOT NULL,
+		amount             NUMERIC NOT NULL,
+		source             TEXT NOT NULL DEFAULT '',
+		reference          TEXT NOT NULL DEFAULT '',
+		entered_by         TEXT NOT NULL DEFAULT '',
+		entered_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		revision_of        UUID
+	)`},
+	{"req118_create_drip_cost_rates", `CREATE TABLE IF NOT EXISTS drip_cost_rates (
+		key        TEXT PRIMARY KEY,
+		value      NUMERIC,                                       -- NULL = not yet allocated (infra_monthly_usd)
+		unit       TEXT NOT NULL DEFAULT '',
+		updated_by TEXT NOT NULL DEFAULT '',
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`},
+	// SEPARATE ENTRY from the CREATE above on purpose (the seed_gmail_bans
+	// precedent): migrationSkipProbe classifies by leading keyword, so a
+	// combined CREATE+INSERT is probed as a CREATE and the seed would
+	// silently never land once the table exists. INSERT … WHERE NOT EXISTS,
+	// never upsert: an operator-corrected rate must never be reverted by a
+	// boot. 5 rows, O(1), far inside the 5s budget.
+	{"req118_seed_drip_cost_rates", `INSERT INTO drip_cost_rates (key, value, unit, updated_by)
+		SELECT s.key, s.value, s.unit, s.updated_by FROM (VALUES
+			('eo_per_verdict',      0.000244::numeric, 'usd_per_verdict', 'REQ-118'),
+			('eo_list_per_verdict', 0.0006::numeric,   'usd_per_verdict', 'REQ-118'),
+			('ses_per_message',     0.0001::numeric,   'usd_per_message', 'REQ-118'),
+			('pmta_per_message',    0::numeric,        'usd_per_message', 'REQ-118'),
+			('infra_monthly_usd',   NULL::numeric,     'usd_per_month',   'REQ-118')
+		) AS s(key, value, unit, updated_by)
+		WHERE NOT EXISTS (SELECT 1 FROM drip_cost_rates d WHERE d.key = s.key)`},
+
+	// ── §7 step 2 shadow twins ─────────────────────────────────────────
+	// MODE=shadow computes plans and reservations into these instead of the
+	// live ledger (no locks on partner_clean_queue) for 3 operating days.
+	// LIKE … INCLUDING ALL rather than a retyped body: "same columns" is
+	// then a database guarantee, not a copy-paste convention that drifts
+	// the first time a live column is added. Dropped 30 days after cutover
+	// (§7 step 7). Must stay AFTER their base tables in this slice.
+	{"req118_create_drip_capacity_ledger_shadow", `CREATE TABLE IF NOT EXISTS drip_capacity_ledger_shadow (LIKE drip_capacity_ledger INCLUDING ALL)`},
+	{"req118_create_drip_daily_plan_shadow", `CREATE TABLE IF NOT EXISTS drip_daily_plan_shadow (LIKE drip_daily_plan INCLUDING ALL)`},
+	{"req118_create_drip_supply_ledger_shadow", `CREATE TABLE IF NOT EXISTS drip_supply_ledger_shadow (LIKE drip_supply_ledger INCLUDING ALL)`},
+}
 
 func runStartupMigrations(db *sql.DB) {
 	const migrationLockID = 8675309 // arbitrary but stable
@@ -10760,6 +11136,12 @@ END $$`},
 			FROM unnest(ARRAY['wf','rb','rr','tt','cp','lp','yi','ci']) AS code
 			ON CONFLICT (organization_id, brand_code, isp) DO NOTHING`},
 	}
+
+	// REQ-118 Drip Supply Chain schema (§1). Appended rather than inlined so
+	// the entries stay a package-level value a unit test can parse without a
+	// database; ordering is unchanged (they run last, exactly as if they had
+	// been typed at the end of the literal above).
+	migrations = append(migrations, dripSupplyMigrations...)
 
 	// Use a dedicated connection with a short statement timeout so heavy
 	// backfills fail fast (~5s) instead of holding up startup for 30s each.
