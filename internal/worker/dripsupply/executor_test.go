@@ -918,3 +918,35 @@ func TestPlanReaderIsTouchClassAware(t *testing.T) {
 			rf.Granted, rf.BindingReason, ReasonPlanShare)
 	}
 }
+
+// The orphan-claim reap is a LIVE partner_clean_queue write (REQ-117 item 4,
+// operator-gated). It must never run in off/shadow, and in canary/on only when
+// DRIP_SUPPLY_REAP_ENABLED=1 armed it.
+func TestReapIsOperatorGatedAndNeverRunsInShadow(t *testing.T) {
+	db, err := sql.Open("postgres", "postgres://unused:unused@127.0.0.1:1/unused?sslmode=disable")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	cases := []struct {
+		mode  Mode
+		armed bool
+		want  bool
+	}{
+		{ModeOff, false, false}, {ModeOff, true, false},
+		{ModeShadow, false, false}, {ModeShadow, true, false},
+		{ModeCanary, false, false}, {ModeCanary, true, true},
+		{ModeOn, false, false}, {ModeOn, true, true},
+	}
+	for _, c := range cases {
+		med := NewMediator(db, NewService(db), MediatorConfig{Mode: c.mode, ReapEnabled: c.armed, AlertsDisabled: true})
+		if got := med.reapAllowed(); got != c.want {
+			t.Errorf("mode=%s armed=%v: reapAllowed=%v want %v", c.mode, c.armed, got, c.want)
+		}
+	}
+	var nilMed *Mediator
+	if nilMed.reapAllowed() {
+		t.Errorf("nil mediator must not reap")
+	}
+}

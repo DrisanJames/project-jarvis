@@ -287,6 +287,9 @@ type MediatorConfig struct {
 	// OutcomesDisabled is DRIP_TICK_OUTCOMES_DISABLED=1. The outcome rows are
 	// the only always-on visibility this subsystem has, so this is an opt-OUT.
 	OutcomesDisabled bool
+	// ReapEnabled is DRIP_SUPPLY_REAP_ENABLED=1: arms the §2.4 orphan-claim
+	// reap (a live pcq write, REQ-117 item 4, operator-gated). Default false.
+	ReapEnabled bool
 	// AlertsDisabled is DRIP_SUPPLY_ALERTS_DISABLED=1.
 	AlertsDisabled bool
 
@@ -360,6 +363,17 @@ type Mediator struct {
 	lastAlert    map[string]time.Time
 
 	plannerWarnOnce sync.Once
+	reapWarnOnce    sync.Once
+}
+
+// reapAllowed: the orphan-claim reap mutates partner_clean_queue, so it runs
+// only when the mediator is enforcing (canary/on) and the operator has armed
+// it. Shadow and off never touch pcq.
+func (m *Mediator) reapAllowed() bool {
+	if m == nil || m.tr == nil || m.db == nil {
+		return false
+	}
+	return m.cfg.ReapEnabled && (m.cfg.Mode == ModeOn || m.cfg.Mode == ModeCanary)
 }
 
 // NewMediator builds the mediator. `svc` may be nil only when mode is off.
@@ -544,10 +558,20 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 
 	// (4) Orphan claims (§2.4). Covers the shape releaseStaleClaims cannot:
 	// a claimed row that got as far as having a subscriber hydrated.
-	if n, err := m.tr.Reap(ctx, m.db, m.cfg.ReapAge, m.cfg.ReapBatch); err != nil {
-		log.Printf("[DripSupply] reap orphan claims: %v", err)
-	} else if n > 0 {
-		log.Printf("[DripSupply] reaped %d orphan claims older than %s", n, m.cfg.ReapAge)
+	// LIVE pcq write: 1.41M rows carry this shape today (REQ-117) and releasing
+	// them re-feeds the OLD chain with 1M+ consumer/term-life records. So it
+	// runs only when enforcing (canary/on) AND the operator armed it
+	// (DRIP_SUPPLY_REAP_ENABLED=1) — never in shadow, which must not mutate pcq.
+	if m.reapAllowed() {
+		if n, err := m.tr.Reap(ctx, m.db, m.cfg.ReapAge, m.cfg.ReapBatch); err != nil {
+			log.Printf("[DripSupply] reap orphan claims: %v", err)
+		} else if n > 0 {
+			log.Printf("[DripSupply] reaped %d orphan claims older than %s", n, m.cfg.ReapAge)
+		}
+	} else {
+		m.reapWarnOnce.Do(func() {
+			log.Printf("[DripSupply] orphan-claim reap is OFF (mode=%s reap_enabled=%v) — REQ-117 §2.4 release is operator-gated", m.cfg.Mode, m.cfg.ReapEnabled)
+		})
 	}
 }
 

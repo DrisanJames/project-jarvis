@@ -5614,8 +5614,15 @@ func zeroAdvanceDisabled() bool {
 
 // tickOutcome records one drip_tick_outcomes row for (this tick, lane, pass).
 // Never returns an error: a lost outcome row must not abort a wave.
+// tickOutcomeNoMediatorOnce logs once per process when tick outcomes are
+// being dropped because SetCapacityMediator was never called (REQ-118 WP5).
+var tickOutcomeNoMediatorOnce sync.Once
+
 func (po *PartnerDripOrchestrator) tickOutcome(ctx context.Context, lane, pass, outcome, reason, brand string, caps map[string]int, claimed int, campaignID string) {
 	if po.mediator == nil {
+		tickOutcomeNoMediatorOnce.Do(func() {
+			log.Printf("[DripSupply] tick outcome skipped: no capacity mediator attached (SetCapacityMediator not called) — outcomes are silent on this instance")
+		})
 		return
 	}
 	po.mediator.Outcome(ctx, dripsupply.OutcomeRow{

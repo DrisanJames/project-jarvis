@@ -413,6 +413,7 @@ func main() {
 						Planner:          supplyPlanner,
 						PlannerDisabled:  plannerDisabled,
 						OutcomesDisabled: os.Getenv("DRIP_TICK_OUTCOMES_DISABLED") == "1",
+						ReapEnabled:      os.Getenv("DRIP_SUPPLY_REAP_ENABLED") == "1",
 						AlertsDisabled:   os.Getenv("DRIP_SUPPLY_ALERTS_DISABLED") == "1",
 						Notifier:         notify.SlackChannelFromEnv("SLACK_DRIP_SUPPLY_CHANNEL", "#jarvis"),
 					})
@@ -428,6 +429,9 @@ func main() {
 					YahooNewsletterOnlyDrip:     yahooNewsletterOnly,
 				})
 				orch.SetCapacityMediator(supplyMediator) // REQ-118 WP5 — BEFORE Start()
+				log.Printf("[DripSupply] capacity mediator attached: mode=%s canary_cells=%d outcomes_disabled=%v reap_enabled=%v key=%v",
+					supplyMediator.Mode(), len(supplyCanary), os.Getenv("DRIP_TICK_OUTCOMES_DISABLED") == "1",
+					os.Getenv("DRIP_SUPPLY_REAP_ENABLED") == "1", supplyKeyErr == nil)
 				// The 00:05 MT scheduled plan (§2.5). Mediator.TickStart is the
 				// safety net for the day this worker cannot serve (first boot, a
 				// deploy at 09:00, an instance killed mid-pass); this is the
