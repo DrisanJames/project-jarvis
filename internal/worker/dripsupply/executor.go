@@ -35,15 +35,18 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 )
 
 // -----------------------------------------------------------------------------
@@ -256,6 +259,14 @@ const upsertOutcomeSQL = `
 // identical.
 const ShadowLedgerTable = "drip_capacity_ledger_shadow"
 
+// ShadowPlanTable is the §7 step-2 twin of drip_daily_plan. Same reason the
+// ledger has one: WP6's Planner.store hard-codes `drip_daily_plan` AND upserts
+// drip_lane_balance, which the LIVE executor reserves against. Pointing WP6 at
+// another table is not enough — a shadow plan must write no lane balances at
+// all, so shadow planning runs WP6's read + assign phases and this file's own
+// writer. planShadow is that writer; planner.go is untouched.
+const ShadowPlanTable = "drip_daily_plan_shadow"
+
 // Defaults for the tick janitors (§2.8).
 const (
 	DefaultExpireAfter = 45 * time.Minute
@@ -281,6 +292,25 @@ type MediatorConfig struct {
 
 	// ShadowLedgerTable overrides ShadowLedgerTable (tests use a scratch name).
 	ShadowLedgerTable string
+	// ShadowPlanTable overrides ShadowPlanTable (tests use a scratch name).
+	ShadowPlanTable string
+
+	// Planner is WP6's daily planner, built once at boot with its rank source,
+	// yield source, governors and contract key. Nil = the tick does not plan
+	// (and says so once), because an un-injected planner would silently fall
+	// back to seed yields and tier-only ranking on the live estate.
+	Planner *Planner
+	// PlanFunc overrides how a day is planned. Nil = Planner.Plan for the live
+	// table, planShadow for the shadow one. It exists so the scheduling and
+	// idempotency around the plan can be tested without standing up WP6's four
+	// contract tables and their HMAC tokens (planner_test.go owns those), and
+	// so a future caller can substitute a plan source.
+	PlanFunc func(ctx context.Context, day time.Time) (*Plan, error)
+	// PlannerDisabled is DRIP_PLANNER_DISABLED=1: the tick never plans and the
+	// PlannerWorker never starts. The plan_share term then does not bind
+	// (PlanRemaining fails OPEN on a missing row), so this degrades to the
+	// pre-WP6 behaviour rather than stopping the estate.
+	PlannerDisabled bool
 
 	// ContractKey is the §1.5 HMAC key LoadActive verifies contract tokens
 	// with. Nil = resolve it once from CONTRACT_TOKEN_KEY at construction.
@@ -324,9 +354,12 @@ type Mediator struct {
 	contractKeyErr error
 
 	// Cross-tick state.
+	plannedDay   string         // Denver dayKey this process has confirmed a frozen plan for
 	activatedDay string         // dayKey of the last ActivateScheduled
 	zeroStreak   map[string]int // "lane|pass" -> consecutive zero/failed outcomes
 	lastAlert    map[string]time.Time
+
+	plannerWarnOnce sync.Once
 }
 
 // NewMediator builds the mediator. `svc` may be nil only when mode is off.
@@ -345,6 +378,9 @@ func NewMediator(db *sql.DB, svc *Service, cfg MediatorConfig) *Mediator {
 	}
 	if strings.TrimSpace(cfg.ShadowLedgerTable) == "" {
 		cfg.ShadowLedgerTable = ShadowLedgerTable
+	}
+	if strings.TrimSpace(cfg.ShadowPlanTable) == "" {
+		cfg.ShadowPlanTable = ShadowPlanTable
 	}
 	if cfg.AlertEvery <= 0 {
 		cfg.AlertEvery = DefaultAlertEvery
@@ -484,6 +520,13 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	if _, err := EnsureDayBalances(ctx, m.db, now, set); err != nil {
 		log.Printf("[DripSupply] ensure day balances for %s: %v", key, err)
 	}
+
+	// (2b) The day's plan. The 00:05 MT PlannerWorker is the scheduled owner;
+	// this is the SAFETY NET for the day it cannot serve — a deploy at 09:00,
+	// a first boot, an ECS bounce that killed the 00:05 holder mid-pass. It is
+	// gated on "no frozen rows for this Denver day", so on a normal day it
+	// costs one EXISTS the first tick and nothing afterwards.
+	m.ensureDailyPlan(ctx, now)
 
 	// (3) Stale reservations. A reservation with no commit after 45 min means a
 	// wave claimed capacity and then died between Reserve and Commit — the
@@ -1155,4 +1198,338 @@ func (m *Mediator) deliver(ctx context.Context, tier notify.Tier, headline, body
 	if err := notify.Deliver(m.cfg.Notifier, msg); err != nil {
 		log.Printf("[DripSupply] alert delivery failed (%s): %v", headline, err)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// The daily plan (§2.5) — scheduling and the shadow twin
+// -----------------------------------------------------------------------------
+
+// plannerLockKey is the distributed lock the 00:05 pass contends on, in the
+// same shape as economicsLockKey / supplyLockKey. Two orchestrator instances
+// run (desiredCount=2); the plan write is transactional and Plan(replan=false)
+// is idempotent, so the lock is about not paying for the read phase twice, not
+// about correctness.
+const plannerLockKey = "drip:planner:daily"
+
+// DefaultPlannerRunAfter is §2.5's 00:05 MT.
+const DefaultPlannerRunAfter = 5 * time.Minute
+
+// planTable is the table this mediator's plan lands in: the live one when a
+// cell can be enforced, the shadow twin in shadow mode (§7 step 2).
+func (m *Mediator) planTable() string {
+	if m.cfg.Mode == ModeShadow {
+		return m.cfg.ShadowPlanTable
+	}
+	return "drip_daily_plan"
+}
+
+// planFrozen reports whether `table` already carries frozen rows for the day.
+// EXISTS, not a row count and not LoadStoredPlan: the check runs on every tick
+// until it is true, and loading a 30-lane × 12-ISP × 29-domain plan to answer
+// "has this day been planned" would read thousands of rows every 15 minutes.
+func planFrozen(ctx context.Context, q Queryer, table string, day time.Time) (bool, error) {
+	var ok bool
+	err := q.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM `+table+` WHERE day = $1::date AND frozen_at IS NOT NULL)`,
+		dayKey(day)).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("dripsupply: plan frozen check on %s for %s: %w", table, dayKey(day), err)
+	}
+	return ok, nil
+}
+
+// ensureDailyPlan plans the Denver day if nothing has yet. Idempotent three
+// times over: an in-process day cache, an EXISTS on the plan table, and
+// Planner.Plan's own frozen-day short circuit.
+//
+// Failures are logged and alerted, never fatal: with no plan row PlanRemaining
+// fails OPEN (bounded=false), so the domain balance, lane balance and supply
+// terms still bind and a planner outage cannot stop the estate mailing.
+func (m *Mediator) ensureDailyPlan(ctx context.Context, now time.Time) {
+	if m == nil || m.db == nil || m.cfg.PlannerDisabled {
+		return
+	}
+	day := DenverDay(now)
+	key := dayKey(day)
+
+	m.mu.Lock()
+	already := m.plannedDay == key
+	m.mu.Unlock()
+	if already {
+		return
+	}
+
+	frozen, err := planFrozen(ctx, m.db, m.planTable(), day)
+	if err != nil {
+		log.Printf("[DripSupply] %v", err)
+		return
+	}
+	if frozen {
+		m.mu.Lock()
+		m.plannedDay = key
+		m.mu.Unlock()
+		return
+	}
+
+	if m.cfg.Planner == nil && m.cfg.PlanFunc == nil {
+		m.plannerWarnOnce.Do(func() {
+			log.Printf("[DripSupply] no Planner injected — %s will not be planned by the tick; the plan_share term does not bind", key)
+		})
+		return
+	}
+
+	plan, perr := m.runPlan(ctx, day)
+	if perr != nil {
+		log.Printf("[DripSupply] daily plan for %s FAILED: %v — the plan does not bind this tick", key, perr)
+		m.alertOnce(ctx, "planner", notify.TierAlert,
+			fmt.Sprintf("daily plan failed · %s", key),
+			"Error: "+perr.Error()+"\nEffect: plan_share does not bind; balances and supply still do",
+			"Run: GET /api/mailing/supply/plan?day="+key)
+		return
+	}
+	m.mu.Lock()
+	m.plannedDay = key
+	m.mu.Unlock()
+	log.Printf("[DripSupply] daily plan for %s ready in %s: %d rows, firm=%d provisional=%d",
+		key, m.planTable(), len(plan.Rows), plan.TotalFirm(), plan.TotalProvisional())
+}
+
+// runPlan dispatches to the live planner or the shadow writer.
+func (m *Mediator) runPlan(ctx context.Context, day time.Time) (*Plan, error) {
+	if m.cfg.PlanFunc != nil {
+		return m.cfg.PlanFunc(ctx, day)
+	}
+	if m.cfg.Mode == ModeShadow {
+		return m.planShadow(ctx, day)
+	}
+	return m.cfg.Planner.Plan(ctx, m.db, day, false)
+}
+
+// planShadow is the §7 step-2 plan: WP6's read + assign phases verbatim, with
+// the rows written to the shadow table and NOTHING else touched.
+//
+// It is a separate writer rather than a table option on WP6's Planner for the
+// same reason shadowReserve is separate from Reserve: Planner.store also calls
+// EnsureDayBalances and upserts drip_lane_balance — the rows the LIVE executor
+// reserves against. A shadow plan that rewrote `desired`, `awarded_*` and
+// `unfilled` would move the live chain's ceilings, which is precisely what
+// shadow mode must not do.
+func (m *Mediator) planShadow(ctx context.Context, day time.Time) (*Plan, error) {
+	in, err := m.cfg.Planner.ReadInputs(ctx, m.db, day)
+	if err != nil {
+		return nil, err
+	}
+	plan := assign(in)
+	if len(plan.Rows) > maxPlanRows {
+		return nil, fmt.Errorf("dripsupply: shadow plan produced %d rows for %s, above the %d bound",
+			len(plan.Rows), dayKey(day), maxPlanRows)
+	}
+	if err := m.storeShadowPlan(ctx, &plan); err != nil {
+		return nil, err
+	}
+	return &plan, nil
+}
+
+// storeShadowPlan writes one day into the shadow plan table in ONE transaction
+// (delete the day, insert the rows), mirroring Planner.store's crash-window
+// rule minus every live-table write.
+func (m *Mediator) storeShadowPlan(ctx context.Context, plan *Plan) error {
+	table := m.cfg.ShadowPlanTable
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("dripsupply: shadow plan begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	key := dayKey(plan.Day)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE day = $1::date`, key); err != nil {
+		return fmt.Errorf("dripsupply: shadow plan clear %s: %w", key, err)
+	}
+	for start := 0; start < len(plan.Rows); start += planInsertChunk {
+		end := min(start+planInsertChunk, len(plan.Rows))
+		chunk := plan.Rows[start:end]
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO ` + table + `
+			(day, lane, isp, sending_domain, award_firm, award_provisional, followups_reserved, plan_share,
+			 rank, rank_reason, unserved, unserved_reason, supply_released, frozen_at) VALUES `)
+		args := make([]any, 0, len(chunk)*planInsertCols)
+		for i, r := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			b := i * planInsertCols
+			fmt.Fprintf(&sb, "($%d::date,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11, b+12, b+13, b+14)
+			args = append(args, key, r.Lane, r.ISP, r.SendingDomain, r.AwardFirm, r.AwardProvisional,
+				r.FollowupsReserved, r.PlanShare, r.Rank, r.RankReason,
+				r.Unserved, r.UnservedReason, r.SupplyReleased, plan.FrozenAt)
+		}
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("dripsupply: shadow plan insert rows %d-%d: %w", start, end, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("dripsupply: shadow plan commit %s: %w", key, err)
+	}
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// PlannerWorker — the 00:05 MT scheduled pass
+// -----------------------------------------------------------------------------
+
+// PlannerWorkerConfig is what main.go supplies.
+type PlannerWorkerConfig struct {
+	Mediator *Mediator     // the plan is run THROUGH the mediator, so mode + shadow table are shared
+	Interval time.Duration // poll cadence; the run is gated on the Denver clock
+	RunAfter time.Duration // how far past Denver midnight the pass fires (default 00:05)
+	NowFn    func() time.Time
+}
+
+// PlannerWorker fires the daily plan at 00:05 MT, once per Denver day, under the
+// distributed lock. It is the SCHEDULED owner of the plan; Mediator.TickStart is
+// the safety net for the day this worker cannot serve (first boot, a deploy at
+// 09:00, an instance killed mid-pass).
+type PlannerWorker struct {
+	med   *Mediator
+	db    *sql.DB
+	redis *redis.Client
+	loc   *time.Location
+
+	disabled bool
+	interval time.Duration
+	runAfter time.Duration
+	nowFn    func() time.Time
+
+	// lastRanDay is advanced only on SUCCESS, so a failed pass retries on the
+	// next poll instead of being silently skipped until tomorrow.
+	lastRanDay string
+}
+
+// NewPlannerWorker builds the 00:05 MT pass. Kill switch: DRIP_PLANNER_DISABLED=1.
+func NewPlannerWorker(db *sql.DB, redisClient *redis.Client, cfg PlannerWorkerConfig) *PlannerWorker {
+	w := &PlannerWorker{
+		med:      cfg.Mediator,
+		db:       db,
+		redis:    redisClient,
+		interval: cfg.Interval,
+		runAfter: cfg.RunAfter,
+		nowFn:    cfg.NowFn,
+	}
+	if w.interval <= 0 {
+		w.interval = 10 * time.Minute
+	}
+	if w.runAfter <= 0 {
+		w.runAfter = DefaultPlannerRunAfter
+	}
+	if w.nowFn == nil {
+		w.nowFn = time.Now
+	}
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		log.Printf("[DripPlanner] America/Denver unavailable (%v) — falling back to UTC day boundaries", err)
+		loc = time.UTC
+	}
+	w.loc = loc
+	if v := os.Getenv("DRIP_PLANNER_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+		log.Println("[DripPlanner] DRIP_PLANNER_DISABLED set — the daily planner pass is disabled")
+		w.disabled = true
+	}
+	// A worker with no mediator, no planner, or MODE=off would poll every ten
+	// minutes to do nothing. MODE=off is the rollback: nothing reads the plan,
+	// so nothing plans.
+	if w.med == nil || w.med.cfg.PlannerDisabled || w.med.Mode() == ModeOff ||
+		(w.med.cfg.Planner == nil && w.med.cfg.PlanFunc == nil) {
+		w.disabled = true
+	}
+	return w
+}
+
+// Disabled reports whether this worker will do anything. Exported so the boot
+// log states it rather than leaving a dark worker looking alive.
+func (w *PlannerWorker) Disabled() bool { return w == nil || w.disabled }
+
+// Start polls every `interval` and fires once per Denver day at or after
+// `runAfter`. Single goroutine; honors ctx.Done().
+func (w *PlannerWorker) Start(ctx context.Context) {
+	if w.Disabled() {
+		return
+	}
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+	w.tick(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.tick(ctx)
+		}
+	}
+}
+
+func (w *PlannerWorker) tick(ctx context.Context) {
+	now := w.nowFn().In(w.loc)
+	today := dayOf(now)
+	key := today.Format("2006-01-02")
+	if now.Before(today.Add(w.runAfter)) {
+		return
+	}
+	if w.lastRanDay == key {
+		return
+	}
+
+	lock := distlock.NewLock(w.redis, w.db, plannerLockKey, 30*time.Minute)
+	ok, err := lock.Acquire(ctx)
+	if err != nil {
+		log.Printf("[DripPlanner] lock acquire failed: %v", err)
+		return
+	}
+	if !ok {
+		// The other instance is running this pass. Do NOT advance lastRanDay:
+		// if that instance dies mid-pass this one retries on the next poll.
+		return
+	}
+	defer func() {
+		relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := lock.Release(relCtx); err != nil {
+			log.Printf("[DripPlanner] lock release failed: %v", err)
+		}
+	}()
+
+	if err := w.RunOnce(ctx, today); err != nil {
+		log.Printf("[DripPlanner] daily pass for %s FAILED: %v (will retry in %s)", key, err, w.interval)
+		return
+	}
+	w.lastRanDay = key
+}
+
+// RunOnce plans one Denver day, unless it is already frozen. Exported so an
+// operator (and WP9's API) can force the pass without waiting for midnight.
+func (w *PlannerWorker) RunOnce(ctx context.Context, day time.Time) error {
+	if w == nil || w.med == nil {
+		return errors.New("dripsupply: PlannerWorker.RunOnce with no mediator")
+	}
+	day = dayOf(day.In(w.loc))
+	frozen, err := planFrozen(ctx, w.db, w.med.planTable(), day)
+	if err != nil {
+		return err
+	}
+	if frozen {
+		w.med.mu.Lock()
+		w.med.plannedDay = dayKey(day)
+		w.med.mu.Unlock()
+		return nil
+	}
+	plan, err := w.med.runPlan(ctx, day)
+	if err != nil {
+		return err
+	}
+	w.med.mu.Lock()
+	w.med.plannedDay = dayKey(day)
+	w.med.mu.Unlock()
+	log.Printf("[DripPlanner] %s planned into %s: %d rows, firm=%d provisional=%d followups=%d",
+		dayKey(day), w.med.planTable(), len(plan.Rows), plan.TotalFirm(), plan.TotalProvisional(), plan.TotalFollowupsReserved())
+	return nil
 }

@@ -42,6 +42,8 @@ var req118StartupTables = []string{
 	"drip_capacity_ledger_shadow",
 	"drip_daily_plan_shadow",
 	"drip_supply_ledger_shadow",
+	// §4 economics (WP8) — nightly-computed lane x ISP unit economics.
+	"drip_lane_economics",
 }
 
 // req118StartupIndexes — the four contract-uniqueness indexes and the four

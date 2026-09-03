@@ -40,6 +40,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/ongage"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brandident"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
@@ -48,6 +49,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/storage"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
+	"github.com/ignite/sparkpost-monitor/internal/worker/dripsupply"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -198,6 +200,14 @@ func main() {
 	var mailingDB *sql.DB
 	var redisClient *redis.Client
 	dbReachable := false
+
+	// REQ-118: the measured 14-day EO yield (§2.6). ONE instance, shared by the
+	// WP6 planner (which sizes the provisional award with it) and the WP7 supply
+	// controller (which sizes the order that backs that award). Two instances
+	// would be two caches of the same query and could size the two halves of the
+	// same decision differently. Declared here because the WP5 mediator block
+	// and the WP7 worker live in sibling blocks below.
+	supplyYield := dripsupply.NewMeasuredYield()
 
 	if cfg.Mailing.Enabled && cfg.Mailing.DatabaseURL != "" {
 		log.Println("Initializing Mailing Platform with PostgreSQL...")
@@ -351,6 +361,61 @@ func main() {
 					creativesDir = "docs/emails"
 				}
 				yahooNewsletterOnly := os.Getenv("PARTNER_DRIP_YAHOO_NEWSLETTER_ONLY") == "1"
+				// REQ-118 WP5: the capacity Mediator. DRIP_SUPPLY_CHAIN_MODE
+				// defaults to off, in which case Grant returns before touching
+				// the database and every cap decision stays on the pre-REQ-118
+				// chain. An UNRECOGNISED mode is refused (not coerced): a typo
+				// that silently resolved to `on` would enforce contracts
+				// estate-wide on a deploy nobody reviewed for that.
+				supplyMode, modeErr := dripsupply.ParseMode(os.Getenv("DRIP_SUPPLY_CHAIN_MODE"))
+				if modeErr != nil {
+					log.Printf("[DripSupply] %v — falling back to off", modeErr)
+					supplyMode = dripsupply.ModeOff
+				}
+				supplyCanary, canaryErr := dripsupply.ParseCanary(os.Getenv("DRIP_SUPPLY_CANARY"))
+				if canaryErr != nil {
+					log.Printf("[DripSupply] %v — no cell is enforced", canaryErr)
+					supplyCanary = nil
+				}
+				// The contract integrity key (§1.5), resolved ONCE here rather
+				// than re-read from the environment by every subsystem. A
+				// missing key is not fatal at boot: the mediator fails every
+				// lane closed with reason no_contract_key while the mode
+				// enforces, and is inert while it is off.
+				supplyKey, supplyKeyErr := contractmeta.KeyFromEnv()
+				if supplyKeyErr != nil && supplyMode != dripsupply.ModeOff {
+					log.Printf("[DripSupply] %s: %v — every drip lane will fail closed", contractmeta.KeyEnvVar, supplyKeyErr)
+				}
+				supplyGovernors := dripsupply.ThrottleGovernor{DB: db}
+				// WP6's daily planner, built once with its dependencies. The
+				// stub dripsupply.RunDailyPlanner injects none of these, so the
+				// plan would otherwise rank on operator tier alone and size
+				// every provisional award at the SEED yield.
+				supplyPlanner := dripsupply.NewPlanner(
+					dripsupply.WithContractTokenKey(supplyKey),
+					dripsupply.WithRankSource(dripsupply.EconomicsRankSource{}),
+					dripsupply.WithYieldSource(supplyYield),
+					dripsupply.WithPlannerGovernors(supplyGovernors),
+				)
+				plannerDisabled := os.Getenv("DRIP_PLANNER_DISABLED") == "1"
+				supplyMediator := dripsupply.NewMediator(db,
+					// WithPlanReader is what makes the plan BIND: without it
+					// the plan_share term is unbounded and drip_daily_plan is
+					// a report nothing enforces.
+					dripsupply.NewService(db,
+						dripsupply.WithGovernors(supplyGovernors),
+						dripsupply.WithPlanReader(dripsupply.PlanStore{}),
+					),
+					dripsupply.MediatorConfig{
+						Mode:             supplyMode,
+						Canary:           supplyCanary,
+						ContractKey:      supplyKey,
+						Planner:          supplyPlanner,
+						PlannerDisabled:  plannerDisabled,
+						OutcomesDisabled: os.Getenv("DRIP_TICK_OUTCOMES_DISABLED") == "1",
+						AlertsDisabled:   os.Getenv("DRIP_SUPPLY_ALERTS_DISABLED") == "1",
+						Notifier:         notify.SlackChannelFromEnv("SLACK_DRIP_SUPPLY_CHANNEL", "#jarvis"),
+					})
 				orch := worker.NewPartnerDripOrchestrator(db, worker.PartnerDripOrchestratorConfig{
 					OrganizationID:              "00000000-0000-0000-0000-000000000001",
 					DeployFn:                    worker.WrapPMTACampaignDeploy(pmta.HandleDeployCampaign),
@@ -362,9 +427,19 @@ func main() {
 					CreativesDir:                creativesDir,
 					YahooNewsletterOnlyDrip:     yahooNewsletterOnly,
 				})
+				orch.SetCapacityMediator(supplyMediator) // REQ-118 WP5 — BEFORE Start()
+				// The 00:05 MT scheduled plan (§2.5). Mediator.TickStart is the
+				// safety net for the day this worker cannot serve (first boot, a
+				// deploy at 09:00, an instance killed mid-pass); this is the
+				// scheduled owner. Inert on MODE=off or DRIP_PLANNER_DISABLED=1.
+				supplyPlannerWorker := dripsupply.NewPlannerWorker(db, redisClient,
+					dripsupply.PlannerWorkerConfig{Mediator: supplyMediator})
+				go supplyPlannerWorker.Start(ctx)
+				log.Printf("[DripPlanner] daily planner worker started (00:05 MT; disabled=%v mode=%s)",
+					supplyPlannerWorker.Disabled(), supplyMode)
 				orch.Start()
-				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_deferral_disabled=%v throttle_threshold=%.0f creatives_dir=%s yahoo_newsletter_only=%v)",
-					followupDisabled, followupMax, throttleDeferralDisabled, throttleThreshold, creativesDir, yahooNewsletterOnly)
+				log.Printf("[PartnerDripOrchestrator] started (followup_disabled=%v followup_max=%d throttle_deferral_disabled=%v throttle_threshold=%.0f creatives_dir=%s yahoo_newsletter_only=%v supply_mode=%s supply_canary=%d)",
+					followupDisabled, followupMax, throttleDeferralDisabled, throttleThreshold, creativesDir, yahooNewsletterOnly, supplyMode, len(supplyCanary))
 				return orch
 			})
 		}
@@ -846,6 +921,64 @@ func main() {
 			dripObservatory := worker.NewDripObservatoryRollup(mailingDB)
 			go dripObservatory.Start(ctx)
 			log.Println("Drip Observatory rollup started (first run 120s, then every 6h)")
+
+			// REQ-118 WP8 economics (docs/DRIP_SUPPLY_CHAIN_DESIGN.md §4) —
+			// recomputes drip_lane_economics(day, lane, isp) nightly at 00:20
+			// MT for yesterday plus the 7 prior days. The backfill is load
+			// bearing, not defensive: `maturity` flips from 'incomplete' to
+			// 'mature' when a cohort turns 7 days old, and late Everflow
+			// postbacks land inside that same window, so a day is not final
+			// on the night it is first written. RankInputs (the WP6 planner's
+			// ranking input) reads only mature cohorts.
+			// Kill switch: DRIP_ECONOMICS_DISABLED=1.
+			dripEconomics := dripsupply.NewEconomicsWorker(mailingDB, redisClient)
+			go dripEconomics.Start(ctx)
+			log.Println("Drip economics worker started (nightly 00:20 MT: yesterday + 7 prior days)")
+
+			// REQ-118 WP7 supply controller (docs/DRIP_SUPPLY_CHAIN_DESIGN.md
+			// §2.6) — hourly, it makes the planner's PROVISIONAL awards real by
+			// promoting held stock with a live verdict, resurrecting mailed
+			// non-engagers, and only then buying EO verdicts for the remainder.
+			//
+			// It shares DRIP_SUPPLY_CHAIN_MODE with the WP5 mediator, so the
+			// same dial rolls the whole subsystem back: `off` (the default)
+			// makes RunOnce return before it reads anything, and the pre-REQ-118
+			// Python supply jobs keep the queue exactly as they do today.
+			// DRIP_SUPPLY_CONTROLLER_DISABLED=1 stops this worker alone.
+			//
+			// The ThrottleGovernor is passed deliberately: without a
+			// GovernorReader the §5.5 gate is inert and the controller would buy
+			// verdicts for a lane×ISP that is governed to zero.
+			//
+			// supplyYield is the measured 14-day EO yield. WP6's planner block
+			// must be given THIS instance (dripsupply.WithYieldSource) so the
+			// provisional award and the order that backs it size against the
+			// same number.
+			// supplyYield is constructed once at the top of main() and shared
+			// with the WP6 planner (REQ-118 WP5 wiring) — see the comment there.
+			// Parsed locally: the WP5 copies live inside the
+			// SetPartnerDripStarter closure above and are not in scope here. An
+			// unrecognised value falls back to `off` (never coerced to `on`).
+			ctlMode, ctlModeErr := dripsupply.ParseMode(os.Getenv("DRIP_SUPPLY_CHAIN_MODE"))
+			if ctlModeErr != nil {
+				log.Printf("[DripSupply] %v — supply controller falling back to off", ctlModeErr)
+				ctlMode = dripsupply.ModeOff
+			}
+			ctlCanary, ctlCanaryErr := dripsupply.ParseCanary(os.Getenv("DRIP_SUPPLY_CANARY"))
+			if ctlCanaryErr != nil {
+				log.Printf("[DripSupply] %v — supply controller enforces no cell", ctlCanaryErr)
+				ctlCanary = nil
+			}
+			supplyWorker := dripsupply.NewSupplyWorker(mailingDB, redisClient, dripsupply.SupplyControllerConfig{
+				Mode:           ctlMode,
+				Canary:         ctlCanary,
+				Yield:          supplyYield,
+				Governors:      dripsupply.ThrottleGovernor{DB: mailingDB},
+				AlertsDisabled: os.Getenv("DRIP_SUPPLY_ALERTS_DISABLED") == "1",
+				Notifier:       notify.SlackChannelFromEnv("SLACK_DRIP_SUPPLY_CHANNEL", "#jarvis"),
+			})
+			go supplyWorker.Start(ctx)
+			log.Printf("Drip supply controller started (hourly; mode=%s disabled=%v)", supplyWorker.Mode(), supplyWorker.Disabled())
 
 			// Start Engine Signals Archiver. Keeps mailing_engine_signals
 			// at a 14-day hot window; everything older lands in
@@ -2768,6 +2901,11 @@ var concurrentIndexSpecs = []struct {
 	// even a partial build reads the full 14 GB queue heap, and a
 	// lock-taking CREATE INDEX on this table is the 2026-08-20 barricade.
 	{"idx_pcq_alloc", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_alloc ON partner_clean_queue (capacity_allocation_id) WHERE capacity_allocation_id IS NOT NULL`},
+	// REQ-118 §2.4 Reap: the orphan-claim shape (subscriber_id SET, no campaign)
+	// that releaseStaleClaims' partial index (subscriber_id IS NULL) cannot serve —
+	// measured 2026-09-03 (WP12): parallel seq scan 1.3 s / 13.8M rows per sweep
+	// without it. Partial on the shape, ordered by claimed_at for the cutoff.
+	{"idx_pcq_reap_orphans", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_reap_orphans ON partner_clean_queue (claimed_at) WHERE status = 'claimed' AND last_touch_campaign_id IS NULL AND mailed_campaign_id IS NULL`},
 }
 
 const concurrentIndexIOWaitMax = 8
@@ -2990,12 +3128,17 @@ var dripSupplyMigrations = []struct {
 		approved_at         TIMESTAMPTZ,
 		change_ledger_id    TEXT NOT NULL DEFAULT '',
 		notes               TEXT NOT NULL DEFAULT '',
+		metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,   -- standard contract metadata block (REQ-118 §1.5): refs, mutation, token
+		token               TEXT  NOT NULL DEFAULT '',            -- integrity token (HMAC over canonical body+version); mediator verifies before honouring
 		daily_max_by_isp    JSONB NOT NULL,                      -- every ISP class present; validated in Go (WP2)
 		active_window_start TIME NOT NULL DEFAULT '01:00',
 		active_window_end   TIME NOT NULL DEFAULT '20:00',
 		interval_minutes    INT  NOT NULL DEFAULT 15,
 		max_burst_intervals INT  NOT NULL DEFAULT 2,
-		ramp_source         TEXT                                 -- 'sending_domain_cards' | 'operator'
+		ramp_source         TEXT,                                -- 'sending_domain_cards' | 'operator'
+		health_band         TEXT NOT NULL DEFAULT 'green'
+			CHECK (health_band IN ('green','amber','red')),      -- operator/ramp-set policy (ruled 2026-09-03): red ⇒ 0, amber ⇒ 50% of contracted
+		ramp_stage          TEXT NOT NULL DEFAULT ''             -- free text from the ramp job / operator, displayed only
 	)`},
 	{"req118_create_drip_dispatch_contracts", `CREATE TABLE IF NOT EXISTS drip_dispatch_contracts (
 		id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -3011,6 +3154,8 @@ var dripSupplyMigrations = []struct {
 		approved_at            TIMESTAMPTZ,
 		change_ledger_id       TEXT NOT NULL DEFAULT '',
 		notes                  TEXT NOT NULL DEFAULT '',
+		metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,   -- standard contract metadata block (REQ-118 §1.5): refs, mutation, token
+		token               TEXT  NOT NULL DEFAULT '',            -- integrity token (HMAC over canonical body+version); mediator verifies before honouring
 		operator_priority_tier INT  NOT NULL DEFAULT 2,          -- 1 first, 3 last, 9 test/exploration
 		desired_daily_intros   JSONB NOT NULL,                   -- absent ISP = 0 (not wanted)
 		demand_mode            TEXT NOT NULL DEFAULT 'target'
@@ -3038,6 +3183,8 @@ var dripSupplyMigrations = []struct {
 		approved_at            TIMESTAMPTZ,
 		change_ledger_id       TEXT NOT NULL DEFAULT '',
 		notes                  TEXT NOT NULL DEFAULT '',
+		metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,   -- standard contract metadata block (REQ-118 §1.5): refs, mutation, token
+		token               TEXT  NOT NULL DEFAULT '',            -- integrity token (HMAC over canonical body+version); mediator verifies before honouring
 		accepted_sources       TEXT[] NOT NULL,                  -- partner_datasets.slug values
 		verdict_valid_days     INT  NOT NULL DEFAULT 60,
 		eo_enabled             BOOLEAN NOT NULL DEFAULT TRUE,
@@ -3066,6 +3213,8 @@ var dripSupplyMigrations = []struct {
 		approved_at           TIMESTAMPTZ,
 		change_ledger_id      TEXT NOT NULL DEFAULT '',
 		notes                 TEXT NOT NULL DEFAULT '',
+		metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,   -- standard contract metadata block (REQ-118 §1.5): refs, mutation, token
+		token               TEXT  NOT NULL DEFAULT '',            -- integrity token (HMAC over canonical body+version); mediator verifies before honouring
 		record_class          TEXT NOT NULL,                     -- 'auto_insurance' | 'mortgage' | ...
 		eligible_isps         TEXT[] NOT NULL,
 		max_daily_intake      INT,
@@ -3179,6 +3328,9 @@ var dripSupplyMigrations = []struct {
 		plan_share          NUMERIC NOT NULL DEFAULT 0,
 		rank                INT NOT NULL DEFAULT 0,
 		rank_reason         TEXT NOT NULL DEFAULT '',
+		unserved            INT NOT NULL DEFAULT 0,       -- §2.5 step 7: desired − firm − provisional for this cell
+		unserved_reason     TEXT NOT NULL DEFAULT '',     -- supply | domain_capacity | max_intro_share | followup_reserve | negative_contribution | governor | no_contract
+		supply_released     INT NOT NULL DEFAULT 0,       -- capacity awarded in step 5 that supply could not back and step 6b re-offered
 		frozen_at           TIMESTAMPTZ,
 		PRIMARY KEY (day, lane, isp, sending_domain)
 	)`},
@@ -3246,6 +3398,54 @@ var dripSupplyMigrations = []struct {
 	{"req118_create_drip_capacity_ledger_shadow", `CREATE TABLE IF NOT EXISTS drip_capacity_ledger_shadow (LIKE drip_capacity_ledger INCLUDING ALL)`},
 	{"req118_create_drip_daily_plan_shadow", `CREATE TABLE IF NOT EXISTS drip_daily_plan_shadow (LIKE drip_daily_plan INCLUDING ALL)`},
 	{"req118_create_drip_supply_ledger_shadow", `CREATE TABLE IF NOT EXISTS drip_supply_ledger_shadow (LIKE drip_supply_ledger INCLUDING ALL)`},
+
+	// ── §4 Economics (WP8) ─────────────────────────────────────────────
+	// One row per Denver day × lane × ISP, recomputed nightly at 00:20 MT
+	// for yesterday plus the 7 prior days (dripsupply.EconomicsWorker) —
+	// the re-compute exists because `maturity` MOVES: a day flips from
+	// 'incomplete' to 'mature' once it is 7 days old (§4 attribution
+	// window), and late Everflow postbacks land inside that same window.
+	//
+	// Every money column is NUMERIC, never float: eCPMs are multiplied by
+	// 1000 and summed across ~13 ISP classes × ~20 lanes, and binary
+	// float would make the estate total depend on row order.
+	//
+	// Three columns are NULLABLE ON PURPOSE — "unknown renders as unknown,
+	// never zero" (§6). infra_share is NULL until the operator supplies
+	// infra_monthly_usd (§9 decision 6, seeded NULL); fully_loaded_ecpm is
+	// NULL exactly when infra_share is; cleaning_value is NULL when
+	// sample_ok is false, because a cleaning value computed off a
+	// sub-threshold trailing window is noise the supply controller would
+	// spend real EO dollars on (§2.6).
+	//
+	// No secondary index: the PK's leading `day` serves both readers —
+	// ComputeLaneEconomics' per-day upsert and RankInputs' trailing-window
+	// scan — and an unused index on a nightly-written table is dead weight.
+	{"req118_create_drip_lane_economics", `CREATE TABLE IF NOT EXISTS drip_lane_economics (
+		day               DATE NOT NULL,                          -- Denver day of the campaign's scheduled_at
+		lane              TEXT NOT NULL,                          -- split_part(campaign name, ' ', 2)
+		isp               TEXT NOT NULL,
+		messages          INT  NOT NULL DEFAULT 0,                -- intros + followups
+		intros            INT  NOT NULL DEFAULT 0,
+		followups         INT  NOT NULL DEFAULT 0,
+		verdicts          INT  NOT NULL DEFAULT 0,                -- EO verdicts ordered for this lane x ISP that day
+		conversions       INT  NOT NULL DEFAULT 0,
+		revenue_everflow  NUMERIC NOT NULL DEFAULT 0,
+		revenue_manual    NUMERIC NOT NULL DEFAULT 0,
+		send_cost         NUMERIC NOT NULL DEFAULT 0,
+		eo_cost           NUMERIC NOT NULL DEFAULT 0,
+		acquisition_cost  NUMERIC NOT NULL DEFAULT 0,
+		infra_share       NUMERIC,                                -- NULL until infra_monthly_usd is set (§9 decision 6)
+		gross_ecpm        NUMERIC NOT NULL DEFAULT 0,             -- revenue / messages x 1000
+		contribution_ecpm NUMERIC NOT NULL DEFAULT 0,             -- (revenue - send) / messages x 1000
+		cleaning_value    NUMERIC,                                -- NULL when sample_ok is false
+		fully_loaded_ecpm NUMERIC,                                -- NULL when infra_share is NULL
+		maturity          TEXT NOT NULL DEFAULT 'incomplete'
+			CHECK (maturity IN ('mature','incomplete')),
+		sample_ok         BOOLEAN NOT NULL DEFAULT FALSE,
+		computed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (day, lane, isp)
+	)`},
 }
 
 func runStartupMigrations(db *sql.DB) {

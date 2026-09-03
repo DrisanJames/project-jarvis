@@ -95,9 +95,9 @@ func TestDripSupplyMigrationsDoubleApply(t *testing.T) {
 	}
 
 	stmts := req118Statements()
-	// 24 in the 5s slice + 3 send-path-critical + 1 concurrent index.
-	if len(stmts) != 28 {
-		t.Fatalf("expected the full 28-statement REQ-118 set, got %d", len(stmts))
+	// 25 in the 5s slice + 3 send-path-critical + 1 concurrent index.
+	if len(stmts) != 29 {
+		t.Fatalf("expected the full 29-statement REQ-118 set, got %d", len(stmts))
 	}
 	for pass := 1; pass <= 2; pass++ {
 		for _, s := range stmts {
