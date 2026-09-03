@@ -1144,6 +1144,20 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			eoCleanSvc := NewEOCleanService(db)
 			eoCleanSvc.RegisterRoutes(r)
 
+			// === DRIP SUPPLY CHAIN (REQ-118 WP9) ===
+			// The projection + contract surface for the supply chain
+			// (docs/DRIP_SUPPLY_CHAIN_DESIGN.md §3): GET /api/mailing/supply/
+			// {health,ecosystem,lanes/{lane},domains,domains/{domain},
+			// ledger/capacity,ledger/supply,plan,contracts/{kind}/{subject}},
+			// POST /supply/contracts/{kind}/{subject}[/{version}/approve] and
+			// POST /supply/manual-revenue. Reads are read-only and bounded at
+			// 20s; the only writes are contract drafts, the approve→schedule
+			// token issue, and audited manual revenue. Contract-projecting
+			// endpoints fail closed with 503 when CONTRACT_TOKEN_KEY is unset
+			// (§1.5). See internal/api/drip_supply_handlers.go.
+			dripSupplySvc := NewDripSupplyService(db)
+			dripSupplySvc.RegisterRoutes(r)
+
 			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
 			// The Optizmo compliance loop as software: GET
 			// /api/mailing/send-day/{date}/audience-md5[/summary] streams the
