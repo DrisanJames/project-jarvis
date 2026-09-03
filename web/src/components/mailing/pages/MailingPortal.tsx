@@ -72,6 +72,9 @@ const AudienceCommand = lazy(() => import('./AudienceCommand').then(m => ({ defa
 const FreshBroadcastConfig = lazy(() => import('./FreshBroadcastConfig').then(m => ({ default: m.FreshBroadcastConfig })));
 const EOCleaning = lazy(() => import('./EOCleaning').then(m => ({ default: m.EOCleaning })));
 const ClickFunnels = lazy(() => import('../components/ClickFunnels').then(m => ({ default: m.ClickFunnels })));
+// REQ-118 WP10 — the drip supply chain's operator surface (three panes:
+// ecosystem queue / lane / domains) over /api/mailing/supply/*.
+const SupplyView = lazy(() => import('../components/SupplyView').then(m => ({ default: m.SupplyView })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -80,7 +83,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply';
 
 interface Tab {
   id: TabId;
@@ -92,7 +95,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'schedule', 'scheduling-copilot'] },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'supply', 'schedule', 'scheduling-copilot'] },
   { id: 'audiences', label: 'Audiences', icon: faUsers, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
   { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
@@ -290,6 +293,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><EOCleaning /></Suspense>;
       case 'click-funnels':
         return <Suspense fallback={<ChunkLoader />}><ClickFunnels /></Suspense>;
+      case 'supply':
+        return <Suspense fallback={<ChunkLoader />}><SupplyView /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
@@ -2145,6 +2150,7 @@ const CampaignCenterSection: React.FC<{
         <button style={subNavBtnStyle(subTab === 'drip-lanes')} onClick={() => onSubTabChange('drip-lanes')}>Drip Lanes</button>
         <button style={subNavBtnStyle(subTab === 'drip-lane-onboarding')} onClick={() => onSubTabChange('drip-lane-onboarding')}>Lane Onboarding</button>
         <button style={subNavBtnStyle(subTab === 'drip-journey')} onClick={() => onSubTabChange('drip-journey')}>Drip Journey</button>
+        <button style={subNavBtnStyle(false)} onClick={() => onSubTabChange('supply')} title="The drip supply chain — ecosystem queue, lane detail, sending-domain capacity and the contracts behind them.">Supply</button>
         <button style={subNavBtnStyle(subTab === 'schedule')} onClick={() => onSubTabChange('schedule')}>Schedule</button>
         <button style={subNavBtnStyle(subTab === 'scheduling-copilot')} onClick={() => onSubTabChange('scheduling-copilot')}>Copilot</button>
       </div>

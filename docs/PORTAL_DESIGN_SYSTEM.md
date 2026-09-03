@@ -105,7 +105,39 @@ Filtering is a PRODUCT surface, not a per-screen widget. One shared filter bar
    for the same window before shipping (Metric Contract §8).
 8. `PAGE_VERSION` bumped with a comment on behavior changes.
 
+## 6. Labelled numbers, unknown-vs-zero, and drill-down sections (REQ-118, 2026-09-03)
+
+Added with the Supply tab (`components/Supply*.tsx`), and binding on any screen that projects a
+mediator's own records rather than raw event counts.
+
+1. **A number carries its kind, not just its value.** Where the backend ships a `labels` map naming
+   each figure (`contracted | effective | planned | reserved | actual | forecast`), the screen
+   renders that label — as a chip on a KPI tile, in the `title=` of every table cell — and NEVER
+   invents one. Two figures with the same magnitude and different labels are different facts.
+2. **`null` renders as "unknown", muted and italic. Never 0, never "—" where a count belongs.**
+   "Never built", "built empty", "measured zero" and "could not measure" are four different displays.
+   When the API names what it could not compute (a `degraded[]` array), the screen prints those lines
+   verbatim rather than showing a plausible-looking blank.
+3. **`as_of`, data freshness and contract/config versions live in a header strip on every pane** of
+   such a screen, not only on the first one. A number whose moment and governing policy version are
+   off-screen is not decision-grade.
+4. **A verdict computed server-side is displayed, not recomputed.** Health colours, statuses and
+   bands come from the API field; the UI maps the string to a theme token. Two implementations of a
+   rule is two rules.
+5. **Progressive drill-down beats a second filter.** A multi-pane section narrows by CLICKING the row
+   (queue → entity → records), and the active narrowing shows as a shared `FilterChip` with an ✕.
+   Do not add a bespoke entity picker beside the shared FilterBar — §3 still holds.
+6. **Single-day surfaces say so.** A screen that reads one Denver day composes the shared FilterBar
+   (which is a range bar), uses the `To` day, and prints a warning when a wider range was applied —
+   it never silently averages or silently truncates the range.
+
 ## Amendment log
 
 - 2026-07-01: initial version — extracted from the Delivery Queue gold standard, the
   shared/theme.ts + ui.tsx kit, and the Reporting-screen unification work.
+- 2026-09-03: §6 added with the REQ-118 Supply tab — display the API's label vocabulary rather than
+  inventing one; null renders as "unknown", never 0, and `degraded[]` notes print verbatim; `as_of` +
+  freshness + contract versions on EVERY pane; server-computed verdicts (health colour) are mapped,
+  never recomputed; drill-down instead of a bespoke second filter, with the shared FilterChip showing
+  the active narrowing; single-day screens use the shared range bar's `To` day and warn when a wider
+  range was applied.

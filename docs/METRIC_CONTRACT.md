@@ -465,6 +465,112 @@ model: Athena is the sole source of every EMAIL number; Postgres remains the sys
 journey state; neither is queried on the request path. Emitting journey state into the lake
 (making Athena sole source for flow too) is the target state, not this contract.
 
+## 11. Drip supply chain (REQ-118, 2026-09-03)
+
+The Supply tab (`web/src/components/mailing/components/Supply*.tsx`) projects the mediators' own
+records. It computes nothing: every number below is read from `/api/mailing/supply/*`
+(`internal/api/drip_supply_handlers.go`), which is the only implementation. A number that disagrees
+with this screen is wrong on the other screen.
+
+### 11.1 Every number carries a label — the closed vocabulary
+
+Each response carries a `labels` map naming what kind of number each field is. The vocabulary is
+closed (`dripLabelVocab`, six values) and the UI renders the label in the cell's tooltip:
+
+| label | means | changes when |
+|---|---|---|
+| `contracted` | the static contract's policy value | only at a Denver midnight, by operator/lead action |
+| `effective` | contracted after governors reduced it | every tick (governors reduce, never raise) |
+| `planned` | the daily planner's frozen award | once a day, at plan freeze |
+| `reserved` | capacity held by a live reservation, not yet submitted | per reservation |
+| `actual` | measured after the fact (committed, sent, ledgered, revenue) | as events land |
+| `forecast` | expected, not measured (pending EO, expected arrivals) | as the supply controller re-projects |
+
+**`contracted` vs `effective` is the single most misread pair.** `contracted` is what policy allows;
+`effective = min(contracted, governor ceilings)` where the governors are the ISP throttle state, the
+SES daily-quota remainder for SES-routed ISPs, the domain's health band and the gmail hold. A
+governor value ABOVE the contract is ignored. `effective < contracted` is normal operation, not a
+fault — the binding governor is named in `effective_reason` and the UI always renders it next to the
+number.
+
+### 11.2 The five demand states per lane×ISP
+
+Never collapse these into "how much did the lane get". They answer different questions:
+
+1. **desired** (`contracted`) — the dispatch contract's `desired_daily_intros` for the ISP. Absent
+   ISP = 0 desired ("not wanted"), which is NOT the same as an excluded ISP.
+2. **awarded_firm** (`planned`) — the planner's award backed by mailable supply that exists now.
+3. **awarded_provisional** (`planned`) — the award the supply controller must still deliver before
+   need time (pending EO × yield + expected arrivals + remail credit).
+4. **supply_backed** (`planned`) — the award supply can actually stand behind.
+5. **unserved** (`planned`) — `desired − firm − provisional`, always carrying an `unserved_reason`
+   from the closed set `supply | domain_capacity | max_intro_share | followup_reserve |
+   negative_contribution | governor | no_contract`. Unserved without its reason is not reportable.
+
+`followups_reserved` is not one of the five: due follow-ups are OBLIGATIONS reserved before any
+discretionary intro, and intros and follow-ups share ONE domain×ISP balance.
+
+### 11.3 Fill rate
+
+**`fill_rate = committed ÷ desired`.** When `desired = 0` the fill rate is **null (unknown)** and
+renders as "unknown" — never 100% (a lane that wants nothing did not succeed) and never 0% (it did
+not fail). A lane with demand and no committed capacity is `null` too, and the health rule treats
+that as amber, not green.
+
+### 11.4 The three eCPMs, and the maturity that gates them
+
+All three share the same denominator — **messages in the cohort** — and all use a **7-day attribution
+window**. Revenue = `mailing_everflow_conversions` payout attributed by `campaign_id`, counted
+**UNJOINED** (three `mailing_offers` rows share EF 162 and a join fans it ×3), plus
+`drip_manual_revenue`.
+
+| metric | formula | used for |
+|---|---|---|
+| Gross eCPM | revenue ÷ messages × 1000 | reporting |
+| **Dispatch contribution eCPM** | (revenue − send cost) ÷ messages × 1000 — **EO cost is SUNK** | the planner's RANK of already-mailable inventory |
+| Fully loaded net eCPM | (revenue − send − EO − acquisition − infra share) ÷ messages × 1000 | reporting only; **infra share is NULL** until OVH + IPXO monthlies are supplied, so this figure is legitimately unknown |
+
+Plus **cleaning value** = expected revenue per raw record − acquisition − expected EO ÷ yield −
+expected send cost over the ladder. That is the supply controller's ordering metric, not a rate.
+
+**Maturity is part of the number.** `mature` = the cohort is ≥ 7 days old; `incomplete` = the window
+has not closed; `unknown` = no data. **Only a mature figure ranks**, and a lane below the minimum
+sample (20k messages OR 5 conversions) inherits the estate median for its record class — the response
+flags that with `inherited: true` and the UI says "inherited estate median" rather than presenting it
+as the lane's own performance. An immature figure ranks as 0, never negative.
+
+### 11.5 Units — records vs messages, never summed
+
+The **Supply Ledger counts unique RECORDS**. The **Capacity Ledger counts MESSAGES**. One record
+becomes one intro plus up to four follow-ups, so the two are not comparable and are never added. Each
+table on the Supply tab states its unit in the panel header.
+
+### 11.6 Health colour — one implementation
+
+`health` and `health_reason` come from the API (`dripHealthColour`). The rule: **grey** if paused ·
+**red** if two consecutive `zero`/`failed` tick outcomes while `desired > 0` · **amber** if fill rate
+< 80% (or fill rate is unknown while `desired > 0`) · **green** otherwise. The UI maps the string to
+a colour token and never re-derives it — two implementations of a colour rule is two colour rules.
+
+### 11.7 Unknown is not zero
+
+Every count on this surface is nullable and **null renders as "unknown", muted, never 0**. The
+distinction is load-bearing:
+
+- **no `drip_capacity_balance` row for the day** ⇒ capacity is UNKNOWN (the midnight rebuild may not
+  have run), not "every domain capped at 0";
+- **no `drip_lane_balance` row** ⇒ demand is UNKNOWN, not "no lane wants anything";
+- **`stranded_claims` null** ⇒ the 48h orphan-claim count exceeded the 20s statement budget (the
+  reap index may still be building) — unknown, not zero;
+- **an absent Supply-Ledger event key IS a measured zero** — that ledger is append-only, so "no
+  `VALIDATION_ORDERED` row today" really is $0.00 ordered. This is the one place a missing row means
+  zero, and the UI says so in the cell's tooltip.
+
+Responses name what they could not compute in a `degraded[]` array; the UI prints those verbatim in
+the header strip. Every response also carries `as_of` and the `contract_versions` it was computed
+against — a supply number without its `as_of` and contract version is a number about an unknown
+moment under unknown policy.
+
 ## Amendment log
 
 - 2026-07-01: initial contract, consolidated from the Reporting-screen fix set (commits f76582f,
@@ -483,3 +589,11 @@ journey state; neither is queried on the request path. Emitting journey state in
   `CanonicalEventType` maps `ses_accepted` → lake `attempted` so the `source='ses'` lake stream is
   unchanged; the 2026-06-05 → 2026-09-01 double-count documented as a known break with the
   affected-surface list and the `substring(id::text,15,1)='4'` read-around. No backfill.
+- 2026-09-03: §11 Drip supply chain (REQ-118) — the six-value label vocabulary and the
+  contracted-vs-effective rule (governors reduce, never raise); the five demand states per lane×ISP
+  with their closed `unserved_reason` set; fill rate = committed ÷ desired, NULL when desired is 0;
+  the three eCPMs on a messages denominator with a 7-day window, unjoined conversion counting, and
+  maturity/minimum-sample gating (only mature ranks; below-sample inherits the estate median);
+  records vs messages never summed; the health colour as a single API-side implementation; and
+  "unknown is not zero", including the one exception (an absent append-only Supply-Ledger event key
+  is a measured zero).
