@@ -66,8 +66,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -813,6 +815,36 @@ type freshStageStats struct {
 	claimed         int
 }
 
+// ── REQ-118 fresh-broadcast fence ────────────────────────────────────────────
+
+// errBroadcastFenced is returned by stage when the fence is armed and the batch
+// would claim queue rows. The message names the section so an operator reading
+// it in a log knows which switch produced it and what the replacement path is.
+var errBroadcastFenced = errors.New("fresh-broadcast claims are fenced (REQ-118 §2.4): reserve through dripsupply")
+
+// broadcastFenceEnabled reads DRIP_SUPPLY_BROADCAST_FENCE at CALL time, not at
+// process start: the fence is an operator switch during the §7 cutover and must
+// take effect on a task restart without a code change, and a cached value would
+// make "did the fence apply?" depend on when the runner was constructed.
+func broadcastFenceEnabled() bool {
+	return strings.TrimSpace(os.Getenv("DRIP_SUPPLY_BROADCAST_FENCE")) == "1"
+}
+
+// assignmentClaimsQueueRows reports whether this batch would issue the direct
+// partner_clean_queue claim below. Tag-sourced rows carry no QueueID and never
+// reach that UPDATE, so fencing them would be a behaviour change the design
+// does not ask for.
+func assignmentClaimsQueueRows(assignment map[freshCell][]freshDrawRow) bool {
+	for _, rows := range assignment {
+		for _, row := range rows {
+			if row.QueueID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // stage creates the dated batch segments, hydrates queue rows to subscribers
 // (python's exact insert shape incl. vertical_tag in tags), inserts members,
 // and claims the queue rows. Uses a context detached from any HTTP request so
@@ -823,6 +855,17 @@ func (r *FreshBroadcastRunner) stage(reqCtx context.Context, orgID uuid.UUID, cf
 	_ = reqCtx // deliberately not used for the write path (detached)
 
 	var stats freshStageStats
+
+	// REQ-118 §2.4 / §9.4: fresh broadcasts are FENCED — they may not claim
+	// partner_clean_queue rows outside the reservation path. The check is here,
+	// before the first write, so a fenced run leaves no half-staged segment
+	// behind; and it fires only when this batch actually carries queue rows
+	// (QueueID != ""), so the tag-sourced shape, which never claims, is
+	// unaffected. Unset flag = old behaviour, byte for byte.
+	if broadcastFenceEnabled() && assignmentClaimsQueueRows(assignment) {
+		return stats, errBroadcastFenced
+	}
+
 	marker := freshBatchMarker(cfg.SegPrefix, token, date)
 
 	// 1. segments (idempotent per batch token; deterministic uuid5 ids).
