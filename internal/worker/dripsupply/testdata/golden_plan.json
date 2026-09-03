@@ -12,7 +12,10 @@
       "followups_reserved": 500,
       "plan_share": 0.1,
       "rank": 2,
-      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3 | unserved=3100 reason=supply"
+      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3",
+      "unserved": 3100,
+      "unserved_reason": "supply",
+      "supply_released": 310
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -24,7 +27,10 @@
       "followups_reserved": 250,
       "plan_share": 0.6,
       "rank": 2,
-      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3 | unserved=3100 reason=supply"
+      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 1860
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -36,7 +42,40 @@
       "followups_reserved": 250,
       "plan_share": 0.3,
       "rank": 2,
-      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3 | unserved=3100 reason=supply"
+      "rank_reason": "tier=2 contribution=$6.20/1k(mature) domains=3",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 930
+    },
+    {
+      "day": "2026-09-10T00:00:00-06:00",
+      "lane": "dead_lane",
+      "isp": "aol",
+      "sending_domain": "em.historythinking.com",
+      "award_firm": 0,
+      "award_provisional": 0,
+      "followups_reserved": 0,
+      "plan_share": 0,
+      "rank": 4,
+      "rank_reason": "tier=2 contribution=$-1.20/1k(mature) domains=1 blocked=negative_contribution",
+      "unserved": 2000,
+      "unserved_reason": "negative_contribution",
+      "supply_released": 0
+    },
+    {
+      "day": "2026-09-10T00:00:00-06:00",
+      "lane": "probe_v9",
+      "isp": "aol",
+      "sending_domain": "em.discountblog.com",
+      "award_firm": 200,
+      "award_provisional": 0,
+      "followups_reserved": 0,
+      "plan_share": 0.5,
+      "rank": 5,
+      "rank_reason": "tier=9 contribution=$0.00/1k(incomplete) domains=2 exploration",
+      "unserved": 2600,
+      "unserved_reason": "supply_reclaim",
+      "supply_released": 0
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -46,9 +85,12 @@
       "award_firm": 200,
       "award_provisional": 0,
       "followups_reserved": 0,
-      "plan_share": 1,
+      "plan_share": 0.5,
       "rank": 5,
-      "rank_reason": "tier=9 contribution=$0.00/1k(incomplete) domains=2 exploration | unserved=2800 reason=domain_capacity"
+      "rank_reason": "tier=9 contribution=$0.00/1k(incomplete) domains=2 exploration",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 0
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -60,7 +102,10 @@
       "followups_reserved": 1500,
       "plan_share": 0.6,
       "rank": 1,
-      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3 | unserved=1300 reason=supply"
+      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3",
+      "unserved": 1300,
+      "unserved_reason": "supply",
+      "supply_released": 780
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -72,7 +117,10 @@
       "followups_reserved": 750,
       "plan_share": 0.3,
       "rank": 1,
-      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3 | unserved=1300 reason=supply"
+      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 390
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -84,7 +132,10 @@
       "followups_reserved": 750,
       "plan_share": 0.1,
       "rank": 1,
-      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3 | unserved=1300 reason=supply"
+      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 130
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -96,7 +147,10 @@
       "followups_reserved": 0,
       "plan_share": 0.6,
       "rank": 1,
-      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3 | unserved=1000 reason=max_intro_share"
+      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3",
+      "unserved": 1000,
+      "unserved_reason": "max_intro_share",
+      "supply_released": 0
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -108,7 +162,10 @@
       "followups_reserved": 0,
       "plan_share": 0.4,
       "rank": 1,
-      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3 | unserved=1000 reason=max_intro_share"
+      "rank_reason": "tier=1 contribution=$9.40/1k(mature) domains=3",
+      "unserved": 0,
+      "unserved_reason": "",
+      "supply_released": 0
     },
     {
       "day": "2026-09-10T00:00:00-06:00",
@@ -120,7 +177,10 @@
       "followups_reserved": 0,
       "plan_share": 1,
       "rank": 3,
-      "rank_reason": "tier=2 contribution=$4.10/1k(mature) domains=1 | unserved=3800 reason=supply"
+      "rank_reason": "tier=2 contribution=$4.10/1k(mature) domains=1",
+      "unserved": 3800,
+      "unserved_reason": "supply",
+      "supply_released": 2600
     }
   ],
   "lanes": [
@@ -133,6 +193,8 @@
       "awarded_provisional": 0,
       "followups_due": 1000,
       "followups_reserved": 1000,
+      "released": 3100,
+      "reclaimed": 0,
       "unserved": 3100,
       "unserved_reason": "supply",
       "rank": 2
@@ -146,6 +208,8 @@
       "awarded_provisional": 0,
       "followups_due": 0,
       "followups_reserved": 0,
+      "released": 0,
+      "reclaimed": 0,
       "unserved": 2000,
       "unserved_reason": "negative_contribution",
       "rank": 4
@@ -154,13 +218,15 @@
       "lane": "probe_v9",
       "isp": "aol",
       "desired": 3000,
-      "awarded_capacity": 200,
-      "awarded_firm": 200,
+      "awarded_capacity": 400,
+      "awarded_firm": 400,
       "awarded_provisional": 0,
       "followups_due": 0,
       "followups_reserved": 0,
-      "unserved": 2800,
-      "unserved_reason": "domain_capacity",
+      "released": 0,
+      "reclaimed": 200,
+      "unserved": 2600,
+      "unserved_reason": "supply_reclaim",
       "rank": 5
     },
     {
@@ -172,6 +238,8 @@
       "awarded_provisional": 1700,
       "followups_due": 3000,
       "followups_reserved": 3000,
+      "released": 1300,
+      "reclaimed": 0,
       "unserved": 1300,
       "unserved_reason": "supply",
       "rank": 1
@@ -185,6 +253,8 @@
       "awarded_provisional": 0,
       "followups_due": 0,
       "followups_reserved": 0,
+      "released": 0,
+      "reclaimed": 0,
       "unserved": 1000,
       "unserved_reason": "max_intro_share",
       "rank": 1
@@ -198,6 +268,8 @@
       "awarded_provisional": 1200,
       "followups_due": 0,
       "followups_reserved": 0,
+      "released": 2600,
+      "reclaimed": 0,
       "unserved": 3800,
       "unserved_reason": "supply",
       "rank": 3
@@ -262,5 +334,8 @@
     "em.discountblog.com|aol": 3690,
     "em.historythinking.com|aol": 2250,
     "em.myownhealth.net|aol": 1060
+  },
+  "supply_reclaimed": {
+    "em.discountblog.com|aol": 200
   }
 }

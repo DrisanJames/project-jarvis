@@ -216,6 +216,7 @@ const (
 	UnservedDomainCapacity       = "domain_capacity"
 	UnservedExplorationCap       = "exploration_cap"
 	UnservedSupply               = "supply"
+	UnservedSupplyReclaim        = "supply_reclaim"
 	UnservedDailyCeiling         = "daily_ceiling"
 )
 
@@ -297,6 +298,21 @@ type PlanRow struct {
 	PlanShare         float64   `json:"plan_share"`
 	Rank              int       `json:"rank"`
 	RankReason        string    `json:"rank_reason"`
+
+	// Unserved / UnservedReason are §2.5 step 7, now real columns (WP1
+	// addendum). They are a lane x ISP quantity, not a per-domain one — the
+	// lane's demand is never expressed per domain — so they are written on the
+	// cell's ANCHOR ROW ONLY (its lowest-sorted sending domain) and are 0/""
+	// on its other rows. That keeps SUM(unserved) correct at every grain;
+	// denormalising the same figure onto every row would triple-count a
+	// three-domain lane the first time anyone aggregates it.
+	Unserved       int    `json:"unserved"`
+	UnservedReason string `json:"unserved_reason"`
+
+	// SupplyReleased is what THIS cell released in step 6: capacity it was
+	// awarded in step 5 that its supply could not back. Per row, so it sums
+	// cleanly by domain, by lane, or across the estate.
+	SupplyReleased int `json:"supply_released"`
 }
 
 // LaneAward is the lane × ISP roll-up: what was wanted, what was awarded, what
@@ -310,9 +326,14 @@ type LaneAward struct {
 	AwardedProvisional int    `json:"awarded_provisional"`
 	FollowupsDue       int    `json:"followups_due"`
 	FollowupsReserved  int    `json:"followups_reserved"`
-	Unserved           int    `json:"unserved"`
-	UnservedReason     string `json:"unserved_reason"`
-	Rank               int    `json:"rank"`
+	// Released is what step 6 handed back; Reclaimed is what step 6b took from
+	// other lanes' releases. A cell can do both (release its own unbacked
+	// capacity and gain none back).
+	Released       int    `json:"released"`
+	Reclaimed      int    `json:"reclaimed"`
+	Unserved       int    `json:"unserved"`
+	UnservedReason string `json:"unserved_reason"`
+	Rank           int    `json:"rank"`
 }
 
 // RankedLane is one lane's frozen rank and the reason for it (§2.5 step 8).
@@ -345,8 +366,13 @@ type Plan struct {
 	GovernorZero map[DomainISP]string `json:"governor_zero,omitempty"`
 
 	// SupplyReleased is capacity awarded in step 5 that step 6's supply check
-	// could not back. It is reported, not re-offered — see the note on assign().
+	// could not back, per domain x ISP — GROSS, before step 6b re-offers it.
 	SupplyReleased map[DomainISP]int `json:"supply_released,omitempty"`
+
+	// SupplyReclaimed is what step 6b actually re-awarded out of that release.
+	// Released minus reclaimed is the capacity that stayed idle for the day,
+	// which is the number an operator acts on.
+	SupplyReclaimed map[DomainISP]int `json:"supply_reclaimed,omitempty"`
 }
 
 // TotalFirm / TotalProvisional / TotalUnserved are the estate roll-ups §6's
@@ -373,6 +399,25 @@ func (p *Plan) TotalFollowupsReserved() int {
 	n := 0
 	for _, r := range p.Rows {
 		n += r.FollowupsReserved
+	}
+	return n
+}
+
+// TotalReleased is the gross capacity step 6 handed back across the estate.
+func (p *Plan) TotalReleased() int {
+	n := 0
+	for _, v := range p.SupplyReleased {
+		n += v
+	}
+	return n
+}
+
+// TotalReclaimed is what step 6b re-awarded out of that. Released minus
+// reclaimed is the capacity that stayed idle for the day.
+func (p *Plan) TotalReclaimed() int {
+	n := 0
+	for _, v := range p.SupplyReclaimed {
+		n += v
 	}
 	return n
 }
@@ -409,23 +454,26 @@ type cell struct {
 	earliestDueHour   int
 
 	awardedCapacity int
+	released        map[string]int
+	reclaimed       int
 	unservedReason  string
 	blocked         string
 }
 
-// KNOWN LIMITATION, reported to the lead rather than silently patched:
-// §2.5 runs step 5 (assignment) before step 6 (the firm/provisional supply
-// check). A lane can therefore be awarded domain capacity that supply cannot
-// back, and the doc specifies no second pass to re-offer it. assign() follows
-// the doc literally and records the shortfall in Plan.SupplyReleased so the
-// operator can see idle capacity next to an unserved lane, instead of the
-// planner quietly inventing a redistribution rule the design does not have.
+// Step 6b (ruled 2026-09-03) closes what was WP6's reported limitation: §2.5
+// assigned capacity (step 5) before checking supply (step 6), so a lane could
+// hold capacity its inventory could not back while a later lane went unserved.
+// 6b returns that capacity to its domain x ISP pool and re-offers it ONCE, in
+// rank order. One pass, deliberately: a loop would let a chain of supply-short
+// lanes churn the whole plan, and the plan has to be explainable to an operator
+// at 06:00.
 func assign(in Inputs) Plan {
 	out := Plan{
-		Day:            dayOf(in.Day),
-		FrozenAt:       in.Now,
-		GovernorZero:   map[DomainISP]string{},
-		SupplyReleased: map[DomainISP]int{},
+		Day:             dayOf(in.Day),
+		FrozenAt:        in.Now,
+		GovernorZero:    map[DomainISP]string{},
+		SupplyReleased:  map[DomainISP]int{},
+		SupplyReclaimed: map[DomainISP]int{},
 	}
 	if in.Contracts == nil {
 		return out
@@ -497,6 +545,7 @@ func assign(in Inputs) Plan {
 				followups:        map[string]int{},
 				firm:             map[string]int{},
 				provisional:      map[string]int{},
+				released:         map[string]int{},
 				followupsDue:     in.FollowupsDue[key],
 				earliestDueHour:  earliestDueHour(in.FollowupsDueByHour[key]),
 			}
@@ -648,6 +697,20 @@ func assign(in Inputs) Plan {
 		}
 	}
 
+	// demand_mode='consume_available' bounds a lane across ALL its ISPs for the
+	// whole day, so the remaining budget has to survive from step 5 into step 6b.
+	// Scoped here rather than inside the rank loop: a reclaim that forgot the
+	// ceiling would let a deliberately capped lane mail several times its limit.
+	laneBudgetLeft := map[string]int{}
+	for _, laneName := range laneNames {
+		d := in.Contracts.Dispatches[laneName]
+		budget := math.MaxInt
+		if d != nil && d.DemandMode == DemandModeConsumeAvailable && d.DailyCeiling != nil {
+			budget = max(*d.DailyCeiling, 0)
+		}
+		laneBudgetLeft[laneName] = budget
+	}
+
 	// Main pass, then the exploration pass. Tier-9 lanes never take from the
 	// main pool and never from the follow-up reserve (§5.3).
 	for _, phase := range []bool{false, true} {
@@ -663,18 +726,13 @@ func assign(in Inputs) Plan {
 				}
 				continue
 			}
-			disp := in.Contracts.Dispatches[r.Lane]
-			laneBudget := math.MaxInt
-			if disp != nil && disp.DemandMode == DemandModeConsumeAvailable && disp.DailyCeiling != nil {
-				laneBudget = max(*disp.DailyCeiling, 0)
-			}
 			for _, c := range cellsByLane[r.Lane] {
 				if c.blocked != "" || c.desired <= 0 {
 					continue
 				}
 				need := c.desired
-				if need > laneBudget {
-					need = laneBudget
+				if need > laneBudgetLeft[r.Lane] {
+					need = laneBudgetLeft[r.Lane]
 					c.unservedReason = UnservedDailyCeiling
 				}
 				flexible := len(c.domains) > 1
@@ -747,8 +805,8 @@ func assign(in Inputs) Plan {
 						soleReserve[k] = max(soleReserve[k]-take, 0)
 					}
 					need -= take
-					if laneBudget != math.MaxInt {
-						laneBudget -= take
+					if laneBudgetLeft[r.Lane] != math.MaxInt {
+						laneBudgetLeft[r.Lane] -= take
 					}
 					// This lane's OWN follow-up obligation displaced its own
 					// intros on this domain. Another lane's follow-ups
@@ -784,50 +842,145 @@ func assign(in Inputs) Plan {
 			if c.awardedCapacity <= 0 {
 				continue
 			}
-			key := LaneISP{Lane: c.lane, ISP: c.isp}
-			y := yieldFor(in.Yields, c.isp)
-			firmCap := max(in.FreshMailable[key], 0)
-			remailCredit := 0
-			if inv != nil && inv.RemailEnabled {
-				remailCredit = min(max(in.RemailEligible[key], 0),
-					introShareCap(inv.MaxRemailShare, c.awardedCapacity))
-			}
-			provCap := int(math.Floor(float64(max(in.PendingEO[key], 0))*y)) + remailCredit
+			splitCellSupply(c, in, inv)
+		}
+	}
 
-			firmTotal := min(c.awardedCapacity, firmCap)
-			provTotal := min(c.awardedCapacity-firmTotal, max(provCap, 0))
-
-			// Split both halves across the domains proportionally to each
-			// domain's award, largest remainder, capped by the award itself.
-			doms := make([]string, 0, len(c.awards))
-			for d := range c.awards {
-				doms = append(doms, d)
-			}
-			sort.Strings(doms)
-			weights := make([]int, len(doms))
-			for i, d := range doms {
-				weights[i] = c.awards[d]
-			}
-			firmParts := apportion(firmTotal, weights, weights)
-			rest := make([]int, len(doms))
-			for i := range doms {
-				rest[i] = weights[i] - firmParts[i]
-			}
-			provParts := apportion(provTotal, rest, rest)
-			for i, d := range doms {
-				c.firm[d] = firmParts[i]
-				c.provisional[d] = provParts[i]
-				if short := weights[i] - firmParts[i] - provParts[i]; short > 0 {
-					out.SupplyReleased[DomainISP{Domain: d, ISP: c.isp}] += short
+	// ---- step 6b: reclaim unbacked capacity, ONE pass -----------------------
+	//
+	// The pool is exactly what step 6 released — not the whole of `remaining`.
+	// Re-offering leftover step-5 capacity too would quietly turn 6b into a
+	// second water-fill and undo the max_intro_share and scarcity decisions
+	// step 5 already made.
+	reclaimPool := map[DomainISP]int{}
+	for _, laneName := range laneNames {
+		for _, c := range cellsByLane[laneName] {
+			for _, d := range sortedKeys(c.released) {
+				n := c.released[d]
+				if n <= 0 {
+					continue
 				}
+				k := DomainISP{Domain: d, ISP: c.isp}
+				reclaimPool[k] += n
+				remaining[k] += n
+				out.SupplyReleased[k] += n
 			}
-			if c.awardedCapacity-firmTotal-provTotal > 0 {
-				// Supply bound the award. It overrides a capacity reason only
-				// when it is the larger shortfall — the operator needs the
-				// constraint that actually cost the most mail.
-				capShort := c.desired - c.awardedCapacity
-				if c.unservedReason == "" || c.awardedCapacity-firmTotal-provTotal >= capShort {
-					c.unservedReason = UnservedSupply
+		}
+	}
+
+	if len(reclaimPool) > 0 {
+		for _, r := range ranked {
+			if r.Blocked != "" {
+				continue
+			}
+			inv := in.Contracts.Inventories[r.Lane]
+			for _, c := range cellsByLane[r.Lane] {
+				if c.blocked != "" {
+					continue
+				}
+				// "still has unserved demand": step 5 could not give it
+				// everything it asked for.
+				capacityShort := c.desired - c.awardedCapacity
+				if capacityShort <= 0 {
+					continue
+				}
+				// "AND mailable supply on that ISP": the most capacity this
+				// cell's inventory could EVER back. A lane that is supply-bound
+				// rather than capacity-bound gains nothing from a reclaim and
+				// must not take capacity from a lane that could mail it.
+				headroom := supplyCeilingCap(c, in, inv) - c.awardedCapacity
+				if headroom <= 0 {
+					continue
+				}
+				// The daily ceiling is a DAY bound, not a step-5 bound: a
+				// reclaim that ignored it would hand a deliberately capped lane
+				// several times its limit (regression-guarded).
+				need := min(capacityShort, headroom)
+				if need > laneBudgetLeft[r.Lane] {
+					need = laneBudgetLeft[r.Lane]
+					if c.unservedReason == "" {
+						c.unservedReason = UnservedDailyCeiling
+					}
+				}
+				if need <= 0 {
+					continue
+				}
+				flexible := len(c.domains) > 1
+				order := append([]string(nil), c.domains...)
+				sort.SliceStable(order, func(i, j int) bool {
+					a := DomainISP{Domain: order[i], ISP: c.isp}
+					b := DomainISP{Domain: order[j], ISP: c.isp}
+					if contention[a] != contention[b] {
+						return contention[a] < contention[b]
+					}
+					return order[i] < order[j]
+				})
+				for _, d := range order {
+					if need <= 0 {
+						break
+					}
+					k := DomainISP{Domain: d, ISP: c.isp}
+					pool := reclaimPool[k]
+					if pool <= 0 {
+						continue
+					}
+					avail := min(pool, remaining[k])
+					// The scarcity reservation still binds: reclaimed capacity
+					// on a scarce domain is not a back door around it.
+					if flexible && soleReserve[k] > 0 {
+						avail -= soleReserve[k]
+					}
+					if r.Exploration {
+						// §5.3 is policy, not a step-5 detail. A reclaim that
+						// let a tier-9 lane past exploration_share would be a
+						// test lane taking estate capacity through the back door.
+						laneCap := introShareCap(c.explorationShare, capacity[k]) - explorationUsed[k]
+						aggCap := explorationCapAt[k] - explorationUsed[k]
+						avail = min(avail, max(min(laneCap, aggCap), 0))
+					}
+					if introUsed[k] == nil {
+						introUsed[k] = map[string]int{}
+					}
+					room := introShareCap(c.maxIntroShare, capacity[k]) - introUsed[k][c.lane]
+					take := min(need, min(max(avail, 0), max(room, 0)))
+					if take <= 0 {
+						continue
+					}
+					c.awards[d] += take
+					c.awardedCapacity += take
+					c.reclaimed += take
+					remaining[k] -= take
+					reclaimPool[k] -= take
+					introUsed[k][c.lane] += take
+					if r.Exploration {
+						explorationUsed[k] += take
+					}
+					if !flexible && soleReserve[k] > 0 {
+						soleReserve[k] = max(soleReserve[k]-take, 0)
+					}
+					out.SupplyReclaimed[k] += take
+					need -= take
+					if laneBudgetLeft[r.Lane] != math.MaxInt {
+						laneBudgetLeft[r.Lane] -= take
+					}
+				}
+				if c.reclaimed > 0 {
+					// Re-split against the larger award. Anything the cell
+					// STILL cannot back is released again and recorded, but it
+					// is NOT re-offered — 6b is one pass.
+					for d := range c.released {
+						delete(c.released, d)
+					}
+					splitCellSupply(c, in, inv)
+					for _, d := range sortedKeys(c.released) {
+						if n := c.released[d]; n > 0 {
+							out.SupplyReleased[DomainISP{Domain: d, ISP: c.isp}] += n
+						}
+					}
+					// The operator needs to see that this lane was topped up
+					// from another lane's release; if it is still short, that
+					// is the reason worth showing.
+					c.unservedReason = UnservedSupplyReclaim
 				}
 			}
 		}
@@ -836,12 +989,15 @@ func assign(in Inputs) Plan {
 	// ---- step 7 + 8: rows, roll-ups, freeze --------------------------------
 	for _, laneName := range laneNames {
 		for _, c := range cellsByLane[laneName] {
-			firm, prov := 0, 0
+			firm, prov, released := 0, 0, 0
 			for _, v := range c.firm {
 				firm += v
 			}
 			for _, v := range c.provisional {
 				prov += v
+			}
+			for _, v := range c.released {
+				released += v
 			}
 			unserved := c.desired - firm - prov
 			if unserved < 0 {
@@ -867,6 +1023,8 @@ func assign(in Inputs) Plan {
 				AwardedProvisional: prov,
 				FollowupsDue:       c.followupsDue,
 				FollowupsReserved:  c.followupsReserved,
+				Released:           released,
+				Reclaimed:          c.reclaimed,
 				Unserved:           unserved,
 				UnservedReason:     reason,
 				Rank:               rankOf[c.lane],
@@ -887,22 +1045,26 @@ func assign(in Inputs) Plan {
 			for d := range c.followups {
 				doms[d] = struct{}{}
 			}
+			for d := range c.released {
+				doms[d] = struct{}{}
+			}
 			names := make([]string, 0, len(doms))
 			for d := range doms {
 				names = append(names, d)
 			}
 			sort.Strings(names)
+			rows := make([]PlanRow, 0, len(names))
 			total := firm + prov
 			for _, d := range names {
-				rf, rp, rfu := c.firm[d], c.provisional[d], c.followups[d]
-				if rf == 0 && rp == 0 && rfu == 0 {
+				rf, rp, rfu, rrel := c.firm[d], c.provisional[d], c.followups[d], c.released[d]
+				if rf == 0 && rp == 0 && rfu == 0 && rrel == 0 {
 					continue
 				}
 				share := 0.0
 				if total > 0 {
 					share = round4(float64(rf+rp) / float64(total))
 				}
-				out.Rows = append(out.Rows, PlanRow{
+				rows = append(rows, PlanRow{
 					Day:               out.Day,
 					Lane:              c.lane,
 					ISP:               c.isp,
@@ -912,9 +1074,39 @@ func assign(in Inputs) Plan {
 					FollowupsReserved: rfu,
 					PlanShare:         share,
 					Rank:              rankOf[c.lane],
-					RankReason:        composeRankReason(reasonOf[c.lane], unserved, reason),
+					RankReason:        reasonOf[c.lane],
+					SupplyReleased:    rrel,
 				})
 			}
+			// A cell with unserved demand and no row of its own would lose its
+			// binding reason entirely — a blocked lane is exactly the case an
+			// operator needs to see. Emit a zero-award anchor row on its first
+			// capable domain rather than inventing a sentinel sending_domain.
+			if len(rows) == 0 && unserved > 0 && len(c.domains) > 0 {
+				rows = append(rows, PlanRow{
+					Day:           out.Day,
+					Lane:          c.lane,
+					ISP:           c.isp,
+					SendingDomain: c.domains[0],
+					Rank:          rankOf[c.lane],
+					RankReason:    reasonOf[c.lane],
+				})
+			}
+			// The unserved figure belongs to the lane x ISP, so it goes on ONE
+			// row only. Writing it on every row would triple-count a
+			// three-domain lane the first time anyone SUMs the column.
+			if len(rows) > 0 && unserved > 0 {
+				rows[0].Unserved = unserved
+				rows[0].UnservedReason = reason
+			}
+			if len(rows) == 0 && unserved > 0 {
+				// No capable domain at all (isp_excluded / no_allowed_domain).
+				// drip_lane_balance carries the number; nothing carries the
+				// reason, so say so rather than dropping it silently.
+				log.Printf("[DripPlanner] %s/%s: %d unserved (%s) has NO plan row to carry it — the cell has no capable domain; the reason survives only in this log",
+					c.lane, c.isp, unserved, reason)
+			}
+			out.Rows = append(out.Rows, rows...)
 		}
 	}
 	sort.SliceStable(out.Lanes, func(i, j int) bool {
@@ -934,6 +1126,78 @@ func assign(in Inputs) Plan {
 		return a.SendingDomain < b.SendingDomain
 	})
 	return out
+}
+
+// splitCellSupply is §2.5 step 6 for one lane x ISP cell: split its step-5 award
+// into firm (mailable now) and provisional (pending EO x yield + remail credit),
+// spread both across the cell's domains proportionally to each domain's award,
+// and record what supply could NOT back in c.released.
+//
+// It is idempotent on c.firm/c.provisional/c.released, so step 6b can call it a
+// second time after a reclaim has grown the award.
+func splitCellSupply(c *cell, in Inputs, inv *InventoryContract) {
+	key := LaneISP{Lane: c.lane, ISP: c.isp}
+	y := yieldFor(in.Yields, c.isp)
+	firmCap := max(in.FreshMailable[key], 0)
+	remailCredit := 0
+	if inv != nil && inv.RemailEnabled {
+		remailCredit = min(max(in.RemailEligible[key], 0),
+			introShareCap(inv.MaxRemailShare, c.awardedCapacity))
+	}
+	provCap := int(math.Floor(float64(max(in.PendingEO[key], 0))*y)) + remailCredit
+
+	firmTotal := min(c.awardedCapacity, firmCap)
+	provTotal := min(c.awardedCapacity-firmTotal, max(provCap, 0))
+
+	doms := make([]string, 0, len(c.awards))
+	for d := range c.awards {
+		doms = append(doms, d)
+	}
+	sort.Strings(doms)
+	weights := make([]int, len(doms))
+	for i, d := range doms {
+		weights[i] = c.awards[d]
+	}
+	firmParts := apportion(firmTotal, weights, weights)
+	rest := make([]int, len(doms))
+	for i := range doms {
+		rest[i] = weights[i] - firmParts[i]
+	}
+	provParts := apportion(provTotal, rest, rest)
+	for i, d := range doms {
+		c.firm[d] = firmParts[i]
+		c.provisional[d] = provParts[i]
+		if short := weights[i] - firmParts[i] - provParts[i]; short > 0 {
+			c.released[d] = short
+		}
+	}
+	if c.awardedCapacity-firmTotal-provTotal > 0 {
+		// Supply bound the award. It overrides a capacity reason only when it
+		// is the larger shortfall — the operator needs the constraint that
+		// actually cost the most mail.
+		capShort := c.desired - c.awardedCapacity
+		if c.unservedReason == "" || c.awardedCapacity-firmTotal-provTotal >= capShort {
+			c.unservedReason = UnservedSupply
+		}
+	}
+}
+
+// supplyCeilingCap is the largest award this cell's inventory could ever back:
+// fresh mailable + pending EO x yield + every remail-eligible record. Step 6b
+// uses it as the "AND mailable supply" gate, so a supply-bound lane cannot take
+// reclaimed capacity away from a lane that could actually mail it.
+//
+// It is an UPPER bound (the remail term is additionally share-capped against the
+// final award inside splitCellSupply), so 6b can still take slightly more than
+// it converts. That residue is released again and recorded — never re-offered.
+func supplyCeilingCap(c *cell, in Inputs, inv *InventoryContract) int {
+	key := LaneISP{Lane: c.lane, ISP: c.isp}
+	y := yieldFor(in.Yields, c.isp)
+	n := max(in.FreshMailable[key], 0) + int(math.Floor(float64(max(in.PendingEO[key], 0))*y))
+	if inv != nil && inv.RemailEnabled {
+		n += max(in.RemailEligible[key], 0)
+	}
+	return n
 }
 
 // rankLanes implements §5.2: hard gates, then operator tier 1->3, then mature
@@ -1049,24 +1313,6 @@ func rankReason(e RankedLane, in Inputs) string {
 		parts = append(parts, "blocked="+e.Blocked)
 	}
 	return strings.Join(parts, " ")
-}
-
-// composeRankReason folds the §2.5 step-7 unserved record into rank_reason.
-//
-// SCHEMA GAP, reported to the lead: drip_daily_plan (WP1) has no `unserved` /
-// `unserved_reason` column, and WP6 is not permitted to edit main.go. The
-// binding reason step 7 requires therefore rides in rank_reason, which is the
-// only TEXT column on the row. It should become two real columns in a WP1
-// addendum; until then this is the durable record.
-func composeRankReason(base string, unserved int, reason string) string {
-	if unserved <= 0 || reason == "" {
-		return base
-	}
-	suffix := fmt.Sprintf("unserved=%d reason=%s", unserved, reason)
-	if base == "" {
-		return suffix
-	}
-	return base + " | " + suffix
 }
 
 // resolveDomains maps a dispatch contract's allowed_domains onto sending
@@ -1251,6 +1497,9 @@ const DailyPlanDDL = `CREATE TABLE IF NOT EXISTS drip_daily_plan (
 		plan_share          NUMERIC NOT NULL DEFAULT 0,
 		rank                INT NOT NULL DEFAULT 0,
 		rank_reason         TEXT NOT NULL DEFAULT '',
+		unserved            INT NOT NULL DEFAULT 0,       -- §2.5 step 7: desired − firm − provisional for this cell
+		unserved_reason     TEXT NOT NULL DEFAULT '',     -- supply | domain_capacity | max_intro_share | followup_reserve | negative_contribution | governor | no_contract
+		supply_released     INT NOT NULL DEFAULT 0,       -- capacity awarded in step 5 that supply could not back and step 6b re-offered
 		frozen_at           TIMESTAMPTZ,
 		PRIMARY KEY (day, lane, isp, sending_domain)
 	)`
@@ -1261,9 +1510,12 @@ const DailyPlanDDL = `CREATE TABLE IF NOT EXISTS drip_daily_plan (
 // 5 s statement budget.
 const maxPlanRows = 50000
 
-// planInsertChunk keeps one multi-VALUES insert under Postgres' 65535-parameter
-// ceiling (11 params per row).
-const planInsertChunk = 200
+// planInsertCols is the number of bound parameters per plan row; planInsertChunk
+// keeps one multi-VALUES insert well under Postgres' 65535-parameter ceiling.
+const (
+	planInsertCols  = 14
+	planInsertChunk = 200
+)
 
 // DefaultPlannerTimeout is the per-query budget for the read phase. The planner
 // runs at 00:05 MT off the hot path, and its pcq aggregates are measurably
@@ -1417,9 +1669,10 @@ func (p *Planner) Plan(ctx context.Context, db *sql.DB, day time.Time, replan bo
 		log.Printf("[DripPlanner] %s produced ZERO plan rows (%d lane cells seen) — no lane was awarded capacity; check allowed_domains, desired_daily_intros and the domain contracts. The day is NOT frozen and the next call will recompute.",
 			dayKey(day), len(plan.Lanes))
 	}
-	log.Printf("[DripPlanner] %s frozen: %d rows, %d lane cells, firm=%d provisional=%d followups=%d unserved=%d replan=%t",
+	log.Printf("[DripPlanner] %s frozen: %d rows, %d lane cells, firm=%d provisional=%d followups=%d unserved=%d released=%d reclaimed=%d idle=%d replan=%t",
 		dayKey(day), len(plan.Rows), len(plan.Lanes), plan.TotalFirm(), plan.TotalProvisional(),
-		plan.TotalFollowupsReserved(), plan.TotalUnserved(), replan)
+		plan.TotalFollowupsReserved(), plan.TotalUnserved(),
+		plan.TotalReleased(), plan.TotalReclaimed(), plan.TotalReleased()-plan.TotalReclaimed(), replan)
 	return &plan, nil
 }
 
@@ -1748,17 +2001,19 @@ func (p *Planner) store(ctx context.Context, db *sql.DB, contracts *ActiveSet, p
 		chunk := plan.Rows[start:end]
 		var sb strings.Builder
 		sb.WriteString(`INSERT INTO drip_daily_plan
-			(day, lane, isp, sending_domain, award_firm, award_provisional, followups_reserved, plan_share, rank, rank_reason, frozen_at) VALUES `)
-		args := make([]any, 0, len(chunk)*11)
+			(day, lane, isp, sending_domain, award_firm, award_provisional, followups_reserved, plan_share,
+			 rank, rank_reason, unserved, unserved_reason, supply_released, frozen_at) VALUES `)
+		args := make([]any, 0, len(chunk)*planInsertCols)
 		for i, r := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			b := i * 11
-			fmt.Fprintf(&sb, "($%d::date,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-				b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11)
+			b := i * planInsertCols
+			fmt.Fprintf(&sb, "($%d::date,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				b+1, b+2, b+3, b+4, b+5, b+6, b+7, b+8, b+9, b+10, b+11, b+12, b+13, b+14)
 			args = append(args, key, r.Lane, r.ISP, r.SendingDomain, r.AwardFirm, r.AwardProvisional,
-				r.FollowupsReserved, r.PlanShare, r.Rank, r.RankReason, plan.FrozenAt)
+				r.FollowupsReserved, r.PlanShare, r.Rank, r.RankReason,
+				r.Unserved, r.UnservedReason, r.SupplyReleased, plan.FrozenAt)
 		}
 		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
 			return fmt.Errorf("dripsupply: planner insert rows %d-%d: %w", start, end, err)
@@ -1795,7 +2050,7 @@ func LoadStoredPlan(ctx context.Context, q Queryer, day time.Time) (*Plan, bool,
 	day = dayOf(day)
 	rows, err := q.QueryContext(ctx, `
 		SELECT lane, isp, sending_domain, award_firm, award_provisional, followups_reserved,
-		       plan_share, rank, rank_reason, frozen_at
+		       plan_share, rank, rank_reason, unserved, unserved_reason, supply_released, frozen_at
 		FROM drip_daily_plan
 		WHERE day = $1::date AND frozen_at IS NOT NULL
 		ORDER BY lane, isp, sending_domain
@@ -1811,7 +2066,8 @@ func LoadStoredPlan(ctx context.Context, q Queryer, day time.Time) (*Plan, bool,
 		var r PlanRow
 		var frozen sql.NullTime
 		if err := rows.Scan(&r.Lane, &r.ISP, &r.SendingDomain, &r.AwardFirm, &r.AwardProvisional,
-			&r.FollowupsReserved, &r.PlanShare, &r.Rank, &r.RankReason, &frozen); err != nil {
+			&r.FollowupsReserved, &r.PlanShare, &r.Rank, &r.RankReason,
+			&r.Unserved, &r.UnservedReason, &r.SupplyReleased, &frozen); err != nil {
 			return nil, false, fmt.Errorf("dripsupply: load stored plan scan: %w", err)
 		}
 		r.Day = day
@@ -1830,6 +2086,12 @@ func LoadStoredPlan(ctx context.Context, q Queryer, day time.Time) (*Plan, bool,
 		a.AwardedProvisional += r.AwardProvisional
 		a.FollowupsReserved += r.FollowupsReserved
 		a.AwardedCapacity += r.AwardFirm + r.AwardProvisional
+		a.Released += r.SupplyReleased
+		// unserved lives on the anchor row only, so this is a sum of one.
+		a.Unserved += r.Unserved
+		if r.UnservedReason != "" {
+			a.UnservedReason = r.UnservedReason
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("dripsupply: load stored plan rows: %w", err)

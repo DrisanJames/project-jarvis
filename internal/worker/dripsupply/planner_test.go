@@ -1249,3 +1249,570 @@ func TestAssign_FollowupsNegativeControl_RemainingIsStillACap(t *testing.T) {
 		t.Errorf("lane_b placed %d of its 400 due follow-ups", gotDB+gotHT)
 	}
 }
+
+// -----------------------------------------------------------------------------
+// §2.5 step 6b — supply reclaim (ruled 2026-09-03)
+// -----------------------------------------------------------------------------
+
+// reclaimInputs: one domain with 1000 aol capacity.
+//
+//	lane_a (tier 1) wins all 1000 in step 5 but can only back `aFresh` of it,
+//	       so it releases the rest.
+//	lane_b (tier 2) was shut out by capacity in step 5 and has `bFresh` mailable.
+func reclaimInputs(t *testing.T, aFresh, bFresh int) Inputs {
+	in := blankInputs(t)
+	in.Contracts = newSet(in.Day,
+		[]*DomainContract{planDomain("db", gDB, map[string]int{"aol": 1000})},
+		[]*DispatchContract{
+			planDispatch(dispatchSpec{lane: "lane_a", tier: 1, desired: map[string]int{"aol": 1000},
+				allowed: []string{"db"}, introShare: 1.0}),
+			planDispatch(dispatchSpec{lane: "lane_b", tier: 2, desired: map[string]int{"aol": 1000},
+				allowed: []string{"db"}, introShare: 1.0}),
+		},
+		[]*InventoryContract{planInventory("lane_a", false, 0.25), planInventory("lane_b", false, 0.25)})
+	in.FreshMailable = map[LaneISP]int{{"lane_a", "aol"}: aFresh, {"lane_b", "aol"}: bFresh}
+	in.Ranks = map[string]LaneRank{
+		"lane_a": {ContributionECPM: 9, Mature: true},
+		"lane_b": {ContributionECPM: 4, Mature: true},
+	}
+	return in
+}
+
+func TestAssign_SupplyReclaimReoffersUnbackedCapacity(t *testing.T) {
+	p := assign(reclaimInputs(t, 200, 1000))
+	k := DomainISP{Domain: gDB, ISP: "aol"}
+
+	a := laneAward(t, p, "lane_a", "aol")
+	if a.AwardedCapacity != 1000 || a.AwardedFirm != 200 || a.Released != 800 {
+		t.Fatalf("fixture: lane_a capacity=%d firm=%d released=%d, want 1000/200/800",
+			a.AwardedCapacity, a.AwardedFirm, a.Released)
+	}
+	b := laneAward(t, p, "lane_b", "aol")
+	if b.Reclaimed != 800 {
+		t.Errorf("lane_b reclaimed=%d, want 800 — the capacity lane_a could not back must be re-offered", b.Reclaimed)
+	}
+	if b.AwardedFirm != 800 {
+		t.Errorf("lane_b awarded_firm=%d, want 800", b.AwardedFirm)
+	}
+	if b.Unserved != 200 || b.UnservedReason != UnservedSupplyReclaim {
+		t.Errorf("lane_b unserved=%d reason=%q, want 200 / %q", b.Unserved, b.UnservedReason, UnservedSupplyReclaim)
+	}
+	if p.SupplyReleased[k] != 800 {
+		t.Errorf("supply_released[%v]=%d, want 800 (gross)", k, p.SupplyReleased[k])
+	}
+	if p.SupplyReclaimed[k] != 800 {
+		t.Errorf("supply_reclaimed[%v]=%d, want 800", k, p.SupplyReclaimed[k])
+	}
+	if idle := p.TotalReleased() - p.TotalReclaimed(); idle != 0 {
+		t.Errorf("%d messages of capacity stayed idle with a supplied lane waiting for them", idle)
+	}
+	// The row carries the release that produced the reclaim.
+	if got := rowFor(t, p, "lane_a", "aol", gDB).SupplyReleased; got != 800 {
+		t.Errorf("lane_a row supply_released=%d, want 800", got)
+	}
+}
+
+// Negative control: lane_b has NO mailable supply, so the reclaim must not fire
+// and the released capacity stays idle. Without the "AND mailable supply" gate
+// a supply-bound lane would take capacity it can never mail, away from nobody —
+// and the plan would claim an award it cannot execute.
+func TestAssign_SupplyReclaim_NegativeControl_NoSupplyNoReclaim(t *testing.T) {
+	p := assign(reclaimInputs(t, 200, 0))
+	k := DomainISP{Domain: gDB, ISP: "aol"}
+
+	b := laneAward(t, p, "lane_b", "aol")
+	if b.Reclaimed != 0 || b.AwardedCapacity != 0 {
+		t.Errorf("lane_b reclaimed=%d capacity=%d, want 0/0 — a lane with no mailable supply must not reclaim",
+			b.Reclaimed, b.AwardedCapacity)
+	}
+	if len(p.SupplyReclaimed) != 0 {
+		t.Errorf("supply_reclaimed=%v, want empty", p.SupplyReclaimed)
+	}
+	if idle := p.SupplyReleased[k] - p.SupplyReclaimed[k]; idle != 800 {
+		t.Errorf("idle capacity=%d, want the full 800 to stay idle and be visible", idle)
+	}
+}
+
+// Step 6b is ONE pass.
+//
+// The headroom gate normally stops a cell taking more than its inventory can
+// back, so a second-order release needs the one case where the ceiling is a
+// genuine OVER-estimate: a remail-funded lane. supplyCeilingCap counts every
+// remail-eligible record, but splitCellSupply then caps the remail credit at
+// max_remail_share of the FINAL award — so lane_b takes 800 and can back only
+// 0.25 x 800 = 200 of it. The other 600 is released again and recorded, and it
+// must NOT be handed to lane_c however well supplied lane_c is: a loop here
+// would let a chain of supply-short lanes churn the plan into something nobody
+// can explain at 06:00.
+func TestAssign_SupplyReclaimIsBoundedToOnePass(t *testing.T) {
+	in := reclaimInputs(t, 200, 0)
+	in.Contracts.Inventories["lane_b"] = planInventory("lane_b", true, 0.25)
+	in.RemailEligible[LaneISP{"lane_b", "aol"}] = 10000
+
+	in.Contracts.Dispatches["lane_c"] = planDispatch(dispatchSpec{lane: "lane_c", tier: 3,
+		desired: map[string]int{"aol": 1000}, allowed: []string{"db"}, introShare: 1.0})
+	in.Contracts.Inventories["lane_c"] = planInventory("lane_c", false, 0.25)
+	in.FreshMailable[LaneISP{"lane_c", "aol"}] = 1000
+	in.Ranks["lane_c"] = LaneRank{ContributionECPM: 1, Mature: true}
+
+	p := assign(in)
+	b := laneAward(t, p, "lane_b", "aol")
+	if b.Reclaimed != 800 {
+		t.Fatalf("fixture: lane_b reclaimed=%d, want 800", b.Reclaimed)
+	}
+	if b.AwardedProvisional != 200 || b.AwardedFirm != 0 {
+		t.Fatalf("fixture: lane_b firm=%d prov=%d, want 0/200 (0.25 x 800 remail credit)",
+			b.AwardedFirm, b.AwardedProvisional)
+	}
+	if b.Released != 600 {
+		t.Errorf("lane_b released=%d on the re-split, want 600", b.Released)
+	}
+	c := laneAward(t, p, "lane_c", "aol")
+	if c.Reclaimed != 0 || c.AwardedCapacity != 0 {
+		t.Errorf("lane_c reclaimed=%d capacity=%d, want 0/0 — 6b is ONE pass, a second-order release is not re-offered",
+			c.Reclaimed, c.AwardedCapacity)
+	}
+	k := DomainISP{Domain: gDB, ISP: "aol"}
+	if p.SupplyReleased[k] != 1400 {
+		t.Errorf("supply_released=%d, want 1400 (lane_a 800 + lane_b second-order 600)", p.SupplyReleased[k])
+	}
+	if p.SupplyReclaimed[k] != 800 {
+		t.Errorf("supply_reclaimed=%d, want 800", p.SupplyReclaimed[k])
+	}
+}
+
+// Negative control for the headroom gate: in the ordinary (non-remail) case a
+// cell takes ONLY what it can back, so no second-order release exists at all.
+func TestAssign_SupplyReclaim_NegativeControl_HeadroomPreventsOverTaking(t *testing.T) {
+	p := assign(reclaimInputs(t, 200, 300))
+	b := laneAward(t, p, "lane_b", "aol")
+	if b.Reclaimed != 300 {
+		t.Errorf("lane_b reclaimed=%d, want 300 — it must take only what its 300 mailable records can back, not the whole 800 pool", b.Reclaimed)
+	}
+	if b.Released != 0 {
+		t.Errorf("lane_b released=%d after reclaiming, want 0 — the headroom gate should prevent any over-take", b.Released)
+	}
+	k := DomainISP{Domain: gDB, ISP: "aol"}
+	if idle := p.SupplyReleased[k] - p.SupplyReclaimed[k]; idle != 500 {
+		t.Errorf("idle=%d, want 500 (800 released, 300 reclaimed) and visible to the operator", idle)
+	}
+}
+
+// The reclaim is not a back door around the guardrails step 5 applied.
+func TestAssign_SupplyReclaimRespectsMaxIntroShareAndScarcity(t *testing.T) {
+	t.Run("max_intro_share still binds", func(t *testing.T) {
+		in := reclaimInputs(t, 200, 1000)
+		in.Contracts.Dispatches["lane_b"].MaxIntroShare = 0.10 // 100 of 1000
+		p := assign(in)
+		b := laneAward(t, p, "lane_b", "aol")
+		if b.Reclaimed != 100 {
+			t.Errorf("lane_b reclaimed=%d, want 100 (0.10 x 1000) — max_intro_share must bind in 6b too", b.Reclaimed)
+		}
+	})
+
+	t.Run("tier-9 still capped by exploration_share", func(t *testing.T) {
+		in := reclaimInputs(t, 200, 1000)
+		in.Contracts.Dispatches["lane_b"].OperatorPriorityTier = ExplorationTier
+		in.Contracts.Dispatches["lane_b"].ExplorationShare = 0.05 // 50 of 1000
+		p := assign(in)
+		b := laneAward(t, p, "lane_b", "aol")
+		if b.Reclaimed != 50 {
+			t.Errorf("tier-9 lane reclaimed=%d, want 50 (0.05 x 1000) — a reclaim must not be a back door around §5.3", b.Reclaimed)
+		}
+	})
+
+	t.Run("negative control: a blocked lane never reclaims", func(t *testing.T) {
+		in := reclaimInputs(t, 200, 1000)
+		in.Ranks["lane_b"] = LaneRank{ContributionECPM: -3, Mature: true}
+		p := assign(in)
+		b := laneAward(t, p, "lane_b", "aol")
+		if b.Reclaimed != 0 {
+			t.Errorf("a negative-contribution lane reclaimed %d — §5.3 says no discretionary intros, reclaimed or not", b.Reclaimed)
+		}
+	})
+}
+
+// -----------------------------------------------------------------------------
+// The three new drip_daily_plan columns
+// -----------------------------------------------------------------------------
+
+// TestPlanRow_UnservedIsOnTheAnchorRowOnly pins the SUM-safety rule: unserved is
+// a lane x ISP quantity written on ONE row. Denormalising it onto all three of a
+// three-domain lane's rows would report 3x the shortfall the first time WP9
+// aggregates the column.
+func TestPlanRow_UnservedIsOnTheAnchorRowOnly(t *testing.T) {
+	p := assign(goldenInputs(t))
+
+	perCell := map[LaneISP]int{}
+	rowsWithReason := map[LaneISP]int{}
+	for _, r := range p.Rows {
+		k := LaneISP{Lane: r.Lane, ISP: r.ISP}
+		if r.Unserved > 0 {
+			perCell[k]++
+		}
+		if r.UnservedReason != "" {
+			rowsWithReason[k]++
+		}
+		if (r.Unserved > 0) != (r.UnservedReason != "") {
+			t.Errorf("%s/%s/%s: unserved=%d but reason=%q — the two must travel together",
+				r.Lane, r.ISP, r.SendingDomain, r.Unserved, r.UnservedReason)
+		}
+	}
+	for k, n := range perCell {
+		if n != 1 {
+			t.Errorf("%s/%s carries unserved on %d rows, want exactly 1 (the anchor)", k.Lane, k.ISP, n)
+		}
+	}
+	// SUM over rows must equal the lane roll-up, at every grain.
+	sum := 0
+	for _, r := range p.Rows {
+		sum += r.Unserved
+	}
+	if sum != p.TotalUnserved() {
+		t.Errorf("SUM(rows.unserved)=%d but the lane roll-up is %d — the column is not SUM-safe", sum, p.TotalUnserved())
+	}
+	// Every unserved cell in the roll-up is represented by a row.
+	for _, l := range p.Lanes {
+		if l.Unserved == 0 {
+			continue
+		}
+		if rowsWithReason[LaneISP{Lane: l.Lane, ISP: l.ISP}] != 1 {
+			t.Errorf("%s/%s is unserved (%d, %s) but no plan row carries the reason",
+				l.Lane, l.ISP, l.Unserved, l.UnservedReason)
+		}
+	}
+}
+
+// A blocked lane awards nothing and would have no row at all; without an anchor
+// row its binding reason would exist only in memory. dead_lane is exactly that
+// case in the golden fixture.
+func TestPlanRow_BlockedLaneStillGetsAnAnchorRow(t *testing.T) {
+	p := assign(goldenInputs(t))
+	r := rowFor(t, p, "dead_lane", "aol", gHT)
+	if r.AwardFirm != 0 || r.AwardProvisional != 0 || r.FollowupsReserved != 0 {
+		t.Errorf("anchor row for a blocked lane carries awards: %+v", r)
+	}
+	if r.Unserved != 2000 || r.UnservedReason != UnservedNegativeContribution {
+		t.Errorf("anchor row unserved=%d reason=%q, want 2000 / %q", r.Unserved, r.UnservedReason, UnservedNegativeContribution)
+	}
+}
+
+// Negative control for the column move: rank_reason must no longer smuggle the
+// unserved record as a text suffix now that real columns exist.
+func TestPlanRow_RankReasonNoLongerCarriesTheUnservedSuffix(t *testing.T) {
+	p := assign(goldenInputs(t))
+	for _, r := range p.Rows {
+		if strings.Contains(r.RankReason, "unserved=") || strings.Contains(r.RankReason, "|") {
+			t.Errorf("%s/%s/%s rank_reason still carries the suffix: %q",
+				r.Lane, r.ISP, r.SendingDomain, r.RankReason)
+		}
+	}
+	// ...and it is still the lane's actual rank reason, not empty.
+	if got := rowFor(t, p, "refi_heloc", "aol", gDB).RankReason; !strings.HasPrefix(got, "tier=1 ") {
+		t.Errorf("rank_reason = %q, want the lane's rank reason", got)
+	}
+}
+
+// TestDailyPlanDDLMatchesWP1 keeps the package's DDL copy byte-identical to the
+// production statement in cmd/server/main.go. WP6 writes three columns WP1 owns;
+// if the two drift, this fails here instead of as an INSERT error on the 00:05
+// run against a table that does not have them.
+func TestDailyPlanDDLMatchesWP1(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "cmd", "server", "main.go"))
+	if err != nil {
+		t.Skipf("cannot read main.go: %v", err)
+	}
+	const marker = `{"req118_create_drip_daily_plan", ` + "`"
+	i := strings.Index(string(src), marker)
+	if i < 0 {
+		t.Fatal("req118_create_drip_daily_plan not found in cmd/server/main.go")
+	}
+	rest := string(src)[i+len(marker):]
+	j := strings.Index(rest, "`")
+	if j < 0 {
+		t.Fatal("unterminated DDL literal in cmd/server/main.go")
+	}
+	if got, want := DailyPlanDDL, rest[:j]; got != want {
+		t.Errorf("DailyPlanDDL has drifted from WP1.\n--- package copy ---\n%s\n--- cmd/server/main.go ---\n%s", got, want)
+	}
+	// The three columns WP6 writes must actually be in the production statement.
+	for _, col := range []string{"unserved", "unserved_reason", "supply_released"} {
+		if !strings.Contains(DailyPlanDDL, col) {
+			t.Errorf("drip_daily_plan has no %q column, but the planner INSERTs it — the 00:05 run would fail", col)
+		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Property test — the invariants a plan must never break
+// -----------------------------------------------------------------------------
+
+// TestAssign_Invariants runs assign() over randomly generated contract sets and
+// asserts the properties no plan may ever violate, whatever the inputs. The
+// hand-built fixtures above pin SPECIFIC numbers; this pins the guarantees, and
+// it is what catches an over-award in a shape nobody thought to write a fixture
+// for.
+//
+// Seeded, so a failure is reproducible from the printed case number.
+func TestAssign_Invariants(t *testing.T) {
+	rnd := newDetRand(0x5EED_118)
+	isps := []string{"aol", "yahoo", "gmail"}
+
+	for iter := 0; iter < 400; iter++ {
+		nDom := 1 + rnd.intn(4)
+		nLane := 1 + rnd.intn(5)
+
+		var doms []*DomainContract
+		var brands []string
+		for d := 0; d < nDom; d++ {
+			b := fmt.Sprintf("b%d", d)
+			cap := map[string]int{}
+			for _, isp := range isps {
+				cap[isp] = rnd.intn(5000)
+			}
+			doms = append(doms, planDomain(b, fmt.Sprintf("em.b%d.com", d), cap))
+			brands = append(brands, b)
+		}
+
+		in := blankInputs(t)
+		var disp []*DispatchContract
+		var invs []*InventoryContract
+		for l := 0; l < nLane; l++ {
+			lane := fmt.Sprintf("lane%d", l)
+			desired := map[string]int{}
+			for _, isp := range isps {
+				if rnd.intn(4) > 0 {
+					desired[isp] = rnd.intn(6000)
+				}
+			}
+			allowed := []string{}
+			for _, b := range brands {
+				if rnd.intn(3) > 0 {
+					allowed = append(allowed, b)
+				}
+			}
+			if len(allowed) == 0 {
+				allowed = []string{brands[0]}
+			}
+			tier := []int{1, 2, 3, ExplorationTier}[rnd.intn(4)]
+			remail := rnd.intn(2) == 0
+			spec := dispatchSpec{
+				lane: lane, tier: tier, desired: desired, allowed: allowed,
+				introShare:  0.1 + float64(rnd.intn(10))/10.0,
+				exploration: float64(rnd.intn(20)) / 100.0,
+				followups:   rnd.intn(2) == 0,
+			}
+			if rnd.intn(3) == 0 {
+				ceil := 1 + rnd.intn(4000)
+				spec.demandMode = DemandModeConsumeAvailable
+				spec.ceiling = &ceil
+			}
+			disp = append(disp, planDispatch(spec))
+			invs = append(invs, planInventory(lane, remail, 0.25))
+			for _, isp := range isps {
+				k := LaneISP{Lane: lane, ISP: isp}
+				in.FreshMailable[k] = rnd.intn(4000)
+				in.PendingEO[k] = rnd.intn(2000)
+				in.RemailEligible[k] = rnd.intn(9000)
+				if n := rnd.intn(2500); n > 0 {
+					in.FollowupsDue[k] = n
+					in.FollowupsDueByHour[k] = hours(map[int]int{rnd.intn(24): n})
+				}
+			}
+			in.Ranks[lane] = LaneRank{
+				ContributionECPM: float64(rnd.intn(2000)-500) / 100.0,
+				Mature:           rnd.intn(3) > 0,
+			}
+		}
+		in.Contracts = newSet(in.Day, doms, disp, invs)
+
+		p := assign(in)
+
+		// (1) determinism — the same fixture must plan identically.
+		a, _ := json.Marshal(p)
+		b, _ := json.Marshal(assign(in))
+		if string(a) != string(b) {
+			t.Fatalf("case %d: assign() is not deterministic", iter)
+		}
+
+		capacity := map[DomainISP]int{}
+		for _, d := range doms {
+			for isp, v := range d.DailyMaxByISP {
+				capacity[DomainISP{Domain: d.SendingDomain, ISP: isp}] = v
+			}
+		}
+
+		// (2) no domain x ISP is ever over-committed: intros + follow-ups on a
+		//     cell can never exceed what its contract allows for the day.
+		perCell := map[DomainISP]int{}
+		perLaneCell := map[string]int{}
+		for _, r := range p.Rows {
+			k := DomainISP{Domain: r.SendingDomain, ISP: r.ISP}
+			perCell[k] += r.AwardFirm + r.AwardProvisional + r.FollowupsReserved
+			perLaneCell[r.Lane+"|"+r.ISP+"|"+r.SendingDomain] += r.AwardFirm + r.AwardProvisional
+		}
+		for k, used := range perCell {
+			if used > capacity[k] {
+				t.Fatalf("case %d: %s/%s committed %d against a contract of %d", iter, k.Domain, k.ISP, used, capacity[k])
+			}
+		}
+
+		// (3) max_intro_share is never exceeded by any one lane on any cell.
+		for _, d := range disp {
+			for _, dom := range doms {
+				for _, isp := range isps {
+					k := DomainISP{Domain: dom.SendingDomain, ISP: isp}
+					got := perLaneCell[d.Lane+"|"+isp+"|"+dom.SendingDomain]
+					if lim := introShareCap(d.MaxIntroShare, capacity[k]); got > lim {
+						t.Fatalf("case %d: lane %s took %d on %s/%s, above its max_intro_share limit of %d",
+							iter, d.Lane, got, dom.SendingDomain, isp, lim)
+					}
+				}
+			}
+		}
+
+		// (4) a lane is never awarded more than it asked for.
+		for _, l := range p.Lanes {
+			if l.AwardedFirm+l.AwardedProvisional > l.Desired {
+				t.Fatalf("case %d: %s/%s awarded %d+%d against a desire of %d",
+					iter, l.Lane, l.ISP, l.AwardedFirm, l.AwardedProvisional, l.Desired)
+			}
+			if l.Unserved != l.Desired-l.AwardedFirm-l.AwardedProvisional {
+				t.Fatalf("case %d: %s/%s unserved %d does not reconcile with %d-%d-%d",
+					iter, l.Lane, l.ISP, l.Unserved, l.Desired, l.AwardedFirm, l.AwardedProvisional)
+			}
+		}
+
+		// (5) step 6b can never reclaim more than was released on a cell. This
+		//     is the property that keeps 6b a RECLAIM and stops it becoming a
+		//     second water-fill over capacity step 5 deliberately left alone.
+		for k, rec := range p.SupplyReclaimed {
+			if rel := p.SupplyReleased[k]; rec > rel {
+				t.Fatalf("case %d: %s/%s reclaimed %d but only %d was released", iter, k.Domain, k.ISP, rec, rel)
+			}
+		}
+
+		// (6) a consume_available lane never exceeds its daily_ceiling, across
+		//     ALL its ISPs and across BOTH the step-5 and step-6b passes.
+		laneTotal := map[string]int{}
+		for _, l := range p.Lanes {
+			laneTotal[l.Lane] += l.AwardedFirm + l.AwardedProvisional
+		}
+		for _, d := range disp {
+			if d.DemandMode != DemandModeConsumeAvailable || d.DailyCeiling == nil {
+				continue
+			}
+			if got := laneTotal[d.Lane]; got > *d.DailyCeiling {
+				t.Fatalf("case %d: lane %s awarded %d across all ISPs against a daily_ceiling of %d",
+					iter, d.Lane, got, *d.DailyCeiling)
+			}
+		}
+
+		// (7) unserved stays SUM-safe: at most one row per lane x ISP carries it.
+		seen := map[LaneISP]int{}
+		for _, r := range p.Rows {
+			if r.Unserved > 0 {
+				seen[LaneISP{Lane: r.Lane, ISP: r.ISP}]++
+			}
+		}
+		for k, n := range seen {
+			if n != 1 {
+				t.Fatalf("case %d: %s/%s carries unserved on %d rows", iter, k.Lane, k.ISP, n)
+			}
+		}
+	}
+}
+
+// detRand is a tiny deterministic PRNG (xorshift64*), so the property test does
+// not depend on the standard library's seeding behaviour across Go versions.
+type detRand struct{ s uint64 }
+
+func newDetRand(seed uint64) *detRand {
+	if seed == 0 {
+		seed = 1
+	}
+	return &detRand{s: seed}
+}
+
+func (r *detRand) next() uint64 {
+	r.s ^= r.s << 13
+	r.s ^= r.s >> 7
+	r.s ^= r.s << 17
+	return r.s
+}
+
+func (r *detRand) intn(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return int(r.next() % uint64(n))
+}
+
+// A consume_available lane is capped by daily_ceiling in step 5. Step 6b must
+// honour the SAME ceiling — a reclaim that ignored it would let a lane mail far
+// past the limit its contract sets, which is the one number an operator uses to
+// bound an experimental or capped lane.
+func TestAssign_SupplyReclaimHonoursDailyCeiling(t *testing.T) {
+	ceiling := 300
+	in := reclaimInputs(t, 200, 1000)
+	in.Contracts.Dispatches["lane_b"].DemandMode = DemandModeConsumeAvailable
+	in.Contracts.Dispatches["lane_b"].DailyCeiling = &ceiling
+
+	p := assign(in)
+	b := laneAward(t, p, "lane_b", "aol")
+	if b.AwardedCapacity > ceiling {
+		t.Errorf("lane_b was awarded %d against a daily_ceiling of %d — step 6b bypassed the ceiling",
+			b.AwardedCapacity, ceiling)
+	}
+	if b.AwardedCapacity != ceiling {
+		t.Errorf("lane_b awarded %d, want exactly the %d its ceiling allows", b.AwardedCapacity, ceiling)
+	}
+	k := DomainISP{Domain: gDB, ISP: "aol"}
+	if idle := p.SupplyReleased[k] - p.SupplyReclaimed[k]; idle != 500 {
+		t.Errorf("idle=%d, want 500 — the capacity the ceiling refuses must stay idle and visible", idle)
+	}
+}
+
+// daily_ceiling bounds a lane across ALL its ISPs, so step 6b must DECREMENT the
+// remaining budget as it awards. A lane reclaiming on two ISPs would otherwise
+// spend the same ceiling twice — the shape that makes a "capped" lane mail
+// double its limit on a two-lane day.
+func TestAssign_SupplyReclaimDailyCeilingIsSharedAcrossISPs(t *testing.T) {
+	ceiling := 1000
+	in := blankInputs(t)
+	in.Contracts = newSet(in.Day,
+		[]*DomainContract{planDomain("db", gDB, map[string]int{"aol": 1000, "yahoo": 1000})},
+		[]*DispatchContract{
+			planDispatch(dispatchSpec{lane: "lane_a", tier: 1,
+				desired: map[string]int{"aol": 1000, "yahoo": 1000},
+				allowed: []string{"db"}, introShare: 1.0}),
+			planDispatch(dispatchSpec{lane: "lane_b", tier: 2,
+				desired: map[string]int{"aol": 5000, "yahoo": 5000},
+				allowed: []string{"db"}, introShare: 1.0,
+				demandMode: DemandModeConsumeAvailable, ceiling: &ceiling}),
+		},
+		[]*InventoryContract{planInventory("lane_a", false, 0.25), planInventory("lane_b", false, 0.25)})
+	in.FreshMailable = map[LaneISP]int{
+		{"lane_a", "aol"}: 200, {"lane_a", "yahoo"}: 200,
+		{"lane_b", "aol"}: 5000, {"lane_b", "yahoo"}: 5000,
+	}
+	in.Ranks = map[string]LaneRank{
+		"lane_a": {ContributionECPM: 9, Mature: true},
+		"lane_b": {ContributionECPM: 4, Mature: true},
+	}
+
+	p := assign(in)
+	total := 0
+	for _, l := range p.Lanes {
+		if l.Lane == "lane_b" {
+			total += l.AwardedFirm + l.AwardedProvisional
+		}
+	}
+	if total > ceiling {
+		t.Errorf("lane_b awarded %d across aol+yahoo against a daily_ceiling of %d — 6b spent the budget twice",
+			total, ceiling)
+	}
+	if total != ceiling {
+		t.Errorf("lane_b awarded %d, want exactly its %d ceiling (800 reclaimed on aol + 200 on yahoo)", total, ceiling)
+	}
+}
