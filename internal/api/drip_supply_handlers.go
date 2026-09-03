@@ -99,6 +99,11 @@ const (
 	// consecutive tick outcomes" rule (§6) and the lane pane's outcome list.
 	dripSupplyTickWindow = 24 * time.Hour
 
+	// dripContractVersionCap bounds the version history one call returns, and
+	// with it the dripHydrateBodies loop. History is append-only and a subject
+	// accumulates versions forever; the editor needs the recent ones.
+	dripContractVersionCap = 50
+
 	// dripSupplyKeyMissingMsg is the single fail-closed message. It names the
 	// variable because the operator's fix is one move.
 	dripSupplyKeyMissingMsg = "contract integrity key unavailable: " + contractmeta.KeyEnvVar +
@@ -162,6 +167,7 @@ func NewDripSupplyService(db *sql.DB) *DripSupplyService { return &DripSupplySer
 //	GET  /supply/contracts/{kind}/{subject}
 //	POST /supply/contracts/{kind}/{subject}
 //	POST /supply/contracts/{kind}/{subject}/{version}/approve
+//	POST /supply/contracts/{kind}/{subject}/{version}/reject
 //	POST /supply/manual-revenue
 func (s *DripSupplyService) RegisterRoutes(r chi.Router) {
 	r.Route("/supply", func(sr chi.Router) {
@@ -179,6 +185,7 @@ func (s *DripSupplyService) RegisterRoutes(r chi.Router) {
 			cr.Get("/{kind}/{subject}", s.HandleContractVersions)
 			cr.Post("/{kind}/{subject}", s.HandleContractDraft)
 			cr.Post("/{kind}/{subject}/{version}/approve", s.HandleContractApprove)
+			cr.Post("/{kind}/{subject}/{version}/reject", s.HandleContractReject)
 		})
 		sr.Post("/manual-revenue", s.HandleManualRevenue)
 	})
@@ -1433,6 +1440,7 @@ type dripContractSummary struct {
 	EffectiveAt  time.Time          `json:"effective_at"`
 	TokenPresent bool               `json:"token_present"`
 	Metadata     contractmeta.Block `json:"metadata"`
+	Body         any                `json:"body"`
 }
 
 type dripLaneResponse struct {
@@ -1447,6 +1455,7 @@ type dripLaneResponse struct {
 	TickOutcomes  []dripTickOutcomeRow   `json:"tick_outcomes_24h"`
 	Contracts     []dripContractSummary  `json:"contracts"`
 	DispatchValue dripDispatchValue      `json:"dispatch_value"`
+	RecordFlow    *dripRecordFlow        `json:"record_flow"`
 }
 
 func dripLaneLabels() map[string]string {
@@ -1472,6 +1481,7 @@ func dripLaneLabels() map[string]string {
 		"supply_by_source_isp.events":       dripLabelActual,
 		"economics_by_isp":                  dripLabelActual,
 		"tick_outcomes_24h":                 dripLabelActual,
+		"record_flow":                       dripLabelActual,
 	}
 }
 
@@ -1567,6 +1577,9 @@ func (s *DripSupplyService) laneDetail(ctx context.Context, tx dripQueryer, day 
 		return nil, fmt.Errorf("rank inputs: %w", err)
 	}
 	out.DispatchValue = dripDispatchValueFor(ranks, lane)
+	// record_flow runs LAST and in its OWN transaction — see recordFlow's
+	// comment for why a shared one would take the whole pane down with it.
+	s.attachRecordFlow(ctx, lane, out)
 	return out, nil
 }
 
@@ -1926,11 +1939,242 @@ func (s *DripSupplyService) laneContracts(ctx context.Context, tx dripQueryer, l
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// record_flow — the lane's pcq status flow (§6 pane 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// dripFlowBucket is one node of the record-flow diagram.
+type dripFlowBucket struct {
+	Bucket         string   `json:"bucket"`
+	Label          string   `json:"label"`
+	Count          int      `json:"count"`
+	MedianAgeHours *float64 `json:"median_age_hours"`
+	Terminal       bool     `json:"terminal"` // a dead end: nothing leaves this bucket
+	Orphan         bool     `json:"orphan"`   // the stranded-claim bucket
+}
+
+type dripRecordFlow struct {
+	DatasetIDs   []string         `json:"dataset_ids"`
+	Total        int              `json:"total"`
+	Buckets      []dripFlowBucket `json:"buckets"`
+	AgeBasis     string           `json:"age_basis"`
+	Unclassified int              `json:"unclassified"`
+}
+
+// dripFlowOrder is the flow, in flow order, with the label and whether the node
+// is a DEAD END. The diagram must draw dead ends as dead ends (§6) — a record
+// in `cold`, `exited`, `completed`, `suppressed_eo`, `dead_letter` or the
+// orphan bucket never moves again on its own, and drawing those as pass-through
+// nodes is how a stalled ladder reads as a working one.
+//
+// Every bucket is emitted even at count 0: a scanned set that contains none of
+// a status is a MEASURED zero, not an unknown, and a diagram that changes shape
+// day to day cannot be read at a glance.
+var dripFlowOrder = []struct {
+	Key      string
+	Label    string
+	Terminal bool
+	Orphan   bool
+}{
+	{"pending_eo", "pending EO", false, false},
+	{"eo_in_flight", "EO in flight", false, false},
+	{"ready_fresh", "ready (fresh, never touched)", false, false},
+	{"ready_touched", "ready (returned to the pool)", false, false},
+	{"claimed_active", "claimed (in a wave)", false, false},
+	{"claimed_orphan", "claimed ORPHAN (stranded, no campaign)", true, true},
+	{"mailed_t1", "mailed · touch 1", false, false},
+	{"mailed_t2", "mailed · touch 2", false, false},
+	{"mailed_t3", "mailed · touch 3", false, false},
+	{"mailed_t4", "mailed · touch 4", false, false},
+	{"mailed_t5", "mailed · touch 5", false, false},
+	{"cold", "cold — no engagement", true, false},
+	{"exited", "exited — clicked out of the ladder", true, false},
+	{"completed", "completed the ladder", true, false},
+	{"suppressed_eo", "suppressed (EO verdict)", true, false},
+	{"dead_letter", "dead letter", true, false},
+	{"held", "held", false, false},
+}
+
+const dripFlowDatasetsSQL = `
+	SELECT id::text FROM partner_datasets
+	 WHERE vertical = $1 AND status = 'active'
+	 ORDER BY id`
+
+// dripRecordFlowSQL classifies every queue row for the lane's datasets into
+// exactly one bucket, and returns the grand total in the same pass via
+// GROUPING SETS — so "the buckets sum to the lane total" is a fact the query
+// produces, not an assumption the handler makes.
+//
+// Age is measured from `ingested_at` (how long the record has been in the
+// system), never from the per-status timestamp: a flow diagram compares nodes,
+// and a median measured against a different clock per node compares nothing.
+// percentile_cont cannot order timestamptz, hence the EPOCH extraction.
+//
+// COST, measured on prod 2026-09-03 (EXPLAIN, read-only, lane wcl_remail,
+// 3 active datasets, ~900k rows): a Parallel Seq Scan at cost 1.14M. Every
+// bucket discriminator (touch_count, terminal_reason, last_touch_campaign_id,
+// mailed_campaign_id) is off-index, so the heap must be visited whichever index
+// is chosen and the planner picks the sequential path over
+// idx_pcq_dataset_status_ingested. A scalar `dataset_id = $1` per dataset DOES
+// take idx_pcq_dataset_status_mailed (cost ~900k each) but three of those is
+// worse than one of these. That is why this runs in its OWN transaction and
+// degrades to null: on a large lane it can legitimately exceed the 20s budget,
+// and when it does the rest of the lane pane must still render.
+const dripRecordFlowSQL = `
+	SELECT
+	  CASE
+	    WHEN status = 'ready'   AND COALESCE(touch_count, 0) = 0 THEN 'ready_fresh'
+	    WHEN status = 'ready'                                    THEN 'ready_touched'
+	    WHEN status = 'claimed' AND last_touch_campaign_id IS NULL
+	                            AND mailed_campaign_id IS NULL   THEN 'claimed_orphan'
+	    WHEN status = 'claimed'                                  THEN 'claimed_active'
+	    WHEN status = 'mailed'  AND terminal_reason = 'cold_no_engagement' THEN 'cold'
+	    WHEN status = 'mailed'  AND terminal_reason = 'clicked_exit'       THEN 'exited'
+	    WHEN status = 'mailed'  AND terminal_reason IN ('completed', 'ladder_complete') THEN 'completed'
+	    WHEN status = 'mailed'  THEN 'mailed_t' || LEAST(GREATEST(COALESCE(touch_count, 1), 1), 5)::text
+	    ELSE status
+	  END                                                                   AS bucket,
+	  COUNT(*)::bigint                                                      AS n,
+	  percentile_cont(0.5) WITHIN GROUP (
+	      ORDER BY EXTRACT(EPOCH FROM (NOW() - ingested_at))
+	  )::float8                                                             AS median_age_secs
+	  FROM partner_clean_queue
+	 WHERE dataset_id = ANY($1)
+	 GROUP BY GROUPING SETS ((1), ())`
+
+// attachRecordFlow fills out.RecordFlow, or leaves it nil with a degraded note.
+// It NEVER returns an error and never fails the lane pane: the record flow is a
+// diagnostic, and losing it must not cost the operator the capacity, supply and
+// economics tables next to it.
+//
+// Its own transaction is the point. A statement timeout aborts the whole
+// Postgres transaction, so running this inside the lane pane's read tx would
+// poison every later statement — and a 900k-row classification is exactly the
+// statement most likely to hit the budget.
+func (s *DripSupplyService) attachRecordFlow(ctx context.Context, lane string, out *dripLaneResponse) {
+	flow, note, err := s.recordFlow(ctx, lane)
+	switch {
+	case err != nil:
+		out.Degraded = append(out.Degraded, "record_flow unavailable: "+err.Error())
+	case note != "":
+		out.Degraded = append(out.Degraded, note)
+	}
+	out.RecordFlow = flow
+}
+
+func (s *DripSupplyService) recordFlow(ctx context.Context, lane string) (*dripRecordFlow, string, error) {
+	tx, err := s.readTx(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var ids []string
+	drows, err := tx.QueryContext(ctx, dripFlowDatasetsSQL, lane)
+	if err != nil {
+		return nil, "", fmt.Errorf("lane datasets: %w", err)
+	}
+	for drows.Next() {
+		var id string
+		if err := drows.Scan(&id); err != nil {
+			drows.Close()
+			return nil, "", fmt.Errorf("lane datasets scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	drows.Close()
+	if err := drows.Err(); err != nil {
+		return nil, "", fmt.Errorf("lane datasets: %w", err)
+	}
+	if len(ids) == 0 {
+		// Nothing was scanned, so nothing is known. All-zero buckets would
+		// read as "the flow is empty", which is a different claim.
+		return nil, "record_flow: lane " + lane + " has no active partner_datasets — nothing to trace (unknown, not empty)", nil
+	}
+
+	rows, err := tx.QueryContext(ctx, dripRecordFlowSQL, pq.Array(ids))
+	if err != nil {
+		if dripIsTimeout(err) {
+			return nil, fmt.Sprintf("record_flow timed out at %s over %d dataset(s) — the bucket discriminators are off-index and the classification is a full scan of the lane's queue rows", dripSupplyStmtTimeout, len(ids)), nil
+		}
+		return nil, "", fmt.Errorf("record flow: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[string]int{}
+	ages := map[string]*float64{}
+	total := 0
+	seen := map[string]bool{}
+	for rows.Next() {
+		var bucket sql.NullString
+		var n int64
+		var medianSecs sql.NullFloat64
+		if err := rows.Scan(&bucket, &n, &medianSecs); err != nil {
+			return nil, "", fmt.Errorf("record flow scan: %w", err)
+		}
+		if !bucket.Valid {
+			// The GROUPING SETS grand-total row: an independent aggregate over
+			// the same scan, which is what makes the sum check meaningful.
+			total = int(n)
+			continue
+		}
+		counts[bucket.String] = int(n)
+		seen[bucket.String] = true
+		if medianSecs.Valid {
+			ages[bucket.String] = dsupFloat(medianSecs.Float64 / 3600.0)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		if dripIsTimeout(err) {
+			return nil, fmt.Sprintf("record_flow timed out at %s over %d dataset(s)", dripSupplyStmtTimeout, len(ids)), nil
+		}
+		return nil, "", fmt.Errorf("record flow: %w", err)
+	}
+
+	flow := &dripRecordFlow{
+		DatasetIDs: ids,
+		Total:      total,
+		AgeBasis:   "hours since partner_clean_queue.ingested_at",
+		Buckets:    make([]dripFlowBucket, 0, len(dripFlowOrder)),
+	}
+	placed := 0
+	for _, b := range dripFlowOrder {
+		flow.Buckets = append(flow.Buckets, dripFlowBucket{
+			Bucket: b.Key, Label: b.Label, Count: counts[b.Key],
+			MedianAgeHours: ages[b.Key], Terminal: b.Terminal, Orphan: b.Orphan,
+		})
+		placed += counts[b.Key]
+		delete(seen, b.Key)
+	}
+	// A status the flow order does not name (a new pcq status, or one of the
+	// suppressed_global / suppressed / engaged tails) is reported as a number,
+	// never dropped — otherwise the buckets would silently stop summing to the
+	// total and the diagram would lie by omission.
+	for key := range seen {
+		flow.Unclassified += counts[key]
+		placed += counts[key]
+	}
+	if placed != total {
+		return flow, fmt.Sprintf("record_flow buckets sum to %d but the scan counted %d rows — the classification dropped rows", placed, total), nil
+	}
+	return flow, "", nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /supply/domains and /supply/domains/{domain}
 // ─────────────────────────────────────────────────────────────────────────────
 
 type dripDomainRow struct {
-	SendingDomain   string     `json:"sending_domain"`
+	SendingDomain string `json:"sending_domain"`
+	// RampStage and HealthBand come from the domain's ACTIVE contract — see
+	// dripBandSourceNote. Null means the domain has no active contract, never
+	// "we could not be bothered": nothing here is computed or inferred.
+	RampStage  *string `json:"ramp_stage"`
+	HealthBand *string `json:"health_band"`
+	// DomainContractVersion is the active contract the two fields above came
+	// from. Null means the domain has NO active domain contract — the mediator
+	// fails closed on it, and the band being unknown is the least of it.
+	DomainContractVersion *int `json:"domain_contract_version"`
+
 	Contracted      *int       `json:"contracted"`
 	Effective       *int       `json:"effective"`
 	EffectiveReason string     `json:"effective_reason"`
@@ -1981,22 +2225,75 @@ func dripDomainLabels() map[string]string {
 		"ledger.requested": dripLabelPlanned,
 		"ledger.reserved":  dripLabelReserved,
 		"ledger.committed": dripLabelActual,
+		"ramp_stage":       dripLabelEffective,
+		"health_band":      dripLabelEffective,
 	}
 }
 
+// dripBandSourceNote records WHERE ramp_stage and health_band come from, and
+// why this handler reads them without verifying the contract's token.
+//
+// The obvious source is wrong, and it is worth writing down so nobody re-walks
+// it: the domain agent's persisted surface is `mailing_domain_agent_scorecard`
+// (internal/domainagent/scorecard.go RollupDay, the DELETE + INSERT at :191),
+// and it carries COUNTERS ONLY — sends, delivered, human/machine opens and
+// clicks, bounces, complaints, unsubscribes. No band, no stage. Verified
+// read-only against prod 2026-09-03: an information_schema sweep for
+// ramp_stage / health_band / ramp_phase / band across every table returned
+// zero rows at that moment.
+//
+// They became POLICY the same day (commit ece443a, WP2/WP3 follow-through):
+// `drip_domain_contracts.health_band` NOT NULL DEFAULT 'green' CHECK IN
+// (green, amber, red) — the governor semantics are red ⇒ 0, amber ⇒ 50% of
+// contracted — and `.ramp_stage` free text, display-only. Both are inside
+// DomainContract.TokenBody(), so a hand-edited band does not verify.
+//
+// This read is KEYLESS on purpose. /supply/domains is one of the ledger views
+// that must keep working when CONTRACT_TOKEN_KEY is missing (that is exactly
+// when an operator needs to see the estate), and /supply/domains/{domain}
+// already lists contract rows without the key. The trade is stated in the
+// response: these two fields are projected from the contract row, not from a
+// token-verified load, so they are labelled `effective` and carry
+// domain_contract_version alongside. Anything that ACTS on the band — the
+// governor — still goes through LoadActive and still fails closed.
+const dripBandSourceNote = "ramp_stage + health_band are read from the active drip_domain_contracts row " +
+	"(contract policy since 2026-09-03; the domain-agent scorecard persists counters only). They are projected " +
+	"without token verification so this view survives a missing CONTRACT_TOKEN_KEY — the governor that ACTS on the band still verifies."
+
+// dripDomainsSQL aggregates the day's balances per sending domain and joins the
+// domain's ACTIVE contract for its ramp stage and health band (dripBandSourceNote).
+//
+// The join is to a pre-aggregated subquery rather than a bare LEFT JOIN of the
+// contract table, so a second `active` row for a subject — which the partial
+// unique index uq_drip_domain_contracts_active makes impossible, but which a
+// broken index would not — cannot silently double the balance sums.
 const dripDomainsSQL = `
-	SELECT sending_domain,
-	       COUNT(*)::bigint,
-	       COALESCE(SUM(contracted), 0)::bigint,
-	       COALESCE(SUM(effective), 0)::bigint,
-	       COALESCE(SUM(reserved), 0)::bigint,
-	       COALESCE(SUM(committed), 0)::bigint,
-	       COALESCE(SUM(released), 0)::bigint,
-	       COALESCE(mode() WITHIN GROUP (ORDER BY effective_reason) FILTER (WHERE effective_reason <> ''), ''),
-	       MAX(last_refill_tick)
-	  FROM drip_capacity_balance
-	 WHERE day = $1
-	 GROUP BY 1
+	WITH bal AS (
+	    SELECT sending_domain,
+	           COUNT(*)::bigint                                   AS cells,
+	           COALESCE(SUM(contracted), 0)::bigint               AS contracted,
+	           COALESCE(SUM(effective), 0)::bigint                AS effective,
+	           COALESCE(SUM(reserved), 0)::bigint                 AS reserved,
+	           COALESCE(SUM(committed), 0)::bigint                AS committed,
+	           COALESCE(SUM(released), 0)::bigint                 AS released,
+	           COALESCE(mode() WITHIN GROUP (ORDER BY effective_reason)
+	                    FILTER (WHERE effective_reason <> ''), '') AS effective_reason,
+	           MAX(last_refill_tick)                              AS last_refill_tick
+	      FROM drip_capacity_balance
+	     WHERE day = $1
+	     GROUP BY 1
+	), ct AS (
+	    SELECT DISTINCT ON (sending_domain)
+	           sending_domain, version, health_band, ramp_stage
+	      FROM drip_domain_contracts
+	     WHERE status = 'active'
+	     ORDER BY sending_domain, version DESC
+	)
+	SELECT bal.sending_domain, bal.cells, bal.contracted, bal.effective, bal.reserved,
+	       bal.committed, bal.released, bal.effective_reason, bal.last_refill_tick,
+	       ct.version, ct.health_band, ct.ramp_stage
+	  FROM bal
+	  LEFT JOIN ct ON ct.sending_domain = bal.sending_domain
 	 ORDER BY 1`
 
 // HandleDomains GET /api/mailing/supply/domains?day=
@@ -2024,14 +2321,40 @@ func (s *DripSupplyService) HandleDomains(w http.ResponseWriter, r *http.Request
 	}
 	defer rows.Close()
 	out := dripDomainsResponse{dripSupplyMeta: dripMeta(day, dripDomainLabels()), Domains: []dripDomainRow{}}
+	var missingContract []string
 	for rows.Next() {
 		var d dripDomainRow
 		var cells, contracted, effective, reserved, committed, released int64
 		var refill sql.NullTime
+		var ctVersion sql.NullInt64
+		var band, stage sql.NullString
 		if err := rows.Scan(&d.SendingDomain, &cells, &contracted, &effective, &reserved,
-			&committed, &released, &d.EffectiveReason, &refill); err != nil {
+			&committed, &released, &d.EffectiveReason, &refill,
+			&ctVersion, &band, &stage); err != nil {
 			respondError(w, http.StatusInternalServerError, "supply domains scan: "+err.Error())
 			return
+		}
+		d.DomainContractVersion = dsupNullInt(ctVersion)
+		if band.Valid {
+			// Empty resolves to green, matching DomainContract.Band() and the
+			// column's NOT NULL DEFAULT — two readings of the same row must
+			// not disagree about a domain's health.
+			v := strings.TrimSpace(band.String)
+			if v == "" {
+				v = dripsupply.HealthBandGreen
+			}
+			d.HealthBand = &v
+		}
+		if stage.Valid && strings.TrimSpace(stage.String) != "" {
+			v := strings.TrimSpace(stage.String)
+			d.RampStage = &v
+		}
+		if ctVersion.Valid && d.HealthBand == nil {
+			v := dripsupply.HealthBandGreen
+			d.HealthBand = &v
+		}
+		if !ctVersion.Valid {
+			missingContract = append(missingContract, d.SendingDomain)
 		}
 		d.ISPCells = int(cells)
 		d.Contracted = dsupInt(int(contracted))
@@ -2058,6 +2381,14 @@ func (s *DripSupplyService) HandleDomains(w http.ResponseWriter, r *http.Request
 	}
 	if len(out.Domains) == 0 {
 		out.Degraded = append(out.Degraded, "no drip_capacity_balance rows for this day — the estate's capacity is unknown, not zero")
+	}
+	out.Degraded = append(out.Degraded, dripBandSourceNote)
+	if len(missingContract) > 0 {
+		// A null band here is not a display gap: with no active domain contract
+		// the mediator SKIPS the domain entirely (§2.1, skipped:no_contract).
+		out.Degraded = append(out.Degraded, fmt.Sprintf(
+			"no ACTIVE domain contract for %d sending domain(s) (%s) — ramp_stage/health_band are unknown for them and the mediator fails closed on those domains",
+			len(missingContract), strings.Join(missingContract, ", ")))
 	}
 	respondJSON(w, http.StatusOK, out)
 }
@@ -2443,6 +2774,16 @@ const dripPlanListSQL = `
 	 LIMIT $2`
 
 // HandlePlan GET /api/mailing/supply/plan?day=
+//
+// RAW VIEW, RETAINED FOR RECONCILE TOOLING — NOT A PORTAL SURFACE.
+// This returns drip_daily_plan rows verbatim, one per day×lane×ISP×domain, with
+// no projection and no joins. WP11's reconcile tooling
+// (agents/reporting/supply_reconcile.py) reads it to diff the planner's frozen
+// output against the ledgers; the portal must not build a screen on it. The
+// Supply tab's planned numbers come from /supply/ecosystem and
+// /supply/lanes/{lane}, which label them and pair them with what became of
+// them. A plan row on its own carries no as-built context and reads as a
+// promise the estate may never have been able to keep.
 func (s *DripSupplyService) HandlePlan(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.org(w, r); !ok {
 		return
@@ -2520,6 +2861,14 @@ type dripContractVersionRow struct {
 	TokenPresent   bool               `json:"token_present"`
 	TokenIssuedAt  *time.Time         `json:"token_issued_at"`
 	Metadata       contractmeta.Block `json:"metadata"`
+	// Body is the version's POLICY body — the same JSON shape POST accepts, so
+	// the portal editor can prefill the current policy without a second call
+	// and without reconstructing field names. It is Contract.TokenBody(), i.e.
+	// the exact set of fields the integrity token covers: policy only, no
+	// lifecycle fields (status/effective_at/notes live on this row already).
+	// nil means the row could not be re-read; the editor must not treat that
+	// as an empty policy.
+	Body any `json:"body"`
 }
 
 type dripContractsResponse struct {
@@ -2550,7 +2899,7 @@ func dripContractSelectSQL(kind dripsupply.ContractKind, statuses []string) (str
 	if len(statuses) > 0 {
 		q += ` AND status = ANY($2)`
 	}
-	q += ` ORDER BY version DESC`
+	q += fmt.Sprintf(` ORDER BY version DESC LIMIT %d`, dripContractVersionCap)
 	return q, nil
 }
 
@@ -2592,7 +2941,43 @@ func dripScanContractVersions(ctx context.Context, q dripQueryer, kind dripsuppl
 		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := dripHydrateBodies(ctx, q, kind, subject, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// dripHydrateBodies re-reads each listed version through dripsupply.LoadOne and
+// attaches its policy body.
+//
+// One query per version rather than widening the listing SELECT: the per-kind
+// column lists and row scanners live in dripsupply (scanDomain/scanDispatch/…)
+// and are unexported, so re-typing them here would be a second, drifting copy
+// of the contract schema — the thing WP2 owns. The version list is capped
+// (dripContractVersionCap) precisely so this loop is bounded, and the rows are
+// a handful per subject on a tiny table.
+//
+// LoadOne deliberately does NOT verify the token (that is LoadActive's job), so
+// this works with the contract key unset — which is what lets the editor keep
+// working while the key is missing.
+func dripHydrateBodies(ctx context.Context, q dripQueryer, kind dripsupply.ContractKind, subject string, rows []dripContractVersionRow) error {
+	for i := range rows {
+		c, err := dripsupply.LoadOne(ctx, q, kind, subject, rows[i].Version)
+		if err != nil {
+			var notFound *dripsupply.ErrContractNotFound
+			if errors.As(err, &notFound) {
+				// Raced with a delete. Leave Body nil — never {} , which the
+				// editor would render as "policy is empty".
+				continue
+			}
+			return fmt.Errorf("%s contract %q v%d body: %w", kind, subject, rows[i].Version, err)
+		}
+		rows[i].Body = c.TokenBody()
+	}
+	return nil
 }
 
 func dripContractRows(ctx context.Context, q dripQueryer, kind dripsupply.ContractKind, subject string, statuses ...string) ([]dripContractSummary, error) {
@@ -2605,6 +2990,7 @@ func dripContractRows(ctx context.Context, q dripQueryer, kind dripsupply.Contra
 		out = append(out, dripContractSummary{
 			Kind: string(kind), Subject: subject, Version: v.Version, Status: v.Status,
 			EffectiveAt: v.EffectiveAt, TokenPresent: v.TokenPresent, Metadata: v.Metadata,
+			Body: v.Body,
 		})
 	}
 	return out, nil
@@ -3026,6 +3412,150 @@ func (s *DripSupplyService) HandleContractApprove(w http.ResponseWriter, r *http
 		"as_of":           time.Now().UTC(),
 		"labels":          map[string]string{"version": dripLabelContracted},
 		"note":            "scheduled: it becomes active at the next Denver midnight (ActivateScheduled), never immediately",
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /supply/contracts/{kind}/{subject}/{version}/reject
+// ─────────────────────────────────────────────────────────────────────────────
+
+// dripRejectableStatuses are the three lifecycle states a version can be
+// rejected FROM. `active` and `superseded` are deliberately absent:
+//
+//   - active — rejecting the contract the mediators are honouring right now
+//     would leave the subject with NO active contract mid-day, and §2.1 makes
+//     that a hard stop (executor skips it, outcome `skipped:no_contract`). A
+//     live contract is replaced by scheduling its successor, never by deleting
+//     it out from under the estate.
+//   - superseded — already terminal. Re-rejecting would move superseded_at and
+//     rewrite history.
+//
+// Both return 409 with the current status named.
+var dripRejectableStatuses = []string{
+	string(dripsupply.StatusDraft),
+	string(dripsupply.StatusApproved),
+	string(dripsupply.StatusScheduled),
+}
+
+// dripRejectSQL is guarded on the three rejectable statuses, so the forbidden
+// states are refused by the DATABASE rather than by a check the handler could
+// race. The note is APPENDED (never overwritten): the audit trail of why a
+// version was written must survive the rejection of that version.
+func dripRejectSQL(kind dripsupply.ContractKind) (string, error) {
+	table, err := dripsupply.TableFor(kind)
+	if err != nil {
+		return "", err
+	}
+	col, err := dripsupply.SubjectColumnFor(kind)
+	if err != nil {
+		return "", err
+	}
+	return `UPDATE ` + table + ` SET status = 'superseded',
+	               superseded_at = NOW(),
+	               notes = CASE WHEN COALESCE(notes, '') = '' THEN $1 ELSE notes || chr(10) || $1 END
+	         WHERE ` + col + ` = $2 AND version = $3 AND status = ANY($4)
+	     RETURNING status`, nil
+}
+
+// HandleContractReject POST /api/mailing/supply/contracts/{kind}/{subject}/{version}/reject
+//
+// Rejects a draft, approved or scheduled version: status → `superseded`,
+// `superseded_at` = now, and `rejected by <user>` appended to notes. A rejected
+// scheduled version never activates, because ActivateScheduled only promotes
+// rows still in `scheduled`.
+//
+// No contract key needed: rejection destroys authority, it never grants any, so
+// there is nothing to sign. That is what makes it usable as the operator's
+// escape hatch when the key is the thing that is broken.
+func (s *DripSupplyService) HandleContractReject(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.org(w, r); !ok {
+		return
+	}
+	kind, err := dripParseKind(chi.URLParam(r, "kind"))
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	subject := dripSubject(chi.URLParam(r, "subject"))
+	if subject == "" {
+		respondError(w, http.StatusBadRequest, "subject is required")
+		return
+	}
+	version, err := strconv.Atoi(strings.TrimSpace(chi.URLParam(r, "version")))
+	if err != nil || version <= 0 {
+		respondError(w, http.StatusBadRequest, "version must be a positive integer")
+		return
+	}
+	actor := actorFromRequest(r)
+	note := "rejected by " + actor + " at " + time.Now().UTC().Format(time.RFC3339)
+
+	ctx := r.Context()
+	tx, err := s.writeTx(ctx)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "supply contract reject: "+err.Error())
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Read the prior state first: the audit row records what was rejected, and
+	// a reject with no before-state is an unauditable change.
+	statusQ, err := dripContractStatusSQL(kind)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var before string
+	switch err := tx.QueryRowContext(ctx, statusQ, subject, version).Scan(&before); {
+	case errors.Is(err, sql.ErrNoRows):
+		respondError(w, http.StatusNotFound,
+			fmt.Sprintf("no %s contract %q at version %d", kind, subject, version))
+		return
+	case err != nil:
+		respondError(w, http.StatusInternalServerError, "supply contract reject: "+err.Error())
+		return
+	}
+
+	rejectQ, err := dripRejectSQL(kind)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var after string
+	switch err := tx.QueryRowContext(ctx, rejectQ, note, subject, version, pq.Array(dripRejectableStatuses)).Scan(&after); {
+	case errors.Is(err, sql.ErrNoRows):
+		// The row exists (checked above) but is not in a rejectable state.
+		respondError(w, http.StatusConflict, fmt.Sprintf(
+			"%s contract %q v%d is %q — only %s may be rejected. An active contract is replaced by scheduling its successor, never rejected out from under the estate (REQ-118 §2.1: a subject with no active contract is a hard stop).",
+			kind, subject, version, before, strings.Join(dripRejectableStatuses, ", ")))
+		return
+	case err != nil:
+		respondError(w, http.StatusInternalServerError, "supply contract reject: "+err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		respondError(w, http.StatusInternalServerError, "supply contract reject commit: "+err.Error())
+		return
+	}
+
+	// Audit AFTER commit, on the pool rather than the (now closed) tx, and
+	// best-effort by design — writeAuditLog swallows its own error, so a full
+	// audit table can never roll back a rejection the operator already saw
+	// succeed.
+	writeAuditLog(ctx, s.db, actor, "drip_supply_contract_reject", string(kind),
+		fmt.Sprintf("%s v%d", subject, version),
+		map[string]any{"status": before},
+		map[string]any{"status": after, "note": note})
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"kind":            string(kind),
+		"subject":         subject,
+		"version":         version,
+		"status":          after,
+		"previous_status": before,
+		"rejected_by":     actor,
+		"note":            note,
+		"as_of":           time.Now().UTC(),
+		"labels":          map[string]string{"version": dripLabelContracted},
 	})
 }
 

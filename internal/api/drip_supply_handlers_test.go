@@ -21,9 +21,14 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +36,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
 	"github.com/ignite/sparkpost-monitor/internal/worker/dripsupply"
@@ -105,6 +111,7 @@ func TestDripSupply_RoutesRegistered(t *testing.T) {
 		"GET /supply/contracts/{kind}/{subject}",
 		"POST /supply/contracts/{kind}/{subject}",
 		"POST /supply/contracts/{kind}/{subject}/{version}/approve",
+		"POST /supply/contracts/{kind}/{subject}/{version}/reject",
 		"POST /supply/manual-revenue",
 	}
 	for _, w := range want {
@@ -348,8 +355,10 @@ func TestDripSupply_Domains(t *testing.T) {
 	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("FROM drip_capacity_balance").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"sending_domain", "cells", "contracted", "effective", "reserved", "committed", "released", "reason", "refill",
-		}).AddRow("em.historythinking.com", int64(9), int64(17000), int64(12000), int64(8000), int64(4000), int64(0), "throttle", time.Now()))
+			"sending_domain", "cells", "contracted", "effective", "reserved", "committed",
+			"released", "reason", "refill", "ct_version", "health_band", "ramp_stage",
+		}).AddRow("em.historythinking.com", int64(9), int64(17000), int64(12000), int64(8000), int64(4000), int64(0),
+			"throttle", time.Now(), int64(12), "green", "mature"))
 	mock.ExpectRollback()
 
 	w := dripServe(svc, dripRequest(t, http.MethodGet, "/supply/domains?day=2026-09-03", ""))
@@ -449,6 +458,16 @@ func TestDripSupply_ContractVersionsRedactTheToken(t *testing.T) {
 			"approved_by", "approved_at", "change_ledger_id", "notes", "metadata", "token",
 		}).AddRow(uuid.NewString(), 4, "active", time.Now(), nil, "ops@x", time.Now(),
 			"ops@x", time.Now(), "portal:abc", "", raw, "deadbeefcafef00d"))
+	// dripHydrateBodies re-reads the version for its policy body.
+	mock.ExpectQuery("FROM drip_dispatch_contracts").WillReturnRows(sqlmock.NewRows([]string{
+		"id", "version", "status", "effective_at", "superseded_at", "created_by", "created_at",
+		"approved_by", "approved_at", "change_ledger_id", "notes", "metadata", "token",
+		"lane", "operator_priority_tier", "desired_daily_intros", "demand_mode", "daily_ceiling",
+		"allowed_domains", "isp_exclusions", "ladder_touches", "ladder_gap_hours",
+		"followups_committed", "max_intro_share", "exploration_share",
+	}).AddRow(uuid.NewString(), 4, "active", time.Now(), nil, "ops@x", time.Now(),
+		"ops@x", time.Now(), "portal:abc", "", raw, "deadbeefcafef00d",
+		"wcl_remail", 1, []byte(`{"aol":5000}`), "target", nil, "{ht}", "{}", 5, 24, true, 0.40, 0.0))
 	mock.ExpectRollback()
 
 	w := dripServe(svc, dripRequest(t, http.MethodGet, "/supply/contracts/dispatch/wcl_remail", ""))
@@ -839,5 +858,614 @@ func TestDripSupply_DraftEffectiveAtIsNextDenverMidnight(t *testing.T) {
 	}
 	if !got.After(now) {
 		t.Error("a contract must never take effect in the past")
+	}
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WP10 gap-closure tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── (1) policy body on every contract version ───────────────────────────────
+
+// dripContractListRows is the meta listing sqlmock returns for one version.
+func dripContractListRows(version int, status string) *sqlmock.Rows {
+	blk := contractmeta.Block{ContractID: uuid.NewString(), Version: version,
+		Token: contractmeta.Token{Alg: contractmeta.AlgHMACSHA256, IssuedAt: time.Now().UTC(),
+			IssuedBy: contractmeta.IssuerSystem, Value: "abc123"}}
+	raw, _ := json.Marshal(blk)
+	return sqlmock.NewRows([]string{
+		"id", "version", "status", "effective_at", "superseded_at", "created_by", "created_at",
+		"approved_by", "approved_at", "change_ledger_id", "notes", "metadata", "token",
+	}).AddRow(uuid.NewString(), version, status, time.Now(), nil, "ops@x", time.Now(),
+		"ops@x", time.Now(), "portal:abc", "", raw, "abc123")
+}
+
+// The editor cannot prefill without the policy body, and it must arrive for
+// EVERY kind — a kind whose LoadOne shape drifted would ship a blank form.
+func TestDripSupply_ContractVersionsCarryPolicyBodyForEveryKind(t *testing.T) {
+	metaCols := []string{"id", "version", "status", "effective_at", "superseded_at", "created_by",
+		"created_at", "approved_by", "approved_at", "change_ledger_id", "notes", "metadata", "token"}
+	blk := contractmeta.Block{ContractID: uuid.NewString(), Version: 3}
+	rawMeta, _ := json.Marshal(blk)
+
+	cases := []struct {
+		kind      string
+		table     string
+		subject   string
+		bodyCols  []string
+		bodyVals  []driver.Value
+		wantField string
+	}{
+		{"domain", "drip_domain_contracts", "em.historythinking.com",
+			[]string{"sending_domain", "brand_code", "daily_max_by_isp", "active_window_start",
+				"active_window_end", "interval_minutes", "max_burst_intervals", "ramp_source",
+				"health_band", "ramp_stage"},
+			[]driver.Value{"em.historythinking.com", "ht", []byte(`{"aol":4900}`), "01:00:00", "20:00:00", 15, 2, nil,
+				"amber", "ramp day 17"},
+			"daily_max_by_isp"},
+		{"dispatch", "drip_dispatch_contracts", "wcl_remail",
+			[]string{"lane", "operator_priority_tier", "desired_daily_intros", "demand_mode", "daily_ceiling",
+				"allowed_domains", "isp_exclusions", "ladder_touches", "ladder_gap_hours",
+				"followups_committed", "max_intro_share", "exploration_share"},
+			[]driver.Value{"wcl_remail", 1, []byte(`{"aol":5000}`), "target", nil,
+				"{ht}", "{}", 5, 24, true, 0.40, 0.0},
+			"desired_daily_intros"},
+		{"inventory", "drip_inventory_contracts", "wcl_remail",
+			[]string{"lane", "accepted_sources", "verdict_valid_days", "eo_enabled", "max_daily_eo_spend_usd",
+				"min_eo_order", "min_coverage_hours", "target_coverage_hours", "max_coverage_hours",
+				"remail_enabled", "remail_after_days", "remail_mode", "max_remail_share"},
+			[]driver.Value{"wcl_remail", "{wcl-remail}", 60, true, 50.0, 1000, 8, 16, 36, false, 7, "full_ladder", 0.25},
+			"accepted_sources"},
+		{"source", "drip_source_contracts", "wcl-remail",
+			[]string{"source_slug", "record_class", "eligible_isps", "max_daily_intake", "arrival_cadence",
+				"validated_on_arrival", "record_max_age_days", "unit_acquisition_cost"},
+			[]driver.Value{"wcl-remail", "mortgage", "{aol,yahoo}", nil, "continuous", false, nil, 0.0},
+			"record_class"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			svc, mock, done := dripNewMock(t)
+			defer done()
+
+			mock.ExpectBegin()
+			mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery("FROM " + tc.table).
+				WillReturnRows(sqlmock.NewRows(metaCols).AddRow(uuid.NewString(), 3, "active", time.Now(), nil,
+					"ops@x", time.Now(), "ops@x", time.Now(), "portal:abc", "", rawMeta, "tok"))
+			// dripHydrateBodies re-reads the version through dripsupply.LoadOne.
+			mock.ExpectQuery("FROM " + tc.table).
+				WillReturnRows(sqlmock.NewRows(append(append([]string{}, metaCols...), tc.bodyCols...)).
+					AddRow(append([]driver.Value{uuid.NewString(), 3, "active", time.Now(), nil,
+						"ops@x", time.Now(), "ops@x", time.Now(), "portal:abc", "", rawMeta, "tok"}, tc.bodyVals...)...))
+			mock.ExpectRollback()
+
+			w := dripServe(svc, dripRequest(t, http.MethodGet, "/supply/contracts/"+tc.kind+"/"+tc.subject, ""))
+			if w.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+			}
+			var got struct {
+				Versions []struct {
+					Body map[string]any `json:"body"`
+				} `json:"versions"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v body=%s", err, w.Body.String())
+			}
+			if len(got.Versions) != 1 {
+				t.Fatalf("want 1 version, got %d", len(got.Versions))
+			}
+			if got.Versions[0].Body == nil {
+				t.Fatalf("%s version carries NO policy body — the editor cannot prefill: %s", tc.kind, w.Body.String())
+			}
+			if _, ok := got.Versions[0].Body[tc.wantField]; !ok {
+				t.Errorf("%s body is missing %q; got keys %v", tc.kind, tc.wantField, got.Versions[0].Body)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("unmet expectations: %v", err)
+			}
+		})
+	}
+}
+
+// NEGATIVE CONTROL: the body must not smuggle the token value out. A handler
+// that shipped the whole row as `body` would pass the test above and fail here.
+func TestDripSupply_PolicyBodyStillRedactsTheToken(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	metaCols := []string{"id", "version", "status", "effective_at", "superseded_at", "created_by",
+		"created_at", "approved_by", "approved_at", "change_ledger_id", "notes", "metadata", "token"}
+	blk := contractmeta.Block{ContractID: uuid.NewString(), Version: 3,
+		Token: contractmeta.Token{Alg: contractmeta.AlgHMACSHA256, IssuedAt: time.Now().UTC(),
+			IssuedBy: contractmeta.IssuerSystem, Value: "SUPERSECRETMAC"}}
+	rawMeta, _ := json.Marshal(blk)
+	meta := []driver.Value{uuid.NewString(), 3, "active", time.Now(), nil, "ops@x", time.Now(),
+		"ops@x", time.Now(), "portal:abc", "", rawMeta, "SUPERSECRETMAC"}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM drip_inventory_contracts").WillReturnRows(sqlmock.NewRows(metaCols).AddRow(meta...))
+	mock.ExpectQuery("FROM drip_inventory_contracts").WillReturnRows(
+		sqlmock.NewRows(append(append([]string{}, metaCols...),
+			"lane", "accepted_sources", "verdict_valid_days", "eo_enabled", "max_daily_eo_spend_usd",
+			"min_eo_order", "min_coverage_hours", "target_coverage_hours", "max_coverage_hours",
+			"remail_enabled", "remail_after_days", "remail_mode", "max_remail_share")).
+			AddRow(append(append([]driver.Value{}, meta...),
+				"wcl_remail", "{wcl-remail}", 60, true, 50.0, 1000, 8, 16, 36, false, 7, "full_ladder", 0.25)...))
+	mock.ExpectRollback()
+
+	w := dripServe(svc, dripRequest(t, http.MethodGet, "/supply/contracts/inventory/wcl_remail", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "SUPERSECRETMAC") {
+		t.Errorf("adding `body` must not leak the token value; got %s", w.Body.String())
+	}
+}
+
+// ── (2) reject ──────────────────────────────────────────────────────────────
+
+func TestDripSupply_RejectMovesVersionToSuperseded(t *testing.T) {
+	for _, from := range []string{"draft", "approved", "scheduled"} {
+		t.Run("from_"+from, func(t *testing.T) {
+			svc, mock, done := dripNewMock(t)
+			defer done()
+
+			mock.ExpectBegin()
+			mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery("SELECT status FROM drip_dispatch_contracts").
+				WithArgs("wcl_remail", 3).
+				WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(from))
+			mock.ExpectQuery("UPDATE drip_dispatch_contracts").
+				WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("superseded"))
+			mock.ExpectCommit()
+			// audit row, best-effort, on the pool after commit
+			mock.ExpectExec("INSERT INTO partner_admin_audit_log").WillReturnResult(sqlmock.NewResult(1, 1))
+
+			w := dripServe(svc, dripRequest(t, http.MethodPost, "/supply/contracts/dispatch/wcl_remail/3/reject", ""))
+			if w.Code != http.StatusOK {
+				t.Fatalf("want 200 rejecting a %s version, got %d body=%s", from, w.Code, w.Body.String())
+			}
+			var got struct {
+				Status         string `json:"status"`
+				PreviousStatus string `json:"previous_status"`
+				Note           string `json:"note"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &got)
+			if got.Status != "superseded" {
+				t.Errorf("status = %q, want superseded", got.Status)
+			}
+			if got.PreviousStatus != from {
+				t.Errorf("previous_status = %q, want %q", got.PreviousStatus, from)
+			}
+			if !strings.HasPrefix(got.Note, "rejected by ") {
+				t.Errorf("note must record who rejected it, got %q", got.Note)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("the reject must write an audit row: %v", err)
+			}
+		})
+	}
+}
+
+// The forbidden states. `active` is the one that matters: rejecting it would
+// leave the subject with no active contract mid-day, which is a hard stop.
+func TestDripSupply_RejectForbiddenOnActiveAndSuperseded(t *testing.T) {
+	for _, from := range []string{"active", "superseded"} {
+		t.Run("from_"+from, func(t *testing.T) {
+			svc, mock, done := dripNewMock(t)
+			defer done()
+
+			mock.ExpectBegin()
+			mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery("SELECT status FROM drip_domain_contracts").
+				WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(from))
+			// The guarded UPDATE matches nothing — the DATABASE refuses, not the handler.
+			mock.ExpectQuery("UPDATE drip_domain_contracts").WillReturnError(sql.ErrNoRows)
+			mock.ExpectRollback()
+
+			w := dripServe(svc, dripRequest(t, http.MethodPost,
+				"/supply/contracts/domain/em.historythinking.com/9/reject", ""))
+			if w.Code != http.StatusConflict {
+				t.Fatalf("want 409 rejecting a %s version, got %d body=%s", from, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), from) {
+				t.Errorf("the 409 must name the current status so the operator knows why; got %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestDripSupply_RejectMissingVersionIs404(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT status FROM drip_source_contracts").WillReturnError(sql.ErrNoRows)
+	mock.ExpectRollback()
+
+	w := dripServe(svc, dripRequest(t, http.MethodPost, "/supply/contracts/source/wcl-remail/99/reject", ""))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// The guard belongs in the SQL, not only in a Go branch a concurrent approve
+// could race past.
+func TestDripSupply_RejectSQLIsGuardedOnStatus(t *testing.T) {
+	q, err := dripRejectSQL(dripsupply.KindDispatch)
+	if err != nil {
+		t.Fatalf("dripRejectSQL: %v", err)
+	}
+	for _, frag := range []string{"status = 'superseded'", "superseded_at = NOW()", "status = ANY($4)", "RETURNING status"} {
+		if !strings.Contains(q, frag) {
+			t.Errorf("reject SQL lost %q:\n%s", frag, q)
+		}
+	}
+	if strings.Contains(q, "notes = $1") {
+		t.Error("notes must be APPENDED, never overwritten — the record of why a version existed outlives its rejection")
+	}
+	for _, forbidden := range []string{"active", "superseded"} {
+		for _, allowed := range dripRejectableStatuses {
+			if allowed == forbidden {
+				t.Errorf("%q must never be a rejectable status", forbidden)
+			}
+		}
+	}
+	if len(dripRejectableStatuses) != 3 {
+		t.Errorf("dripRejectableStatuses = %v, want exactly draft/approved/scheduled", dripRejectableStatuses)
+	}
+}
+
+// ── (3) record_flow ─────────────────────────────────────────────────────────
+
+func dripFlowRows(pairs map[string]int64, total int64) *sqlmock.Rows {
+	r := sqlmock.NewRows([]string{"bucket", "n", "median_age_secs"})
+	keys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		r.AddRow(k, pairs[k], 7200.0)
+	}
+	r.AddRow(nil, total, nil) // the GROUPING SETS grand-total row
+	return r
+}
+
+func TestDripSupply_RecordFlowBucketsSumToTheLaneTotal(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	buckets := map[string]int64{
+		"pending_eo": 1000, "ready_fresh": 5000, "ready_touched": 200,
+		"claimed_active": 300, "claimed_orphan": 42,
+		"mailed_t1": 4000, "mailed_t2": 3000, "mailed_t3": 1500,
+		"cold": 800, "exited": 12, "completed": 2200,
+		"suppressed_eo": 600, "dead_letter": 100, "held": 250,
+	}
+	var total int64
+	for _, v := range buckets {
+		total += v
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").WithArgs("wcl_remail").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").WillReturnRows(dripFlowRows(buckets, total))
+	mock.ExpectRollback()
+
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail")
+	if err != nil {
+		t.Fatalf("recordFlow: %v", err)
+	}
+	if note != "" {
+		t.Fatalf("unexpected degraded note: %s", note)
+	}
+	if flow == nil {
+		t.Fatal("record_flow is nil")
+	}
+	sum := flow.Unclassified
+	for _, b := range flow.Buckets {
+		sum += b.Count
+	}
+	if sum != flow.Total || flow.Total != int(total) {
+		t.Errorf("buckets sum to %d, flow.Total = %d, scan counted %d — they must agree", sum, flow.Total, total)
+	}
+	// The sum check above is NOT enough on its own: Unclassified absorbs any
+	// bucket that falls out of dripFlowOrder, so the totals would still
+	// reconcile while the diagram silently lost a node. Every bucket in this
+	// fixture is a NAMED flow bucket, so unclassified must be exactly 0 — that
+	// is what turns "a bucket was dropped from the flow" into a red test.
+	if flow.Unclassified != 0 {
+		t.Errorf("unclassified = %d, want 0 — every fixture bucket is a named flow node; a non-zero value means one fell out of dripFlowOrder", flow.Unclassified)
+	}
+	// And pin the flow itself. The order IS the diagram: an operator reads it
+	// left to right, so a reordering or a missing node is a behaviour change,
+	// not a cosmetic one.
+	wantOrder := []string{
+		"pending_eo", "eo_in_flight", "ready_fresh", "ready_touched",
+		"claimed_active", "claimed_orphan",
+		"mailed_t1", "mailed_t2", "mailed_t3", "mailed_t4", "mailed_t5",
+		"cold", "exited", "completed", "suppressed_eo", "dead_letter", "held",
+	}
+	if len(flow.Buckets) != len(wantOrder) {
+		t.Fatalf("flow has %d nodes, want %d (%v)", len(flow.Buckets), len(wantOrder), wantOrder)
+	}
+	for i, want := range wantOrder {
+		if flow.Buckets[i].Bucket != want {
+			t.Errorf("flow position %d = %q, want %q — the flow order is the diagram", i, flow.Buckets[i].Bucket, want)
+		}
+	}
+	// Every dead end the doc names must be drawn as one.
+	terminal := map[string]bool{}
+	for _, b := range flow.Buckets {
+		terminal[b.Bucket] = b.Terminal
+	}
+	for _, deadEnd := range []string{"claimed_orphan", "cold", "exited", "completed", "suppressed_eo", "dead_letter"} {
+		if !terminal[deadEnd] {
+			t.Errorf("%q must be drawn as a dead end — nothing leaves it on its own", deadEnd)
+		}
+	}
+	for _, flowing := range []string{"pending_eo", "ready_fresh", "claimed_active", "mailed_t1", "held"} {
+		if terminal[flowing] {
+			t.Errorf("%q is not a dead end — records move on from it", flowing)
+		}
+	}
+	// Flow order, dead ends and the orphan bucket are what make the diagram readable.
+	if flow.Buckets[0].Bucket != "pending_eo" {
+		t.Errorf("flow must start at pending_eo, got %q", flow.Buckets[0].Bucket)
+	}
+	var orphan *dripFlowBucket
+	for i := range flow.Buckets {
+		if flow.Buckets[i].Orphan {
+			orphan = &flow.Buckets[i]
+		}
+	}
+	if orphan == nil || orphan.Bucket != "claimed_orphan" || orphan.Count != 42 || !orphan.Terminal {
+		t.Errorf("the orphan bucket must be present, counted and drawn as a dead end: %+v", orphan)
+	}
+	for _, b := range flow.Buckets {
+		if b.Count == 0 && b.MedianAgeHours != nil {
+			t.Errorf("bucket %q has no rows but reports a median age", b.Bucket)
+		}
+		if b.Count > 0 && b.MedianAgeHours == nil {
+			t.Errorf("bucket %q has rows but no median age", b.Bucket)
+		}
+	}
+	if flow.Buckets[0].MedianAgeHours == nil || *flow.Buckets[0].MedianAgeHours != 2.0 {
+		t.Errorf("median age must be reported in HOURS (7200s = 2h), got %v", flow.Buckets[0].MedianAgeHours)
+	}
+}
+
+// NEGATIVE CONTROL: a status outside the flow order must be counted as
+// unclassified, not dropped — otherwise the sum check above passes vacuously
+// while the diagram lies by omission.
+func TestDripSupply_RecordFlowCountsUnknownStatusesRatherThanDroppingThem(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	buckets := map[string]int64{"ready_fresh": 100, "suppressed_global": 7, "engaged": 3}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").WillReturnRows(dripFlowRows(buckets, 110))
+	mock.ExpectRollback()
+
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail")
+	if err != nil {
+		t.Fatalf("recordFlow: %v", err)
+	}
+	if note != "" {
+		t.Errorf("the sum still reconciles, so there must be no drop warning: %s", note)
+	}
+	if flow.Unclassified != 10 {
+		t.Errorf("unclassified = %d, want 10 (suppressed_global 7 + engaged 3)", flow.Unclassified)
+	}
+	sum := flow.Unclassified
+	for _, b := range flow.Buckets {
+		sum += b.Count
+	}
+	if sum != flow.Total {
+		t.Errorf("buckets + unclassified = %d, total = %d", sum, flow.Total)
+	}
+}
+
+// The degraded path returns NULL, not zeros — and never fails the lane pane.
+func TestDripSupply_RecordFlowDegradesToNullNotZero(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		svc, mock, done := dripNewMock(t)
+		defer done()
+
+		mock.ExpectBegin()
+		mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("FROM partner_datasets").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+		mock.ExpectQuery("FROM partner_clean_queue").
+			WillReturnError(&pq.Error{Code: "57014", Message: "canceling statement due to statement timeout"})
+		mock.ExpectRollback()
+
+		out := &dripLaneResponse{}
+		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		if out.RecordFlow != nil {
+			t.Errorf("a timed-out record_flow must be null, not a zeroed diagram: %+v", out.RecordFlow)
+		}
+		if len(out.Degraded) == 0 || !strings.Contains(strings.Join(out.Degraded, " "), "timed out") {
+			t.Errorf("a null must carry a degraded note saying why; got %v", out.Degraded)
+		}
+	})
+
+	t.Run("no active datasets", func(t *testing.T) {
+		svc, mock, done := dripNewMock(t)
+		defer done()
+
+		mock.ExpectBegin()
+		mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("FROM partner_datasets").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+		mock.ExpectRollback()
+
+		out := &dripLaneResponse{}
+		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		if out.RecordFlow != nil {
+			t.Errorf("with nothing scanned the flow is unknown, not all-zero: %+v", out.RecordFlow)
+		}
+		if len(out.Degraded) == 0 {
+			t.Error("the null must be explained")
+		}
+	})
+
+	t.Run("hard error never fails the pane", func(t *testing.T) {
+		svc, mock, done := dripNewMock(t)
+		defer done()
+
+		mock.ExpectBegin()
+		mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectQuery("FROM partner_datasets").WillReturnError(errors.New("boom"))
+		mock.ExpectRollback()
+
+		out := &dripLaneResponse{Lane: "wcl_remail"}
+		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		if out.RecordFlow != nil {
+			t.Error("record_flow must be null on error")
+		}
+		if len(out.Degraded) == 0 {
+			t.Error("the error must surface as a degraded note, not be swallowed")
+		}
+	})
+}
+
+// ── (4) ramp_stage / health_band ────────────────────────────────────────────
+
+func TestDripSupply_DomainsProjectRampAndBandFromTheActiveContract(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM drip_capacity_balance").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"sending_domain", "cells", "contracted", "effective", "reserved", "committed",
+			"released", "reason", "refill", "ct_version", "health_band", "ramp_stage",
+		}).
+			AddRow("em.historythinking.com", int64(9), int64(17000), int64(8500), int64(0), int64(0), int64(0), "", time.Now(),
+				int64(12), "amber", "ramp day 17").
+			// A domain with NO active contract: both fields unknown, and the
+			// mediator fails closed on it.
+			AddRow("em.quizfiesta.com", int64(9), int64(5000), int64(5000), int64(0), int64(0), int64(0), "", time.Now(),
+				nil, nil, nil).
+			// An active contract with an empty band resolves to green, matching
+			// DomainContract.Band() and the column default.
+			AddRow("em.myownhealth.net", int64(9), int64(9000), int64(9000), int64(0), int64(0), int64(0), "", time.Now(),
+				int64(3), "", ""))
+	mock.ExpectRollback()
+
+	w := dripServe(svc, dripRequest(t, http.MethodGet, "/supply/domains?day=2026-09-03", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var got dripDomainsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Domains) != 3 {
+		t.Fatalf("want 3 rows, got %d", len(got.Domains))
+	}
+
+	ht := got.Domains[0]
+	if ht.HealthBand == nil || *ht.HealthBand != "amber" {
+		t.Errorf("health_band = %v, want amber from the active contract", ht.HealthBand)
+	}
+	if ht.RampStage == nil || *ht.RampStage != "ramp day 17" {
+		t.Errorf("ramp_stage = %v, want the contract's free text", ht.RampStage)
+	}
+	if ht.DomainContractVersion == nil || *ht.DomainContractVersion != 12 {
+		t.Errorf("the band must be attributable to a contract VERSION, got %v", ht.DomainContractVersion)
+	}
+
+	qf := got.Domains[1]
+	if qf.HealthBand != nil || qf.RampStage != nil || qf.DomainContractVersion != nil {
+		t.Errorf("with no active contract all three must be null, not defaulted: %+v", qf)
+	}
+	if !strings.Contains(w.Body.String(), `"health_band":null`) {
+		t.Errorf("a domain with no contract must serialise health_band as null; got %s", w.Body.String())
+	}
+
+	mh := got.Domains[2]
+	if mh.HealthBand == nil || *mh.HealthBand != dripsupply.HealthBandGreen {
+		t.Errorf("an empty band on an ACTIVE contract resolves to green (Band()); got %v", mh.HealthBand)
+	}
+	if mh.RampStage != nil {
+		t.Errorf("an empty ramp_stage is unknown, not the empty string: %v", mh.RampStage)
+	}
+
+	joined := strings.Join(got.Degraded, " ")
+	if !strings.Contains(joined, "drip_domain_contracts") {
+		t.Errorf("the response must name where the band came from; degraded = %v", got.Degraded)
+	}
+	if !strings.Contains(joined, "em.quizfiesta.com") {
+		t.Errorf("a domain with no active contract must be named — the mediator skips it; degraded = %v", got.Degraded)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the band must ride the SAME query as the balances — no N+1: %v", err)
+	}
+}
+
+// NEGATIVE CONTROL: this handler must never COMPUTE a band. If someone wires a
+// derivation in, the source note stops being true and the two definitions of
+// domain health drift.
+func TestDripSupply_DomainsNeverComputeTheBand(t *testing.T) {
+	src, err := os.ReadFile("drip_supply_handlers.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	text := string(src)
+	i := strings.Index(text, "const dripDomainsSQL")
+	j := strings.Index(text[i:], "// HandleDomain GET")
+	if i < 0 || j < 0 {
+		t.Fatal("could not locate the domains section")
+	}
+	section := text[i : i+j]
+	if !strings.Contains(section, "FROM drip_domain_contracts") {
+		t.Error("ramp_stage/health_band must be READ from the active domain contract")
+	}
+	for _, banned := range []string{"bounce_rate", "complaint_rate", "human_clicks", "mailing_domain_agent_scorecard"} {
+		if strings.Contains(section, banned) {
+			t.Errorf("the domains handler references %q — it must project the contract's band, never derive one", banned)
+		}
+	}
+	if !strings.Contains(dripBandSourceNote, "drip_domain_contracts") {
+		t.Errorf("the source note must name the table it reads: %s", dripBandSourceNote)
+	}
+}
+
+// The note has to keep naming the wrong turn as well as the right one, so the
+// next engineer does not re-investigate the scorecard.
+func TestDripSupply_BandSourceNoteNamesBothSources(t *testing.T) {
+	for _, frag := range []string{"drip_domain_contracts", "scorecard", "CONTRACT_TOKEN_KEY"} {
+		if !strings.Contains(dripBandSourceNote, frag) {
+			t.Errorf("dripBandSourceNote must mention %q: %s", frag, dripBandSourceNote)
+		}
+	}
+}
+
+// ── (5) /supply/plan is reconcile tooling ───────────────────────────────────
+
+func TestDripSupply_PlanIsMarkedAsReconcileTooling(t *testing.T) {
+	src, err := os.ReadFile("drip_supply_handlers.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	i := strings.Index(string(src), "func (s *DripSupplyService) HandlePlan(")
+	if i < 0 {
+		t.Fatal("HandlePlan not found")
+	}
+	doc := string(src)[max(0, i-1600):i]
+	for _, frag := range []string{"RECONCILE TOOLING", "NOT A PORTAL SURFACE", "supply_reconcile.py"} {
+		if !strings.Contains(doc, frag) {
+			t.Errorf("HandlePlan's doc comment must say %q — WP11 owns this view, the portal must not build on it", frag)
+		}
 	}
 }
