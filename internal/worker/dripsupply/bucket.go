@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brandident"
 	"github.com/lib/pq"
 )
 
@@ -224,9 +228,10 @@ func (t ThrottleGovernor) Ceilings(ctx context.Context, day time.Time, domain, i
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, nil
 	case err != nil:
-		// Missing table = no throttling, matching fetchThrottledISPs so a fresh
-		// database does not fail every reservation closed.
-		if strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+		// Missing TABLE = no throttling, matching fetchThrottledISPs so a fresh
+		// database does not fail every reservation closed. A missing COLUMN is a
+		// real fault and is surfaced.
+		if isUndefinedTable(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read mailing_isp_throttle_state for isp=%s: %w", isp, err)
@@ -241,82 +246,387 @@ func (t ThrottleGovernor) Ceilings(ctx context.Context, day time.Time, domain, i
 	return []GovernorCeiling{{Name: "throttle", Limit: limit}}, nil
 }
 
-// unconfiguredGovernor is the shared body of the three governors WP3 stubs. It
-// never invents a ceiling — it returns NoLimit and logs ONCE, so an operator
-// grepping for "NOT WIRED" can see which inputs `effective` is missing instead
-// of trusting a number that silently ignores them.
-type unconfiguredGovernor struct {
-	name   string
-	source string
-	once   sync.Once
-}
+// -----------------------------------------------------------------------------
+// Brand resolution — the reverse of the executor's brand → domain
+// -----------------------------------------------------------------------------
 
-func (u *unconfiguredGovernor) ceilings() ([]GovernorCeiling, error) {
-	u.once.Do(func() {
-		log.Printf("[DripSupply] governor %q NOT WIRED — effective capacity ignores it. TODO source: %s", u.name, u.source)
-	})
-	return []GovernorCeiling{{Name: u.name, Limit: NoLimit}}, nil
-}
+// BrandForDomain resolves a sending domain to its canonical brand_code.
+// ok=false means the domain could not be identified — never a guessed code.
+type BrandForDomain func(ctx context.Context, sendingDomain string) (string, bool)
 
-// SESQuotaGovernor caps SES-routed ISPs at the remaining SES daily quota.
+// DefaultBrandForDomain is the platform's existing mapping, and is a deliberate
+// mirror of api.ispBanBrandCode (internal/api/isp_bans.go): brand.Root (owned
+// domain roots, the union of the Go slice and mailing_owned_domains) then
+// brandident.CodeForApex (the ONE brand_code↔apex normalizer). Nothing here
+// re-hardcodes a brand map.
 //
-// TODO(WP5/WP7): source is the SESv2 account sending quota (AWS SDK sesv2
-// GetAccount → Max24HourSend minus SentLast24Hours, via internal/ses), divided
-// across the SES-routed domain×ISP cells for the rest of the window. Doctrine:
-// an SES 454 is CAPACITY, not deliverability (JAOS core §5) — this governor must
-// reduce capacity and must NOT feed an ISP health band.
-type SESQuotaGovernor struct{ u unconfiguredGovernor }
-
-func NewSESQuotaGovernor() *SESQuotaGovernor {
-	return &SESQuotaGovernor{u: unconfiguredGovernor{
-		name:   "ses_quota",
-		source: "SESv2 GetAccount Max24HourSend/SentLast24Hours via internal/ses",
-	}}
-}
-
-func (g *SESQuotaGovernor) Ceilings(context.Context, time.Time, string, string, Window) ([]GovernorCeiling, error) {
-	return g.u.ceilings()
-}
-
-// HealthBandGovernor caps a domain by its deliverability health band.
+// mailing_sending_profiles was the suggested source and carries NO brand column
+// (only sending_domain / pool_prefix / from_name), so it cannot answer this;
+// brandident is the canonical reverse and needs no query at all.
 //
-// TODO(WP5/WP7): source is the sending-domain card health band — Go side
-// internal/domainagent/scorecard.go; operator artifact
-// .scratch/reports/sending_domain_cards/. Map band → fraction of contract
-// (red ⇒ 0, amber ⇒ 0.5×, green ⇒ NoLimit) with the mapping in the contract's
-// notes, never hard-coded here.
-type HealthBandGovernor struct{ u unconfiguredGovernor }
-
-func NewHealthBandGovernor() *HealthBandGovernor {
-	return &HealthBandGovernor{u: unconfiguredGovernor{
-		name:   "health_band",
-		source: "sending_domain_cards / internal/domainagent/scorecard.go",
-	}}
+// brand.Root returns its input unchanged on a miss (CLAUDE.md §7), so the second
+// attempt strips the sending label ("em.warrantyforyou.com" → "warrantyforyou.com")
+// exactly as isp_bans.go does.
+func DefaultBrandForDomain(_ context.Context, sendingDomain string) (string, bool) {
+	d := strings.ToLower(strings.TrimSpace(sendingDomain))
+	if d == "" {
+		return "", false
+	}
+	apex := brand.Root(d)
+	if code, ok := brandident.CodeForApex(apex); ok {
+		return code, true
+	}
+	if i := strings.Index(apex, "."); i > 0 {
+		if code, ok := brandident.CodeForApex(apex[i+1:]); ok {
+			return code, true
+		}
+	}
+	return "", false
 }
+
+// -----------------------------------------------------------------------------
+// GmailHoldGovernor — REAL (REQ-083 bans + the mature-brand allow-list)
+// -----------------------------------------------------------------------------
+
+// GmailAllowEnv is the per-ISP allow-list override the orchestrator reads.
+const GmailAllowEnv = "PARTNER_DRIP_GMAIL_NEW_BRANDS"
+
+// gmailAllowDefault is the mature-4 default (operator 2026-06-13): the
+// engagement-priced, reputation-sensitive ISPs ship only from the warmed
+// domains that own the isolated per-ISP IP pools.
+const gmailAllowDefault = "db,ht,mh,qf"
+
+// GmailAllowedBrands duplicates the gmail slice of
+// worker.DefaultNewRecordISPBrandAllow (partner_drip_orchestrator.go:685).
+// It is duplicated rather than imported because internal/worker will import
+// THIS package at WP5 and the edge would be a cycle; the duplication is pinned
+// by TestGmailAllowListMatchesOrchestrator in the external test package.
+func GmailAllowedBrands() map[string]bool {
+	v := strings.TrimSpace(os.Getenv(GmailAllowEnv))
+	if v == "" {
+		v = gmailAllowDefault
+	}
+	m := map[string]bool{}
+	for _, b := range strings.Split(v, ",") {
+		if b = strings.ToLower(strings.TrimSpace(b)); b != "" {
+			m[b] = true
+		}
+	}
+	return m
+}
+
+// GmailHoldGovernor stops gmail for a brand that is either banned in
+// mailing_isp_bans (REQ-083, the 2026-08-30 8-brand ruling) or outside the
+// mature-brand allow-list. It is the only governor that fails CLOSED.
+//
+// Why closed: isp_bans.go's own doctrine is "a ban that fails open re-creates
+// exactly the leak this exists to close" — 3,416 gmail messages shipped on
+// banned brands on 2026-09-01 because the enforcement ran somewhere the rebind
+// could undo. An unreadable ban table, or a domain whose brand cannot be
+// identified, therefore yields ceiling 0 for gmail.
+//
+// The one exception is a MISSING table: a database that has never run the
+// REQ-083 migration is a fresh boot, not a policy failure, and is treated as
+// "no bans" so a new environment is not wedged. Same split as ThrottleGovernor.
+type GmailHoldGovernor struct {
+	DB       Queryer
+	OrgID    string         // "" = the cross-org union, which can only ban MORE
+	BrandFor BrandForDomain // nil = DefaultBrandForDomain
+	// ISP is the class this governor guards. Defaults to "gmail"; overridable so
+	// the same body can guard another banned class without a second type.
+	ISP      string
+	CacheTTL time.Duration // 0 = 60s, matching api.ispBans
+
+	mu      sync.RWMutex
+	cached  map[string]map[string]bool // brand_code -> isp -> banned
+	fetched time.Time
+}
+
+// NewGmailHoldGovernor builds the gmail hold against the live ban registry.
+func NewGmailHoldGovernor(db Queryer, orgID string) *GmailHoldGovernor {
+	return &GmailHoldGovernor{DB: db, OrgID: orgID, ISP: "gmail", CacheTTL: 60 * time.Second}
+}
+
+func (g *GmailHoldGovernor) isp() string {
+	if s := normISP(g.ISP); s != "" {
+		return s
+	}
+	return "gmail"
+}
+
+func (g *GmailHoldGovernor) brandFor() BrandForDomain {
+	if g.BrandFor != nil {
+		return g.BrandFor
+	}
+	return DefaultBrandForDomain
+}
+
+// bans returns the cached ban table, reloading when stale. A load error is
+// never cached: a transient blip must not pin a refusal for a whole TTL.
+// (nil, nil) means "the table does not exist" — no bans, not a failure.
+func (g *GmailHoldGovernor) bans(ctx context.Context) (map[string]map[string]bool, error) {
+	ttl := g.CacheTTL
+	if ttl <= 0 {
+		ttl = 60 * time.Second
+	}
+	g.mu.RLock()
+	if g.cached != nil && time.Since(g.fetched) < ttl {
+		c := g.cached
+		g.mu.RUnlock()
+		return c, nil
+	}
+	g.mu.RUnlock()
+
+	if g.DB == nil {
+		return nil, nil
+	}
+	qctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	// The whole table is 8 rows in production — a config table, read once and
+	// scoped in memory. The org predicate mirrors api.ispBanTable.forOrg: an
+	// empty org asks for the cross-org union.
+	rows, err := g.DB.QueryContext(qctx, `
+		SELECT lower(btrim(brand_code)), lower(btrim(isp))
+		FROM mailing_isp_bans
+		WHERE $1::text = '' OR lower(btrim(organization_id::text)) = lower(btrim($1))
+	`, strings.TrimSpace(g.OrgID))
+	if err != nil {
+		if isUndefinedTable(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load mailing_isp_bans: %w", err)
+	}
+	defer rows.Close()
+	tbl := map[string]map[string]bool{}
+	for rows.Next() {
+		var code, isp string
+		if err := rows.Scan(&code, &isp); err != nil {
+			return nil, fmt.Errorf("scan mailing_isp_bans: %w", err)
+		}
+		if code == "" || isp == "" {
+			return nil, fmt.Errorf("mailing_isp_bans row has an empty brand_code or isp")
+		}
+		if tbl[code] == nil {
+			tbl[code] = map[string]bool{}
+		}
+		tbl[code][isp] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mailing_isp_bans rows: %w", err)
+	}
+	g.mu.Lock()
+	g.cached, g.fetched = tbl, time.Now()
+	g.mu.Unlock()
+	return tbl, nil
+}
+
+func (g *GmailHoldGovernor) Ceilings(ctx context.Context, _ time.Time, domain, isp string, _ Window) ([]GovernorCeiling, error) {
+	if normISP(isp) != g.isp() {
+		return nil, nil // this governor has no opinion about other classes
+	}
+	stop := []GovernorCeiling{{Name: "gmail_hold", Limit: 0}}
+
+	code, ok := g.brandFor()(ctx, domain)
+	if !ok {
+		log.Printf("[DripSupply] gmail_hold: cannot identify a brand for %q — holding gmail at 0 (a domain we cannot name cannot be proven allowed)", domain)
+		return stop, nil
+	}
+
+	tbl, err := g.bans(ctx)
+	if err != nil {
+		log.Printf("[DripSupply] gmail_hold: ban registry unreadable (%v) — holding %s/gmail at 0; a ban that fails OPEN is the bug REQ-083 exists to prevent", err, domain)
+		return stop, nil
+	}
+	if tbl[code][g.isp()] {
+		return stop, nil
+	}
+	if !GmailAllowedBrands()[code] {
+		return stop, nil
+	}
+	return nil, nil
+}
+
+// -----------------------------------------------------------------------------
+// SESQuotaGovernor — REAL (remaining 24h account quota)
+// -----------------------------------------------------------------------------
+
+// SESQuotaFunc reads the account's 24-hour sending quota. It is a function, not
+// an *ses.Client, so this package carries no AWS dependency and main.go needs no
+// edit. Wire it in one line next to the orchestrator:
+//
+//	dripsupply.NewSESQuotaGovernor(func(ctx context.Context) (float64, float64, error) {
+//	    out, err := sesClient.GetAccountStatistics(ctx)   // internal/ses/client.go:269
+//	    if err != nil || out == nil || out.SendQuota == nil {
+//	        return 0, 0, err
+//	    }
+//	    return out.SendQuota.Max24HourSend, out.SendQuota.SentLast24Hours, nil
+//	})
+type SESQuotaFunc func(ctx context.Context) (max24h, sent24h float64, err error)
+
+// SESRouteAllEnv is the orchestrator's route-everything-through-SES switch.
+const SESRouteAllEnv = "PARTNER_DRIP_ROUTE_ALL_SES"
+
+// SESDoctrineISPs are the classes that route SES by standing doctrine
+// (CLAUDE.md §5.3: "Gmail, Apple and the yahoo-family lanes route SES").
+var SESDoctrineISPs = []string{"gmail", "apple"}
+
+// SESRouteAll mirrors worker.dripRouteAllSES (partner_drip_orchestrator.go:1323):
+// default ON, meaning the WHOLE drip defaults to the SES relay. Duplicated for
+// the same import-cycle reason as the gmail allow-list and pinned by
+// TestSESRouteAllMatchesOrchestrator.
+func SESRouteAll() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(SESRouteAllEnv))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true
+}
+
+// SESRoutedISP reports whether an ISP's mail goes through the SES relay, and so
+// whether the account quota is a real ceiling for it.
+//
+// NOTE: with SESRouteAll on (the default) this is EVERY class, not just
+// gmail/apple. The orchestrator's `sesPins` (dripBrandISPSESProfiles) is not a
+// set of SES-routed ISPs at all — it is a brand×ISP → tenant-profile map whose
+// default is the single entry ht=microsoft, layered ON TOP of the route-all
+// default. Treating sesPins as the routed set would have under-counted the
+// governed surface to one cell.
+func SESRoutedISP(isp string) bool {
+	if SESRouteAll() {
+		return true
+	}
+	n := normISP(isp)
+	for _, d := range SESDoctrineISPs {
+		if n == d {
+			return true
+		}
+	}
+	return false
+}
+
+// SESQuotaGovernor caps SES-routed ISPs at the account's remaining 24-hour
+// quota. Doctrine: an SES 454 is CAPACITY, not deliverability (JAOS core §5) —
+// this reduces capacity and must never colour an ISP health band.
+//
+// A read error yields NO ceiling and increments ErrorCount. Failing closed here
+// would stop the estate on an AWS blip, and the quota is a ceiling on the whole
+// account rather than a per-cell policy.
+type SESQuotaGovernor struct {
+	read     SESQuotaFunc
+	ttl      time.Duration
+	routed   func(isp string) bool
+	errors   atomic.Int64
+	mu       sync.RWMutex
+	cached   int
+	hasCache bool
+	fetched  time.Time
+	warnOnce sync.Once
+}
+
+// NewSESQuotaGovernor builds the quota governor. A nil read function makes it
+// permanently inert (and says so once), never a source of zeroes.
+func NewSESQuotaGovernor(read SESQuotaFunc) *SESQuotaGovernor {
+	return &SESQuotaGovernor{read: read, ttl: 5 * time.Minute, routed: SESRoutedISP}
+}
+
+// WithTTL overrides the 5-minute cache (tests, and a tighter watch during a
+// quota-pressure incident).
+func (g *SESQuotaGovernor) WithTTL(d time.Duration) *SESQuotaGovernor {
+	if d > 0 {
+		g.ttl = d
+	}
+	return g
+}
+
+// ErrorCount is the number of failed quota reads since boot. Rising means the
+// estate is running WITHOUT the quota ceiling — visible, not silent.
+func (g *SESQuotaGovernor) ErrorCount() int64 { return g.errors.Load() }
+
+func (g *SESQuotaGovernor) Ceilings(ctx context.Context, _ time.Time, _, isp string, _ Window) ([]GovernorCeiling, error) {
+	if g.read == nil {
+		g.warnOnce.Do(func() {
+			log.Printf("[DripSupply] governor \"ses_quota\" has no reader — SES-routed capacity is NOT quota-bound")
+		})
+		return nil, nil
+	}
+	routed := g.routed
+	if routed == nil {
+		routed = SESRoutedISP
+	}
+	if !routed(isp) {
+		return nil, nil
+	}
+
+	g.mu.RLock()
+	if g.hasCache && time.Since(g.fetched) < g.ttl {
+		c := g.cached
+		g.mu.RUnlock()
+		return []GovernorCeiling{{Name: "ses_quota", Limit: c}}, nil
+	}
+	g.mu.RUnlock()
+
+	max24h, sent24h, err := g.read(ctx)
+	if err != nil {
+		n := g.errors.Add(1)
+		log.Printf("[DripSupply] ses_quota read failed (%v, total=%d) — NO quota ceiling this tick; capacity is contract-bound only", err, n)
+		return nil, nil
+	}
+	// SES reports -1 for an account with no 24-hour cap.
+	if max24h < 0 {
+		g.store(NoLimit)
+		return []GovernorCeiling{{Name: "ses_quota", Limit: NoLimit}}, nil
+	}
+	remaining := int(math.Floor(max24h - sent24h))
+	if remaining < 0 {
+		remaining = 0 // the quota is genuinely spent; that IS a ceiling of 0
+	}
+	g.store(remaining)
+	return []GovernorCeiling{{Name: "ses_quota", Limit: remaining}}, nil
+}
+
+func (g *SESQuotaGovernor) store(v int) {
+	g.mu.Lock()
+	g.cached, g.hasCache, g.fetched = v, true, time.Now()
+	g.mu.Unlock()
+}
+
+// -----------------------------------------------------------------------------
+// HealthBandGovernor — BLOCKED, still inert. See the report to the lead.
+// -----------------------------------------------------------------------------
+
+// HealthBandGovernor is NOT implemented, deliberately: there is no health band
+// to read. Verified 2026-09-03 against the tree —
+//
+//   - there is no `sending_domain_cards` table; the only Go references to that
+//     string are this comment and drip_domain_contracts.ramp_source's enum value;
+//   - internal/domainagent/scorecard.go persists mailing_domain_agent_scorecard,
+//     which is RAW COUNTERS per domain×ISP×day (sends, delivered, human_opens,
+//     bounces, complaints…) and carries no band;
+//   - mailing_isp_doctrines.health_bands is free-text markdown keyed by ISP, not
+//     by sending domain — operator prose the portal renders in an editor;
+//   - agents/reporting/sending_domain_report_card.py writes Markdown to the
+//     operator's Desktop and a JSON history to .scratch/; it never writes to
+//     Postgres and contains no red/amber/green vocabulary at all.
+//
+// Implementing red→0 / amber→50% would mean inventing the classifier AND its
+// thresholds inside a capacity governor — deliverability doctrine, decided here,
+// silently halving or zeroing a domain. That is the opposite of "never invent a
+// ceiling", so it is not being guessed. It stays inert (NoLimit) and logs once.
+//
+// To unblock, one of these has to exist first (lead/operator call):
+//  1. a persisted band per sending domain (a `band` column on a daily
+//     domain-health row) written by whoever owns the deliverability verdict; or
+//  2. an operator-set band on the domain CONTRACT itself, which makes it policy
+//     under §1.1 versioning and audit rather than an inferred governor.
+type HealthBandGovernor struct{ warnOnce sync.Once }
+
+func NewHealthBandGovernor() *HealthBandGovernor { return &HealthBandGovernor{} }
 
 func (g *HealthBandGovernor) Ceilings(context.Context, time.Time, string, string, Window) ([]GovernorCeiling, error) {
-	return g.u.ceilings()
-}
-
-// GmailHoldGovernor enforces the standing gmail holds.
-//
-// TODO(WP5/WP7): source is `mailing_isp_bans` (REQ-083, enforced in the planner
-// at internal/api/pmta_campaign_planner.go:1078) plus the 8-brand gmail ban
-// (WFY RB RRU TOT CP LPL YIH CI). Ceiling 0 for a banned brand×gmail cell.
-// Until this is wired, a domain contract's gmail value is the ONLY thing between
-// a banned brand and a gmail send — which is exactly why §1.1 requires notes
-// naming the operator ruling whenever gmail > 0.
-type GmailHoldGovernor struct{ u unconfiguredGovernor }
-
-func NewGmailHoldGovernor() *GmailHoldGovernor {
-	return &GmailHoldGovernor{u: unconfiguredGovernor{
-		name:   "gmail_hold",
-		source: "mailing_isp_bans (REQ-083) + the 8-brand gmail ban",
-	}}
-}
-
-func (g *GmailHoldGovernor) Ceilings(context.Context, time.Time, string, string, Window) ([]GovernorCeiling, error) {
-	return g.u.ceilings()
+	g.warnOnce.Do(func() {
+		log.Printf("[DripSupply] governor \"health_band\" NOT WIRED — no persisted band exists for a sending domain (see HealthBandGovernor doc); effective capacity ignores domain health")
+	})
+	return []GovernorCeiling{{Name: "health_band", Limit: NoLimit}}, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -507,6 +817,24 @@ func (s *Service) refillOne(ctx context.Context, day time.Time, domain, isp stri
 		return res, fmt.Errorf("dripsupply: refill %s/%s on %s: %w", domain, isp, dayKey(day), err)
 	}
 	return res, nil
+}
+
+// isUndefinedTable reports whether err is Postgres 42P01 (undefined_table) —
+// the table has never been created, i.e. a fresh database rather than a broken
+// one. It deliberately does NOT match a bare "does not exist" substring: 42703
+// (undefined_column) carries the same words, and treating a schema drift on an
+// EXISTING policy table as "no policy" is how a governor fails open by accident.
+func isUndefinedTable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pe *pq.Error
+	if errors.As(err, &pe) {
+		return string(pe.Code) == "42P01"
+	}
+	// Drivers that lose the SQLSTATE still name the relation in the message.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "relation") && strings.Contains(msg, "does not exist")
 }
 
 // isStatementTimeout reports whether err is a statement/lock timeout or a

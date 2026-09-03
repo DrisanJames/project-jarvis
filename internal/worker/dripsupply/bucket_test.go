@@ -2,6 +2,8 @@ package dripsupply
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"math"
 	"os"
 	"strings"
@@ -285,10 +287,19 @@ func TestThrottleGovernor_ReadsTheRealTable(t *testing.T) {
 	}
 }
 
-func TestStubGovernors_NeverInventACeiling(t *testing.T) {
+// TestUnconfiguredGovernors_NeverInventACeiling: a governor with no source
+// wired must be INERT (NoLimit), never a decider. HealthBandGovernor is
+// permanently in this state until a band source exists; the other two land here
+// only when they are constructed without their input.
+func TestUnconfiguredGovernors_NeverInventACeiling(t *testing.T) {
 	ctx := context.Background()
 	day := testDay(t)
-	for _, g := range []GovernorReader{NewSESQuotaGovernor(), NewHealthBandGovernor(), NewGmailHoldGovernor()} {
+	inert := []GovernorReader{
+		NewHealthBandGovernor(),          // no band source exists (see its doc)
+		NewSESQuotaGovernor(nil),         // no quota reader wired
+		&GmailHoldGovernor{ISP: "gmail"}, // no DB — but see the note below
+	}
+	for _, g := range inert[:2] {
 		cs, err := g.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow())
 		if err != nil {
 			t.Fatalf("%T: %v", g, err)
@@ -300,6 +311,289 @@ func TestStubGovernors_NeverInventACeiling(t *testing.T) {
 		}
 		if eff, bound := ApplyGovernors(5000, cs); eff != 5000 || bound != "" {
 			t.Fatalf("%T changed effective to %d (bound=%q) — an unwired governor must be inert", g, eff, bound)
+		}
+	}
+	// The gmail hold is the deliberate exception: with no ban registry to read it
+	// still enforces the ALLOW-LIST, because failing open on gmail is the SEV-1
+	// REQ-083 exists to prevent. A mature brand passes; a non-mature one does not.
+	gh := inert[2]
+	if cs, err := gh.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow()); err != nil || len(cs) != 0 {
+		t.Fatalf("gmail hold on a mature brand gave %+v (err=%v), want no ceiling", cs, err)
+	}
+	if cs, err := gh.Ceilings(ctx, day, "em.warrantyforyou.com", "gmail", DefaultWindow()); err != nil || len(cs) != 1 || cs[0].Limit != 0 {
+		t.Fatalf("gmail hold on a non-mature brand gave %+v (err=%v), want a ceiling of 0", cs, err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// GmailHoldGovernor
+// -----------------------------------------------------------------------------
+
+// ispBansDDL is a VERBATIM copy of the create_mailing_isp_bans statement in
+// cmd/server/main.go (REQ-083). The gmail hold reads this table in production,
+// so the tests build the production shape; TestPackageDDLMatchesWP1 catches drift.
+const ispBansDDL = `CREATE TABLE IF NOT EXISTS mailing_isp_bans (
+			organization_id UUID NOT NULL,
+			brand_code      TEXT NOT NULL,
+			isp             TEXT NOT NULL,
+			reason          TEXT NOT NULL DEFAULT '',
+			banned_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			banned_by       TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (organization_id, brand_code, isp)
+		)`
+
+// newBanTestDB is newTestDB plus the REQ-083 ban registry.
+func newBanTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := newTestDB(t)
+	if _, err := db.Exec(ispBansDDL); err != nil {
+		t.Fatalf("mailing_isp_bans ddl: %v", err)
+	}
+	return db
+}
+
+func seedBan(t *testing.T, db *sql.DB, org, code, isp string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO mailing_isp_bans (organization_id, brand_code, isp, reason, banned_by)
+		VALUES ($1::uuid, $2, $3, 'test', 'WP3') ON CONFLICT DO NOTHING`, org, code, isp); err != nil {
+		t.Fatalf("seed ban %s/%s: %v", code, isp, err)
+	}
+}
+
+func TestGmailHold_BansAndAllowList(t *testing.T) {
+	db := newBanTestDB(t)
+	ctx := context.Background()
+	day := testDay(t)
+	w := DefaultWindow()
+	const org = "00000000-0000-0000-0000-000000000001"
+
+	// The REQ-083 ruling, in the table's own brandident vocabulary.
+	for _, code := range []string{"wf", "rb", "rr", "tt", "cp", "lp", "yi", "ci"} {
+		seedBan(t, db, org, code, "gmail")
+	}
+	g := NewGmailHoldGovernor(db, org)
+
+	cases := []struct {
+		name, domain string
+		wantStop     bool
+		why          string
+	}{
+		{"mature brand, not banned", "em.historythinking.com", false, "ht is in the mature-4 allow-list and carries no ban"},
+		{"mature brand db", "em.discountblog.com", false, "db is mature-4"},
+		{"banned brand", "em.warrantyforyou.com", true, "wf is banned by REQ-083"},
+		{"banned brand casainsure", "em.casainsure.com", true, "ci is banned by REQ-083"},
+		{"unbanned but not mature", "em.businessweeklypro.com", true, "bw carries no ban but is outside the gmail allow-list"},
+		{"unidentifiable domain", "em.not-a-brand.example", true, "a domain we cannot name cannot be proven allowed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, err := g.Ceilings(ctx, day, tc.domain, "gmail", w)
+			if err != nil {
+				t.Fatalf("Ceilings: %v", err)
+			}
+			stopped := len(cs) == 1 && cs[0].Limit == 0
+			if stopped != tc.wantStop {
+				t.Fatalf("%s: ceilings %+v, want stop=%v (%s)", tc.domain, cs, tc.wantStop, tc.why)
+			}
+			if eff, bound := ApplyGovernors(5000, cs); tc.wantStop && (eff != 0 || bound != "gmail_hold") {
+				t.Fatalf("%s: effective %d bound=%q, want 0/gmail_hold", tc.domain, eff, bound)
+			} else if !tc.wantStop && eff != 5000 {
+				t.Fatalf("%s: effective %d, want the contract 5000", tc.domain, eff)
+			}
+		})
+	}
+}
+
+// TestGmailHold_NegativeControl_OtherISPsUntouched: the governor must have NO
+// opinion about a class it does not guard. Without this, a hold that returned a
+// ceiling for every ISP would pass every positive case above.
+func TestGmailHold_NegativeControl_OtherISPsUntouched(t *testing.T) {
+	db := newBanTestDB(t)
+	ctx := context.Background()
+	day := testDay(t)
+	const org = "00000000-0000-0000-0000-000000000001"
+	seedBan(t, db, org, "wf", "gmail")
+	g := NewGmailHoldGovernor(db, org)
+
+	for _, isp := range []string{"aol", "yahoo", "microsoft", "apple", "comcast"} {
+		cs, err := g.Ceilings(ctx, day, "em.warrantyforyou.com", isp, DefaultWindow())
+		if err != nil {
+			t.Fatalf("%s: %v", isp, err)
+		}
+		if len(cs) != 0 {
+			t.Fatalf("gmail hold produced %+v for isp=%s — a gmail ban must not stop the brand's other lanes", cs, isp)
+		}
+	}
+}
+
+// TestGmailHold_AllowListEnvOverrideOpensABrand proves the allow-list is really
+// consulted: the same brand that is stopped by default is admitted once the
+// operator's env override names it, and a ban still overrules the override.
+func TestGmailHold_AllowListEnvOverrideOpensABrand(t *testing.T) {
+	db := newBanTestDB(t)
+	ctx := context.Background()
+	day := testDay(t)
+	const org = "00000000-0000-0000-0000-000000000001"
+	seedBan(t, db, org, "wf", "gmail")
+	g := NewGmailHoldGovernor(db, org)
+
+	// Default: bw is outside the mature-4 list and is stopped.
+	if cs, _ := g.Ceilings(ctx, day, "em.businessweeklypro.com", "gmail", DefaultWindow()); len(cs) == 0 {
+		t.Fatal("bw was admitted under the default allow-list")
+	}
+	t.Setenv(GmailAllowEnv, "db,ht,mh,qf,bw")
+	if cs, err := g.Ceilings(ctx, day, "em.businessweeklypro.com", "gmail", DefaultWindow()); err != nil || len(cs) != 0 {
+		t.Fatalf("bw still stopped after the env override admitted it: %+v (err=%v)", cs, err)
+	}
+	// A BAN is not overridable by the allow-list.
+	t.Setenv(GmailAllowEnv, "db,ht,mh,qf,wf")
+	if cs, _ := g.Ceilings(ctx, day, "em.warrantyforyou.com", "gmail", DefaultWindow()); len(cs) != 1 || cs[0].Limit != 0 {
+		t.Fatalf("a banned brand was admitted by the allow-list: %+v", cs)
+	}
+}
+
+// TestGmailHold_UnreadableRegistryFailsClosed pins the one governor that errs on
+// the side of stopping: isp_bans.go's doctrine is that a ban failing OPEN is the
+// bug it exists to prevent (3,416 banned-brand gmail messages, 2026-09-01).
+func TestGmailHold_UnreadableRegistryFailsClosed(t *testing.T) {
+	db := newBanTestDB(t)
+	ctx := context.Background()
+	day := testDay(t)
+	const org = "00000000-0000-0000-0000-000000000001"
+
+	// A table with the wrong shape reads as an error, not as "no bans".
+	if _, err := db.Exec(`ALTER TABLE mailing_isp_bans DROP COLUMN brand_code`); err != nil {
+		t.Fatalf("break the table: %v", err)
+	}
+	g := NewGmailHoldGovernor(db, org)
+	cs, err := g.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow())
+	if err != nil {
+		t.Fatalf("Ceilings returned an error instead of failing closed: %v", err)
+	}
+	if len(cs) != 1 || cs[0].Limit != 0 {
+		t.Fatalf("an unreadable ban registry gave %+v, want a ceiling of 0 for a MATURE brand that would otherwise pass", cs)
+	}
+
+	// Negative control: a MISSING table is a fresh boot, not a policy failure,
+	// and must not wedge gmail for an allow-listed brand.
+	if _, err := db.Exec(`DROP TABLE mailing_isp_bans`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	g2 := NewGmailHoldGovernor(db, org)
+	if cs, err := g2.Ceilings(ctx, day, "em.historythinking.com", "gmail", DefaultWindow()); err != nil || len(cs) != 0 {
+		t.Fatalf("a MISSING ban table gave %+v (err=%v), want no ceiling for a mature brand", cs, err)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// SESQuotaGovernor
+// -----------------------------------------------------------------------------
+
+func TestSESQuota_RemainingIsTheCeiling(t *testing.T) {
+	ctx := context.Background()
+	day := testDay(t)
+	w := DefaultWindow()
+
+	var calls int
+	g := NewSESQuotaGovernor(func(context.Context) (float64, float64, error) {
+		calls++
+		return 3_000_000, 2_880_000, nil
+	})
+
+	cs, err := g.Ceilings(ctx, day, "em.historythinking.com", "gmail", w)
+	if err != nil {
+		t.Fatalf("Ceilings: %v", err)
+	}
+	if len(cs) != 1 || cs[0].Name != "ses_quota" || cs[0].Limit != 120_000 {
+		t.Fatalf("ceilings = %+v, want a ses_quota ceiling of 120000", cs)
+	}
+	if eff, bound := ApplyGovernors(500_000, cs); eff != 120_000 || bound != "ses_quota" {
+		t.Fatalf("effective = %d (bound=%q), want 120000/ses_quota", eff, bound)
+	}
+	// Above the contract it is ignored — reduce only.
+	if eff, bound := ApplyGovernors(50_000, cs); eff != 50_000 || bound != "" {
+		t.Fatalf("effective = %d (bound=%q); a quota above the contract must be ignored", eff, bound)
+	}
+	// Cached for the TTL: one read serves the whole tick, not one per cell.
+	for i := 0; i < 25; i++ {
+		if _, err := g.Ceilings(ctx, day, "em.discountblog.com", "gmail", w); err != nil {
+			t.Fatalf("cached read: %v", err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("quota read %d times across 26 cells, want 1 (the 5-minute cache)", calls)
+	}
+
+	// Spent quota IS a real ceiling of 0 — this is capacity, not deliverability.
+	spent := NewSESQuotaGovernor(func(context.Context) (float64, float64, error) { return 3_000_000, 3_200_000, nil })
+	if cs, _ := spent.Ceilings(ctx, day, "em.historythinking.com", "gmail", w); len(cs) != 1 || cs[0].Limit != 0 {
+		t.Fatalf("an exhausted quota gave %+v, want a ceiling of 0", cs)
+	}
+	// SES reports -1 for an uncapped account.
+	unl := NewSESQuotaGovernor(func(context.Context) (float64, float64, error) { return -1, 900, nil })
+	if cs, _ := unl.Ceilings(ctx, day, "em.historythinking.com", "gmail", w); len(cs) != 1 || cs[0].Limit != NoLimit {
+		t.Fatalf("an uncapped account gave %+v, want NoLimit", cs)
+	}
+}
+
+// TestSESQuota_NegativeControl_ErrorAndUnroutedNeverProduceACeiling: the two
+// paths that must NEVER yield a number. An error that returned 0 would stop the
+// estate on an AWS blip; an unrouted ISP would be capped by a quota it does not
+// consume.
+func TestSESQuota_NegativeControl_ErrorAndUnroutedNeverProduceACeiling(t *testing.T) {
+	ctx := context.Background()
+	day := testDay(t)
+	w := DefaultWindow()
+
+	boom := NewSESQuotaGovernor(func(context.Context) (float64, float64, error) {
+		return 0, 0, errors.New("sesv2: throttled")
+	})
+	cs, err := boom.Ceilings(ctx, day, "em.historythinking.com", "gmail", w)
+	if err != nil {
+		t.Fatalf("a read error must not surface as an error: %v", err)
+	}
+	if len(cs) != 0 {
+		t.Fatalf("a failed quota read produced %+v, want no ceiling", cs)
+	}
+	if boom.ErrorCount() != 1 {
+		t.Fatalf("ErrorCount = %d, want 1 — running without the quota ceiling must be countable", boom.ErrorCount())
+	}
+	if eff, _ := ApplyGovernors(5000, cs); eff != 5000 {
+		t.Fatalf("effective = %d after a failed read, want the contract 5000", eff)
+	}
+
+	// With route-all OFF, a non-doctrine ISP is not SES-routed and gets nothing.
+	t.Setenv(SESRouteAllEnv, "false")
+	g := NewSESQuotaGovernor(func(context.Context) (float64, float64, error) { return 3_000_000, 2_999_000, nil })
+	if cs, _ := g.Ceilings(ctx, day, "em.historythinking.com", "aol", w); len(cs) != 0 {
+		t.Fatalf("aol got %+v with route-all off — it is not SES-routed", cs)
+	}
+	// gmail and apple still are, by standing doctrine.
+	for _, isp := range SESDoctrineISPs {
+		if cs, _ := g.Ceilings(ctx, day, "em.historythinking.com", isp, w); len(cs) != 1 {
+			t.Fatalf("%s got %+v with route-all off — it routes SES by doctrine", isp, cs)
+		}
+	}
+}
+
+func TestSESRoutedISP_FollowsTheRouteAllSwitch(t *testing.T) {
+	// Default ON: the WHOLE drip relays through SES, so every class is bound.
+	t.Setenv(SESRouteAllEnv, "")
+	for _, isp := range []string{"gmail", "apple", "aol", "yahoo", "microsoft", "other"} {
+		if !SESRoutedISP(isp) {
+			t.Fatalf("%s is not SES-routed under the route-all default", isp)
+		}
+	}
+	for _, off := range []string{"false", "0", "off", "no", "FALSE", " Off "} {
+		t.Setenv(SESRouteAllEnv, off)
+		if SESRouteAll() {
+			t.Fatalf("SESRouteAll() is true for %q", off)
+		}
+		if SESRoutedISP("aol") {
+			t.Fatalf("aol is SES-routed with route-all=%q", off)
+		}
+		if !SESRoutedISP("gmail") {
+			t.Fatalf("gmail is not SES-routed with route-all=%q", off)
 		}
 	}
 }
@@ -437,7 +731,7 @@ func TestPackageDDLMatchesWP1(t *testing.T) {
 		t.Skipf("cannot read cmd/server/main.go: %v", err)
 	}
 	main := string(raw)
-	stmts := append([]string{CapacityLedgerDDL, CapacityBalanceDDL, LaneBalanceDDL}, CapacityLedgerIndexDDL...)
+	stmts := append([]string{CapacityLedgerDDL, CapacityBalanceDDL, LaneBalanceDDL, ispBansDDL}, CapacityLedgerIndexDDL...)
 	for _, s := range stmts {
 		if !strings.Contains(main, s) {
 			head := s
