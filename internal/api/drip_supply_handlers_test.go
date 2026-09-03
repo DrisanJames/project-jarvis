@@ -25,11 +25,13 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +49,9 @@ const dripTestOrgID = "11111111-2222-3333-4444-555555555555"
 
 // dripTestKey is a >= 32 byte HMAC key for the tests that need one.
 const dripTestKey = "test-contract-token-key-0123456789abcdef"
+
+// dripTestDay is the Denver day every record-flow test keys its cache on.
+var dripTestDay = time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
 
 func dripNewMock(t *testing.T) (*DripSupplyService, sqlmock.Sqlmock, func()) {
 	t.Helper()
@@ -1158,7 +1163,7 @@ func TestDripSupply_RecordFlowBucketsSumToTheLaneTotal(t *testing.T) {
 	mock.ExpectQuery("FROM partner_clean_queue").WillReturnRows(dripFlowRows(buckets, total))
 	mock.ExpectRollback()
 
-	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail")
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
 	if err != nil {
 		t.Fatalf("recordFlow: %v", err)
 	}
@@ -1256,7 +1261,7 @@ func TestDripSupply_RecordFlowCountsUnknownStatusesRatherThanDroppingThem(t *tes
 	mock.ExpectQuery("FROM partner_clean_queue").WillReturnRows(dripFlowRows(buckets, 110))
 	mock.ExpectRollback()
 
-	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail")
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
 	if err != nil {
 		t.Fatalf("recordFlow: %v", err)
 	}
@@ -1289,7 +1294,7 @@ func TestDripSupply_RecordFlowDegradesToNullNotZero(t *testing.T) {
 		mock.ExpectRollback()
 
 		out := &dripLaneResponse{}
-		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		svc.attachRecordFlow(context.Background(), "wcl_remail", dripTestDay, out)
 		if out.RecordFlow != nil {
 			t.Errorf("a timed-out record_flow must be null, not a zeroed diagram: %+v", out.RecordFlow)
 		}
@@ -1308,7 +1313,7 @@ func TestDripSupply_RecordFlowDegradesToNullNotZero(t *testing.T) {
 		mock.ExpectRollback()
 
 		out := &dripLaneResponse{}
-		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		svc.attachRecordFlow(context.Background(), "wcl_remail", dripTestDay, out)
 		if out.RecordFlow != nil {
 			t.Errorf("with nothing scanned the flow is unknown, not all-zero: %+v", out.RecordFlow)
 		}
@@ -1327,7 +1332,7 @@ func TestDripSupply_RecordFlowDegradesToNullNotZero(t *testing.T) {
 		mock.ExpectRollback()
 
 		out := &dripLaneResponse{Lane: "wcl_remail"}
-		svc.attachRecordFlow(context.Background(), "wcl_remail", out)
+		svc.attachRecordFlow(context.Background(), "wcl_remail", dripTestDay, out)
 		if out.RecordFlow != nil {
 			t.Error("record_flow must be null on error")
 		}
@@ -1466,6 +1471,335 @@ func TestDripSupply_PlanIsMarkedAsReconcileTooling(t *testing.T) {
 	for _, frag := range []string{"RECONCILE TOOLING", "NOT A PORTAL SURFACE", "supply_reconcile.py"} {
 		if !strings.Contains(doc, frag) {
 			t.Errorf("HandlePlan's doc comment must say %q — WP11 owns this view, the portal must not build on it", frag)
+		}
+	}
+}
+
+// ── record_flow cache: TTL, negative caching, single flight ─────────────────
+
+// dripExpectFlowScan queues ONE complete scan (datasets + classification).
+// Queueing exactly N of these and then asserting ExpectationsWereMet is how
+// these tests COUNT scans: an extra scan surfaces as "call was not expected"
+// inside recordFlow, and a missing one leaves an unfulfilled expectation.
+func dripExpectFlowScan(mock sqlmock.Sqlmock, buckets map[string]int64, total int64) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").WillReturnRows(dripFlowRows(buckets, total))
+	mock.ExpectRollback()
+}
+
+// Two requests inside the TTL must run ONE scan.
+func TestDripSupply_RecordFlowCachedWithinTTL(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	base := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	clock := base
+	svc.now = func() time.Time { return clock }
+
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 100}, 100)
+
+	first, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil || note != "" || first == nil {
+		t.Fatalf("first call: flow=%v note=%q err=%v", first, note, err)
+	}
+	if first.CacheAgeSeconds != 0 {
+		t.Errorf("a fresh scan must report cache_age_seconds = 0, got %d", first.CacheAgeSeconds)
+	}
+	if !first.AsOf.Equal(base) {
+		t.Errorf("as_of = %s, want the scan time %s", first.AsOf, base)
+	}
+
+	// 9 minutes later — still inside the 10 minute TTL.
+	clock = base.Add(9 * time.Minute)
+	second, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil || note != "" || second == nil {
+		t.Fatalf("second call: flow=%v note=%q err=%v", second, note, err)
+	}
+	if second.CacheAgeSeconds != 540 {
+		t.Errorf("cache_age_seconds = %d, want 540 (9 minutes)", second.CacheAgeSeconds)
+	}
+	if !second.AsOf.Equal(base) {
+		t.Errorf("as_of must stay the SCAN time across cache hits, got %s want %s", second.AsOf, base)
+	}
+	if second.Total != first.Total {
+		t.Errorf("cached total drifted: %d vs %d", second.Total, first.Total)
+	}
+	// THE COUNT: exactly one scan was queued and exactly one was consumed.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("two requests inside the TTL must run exactly ONE scan: %v", err)
+	}
+}
+
+// NEGATIVE CONTROL: past the TTL a second scan must actually run. Without this
+// the test above is satisfied by a cache that never expires.
+func TestDripSupply_RecordFlowRescansAfterTTL(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	base := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	clock := base
+	svc.now = func() time.Time { return clock }
+
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 100}, 100)
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 250}, 250)
+
+	if _, _, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	clock = base.Add(dripFlowCacheTTL + time.Second)
+	second, _, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if second.Total != 250 {
+		t.Errorf("after the TTL the caller must get the RE-SCANNED value (250), got %d", second.Total)
+	}
+	if second.CacheAgeSeconds != 0 {
+		t.Errorf("a re-scan resets the age, got %d", second.CacheAgeSeconds)
+	}
+	if !second.AsOf.Equal(clock) {
+		t.Errorf("as_of must advance to the new scan, got %s want %s", second.AsOf, clock)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("both scans must have run: %v", err)
+	}
+}
+
+// The lane too big to scan must not be re-scanned on every click.
+func TestDripSupply_RecordFlowDegradedResultIsCachedBriefly(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	base := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	clock := base
+	svc.now = func() time.Time { return clock }
+
+	// ONE timed-out scan queued. A second attempt inside the negative TTL would
+	// consume an expectation that does not exist.
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").
+		WillReturnError(&pq.Error{Code: "57014", Message: "canceling statement due to statement timeout"})
+	mock.ExpectRollback()
+
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil || flow != nil {
+		t.Fatalf("a timeout must degrade to a null flow, got flow=%v err=%v", flow, err)
+	}
+	if !strings.Contains(note, "timed out") {
+		t.Fatalf("note = %q, want it to say the scan timed out", note)
+	}
+	if strings.Contains(note, "cached") {
+		t.Errorf("the first, live result must not claim to be cached: %q", note)
+	}
+
+	// 90 s later: inside the 2 minute negative TTL — no re-scan.
+	clock = base.Add(90 * time.Second)
+	flow, note, err = svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil || flow != nil {
+		t.Fatalf("cached degraded result must still be a null flow, got flow=%v err=%v", flow, err)
+	}
+	if !strings.Contains(note, "cached 90s ago") {
+		t.Errorf("a served-from-cache note must say how old it is; got %q", note)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("a timed-out lane must NOT be re-scanned inside the negative TTL: %v", err)
+	}
+}
+
+// NEGATIVE CONTROL for the negative cache: it must be SHORT. An operator has to
+// be able to retry once the pressure passes.
+func TestDripSupply_RecordFlowRetriesAfterNegativeTTL(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+
+	base := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	clock := base
+	svc.now = func() time.Time { return clock }
+
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").
+		WillReturnError(&pq.Error{Code: "57014", Message: "canceling statement due to statement timeout"})
+	mock.ExpectRollback()
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 7}, 7)
+
+	if _, _, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	clock = base.Add(dripFlowCacheNegativeTTL + time.Second)
+	flow, note, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if flow == nil || flow.Total != 7 {
+		t.Errorf("past the negative TTL the retry must actually scan; got flow=%v note=%q", flow, note)
+	}
+	if dripFlowCacheNegativeTTL >= dripFlowCacheTTL {
+		t.Errorf("the negative TTL (%s) must be SHORTER than the success TTL (%s) — a failure is not as reusable as an answer",
+			dripFlowCacheNegativeTTL, dripFlowCacheTTL)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("both attempts must have run: %v", err)
+	}
+}
+
+// Concurrent requests for the same lane share ONE scan. Without single flight a
+// page refresh during a slow scan starts a second one, and the fix for load
+// becomes a source of it.
+func TestDripSupply_RecordFlowSingleFlight(t *testing.T) {
+	svc, mock, done := dripNewMock(t)
+	defer done()
+	svc.now = time.Now
+
+	// ONE scan queued, with the classification delayed so the other callers
+	// pile up behind it.
+	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("FROM partner_datasets").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uuid.NewString()))
+	mock.ExpectQuery("FROM partner_clean_queue").
+		WillDelayFor(150 * time.Millisecond).
+		WillReturnRows(dripFlowRows(map[string]int64{"ready_fresh": 42}, 42))
+	mock.ExpectRollback()
+
+	const callers = 8
+	var wg sync.WaitGroup
+	results := make([]*dripRecordFlow, callers)
+	errs := make([]error, callers)
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			f, _, err := svc.recordFlow(context.Background(), "wcl_remail", dripTestDay)
+			results[i], errs[i] = f, err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < callers; i++ {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if results[i] == nil || results[i].Total != 42 {
+			t.Errorf("caller %d got %v, want the shared scan's total 42", i, results[i])
+		}
+	}
+	// THE COUNT: 8 concurrent callers, exactly one queued scan, all consumed.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("%d concurrent callers must share ONE scan: %v", callers, err)
+	}
+}
+
+// A waiter must not be stuck behind someone else's scan forever.
+func TestDripSupply_RecordFlowWaiterRespectsContext(t *testing.T) {
+	svc, _, done := dripNewMock(t)
+	defer done()
+
+	// Occupy the slot with an in-flight scan that never completes.
+	key := dripFlowCacheKey("wcl_remail", dripTestDay)
+	slot, leader := svc.flow.acquire(key)
+	if !leader {
+		t.Fatal("expected to be the leader on an empty cache")
+	}
+	_ = slot
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := svc.recordFlow(ctx, "wcl_remail", dripTestDay); err == nil {
+		t.Error("a waiter on a cancelled context must return, not block on the leader's scan")
+	}
+}
+
+// Different lanes and different days are different keys, or one lane's flow
+// would be served for another's.
+func TestDripSupply_RecordFlowCacheKeyIsLaneAndDay(t *testing.T) {
+	d1 := time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC)
+	if dripFlowCacheKey("a", d1) == dripFlowCacheKey("b", d1) {
+		t.Error("two lanes must not share a cache key")
+	}
+	if dripFlowCacheKey("a", d1) == dripFlowCacheKey("a", d2) {
+		t.Error("two days must not share a cache key")
+	}
+
+	svc, mock, done := dripNewMock(t)
+	defer done()
+	svc.now = func() time.Time { return d1 }
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 1}, 1)
+	dripExpectFlowScan(mock, map[string]int64{"ready_fresh": 2}, 2)
+
+	if _, _, err := svc.recordFlow(context.Background(), "lane_a", d1); err != nil {
+		t.Fatalf("lane_a: %v", err)
+	}
+	// Same instant, different lane: must scan rather than serve lane_a's flow.
+	f, _, err := svc.recordFlow(context.Background(), "lane_b", d1)
+	if err != nil {
+		t.Fatalf("lane_b: %v", err)
+	}
+	if f.Total != 2 {
+		t.Errorf("lane_b got lane_a's cached flow (total %d)", f.Total)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("each key must scan once: %v", err)
+	}
+}
+
+// The cache must not grow without bound: `lane` comes from a URL path.
+func TestDripSupply_RecordFlowCacheIsBounded(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	c := newDripFlowCache(func() time.Time { return now })
+	for i := 0; i < dripFlowCacheMaxEntries*2; i++ {
+		key := fmt.Sprintf("lane-%d|2026-09-03", i)
+		slot, leader := c.acquire(key)
+		if !leader {
+			t.Fatalf("key %s should be a fresh leader", key)
+		}
+		c.publish(key, slot, dripFlowResult{at: now, ttl: dripFlowCacheTTL, flow: &dripRecordFlow{}})
+	}
+	c.mu.Lock()
+	n := len(c.slots)
+	c.mu.Unlock()
+	if n > dripFlowCacheMaxEntries {
+		t.Errorf("cache grew to %d entries, cap is %d — `lane` is attacker-supplied", n, dripFlowCacheMaxEntries)
+	}
+}
+
+// The lane pane must serve the cache age through the HTTP surface, not just
+// internally — the operator has to see how old the diagram is.
+func TestDripSupply_RecordFlowAgeIsSerialised(t *testing.T) {
+	f := &dripRecordFlow{
+		Total:   10,
+		AsOf:    time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC),
+		Buckets: []dripFlowBucket{{Bucket: "ready_fresh", Count: 10}},
+	}
+	got := f.withAge(f.AsOf.Add(125 * time.Second))
+	if got.CacheAgeSeconds != 125 {
+		t.Errorf("cache_age_seconds = %d, want 125", got.CacheAgeSeconds)
+	}
+	if f.CacheAgeSeconds != 0 {
+		t.Error("withAge must COPY — stamping the cached value hands the next caller a stale age")
+	}
+	got.Buckets[0].Count = 999
+	if f.Buckets[0].Count != 10 {
+		t.Error("withAge must copy the bucket slice — a caller must not be able to mutate the cached flow")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, frag := range []string{`"as_of"`, `"cache_age_seconds":125`} {
+		if !strings.Contains(string(raw), frag) {
+			t.Errorf("record_flow JSON must carry %s; got %s", frag, raw)
 		}
 	}
 }

@@ -66,6 +66,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -147,11 +148,23 @@ const (
 // ─────────────────────────────────────────────────────────────────────────────
 
 // DripSupplyService serves the REQ-118 supply chain's projection and contract
-// surface. It owns no state beyond the pool.
-type DripSupplyService struct{ db *sql.DB }
+// surface. Its only state is the record-flow cache (dripFlowCache) — every
+// other endpoint reads straight through to Postgres.
+type DripSupplyService struct {
+	db   *sql.DB
+	flow *dripFlowCache
+	// now is the clock. A field rather than a direct time.Now call so the cache
+	// TTL is testable without sleeping: a TTL test that sleeps 10 minutes is a
+	// TTL test nobody runs.
+	now func() time.Time
+}
 
 // NewDripSupplyService builds the service.
-func NewDripSupplyService(db *sql.DB) *DripSupplyService { return &DripSupplyService{db: db} }
+func NewDripSupplyService(db *sql.DB) *DripSupplyService {
+	s := &DripSupplyService{db: db, now: time.Now}
+	s.flow = newDripFlowCache(func() time.Time { return s.now() })
+	return s
+}
 
 // RegisterRoutes mounts the service under the /api/mailing group, so the final
 // URLs are /api/mailing/supply/*. Route table (§3):
@@ -1579,7 +1592,7 @@ func (s *DripSupplyService) laneDetail(ctx context.Context, tx dripQueryer, day 
 	out.DispatchValue = dripDispatchValueFor(ranks, lane)
 	// record_flow runs LAST and in its OWN transaction — see recordFlow's
 	// comment for why a shared one would take the whole pane down with it.
-	s.attachRecordFlow(ctx, lane, out)
+	s.attachRecordFlow(ctx, lane, day, out)
 	return out, nil
 }
 
@@ -1939,6 +1952,140 @@ func (s *DripSupplyService) laneContracts(ctx context.Context, tx dripQueryer, l
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// record_flow cache — TTL + single flight
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// record_flow is a full classification scan of a lane's queue rows (EXPLAIN on
+// prod 2026-09-03: Parallel Seq Scan, cost 1.14M, ~900k rows for wcl_remail).
+// Uncached it is re-run on every click of the lane pane, and several operators
+// on the same lane multiply it. This cache makes the scan cost per lane bounded
+// by the TTL rather than by how often anyone looks.
+//
+// Three properties, all of which matter:
+//
+//   - TTL. A successful flow is reused for dripFlowCacheTTL. The flow is a
+//     shape, not a counter — buckets move over hours, not seconds — so a
+//     ten-minute-old answer is the same answer. The response says exactly how
+//     old it is (as_of + cache_age_seconds) so nobody has to guess.
+//   - NEGATIVE CACHING. A timed-out or failed scan is cached for
+//     dripFlowCacheNegativeTTL. Without it the pathological case inverts: the
+//     lane too big to scan is the one that gets re-scanned on every click,
+//     each attempt burning the full 20s budget. Short, because the operator
+//     must be able to retry after the pressure passes.
+//   - SINGLE FLIGHT. Concurrent requests for the same key share ONE scan; the
+//     rest wait on a channel and never open a transaction. Otherwise a page
+//     refresh during a slow scan starts a second one, and the fix for load
+//     becomes a source of it.
+//
+// Hand-rolled rather than golang.org/x/sync/singleflight: that module is an
+// INDIRECT dependency today, and importing it directly would promote it in
+// go.mod — a file outside this change.
+const (
+	dripFlowCacheTTL         = 10 * time.Minute
+	dripFlowCacheNegativeTTL = 2 * time.Minute
+	// dripFlowCacheMaxEntries bounds the map. The real key space is ~20 lanes ×
+	// a couple of days, but `lane` comes from a URL path, so an unbounded map
+	// is a memory leak with a public trigger.
+	dripFlowCacheMaxEntries = 256
+)
+
+// dripFlowResult is one completed scan: exactly one of flow / note / err is
+// meaningful, plus when it happened and how long it may be reused.
+type dripFlowResult struct {
+	flow *dripRecordFlow
+	note string
+	err  error
+	at   time.Time
+	ttl  time.Duration
+}
+
+// dripFlowSlot is a cache entry. `done` is closed exactly once, when the
+// leader's scan finishes; `result` is written before that close and read only
+// after it, so the channel provides the happens-before and no lock is needed on
+// the result itself.
+type dripFlowSlot struct {
+	done   chan struct{}
+	result *dripFlowResult
+}
+
+type dripFlowCache struct {
+	mu    sync.Mutex
+	slots map[string]*dripFlowSlot
+	now   func() time.Time
+}
+
+func newDripFlowCache(now func() time.Time) *dripFlowCache {
+	return &dripFlowCache{slots: map[string]*dripFlowSlot{}, now: now}
+}
+
+func dripFlowCacheKey(lane string, day time.Time) string {
+	return lane + "|" + day.Format("2006-01-02")
+}
+
+// acquire returns the slot serving this key and whether the caller must run the
+// scan. A caller that is not the leader either has a fresh result already or
+// must wait on slot.done.
+func (c *dripFlowCache) acquire(key string) (slot *dripFlowSlot, leader bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.slots[key]; ok {
+		select {
+		case <-s.done:
+			if c.now().Sub(s.result.at) < s.result.ttl {
+				return s, false // fresh
+			}
+			// Expired: fall through and replace the slot with a new in-flight
+			// one. The stale result stays readable to nobody, which is correct
+			// — a caller past the TTL asked for a current answer.
+		default:
+			return s, false // in flight: join it
+		}
+	}
+	c.sweepLocked()
+	s := &dripFlowSlot{done: make(chan struct{})}
+	c.slots[key] = s
+	return s, true
+}
+
+// publish records the leader's result and releases every waiter. It is called
+// from a defer so a panic in the scan cannot leave waiters blocked forever.
+func (c *dripFlowCache) publish(key string, slot *dripFlowSlot, res dripFlowResult) {
+	c.mu.Lock()
+	if slot.result == nil {
+		slot.result = &res
+	}
+	c.mu.Unlock()
+	select {
+	case <-slot.done:
+	default:
+		close(slot.done)
+	}
+}
+
+// sweepLocked drops completed, expired entries once the map is at its cap.
+func (c *dripFlowCache) sweepLocked() {
+	if len(c.slots) < dripFlowCacheMaxEntries {
+		return
+	}
+	now := c.now()
+	for k, s := range c.slots {
+		select {
+		case <-s.done:
+			if now.Sub(s.result.at) >= s.result.ttl {
+				delete(c.slots, k)
+			}
+		default:
+		}
+	}
+	// Still full: every entry is live or fresh. Drop the whole map rather than
+	// grow without bound — a cold cache is a performance problem, a leak is an
+	// outage.
+	if len(c.slots) >= dripFlowCacheMaxEntries {
+		c.slots = map[string]*dripFlowSlot{}
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // record_flow — the lane's pcq status flow (§6 pane 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1958,6 +2105,27 @@ type dripRecordFlow struct {
 	Buckets      []dripFlowBucket `json:"buckets"`
 	AgeBasis     string           `json:"age_basis"`
 	Unclassified int              `json:"unclassified"`
+	// AsOf is when the SCAN ran, not when the response was built — the whole
+	// point of showing it is that they differ.
+	AsOf time.Time `json:"as_of"`
+	// CacheAgeSeconds is 0 on a fresh scan and counts up to dripFlowCacheTTL.
+	CacheAgeSeconds int `json:"cache_age_seconds"`
+}
+
+// withAge returns a COPY carrying the current cache age. A copy because the
+// original is shared by every subsequent reader for the whole TTL, and a
+// handler that stamped the age onto the cached value would hand the next
+// caller a stale one.
+func (f *dripRecordFlow) withAge(now time.Time) *dripRecordFlow {
+	cp := *f
+	cp.Buckets = append([]dripFlowBucket(nil), f.Buckets...)
+	cp.DatasetIDs = append([]string(nil), f.DatasetIDs...)
+	age := int(now.Sub(f.AsOf).Seconds())
+	if age < 0 {
+		age = 0
+	}
+	cp.CacheAgeSeconds = age
+	return &cp
 }
 
 // dripFlowOrder is the flow, in flow order, with the label and whether the node
@@ -2050,8 +2218,8 @@ const dripRecordFlowSQL = `
 // Postgres transaction, so running this inside the lane pane's read tx would
 // poison every later statement — and a 900k-row classification is exactly the
 // statement most likely to hit the budget.
-func (s *DripSupplyService) attachRecordFlow(ctx context.Context, lane string, out *dripLaneResponse) {
-	flow, note, err := s.recordFlow(ctx, lane)
+func (s *DripSupplyService) attachRecordFlow(ctx context.Context, lane string, day time.Time, out *dripLaneResponse) {
+	flow, note, err := s.recordFlow(ctx, lane, day)
 	switch {
 	case err != nil:
 		out.Degraded = append(out.Degraded, "record_flow unavailable: "+err.Error())
@@ -2061,7 +2229,69 @@ func (s *DripSupplyService) attachRecordFlow(ctx context.Context, lane string, o
 	out.RecordFlow = flow
 }
 
-func (s *DripSupplyService) recordFlow(ctx context.Context, lane string) (*dripRecordFlow, string, error) {
+// recordFlow is the cached, single-flighted entry point. It returns the flow
+// (already stamped with its cache age), the degraded note if any, and the error
+// if the scan failed — the same three values scanRecordFlow returns, so callers
+// cannot tell whether they were served from cache except by reading
+// cache_age_seconds, which is the point.
+//
+// A cached NOTE gets its age appended, because "no active datasets" read two
+// minutes ago and read just now are different claims about the estate.
+func (s *DripSupplyService) recordFlow(ctx context.Context, lane string, day time.Time) (*dripRecordFlow, string, error) {
+	key := dripFlowCacheKey(lane, day)
+	slot, leader := s.flow.acquire(key)
+
+	if leader {
+		// Publish from a defer: a panic in the scan must still release every
+		// waiter, or one bad request wedges the lane pane for the process's
+		// lifetime.
+		res := dripFlowResult{at: s.now().UTC(), ttl: dripFlowCacheNegativeTTL}
+		defer func() { s.flow.publish(key, slot, res) }()
+		flow, note, err := s.scanRecordFlow(ctx, lane)
+		res.flow, res.note, res.err = flow, note, err
+		res.at = s.now().UTC()
+		if err == nil && note == "" && flow != nil {
+			res.ttl = dripFlowCacheTTL
+		}
+		if flow != nil {
+			res.at = flow.AsOf
+		}
+		return dripFlowServe(&res, s.now())
+	}
+
+	// Not the leader: either a fresh result is already there, or a scan is in
+	// flight and we wait for it WITHOUT opening a transaction of our own.
+	select {
+	case <-slot.done:
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+	return dripFlowServe(slot.result, s.now())
+}
+
+// dripFlowServe renders one cached result for one caller, stamping the age.
+func dripFlowServe(res *dripFlowResult, now time.Time) (*dripRecordFlow, string, error) {
+	if res == nil {
+		return nil, "", errors.New("record flow: no result")
+	}
+	if res.err != nil {
+		return nil, "", res.err
+	}
+	age := int(now.Sub(res.at).Seconds())
+	if age < 0 {
+		age = 0
+	}
+	note := res.note
+	if note != "" && age > 0 {
+		note = fmt.Sprintf("%s (cached %ds ago)", note, age)
+	}
+	if res.flow == nil {
+		return nil, note, nil
+	}
+	return res.flow.withAge(now), note, nil
+}
+
+func (s *DripSupplyService) scanRecordFlow(ctx context.Context, lane string) (*dripRecordFlow, string, error) {
 	tx, err := s.readTx(ctx)
 	if err != nil {
 		return nil, "", err
@@ -2134,6 +2364,7 @@ func (s *DripSupplyService) recordFlow(ctx context.Context, lane string) (*dripR
 		DatasetIDs: ids,
 		Total:      total,
 		AgeBasis:   "hours since partner_clean_queue.ingested_at",
+		AsOf:       s.now().UTC(),
 		Buckets:    make([]dripFlowBucket, 0, len(dripFlowOrder)),
 	}
 	placed := 0
