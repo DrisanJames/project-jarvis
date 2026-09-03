@@ -16,9 +16,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
+	"os"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ignite/sparkpost-monitor/internal/emailoversight"
@@ -51,6 +55,10 @@ type PartnerValidator struct {
 
 	startOnce sync.Once
 	stopOnce  sync.Once
+
+	// REQ-118 §2.6 Supply Ledger mirror (see mirrorToSupplyLedger).
+	ledgerMirrorDisabled bool
+	ledgerMirrorFailures atomic.Int64
 }
 
 func NewPartnerValidator(db *sql.DB, eoClient EOValidator, cfg PartnerValidatorConfig) *PartnerValidator {
@@ -70,13 +78,18 @@ func NewPartnerValidator(db *sql.DB, eoClient EOValidator, cfg PartnerValidatorC
 		cfg.OrganizationID = "00000000-0000-0000-0000-000000000001"
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &PartnerValidator{
+	pv := &PartnerValidator{
 		db:       db,
 		eoClient: eoClient,
 		cfg:      cfg,
 		ctx:      ctx,
 		cancel:   cancel,
 	}
+	if v := os.Getenv("DRIP_SUPPLY_LEDGER_MIRROR_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+		log.Println("[PartnerValidator] DRIP_SUPPLY_LEDGER_MIRROR_DISABLED set — REQ-118 Supply Ledger mirror off (MeasuredYield will stay on its seed)")
+		pv.ledgerMirrorDisabled = true
+	}
+	return pv
 }
 
 func (pv *PartnerValidator) Start() {
@@ -152,6 +165,11 @@ type pendingRecord struct {
 	datasetID string
 	partnerID string
 	vertical  string
+	// isp and sourceSlug exist only for the REQ-118 §2.6 Supply Ledger mirror
+	// (drip_supply_ledger is keyed lane x source_slug x isp). They are read on
+	// the claim so the mirror needs no second query per batch.
+	isp        string
+	sourceSlug string
 }
 
 // claimPendingEO atomically marks up to BatchSize rows as 'eo_in_flight' so
@@ -171,7 +189,9 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 		SET status = 'eo_in_flight', claimed_at = NOW()
 		FROM claimed
 		WHERE q.id = claimed.id
-		RETURNING q.id, q.email, q.email_md5, q.eo_attempts, q.dataset_id, q.partner_id, q.vertical
+		RETURNING q.id, q.email, q.email_md5, q.eo_attempts, q.dataset_id, q.partner_id, q.vertical,
+		          lower(COALESCE(NULLIF(q.isp_family, ''), 'other')),
+		          COALESCE((SELECT d.slug FROM partner_datasets d WHERE d.id = q.dataset_id), '')
 	`, pv.cfg.MaxRetries, pv.cfg.BatchSize)
 	if err != nil {
 		return nil, err
@@ -180,7 +200,8 @@ func (pv *PartnerValidator) claimPendingEO(ctx context.Context) ([]pendingRecord
 	out := make([]pendingRecord, 0, pv.cfg.BatchSize)
 	for rows.Next() {
 		var p pendingRecord
-		if err := rows.Scan(&p.id, &p.email, &p.emailMD5, &p.attempts, &p.datasetID, &p.partnerID, &p.vertical); err != nil {
+		if err := rows.Scan(&p.id, &p.email, &p.emailMD5, &p.attempts, &p.datasetID, &p.partnerID, &p.vertical,
+			&p.isp, &p.sourceSlug); err != nil {
 			continue
 		}
 		out = append(out, p)
@@ -260,6 +281,119 @@ func (pv *PartnerValidator) validateAndApply(ctx context.Context, batch []pendin
 	}
 	log.Printf("[PartnerValidator] batch=%d ready=%d suppressed=%d retry=%d errored=%d",
 		len(batch), ready, suppressed, retry, errored)
+
+	pv.mirrorToSupplyLedger(ctx, batch, results)
+}
+
+// -----------------------------------------------------------------------------
+// REQ-118 §2.6 — Supply Ledger mirror
+// -----------------------------------------------------------------------------
+
+// mirrorToSupplyLedger records this batch's verdicts in drip_supply_ledger,
+// grouped by (lane, source, ISP, verdict class), as ONE statement.
+//
+// Why it exists: `dripsupply.MeasuredYield` sizes every EO order from the
+// rolling 14-day VALIDATION_VALID / VALIDATION_ORDERED ratio. Without this
+// mirror the numerator is always zero, the yield sits on its 0.85 seed forever,
+// and the supply controller over- or under-buys by whatever the real yield
+// happens to differ by. A verdict that is computed but never recorded is inert.
+//
+// Three rules bind here:
+//
+//  1. IT WRITES THE LIVE LEDGER IN EVERY MODE. The mirror observes what EO
+//     actually returned; it is not a send-path mutation, so it is not gated on
+//     DRIP_SUPPLY_CHAIN_MODE. During shadow the ORDERED rows go to the shadow
+//     twin, so the measured denominator stays under YieldMinSample and the
+//     yield stays on its seed — which is the correct, conservative answer.
+//  2. A LEDGER FAILURE NEVER FAILS THE BATCH. The records are already
+//     transitioned; unwinding them over a bookkeeping error would strand them.
+//     Failures are logged and counted (LedgerMirrorFailures).
+//  3. A RETRY IS NOT A VERDICT. Only a record that reached `dead_letter` — EO
+//     never produced an answer within MaxRetries — is VALIDATION_NO_VERDICT. A
+//     record going back to `pending_eo` gets no row; it has not been decided.
+//
+// Kill switch: DRIP_SUPPLY_LEDGER_MIRROR_DISABLED=1.
+type supplyLedgerKey struct {
+	lane, source, isp, event string
+}
+
+// LedgerMirrorFailures is the count of batches whose Supply Ledger mirror
+// failed. Non-zero means MeasuredYield is reading an incomplete numerator.
+func (pv *PartnerValidator) LedgerMirrorFailures() int64 { return pv.ledgerMirrorFailures.Load() }
+
+func (pv *PartnerValidator) mirrorToSupplyLedger(ctx context.Context, batch []pendingRecord, results []eoOutcome) {
+	if pv.ledgerMirrorDisabled {
+		return
+	}
+	counts := map[supplyLedgerKey]int{}
+	for i, outcome := range results {
+		if i >= len(batch) {
+			break
+		}
+		rec := batch[i]
+		var event string
+		switch outcome.kind {
+		case outcomeReady:
+			event = "VALIDATION_VALID"
+		case outcomeSuppress:
+			event = "VALIDATION_INVALID"
+		default:
+			// outcomeRetry and outcomeError both route through markRetry; only
+			// the attempt that exhausts MaxRetries becomes dead_letter, and
+			// only that one is a "no verdict" outcome.
+			if rec.attempts+1 < pv.cfg.MaxRetries {
+				continue
+			}
+			event = "VALIDATION_NO_VERDICT"
+		}
+		lane := strings.TrimSpace(rec.vertical)
+		if lane == "" {
+			continue
+		}
+		isp := strings.ToLower(strings.TrimSpace(rec.isp))
+		if isp == "" {
+			isp = "other"
+		}
+		counts[supplyLedgerKey{lane: lane, source: rec.sourceSlug, isp: isp, event: event}]++
+	}
+	if len(counts) == 0 {
+		return
+	}
+
+	keys := make([]supplyLedgerKey, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.lane != b.lane {
+			return a.lane < b.lane
+		}
+		if a.source != b.source {
+			return a.source < b.source
+		}
+		if a.isp != b.isp {
+			return a.isp < b.isp
+		}
+		return a.event < b.event
+	})
+
+	values := make([]string, 0, len(keys))
+	args := make([]interface{}, 0, len(keys)*5)
+	for i, k := range keys {
+		b := i * 5
+		// Explicit casts: a bare VALUES list types every literal as text, and
+		// `quantity` is an INT column.
+		values = append(values, fmt.Sprintf("($%d::text, $%d::text, $%d::text, $%d::text, $%d::int)", b+1, b+2, b+3, b+4, b+5))
+		args = append(args, k.lane, k.source, k.isp, k.event, counts[k])
+	}
+	query := `INSERT INTO drip_supply_ledger (lane, source_slug, isp, event, quantity, reason)
+		SELECT v.lane, v.source_slug, v.isp, v.event, v.quantity, 'partner_validator'
+		FROM (VALUES ` + strings.Join(values, ", ") + `) AS v(lane, source_slug, isp, event, quantity)`
+	if _, err := pv.db.ExecContext(ctx, query, args...); err != nil {
+		n := pv.ledgerMirrorFailures.Add(1)
+		log.Printf("[PartnerValidator] supply_ledger mirror failed (%d groups, failure #%d): %v", len(keys), n, err)
+	}
 }
 
 type eoOutcomeKind int
