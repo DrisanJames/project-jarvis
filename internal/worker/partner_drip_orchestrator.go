@@ -44,6 +44,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/engine"
+	"github.com/ignite/sparkpost-monitor/internal/worker/dripsupply"
 )
 
 // Brands in deterministic round-robin order. The first 4 are the mature
@@ -492,8 +493,8 @@ type PartnerDripOrchestrator struct {
 	brandBudgetCache map[string]map[string]brandBudgetRow
 	// domainGov: per-sending-domain × ISP global recovery caps
 	// (partner_drip_domain_governor.go), refreshed by loadDomainGovernor each tick.
-	domainGov domainGovernorState
-	globalHold       *bool
+	domainGov  domainGovernorState
+	globalHold *bool
 
 	// throttleCache is the per-tick snapshot of mailing_isp_throttle_state
 	// (fetchThrottledISPs), loaded once by loadThrottledISPs in tickOnce.
@@ -518,6 +519,25 @@ type PartnerDripOrchestrator struct {
 	// lastStampRecovery is the wall clock of the last recovery pass, so the
 	// opt-in sweep runs on its own cadence rather than every tick.
 	lastStampRecovery time.Time
+
+	// REQ-118 WP5. mediator is the capacity Mediator (internal/worker/dripsupply).
+	// NIL, or DRIP_SUPPLY_CHAIN_MODE=off, leaves every cap decision below to the
+	// pre-REQ-118 chain — that is the rollback, and the golden test pins it.
+	// transitions is the single pcq transition path (WP4); it is only used on
+	// the enforced branch.
+	mediator    *dripsupply.Mediator
+	transitions *dripsupply.Transitions
+}
+
+// SetCapacityMediator injects the REQ-118 capacity Mediator. Called once from
+// cmd/server/main.go next to the orchestrator wiring, BEFORE Start(). A nil
+// mediator (every existing test, and any boot with the flag unset) is the
+// pre-REQ-118 behaviour.
+func (po *PartnerDripOrchestrator) SetCapacityMediator(m *dripsupply.Mediator) {
+	po.mediator = m
+	if po.transitions == nil {
+		po.transitions = dripsupply.NewTransitions()
+	}
 }
 
 // propertyGovernor is the in-memory form of a partner_property_governor row.
@@ -856,6 +876,14 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 	// Throttle snapshot for this tick — applyThroughputSafety runs once per WAVE
 	// and used to re-read mailing_isp_throttle_state on every call.
 	po.loadThrottledISPs(po.ctx)
+	// REQ-118 WP5 (§2.8 tick preamble): activate contracts if the Denver day
+	// rolled, ensure the day's balances, expire reservations with no commit
+	// after 45 min, reap orphan claims. It ALSO stamps the tick timestamp every
+	// drip_tick_outcomes row of this tick is keyed on, which is why it runs in
+	// every mode including off. releaseStaleClaims / reconcileShippedClaims
+	// below are deliberately unchanged — Reap covers the orphan shape they
+	// cannot see, it does not replace them.
+	po.mediator.TickStart(po.ctx, time.Now())
 	if po.cfg.ClaimedJanitorMaxAge > 0 {
 		if n, err := po.releaseStaleClaims(po.ctx); err != nil {
 			log.Printf("[PartnerDripOrchestrator] claimed janitor: %v", err)
@@ -1506,6 +1534,9 @@ func (po *PartnerDripOrchestrator) deployWaveGroups(ctx context.Context, v verti
 type passContext struct {
 	roster   []string // brands to round-robin
 	stateKey string   // partner_drip_state.vertical key for the rotation pointer
+	// pass is the REQ-118 WP5 drip_tick_outcomes `pass` label. Empty defaults
+	// to the welcome pass, so a caller that predates WP5 still records a row.
+	pass string
 }
 
 // processVertical preserves the original entrypoint for the welcome pass: it
@@ -1516,20 +1547,27 @@ func (po *PartnerDripOrchestrator) processVertical(ctx context.Context, v vertic
 	return po.processVerticalWith(ctx, v, passContext{
 		roster:   brandRosterFor(v.vertical),
 		stateKey: v.vertical,
+		pass:     dripsupply.PassWelcome, // REQ-118 WP5
 	})
 }
 
 func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v verticalState, pc passContext) error {
+	pass := passLabel(pc) // REQ-118 WP5
 	waveSize := po.computeWaveSize(v)
 	if waveSize <= 0 {
+		// REQ-118 WP5: every lane the pass CONSIDERED gets a row, including the
+		// ones it declined before doing any work.
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeSkipped, dripsupply.SkipNoWaveSize, "", nil, 0, "")
 		return nil
 	}
 	brand, newIdx, err := po.pickNextBrand(ctx, v, pc.roster)
 	if err != nil {
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "pick_brand", "", nil, 0, "") // REQ-118 WP5
 		return fmt.Errorf("pick_brand: %w", err)
 	}
 	creative, err := po.resolveCreativeForVertical(ctx, v, brand)
 	if err != nil {
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "resolve_creative", brand, nil, 0, "") // REQ-118 WP5
 		return fmt.Errorf("resolve_creative: %w", err)
 	}
 
@@ -1599,6 +1637,10 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 			} else {
 				log.Printf("[PartnerDripOrchestrator] brand=%s budget-exhausted for vertical=%s — skipped, rotation advanced", brand, v.vertical)
 			}
+			// REQ-118 WP5: the skip that already advanced the pointer now also
+			// leaves a reason behind. This is the shape the zero-claim path
+			// below was missing (REQ-116).
+			po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeSkipped, dripsupply.SkipBudgetExhausted, brand, preBudget, 0, "")
 			return nil
 		}
 	}
@@ -1614,11 +1656,44 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	if aolRotationActive(v.vertical) {
 		perISPCaps["aol"] = 0
 	}
-	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, waveSize)
+	// ---- REQ-118 WP5: capacity mediation -----------------------------------
+	// When the mediator ENFORCES this (lane, domain, ISP), its reservation
+	// grants REPLACE the cap chain for those ISPs: layers 1 (resolvePerISPCaps
+	// / ispCapForDrainHorizon), 5 (applyNewRecordDailyBudget) and 7
+	// (applyBrandIntroBudgets) are bypassed, while 8 (applyISPBrandRouting),
+	// 12 (apple-banned verticals), the domain governor and 15
+	// (applyThroughputSafety, below) still apply — governors may only reduce.
+	// When it does not enforce (MODE=off, shadow, or a non-canary cell) the
+	// caps come back untouched and everything below is byte-identical to HEAD.
+	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, pass, dripsupply.TouchClassIntro, "", waveSize, perISPCaps, false)
+	if mErr != nil {
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "grant_capacity", brand, perISPCaps, 0, "")
+		return fmt.Errorf("grant_capacity: %w", mErr)
+	}
+	if alloc.ShouldSkip() {
+		po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeSkipped, alloc.SkipReason(), perISPCaps)
+		return nil
+	}
+	perISPCaps = effCaps
+
+	claimed, err := po.claimWaveByCaps(ctx, v.vertical, brand, perISPCaps, waveSize, alloc)
 	if err != nil {
+		_ = alloc.Release(ctx, "claim_failed")
+		if errors.Is(err, dripsupply.ErrNoPositiveGrant) {
+			po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeZero, dripsupply.SkipNoPositiveGrant, perISPCaps)
+			return nil
+		}
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "claim_records", brand, perISPCaps, 0, "")
 		return fmt.Errorf("claim_records: %w", err)
 	}
 	if len(claimed) == 0 {
+		// REQ-116 / REQ-118 WP5. This used to `return nil` in silence, leaving
+		// next_brand_index where it was: updateDripState only runs after a
+		// deploy, so a brand that claims nothing was re-picked on every tick
+		// and pinned the vertical's rotation for the rest of the day. Record
+		// the reason and advance, exactly like the budget-exhausted skip.
+		_ = alloc.Release(ctx, dripsupply.ZeroNoRecordsClaimed)
+		po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeZero, dripsupply.ZeroNoRecordsClaimed, perISPCaps)
 		return nil
 	}
 
@@ -1639,6 +1714,9 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	}
 	if len(keep) == 0 {
 		log.Printf("[PartnerDripOrchestrator] vertical=%s: all claimed records deferred — skipping wave", v.vertical)
+		// REQ-118 WP5: a fully deferred wave is a `zero`, not silence.
+		_ = alloc.Release(ctx, dripsupply.ZeroAllDeferred)
+		po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeZero, dripsupply.ZeroAllDeferred, perISPCaps)
 		return nil
 	}
 	claimed = keep
@@ -1646,6 +1724,8 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	subscriberIDs, err := po.promoteToSubscribers(ctx, v, claimed)
 	if err != nil {
 		_ = po.releaseClaim(ctx, claimed)
+		_ = alloc.Release(ctx, "promote_failed")                                                                         // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "promote_subscribers", brand, perISPCaps, 0, "") // REQ-118 WP5
 		return fmt.Errorf("promote_subscribers: %w", err)
 	}
 
@@ -1655,8 +1735,15 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	// identical to the pre-split behavior.
 	lastCampaignID, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, "")
 	if deployedCount == 0 {
+		_ = alloc.Release(ctx, "deploy_failed")                                                                               // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "deploy_all_groups_failed", brand, perISPCaps, 0, "") // REQ-118 WP5
 		return fmt.Errorf("all wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 	}
+	// REQ-118 WP5: settle the reservation against what actually shipped; the
+	// per-ISP remainder of a partially deployed wave goes back immediately
+	// rather than waiting 45 minutes for ExpireStale.
+	po.commitWave(ctx, alloc, claimed, deployedCount, lastCampaignID)
+	po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFired, "", brand, perISPCaps, deployedCount, lastCampaignID)
 	if err := po.updateDripState(ctx, pc.stateKey, newIdx, brand, lastCampaignID, deployedCount); err != nil {
 		log.Printf("[PartnerDripOrchestrator] update_state: %v", err)
 	}
@@ -4630,7 +4717,7 @@ func (po *PartnerDripOrchestrator) tickGoverned(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			pc := passContext{roster: roster, stateKey: stateKey}
+			pc := passContext{roster: roster, stateKey: stateKey, pass: dripsupply.PassGoverned} // REQ-118 WP5
 			if err := po.processVerticalWith(ctx, v, pc); err != nil {
 				log.Printf("[PartnerDripOrchestrator] governed vertical=%s: %v", v.vertical, err)
 				// Keep advancing even on error — the next governed brand's wave
@@ -5026,11 +5113,39 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	// cap of 0 for an ISP suppresses ALL touches to that ISP. Kill switch:
 	// PARTNER_DRIP_FOLLOWUP_DAILY_CAPS_DISABLED=1 restores the legacy behavior.
 	perISPCaps = po.applyFollowupDailyISPBudget(ctx, brand, v.datasetID, perISPCaps)
-	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, hardCap)
+
+	// ---- REQ-118 WP5: capacity mediation -----------------------------------
+	// Follow-ups reserve with touch_class='followup' against the SAME
+	// domain×ISP balance as intros (§2.7), under the same wave key scheme. The
+	// planner's followups_reserved becomes their ceiling once WP6's PlanReader
+	// is wired into the Service.
+	waveSuffix := "fu"
+	if yahooNewsletter {
+		waveSuffix = "fu-ynl"
+	}
+	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, dripsupply.PassFollowup, dripsupply.TouchClassFollowup, waveSuffix, hardCap, perISPCaps, yahooNewsletter)
+	if mErr != nil {
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "grant_capacity", brand, perISPCaps, 0, "")
+		return fmt.Errorf("grant_capacity: %w", mErr)
+	}
+	if alloc.ShouldSkip() {
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeSkipped, alloc.SkipReason(), brand, perISPCaps, 0, "")
+		return nil
+	}
+	perISPCaps = effCaps
+
+	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, hardCap, alloc.AllocationID())
 	if err != nil {
+		_ = alloc.Release(ctx, "claim_failed") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "claim_followup", brand, perISPCaps, 0, "")
 		return fmt.Errorf("claim_followup: %w", err)
 	}
 	if len(claimed) == 0 {
+		// REQ-118 WP5. The follow-up rotation pointer is already advanced by
+		// tickFollowups after EVERY brand attempt, so there is nothing to
+		// advance here — only the reason to record.
+		_ = alloc.Release(ctx, dripsupply.ZeroNoRecordsClaimed)
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeZero, dripsupply.ZeroNoRecordsClaimed, brand, perISPCaps, 0, "")
 		return nil
 	}
 
@@ -5048,6 +5163,8 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	}
 	if len(keep) == 0 {
 		log.Printf("[PartnerDripOrchestrator] followup vertical=%s: all claimed records deferred — skipping wave", v.vertical)
+		_ = alloc.Release(ctx, dripsupply.ZeroAllDeferred) // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeZero, dripsupply.ZeroAllDeferred, brand, perISPCaps, 0, "")
 		return nil
 	}
 	claimed = keep
@@ -5061,10 +5178,14 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 		SELECT MAX(touch_count) + 1 FROM partner_clean_queue WHERE id = ANY($1::uuid[])
 	`, "{"+strings.Join(claimedRecordIDs(claimed), ",")+"}").Scan(&touchNum); err != nil {
 		_ = po.releaseClaim(ctx, claimed)
+		_ = alloc.Release(ctx, "compute_touch_number_failed") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "compute_touch_number", brand, perISPCaps, 0, "")
 		return fmt.Errorf("compute_touch_number: %w", err)
 	}
 	if touchNum < 2 || touchNum > MaxTouchCount {
 		_ = po.releaseClaim(ctx, claimed)
+		_ = alloc.Release(ctx, "invalid_touch_number") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "invalid_touch_number", brand, perISPCaps, 0, "")
 		return fmt.Errorf("invalid touch_number %d for vertical=%s", touchNum, v.vertical)
 	}
 
@@ -5077,21 +5198,30 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 		creative, err := po.resolveCreative(ctx, v.vertical, brand)
 		if err != nil {
 			_ = po.releaseClaim(ctx, claimed)
+			_ = alloc.Release(ctx, "no_yahoo_newsletter_creative") // REQ-118 WP5
 			if errors.Is(err, sql.ErrNoRows) {
 				log.Printf("[PartnerDripOrchestrator] followup-yahoo-nl vertical=%s brand=%s touch=%d has no newsletter for this brand — released", v.vertical, brand, touchNum)
+				po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeSkipped, "no_newsletter_creative", brand, perISPCaps, 0, "")
 				return nil
 			}
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "resolve_yahoo_newsletter_creative", brand, perISPCaps, 0, "")
 			return fmt.Errorf("resolve_yahoo_newsletter_creative: %w", err)
 		}
 		subscriberIDs, err := po.promoteToSubscribers(ctx, v, claimed)
 		if err != nil {
 			_ = po.releaseClaim(ctx, claimed)
+			_ = alloc.Release(ctx, "promote_failed") // REQ-118 WP5
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "promote_followup_subscribers", brand, perISPCaps, 0, "")
 			return fmt.Errorf("promote_followup_subscribers: %w", err)
 		}
-		_, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
+		lastCampaignID, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
 		if deployedCount == 0 {
+			_ = alloc.Release(ctx, "deploy_failed") // REQ-118 WP5
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "deploy_all_groups_failed", brand, perISPCaps, 0, "")
 			return fmt.Errorf("all yahoo-nl followup wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 		}
+		po.commitWave(ctx, alloc, claimed, deployedCount, lastCampaignID) // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFired, fmt.Sprintf("t%d yahoo-nl", touchNum), brand, perISPCaps, deployedCount, lastCampaignID)
 		log.Printf("[PartnerDripOrchestrator] followup-yahoo-nl wave complete: vertical=%s brand=%s touch=%d deployed=%d creative=%s",
 			v.vertical, brand, touchNum, deployedCount, creative.filename)
 		return nil
@@ -5107,6 +5237,7 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 		//   2. Some OTHER brand configures this touch but the shared follow-up brand
 		//      rotation landed on a brand that doesn't — release the claim so a later
 		//      wave under a configured brand serves it.
+		_ = alloc.Release(ctx, "no_followup_creative") // REQ-118 WP5
 		if configured, cErr := po.followupTouchConfigured(ctx, v.vertical, touchNum); cErr == nil && !configured {
 			if rErr := po.retireRecordsTerminal(ctx, claimed, "ladder_complete"); rErr != nil {
 				log.Printf("[PartnerDripOrchestrator] followup retire-terminal failed (vertical=%s touch=%d): %v", v.vertical, touchNum, rErr)
@@ -5114,14 +5245,18 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 			} else {
 				log.Printf("[PartnerDripOrchestrator] followup vertical=%s touch=%d unconfigured — retired %d records as terminal (ladder_complete)", v.vertical, touchNum, len(claimed))
 			}
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeSkipped, fmt.Sprintf("ladder_complete t%d", touchNum), brand, perISPCaps, 0, "")
 			return nil
 		}
 		_ = po.releaseClaim(ctx, claimed)
 		log.Printf("[PartnerDripOrchestrator] followup vertical=%s brand=%s touch=%d has no creative for this brand — released for a configured brand", v.vertical, brand, touchNum)
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeSkipped, fmt.Sprintf("no_creative t%d", touchNum), brand, perISPCaps, 0, "")
 		return nil
 	}
 	if err != nil {
 		_ = po.releaseClaim(ctx, claimed)
+		_ = alloc.Release(ctx, "resolve_followup_creative_failed") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "resolve_followup_creative", brand, perISPCaps, 0, "")
 		return fmt.Errorf("resolve_followup_creative: %w", err)
 	}
 
@@ -5131,16 +5266,23 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	subscriberIDs, err := po.promoteToSubscribers(ctx, v, claimed)
 	if err != nil {
 		_ = po.releaseClaim(ctx, claimed)
+		_ = alloc.Release(ctx, "promote_failed") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "promote_followup_subscribers", brand, perISPCaps, 0, "")
 		return fmt.Errorf("promote_followup_subscribers: %w", err)
 	}
 
 	// Split by SES routing (e.g. ht microsoft → HT SES tenant) and deploy each
 	// group as its own follow-up campaign. The "[t%d]" suffix tags the touch so
 	// analytics distinguishes welcome vs follow-up waves at a glance.
-	_, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
+	lastCampaignID, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, claimed, subscriberIDs, fmt.Sprintf("[t%d]", touchNum))
 	if deployedCount == 0 {
+		_ = alloc.Release(ctx, "deploy_failed") // REQ-118 WP5
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "deploy_all_groups_failed", brand, perISPCaps, 0, "")
 		return fmt.Errorf("all followup wave groups failed to deploy for vertical=%s brand=%s", v.vertical, brand)
 	}
+	// REQ-118 WP5
+	po.commitWave(ctx, alloc, claimed, deployedCount, lastCampaignID)
+	po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFired, fmt.Sprintf("t%d", touchNum), brand, perISPCaps, deployedCount, lastCampaignID)
 	log.Printf("[PartnerDripOrchestrator] followup wave complete: vertical=%s brand=%s touch=%d deployed=%d creative=%s",
 		v.vertical, brand, touchNum, deployedCount, creative.filename)
 	return nil
@@ -5173,7 +5315,12 @@ func claimedRecordIDs(recs []claimedRecord) []string {
 // Returns the claimed records with status flipped to 'claimed' (so they
 // won't be re-picked by a concurrent tick) and the wave_segment + deploy
 // pipeline can carry on. On failure the caller releases via releaseClaim.
-func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Context, vertical, forBrand string, perISPCaps map[string]int, hardCap int) ([]claimedRecord, error) {
+// REQ-118 WP5: `allocation` is VARIADIC so the pre-REQ-118 five-argument call
+// sites (and their tests) still compile unchanged. When a non-nil allocation is
+// supplied the UPDATE stamps capacity_allocation_id, which is what
+// pcq_claim_requires_allocation enforces after the §7 cutover; with none, the
+// statement is byte-identical to HEAD.
+func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Context, vertical, forBrand string, perISPCaps map[string]int, hardCap int, allocation ...uuid.UUID) ([]claimedRecord, error) {
 	pin := homeBrandPinSQL(vertical, forBrand, "")
 	if len(perISPCaps) == 0 {
 		return nil, fmt.Errorf("perISPCaps is empty")
@@ -5266,6 +5413,13 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 	if positive == 0 {
 		return nil, fmt.Errorf("perISPCaps has no positive entries")
 	}
+	// REQ-118 WP5: the allocation stamp, appended AFTER the caps args so their
+	// $4.. positions are unchanged.
+	allocSet := ""
+	if len(allocation) > 0 && allocation[0] != uuid.Nil {
+		args = append(args, allocation[0].String())
+		allocSet = fmt.Sprintf(", capacity_allocation_id = $%d", len(args))
+	}
 
 	query := fmt.Sprintf(`
 		WITH ranked AS (
@@ -5302,7 +5456,7 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE partner_clean_queue q
-		SET status = 'claimed', claimed_at = NOW()
+		SET status = 'claimed', claimed_at = NOW()`+allocSet+`
 		FROM picked
 		WHERE q.id = picked.id
 		RETURNING q.id, q.email, q.email_md5, q.isp_family, q.dataset_id, q.partner_id, q.batch_id, q.extra_metadata
@@ -5430,6 +5584,277 @@ func (po *PartnerDripOrchestrator) updateDripState(ctx context.Context, vertical
 		    updated_at = NOW()
 	`, vertical, nextIdx, campaignID, brand, waveSize)
 	return err
+}
+
+// =========================================================================
+// REQ-118 WP5 — capacity mediation + tick outcomes
+// =========================================================================
+//
+// Everything in this block is inert when the mediator is nil or
+// DRIP_SUPPLY_CHAIN_MODE=off, EXCEPT tickOutcome/zeroWave, which are the
+// "nothing is silent" surface and run in every mode (opt-out:
+// DRIP_TICK_OUTCOMES_DISABLED=1 / PARTNER_DRIP_ZERO_ADVANCE_DISABLED=1).
+
+// passLabel is the drip_tick_outcomes `pass` for a passContext. Empty defaults
+// to the welcome pass so a caller that predates WP5 still writes a valid row.
+func passLabel(pc passContext) string {
+	if p := strings.TrimSpace(pc.pass); p != "" {
+		return p
+	}
+	return dripsupply.PassWelcome
+}
+
+// zeroAdvanceDisabled is the kill switch for the REQ-116 half of WP5: advancing
+// the brand rotation past a wave that claimed nothing. It is the ONE behaviour
+// change that happens with DRIP_SUPPLY_CHAIN_MODE=off, so it gets its own
+// switch rather than riding on a flag that means something else.
+func zeroAdvanceDisabled() bool {
+	return strings.TrimSpace(os.Getenv("PARTNER_DRIP_ZERO_ADVANCE_DISABLED")) == "1"
+}
+
+// tickOutcome records one drip_tick_outcomes row for (this tick, lane, pass).
+// Never returns an error: a lost outcome row must not abort a wave.
+func (po *PartnerDripOrchestrator) tickOutcome(ctx context.Context, lane, pass, outcome, reason, brand string, caps map[string]int, claimed int, campaignID string) {
+	if po.mediator == nil {
+		return
+	}
+	po.mediator.Outcome(ctx, dripsupply.OutcomeRow{
+		Lane:       lane,
+		Pass:       pass,
+		Outcome:    outcome,
+		Reason:     reason,
+		Brand:      brand,
+		CapsSeen:   caps,
+		Claimed:    claimed,
+		CampaignID: campaignID,
+	})
+}
+
+// zeroWave records a zero/skipped outcome AND advances the brand rotation.
+//
+// The advance is the REQ-116 fix. updateDripState only runs after a successful
+// deploy, so before this a brand whose wave claimed nothing left
+// next_brand_index untouched and was re-picked on every tick — pinning the
+// vertical's rotation on a dead brand for the rest of the day. The
+// budget-exhausted skip already did exactly this; the zero-claim path did not.
+func (po *PartnerDripOrchestrator) zeroWave(ctx context.Context, v verticalState, pc passContext, brand string, nextIdx int, outcome, reason string, caps map[string]int) {
+	po.tickOutcome(ctx, v.vertical, passLabel(pc), outcome, reason, brand, caps, 0, "")
+	if zeroAdvanceDisabled() {
+		return
+	}
+	if err := po.advanceBrandRotation(ctx, pc.stateKey, nextIdx); err != nil {
+		log.Printf("[PartnerDripOrchestrator] advance rotation past zero wave brand=%s vertical=%s reason=%s: %v", brand, v.vertical, reason, err)
+		return
+	}
+	log.Printf("[PartnerDripOrchestrator] brand=%s produced nothing for vertical=%s (%s) — rotation advanced", brand, v.vertical, reason)
+}
+
+// keptCapLayers builds the cap map from ONLY the layers §2.7 keeps when the
+// mediator enforces a cell:
+//
+//	basePerISPCaps      the ISP ENUMERATION (the 12 canonical classes + the DB
+//	                    overlay). Its VALUES are not used as a ceiling on the
+//	                    enforced branch — the token bucket is the pacing
+//	                    authority — only its keys and its zeroes.
+//	applyISPBrandRouting     layer 8, brand allow-list per ISP
+//	applyDomainGovernor      a governor: may reduce, never raise (non-negotiable 4)
+//	apple-banned verticals   layer 12
+//	aol rotation / yahoo-newsletter routing
+//
+// Deliberately ABSENT (§2.7 bypass list): ispCapForDrainHorizon,
+// applyNewRecordDailyBudget, applyFollowupDailyISPBudget, applyBrandIntroBudgets,
+// applyDatasetISPCapOverrides.
+func (po *PartnerDripOrchestrator) keptCapLayers(ctx context.Context, v verticalState, brand, phase string, yahooNewsletter bool) map[string]int {
+	caps := po.basePerISPCaps()
+	caps = po.applyISPBrandRouting(brand, caps)
+	caps = po.applyDomainGovernor(ctx, brand, v.vertical, phase, caps)
+	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
+		caps["apple"] = 0
+	}
+	if phase == "welcome" {
+		if aolRotationActive(v.vertical) {
+			caps["aol"] = 0
+		}
+	} else {
+		caps = applyYahooNewsletterFollowupCaps(caps, po.cfg.YahooNewsletterOnlyDrip, yahooNewsletter)
+	}
+	return caps
+}
+
+// grantWaveCapacity asks the mediator for this wave's capacity and returns the
+// caps the claim must use.
+//
+// It returns (nil, chainCaps, nil) — i.e. "nothing changes" — for every case
+// the mediator does not own:
+//   - mode off, or no mediator wired;
+//   - a brand with no resolvable sending domain (no contract subject);
+//   - the Kumo governed properties and the warm-up roster brands, which are OUT
+//     OF SCOPE by standing ruling (design §10: "the Kumo governed pass is
+//     untouched; it does not reserve") and are fenced here by their brand set.
+func (po *PartnerDripOrchestrator) grantWaveCapacity(
+	ctx context.Context,
+	v verticalState,
+	brand, pass, touchClass, waveSuffix string,
+	waveSize int,
+	chainCaps map[string]int,
+	yahooNewsletter bool,
+) (*dripsupply.Allocation, map[string]int, error) {
+	if po.mediator.Mode() == dripsupply.ModeOff {
+		return nil, chainCaps, nil
+	}
+	lb := strings.ToLower(strings.TrimSpace(brand))
+	if governedBrands[lb] || warmupRosterBrands[lb] {
+		return nil, chainCaps, nil
+	}
+	domain, ok := resolveBrandSendingDomain(brand)
+	if !ok || strings.TrimSpace(domain) == "" {
+		return nil, chainCaps, nil
+	}
+
+	phase := "welcome"
+	if touchClass == dripsupply.TouchClassFollowup {
+		phase = "followup"
+	}
+	kept := po.keptCapLayers(ctx, v, brand, phase, yahooNewsletter)
+	isps := make([]string, 0, len(kept))
+	for isp, c := range kept {
+		if c > 0 {
+			isps = append(isps, isp)
+		}
+	}
+	if len(isps) == 0 {
+		return nil, chainCaps, nil
+	}
+
+	alloc, err := po.mediator.Grant(ctx, dripsupply.GrantReq{
+		Lane:       v.vertical,
+		Brand:      brand,
+		Domain:     domain,
+		TouchClass: touchClass,
+		Pass:       pass,
+		WaveKey:    po.waveKey(pass, brand, waveSuffix),
+		ISPs:       isps,
+		// The per-ISP ask is the wave's hard ceiling. The §2.3 token bucket
+		// (effective_daily / active_intervals, capped at max_burst_intervals)
+		// is what actually paces a wave, so asking for more than the bucket
+		// holds cannot overshoot the contract.
+		Requested: waveSize,
+	})
+	if err != nil {
+		return nil, chainCaps, err
+	}
+	granted := alloc.EnforcedCaps()
+	if granted == nil {
+		// off / shadow / non-canary cell: the old chain decides, untouched.
+		return alloc, chainCaps, nil
+	}
+
+	eff := cloneISPCapMap(chainCaps)
+	// The kept layers still bind on the enforced branch: an ISP they zeroed
+	// stays zero even if a reservation granted for it.
+	for isp := range eff {
+		if kept[isp] <= 0 {
+			eff[isp] = 0
+		}
+	}
+	for isp, g := range granted {
+		if kept[isp] <= 0 {
+			continue
+		}
+		eff[isp] = g
+	}
+	return alloc, eff, nil
+}
+
+// waveKey is the per-wave half of the reservation idempotency key
+// (domain|isp|lane|wave_key|domain_ver|dispatch_ver, §1.2). It is derived from
+// the TICK timestamp, not from time.Now(), so a re-fired tick — an ECS bounce
+// mid-tick, a retry, the second orchestrator instance replaying the same tick —
+// resolves to the SAME key and gets the first allocation back instead of a
+// second grant.
+func (po *PartnerDripOrchestrator) waveKey(pass, brand, suffix string) string {
+	k := fmt.Sprintf("%s|%s|%s", pass, strings.ToLower(strings.TrimSpace(brand)),
+		po.mediator.Tick().UTC().Format("20060102T150405Z"))
+	if s := strings.TrimSpace(suffix); s != "" {
+		k += "|" + s
+	}
+	return k
+}
+
+// claimWaveByCaps runs the welcome claim. On the enforced branch it goes
+// through dripsupply.Transitions.ClaimByISPCaps (WP4) so the claimed rows carry
+// capacity_allocation_id; otherwise it is the untouched claimRecordsByISPCaps.
+func (po *PartnerDripOrchestrator) claimWaveByCaps(ctx context.Context, vertical, brand string, caps map[string]int, hardCap int, alloc *dripsupply.Allocation) ([]claimedRecord, error) {
+	if alloc.EnforcedCaps() == nil {
+		return po.claimRecordsByISPCaps(ctx, vertical, brand, caps, hardCap)
+	}
+	if alloc.AllocationID() == uuid.Nil {
+		// Every enforced ISP granted 0. Issuing the claim would only return no
+		// rows; the caller turns this into a `zero` outcome and advances.
+		return nil, dripsupply.ErrNoPositiveGrant
+	}
+	if po.transitions == nil {
+		po.transitions = dripsupply.NewTransitions()
+	}
+	var raw []dripsupply.ClaimedRecord
+	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
+		var e error
+		raw, e = po.transitions.ClaimByISPCaps(ctx, tx, vertical, brand, caps, hardCap, alloc.AllocationID())
+		return e
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]claimedRecord, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, claimedRecord{
+			id:        r.ID,
+			email:     r.Email,
+			emailMD5:  r.EmailMD5,
+			ispFamily: r.ISPFamily,
+			datasetID: r.DatasetID,
+			partnerID: r.PartnerID,
+			batchID:   r.BatchID,
+			extra:     r.Extra,
+		})
+	}
+	return out, nil
+}
+
+// commitWave settles the reservation against what actually shipped.
+//
+// The per-ISP split is EXACT whenever every claimed record deployed (the normal
+// case: deployedCount == len(claimed)). It is a largest-remainder approximation
+// only when a wave GROUP failed to deploy, because deployWaveGroups reports the
+// total it shipped and not which group's records it released. The TOTAL
+// committed is exact in both cases.
+func (po *PartnerDripOrchestrator) commitWave(ctx context.Context, alloc *dripsupply.Allocation, claimed []claimedRecord, submitted int, campaignID string) {
+	granted := alloc.EnforcedCaps()
+	if granted == nil {
+		return
+	}
+	// Bucket the tally into the ISP classes capacity was actually granted for:
+	// the claim buckets an unrecognised isp_family (protonmail, and whatever is
+	// next) under 'other', so the tally must too or its records would settle
+	// against an allocation that does not exist.
+	tally := make(map[string]int, len(granted))
+	for isp, n := range tallyISPs(claimed) {
+		key := strings.ToLower(strings.TrimSpace(isp))
+		if key == "" {
+			key = "other"
+		}
+		if _, ok := granted[key]; !ok {
+			key = "other"
+		}
+		tally[key] += n
+	}
+	cid := uuid.Nil
+	if u, err := uuid.Parse(strings.TrimSpace(campaignID)); err == nil {
+		cid = u
+	}
+	if err := alloc.Commit(ctx, dripsupply.SplitSubmitted(tally, submitted), cid); err != nil {
+		log.Printf("[PartnerDripOrchestrator] REQ-118 commit allocation %s (submitted=%d campaign=%s): %v",
+			alloc.AllocationID(), submitted, campaignID, err)
+	}
 }
 
 // safeIdent returns a slug suitable for use inside source_system labels.
