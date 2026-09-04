@@ -84,3 +84,87 @@ func TestSeedPreflightAbortsOnStranger(t *testing.T) {
 		t.Fatalf("preflight fixture: want abort on ['msft'], got %v", strangers)
 	}
 }
+
+// --- VDM comparison buckets (reconciliation rollup) -------------------------
+
+func TestVDMBucketFoldsSbcglobalIntoAtt(t *testing.T) {
+	// The measured reconciliation fix: VDM has no sbcglobal bucket, so both
+	// att and sbcglobal must roll up into "Att" or the comparison reads -60%.
+	for _, g := range []string{ATT, Sbcglobal} {
+		b, ok := VDMBucket(g)
+		if !ok || b != "Att" {
+			t.Errorf("VDMBucket(%q) = (%q,%v), want (\"Att\",true)", g, b, ok)
+		}
+	}
+}
+
+func TestVDMBucketMapsEveryReportedGroup(t *testing.T) {
+	cases := map[string]string{
+		Gmail: "Gmail", Yahoo: "Yahoo", Aol: "Aol",
+		Microsoft: "Hotmail", Apple: "Icloud", Cox: "Cox",
+	}
+	for g, want := range cases {
+		if b, ok := VDMBucket(g); !ok || b != want {
+			t.Errorf("VDMBucket(%q) = (%q,%v), want (%q,true)", g, b, ok, want)
+		}
+	}
+}
+
+// TestVDMBucketUnreportedGroupsAreNotComparable is the negative path: the
+// lanes VDM does not report must be EXCLUDED from a reconciliation, never
+// silently counted as a shortfall. 442,949 sends sat in these lanes over
+// 2026-09-01..03 — folding them anywhere invents a gap.
+func TestVDMBucketUnreportedGroupsAreNotComparable(t *testing.T) {
+	for _, g := range []string{Charter, Comcast, Verizon, Protonmail, Zoho, Other} {
+		if b, ok := VDMBucket(g); ok {
+			t.Errorf("VDMBucket(%q) = (%q,true), want unmapped — VDM does not report it", g, b)
+		}
+		if VDMComparable(g) {
+			t.Errorf("VDMComparable(%q) = true, want false", g)
+		}
+	}
+	// An unknown/garbage group must also be non-comparable, never defaulted.
+	if _, ok := VDMBucket("msft"); ok {
+		t.Error(`VDMBucket("msft") mapped a stranger; want unmapped`)
+	}
+}
+
+// TestVDMBucketRangeIsExactlyTheQueriedRawNames pins the two halves of vdm.go
+// together: every bucket we roll UP into must be a raw name we actually query
+// DOWN from, or a reconciliation compares against a bucket nobody fetched.
+func TestVDMBucketRangeIsExactlyTheQueriedRawNames(t *testing.T) {
+	queried := map[string]bool{}
+	for _, raw := range VDMISPs() {
+		queried[raw] = true
+	}
+	for g, bucket := range groupToVDM {
+		if !queried[bucket] {
+			t.Errorf("group %q rolls up to %q, which VDMISPs() never queries", g, bucket)
+		}
+		// And the round trip must land back on a canonical group.
+		if back, ok := GroupFromVDMISP(bucket); !ok {
+			t.Errorf("bucket %q (from group %q) is not a mapped VDM raw name", bucket, g)
+		} else if _, isGroup := groupToVDM[back]; !isGroup {
+			t.Errorf("bucket %q round-trips to %q, which has no VDM bucket", bucket, back)
+		}
+	}
+	if got, want := len(VDMComparableGroups()), 8; got != want {
+		t.Errorf("VDMComparableGroups() = %d, want %d", got, want)
+	}
+}
+
+func TestSQLCaseVDMBucketFromGroup(t *testing.T) {
+	got := SQLCaseVDMBucketFromGroup("isp_group")
+	want := "CASE\n" +
+		"    WHEN isp_group IN ('aol') THEN 'Aol'\n" +
+		"    WHEN isp_group IN ('att','sbcglobal') THEN 'Att'\n" +
+		"    WHEN isp_group IN ('cox') THEN 'Cox'\n" +
+		"    WHEN isp_group IN ('gmail') THEN 'Gmail'\n" +
+		"    WHEN isp_group IN ('microsoft') THEN 'Hotmail'\n" +
+		"    WHEN isp_group IN ('apple') THEN 'Icloud'\n" +
+		"    WHEN isp_group IN ('yahoo') THEN 'Yahoo'\n" +
+		"    ELSE NULL\nEND"
+	if got != want {
+		t.Errorf("SQLCaseVDMBucketFromGroup mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
