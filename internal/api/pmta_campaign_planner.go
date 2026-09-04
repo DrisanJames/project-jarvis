@@ -790,7 +790,9 @@ func planPMTAAudience(
 	// Maps are local to this finalize call — no goroutine sharing — so
 	// no synchronization is needed for the lookups inside qualifyEmail.
 	sdsFilterOn := sdsFilterEnabled() && strings.TrimSpace(input.SendingDomain) != ""
-	sdsState := loadSDSStateForDomain(ctx, db, input.SendingDomain)
+	// The touch policy reads last_mailed_at from this map and binds even when
+	// the SA-2 kill switch is on, so force the load when a policy exists.
+	sdsState := loadSDSStateForDomain(ctx, db, input.SendingDomain, len(touchPolicy) > 0)
 	crossEngagedIDs := loadCrossEngagedSet(ctx, db)
 	if sdsFilterOn {
 		log.Printf("[finalizer/sds] domain=%q loaded sds_state_rows=%d cross_engaged=%d in %v",
@@ -800,6 +802,7 @@ func planPMTAAudience(
 	// of the SDS filter across all qualifyEmail invocations; the totals
 	// land in the [finalizer] log line at the bottom of the function.
 	var sdsFilteredRecent24h, sdsFilteredCold int
+	var touchPolicyFiltered int
 	var sdsSelectedEngaged, sdsSelectedProbe int
 
 	// Remail gap: load emails that received a send within the last MinRemailHours.
@@ -995,6 +998,24 @@ func planPMTAAudience(
 					sdsFilteredRecent24h++
 					return deny("sds_recent_24h")
 				}
+			}
+		}
+
+		// Per-(sending domain × ISP) touch spacing (isp_touch_policy.go).
+		// Deliberately OUTSIDE the sdsFilterOn branch: the kill switch governs
+		// the SA-2 state exclusion, the policy governs frequency, and the
+		// policy must bind while that switch is on (its production value).
+		//
+		// This runs on candidates from EVERY source path — list, segment, SDS,
+		// cold-fallback — which is what makes the cap real for SEGMENT-sourced
+		// campaigns. The SQL clause spliced into streamList covers only the
+		// list path; the board's engaged tiers are segment-sourced and would
+		// otherwise never see the cap.
+		if gap, capped := touchPolicy[isp]; capped {
+			if row, ok := sdsState[subID]; ok && row.lastMailedAt.Valid &&
+				time.Since(row.lastMailedAt.Time) < time.Duration(gap)*time.Hour {
+				touchPolicyFiltered++
+				return deny("touch_policy_" + isp)
 			}
 		}
 
@@ -1841,9 +1862,10 @@ func planPMTAAudience(
 	// questions. The detailed counts give us a clear signal of whether
 	// the SDS filter is doing meaningful work or is effectively a
 	// no-op for this campaign.
-	log.Printf("[finalizer] campaign=%s domain=%q sds_filter: enabled=%t in=%d filtered_24h=%d filtered_cold=%d selected_engaged=%d selected_probe=%d selected_total=%d reserve_total=%d reserve_mult=%.2f",
+	log.Printf("[finalizer] campaign=%s domain=%q sds_filter: enabled=%t in=%d filtered_24h=%d filtered_cold=%d touch_policy_filtered=%d policy=%v selected_engaged=%d selected_probe=%d selected_total=%d reserve_total=%d reserve_mult=%.2f",
 		input.CampaignID, input.SendingDomain, sdsFilterOn,
 		len(seenEmails), sdsFilteredRecent24h, sdsFilteredCold,
+		touchPolicyFiltered, map[string]int(touchPolicy),
 		sdsSelectedEngaged, sdsSelectedProbe, selectedTotal, reserveTotal, reserveMult)
 
 	// Async backfill: write ISP to subscribers that don't have it set yet.

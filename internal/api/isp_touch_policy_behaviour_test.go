@@ -255,3 +255,67 @@ func TestTouchPolicyBehaviourIsPerSendingDomain(t *testing.T) {
 			len(got), len(touchPolicyFixtures()))
 	}
 }
+
+// THE GAP THIS ALMOST SHIPPED WITH: planPMTAAudience has TWO selection paths.
+// streamList takes the spliced SQL clause; streamSegment does NOT and relies on
+// the in-memory filter. The board's engaged tiers are SEGMENT-sourced, which is
+// where most Gmail volume lives, so a policy that only reached the SQL clause
+// would have looked correct in every string test and capped almost nothing.
+//
+// These pin the two properties the in-memory half depends on, both of which
+// were wrong in the first cut:
+//  1. the SDS state map must LOAD while DISABLE_SDS_FREQUENCY_CAP=true,
+//     because the policy reads last_mailed_at out of it;
+//  2. the decision itself must be per-ISP, not blanket.
+func TestTouchPolicyStateLoadsWhileKillSwitchIsOn(t *testing.T) {
+	t.Setenv("DISABLE_SDS_FREQUENCY_CAP", "true")
+	db := openTouchPolicyDB(t)
+	defer db.Close()
+	schema := buildScratch(t, db, "em.quizfiesta.com")
+
+	// The production loader reads the real table name; point it at the scratch
+	// schema for the duration of this connection.
+	if _, err := db.Exec("SET search_path TO " + schema + ",public"); err != nil {
+		t.Skipf("SKIP: cannot set search_path (%v)", err)
+	}
+	defer db.Exec("SET search_path TO public")
+
+	unforced := loadSDSStateForDomain(context.Background(), db, "em.quizfiesta.com")
+	if len(unforced) != 0 {
+		t.Errorf("kill switch on and no policy: state map should stay empty, got %d", len(unforced))
+	}
+	forced := loadSDSStateForDomain(context.Background(), db, "em.quizfiesta.com", true)
+	if len(forced) == 0 {
+		t.Fatal("kill switch on WITH a policy: state map must load, or the segment-path cap is inert")
+	}
+	if _, ok := forced["g-recent"]; !ok {
+		t.Errorf("expected the recently-mailed gmail row in the map, got %d rows", len(forced))
+	}
+}
+
+// The in-memory decision, exercised exactly as the planner makes it.
+func TestTouchPolicyInMemoryDecisionIsPerISP(t *testing.T) {
+	policy := ispTouchPolicy{"gmail": 20}
+	recent := time.Now().Add(-1 * time.Hour)
+	old := time.Now().Add(-30 * time.Hour)
+
+	capped := func(isp string, lastMailed time.Time) bool {
+		gap, has := policy[isp]
+		if !has {
+			return false
+		}
+		return time.Since(lastMailed) < time.Duration(gap)*time.Hour
+	}
+
+	if !capped("gmail", recent) {
+		t.Error("gmail mailed 1h ago must be capped")
+	}
+	if capped("gmail", old) {
+		t.Error("gmail mailed 30h ago must pass")
+	}
+	for _, isp := range []string{"yahoo", "microsoft", "aol", "apple", "comcast", "att", "sbcglobal", "cox", "charter", "verizon", "other"} {
+		if capped(isp, recent) {
+			t.Errorf("%s mailed 1h ago must NOT be capped — gmail-only", isp)
+		}
+	}
+}

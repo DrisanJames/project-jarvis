@@ -165,9 +165,13 @@ type sdsRow struct {
 // The soft-fail behaviour is intentional: the goal is to never block a
 // finalize because the new SDS-state read failed. The SQL-injected
 // list-path filter remains active independently.
-func loadSDSStateForDomain(ctx context.Context, db dbQuerier, sendingDomain string) map[string]sdsRow {
+// needState is true when the caller has a touch policy to enforce. The policy
+// reads last_mailed_at from this same map, and it binds while the SA-2 kill
+// switch is on, so the switch alone must not decide whether the map is loaded.
+func loadSDSStateForDomain(ctx context.Context, db dbQuerier, sendingDomain string, needState ...bool) map[string]sdsRow {
 	out := make(map[string]sdsRow)
-	if !sdsFilterEnabled() {
+	forced := len(needState) > 0 && needState[0]
+	if !sdsFilterEnabled() && !forced {
 		return out
 	}
 	d := strings.ToLower(strings.TrimSpace(sendingDomain))
