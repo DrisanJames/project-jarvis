@@ -18,8 +18,8 @@ do not re-derive them; reference this file.
 | Question | Source | NOT this |
 |---|---|---|
 | Delivery outcomes (delivered/bounce/deferral) | **Athena lake** `ignite_analytics.email_events`, `source IN ('pmta','ses')` | PG campaign counters (dead since 2026-05-29); the lake's `app` stream (PG mirror — duplicates) |
-| Opens/clicks, RAW (machine incl.) | Lake `source='app'` (the PG-tracking mirror) — or PG `mailing_tracking_events` directly | Lake `pmta` rows (carry none) or `ses` rows alone (webhook slice only, ~1% of opens) |
-| Opens/clicks, HUMAN | PG `mailing_tracking_events` + `ignite_event_verdict(user_agent, ip_address)` | `is_machine_open` / `is_machine_click` columns — **INERT** (verified 2026-06-24) |
+| Opens/clicks, RAW (machine incl.) | Lake `source='app'` (the PG-tracking mirror) — or PG `mailing_tracking_events` directly | Lake `pmta` rows (carry none). ⚠️ The "`ses` is only ~1% of opens" claim here was **stale**: 2026-09-01..03 `source='ses'` carried 2,733,470 opens / 61,565 clicks. `ses` alone is still the wrong RAW answer (SES-routed slice only) but is the ONLY correct basis for a VDM comparison (§12) |
+| Opens/clicks, HUMAN | PG `mailing_tracking_events` + `ignite_event_verdict(user_agent, ip_address)` | `is_machine_open` (still INERT, deliberately — §12.5) / `is_machine_click` (lake `ses` rows populated from 2026-09-04, §12.5). Both are LABELS, never audience filters (§12.1) |
 | Per-campaign delivered for CPM/billing | PG `mailing_tracking_events` (100% campaign-attributed) | Lake (loses ~20% of PMTA rows to blank campaign_id) |
 | Campaign metadata/status | Campaign Center (`mailing_campaigns` row, campaign-summary endpoint) | Its aggregate counter columns (`sent_count`, `open_count`, … — stale) |
 
@@ -571,6 +571,137 @@ the header strip. Every response also carries `as_of` and the `contract_versions
 against — a supply number without its `as_of` and contract version is a number about an unknown
 moment under unknown policy.
 
+## 12. The two engagement bases — and which one governs (2026-09-04)
+
+Engagement has **two legitimate counts**, and they differ by ~37% on opens.
+Neither is wrong. Using the wrong one for the wrong purpose is.
+
+| | **INCLUSIVE** — the operating basis | **VDM-COMPARABLE** — the reconciliation lens |
+|---|---|---|
+| Definition | every open/click **EVENT**, counted on the day the **event** happened | **UNIQUE engaged MESSAGES**, attributed to the day the message was **sent**, `source='ses'` only |
+| Governs | audience selection, engagement tiers, every segment definition, the engaged-tier anchors | deliverability reporting and reconciliation with AWS SES VDM |
+| Where | PG `mailing_tracking_events` / lake open+click event counts; `human_engagement` MCP tool | `vdm_engagement` MCP tool; canonical SQL `agents/dbknowledge/_db.py:vdm_comparable_engagement()` |
+| May feed an audience query | **YES — this is the only one that may** | **NEVER** |
+
+### 12.1 ⭐ The rule: when in doubt, count MORE
+
+**Operator, 2026-09-04:** *"I would rather over count than under count. If we
+over count, we can have a hundred percent certainty that we are not cutting out
+audience members, whereas if we under count, there is always a question."*
+
+The inclusive number is high **on purpose**. Do not filter it down to match VDM,
+a scanner verdict, a bot label, or any other authority. An undercount classifies
+a real human as unengaged and drops them from an audience — the one outcome that
+is not recoverable. This is the same rule that already forbids
+`ignite_verdict_is_human` from gating an audience (CLAUDE.md §6: a scanner-STORM
+filter with a ~20% false-negative floor on proven humans, 35% at Microsoft).
+
+Every machine/scanner signal we store is therefore a **LABEL, not a filter**:
+`is_machine_click`, `is_machine_open`, `ses_bot_event`, `click_verdict`. A label
+may appear in a reporting lens. A label may never appear in a segment
+definition, a planner audience query, or a journey enroller.
+
+### 12.2 Why the two differ — measured, not assumed
+
+Reconciled against AWS SES Virtual Deliverability Manager, 2026-09-01..03,
+`source='ses'`, VDM's tracked ISP buckets (sbcglobal folded into att):
+
+| basis | 6-bucket opens | vs VDM (1,790,394) |
+|---|---|---|
+| raw open EVENTS on the event day | 2,519,711 | **+37.1%** |
+| + dedup to one open per message | 2,308,751 | +25.6% |
+| + attribute to the SEND cohort | 1,813,506 | **+1.3%** |
+
+Two independent differences compound. Both are counting basis; **neither is bot
+filtering**:
+
+1. **VDM counts unique per message.** AWS API reference,
+   `BatchGetMetricDataQuery`: *"OPEN — Unique open events for emails including
+   open trackers"*, *"CLICK — Unique click events for emails including wrapped
+   links"*. Raw event publishing is per event: *"If a recipient opens an email
+   multiple times, Amazon SES counts each open as a unique open event"*
+   (SES metrics FAQ). Measured: **1.14 open events and 3.35 click events per
+   engaged message**.
+2. **VDM attributes to the SEND day.** Measured: **28%** of the opens landing in
+   2026-09-01..03 belong to messages sent before the window. AWS does not
+   document the attribution day; the evidence is that switching to send-cohort
+   attribution moves five independently-sized buckets (5,139 to 1.58M) from
+   +25.6% to within +1.3%..+4.4% simultaneously.
+
+**Ruled OUT with data — do not re-litigate these:**
+
+- *AWS bot-filters VDM.* No. The VDM dashboard doc still carries the warning
+  that Apple MPP *"causes engagement data to look much higher than it typically
+  would be"*, and the `isBotEvent` field AWS shipped 2026-08-07 is an annotation
+  on raw Open/Click notifications, not a VDM filter.
+- *We double-ingest the same open (SES notification + our own pixel) as
+  `source='ses'`.* No. There are exactly two `analytics.Emit` call sites —
+  `handlers_ses_events.go` (`source='ses'`) and `engine/ingest.go`
+  (`pmta`/`kumo`). The pixel path (`mailing_tracking.go`,
+  `internal/tracking/consumer.go`) does not emit to the lake at all.
+  `COUNT(*)` = `COUNT(DISTINCT event_uid)` = 2,733,470 on the window: zero
+  duplicate lake rows.
+- *Timezone / day-boundary skew.* No. VDM day buckets are UTC (VDM dashboard
+  doc: *"All dates & times are UTC"*) and so is the lake's `dt` partition. A
+  boundary skew also cannot produce a uniform +35–45% on six buckets at once.
+- *Per-LINK click grain.* No. Unique (message, link) overshoots every bucket
+  except yahoo: microsoft +72.8%, att +109.5%, cox +69.6%. Unique-per-message is
+  the right grain.
+
+### 12.3 Maturity — a cohort number is not final for ~3 days
+
+The send-cohort metric settles over roughly three days, and the tail is
+ISP-shaped. Measured on the 2026-08-25 send cohort, unique engaged messages at
+day+0 as a share of the day+7 value:
+
+| bucket | opens d+0 | clicks d+0 |
+|---|---|---|
+| microsoft | 43% | 63% |
+| apple | 67% | 77% |
+| att | 63% | 8% |
+| yahoo | 55% | **2%** (9 → 445 by day+2) |
+
+A VDM-comparable figure read with less than 3 days of tail is an **undercount,
+not a discrepancy**. Label the maturity or do not publish the number.
+
+### 12.4 What did NOT close — yahoo
+
+| bucket | opens vs VDM | clicks vs VDM |
+|---|---|---|
+| microsoft | +1.3% | +1.8% |
+| apple | +2.8% | +0.9% |
+| cox | +1.7% | +2.9% |
+| aol | +4.4% | −4.3% |
+| att | +3.5% | +9.1% |
+| **yahoo** | **−15.3%** | **−57.9%** |
+
+Yahoo is the single bucket that does not reconcile, and its click gap is larger
+than any counting-basis effect. Ruled out by measurement: per-link grain, the
+sbcglobal/bellsouth→yahoo re-fold (moves *both* yahoo and att further from VDM),
+and a same-timestamp ingest collision (multi-row `(recipient_send_id, event_at)`
+groups exist, so nothing is being dropped there). **Cause unknown.** State it as
+open; do not smooth it into a total.
+
+### 12.5 Where the labels are written
+
+- `mailing_tracking_events.is_machine_click` — written by all three click ingest
+  paths (`mailing_tracking.go` pixel, `internal/tracking/consumer.go` SQS,
+  `handlers_ses_events.go` SES). Fires rarely by design (3 of 289,196 clicks
+  over 2026-09-01..03): the classifier is conservative, false negatives
+  preferred.
+- `mailing_tracking_events.ses_bot_event` (2026-09-04) — AWS's own `isBotEvent`
+  label (`"Likely"`/`"Unlikely"`), persisted verbatim for **both** opens and
+  clicks. NULL = **UNKNOWN** (no label sent), never "human".
+- Lake `is_machine_click` — now set on `source='ses'` **click** rows only
+  (`analytics.Event.IsMachineClick`, `*bool` + `omitempty`). It was NULL on
+  every row before 2026-09-04 because the SES handler computed the verdict and
+  never put it on the lake event. Non-click rows stay NULL so
+  `is_machine_click IS NOT NULL` remains an honest coverage measure.
+- **NOT written: `is_machine_open`.** It is read by ~15 opt-in `ExcludeMPP`
+  filters that are inert only because nothing writes the column. Populating it
+  would silently switch those screens from inclusive to filtered counting —
+  exactly the undercount §12.1 forbids. Use `ses_bot_event` instead.
+
 ## Amendment log
 
 - 2026-07-01: initial contract, consolidated from the Reporting-screen fix set (commits f76582f,
@@ -597,3 +728,15 @@ moment under unknown policy.
   records vs messages never summed; the health colour as a single API-side implementation; and
   "unknown is not zero", including the one exception (an absent append-only Supply-Ledger event key
   is a measured zero).
+- 2026-09-04: §12 The two engagement bases — the inclusive event count named the
+  OPERATING basis that governs audience selection, and the VDM-comparable
+  unique-message/send-cohort count confined to a reporting lens, under the
+  operator's over-count-never-undercount rule. The +37.1% open gap vs AWS VDM
+  decomposed and closed to +1.3% (5 of 6 buckets within 5%) by two measured
+  causes — VDM's unique-per-message grain and its send-day attribution — with
+  AWS bot filtering, lake double-ingestion, timezone skew and per-link click
+  grain each ruled OUT with data. Cohort maturity (~3 days, ISP-shaped) pinned;
+  yahoo recorded as NOT reconciled. Machine signals restated as LABELS not
+  filters: `ses_bot_event` added (AWS `isBotEvent`), the SES click verdict wired
+  into the lake, and `is_machine_open` explicitly left unwritten so the ~15 inert
+  `ExcludeMPP` filters cannot switch on by accident.
