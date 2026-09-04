@@ -8399,6 +8399,22 @@ END $$`},
 			ON mailing_tracking_events (event_at, is_machine_click)
 			WHERE event_type = 'clicked'`},
 
+		// === AWS's own automated-interaction label (2026-09-04) ===
+		// SES added `isBotEvent` ("Likely"/"Unlikely") to Open and Click event
+		// notifications on 2026-08-07. We persist it VERBATIM rather than
+		// folding it into is_machine_open, because is_machine_open is read by
+		// ~15 opt-in ExcludeMPP filters that are inert today only because
+		// nothing writes the column — populating it would silently switch those
+		// screens from inclusive to filtered counting. This column is a LABEL:
+		// METRIC_CONTRACT.md §12 binds the operating/audience path to the
+		// inclusive count and confines the label to the VDM-comparable
+		// reconciliation lens. NULL = UNKNOWN (no label sent), never "human".
+		// No backfill: the label only exists going forward, and a DEFAULT-less
+		// nullable ADD COLUMN is a catalog-only rewrite that fits the 5s
+		// runStartupMigrations budget on this partitioned table.
+		{"add_ses_bot_event_col", `ALTER TABLE mailing_tracking_events
+			ADD COLUMN IF NOT EXISTS ses_bot_event TEXT`},
+
 		// === Table-driven Microsoft/Azure datacenter click classifier (2026-07-06) ===
 		// See cmd/server/datacenter_classifier.go for the full rationale and the
 		// canonical DDL. Ordering is load-bearing: the containment table exists

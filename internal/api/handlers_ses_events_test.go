@@ -358,7 +358,7 @@ func TestSESEvents_HumanClick_PersistsIPAndUserAgent(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			false, humanIP, humanUA, sqlmock.AnyArg()).
+			false, humanIP, humanUA, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// Counters are batched now; the per-event work is the unique-click check.
 	mock.ExpectQuery("FROM mailing_tracking_events").
@@ -411,7 +411,7 @@ func TestSESEvents_ScannerClick_FlaggedMachine_NoEngagement(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			true, scannerIP, scannerUA, sqlmock.AnyArg()).
+			true, scannerIP, scannerUA, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := snsNotificationBody(t, map[string]interface{}{
@@ -450,7 +450,7 @@ func TestSESEvents_ScannerUAClick_FlaggedMachine(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			true, scannerIP, scannerUA, sqlmock.AnyArg()).
+			true, scannerIP, scannerUA, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := snsNotificationBody(t, map[string]interface{}{
@@ -491,7 +491,7 @@ func TestSESEvents_Open_PersistsIPAndUserAgent(t *testing.T) {
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			false, openIP, openUA, sqlmock.AnyArg()).
+			false, openIP, openUA, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectQuery("FROM mailing_tracking_events").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -685,7 +685,7 @@ func TestSESEvents_ValidationSuppression_LabeledAndReasonPersisted(t *testing.T)
 	mock.ExpectExec("INSERT INTO mailing_tracking_events").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"validation", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), diag).
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), diag, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// Suppression row: reason ($4) re-labeled, diag ($8) retained.
 	mock.ExpectExec("INSERT INTO mailing_global_suppressions").
@@ -742,7 +742,8 @@ func TestSESEvents_SendNotification_IsNotTypedSent(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"ses_accepted",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	body := snsNotificationBody(t, map[string]interface{}{
@@ -782,5 +783,128 @@ func TestSESAccepted_MapsToLakeAttempted(t *testing.T) {
 	}
 	if got := analytics.CanonicalEventType("sent"); got != "attempted" {
 		t.Errorf("CanonicalEventType(\"sent\") = %q, want \"attempted\"", got)
+	}
+}
+
+// --- AWS isBotEvent label (2026-09-04, METRIC_CONTRACT §12) -----------------
+//
+// AWS added `isBotEvent` ("Likely"/"Unlikely") to Open and Click notifications
+// on 2026-08-07. These tests pin the CONTRACT, not the implementation:
+//   * the label is persisted verbatim in ses_bot_event ($14) for BOTH opens and
+//     clicks, so the reconciliation lens can read it;
+//   * a "Likely" CLICK is additionally flagged is_machine_click ($10) — the
+//     existing informational click label;
+//   * a "Likely" OPEN does NOT change is_machine_click and does NOT suppress
+//     the open engagement cascade. This is the negative path that matters: the
+//     operator's rule is over-count, never under-count, so a bot label must
+//     never remove a human from an audience.
+//   * an absent label persists as "" -> NULL (UNKNOWN), never false.
+
+func TestSESEvents_BotLabeledClick_PersistedAndFlaggedMachine(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	// Residential IP + a full browser UA: neither our URL check nor
+	// ClassifyClickAsMachine would fire. ONLY AWS's label makes this machine,
+	// which is what proves the label is wired.
+	humanUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+	humanIP := "98.42.10.11"
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			true, humanIP, humanUA, sqlmock.AnyArg(), "Likely").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Click",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"click": map[string]interface{}{
+			"timestamp": "2026-07-10T19:00:00Z", "ipAddress": humanIP, "userAgent": humanUA,
+			"link":       "https://www.cratoolpro.com/BJB4Q5BF/GK847MZ/?source_id=email&sub1=abc",
+			"isBotEvent": "Likely",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations (INSERT only, no engagement cascade): %v", err)
+	}
+}
+
+func TestSESEvents_BotLabeledOpen_LabelOnly_EngagementUnchanged(t *testing.T) {
+	h, mock, _ := newHandlerForTest(t)
+
+	openUA := "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+	openIP := "198.51.100.23"
+	// is_machine_click MUST stay false on an open even when AWS says "Likely",
+	// and the full engagement cascade MUST still run.
+	mock.ExpectExec("INSERT INTO mailing_tracking_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			false, openIP, openUA, sqlmock.AnyArg(), "Likely").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_tracking_events").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("FROM mailing_campaigns WHERE id").
+		WillReturnRows(sqlmock.NewRows([]string{"from_email"}).AddRow(""))
+	mock.ExpectExec("INSERT INTO mailing_inbox_profiles").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("FROM mailing_inbox_profiles WHERE email_hash").
+		WillReturnRows(sqlmock.NewRows([]string{"total_sends", "total_opens", "total_clicks", "last_open_at"}).
+			AddRow(0, 0, 0, nil))
+
+	body := snsNotificationBody(t, map[string]interface{}{
+		"eventType": "Open",
+		"mail": map[string]interface{}{
+			"tags": map[string][]string{
+				"campaign_id":   {"11111111-1111-1111-1111-111111111111"},
+				"subscriber_id": {"22222222-2222-2222-2222-222222222222"},
+			},
+			"commonHeaders": map[string]interface{}{"to": []string{"user@example.com"}},
+		},
+		"open": map[string]interface{}{
+			"timestamp": "2026-07-10T19:00:00Z", "ipAddress": openIP, "userAgent": openUA,
+			"isBotEvent": "Likely",
+		},
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/webhooks/ses-events", bytes.NewReader(body))
+	h.ServeHTTP(rr, req.WithContext(context.Background()))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sqlmock expectations: %v", err)
+	}
+}
+
+func TestMachineClickForLake_NilOnNonClick(t *testing.T) {
+	// The lake column must stay NULL on every non-click row, or
+	// `is_machine_click IS NOT NULL` stops meaning "classified".
+	for _, et := range []string{"opened", "delivered", "ses_accepted", "bounced", "complaint"} {
+		if got := machineClickForLake(et, true); got != nil {
+			t.Errorf("machineClickForLake(%q) = %v, want nil", et, *got)
+		}
+	}
+	for _, want := range []bool{true, false} {
+		got := machineClickForLake("clicked", want)
+		if got == nil {
+			t.Fatalf("machineClickForLake(clicked, %v) = nil, want non-nil", want)
+		}
+		if *got != want {
+			t.Errorf("machineClickForLake(clicked, %v) = %v", want, *got)
+		}
 	}
 }

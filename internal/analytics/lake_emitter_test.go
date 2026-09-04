@@ -3,6 +3,7 @@ package analytics
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,32 @@ func TestEventJSONTags(t *testing.T) {
 		if _, ok := m[r]; !ok {
 			t.Errorf("missing JSON key %q (Glue column contract). got keys: %v", r, reflect.ValueOf(got))
 		}
+	}
+}
+
+// TestEvent_IsMachineClick_OmittedWhenNil pins the Firehose wire contract for
+// the click label (METRIC_CONTRACT §12). The Glue column is nullable and
+// `is_machine_click IS NOT NULL` is read as classification COVERAGE, so a nil
+// pointer must vanish from the JSON entirely — emitting a bare `false` on the
+// ~5M non-click rows/day would claim classification we never performed.
+func TestEvent_IsMachineClick_OmittedWhenNil(t *testing.T) {
+	b, err := json.Marshal(Event{EventUID: "ses:x", EventType: "open"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "is_machine_click") {
+		t.Fatalf("nil IsMachineClick must be omitted, got %s", b)
+	}
+
+	f := false
+	b, _ = json.Marshal(Event{EventUID: "ses:y", EventType: "click", IsMachineClick: &f})
+	if !strings.Contains(string(b), `"is_machine_click":false`) {
+		t.Fatalf("classified-human click must emit false, got %s", b)
+	}
+
+	tr := true
+	b, _ = json.Marshal(Event{EventUID: "ses:z", EventType: "click", IsMachineClick: &tr})
+	if !strings.Contains(string(b), `"is_machine_click":true`) {
+		t.Fatalf("classified-machine click must emit true, got %s", b)
 	}
 }

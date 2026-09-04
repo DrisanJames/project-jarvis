@@ -204,16 +204,25 @@ type sesEventNotification struct {
 	Reject struct {
 		Reason string `json:"reason"`
 	} `json:"reject"`
+	// IsBotEvent is AWS's own automated-interaction label, added to Open and
+	// Click event notifications on 2026-08-07 ("Amazon SES now helps identify
+	// automated email interactions"). Values: "Likely" | "Unlikely" | "" when
+	// the account/region has not started emitting it. It is a LABEL ONLY — see
+	// METRIC_CONTRACT.md §12: the operating engagement count stays inclusive
+	// and never filters on it; only the VDM-comparable reconciliation lens
+	// reads it.
 	Open struct {
-		Timestamp string `json:"timestamp"`
-		IPAddress string `json:"ipAddress"`
-		UserAgent string `json:"userAgent"`
+		Timestamp  string `json:"timestamp"`
+		IPAddress  string `json:"ipAddress"`
+		UserAgent  string `json:"userAgent"`
+		IsBotEvent string `json:"isBotEvent"`
 	} `json:"open"`
 	Click struct {
-		Timestamp string `json:"timestamp"`
-		IPAddress string `json:"ipAddress"`
-		UserAgent string `json:"userAgent"`
-		Link      string `json:"link"`
+		Timestamp  string `json:"timestamp"`
+		IPAddress  string `json:"ipAddress"`
+		UserAgent  string `json:"userAgent"`
+		Link       string `json:"link"`
+		IsBotEvent string `json:"isBotEvent"`
 	} `json:"click"`
 	DeliveryDelay struct {
 		DelayType    string `json:"delayType"`
@@ -570,14 +579,29 @@ func (h *SESEventsHandler) persistSESEvent(ctx context.Context, eventType string
 	// here — we don't pay the DB round-trip for the send timestamp — so only
 	// rules 1 and 2 of ClassifyClickAsMachine can fire (documented trade-off
 	// at its definition).
-	machineClick := eventType == "clicked" && (isMachineClickURL(linkURL) || tracking.ClassifyClickAsMachine(userAgent, ipAddress, 0))
+	//
+	// AWS's own automated-interaction label (isBotEvent, shipped 2026-08-07) is
+	// folded in for clicks and persisted verbatim for BOTH opens and clicks in
+	// the dedicated `ses_bot_event` label column. sesBotEvent is "" whenever the
+	// notification carries no label — stored NULL, meaning UNKNOWN, never
+	// "human" (METRIC_CONTRACT.md §12: unknown is not zero).
+	sesBotEvent := ""
+	switch eventType {
+	case "opened":
+		sesBotEvent = note.Open.IsBotEvent
+	case "clicked":
+		sesBotEvent = note.Click.IsBotEvent
+	}
+	machineClick := eventType == "clicked" && (isMachineClickURL(linkURL) ||
+		tracking.ClassifyClickAsMachine(userAgent, ipAddress, 0) ||
+		strings.EqualFold(sesBotEvent, "Likely"))
 
 	res, err := h.db.ExecContext(ctx, `
 		INSERT INTO mailing_tracking_events
-			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain, is_machine_click, ip_address, user_agent, bounce_reason)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, '')::inet, NULLIF($12, ''), NULLIF($13, ''))
+			(id, organization_id, campaign_id, subscriber_id, event_type, bounce_type, link_url, event_at, recipient_domain, is_machine_click, ip_address, user_agent, bounce_reason, ses_bot_event)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, '')::inet, NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''))
 		ON CONFLICT (id, event_at) DO NOTHING
-	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick, ipAddress, userAgent, bounceDiag)
+	`, eventID, orgPtr, campUUID, subPtr, eventType, bouncePtr, linkPtr, eventAt, recipientDomain, machineClick, ipAddress, userAgent, bounceDiag, sesBotEvent)
 	if err != nil {
 		// RETURN the error rather than swallowing it. The async ingest worker
 		// retries on this; a permanent failure is counted in the /health
@@ -616,6 +640,15 @@ func (h *SESEventsHandler) persistSESEvent(ctx context.Context, eventType string
 		SourceIP:        ipAddress,
 		EventAt:         eventAt.UTC().Format(time.RFC3339),
 		Source:          "ses",
+		// The machine/scanner verdict computed above was previously dropped on
+		// the floor here: PG got is_machine_click, the lake got nothing, so
+		// every `source='ses'` lake row had is_machine_click NULL and the
+		// column read as INERT. Set it on CLICK rows only — a nil pointer is
+		// omitted from the Firehose JSON and stays NULL in Glue, which is what
+		// keeps "unclassified" distinguishable from "classified human"
+		// (reader_click_funnel.go counts `is_machine_click IS NOT NULL` as
+		// coverage). LABEL ONLY — nothing on the operating path filters on it.
+		IsMachineClick: machineClickForLake(eventType, machineClick),
 	}
 	analytics.Emit(lakeEvt)
 
@@ -1018,6 +1051,20 @@ func firstTag(tags map[string][]string, key string) string {
 // CLICK events the moment the message renders in a mail client. Those must
 // not count as engagement. Detection is by well-known asset/CDN host or by
 // the URL path's file extension (query/fragment stripped first).
+// machineClickForLake renders the click verdict for the lake event. It returns
+// nil for every non-click event type so the Firehose JSON omits the field and
+// the Glue column stays NULL (= NOT CLASSIFIED), and a non-nil pointer on click
+// rows so `is_machine_click IS NOT NULL` is honest coverage. Emitting a bare
+// `false` on opens/deliveries would claim we classified 5M rows we never looked
+// at, which is exactly how the column became meaningless the first time.
+func machineClickForLake(eventType string, machine bool) *bool {
+	if eventType != "clicked" {
+		return nil
+	}
+	v := machine
+	return &v
+}
+
 func isMachineClickURL(link string) bool {
 	l := strings.ToLower(strings.TrimSpace(link))
 	if l == "" {

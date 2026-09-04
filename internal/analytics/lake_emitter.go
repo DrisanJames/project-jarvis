@@ -59,6 +59,14 @@ type Event struct {
 	EventEpochMs      int64  `json:"event_epoch_ms"`
 	IngestedAt        string `json:"ingested_at"`
 
+	// IsMachineClick is the scanner/machine LABEL for click rows. Pointer +
+	// omitempty on purpose: nil is omitted from the Firehose record so the Glue
+	// column stays NULL ("not classified"), which is what makes
+	// `is_machine_click IS NOT NULL` a real coverage measure. Only click rows
+	// set it. It is a reporting label — METRIC_CONTRACT.md §12 forbids the
+	// operating/audience path from filtering on it.
+	IsMachineClick *bool `json:"is_machine_click,omitempty"`
+
 	// partition keys (consumed by Firehose, also fine to keep in the record)
 	Source string `json:"source"`
 	Dt     string `json:"dt"`
