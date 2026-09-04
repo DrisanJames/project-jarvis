@@ -357,10 +357,9 @@ type Mediator struct {
 	contractKeyErr error
 
 	// Cross-tick state.
-	plannedDay   string         // Denver dayKey this process has confirmed a frozen plan for
-	activatedDay string         // dayKey of the last ActivateScheduled
-	zeroStreak   map[string]int // "lane|pass" -> consecutive zero/failed outcomes
-	lastAlert    map[string]time.Time
+	plannedDay string         // Denver dayKey this process has confirmed a frozen plan for
+	zeroStreak map[string]int // "lane|pass" -> consecutive zero/failed outcomes
+	lastAlert  map[string]time.Time
 
 	plannerWarnOnce sync.Once
 	reapWarnOnce    sync.Once
@@ -488,27 +487,29 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 		return
 	}
 
-	// (1) Day boundary: scheduled -> active, previous active -> superseded.
-	// Guarded by the day key so a 15-min tick does not run the activation
-	// transaction 96 times a day; an ECS bounce re-runs it once, which
-	// ActivateScheduled is idempotent under.
+	// (1) Activation: scheduled -> active, previous active -> superseded.
+	//
+	// Gated on "is anything actually due", NEVER on a day key. A contract
+	// becomes due at its own effective_at, which is not necessarily midnight
+	// in any zone — gating on the day meant a contract effective at 06:00Z was
+	// skipped for the whole day, because the day had already been marked
+	// activated at 00:0xZ when nothing was due yet (prod defect 2026-09-04:
+	// 113 contracts stuck `scheduled`, shadow ledgers empty). The probe is one
+	// indexed read, so a tick with nothing due still costs no transaction.
 	key := dayKey(now)
-	m.mu.Lock()
-	rollover := m.activatedDay != key
-	m.mu.Unlock()
-	if rollover {
+	due, dueErr := AnyDue(ctx, m.db, now)
+	if dueErr != nil {
+		log.Printf("[DripSupply] contract due probe: %v", dueErr)
+	}
+	if due {
 		if res, err := ActivateScheduled(ctx, m.db, now); err != nil {
 			log.Printf("[DripSupply] activate scheduled contracts: %v", err)
 			m.alert(ctx, "activation", notify.TierAlert,
 				fmt.Sprintf("contract activation failed · day %s", key),
 				"Error: "+err.Error(), "Run: check drip_*_contracts status rows for "+key)
-		} else {
-			m.mu.Lock()
-			m.activatedDay = key
-			m.mu.Unlock()
-			if res.Total() > 0 {
-				log.Printf("[DripSupply] contracts activated for %s: %+v", key, res.Activated)
-			}
+		} else if res.Total() > 0 {
+			log.Printf("[DripSupply] contracts activated at %s: %+v",
+				now.UTC().Format(time.RFC3339), res.Activated)
 		}
 	}
 

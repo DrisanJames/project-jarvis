@@ -1520,7 +1520,39 @@ func promoteSQL(spec kindSpec) string {
  WHERE status = 'scheduled' AND effective_at <= $1`, spec.Table)
 }
 
-// ActivateScheduled advances the contract lifecycle at a day boundary, for all
+// dueProbeSQL asks, in ONE round trip, whether any kind has a `scheduled` row
+// that has reached its effective_at. Built from kindSpecs so a new contract
+// kind cannot be forgotten here the way it could in a hand-written UNION.
+//
+// This is the cheap precondition for ActivateScheduled: a contract is due at
+// its OWN effective_at, which is not necessarily midnight in any zone, so the
+// caller cannot gate activation on a day key (see the 2026-09-04 defect note
+// on ActivateScheduled).
+func dueProbeSQL() string {
+	parts := make([]string, 0, len(AllKinds()))
+	for _, kind := range AllKinds() {
+		parts = append(parts, fmt.Sprintf(
+			`EXISTS (SELECT 1 FROM %s WHERE status = 'scheduled' AND effective_at <= $1)`,
+			kindSpecs[kind].Table))
+	}
+	return "SELECT " + strings.Join(parts, " OR ")
+}
+
+// AnyDue reports whether any contract of any kind is `scheduled` and has
+// reached its effective_at as of `now`. One indexed read; false means
+// ActivateScheduled would be a no-op and can be skipped.
+func AnyDue(ctx context.Context, db ContractRowQueryer, now time.Time) (bool, error) {
+	if db == nil {
+		return false, errors.New("dripsupply: AnyDue called with a nil db")
+	}
+	var due bool
+	if err := db.QueryRowContext(ctx, dueProbeSQL(), now).Scan(&due); err != nil {
+		return false, fmt.Errorf("dripsupply: contract due probe: %w", err)
+	}
+	return due, nil
+}
+
+// ActivateScheduled advances the contract lifecycle for every DUE row, for all
 // four kinds, in ONE transaction:
 //
 //  1. every DUE scheduled row that is not the newest for its subject -> superseded
@@ -1530,6 +1562,13 @@ func promoteSQL(spec kindSpec) string {
 // Order matters: (2) before (3) keeps the partial unique index satisfied at
 // every instant. The whole thing is idempotent — a second run finds no due
 // scheduled rows and updates nothing — so it is safe on every tick.
+//
+// ⚠️ Callers must gate on AnyDue, NEVER on a day key. Defect found in prod
+// 2026-09-04: TickStart ran this once per UTC day, so 113 contracts with
+// effective_at = 06:00Z sat `scheduled` for the whole day — the mediator had
+// already marked the day activated at 00:0xZ, when nothing was yet due. They
+// would have activated only at the next UTC midnight, ~18h late, and shadow
+// mode recorded nothing in the meantime (0 rows in both shadow ledgers).
 func ActivateScheduled(ctx context.Context, db ContractTxBeginner, now time.Time) (ActivationResult, error) {
 	res := ActivationResult{
 		Activated:    map[ContractKind]int{},
