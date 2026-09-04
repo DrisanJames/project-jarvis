@@ -72,7 +72,7 @@ func TestSDSFilterEnabled_NonTrueValuesKeepFilterOn(t *testing.T) {
 func TestBuildSDSEligibilityClause_Enabled(t *testing.T) {
 	t.Setenv("DISABLE_SDS_FREQUENCY_CAP", "")
 
-	got := buildSDSEligibilityClause("em.discountblog.com", "s", 1)
+	got := buildSDSEligibilityClause("em.discountblog.com", "s", 1, nil)
 
 	if got.Join == "" {
 		t.Errorf("Join should be non-empty when filter is enabled")
@@ -115,7 +115,7 @@ func TestBuildSDSEligibilityClause_Enabled(t *testing.T) {
 func TestBuildSDSEligibilityClause_Disabled(t *testing.T) {
 	t.Setenv("DISABLE_SDS_FREQUENCY_CAP", "true")
 
-	got := buildSDSEligibilityClause("em.discountblog.com", "s", 1)
+	got := buildSDSEligibilityClause("em.discountblog.com", "s", 1, nil)
 
 	if got.Join != "" {
 		t.Errorf("Join should be empty when kill switch is set; got %q", got.Join)
@@ -136,7 +136,7 @@ func TestBuildSDSEligibilityClause_EmptySendingDomain(t *testing.T) {
 
 	for _, d := range []string{"", "   ", "\t"} {
 		t.Run("domain="+d, func(t *testing.T) {
-			got := buildSDSEligibilityClause(d, "s", 1)
+			got := buildSDSEligibilityClause(d, "s", 1, nil)
 			if got.Join != "" || got.Where != "" || len(got.BindArgs) != 0 {
 				t.Errorf("empty/whitespace sending_domain must produce no-op clause; got join=%q where=%q bindargs=%v",
 					got.Join, got.Where, got.BindArgs)
@@ -163,7 +163,7 @@ func TestBuildSDSEligibilityClause_BindIndex(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := buildSDSEligibilityClause("em.example.com", "s", tc.base)
+			got := buildSDSEligibilityClause("em.example.com", "s", tc.base, nil)
 			if !strings.Contains(got.Join, tc.wantBind) {
 				t.Errorf("baseBindCount=%d Join=%q missing expected bind %q",
 					tc.base, got.Join, tc.wantBind)
@@ -181,7 +181,7 @@ func TestBuildSDSEligibilityClause_BindIndex(t *testing.T) {
 func TestBuildSDSEligibilityClause_NormalizesSendingDomain(t *testing.T) {
 	t.Setenv("DISABLE_SDS_FREQUENCY_CAP", "")
 
-	got := buildSDSEligibilityClause("  Em.DiscountBlog.COM  ", "s", 1)
+	got := buildSDSEligibilityClause("  Em.DiscountBlog.COM  ", "s", 1, nil)
 	if len(got.BindArgs) != 1 || got.BindArgs[0] != "em.discountblog.com" {
 		t.Fatalf("BindArgs = %v, want [em.discountblog.com]", got.BindArgs)
 	}
@@ -194,7 +194,7 @@ func TestBuildSDSEligibilityClause_NormalizesSendingDomain(t *testing.T) {
 func TestBuildSDSEligibilityClause_AliasUsedConsistently(t *testing.T) {
 	t.Setenv("DISABLE_SDS_FREQUENCY_CAP", "")
 
-	got := buildSDSEligibilityClause("em.example.com", "sub", 1)
+	got := buildSDSEligibilityClause("em.example.com", "sub", 1, nil)
 	if !strings.Contains(got.Join, "sub.id") {
 		t.Errorf("Join must reference the supplied alias; got %q", got.Join)
 	}

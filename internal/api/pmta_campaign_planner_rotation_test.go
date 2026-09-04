@@ -111,19 +111,19 @@ func TestPlanPMTAAudience_ColdFallback_KillSwitchRevertsToStableOrdering(t *test
 // must stay the deterministic `ORDER BY s.id`, regardless of the rotation
 // switch (which only governs the cold-fallback SQL).
 func TestColdFallbackRotation_LeavesListPathDeterministic(t *testing.T) {
-	if cl := buildSDSEligibilityClause("", "s", 1); cl.OrderBy != "ORDER BY s.id" {
+	if cl := buildSDSEligibilityClause("", "s", 1, nil); cl.OrderBy != "ORDER BY s.id" {
 		t.Fatalf("list-path (SendingDomain unset) OrderBy = %q, want %q", cl.OrderBy, "ORDER BY s.id")
 	}
 
 	// Rotation explicitly ON must not leak into the list-path fallback.
 	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "false")
-	if cl := buildSDSEligibilityClause("", "s", 1); cl.OrderBy != "ORDER BY s.id" {
+	if cl := buildSDSEligibilityClause("", "s", 1, nil); cl.OrderBy != "ORDER BY s.id" {
 		t.Fatalf("list-path OrderBy with rotation on = %q, want %q", cl.OrderBy, "ORDER BY s.id")
 	}
 
 	// Rotation explicitly OFF likewise leaves the list-path fallback intact.
 	t.Setenv("DISABLE_ROTATING_AUDIENCE_SELECTION", "true")
-	if cl := buildSDSEligibilityClause("", "s", 1); cl.OrderBy != "ORDER BY s.id" {
+	if cl := buildSDSEligibilityClause("", "s", 1, nil); cl.OrderBy != "ORDER BY s.id" {
 		t.Fatalf("list-path OrderBy with rotation off = %q, want %q", cl.OrderBy, "ORDER BY s.id")
 	}
 }

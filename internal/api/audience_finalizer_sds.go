@@ -84,14 +84,41 @@ type sdsClause struct {
 // "sds_filter" — chosen so it does not collide with the master-selection
 // path's "sds" alias. If you change it here, update the integration
 // regression test in audience_finalizer_sds_test.go.
-func buildSDSEligibilityClause(sendingDomain string, subscriberAlias string, baseBindCount int) sdsClause {
-	if !sdsFilterEnabled() || strings.TrimSpace(sendingDomain) == "" {
-		// Safe deterministic fallback. Many candidate-selection queries
-		// historically had no ORDER BY (heap order). ORDER BY <alias>.id
-		// is cheap when the PK index is present and gives reproducible
-		// behaviour across runs.
+// `policy` is the per-ISP minimum touch gap for THIS sending domain
+// (isp_touch_policy.go). It is applied INDEPENDENTLY of the kill switch: the
+// switch governs the SA-2 state exclusion and ordering, the policy governs
+// frequency alone. That separation is deliberate — it lets one ISP be capped
+// without turning on three behaviours for every ISP (operator 2026-09-04,
+// "I just want this to be for Gmail only"). Pass a nil/empty policy for the
+// pre-policy behaviour.
+func buildSDSEligibilityClause(sendingDomain string, subscriberAlias string, baseBindCount int, policy ispTouchPolicy) sdsClause {
+	domainKnown := strings.TrimSpace(sendingDomain) != ""
+	gapWhere := ""
+	if domainKnown {
+		gapWhere = policy.touchGapWhere(subscriberAlias, "sds_filter")
+	}
+	if !sdsFilterEnabled() || !domainKnown {
+		// Kill switch on (or no domain): no state exclusion, no reordering.
+		// A touch policy still binds, and needs the JOIN to read
+		// last_mailed_at, so emit the minimal join-and-where form.
+		if gapWhere == "" {
+			// Safe deterministic fallback. Many candidate-selection queries
+			// historically had no ORDER BY (heap order). ORDER BY <alias>.id
+			// is cheap when the PK index is present and gives reproducible
+			// behaviour across runs.
+			return sdsClause{
+				OrderBy: "ORDER BY " + subscriberAlias + ".id",
+			}
+		}
+		bindIdx := baseBindCount + 1
 		return sdsClause{
-			OrderBy: "ORDER BY " + subscriberAlias + ".id",
+			Join: fmt.Sprintf(
+				"LEFT JOIN mailing_subscriber_domain_state sds_filter ON sds_filter.subscriber_id = %s.id AND sds_filter.sending_domain = $%d",
+				subscriberAlias, bindIdx,
+			),
+			Where:    strings.TrimSpace(gapWhere),
+			OrderBy:  "ORDER BY " + subscriberAlias + ".id",
+			BindArgs: []interface{}{strings.ToLower(strings.TrimSpace(sendingDomain))},
 		}
 	}
 	bindIdx := baseBindCount + 1
@@ -100,7 +127,8 @@ func buildSDSEligibilityClause(sendingDomain string, subscriberAlias string, bas
 		subscriberAlias, bindIdx,
 	)
 	where := "AND (sds_filter.state IS NULL OR sds_filter.state IN ('probe','engaged')) " +
-		"AND (sds_filter.last_mailed_at IS NULL OR sds_filter.last_mailed_at < NOW() - INTERVAL '20 hours')"
+		"AND (sds_filter.last_mailed_at IS NULL OR sds_filter.last_mailed_at < NOW() - INTERVAL '20 hours')" +
+		gapWhere
 	orderBy := fmt.Sprintf(
 		"ORDER BY %s.cross_engaged DESC NULLS LAST, "+
 			"CASE COALESCE(sds_filter.state, 'probe') WHEN 'engaged' THEN 1 WHEN 'probe' THEN 2 ELSE 3 END ASC, "+
@@ -121,10 +149,10 @@ func buildSDSEligibilityClause(sendingDomain string, subscriberAlias string, bas
 // retained — total counters and warmup_status are intentionally absent
 // because the new state column already encodes the relevant signal.
 type sdsRow struct {
-	state         string
-	lastMailedAt  sql.NullTime
-	lastOpenAt    sql.NullTime
-	lastClickAt   sql.NullTime
+	state        string
+	lastMailedAt sql.NullTime
+	lastOpenAt   sql.NullTime
+	lastClickAt  sql.NullTime
 }
 
 // loadSDSStateForDomain bulk-loads the SDS state map for one sending

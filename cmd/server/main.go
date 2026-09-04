@@ -3117,6 +3117,29 @@ var dripSupplyMigrations = []struct {
 	// the sibling table omits it": verified 2026-09-03 against prod —
 	// neither partner_clean_queue nor partner_datasets carries an
 	// organization_id column, and lane/source subjects are their keys.
+	// Per-(sending domain × ISP) minimum gap between sends to the SAME
+	// recipient. Read by loadISPTouchPolicy (internal/api/isp_touch_policy.go)
+	// once per planPMTAAudience. sending_domain '*' is the estate default; an
+	// exact-domain row overrides it for that ISP. No row = no cap.
+	// Operator 2026-09-04: Gmail was taking ~5 sends/recipient/day from one
+	// domain and answering with 550-5.7.1 unsolicited-mail rejections.
+	// 20h ≈ 1/day · 11h ≈ 2/day · 7h ≈ 3/day · DELETE the row for no cap.
+	{"gmail_touch_policy_table", `CREATE TABLE IF NOT EXISTS mailing_isp_touch_policy (
+		sending_domain TEXT NOT NULL,
+		isp            TEXT NOT NULL,
+		min_gap_hours  INT  NOT NULL CHECK (min_gap_hours >= 0),
+		notes          TEXT NOT NULL DEFAULT '',
+		updated_by     TEXT NOT NULL DEFAULT '',
+		updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (sending_domain, isp)
+	)`},
+	{"gmail_touch_policy_seed", `INSERT INTO mailing_isp_touch_policy
+		(sending_domain, isp, min_gap_hours, notes, updated_by)
+		SELECT '*', 'gmail', 20,
+		       'operator 2026-09-04: one message per recipient per day for Gmail only. Measured 5.0 sends/recipient/day, 550-5.7.1 unsolicited-mail rejections (quizfiesta 10.2% delivery vs historythinking 100%).',
+		       'req-gmail-touch-policy'
+		WHERE NOT EXISTS (SELECT 1 FROM mailing_isp_touch_policy WHERE sending_domain='*' AND isp='gmail')`},
+
 	{"req118_create_drip_domain_contracts", `CREATE TABLE IF NOT EXISTS drip_domain_contracts (
 		id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		sending_domain      TEXT NOT NULL,                       -- subject, e.g. 'em.discountblog.com'

@@ -670,6 +670,16 @@ func planPMTAAudience(
 	planStart := time.Now()
 	log.Printf("[PlanAudience] starting for campaign %s (%d inclusion lists, %d ISP plans)", input.CampaignID, len(input.InclusionLists), len(normalized.Plans))
 
+	// Per-(sending domain × ISP) touch spacing, loaded ONCE per plan
+	// (isp_touch_policy.go). Empty = no cap, which is the pre-policy
+	// behaviour. Logged so a day's plan says on its face which ISPs were
+	// spaced and by how much.
+	touchPolicy := loadISPTouchPolicy(ctx, db, input.SendingDomain)
+	if len(touchPolicy) > 0 {
+		log.Printf("[PlanAudience] touch policy for %s: %v (min hours between sends to the same recipient)",
+			input.SendingDomain, map[string]int(touchPolicy))
+	}
+
 	// Resolve offer ID: explicit field takes precedence, otherwise look up from the campaign record
 	offerID := input.OfferID
 	if offerID == "" {
@@ -1075,7 +1085,7 @@ func planPMTAAudience(
 		// because they call planPMTAAudience with SendingDomain unset).
 		var args []any
 		args = append(args, listID)
-		sdsCl := buildSDSEligibilityClause(input.SendingDomain, "s", len(args))
+		sdsCl := buildSDSEligibilityClause(input.SendingDomain, "s", len(args), touchPolicy)
 		args = append(args, sdsCl.BindArgs...)
 		query := `SELECT s.id::text, s.email FROM mailing_subscribers s ` +
 			sdsCl.Join +
