@@ -1699,7 +1699,7 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	if err != nil {
 		_ = alloc.Release(ctx, "claim_failed")
 		if errors.Is(err, dripsupply.ErrNoPositiveGrant) {
-			po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeZero, dripsupply.SkipNoPositiveGrant, perISPCaps)
+			po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeZero, alloc.ZeroGrantReason(dripsupply.SkipNoPositiveGrant), perISPCaps)
 			return nil
 		}
 		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "claim_records", brand, perISPCaps, 0, "")

@@ -224,7 +224,7 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 		if errors.Is(err, dripsupply.ErrNoPositiveGrant) {
 			// Every enforced ISP granted 0 — the contract is spent for this
 			// (domain, aol, lane) this interval. A zero, not a failure.
-			po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeZero, dripsupply.SkipNoPositiveGrant, brand, perISPCaps, 0, "")
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeZero, alloc.ZeroGrantReason(dripsupply.SkipNoPositiveGrant), brand, perISPCaps, 0, "")
 			return nil
 		}
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "claim_records", brand, perISPCaps, 0, "")

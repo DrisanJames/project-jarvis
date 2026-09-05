@@ -631,9 +631,13 @@ type Allocation struct {
 	ID       uuid.UUID
 	Caps     map[string]int
 
-	m       *Mediator
-	perISP  map[string]uuid.UUID
-	grants  map[string]int
+	m      *Mediator
+	perISP map[string]uuid.UUID
+	grants map[string]int
+	// reasons is the per-ISP binding reason, kept so a wave that got no
+	// positive grant can name WHICH constraint bound. Populated for enforced
+	// ISPs only; the shadow branch never reaches it.
+	reasons map[string]string
 	settled bool
 	mu      sync.Mutex
 }
@@ -654,6 +658,57 @@ func (a *Allocation) AllocationID() uuid.UUID {
 		return uuid.Nil
 	}
 	return a.ID
+}
+
+// ZeroGrantReason names the constraint that actually bound when every per-ISP
+// grant came back zero, composed as "<base>:<reason>" — the colon idiom the
+// package already uses for "governor:<name>".
+//
+// Why this exists. On 2026-09-05 the estate mailed nothing for 11h42m and the
+// outcome rows said no_positive_grant, which is ALSO what a healthy lane says
+// when its token bucket is simply spent for the interval. The live ledger
+// recorded 44,658 grants denied for no_lane_balance that day; drip_tick_outcomes
+// contained that string zero times, ever. The reason was known at Reserve and
+// then discarded one frame later. So the cause of the outage was in the
+// database the whole time under a name that could not be searched for.
+//
+// It reports the reason that bound the MOST zero-granted ISPs rather than the
+// first one seen: a wave typically reserves several ISPs, and first-wins would
+// let one incidental supply=0 lane mask a no_lane_balance affecting every other
+// ISP on the domain. Ties break on the reason name so two instances replaying
+// the same wave log the same string. ReasonRequested is excluded — "nothing
+// constrained below demand" and a zero grant cannot both be true, and letting it
+// win would rename a real constraint to a non-event.
+//
+// Returns base unchanged when there is nothing to add, so the caller can pass
+// the result straight through. Nil-receiver safe.
+func (a *Allocation) ZeroGrantReason(base string) string {
+	if a == nil {
+		return base
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	counts := make(map[string]int, len(a.reasons))
+	for isp, granted := range a.grants {
+		if granted > 0 {
+			continue
+		}
+		r := a.reasons[isp]
+		if r == "" || r == ReasonRequested || r == base {
+			continue
+		}
+		counts[r]++
+	}
+	best, bestN := "", 0
+	for r, n := range counts {
+		if n > bestN || (n == bestN && r < best) {
+			best, bestN = r, n
+		}
+	}
+	if best == "" {
+		return base
+	}
+	return base + ":" + best
 }
 
 // ShouldSkip reports a fail-closed wave (no contract, outside window, timeout).
@@ -747,11 +802,12 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 	}
 
 	alloc := &Allocation{
-		Mode:   mode,
-		m:      m,
-		perISP: map[string]uuid.UUID{},
-		grants: map[string]int{},
-		Caps:   map[string]int{},
+		Mode:    mode,
+		m:       m,
+		perISP:  map[string]uuid.UUID{},
+		grants:  map[string]int{},
+		reasons: map[string]string{},
+		Caps:    map[string]int{},
 	}
 
 	isps := append([]string(nil), req.ISPs...)
@@ -798,6 +854,7 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 		alloc.Enforced = true
 		alloc.Caps[isp] = res.Granted
 		alloc.grants[isp] = res.Granted
+		alloc.reasons[isp] = res.BindingReason
 		if res.Granted > 0 {
 			alloc.perISP[isp] = res.AllocationID
 		}

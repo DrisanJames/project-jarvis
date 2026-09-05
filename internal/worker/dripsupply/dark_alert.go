@@ -49,6 +49,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ignite/sparkpost-monitor/internal/notify"
 )
@@ -90,11 +91,27 @@ var contractDenialReasons = map[string]bool{
 	ReasonNoLaneBalance: true, // no drip_lane_balance row for lane×ISP
 }
 
-// isContractDenialReason tokenises rather than compares whole strings because
-// Outcome folds the brand into the reason ("no_contract brand=db") and some
-// callers pass the folded form. Tokenising classifies both identically.
+// isContractDenialReason tokenises rather than compares whole strings, on BOTH
+// separators the package composes reasons with:
+//
+//	whitespace — Outcome folds the brand in ("no_contract brand=db")
+//	colon      — a qualified reason ("governor:<name>",
+//	             "no_positive_grant:no_lane_balance" from ZeroGrantReason)
+//
+// The colon half is load-bearing, not defensive. A wave whose every per-ISP
+// grant is zero reports no_positive_grant, and ZeroGrantReason appends the
+// constraint that actually bound. no_lane_balance arrives EXCLUSIVELY in that
+// composed form — a missing lane balance produces a zero grant, never a skip —
+// so a whitespace-only tokeniser would classify the single largest cause of the
+// 2026-09-05 outage (44,658 denied grants) as ordinary pacing and stay silent
+// through the whole thing. Splitting on ':' is what connects the two halves.
+//
+// Qualifying a reason can only ADD a token, so this cannot reclassify anything
+// that was already benign: "governor:<name>" still matches nothing.
 func isContractDenialReason(reason string) bool {
-	for _, tok := range strings.Fields(reason) {
+	for _, tok := range strings.FieldsFunc(reason, func(r rune) bool {
+		return r == ':' || unicode.IsSpace(r)
+	}) {
 		if contractDenialReasons[tok] {
 			return true
 		}
