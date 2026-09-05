@@ -359,6 +359,11 @@ type Mediator struct {
 	// Cross-tick state.
 	plannedDay string         // Denver dayKey this process has confirmed a frozen plan for
 	zeroStreak map[string]int // "lane|pass" -> consecutive zero/failed outcomes
+	// darkStreak is zeroStreak's opposite number: "lane|pass" -> consecutive
+	// CONTRACT-DENIED outcomes. It is a separate counter, not an extension of
+	// zeroStreak, because the two answer different questions with different
+	// remedies — see dark_alert.go's header and trackContractDark.
+	darkStreak map[string]int
 	lastAlert  map[string]time.Time
 
 	plannerWarnOnce sync.Once
@@ -408,6 +413,7 @@ func NewMediator(db *sql.DB, svc *Service, cfg MediatorConfig) *Mediator {
 		cfg:        cfg,
 		refilled:   map[string]bool{},
 		zeroStreak: map[string]int{},
+		darkStreak: map[string]int{},
 		lastAlert:  map[string]time.Time{},
 	}
 	if len(cfg.ContractKey) > 0 {
@@ -1124,6 +1130,10 @@ func (m *Mediator) Outcome(ctx context.Context, r OutcomeRow) {
 		r.Outcome = OutcomeSkipped
 	}
 	reason := strings.TrimSpace(r.Reason)
+	// Kept before the brand is folded in: dark_alert.go classifies on the raw
+	// reason so the operator-facing alert body names the cause, not "no_contract
+	// brand=db".
+	rawReason := reason
 	if b := strings.TrimSpace(r.Brand); b != "" {
 		if reason == "" {
 			reason = "brand=" + b
@@ -1150,6 +1160,7 @@ func (m *Mediator) Outcome(ctx context.Context, r OutcomeRow) {
 		return
 	}
 	m.trackStreak(ctx, lane, pass, r.Outcome, reason)
+	m.trackContractDark(ctx, lane, pass, r.Outcome, rawReason)
 }
 
 // trackStreak implements the §6 "two consecutive zero/failed ticks with demand"
