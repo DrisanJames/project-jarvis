@@ -984,11 +984,19 @@ func main() {
 				log.Printf("[DripSupply] %v — supply controller enforces no cell", ctlCanaryErr)
 				ctlCanary = nil
 			}
+			// REQ-118 D3 (QA 2026-09-04): the SECOND governor registration site.
+			// The mediator's roster is built in the SetPartnerDripStarter closure
+			// above and is not in scope here, so this one was left as
+			// ThrottleGovernor alone — meaning the §5.5 gate that stops us BUYING
+			// data for a lane governed to zero could not see a gmail hold or an
+			// exhausted SES quota. Same roster as the mediator, same kill switch.
+			ctlGovernors := worker.DripSupplyGovernors(mailingDB, "", sesAccountQuotaReader(ctx, cfg.SES))
+			log.Printf("[DripSupply] supply-controller governors wired: %s", strings.Join(worker.DripSupplyGovernorNames(ctlGovernors), ", "))
 			supplyWorker := dripsupply.NewSupplyWorker(mailingDB, redisClient, dripsupply.SupplyControllerConfig{
 				Mode:           ctlMode,
 				Canary:         ctlCanary,
 				Yield:          supplyYield,
-				Governors:      dripsupply.ThrottleGovernor{DB: mailingDB},
+				Governors:      ctlGovernors,
 				AlertsDisabled: os.Getenv("DRIP_SUPPLY_ALERTS_DISABLED") == "1",
 				Notifier:       notify.SlackChannelFromEnv("SLACK_DRIP_SUPPLY_CHANNEL", "#jarvis"),
 			})
