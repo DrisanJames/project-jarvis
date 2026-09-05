@@ -1581,6 +1581,10 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	if err != nil {
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
+	// REQ-118 D1: set when the intro-budget chain zeroed an otherwise-funded
+	// wave AND the veto was deferred to the mediator (see below).
+	var budgetVeto bool
+	var budgetVetoCaps map[string]int
 	if governedBrands[strings.ToLower(strings.TrimSpace(brand))] {
 		// Property governor (Kumo properties): clamp each ISP's wave cap to the
 		// property's remaining (property,vertical,ISP) daily budget, force gmail=0,
@@ -1632,16 +1636,21 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 		// board spends it first, allowed drips get the remainder, rate-limited.
 		perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, "welcome", perISPCaps)
 		if capsAnyPositive(preBudget) && !capsAnyPositive(perISPCaps) {
-			if err := po.advanceBrandRotation(ctx, pc.stateKey, newIdx); err != nil {
-				log.Printf("[PartnerDripOrchestrator] advance rotation past budget-exhausted brand=%s vertical=%s: %v", brand, v.vertical, err)
-			} else {
-				log.Printf("[PartnerDripOrchestrator] brand=%s budget-exhausted for vertical=%s — skipped, rotation advanced", brand, v.vertical)
+			// REQ-118 D1: this veto is a side effect of layer 7
+			// (applyBrandIntroBudgets), which the mediator BYPASSES. Bypassing
+			// its VALUE while honouring its VETO let a held
+			// partner_drip_brand_budgets row kill a wave the contract funded —
+			// 24 rows are on hold in prod, several written at runtime by the
+			// cap-breach detector. So when the mediator will own this wave the
+			// veto is DEFERRED to after grantWaveCapacity, and runs there only
+			// if the mediator declined the cell. When it will not (MODE=off,
+			// shadow, kill switch, nil mediator) the abort happens right here,
+			// byte-identical to pre-REQ-118 — that is the rollback path.
+			if !po.introVetoDeferredToMediator() {
+				po.skipBudgetExhausted(ctx, v, pc, brand, newIdx, preBudget)
+				return nil
 			}
-			// REQ-118 WP5: the skip that already advanced the pointer now also
-			// leaves a reason behind. This is the shape the zero-claim path
-			// below was missing (REQ-116).
-			po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeSkipped, dripsupply.SkipBudgetExhausted, brand, preBudget, 0, "")
-			return nil
+			budgetVeto, budgetVetoCaps = true, preBudget
 		}
 	}
 	// Apple-banned verticals (operator 2026-06-16): Fidelity term-life is HM08-rejected by Apple
@@ -1672,6 +1681,16 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	}
 	if alloc.ShouldSkip() {
 		po.zeroWave(ctx, v, pc, brand, newIdx, dripsupply.OutcomeSkipped, alloc.SkipReason(), perISPCaps)
+		return nil
+	}
+	if budgetVeto && alloc.EnforcedCaps() == nil {
+		// The mediator did NOT take ownership of this cell (a non-canary cell,
+		// a fenced brand, an unresolvable domain). The deferred layer-7 veto
+		// now runs exactly as it did before — same reason, same rotation
+		// advance, same caps_seen. Release is a no-op on an unenforced
+		// allocation (dripsupply/executor.go Release: `!a.Enforced`).
+		_ = alloc.Release(ctx, dripsupply.SkipBudgetExhausted)
+		po.skipBudgetExhausted(ctx, v, pc, brand, newIdx, budgetVetoCaps)
 		return nil
 	}
 	perISPCaps = effCaps
@@ -5656,6 +5675,52 @@ func (po *PartnerDripOrchestrator) zeroWave(ctx context.Context, v verticalState
 	log.Printf("[PartnerDripOrchestrator] brand=%s produced nothing for vertical=%s (%s) — rotation advanced", brand, v.vertical, reason)
 }
 
+// skipBudgetExhausted is the layer-7 veto's whole effect: advance the brand
+// rotation past the budget-exhausted brand and record the reason. Extracted so
+// the pre-mediator veto and the deferred (post-grant) veto are literally the
+// same code, not two copies that can drift.
+//
+// The advance is load-bearing: updateDripState only runs after a deploy, so
+// without it a budget-exhausted brand is re-picked every tick and pins the
+// vertical's rotation for the rest of the day.
+func (po *PartnerDripOrchestrator) skipBudgetExhausted(ctx context.Context, v verticalState, pc passContext, brand string, nextIdx int, preBudget map[string]int) {
+	if err := po.advanceBrandRotation(ctx, pc.stateKey, nextIdx); err != nil {
+		log.Printf("[PartnerDripOrchestrator] advance rotation past budget-exhausted brand=%s vertical=%s: %v", brand, v.vertical, err)
+	} else {
+		log.Printf("[PartnerDripOrchestrator] brand=%s budget-exhausted for vertical=%s — skipped, rotation advanced", brand, v.vertical)
+	}
+	// REQ-118 WP5: the skip that already advanced the pointer now also
+	// leaves a reason behind. This is the shape the zero-claim path
+	// below was missing (REQ-116).
+	po.tickOutcome(ctx, v.vertical, passLabel(pc), dripsupply.OutcomeSkipped, dripsupply.SkipBudgetExhausted, brand, preBudget, 0, "")
+}
+
+// introVetoAlwaysFires is the D1 kill switch. PARTNER_DRIP_INTRO_VETO_ALWAYS=1
+// restores the pre-fix behaviour — the layer-7 veto aborts the wave before the
+// mediator is consulted, at every mode — with no deploy.
+func introVetoAlwaysFires() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_INTRO_VETO_ALWAYS"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// introVetoDeferredToMediator reports whether the layer-7 (intro budget) veto
+// must WAIT for the mediator's answer instead of aborting the wave now.
+//
+// Enforcing() is canary|on. Under canary the mediator answers per cell, and a
+// cell it does not own comes back with EnforcedCaps() == nil — at which point
+// the deferred veto runs and the outcome is identical to today. Under
+// off|shadow this returns false, so Grant is never even reached on a vetoed
+// wave and the shadow ledger sees exactly what it sees today.
+func (po *PartnerDripOrchestrator) introVetoDeferredToMediator() bool {
+	if introVetoAlwaysFires() {
+		return false
+	}
+	return po.mediator.Enforcing()
+}
+
 // keptCapLayers builds the cap map from ONLY the layers §2.7 keeps when the
 // mediator enforces a cell:
 //
@@ -5672,9 +5737,27 @@ func (po *PartnerDripOrchestrator) zeroWave(ctx context.Context, v verticalState
 // applyNewRecordDailyBudget, applyFollowupDailyISPBudget, applyBrandIntroBudgets,
 // applyDatasetISPCapOverrides.
 func (po *PartnerDripOrchestrator) keptCapLayers(ctx context.Context, v verticalState, brand, phase string, yahooNewsletter bool) map[string]int {
+	caps, _ := po.keptCapLayersWithCeiling(ctx, v, brand, phase, yahooNewsletter)
+	return caps
+}
+
+// keptCapLayersWithCeiling returns the kept map AND, separately, the domain
+// governor's own numeric ceiling per ISP (nil when it has no opinion).
+//
+// The split matters because the two halves of `kept` mean different things on
+// the enforced branch:
+//
+//   - basePerISPCaps' VALUES are NOT a ceiling there (the token bucket paces
+//     the wave); only its keys and its zeroes bind. Min()ing a grant against
+//     the kept map as a whole would silently re-impose exactly the legacy
+//     per-wave caps REQ-118 replaces.
+//   - the domain governor IS a governor: non-negotiable 4 says it may only
+//     reduce, never raise. Its ceiling therefore has to travel separately so
+//     grantWaveCapacity can min() against it and nothing else.
+func (po *PartnerDripOrchestrator) keptCapLayersWithCeiling(ctx context.Context, v verticalState, brand, phase string, yahooNewsletter bool) (map[string]int, map[string]int) {
 	caps := po.basePerISPCaps()
 	caps = po.applyISPBrandRouting(brand, caps)
-	caps = po.applyDomainGovernor(ctx, brand, v.vertical, phase, caps)
+	caps, govCeil := po.applyDomainGovernorWithCeiling(ctx, brand, v.vertical, phase, caps)
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		caps["apple"] = 0
 	}
@@ -5685,7 +5768,7 @@ func (po *PartnerDripOrchestrator) keptCapLayers(ctx context.Context, v vertical
 	} else {
 		caps = applyYahooNewsletterFollowupCaps(caps, po.cfg.YahooNewsletterOnlyDrip, yahooNewsletter)
 	}
-	return caps
+	return caps, govCeil
 }
 
 // grantWaveCapacity asks the mediator for this wave's capacity and returns the
@@ -5722,7 +5805,7 @@ func (po *PartnerDripOrchestrator) grantWaveCapacity(
 	if touchClass == dripsupply.TouchClassFollowup {
 		phase = "followup"
 	}
-	kept := po.keptCapLayers(ctx, v, brand, phase, yahooNewsletter)
+	kept, govCeil := po.keptCapLayersWithCeiling(ctx, v, brand, phase, yahooNewsletter)
 	isps := make([]string, 0, len(kept))
 	for isp, c := range kept {
 		if c > 0 {
@@ -5756,21 +5839,55 @@ func (po *PartnerDripOrchestrator) grantWaveCapacity(
 		return alloc, chainCaps, nil
 	}
 
+	return alloc, enforcedEffectiveCaps(chainCaps, kept, govCeil, granted), nil
+}
+
+// enforcedEffectiveCaps merges a reservation grant into the chain's caps.
+//
+//	kept    the §2.7 kept layers. ONLY its keys and its zeroes bind: an ISP the
+//	        kept layers zeroed stays zero even if the reservation granted for it.
+//	        Its positive VALUES are not a ceiling — they are the legacy per-wave
+//	        caps the contract replaces.
+//	govCeil the domain governor's own ceiling, which IS a ceiling
+//	        (non-negotiable 4: a governor may only reduce, never raise).
+//	granted the reservation, per ISP.
+func enforcedEffectiveCaps(chainCaps, kept, govCeil, granted map[string]int) map[string]int {
 	eff := cloneISPCapMap(chainCaps)
-	// The kept layers still bind on the enforced branch: an ISP they zeroed
-	// stays zero even if a reservation granted for it.
 	for isp := range eff {
 		if kept[isp] <= 0 {
 			eff[isp] = 0
 		}
 	}
+	ceilOff := governorCeilingDisabled()
 	for isp, g := range granted {
 		if kept[isp] <= 0 {
 			continue
 		}
+		// REQ-118 D2 / non-negotiable 4: a governor may only REDUCE. Before
+		// this, `eff[isp] = g` threw the number away and only a governor ZERO
+		// bound — a lane_window_cap of 50 against a grant of 500 shipped 500.
+		// The min() is against govCeil ONLY, never against `kept` or
+		// `chainCaps`: their positive values are the legacy per-wave and
+		// daily-budget caps the contract is replacing, and min()ing against
+		// them would re-impose exactly what MODE=on exists to remove.
+		if c, ok := govCeil[isp]; ok && !ceilOff && c < g {
+			g = c
+		}
 		eff[isp] = g
 	}
-	return alloc, eff, nil
+	return eff
+}
+
+// governorCeilingDisabled is the D2 kill switch.
+// PARTNER_DRIP_GOVERNOR_CEILING_DISABLED=1 restores the pre-fix behaviour (a
+// governor's numeric ceiling is discarded on the enforced branch; only its zero
+// binds) with no deploy.
+func governorCeilingDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PARTNER_DRIP_GOVERNOR_CEILING_DISABLED"))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
 }
 
 // waveKey is the per-wave half of the reservation idempotency key

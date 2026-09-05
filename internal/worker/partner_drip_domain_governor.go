@@ -382,20 +382,49 @@ func (po *PartnerDripOrchestrator) recordDomainGovernorDecision(ctx context.Cont
 	}
 }
 
+// domainGovernorUnbounded is the sentinel cap handed to domainGovernorDecide
+// when the caller wants the governor's OWN ceiling instead of
+// min(chain cap, governor). domainGovernorDecide starts at capIn and only ever
+// reduces (take() at :254), so decide(unbounded) == the pure governor ceiling,
+// and decide(capIn) == min(capIn, that ceiling). Large enough that no real
+// cold_cap/daily_cap/lane cap can reach it, small enough not to overflow when
+// a spend is subtracted from it.
+const domainGovernorUnbounded = 1 << 30
+
 // applyDomainGovernor clamps a wave's per-ISP caps to the domain's recovery
 // ceiling. Shadow mode logs the decision and returns caps unchanged.
 func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, brand, vertical, pass string, caps map[string]int) map[string]int {
+	out, _ := po.applyDomainGovernorWithCeiling(ctx, brand, vertical, pass, caps)
+	return out
+}
+
+// applyDomainGovernorWithCeiling is applyDomainGovernor plus the second thing
+// the REQ-118 enforced branch needs: the governor's ceiling as a NUMBER.
+//
+// Why a second return value instead of reading the clamped map: on the enforced
+// branch the chain's cap VALUES are deliberately not a ceiling (the token
+// bucket is the pacing authority), so `out` — which is min(chain, governor) —
+// cannot tell "the governor allows 250" from "the chain happened to ask for
+// 250". The ceiling map carries ONLY what the governor itself would allow, and
+// only for rows in `enforce` mode; a shadow row clamps nothing here exactly as
+// it clamps nothing in `out`. Absent key = this governor has no opinion.
+//
+// It costs no extra database work: the pure ceiling is a second call to the
+// pure domainGovernorDecide against the SAME spend read, and the decision
+// ledger still records the real chain cap_in, so shadow sizing is unchanged.
+func (po *PartnerDripOrchestrator) applyDomainGovernorWithCeiling(ctx context.Context, brand, vertical, pass string, caps map[string]int) (map[string]int, map[string]int) {
 	if domainGovernorDisabled() {
-		return caps
+		return caps, nil
 	}
 	po.domainGov.mu.RLock()
 	ready := po.domainGov.ready
 	rows := po.domainGov.rows[strings.ToLower(strings.TrimSpace(brand))]
 	po.domainGov.mu.RUnlock()
 	if !ready || len(rows) == 0 {
-		return caps
+		return caps, nil
 	}
 	out := cloneISPCapMap(caps)
+	ceil := map[string]int{}
 	for isp, capIn := range caps {
 		row, ok := rows[strings.ToLower(strings.TrimSpace(isp))]
 		if !ok || capIn <= 0 {
@@ -409,6 +438,9 @@ func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, bran
 			if row.enforce {
 				out[isp] = 0
 				capOut = 0
+				// Fail-closed applies to the enforced branch too, or a spend
+				// read that times out would hand the contract an unbounded lane.
+				ceil[isp] = 0
 			}
 			po.recordDomainGovernorDecision(ctx, row, vertical, pass, capIn, capOut,
 				"spend read failed: "+err.Error(), nil)
@@ -427,9 +459,15 @@ func (po *PartnerDripOrchestrator) applyDomainGovernor(ctx context.Context, bran
 		po.recordDomainGovernorDecision(ctx, row, vertical, pass, capIn, allowed, why, &sp)
 		if row.enforce {
 			out[isp] = allowed
+			if pure, _ := domainGovernorDecide(row, vertical, domainGovernorUnbounded, sp); pure < domainGovernorUnbounded {
+				ceil[isp] = pure
+			}
 		}
 	}
-	return out
+	if len(ceil) == 0 {
+		return out, nil
+	}
+	return out, ceil
 }
 
 // domainGovernorWindow is exported for tests/diagnostics: the Denver day start.

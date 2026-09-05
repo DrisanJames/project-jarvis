@@ -386,7 +386,18 @@ func main() {
 				if supplyKeyErr != nil && supplyMode != dripsupply.ModeOff {
 					log.Printf("[DripSupply] %s: %v — every drip lane will fail closed", contractmeta.KeyEnvVar, supplyKeyErr)
 				}
-				supplyGovernors := dripsupply.ThrottleGovernor{DB: db}
+				// REQ-118 D3: the FULL governor stack. Until now this line
+				// was `dripsupply.ThrottleGovernor{DB: db}` alone, so
+				// GmailHoldGovernor and SESQuotaGovernor — both implemented and
+				// unit-tested in dripsupply/bucket.go — were registered nowhere
+				// and the reservation path had no SES daily-quota ceiling at
+				// all. Roster + kill switch live in
+				// internal/worker/dripsupply_governors.go
+				// (DRIP_SUPPLY_GOVERNORS_OFF); HealthBandGovernor is
+				// deliberately absent (it is not a GovernorReader — RefillDomain
+				// applies the band from the contract it already holds).
+				supplyGovernors := worker.DripSupplyGovernors(db, "", sesAccountQuotaReader(ctx, cfg.SES))
+				log.Printf("[DripSupply] governors wired: %s", strings.Join(worker.DripSupplyGovernorNames(supplyGovernors), ", "))
 				// WP6's daily planner, built once with its dependencies. The
 				// stub dripsupply.RunDailyPlanner injects none of these, so the
 				// plan would otherwise rank on operator tier alone and size
