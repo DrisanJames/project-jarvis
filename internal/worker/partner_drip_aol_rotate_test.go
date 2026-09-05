@@ -82,7 +82,9 @@ func TestAOLRotatedRunsDomainGovernorInChainOrder(t *testing.T) {
 	}
 	src := string(b)
 	intro := strings.Index(src, "perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)")
-	gov := strings.Index(src, `po.applyDomainGovernor(ctx, brand, v.vertical, "aol_rotate", perISPCaps)`)
+	// The phase label is the named constant now (phaseAOLRotate == "aol_rotate"),
+	// so this guard follows the symbol rather than the literal.
+	gov := strings.Index(src, `po.applyDomainGovernor(ctx, brand, v.vertical, phaseAOLRotate, perISPCaps)`)
 	keep := strings.Index(src, `perISPCaps = keepOnlyISPCaps(perISPCaps, "aol")`)
 	if gov < 0 {
 		t.Fatal("processAOLRotated does not apply the domain governor — the gated lanes' AOL volume is ungoverned")

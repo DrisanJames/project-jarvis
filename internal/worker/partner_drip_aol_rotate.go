@@ -28,8 +28,10 @@ package worker
 //     every rotated brand — seeded from the brand-agnostic Insurance Savings
 //     set (DB rows, no deploy).
 //
-// REQ-118: this pass is NOT metered against drip_domain_contracts — see the
-// fence block below for why, and DRIP_SUPPLY_AOL_ROTATE_FENCE=1 to stop it.
+// REQ-118: this pass IS metered against drip_domain_contracts — it reserves
+// through grantWaveCapacity under phase phaseAOLRotate and settles with
+// commitWave, like every other spender. DRIP_SUPPLY_AOL_ROTATE_FENCE=1 still
+// stops it outright; see the fence block below.
 //
 // Kill switch: PARTNER_DRIP_AOL_ROTATE_DISABLED=1 restores roster-only AOL.
 // Brand set override: PARTNER_DRIP_AOL_ROTATE_BRANDS="db,ht,..." (blank falls
@@ -106,32 +108,35 @@ func aolRotationActive(vertical string) bool {
 	return false
 }
 
-// ── REQ-118 aol_rotate fence ────────────────────────────────────────────────
+// ── REQ-118 aol_rotate: the fence, and why it is no longer the only control ──
 //
-// WHY THIS IS A FENCE AND NOT A RESERVATION.
+// HISTORY (the state this fence was shipped into). This pass used to be an
+// UNMETERED second spender: it ran the legacy cap chain and claimed directly,
+// so it spent zero contract tokens while drip_domain_contracts funded AOL.
+// Because the roster welcome wave zeroes its own AOL cap while
+// aolRotationActive (grep `aolRotationActive` in partner_drip_orchestrator.go's
+// welcome pass), this is the ONLY AOL intro path on the gated-prefix lanes —
+// so every governed AOL introduction was ungoverned by the contract.
 //
-// The REQ-118 contract system is the sole governance for drip volume, and this
-// pass is an UNMETERED second spender: it runs the legacy cap chain and claims
-// directly (claimRecordsByISPCaps below), so it spends zero contract tokens
-// while drip_domain_contracts fund AOL. Because the roster welcome wave zeroes
-// its own AOL cap while aolRotationActive (partner_drip_orchestrator.go:1656),
-// this is the ONLY AOL intro path on the gated-prefix lanes.
-//
-// Routing it through the shared mediator helper is NOT possible from this file.
-// grantWaveCapacity derives its phase from the touch class — anything that is
-// not TouchClassFollowup is phase "welcome" (partner_drip_orchestrator.go:5721)
-// — and keptCapLayers zeroes AOL for phase "welcome" whenever
-// aolRotationActive (:5681-5683). For a gated vertical that means the shared
-// helper would (a) request a grant for every ISP EXCEPT aol and (b) write those
+// It could not be routed through the shared mediator helper from this file:
+// grantWaveCapacity DERIVED its phase from the touch class (anything not
+// TouchClassFollowup was phase "welcome"), and the kept layers zero AOL for
+// phase "welcome" whenever aolRotationActive. The shared helper would therefore
+// have (a) requested a grant for every ISP EXCEPT aol and (b) written those
 // non-AOL grants back into this pass's AOL-only cap map, turning an AOL-only
-// companion wave into a gmail/microsoft/... wave. Both are worse than the
-// unmetered spend. The one-line change that unblocks the real fix lives in a
-// file this change does not own; see the report.
+// companion wave into a gmail/microsoft/… wave.
 //
-// So the shipped control is the fresh-broadcast fence shape
-// (internal/api/fresh_broadcast_runner.go:823-829): env-gated, read at CALL
-// time, refusing BEFORE the first write, and defaulting to today's behaviour so
-// nothing changes until the operator sets the flag.
+// NOW: grantWaveCapacity takes the phase EXPLICITLY, and phaseAOLRotate is a
+// third phase whose kept layers keep AOL and keep NOTHING ELSE
+// (keptCapLayersWithCeiling, the `case phase == phaseAOLRotate` branch). The
+// widening failure mode above is structurally impossible — the grant ISP list
+// is derived from that map — so processAOLRotated reserves and commits like
+// every other spender.
+//
+// The fence STAYS, unchanged and still default-off. Metering does not replace
+// it: it is the operator's stop switch for this pass, in the fresh-broadcast
+// shape (internal/api/fresh_broadcast_runner.go, broadcastFenceEnabled) —
+// env-gated, read at CALL time, refusing BEFORE the first write.
 
 // errAOLRotateFenced is returned by processAOLRotated when the fence is armed.
 // The message names the switch and the replacement path so an operator reading
@@ -176,11 +181,14 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 	perISPCaps = po.applyBrandIntroBudgets(ctx, brand, perISPCaps)
 	// Per-sending-domain × ISP GLOBAL recovery cap (operator 2026-08-27), same
 	// chain position it holds in the welcome pass. Required here, not optional:
-	// partner_drip_orchestrator.go:1614 zeroes the roster wave's AOL cap while
+	// the welcome pass zeroes the roster wave's AOL cap while
 	// aolRotationActive(vertical) — true for every gated-prefix (internal
 	// insurance) lane — so this companion pass is the ONLY AOL path for those
-	// verticals. Without it every governed AOL send is ungoverned.
-	perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, "aol_rotate", perISPCaps)
+	// verticals. Without it every governed AOL send is ungoverned. (The governor
+	// runs a SECOND time inside the kept layers below, under the same
+	// phaseAOLRotate label; it is idempotent — a pure read + clamp — and there
+	// it supplies the ceiling the enforced branch min()s the grant against.)
+	perISPCaps = po.applyDomainGovernor(ctx, brand, v.vertical, phaseAOLRotate, perISPCaps)
 	perISPCaps = keepOnlyISPCaps(perISPCaps, "aol")
 	if !capsAnyPositive(perISPCaps) {
 		// Was silent. REQ-118 WP5: every tick leaves a reason behind, in every
@@ -190,12 +198,40 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 		return nil // brand exhausted/held for AOL this tick — next tick rotates on
 	}
 
-	claimed, err := po.claimRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, po.cfg.MaxWaveSize)
+	// ---- REQ-118: capacity mediation ---------------------------------------
+	// The last unmetered spender in the supply chain closes here. phaseAOLRotate
+	// is the third cap-chain phase: its kept layers keep AOL (which the roster
+	// wave surrendered) and keep nothing else, so the grant this asks for can
+	// never widen the companion wave into another lane. At ModeOff — and for a
+	// governed/warm-up brand, or a brand with no resolvable sending domain —
+	// grantWaveCapacity returns (nil, perISPCaps, nil) and everything below is
+	// byte-identical to the unmetered path.
+	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, dripsupply.PassAOLRotate,
+		phaseAOLRotate, dripsupply.TouchClassIntro, "", po.cfg.MaxWaveSize, perISPCaps, false)
+	if mErr != nil {
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "grant_capacity", brand, perISPCaps, 0, "")
+		return fmt.Errorf("aol_rotate grant_capacity: %w", mErr)
+	}
+	if alloc.ShouldSkip() {
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeSkipped, alloc.SkipReason(), brand, perISPCaps, 0, "")
+		return nil
+	}
+	perISPCaps = effCaps
+
+	claimed, err := po.claimWaveByCaps(ctx, v.vertical, brand, perISPCaps, po.cfg.MaxWaveSize, alloc)
 	if err != nil {
+		_ = alloc.Release(ctx, "claim_failed")
+		if errors.Is(err, dripsupply.ErrNoPositiveGrant) {
+			// Every enforced ISP granted 0 — the contract is spent for this
+			// (domain, aol, lane) this interval. A zero, not a failure.
+			po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeZero, dripsupply.SkipNoPositiveGrant, brand, perISPCaps, 0, "")
+			return nil
+		}
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "claim_records", brand, perISPCaps, 0, "")
 		return fmt.Errorf("aol_rotate claim: %w", err)
 	}
 	if len(claimed) == 0 {
+		_ = alloc.Release(ctx, dripsupply.ZeroNoRecordsClaimed)
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeZero, dripsupply.ZeroNoRecordsClaimed, brand, perISPCaps, 0, "")
 		return nil
 	}
@@ -212,6 +248,7 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 		log.Printf("[PartnerDripOrchestrator] aol_rotate deferred %d vertical=%s reasons=%v", len(deferred), v.vertical, reasons)
 	}
 	if len(keep) == 0 {
+		_ = alloc.Release(ctx, dripsupply.ZeroAllDeferred)
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeZero, dripsupply.ZeroAllDeferred, brand, perISPCaps, 0, "")
 		return nil
 	}
@@ -219,23 +256,27 @@ func (po *PartnerDripOrchestrator) processAOLRotated(ctx context.Context, v vert
 	creative, err := po.resolveCreative(ctx, v.vertical, brand)
 	if err != nil {
 		_ = po.releaseClaim(ctx, keep)
+		_ = alloc.Release(ctx, "resolve_creative_failed")
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "resolve_creative", brand, perISPCaps, 0, "")
 		return fmt.Errorf("aol_rotate resolve_creative vertical=%s brand=%s: %w", v.vertical, brand, err)
 	}
 	subscriberIDs, err := po.promoteToSubscribers(ctx, v, keep)
 	if err != nil {
 		_ = po.releaseClaim(ctx, keep)
+		_ = alloc.Release(ctx, "promote_failed")
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "promote_subscribers", brand, perISPCaps, 0, "")
 		return fmt.Errorf("aol_rotate promote: %w", err)
 	}
 	lastCampaignID, deployedCount := po.deployWaveGroups(ctx, v, brand, creative, keep, subscriberIDs, "")
 	if deployedCount == 0 {
+		_ = alloc.Release(ctx, "deploy_all_groups_failed")
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFailed, "deploy_all_groups_failed", brand, perISPCaps, 0, "")
 		return fmt.Errorf("aol_rotate: all wave groups failed vertical=%s brand=%s", v.vertical, brand)
 	}
-	// UNMETERED: no commitWave here, because no capacity was reserved. The
-	// `claimed` count on this row is the honest record of what this pass spent
-	// outside drip_domain_contracts until the grant path is unblocked.
+	// Settle the reservation against what actually shipped — the same commit
+	// every other spender makes. A no-op on an unenforced allocation
+	// (EnforcedCaps() == nil), which is what ModeOff hands back.
+	po.commitWave(ctx, alloc, keep, deployedCount, lastCampaignID)
 	po.tickOutcome(ctx, v.vertical, dripsupply.PassAOLRotate, dripsupply.OutcomeFired, "", brand, perISPCaps, deployedCount, lastCampaignID)
 	log.Printf("[PartnerDripOrchestrator] aol_rotate wave: vertical=%s brand=%s size=%d", v.vertical, brand, len(keep))
 	return nil

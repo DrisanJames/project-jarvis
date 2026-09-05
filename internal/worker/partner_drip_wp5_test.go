@@ -95,7 +95,7 @@ func TestWP5GoldenCapsUnchangedWithModeOff(t *testing.T) {
 
 	v := verticalState{vertical: vertical, datasetID: datasetID, readyCount: 5000}
 	alloc, eff, gErr := po.grantWaveCapacity(context.Background(), v, "db",
-		dripsupply.PassWelcome, dripsupply.TouchClassIntro, "", 500, caps, false)
+		dripsupply.PassWelcome, phaseWelcome, dripsupply.TouchClassIntro, "", 500, caps, false)
 	require.NoError(t, gErr)
 	assert.Nil(t, alloc, "MODE=off must return no allocation")
 	assert.Equal(t, wp5GoldenCaps, eff, "MODE=off must return the chain's caps unchanged")
@@ -119,7 +119,7 @@ func TestWP5NilMediatorIsModeOff(t *testing.T) {
 
 	caps := map[string]int{"yahoo": 8, "other": 40}
 	alloc, eff, gErr := po.grantWaveCapacity(context.Background(), verticalState{vertical: "l"}, "db",
-		dripsupply.PassWelcome, dripsupply.TouchClassIntro, "", 500, caps, false)
+		dripsupply.PassWelcome, phaseWelcome, dripsupply.TouchClassIntro, "", 500, caps, false)
 	require.NoError(t, gErr)
 	assert.Nil(t, alloc)
 	assert.Equal(t, caps, eff)

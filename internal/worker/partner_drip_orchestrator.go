@@ -1674,7 +1674,7 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	// (applyThroughputSafety, below) still apply — governors may only reduce.
 	// When it does not enforce (MODE=off, shadow, or a non-canary cell) the
 	// caps come back untouched and everything below is byte-identical to HEAD.
-	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, pass, dripsupply.TouchClassIntro, "", waveSize, perISPCaps, false)
+	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, pass, phaseWelcome, dripsupply.TouchClassIntro, "", waveSize, perISPCaps, false)
 	if mErr != nil {
 		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "grant_capacity", brand, perISPCaps, 0, "")
 		return fmt.Errorf("grant_capacity: %w", mErr)
@@ -5142,7 +5142,7 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	if yahooNewsletter {
 		waveSuffix = "fu-ynl"
 	}
-	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, dripsupply.PassFollowup, dripsupply.TouchClassFollowup, waveSuffix, hardCap, perISPCaps, yahooNewsletter)
+	alloc, effCaps, mErr := po.grantWaveCapacity(ctx, v, brand, dripsupply.PassFollowup, phaseFollowup, dripsupply.TouchClassFollowup, waveSuffix, hardCap, perISPCaps, yahooNewsletter)
 	if mErr != nil {
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "grant_capacity", brand, perISPCaps, 0, "")
 		return fmt.Errorf("grant_capacity: %w", mErr)
@@ -5721,6 +5721,41 @@ func (po *PartnerDripOrchestrator) introVetoDeferredToMediator() bool {
 	return po.mediator.Enforcing()
 }
 
+// Cap-chain PHASES. The phase names which pass is asking for capacity, and it
+// selects the phase-specific routing layers in keptCapLayersWithCeiling. It is
+// passed EXPLICITLY by each caller rather than derived from the touch class:
+// two different passes (the roster welcome wave and the AOL rotated companion
+// wave) both carry touch_class 'intro' and need OPPOSITE AOL routing, so a
+// derivation from the touch class cannot express both.
+const (
+	// phaseWelcome is the roster intro wave. Its AOL cap is zeroed on a lane
+	// where the rotated companion pass owns AOL (aolRotationActive).
+	phaseWelcome = "welcome"
+	// phaseFollowup is the follow-up pass; it carries the yahoo-newsletter
+	// follow-up routing.
+	phaseFollowup = "followup"
+	// phaseAOLRotate is the AOL rotated companion wave (processAOLRotated). It
+	// mails exactly the AOL that phaseWelcome gave up, so AOL must SURVIVE the
+	// kept layers here — and nothing else may, or a grant would widen an
+	// AOL-only companion wave into gmail/microsoft/…. It is an INTRO, not a
+	// follow-up, so the yahoo-newsletter follow-up caps do not apply.
+	// The string matches the label the pass already gives applyDomainGovernor.
+	phaseAOLRotate = "aol_rotate"
+)
+
+// positiveISPKeys is the grant ISP list: the ISPs a kept-cap map leaves
+// claimable. grantWaveCapacity asks the mediator for capacity on exactly these,
+// so whatever keptCapLayersWithCeiling zeroes can never be reserved for.
+func positiveISPKeys(caps map[string]int) []string {
+	isps := make([]string, 0, len(caps))
+	for isp, c := range caps {
+		if c > 0 {
+			isps = append(isps, isp)
+		}
+	}
+	return isps
+}
+
 // keptCapLayers builds the cap map from ONLY the layers §2.7 keeps when the
 // mediator enforces a cell:
 //
@@ -5761,11 +5796,26 @@ func (po *PartnerDripOrchestrator) keptCapLayersWithCeiling(ctx context.Context,
 	if appleBannedDripVerticals()[strings.ToLower(strings.TrimSpace(v.vertical))] {
 		caps["apple"] = 0
 	}
-	if phase == "welcome" {
+	// Phase-specific ROUTING. Three-way and explicit: the AOL rotated pass is
+	// neither a roster welcome (which surrenders AOL to it) nor a follow-up
+	// (which carries the yahoo-newsletter caps). Every branch above this point
+	// — ISP-brand routing, the domain governor and its ceiling, the apple ban —
+	// has already run and still binds on all three, so a governor may still
+	// reduce or zero AOL here, and MUST be able to (non-negotiable 4).
+	switch {
+	case phase == phaseAOLRotate:
+		// AOL-ONLY, structurally. Confining the kept map here rather than at
+		// the call site is what makes it IMPOSSIBLE for a grant to widen this
+		// companion wave into other lanes: grantWaveCapacity asks for capacity
+		// on this map's positive keys (positiveISPKeys), and
+		// enforcedEffectiveCaps zeroes every ISP this map does not keep. AOL
+		// itself is deliberately NOT zeroed — the roster wave gave it up.
+		caps = keepOnlyISPCaps(caps, "aol")
+	case phase == phaseWelcome:
 		if aolRotationActive(v.vertical) {
 			caps["aol"] = 0
 		}
-	} else {
+	default:
 		caps = applyYahooNewsletterFollowupCaps(caps, po.cfg.YahooNewsletterOnlyDrip, yahooNewsletter)
 	}
 	return caps, govCeil
@@ -5781,10 +5831,17 @@ func (po *PartnerDripOrchestrator) keptCapLayersWithCeiling(ctx context.Context,
 //   - the Kumo governed properties and the warm-up roster brands, which are OUT
 //     OF SCOPE by standing ruling (design §10: "the Kumo governed pass is
 //     untouched; it does not reserve") and are fenced here by their brand set.
+//
+// `phase` is passed by the caller (phaseWelcome / phaseFollowup /
+// phaseAOLRotate) and NOT derived from touchClass: the roster intro wave and
+// the AOL rotated companion wave are both touch_class 'intro' yet need opposite
+// AOL routing. It selects the phase-specific layers in keptCapLayersWithCeiling,
+// which in turn decides both the ISPs this asks for and the ISPs the returned
+// caps allow.
 func (po *PartnerDripOrchestrator) grantWaveCapacity(
 	ctx context.Context,
 	v verticalState,
-	brand, pass, touchClass, waveSuffix string,
+	brand, pass, phase, touchClass, waveSuffix string,
 	waveSize int,
 	chainCaps map[string]int,
 	yahooNewsletter bool,
@@ -5801,17 +5858,8 @@ func (po *PartnerDripOrchestrator) grantWaveCapacity(
 		return nil, chainCaps, nil
 	}
 
-	phase := "welcome"
-	if touchClass == dripsupply.TouchClassFollowup {
-		phase = "followup"
-	}
 	kept, govCeil := po.keptCapLayersWithCeiling(ctx, v, brand, phase, yahooNewsletter)
-	isps := make([]string, 0, len(kept))
-	for isp, c := range kept {
-		if c > 0 {
-			isps = append(isps, isp)
-		}
-	}
+	isps := positiveISPKeys(kept)
 	if len(isps) == 0 {
 		return nil, chainCaps, nil
 	}
