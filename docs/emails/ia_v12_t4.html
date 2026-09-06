@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
+  <title>Your Requested Auto Insurance Quotes</title>
+  <style>
+    body,
+    html {
+      margin: 0;
+      padding: 0;
+      font-family: 'Arial', sans-serif;
+      background-color: #f9f9f9;
+    }
+
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+    }
+
+    .header {
+      padding: 20px;
+      text-align: center;
+      background-color: #f1f1f1;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 24px;
+      color: #333333;
+    }
+
+    .content {
+      padding: 20px;
+    }
+
+    .content p {
+      font-size: 16px;
+      color: #555555;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+
+    .cta-button {
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    .cta-button a {
+      display: inline-block;
+      background-color: #007bff;
+      color: #ffffff;
+      text-decoration: none;
+      padding: 12px 25px;
+      border-radius: 4px;
+      font-size: 16px;
+    }
+
+    .footer {
+      padding: 20px;
+      text-align: center;
+      font-size: 12px;
+      color: #888888;
+      background-color: #f1f1f1;
+    }
+
+    .footer a {
+      color: #007bff;
+      text-decoration: none;
+    }
+  </style>
+</head>
+
+<body>{% assign fn = first_name | default: "there" %}{% assign city_g = custom.city | default: "your area" %}{% assign state_g = custom.state | default: "your state" %}{% assign veh = custom.vehicle | default: "vehicle" %}{% assign emd5 = custom.emd5 | default: "" %}{% assign tid = custom.tid | default: "" %}
+  <div class="container">
+    
+    <div class="header">
+      <h1>Your Quotes Are Ready, {{ fn }}</h1>
+    </div>
+
+    <div class="content">
+      <p>Thank you for requesting insurance quotes in {{ city_g }}. We have processed your information and compiled personalized quotes just for you.</p>
+      <p>To review your quotes, please click the button below:</p>
+      <div class="cta-button">
+        <a href="{{ system.tracking_base }}/o/{{ brand.domain | default: 'discountblog.com' }}/{{subscriber.id}}/t1ehz1c39d/{{campaign.id}}?t={{ tid | default: '' }}" style="color: #ffffff;">View Your Options</a>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>This email was sent to <a href="mailto:{{ email }}">{{ email }}</a>.</p>
+      <p>To unsubscribe from future emails, click <a href="https://www.stormlinenbiketeal.com/o-vswm-d21-6d408a24ca5fff7be6de17b7dd6bbea4">here</a>.</p>
+      440 Sawgrass Corporate Pkwy Suite 206, Sunrise, FL 33325<br>
+    </div>
+  </div>
+<!-- unsub-disclaimer --><p style="margin:0;padding:8px 20px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#999999;text-align:center;">Please do not reply, this email box is not monitored. To stop email subscriptions at any time please <a href="{{ system.unsubscribe_url }}" style="color:#999999;">unsubscribe</a>.</p><p style="margin:0;padding:4px 20px 8px;font-family:Arial,Helvetica,sans-serif;font-size:10px;color:#bbbbbb;text-align:center;">{{ brand.domain }} · 30 N Gould St, Ste R, Sheridan, WY 82801</p></body>
+
+</html>
