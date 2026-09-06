@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -3153,7 +3154,18 @@ func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, 
 				// tracking service can derive sub2 even though CloudFront strips the
 				// viewer Host. Emitted URL still starts with baseURL+"/o/", so the
 				// skip rule above catches it on any re-processing (no double-wrap).
-				return `href="` + moneylink.OfferTrackingURL(baseURL, subscriberID, hash, campaignID) + `"`
+				emitted := moneylink.OfferTrackingURL(baseURL, subscriberID, hash, campaignID)
+				// Carry the advertiser token through the hop (operator 2026-09-06:
+				// board remails ship tokenid= and must not lose it). The gateway
+				// fills {{token}} from ?t=, so a bare link that already carried
+				// tokenid=<value> keeps it; a link with no/empty tokenid emits the
+				// exact pre-existing URL (byte-identical, no ?t=). The value is
+				// held to the gateway's own unreserved alphabet so nothing hostile
+				// can ride into the redirect.
+				if tok := offerTokenFromBareURL(origURL); tok != "" {
+					emitted += "?t=" + tok
+				}
+				return `href="` + emitted + `"`
 			}
 		}
 		linkData := fmt.Sprintf("%s|%s", data, origURL)
@@ -3459,4 +3471,27 @@ func personalizeContent(content, email, firstName, lastName string) string {
 	content = strings.ReplaceAll(content, "{{FULL_NAME}}", fullName)
 
 	return content
+}
+
+// offerTokenFromBareURL extracts a bare money link's tokenid= value for the
+// emitter to pass through as ?t=. Mirrors internal/tracking sanitizeOfferToken
+// (RFC 3986 unreserved, max 256) so the send side can never emit a value the
+// gateway would reject — a rejected value renders {{token}} empty, which is
+// exactly the silent loss this exists to prevent. Empty/missing/invalid -> "".
+func offerTokenFromBareURL(raw string) string {
+	u, err := url.Parse(strings.ReplaceAll(raw, "&amp;", "&"))
+	if err != nil {
+		return ""
+	}
+	tok := u.Query().Get("tokenid")
+	if tok == "" || len(tok) > 256 {
+		return ""
+	}
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' || c == '~') {
+			return ""
+		}
+	}
+	return tok
 }
