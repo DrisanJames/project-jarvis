@@ -8471,6 +8471,31 @@ END $$`},
 		{"idx_ignite_datacenter_ranges_gist", igniteDatacenterRangesGistDDL},
 		{"seed_ignite_datacenter_ranges", igniteDatacenterSeedDDL},
 		{"create_ignite_ip_is_datacenter_fn", igniteIPIsDatacenterDDL},
+
+		// === IP CLASSIFICATION — behaviour, not ownership (2026-09-05) ===
+		// See cmd/server/ip_classification.go for the full rationale and the
+		// canonical DDL. ignite_datacenter_ranges says who OWNS a range;
+		// ignite_ip_classification says what it DOES, address-granular, resolved
+		// narrowest-match-wins so an observed /32 carves a real verdict out of a
+		// blanket /16 without editing the ownership table.
+		//
+		// DELIBERATELY INERT ON THE VERDICT PATH: nothing below touches
+		// ignite_ip_is_datacenter (above) or igniteEventVerdictBody (below), so
+		// trg_set_click_verdict keeps stamping mailing_tracking_events
+		// .click_verdict exactly as it does today. Repointing the verdict at
+		// this table is a separate, operator-gated unit.
+		//
+		// Ordering is load-bearing, same as the block above: the table before
+		// the index that covers it, both before the seed that fills it, and all
+		// three before the function that scans it. FOUR SEPARATE ENTRIES —
+		// migrationSkipProbe classifies by leading keyword (migration_skip.go:41),
+		// so a combined CREATE TABLE + CREATE INDEX would be probed as CREATE
+		// TABLE and the GiST index would silently never land.
+		{"create_ignite_ip_classification", igniteIPClassificationDDL},
+		{"idx_ignite_ip_classification_gist", igniteIPClassificationGistDDL},
+		{"seed_ignite_ip_classification_from_dc_ranges", igniteIPClassificationSeedDDL},
+		{"create_ignite_ip_class_fn", igniteIPClassFnDDL},
+
 		{"create_ignite_event_verdict_fn", igniteEventVerdictDDL},
 		{"create_ignite_verdict_is_human_fn", igniteVerdictIsHumanDDL},
 		{"create_ignite_verdict_version_fn", igniteVerdictVersionDDL},
