@@ -3374,6 +3374,15 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 		system["brand_unsubscribe_url"] = p.generateBrandUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), item.BrandRoot, tBase)
 		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", tBase, item.SubscriberID.String())
 		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", tBase, item.CampaignID.String(), item.SubscriberID.String())
+		// Scheme+host of the SENDING profile's tracking domain, no trailing
+		// slash (operator 2026-09-06: the brand resolves from the sending
+		// domain, never hardcoded). A creative builds its own tracking-layer
+		// link as {{ system.tracking_base }}/o/{{ brand.domain }}/... so the
+		// host follows the profile (t.em.<apex> on PMTA, t.m.<apex> on SES)
+		// and RewriteClickLinks recognises the href as its own
+		// (baseURL+"/o/") instead of double-wrapping it in /track/click.
+		// Absent when no tracking base is configured.
+		system["tracking_base"] = tBase
 	}
 	rc["system"] = system
 	rc["now"] = now

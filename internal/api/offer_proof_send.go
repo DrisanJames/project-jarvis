@@ -37,6 +37,14 @@ type proofSendRequest struct {
 	// unchanged) or "ses" (the brand's live SES tenant profile) so proofs can
 	// measure cold-inbox placement on either route. See normalizeProofTransport.
 	Transport string `json:"transport"`
+	// SendingDomain optionally names the sending domain the proof routes
+	// through (e.g. "em.quizfiesta.com"), so a multi-brand offer can proof
+	// from any brand that mails it (operator 2026-09-06: the brand resolves
+	// from the sending domain, never hardcoded). Empty → the offer's
+	// web_property brand kit, byte-identical to the historical behaviour.
+	// Validated by resolveProofProfile: no active profile for that domain +
+	// transport → 422.
+	SendingDomain string `json:"sending_domain"`
 }
 
 type proofItem struct {
@@ -103,9 +111,11 @@ func (h *ProofSendHandler) HandleProofSend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var brandDomain string
-	if kit, ok := GetBrandKit(webProperty); ok {
-		brandDomain = kit.SendingDomain
+	brandDomain := strings.ToLower(strings.TrimSpace(req.SendingDomain))
+	if brandDomain == "" {
+		if kit, ok := GetBrandKit(webProperty); ok {
+			brandDomain = kit.SendingDomain
+		}
 	}
 	pp, perr := h.resolveProofProfile(ctx, brandDomain, transport)
 	if perr != nil {
@@ -466,6 +476,11 @@ func buildProofRenderContext(email, trackBase, emailID, unsubURL, fromEmail stri
 	}
 	system["preferences_url"] = "#preferences"
 	system["view_in_browser_url"] = "#view-in-browser"
+	// Parity with SendWorkerPool.buildRenderContext: a creative that builds
+	// {{ system.tracking_base }}/o/... proofs with the resolved profile's host.
+	if trackBase != "" {
+		system["tracking_base"] = trackBase
+	}
 	rc["system"] = system
 
 	rc["campaign"] = map[string]interface{}{

@@ -57,6 +57,12 @@ type creativeProofRequest struct {
 	// switch: the payload is only woven in when the recipient classifies to the
 	// yahoo ISP group. Empty → fall back to the domain's stored config.
 	ZWSecret string `json:"zw_secret"`
+	// SendingDomain optionally names the sending domain the proof routes
+	// through (e.g. "em.quizfiesta.com") instead of deriving it from the
+	// creative's brand_code, so one creative can proof from every brand that
+	// mails it (operator 2026-09-06). Empty → brand_code derivation, unchanged.
+	// Validated by resolveProofProfile: no active profile → 422.
+	SendingDomain string `json:"sending_domain"`
 }
 
 // proofTransportPMTA / proofTransportSES are the two sending routes a proof
@@ -162,9 +168,12 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Resolve the sending domain from the creative's brand_code, then the active
-	// PMTA sending profile for that domain.
-	sendingDomain := sendingDomainFromBrandCode(brandCode)
+	// Resolve the sending domain — explicit request field first, else the
+	// creative's brand_code — then the active PMTA sending profile for it.
+	sendingDomain := strings.ToLower(strings.TrimSpace(req.SendingDomain))
+	if sendingDomain == "" {
+		sendingDomain = sendingDomainFromBrandCode(brandCode)
+	}
 	if sendingDomain == "" {
 		respondJSON(w, http.StatusUnprocessableEntity,
 			map[string]string{"error": "could not resolve a sending domain for brand_code '" + brandCode + "'"})
@@ -188,6 +197,11 @@ func (h *ProofSendHandler) HandleCreativeProof(w http.ResponseWriter, r *http.Re
 			return
 		}
 		brandRoot := brandRootFromCode(brandCode)
+		if req.SendingDomain != "" {
+			// The gateway row is keyed by brand root; when the caller named
+			// the sending domain, the root follows THAT domain, not brand_code.
+			brandRoot = brand.Root(sendingDomain)
+		}
 		if brandRoot == "" {
 			respondJSON(w, http.StatusUnprocessableEntity,
 				map[string]string{"error": "cannot resolve a brand root for gateway routing from brand_code '" + brandCode + "'"})

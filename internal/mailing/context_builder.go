@@ -128,6 +128,14 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, sub *Subscriber, cam
 		system["preferences_url"] = cb.generatePreferencesURL(sub.ID)
 		system["view_in_browser_url"] = cb.generateViewInBrowserURL(campaign.ID, sub.ID)
 	}
+	// {{ system.tracking_base }} — scheme+host, no trailing slash — mirrors
+	// SendWorkerPool.buildRenderContext so previews render the same shape.
+	// NOTE: on the click-drip journey path cb.baseURL is the GLOBAL
+	// TRACKING_URL; JourneyClickDripSender.SystemURLs overlays the profile's
+	// value before render.
+	if tb := strings.TrimRight(cb.baseURL, "/"); tb != "" {
+		system["tracking_base"] = tb
+	}
 
 	// {{ system.prefill_token }} — the signed 24h token creatives append as
 	// ?pf=... on funnel links (bake-time minting; redirect-time minting in
@@ -250,16 +258,17 @@ func (cb *ContextBuilder) BuildSampleContext() RenderContext {
 
 		// System
 		"system": map[string]interface{}{
-			"current_date":        now.Format("January 2, 2006"),
-			"current_datetime":    now,
-			"current_year":        now.Year(),
-			"current_month":       now.Month().String(),
-			"current_day":         now.Day(),
-			"current_weekday":     now.Weekday().String(),
+			"current_date":          now.Format("January 2, 2006"),
+			"current_datetime":      now,
+			"current_year":          now.Year(),
+			"current_month":         now.Month().String(),
+			"current_day":           now.Day(),
+			"current_weekday":       now.Weekday().String(),
 			"unsubscribe_url":       cb.baseURL + "/track/unsubscribe/preview",
 			"brand_unsubscribe_url": cb.baseURL + "/track/unsubscribe/preview?scope=brand",
 			"preferences_url":       cb.baseURL + "/preferences?token=preview",
 			"view_in_browser_url":   cb.baseURL + "/view?id=preview",
+			"tracking_base":         strings.TrimRight(cb.baseURL, "/"),
 		},
 		"now":   now,
 		"today": now.Format("January 2, 2006"),
@@ -509,6 +518,7 @@ func GetAvailableMergeTags() []MergeTagDefinition {
 		{Key: "system.unsubscribe_url", Label: "Unsubscribe Link (Global)", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.unsubscribe_url }}"},
 		{Key: "system.brand_unsubscribe_url", Label: "Unsubscribe Link (This Brand Only)", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.brand_unsubscribe_url }}"},
 		{Key: "system.preferences_url", Label: "Preferences Link", Category: "system", DataType: "string", Sample: "https://...", Syntax: "{{ system.preferences_url }}"},
+		{Key: "system.tracking_base", Label: "Tracking Base (sending profile's tracking host, no trailing slash)", Category: "system", DataType: "string", Sample: "https://t.em.example.com", Syntax: "{{ system.tracking_base }}"},
 
 		// Logic Examples
 		{Key: "if_vip", Label: "If VIP Customer", Category: "logic", DataType: "block", Sample: "{% if custom.is_vip %}VIP Content{% endif %}", Syntax: "{% if custom.is_vip %}...{% endif %}"},

@@ -391,6 +391,11 @@ func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID
 		"brand_unsubscribe_url": GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRootFromEmail(fromEmail), trackBase, s.trackingSecret),
 		"preferences_url":       fmt.Sprintf("%s/preferences?sid=%s", trackBase, subscriberID),
 		"view_in_browser_url":   fmt.Sprintf("%s/view?cid=%s&sid=%s", trackBase, campaignID, subscriberID),
+		// Profile tracking host for {{ system.tracking_base }}/o/... links —
+		// overrides the GLOBAL base BuildContext stamped (journey_executor
+		// passes TRACKING_URL to NewContextBuilder), parity with
+		// buildRenderContext's system["tracking_base"].
+		"tracking_base": trackBase,
 	}
 }
 
