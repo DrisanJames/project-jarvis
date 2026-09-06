@@ -86,6 +86,11 @@ func main() {
 	// SHIPPED OFF — even fully loaded it withholds nothing unless GATEWAY_ENFORCE
 	// is armed; GATEWAY_DISABLED turns it off entirely. Both are read per
 	// request, so either flips without a deploy.
+	//
+	// Gate 2 (session-shape fanout) rides the same object and is ALSO shipped
+	// off: GATEWAY_FANOUT_ENABLED arms it, GATEWAY_FANOUT_LINKS (default 4) and
+	// GATEWAY_FANOUT_WINDOW_S (default 60) tune it, all read per request. Its
+	// counter is process-local — see the scaling note in gateway.go.
 	ipc := tracking.NewIPClassifier(db, 15*time.Minute)
 	defer ipc.Close()
 

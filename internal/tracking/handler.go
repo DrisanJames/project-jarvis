@@ -149,7 +149,11 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 	// GATEWAY — decided in memory, BEFORE the handoff, and without contacting
 	// the destination (invariant 1). Shadow by default: withholds nothing
 	// unless GATEWAY_ENFORCE is armed.
-	decision := h.ipc.Decide(realIP(r), target)
+	//
+	// parts[2]/parts[1] are the subscriber and campaign that identify the
+	// SESSION for gate 2 (session-shape fanout). Either being empty simply
+	// disables gate 2 for this request — it forwards.
+	decision := h.ipc.DecideSession(realIP(r), target, parts[2], parts[1])
 
 	evt := TrackingEvent{
 		EventType:    EventClick,
@@ -169,14 +173,14 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 	h.pub.Publish(r.Context(), evt)
 
 	if decision.Withhold {
-		log.Printf("CLICK WITHHELD campaign=%s subscriber=%s ip=%s class=%s url=%s",
-			evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, originalURL)
+		log.Printf("CLICK WITHHELD action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d url=%s",
+			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout, originalURL)
 		writeWithheld(w)
 		return
 	}
 	if decision.Shadow {
-		log.Printf("CLICK gateway shadow: WOULD withhold campaign=%s subscriber=%s ip=%s class=%s (forwarding — GATEWAY_ENFORCE unset)",
-			evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class)
+		log.Printf("CLICK gateway shadow: WOULD withhold action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
+			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout)
 	}
 
 	log.Printf("CLICK campaign=%s subscriber=%s url=%s", evt.CampaignID, evt.SubscriberID, originalURL)
@@ -411,7 +415,10 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	// already returned: they redirect to the brand root, hand nothing to an
 	// advertiser, and so have no advertiser hop to suppress. Withholding there
 	// would vary OUR OWN content by visitor for no gain.
-	decision := h.ipc.Decide(realIP(r), dest)
+	// subscriber/campaign come off the /o/ path contract and identify the
+	// SESSION for gate 2 (session-shape fanout); either being empty disables
+	// gate 2 for this request.
+	decision := h.ipc.DecideSession(realIP(r), dest, subscriber, campaign)
 
 	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
 	// but has ZERO influence on what is served below. deltaSinceSend is 0 here
@@ -454,13 +461,14 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	if decision.Withhold {
 		// 204: no Location, no body, no advertiser resources — and NOT the
 		// brand site. See the cloaking note in gateway.go.
-		log.Printf("OFFER WITHHELD hash=%s campaign=%s subscriber=%s ip=%s class=%s", hash, campaign, subscriber, realIP(r), decision.Class)
+		log.Printf("OFFER WITHHELD action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.Fanout)
 		writeWithheld(w)
 		return
 	}
 	if decision.Shadow {
-		log.Printf("OFFER gateway shadow: WOULD withhold hash=%s campaign=%s subscriber=%s ip=%s class=%s (forwarding — GATEWAY_ENFORCE unset)",
-			hash, campaign, subscriber, realIP(r), decision.Class)
+		log.Printf("OFFER gateway shadow: WOULD withhold action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.Fanout)
 	}
 
 	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
