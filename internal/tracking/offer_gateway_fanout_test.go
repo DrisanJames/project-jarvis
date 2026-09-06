@@ -175,6 +175,23 @@ func assertFanForwarded(t *testing.T, rec *httptest.ResponseRecorder, n int, why
 // session under test. Every "must forward" test calls it.
 func assertGate2IsArmed(t *testing.T, h *Handler) {
 	t.Helper()
+	// The control fires four HTTP round trips and needs all four to land inside
+	// ONE window. A caller testing window EXPIRY sets a deliberately tiny window
+	// (1s), and under load — another package compiling on the same machine —
+	// four round trips can exceed it, failing the control for a reason that has
+	// nothing to do with the behaviour under test. Observed once in CI.
+	// The control uses a FRESH session, so widening the window here cannot
+	// disturb the caller's session; restore it before returning so the caller's
+	// own expiry assertions still see their value.
+	prev, had := os.LookupEnv(GatewayFanoutWindowEnv)
+	os.Setenv(GatewayFanoutWindowEnv, "60")
+	defer func() {
+		if had {
+			os.Setenv(GatewayFanoutWindowEnv, prev)
+		} else {
+			os.Unsetenv(GatewayFanoutWindowEnv)
+		}
+	}()
 	sub, camp := fanSession()
 	for n := 1; n <= 4; n++ {
 		rec := doFan(h, ipFanUnresolved, sub, fanHash(n), camp)
