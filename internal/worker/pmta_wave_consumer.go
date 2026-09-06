@@ -25,7 +25,9 @@ type PMTAWaveConsumer struct {
 	queueURL   string
 	db         *sql.DB
 	capChecker *mailing.CapChecker
-	done       chan struct{}
+	// familyGovernor: yahoo-family daily ceiling (family_governor.go); nil/off = no effect.
+	familyGovernor *FamilyGovernor
+	done           chan struct{}
 }
 
 func NewPMTAWaveConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *PMTAWaveConsumer {
@@ -42,6 +44,12 @@ func NewPMTAWaveConsumer(sqsClient *sqs.Client, queueURL string, db *sql.DB) *PM
 // the legacy single-status claim path.
 func (c *PMTAWaveConsumer) SetCapChecker(cc *mailing.CapChecker) {
 	c.capChecker = cc
+}
+
+// SetFamilyGovernor mirrors PMTAWaveScheduler.SetFamilyGovernor for the
+// SQS-driven path so both dispatch entrypoints see the same governor.
+func (c *PMTAWaveConsumer) SetFamilyGovernor(g *FamilyGovernor) {
+	c.familyGovernor = g
 }
 
 func (c *PMTAWaveConsumer) Start(ctx context.Context) {
@@ -78,7 +86,7 @@ func (c *PMTAWaveConsumer) poll(ctx context.Context) {
 		}
 
 		for _, msg := range out.Messages {
-			if processWaveMessage(ctx, c.db, aws.ToString(msg.Body), c.capChecker) {
+			if processWaveMessage(ctx, c.db, aws.ToString(msg.Body), c.capChecker, c.familyGovernor) {
 				c.deleteMessage(ctx, msg.ReceiptHandle)
 			}
 		}
@@ -87,13 +95,13 @@ func (c *PMTAWaveConsumer) poll(ctx context.Context) {
 
 // processWaveMessage handles a single SQS message body. Returns true if the
 // message should be deleted (successful processing or unrecoverable payload).
-func processWaveMessage(ctx context.Context, db *sql.DB, body string, capChecker *mailing.CapChecker) bool {
+func processWaveMessage(ctx context.Context, db *sql.DB, body string, capChecker *mailing.CapChecker, gov *FamilyGovernor) bool {
 	var payload PMTAWaveMessage
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
 		log.Printf("PMTA wave bad message: %v", err)
 		return true
 	}
-	if _, err := EnqueuePMTAWave(ctx, db, payload.WaveID, capChecker); err != nil {
+	if _, err := enqueuePMTAWave(ctx, db, payload.WaveID, capChecker, gov); err != nil {
 		log.Printf("PMTA wave enqueue error (%s): %v", payload.WaveID, err)
 		return false
 	}

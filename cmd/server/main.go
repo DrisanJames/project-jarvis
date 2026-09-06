@@ -658,6 +658,15 @@ func main() {
 			if redisClient != nil {
 				pmtaWaveScheduler.SetRedisClient(redisClient)
 			}
+			// Yahoo-family daily ceiling on the board enqueue (family_governor.go).
+			// FAMILY_GOVERNOR_MODE read ONCE here: ""/off → dead (no queries),
+			// shadow → log + ledger only, on → trims waves. HOLD-CRITICAL.
+			familyGovernor := worker.NewFamilyGovernor(mailingDB)
+			pmtaWaveScheduler.SetFamilyGovernor(familyGovernor)
+			if pmtaWaveConsumer != nil {
+				pmtaWaveConsumer.SetFamilyGovernor(familyGovernor)
+			}
+			log.Printf("FamilyGovernor mode=%s (env %s)", familyGovernor.Mode(), worker.FamilyGovernorModeEnv)
 			if err := pmtaWaveScheduler.Start(); err != nil {
 				log.Printf("Warning: Failed to start PMTA wave scheduler: %v", err)
 			} else if pmtaWaveQueueURL != "" {
@@ -3621,6 +3630,11 @@ func runStartupMigrations(db *sql.DB) {
 		// O(1), inside the 5s budget. ONE entry — migrationSkipProbe
 		// classifies by LEADING keyword (migration_skip.go:41).
 		{"aug28_domain_governor_decisions", worker.PartnerDripDomainGovernorDecisionsDDL},
+		// Yahoo-family broadcast governor DECISION LEDGER (2026-09-06,
+		// FAMILY_GOVERNOR_SPEC): one row per governed wave, written in shadow
+		// AND on. Same shape/budget argument as the entry above — bare CREATE
+		// TABLE, PK only, empty at creation, ONE statement.
+		{"sep06_family_governor_decisions", worker.FamilyGovernorDecisionsDDL},
 		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
 		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
 		// merges). FOUR DDL entries in their own SET/RESET lock_timeout

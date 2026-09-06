@@ -114,6 +114,13 @@ func perWaveWindowHours() int {
 // in rank order. Pass nil for capChecker (or set the kill switch) to
 // revert to the legacy single-status claim with no Peek.
 func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker *mailing.CapChecker) (enqueued int, retErr error) {
+	return enqueuePMTAWave(ctx, db, waveID, capChecker, nil)
+}
+
+// enqueuePMTAWave is EnqueuePMTAWave plus the optional FamilyGovernor (nil or
+// mode=off → byte-identical to EnqueuePMTAWave, not one governor query). The
+// scheduler and the SQS consumer pass the governor wired via SetFamilyGovernor.
+func enqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker *mailing.CapChecker, gov *FamilyGovernor) (enqueued int, retErr error) {
 	start := time.Now()
 	var (
 		campaignID          uuid.UUID
@@ -128,6 +135,8 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 		enqueuedRecipients  int
 		sendingDomain       string
 		partnerDripTag      sql.NullString
+		planISP             string
+		planSendingDomain   string
 	)
 	defer func() {
 		durationMs := time.Since(start).Milliseconds()
@@ -149,13 +158,14 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	err = tx.QueryRowContext(ctx, `
 		SELECT w.campaign_id, w.isp_plan_id, COALESCE(p.organization_id, c.organization_id),
 		       w.status, COALESCE(c.status, 'draft'),
-		       COALESCE(p.status, 'planned'), w.scheduled_at, c.scheduled_at, w.planned_recipients, w.enqueued_recipients, c.partner_drip_tag
+		       COALESCE(p.status, 'planned'), w.scheduled_at, c.scheduled_at, w.planned_recipients, w.enqueued_recipients, c.partner_drip_tag,
+		       COALESCE(p.isp, ''), COALESCE(p.sending_domain, '')
 		FROM mailing_campaign_waves w
 		JOIN mailing_campaigns c ON c.id = w.campaign_id
 		JOIN mailing_campaign_isp_plans p ON p.id = w.isp_plan_id
 		WHERE w.id = $1
 		FOR UPDATE
-	`, waveID).Scan(&campaignID, &ispPlanID, &orgID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &campaignScheduledAt, &plannedRecipients, &enqueuedRecipients, &partnerDripTag)
+	`, waveID).Scan(&campaignID, &ispPlanID, &orgID, &waveStatus, &campaignStatus, &planStatus, &scheduledAt, &campaignScheduledAt, &plannedRecipients, &enqueuedRecipients, &partnerDripTag, &planISP, &planSendingDomain)
 	if err != nil {
 		return 0, err
 	}
@@ -229,6 +239,46 @@ func EnqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 			return 0, err
 		}
 		return 0, tx.Commit()
+	}
+
+	// Yahoo-family daily ceiling (FamilyGovernor, family_governor.go).
+	// Off/nil → this block is dead (no queries). Shadow → log + ledger row,
+	// `remaining` untouched. On → `remaining` = Allowed; 0 completes the wave
+	// with a last_error note so a fully-denied wave is distinguishable from an
+	// exhausted one. Errors fail OPEN (Allowed == remaining) in both modes.
+	// Decide runs on `db`, not `tx`: a governor error inside this transaction
+	// would abort it and fail the wave instead of failing open.
+	if gov.Enabled() && IsFamilyGovernedISP(planISP) {
+		govDomain := strings.TrimSpace(planSendingDomain)
+		if govDomain == "" {
+			govDomain = sendingDomain
+		}
+		decision, derr := gov.Decide(ctx, db, govDomain, planISP, time.Now(), waveID, remaining)
+		if derr != nil {
+			log.Printf("[FamilyGovernor] %s domain=%s isp=%s wave=%s FAIL-OPEN: %v", strings.ToUpper(gov.Mode()), govDomain, planISP, waveID, derr)
+		}
+		if decision.Governed {
+			verb := "SHADOW"
+			if gov.Mode() == FamilyGovernorOn {
+				verb = "ENFORCE"
+			}
+			log.Printf("[FamilyGovernor] %s domain=%s isp=%s wave=%s requested=%d ceiling=%d spent=%d allowed=%d reason=%s",
+				verb, govDomain, planISP, waveID, remaining, decision.Ceiling, decision.Spent, decision.Allowed, decision.Reason)
+			if gov.Mode() == FamilyGovernorOn && decision.Allowed < remaining {
+				remaining = decision.Allowed
+				if remaining <= 0 {
+					if _, err := tx.ExecContext(ctx, `
+						UPDATE mailing_campaign_waves
+						SET status = 'completed', completed_at = NOW(), updated_at = NOW(),
+						    last_error = COALESCE(last_error, '') || $2
+						WHERE id = $1
+					`, waveID, fmt.Sprintf(" [family_governor: deny ceiling=%d spent=%d]", decision.Ceiling, decision.Spent)); err != nil {
+						return 0, err
+					}
+					return 0, tx.Commit()
+				}
+			}
+		}
 	}
 
 	var campaignFromName, campaignFromEmail, campaignSubject, campaignHTML, campaignName, campaignPlain sql.NullString

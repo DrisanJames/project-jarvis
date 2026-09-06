@@ -31,7 +31,7 @@ import (
 var waveMetaColumns = []string{
 	"campaign_id", "isp_plan_id", "organization_id",
 	"status", "campaign_status", "plan_status",
-	"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
+	"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag", "plan_isp", "plan_sending_domain",
 }
 
 // expectRoutedWavePrelude registers everything EnqueuePMTAWave does before the
@@ -43,7 +43,7 @@ func expectRoutedWavePrelude(mock sqlmock.Sqlmock, waveID, campaignID, planID, o
 		WillReturnRows(sqlmock.NewRows(waveMetaColumns).AddRow(
 			campaignID, planID, orgID,
 			"planned", "scheduled", "ready",
-			testScheduledAt, testScheduledAt, planned, 0, nil))
+			testScheduledAt, testScheduledAt, planned, 0, nil, "gmail", "em.test.com"))
 	mock.ExpectQuery(`COALESCE\(sp.sending_domain`).
 		WithArgs(campaignID).
 		WillReturnRows(sqlmock.NewRows([]string{"sending_domain"}).AddRow("em.test.com"))
@@ -235,7 +235,7 @@ func TestDispatcherDoubleFireKafka(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(waveMetaColumns).AddRow(
 			campaignID, planID, orgID,
 			"produced", "sending", "running",
-			testScheduledAt, testScheduledAt, 1, 0, nil))
+			testScheduledAt, testScheduledAt, 1, 0, nil, "gmail", "em.test.com"))
 	mock.ExpectCommit()
 
 	if _, err := EnqueuePMTAWave(context.Background(), db, waveID.String(), nil); err != nil {

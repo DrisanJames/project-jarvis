@@ -78,10 +78,10 @@ func TestEnqueuePMTAWave_CapAwareClaim_ReplacesCappedWithReserve(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id",
 			"status", "campaign_status", "plan_status",
-			"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
+			"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag", "plan_isp", "plan_sending_domain",
 		}).AddRow(campaignID, planID, orgID,
 			"planned", "scheduled", "ready",
-			testScheduledAt, testScheduledAt, 1, 0, nil))
+			testScheduledAt, testScheduledAt, 1, 0, nil, "gmail", "em.test.com"))
 
 	// 2. sending_domain SELECT (best-effort)
 	mock.ExpectQuery(`COALESCE\(sp.sending_domain`).
@@ -214,10 +214,10 @@ func TestEnqueuePMTAWave_KillSwitch_UsesLegacyClaim(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id",
 			"status", "campaign_status", "plan_status",
-			"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
+			"scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag", "plan_isp", "plan_sending_domain",
 		}).AddRow(campaignID, planID, orgID,
 			"completed", "sending", "running",
-			testScheduledAt, testScheduledAt, 100, 100, nil))
+			testScheduledAt, testScheduledAt, 100, 100, nil, "gmail", "em.test.com"))
 	mock.ExpectCommit()
 
 	enqueued, err := EnqueuePMTAWave(context.Background(), db, waveID.String(), cc)

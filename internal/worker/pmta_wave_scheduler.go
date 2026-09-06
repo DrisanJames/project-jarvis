@@ -38,6 +38,10 @@ type PMTAWaveScheduler struct {
 	// claim path (legacy single-status SELECT). Slice 4 of cap-aware
 	// reserve pool plan.
 	capChecker *mailing.CapChecker
+
+	// familyGovernor is the yahoo-family daily ceiling (family_governor.go),
+	// wired in main.go next to the CapChecker. Nil or mode=off → no effect.
+	familyGovernor *FamilyGovernor
 }
 
 func NewPMTAWaveScheduler(db *sql.DB, sqsClient *sqs.Client, queueURL string) *PMTAWaveScheduler {
@@ -58,6 +62,12 @@ func (s *PMTAWaveScheduler) SetRedisClient(client *redis.Client) {
 // keep the legacy single-status claim path.
 func (s *PMTAWaveScheduler) SetCapChecker(cc *mailing.CapChecker) {
 	s.capChecker = cc
+}
+
+// SetFamilyGovernor injects the yahoo-family daily-ceiling governor. Nil (or a
+// governor in mode=off) leaves the dispatcher byte-identical to today.
+func (s *PMTAWaveScheduler) SetFamilyGovernor(g *FamilyGovernor) {
+	s.familyGovernor = g
 }
 
 func (s *PMTAWaveScheduler) Start() error {
@@ -348,7 +358,7 @@ func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID str
 		}
 		return
 	}
-	enqueued, err := EnqueuePMTAWave(ctx, s.db, waveID, s.capChecker)
+	enqueued, err := enqueuePMTAWave(ctx, s.db, waveID, s.capChecker, s.familyGovernor)
 	if err != nil {
 		log.Printf("[PMTAWaveScheduler] enqueue error for wave %s: %v", waveID, err)
 	} else {
@@ -359,7 +369,7 @@ func (s *PMTAWaveScheduler) processOneWave(parentCtx context.Context, waveID str
 
 func (s *PMTAWaveScheduler) dispatchWave(ctx context.Context, waveID string) error {
 	if s.sqsClient == nil || strings.TrimSpace(s.queueURL) == "" {
-		_, err := EnqueuePMTAWave(ctx, s.db, waveID, s.capChecker)
+		_, err := enqueuePMTAWave(ctx, s.db, waveID, s.capChecker, s.familyGovernor)
 		return err
 	}
 

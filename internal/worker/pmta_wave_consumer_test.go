@@ -30,12 +30,12 @@ func TestProcessWaveMessage_ValidMessage(t *testing.T) {
 		WithArgs("wave-valid").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"campaign_id", "isp_plan_id", "organization_id", "status", "campaign_status",
-			"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag",
+			"plan_status", "scheduled_at", "campaign_scheduled_at", "planned_recipients", "enqueued_recipients", "partner_drip_tag", "plan_isp", "plan_sending_domain",
 		}).AddRow(uuid.New(), uuid.New(), uuid.New(), "completed", "sending", "running",
-			testScheduledAt, testScheduledAt, 100, 100, nil))
+			testScheduledAt, testScheduledAt, 100, 100, nil, "gmail", "em.test.com"))
 	mock.ExpectCommit()
 
-	shouldDelete := processWaveMessage(context.Background(), db, string(body), nil)
+	shouldDelete := processWaveMessage(context.Background(), db, string(body), nil, nil)
 	assert.True(t, shouldDelete)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -45,7 +45,7 @@ func TestProcessWaveMessage_InvalidJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	shouldDelete := processWaveMessage(context.Background(), db, "not-json{{{", nil)
+	shouldDelete := processWaveMessage(context.Background(), db, "not-json{{{", nil, nil)
 	assert.True(t, shouldDelete, "bad payloads should be deleted to prevent infinite retries")
 }
 
@@ -68,7 +68,7 @@ func TestProcessWaveMessage_EnqueueFailure(t *testing.T) {
 		WillReturnError(assert.AnError)
 	mock.ExpectRollback()
 
-	shouldDelete := processWaveMessage(context.Background(), db, string(body), nil)
+	shouldDelete := processWaveMessage(context.Background(), db, string(body), nil, nil)
 	assert.False(t, shouldDelete, "transient failures should NOT delete the message so SQS retries")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
