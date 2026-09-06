@@ -2708,6 +2708,16 @@ var concurrentIndexSpecs = []struct {
 	// Concurrent slice, never the 5s migration slice: the build scans the
 	// full members heap.
 	{"idx_segment_members_seg_stamp", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_segment_members_seg_stamp ON mailing_segment_members (segment_id, materialized_at DESC)`},
+	// Campaign lookup BY NAME (2026-09-06). Every operator job that verifies a
+	// deploy "by NAME" — the internal-auto sidecar (remail_auto_nonclickers,
+	// auto_sidecar_daily), board_week_stage, promote, the send-day invariants —
+	// filters mailing_campaigns on name = / name LIKE 'MMDDYYYY - %'. The table
+	// is ~370k rows with NO index on name, so each lookup was a full seq scan:
+	// ~4 s quiet, > 240 s in the post-deploy brownout on 2026-09-06, which
+	// turned one tranche of the sidecar into a traceback. text_pattern_ops so
+	// both equality and the day-prefix LIKE use it. Concurrent slice: the build
+	// reads the whole heap once.
+	{"idx_campaigns_name_pattern", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_name_pattern ON mailing_campaigns (name text_pattern_ops)`},
 	// Partner ingest work-queue selectivity (2026-08-21 incident). The original
 	// idx_pib_status_received was partial over
 	// ('received','slicing','slicing_complete','validating') — but
