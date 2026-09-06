@@ -1359,6 +1359,21 @@ func main() {
 			}
 			sesVDMSnapshot := worker.NewSESVDMSnapshotWorker(mailingDB, redisClient, sesVDMRegion)
 			sesVDMSnapshot.Start(ctx)
+			// BotIPNominator (2026-09-06): the bot-IP feedback loop, ported from
+			// the laptop cron agents/jobs/bot_ip_nominate.py. Every 15 min it
+			// nominates scanner IPs from BEHAVIOUR in the last 30 min of PG
+			// click events (link-agnostic: the same subscriber fetched 2+
+			// DISTINCT links within 5s; >=2 subscribers on the IP, >=80% of
+			// them bursting; a single-subscriber IP is never nominated) and once a day at
+			// ~03:10 MT over the last 30 days of the Athena lake. Nominees are
+			// containment-checked with ignite_ip_class() and upserted into
+			// ignite_ip_classification as class='scanner', which the offer
+			// gateway (internal/tracking/gateway.go) reloads every 15 min.
+			// Leased (distlock) so the two ECS instances never double-run.
+			// Every step logs under "[BotNominate]". Code default OFF; the
+			// deploy turns it on via env.manifest.json BOT_NOMINATE_ENABLED=1.
+			botIPNominator := worker.NewBotIPNominator(mailingDB, redisClient)
+			botIPNominator.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
