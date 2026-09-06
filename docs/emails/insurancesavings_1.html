@@ -90,7 +90,7 @@
       <p>Thank you for requesting insurance quotes in {{ city_g }}. We have processed your information and compiled personalized quotes just for you.</p>
       <p>To review your quotes, please click the button below:</p>
       <div class="cta-button">
-        <a href="https://t.m.discountblog.com/o/{{ brand.domain | default: 'discountblog.com' }}/{{subscriber.id}}/s45cbugnln/{{campaign.id}}?t={{ emd5 }}&t2={{ tid }}&t3={{ s12 }}" style="color: #ffffff;">View Your Options</a>
+        <a href="{{ system.tracking_base }}/o/{{ brand.domain | default: 'discountblog.com' }}/{{subscriber.id}}/s45cbugnln/{{campaign.id}}?t={{ emd5 }}&t2={{ tid }}&t3={{ s12 }}" style="color: #ffffff;">View Your Options</a>
       </div>
     </div>
 

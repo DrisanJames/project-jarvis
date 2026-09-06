@@ -91,7 +91,7 @@
       <p>Your quote for insuring your {{ veh }} in {{ city_g }}, {{ state_g }} is ready to be viewed. These details may update soon — check now to lock them in.</p>
       <br>
       <div class="cta-button">
-        <a href="https://t.m.discountblog.com/o/{{ brand.domain | default: 'discountblog.com' }}/{{subscriber.id}}/s45cbugnln/{{campaign.id}}?t={{ emd5 }}&t2={{ tid }}&t3={{ s12 }}">Resume My Quote</a>
+        <a href="{{ system.tracking_base }}/o/{{ brand.domain | default: 'discountblog.com' }}/{{subscriber.id}}/s45cbugnln/{{campaign.id}}?t={{ emd5 }}&t2={{ tid }}&t3={{ s12 }}">Resume My Quote</a>
       </div>
       <p></p>
     </div>
