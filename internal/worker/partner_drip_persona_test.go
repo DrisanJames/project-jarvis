@@ -157,7 +157,7 @@ func TestPromoteToSubscribersCarriesCustomFields(t *testing.T) {
 			"derek@example.com", "md5hash",
 			"data_partner", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"Derek", "Delfino",
-			`{"city":"Hollywood","postal_code":"33021","state":"FL","tid":"7552","vehicle":"2021 Ford F-150"}`,
+			`{"city":"Hollywood","emd5":"md5hash","postal_code":"33021","state":"FL","tid":"7552","vehicle":"2021 Ford F-150"}`,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("sub-1"))
 	mock.ExpectCommit()
@@ -200,7 +200,7 @@ func TestPromoteToSubscribersEmptyPersonaBindsEmptyObject(t *testing.T) {
 			"nogeo@example.com", "md5hash",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			"", "",
-			"{}",
+			`{"emd5":"md5hash"}`,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("sub-2"))
 	mock.ExpectCommit()
@@ -359,3 +359,53 @@ func TestPersonaFieldsFromExtra_CarriesEmd5(t *testing.T) {
 		t.Fatalf("emd5 key must be absent when the feed does not send it: %v", none)
 	}
 }
+
+// NEGATIVE CONTROL for the emd5 fallback: when the partner DID supply
+// extra_metadata.emd5, the claimed row's email_md5 must NOT override it. The
+// fallback is a floor for the empty case only.
+func TestPromoteToSubscribersExtraEmd5IsNotOverriddenByRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	po := &PartnerDripOrchestrator{db: db}
+	po.cfg.OrganizationID = "00000000-0000-0000-0000-000000000001"
+
+	insertRe := `(?s)INSERT INTO mailing_subscribers.*first_name, last_name, custom_fields\).*` +
+		`\$12::jsonb.*custom_fields = COALESCE\(mailing_subscribers\.custom_fields, '\{\}'::jsonb\) \|\| EXCLUDED\.custom_fields`
+
+	mock.ExpectBegin()
+	prep := mock.ExpectPrepare(insertRe)
+	prep.ExpectQuery().
+		WithArgs(
+			sqlmock.AnyArg(), po.cfg.OrganizationID, dataPartnerMasterListID,
+			"derek@example.com", "md5hash",
+			"data_partner", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"Derek", "Delfino",
+			`{"city":"Hollywood","emd5":"fromextra","postal_code":"33021","state":"FL","tid":"7552","vehicle":"2021 Ford F-150"}`,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("sub-1"))
+	mock.ExpectCommit()
+	// linkSubscriberIDsToQueue best-effort write-back.
+	mock.ExpectExec(`UPDATE partner_clean_queue`).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	recs := []claimedRecord{{
+		id:       "11111111-1111-1111-1111-111111111111",
+		email:    "derek@example.com",
+		emailMD5: "md5hash",
+		batchID:  "b-1",
+		extra: []byte(`{"email":"derek@example.com","first_name":"Derek","last_name":"Delfino",` +
+			`"city":"Hollywood","state":"FL","postal_code":"33021","source":"acp",` +
+			`"metadata":{"vehicle":"2021 Ford F-150","tid":"7552","emd5":"fromextra"}}`),
+	}}
+
+	ids, err := po.promoteToSubscribers(context.Background(), verticalState{
+		vertical: "internal_auto_insurance", partnerSlug: "acp", datasetSlug: "acp-auto",
+	}, recs)
+	require.NoError(t, err)
+	require.Equal(t, []string{"sub-1"}, ids)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A record with no geo data at all must still bind a valid '{}' — an empty
+// string would fail the ::jsonb cast and drop the recipient from the wave.

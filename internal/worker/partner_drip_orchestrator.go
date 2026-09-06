@@ -3586,7 +3586,16 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 		// value, but a defensive fallback keeps a hypothetical error from
 		// binding an empty string to a ::jsonb parameter (which WOULD fail the
 		// insert and drop this recipient from the wave).
-		customJSON, cfErr := json.Marshal(personaFieldsFromExtra(r.extra))
+		custom := personaFieldsFromExtra(r.extra)
+		// {{ custom.emd5 }} reads extra_metadata->emd5, which partners almost
+		// never supply (0 of 18,443 v11 rows, 2026-09-05) — so s11= shipped
+		// EMPTY on 138 of 154 live insurance-savings-pro clicks in 7 days. The
+		// claimed row always carries email_md5; fall back to it rather than
+		// making every creative switch to the {{ email | email_md5 }} filter.
+		if v, _ := custom["emd5"].(string); v == "" && r.emailMD5 != "" {
+			custom["emd5"] = r.emailMD5
+		}
+		customJSON, cfErr := json.Marshal(custom)
 		if cfErr != nil || len(customJSON) == 0 {
 			customJSON = []byte("{}")
 		}
