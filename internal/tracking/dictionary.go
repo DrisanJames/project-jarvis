@@ -199,7 +199,11 @@ func (d *SmartLinkDictionary) Close() {
 // This is the server-side attribution that makes Everflow work from the
 // scanner-safe path (the mustache render + sub-tags the email HTML used to carry).
 //
-// token is the OPAQUE per-recipient passthrough ({{token}}). It exists so an
+// token is the OPAQUE per-recipient passthrough ({{token}}) — slot 1 of three;
+// see offerTokens / renderOfferDestinationTokens below for slots 2 and 3, which
+// exist because several advertiser destinations carry TWO or THREE
+// per-recipient values (e.g. an email-md5 in s11= AND a partner id in
+// tokenid=) and dropping either breaks advertiser attribution. It exists so an
 // advertiser whose landing URL carries its own per-recipient id (e.g.
 // AutoCoveragePoint's ?tokenid=<tid>) can be routed through this gateway — and
 // therefore through the high-risk bridge — WITHOUT losing partner attribution.
@@ -210,11 +214,50 @@ func (d *SmartLinkDictionary) Close() {
 // and a recipient with no id still reaches the offer. A template WITHOUT
 // {{token}} is byte-identical to the pre-token output.
 func renderOfferDestination(template, subscriberID, brandRoot, campaignID, token string) string {
+	return renderOfferDestinationTokens(template, subscriberID, brandRoot, campaignID, offerTokens{T1: token})
+}
+
+// offerTokens carries the per-recipient passthrough slots read off the /o/
+// query string. The slot design, and why it is a fixed set rather than an
+// open-ended ?t<N>, is documented on readOfferTokens (handler.go).
+//
+// Field -> query param -> template placeholder:
+//
+//	T1  ?t   {{token}}    (unchanged since 2026-08-20 — every live link uses it)
+//	T2  ?t2  {{token2}}
+//	T3  ?t3  {{token3}}
+//
+// A zero offerTokens{} renders every placeholder EMPTY, which is a first-class
+// case: the destination stays a valid URL and the recipient still reaches the
+// offer. A template that mentions no placeholder is byte-identical whatever
+// these hold.
+type offerTokens struct {
+	T1 string
+	T2 string
+	T3 string
+}
+
+// renderOfferDestinationTokens is renderOfferDestination with the full slot
+// set. renderOfferDestination is the one-slot form and delegates here, so the
+// pre-existing single-token contract is expressed as code rather than as a
+// promise: if this function ever stops being a superset of that one, the
+// legacy call sites and their regression tests fail.
+//
+// The three token substitutions are prefix-independent: ReplaceAll on the
+// literal "{{token}}" requires "}}" immediately after "token", which
+// "{{token2}}" does not have, so slot 1 cannot consume slot 2's placeholder and
+// the order below carries no meaning. Nor can one slot's VALUE forge another's
+// placeholder — sanitizeOfferToken admits only the RFC 3986 unreserved set,
+// which contains neither "{" nor "}" — and url.QueryEscape would encode them
+// even if it did. Both properties are pinned by tests.
+func renderOfferDestinationTokens(template, subscriberID, brandRoot, campaignID string, tokens offerTokens) string {
 	rendered := template
 	rendered = strings.ReplaceAll(rendered, "{{subscriber.id}}", url.QueryEscape(subscriberID))
 	rendered = strings.ReplaceAll(rendered, "{{brand.domain}}", url.QueryEscape(brandRoot))
 	rendered = strings.ReplaceAll(rendered, "{{campaign}}", url.QueryEscape(campaignID))
-	rendered = strings.ReplaceAll(rendered, "{{token}}", url.QueryEscape(token))
+	rendered = strings.ReplaceAll(rendered, "{{token}}", url.QueryEscape(tokens.T1))
+	rendered = strings.ReplaceAll(rendered, "{{token2}}", url.QueryEscape(tokens.T2))
+	rendered = strings.ReplaceAll(rendered, "{{token3}}", url.QueryEscape(tokens.T3))
 
 	u, err := url.Parse(rendered)
 	if err != nil {

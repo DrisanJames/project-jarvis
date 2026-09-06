@@ -221,6 +221,40 @@ func sanitizeOfferToken(s string) string {
 	return s
 }
 
+// readOfferTokens reads the per-recipient passthrough slots off ONE already
+// parsed query. It exists so the hot path parses r.URL.Query() exactly once no
+// matter how many slots there are.
+//
+// SLOT DESIGN — a FIXED, ENUMERATED set, deliberately not an open-ended "tN":
+//
+//   - Slot 1 keeps its exact wire name (?t) and its exact template placeholder
+//     ({{token}}). Every /o/ link already sitting in an inbox, and every live
+//     mailing_smart_links.offer_url_template row, is therefore untouched — the
+//     backward-compat guarantee is structural, not something a test has to
+//     chase. Slots 2 and 3 are ?t2 -> {{token2}} and ?t3 -> {{token3}}.
+//   - Enumerated, so substitution is a constant three ReplaceAll calls with
+//     compile-time needles and the outbound URL grows by at most
+//     3*offerTokenMaxLen bytes. An open-ended ?t<N> scheme would have to RANGE
+//     over the request query, making both the work and the outbound URL length
+//     proportional to an attacker-controlled parameter count, on a path whose
+//     whole contract is "never 500, never block, never add latency".
+//   - Three, because three is the measured need: every one of the five
+//     internal-auto lanes that could not be smart-linked carries two
+//     per-recipient values (an email-md5 and a partner tid), and the ratekick
+//     (v10) / insurance-savings-pro (v2, v11) destinations carry a third
+//     s12 carrier alongside them. There is no fourth consumer to design for.
+//
+// Every slot goes through the SAME sanitizeOfferToken — same unreserved-set
+// alphabet, same 256-byte bound, same reject-not-escape semantics — so a
+// hostile ?t2= is exactly as inert as a hostile ?t=.
+func readOfferTokens(q url.Values) offerTokens {
+	return offerTokens{
+		T1: sanitizeOfferToken(q.Get("t")),
+		T2: sanitizeOfferToken(q.Get("t2")),
+		T3: sanitizeOfferToken(q.Get("t3")),
+	}
+}
+
 // HandleOfferRedirect resolves the scanner-safe path contract
 //
 //	/o/<subscriber_id>/<hash>/<campaign_id>
@@ -262,13 +296,15 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	hash := chi.URLParam(r, "hash")
 	campaign := chi.URLParam(r, "campaign")
 
-	// Opaque per-recipient passthrough for {{token}} — read from the QUERY
-	// string, identically on both route shapes (4- and 5-segment), and
-	// sanitized to the unreserved set. NO DB LOOKUP: the token rides the URL
-	// precisely so this hot path stays lookup-free (same trade-off documented
-	// for deltaSinceSend below). Absent/hostile -> "" -> {{token}} renders
+	// Opaque per-recipient passthrough for {{token}} / {{token2}} / {{token3}}
+	// — read from the QUERY string, identically on both route shapes (4- and
+	// 5-segment), and sanitized to the unreserved set. NO DB LOOKUP: the
+	// tokens ride the URL precisely so this hot path stays lookup-free (same
+	// trade-off documented for deltaSinceSend below). Deriving, say, an
+	// email-md5 from the subscriber id would put a query here and is exactly
+	// what this design refuses. Absent/hostile -> "" -> the placeholder renders
 	// empty and the offer is still reachable.
-	token := sanitizeOfferToken(r.URL.Query().Get("t"))
+	tokens := readOfferTokens(r.URL.Query())
 
 	// Hash gates the lookup; a malformed hash is a dead link -> brand root.
 	if !hashPattern.MatchString(hash) {
@@ -317,7 +353,7 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 			attrBrand = entry.BrandRoot
 		}
 	}
-	dest := renderOfferDestination(entry.Destination, subscriber, attrBrand, campaign, token)
+	dest := renderOfferDestinationTokens(entry.Destination, subscriber, attrBrand, campaign, tokens)
 
 	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
 	// but has ZERO influence on what is served below. deltaSinceSend is 0 here
