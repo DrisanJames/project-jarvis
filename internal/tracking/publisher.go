@@ -32,8 +32,19 @@ type TrackingEvent struct {
 	// served — no cloaking — and is purely a hint for downstream analytics.
 	// omitempty keeps every existing open/click/unsub event byte-identical on
 	// the wire, so the SQS consumer (which ignores this field) is unaffected.
-	Actor     string    `json:"actor,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Actor string `json:"actor,omitempty"`
+	// GatewayAction records the OFFER GATEWAY's decision for this request:
+	// "" (forwarded normally), "shadow_withheld" (classified 'scanner' but
+	// forwarded because GATEWAY_ENFORCE is unset), or "withheld" (the
+	// advertiser hop was actually suppressed). See gateway.go invariant 4: a
+	// withheld click is still published, because we suppress the ADVERTISER's
+	// visibility, never our own.
+	//
+	// omitempty, exactly like Actor above, so every forwarded open/click/unsub
+	// event stays byte-identical on the wire and the SQS consumer — which
+	// ignores unknown fields — is unaffected.
+	GatewayAction string    `json:"gateway_action,omitempty"`
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 type Publisher struct {

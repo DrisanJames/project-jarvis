@@ -80,7 +80,16 @@ func main() {
 	dict := tracking.NewSmartLinkDictionary(db, 60*time.Second)
 	defer dict.Close() // cancels the background refresh goroutine on shutdown
 
-	handler := tracking.NewHandler(pub, dict)
+	// Offer gateway IP classification (internal/tracking/gateway.go), reading
+	// ignite_ip_classification through the SAME optional handle: db may be nil,
+	// in which case the classifier is an empty no-op and every click forwards.
+	// SHIPPED OFF — even fully loaded it withholds nothing unless GATEWAY_ENFORCE
+	// is armed; GATEWAY_DISABLED turns it off entirely. Both are read per
+	// request, so either flips without a deploy.
+	ipc := tracking.NewIPClassifier(db, 15*time.Minute)
+	defer ipc.Close()
+
+	handler := tracking.NewHandlerWithClassifier(pub, dict, ipc)
 
 	srv := &http.Server{
 		Addr:         ":" + port,

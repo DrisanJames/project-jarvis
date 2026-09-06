@@ -34,14 +34,30 @@ type eventPublisher interface {
 type Handler struct {
 	pub  eventPublisher
 	dict *SmartLinkDictionary
+	// ipc is the offer gateway's classifier (gateway.go). MAY BE NIL, and is
+	// nil for every caller of NewHandler: a nil classifier classifies nothing
+	// and every click forwards, which is the fail-open default.
+	ipc *IPClassifier
 }
 
 // NewHandler wires the tracking handler. dict may be nil (or a nil-db
 // dictionary) — the /o/ offer redirect then always falls back to brand root,
 // and all /track/* behavior is unchanged. This keeps the service bootable with
 // no DATABASE_URL configured (the graceful default).
+//
+// The offer gateway is OFF for handlers built this way (nil classifier). Use
+// NewHandlerWithClassifier to arm it.
 func NewHandler(pub eventPublisher, dict *SmartLinkDictionary) *Handler {
 	return &Handler{pub: pub, dict: dict}
+}
+
+// NewHandlerWithClassifier is NewHandler plus the offer gateway's IP
+// classifier. ipc may be nil, and even a non-nil one withholds nothing unless
+// GATEWAY_ENFORCE is armed — see gateway.go. This is a separate constructor
+// rather than a widened NewHandler so the existing two-arg contract (and every
+// test built on it) stays exactly as it was.
+func NewHandlerWithClassifier(pub eventPublisher, dict *SmartLinkDictionary, ipc *IPClassifier) *Handler {
+	return &Handler{pub: pub, dict: dict, ipc: ipc}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -106,6 +122,10 @@ func (h *Handler) HandleOpen(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
+	// Invariant 2 (gateway.go): no-store on EVERY exit of this handler,
+	// including the bad-link 400s below.
+	writeNoStore(w)
+
 	encoded := chi.URLParam(r, "data")
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
@@ -121,6 +141,15 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 	}
 
 	originalURL := parts[4]
+	// target is what the visitor would actually be handed off to, so it is what
+	// the gateway's destination exemption must be tested against. Identical to
+	// originalURL for everything not in the dead-link remap.
+	target := applyDeadLinkRemap(originalURL)
+
+	// GATEWAY — decided in memory, BEFORE the handoff, and without contacting
+	// the destination (invariant 1). Shadow by default: withholds nothing
+	// unless GATEWAY_ENFORCE is armed.
+	decision := h.ipc.Decide(realIP(r), target)
 
 	evt := TrackingEvent{
 		EventType:    EventClick,
@@ -131,12 +160,27 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 		LinkURL:      originalURL,
 		IPAddress:    realIP(r),
 		UserAgent:    r.UserAgent(),
-		Timestamp:    time.Now().UTC(),
+		// Invariant 4: the event is published for a WITHHELD request too, and
+		// carries the marker that tells it apart from a forwarded one. We
+		// suppress the advertiser hop, never our own visibility.
+		GatewayAction: decision.Action,
+		Timestamp:     time.Now().UTC(),
 	}
 	h.pub.Publish(r.Context(), evt)
 
+	if decision.Withhold {
+		log.Printf("CLICK WITHHELD campaign=%s subscriber=%s ip=%s class=%s url=%s",
+			evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, originalURL)
+		writeWithheld(w)
+		return
+	}
+	if decision.Shadow {
+		log.Printf("CLICK gateway shadow: WOULD withhold campaign=%s subscriber=%s ip=%s class=%s (forwarding — GATEWAY_ENFORCE unset)",
+			evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class)
+	}
+
 	log.Printf("CLICK campaign=%s subscriber=%s url=%s", evt.CampaignID, evt.SubscriberID, originalURL)
-	http.Redirect(w, r, applyDeadLinkRemap(originalURL), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 // deadLinkRemap repoints money links whose offer destination went dead AFTER
@@ -267,6 +311,11 @@ func readOfferTokens(q url.Values) offerTokens {
 //   - a bad/missing hash or a dictionary miss falls back to https://<brand>/;
 //   - telemetry is published on the Publisher's async goroutine.
 func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
+	// Invariant 2 (gateway.go): no-store on EVERY exit — the forwarded 302, the
+	// withheld 204, the bad-hash and dictionary-miss brand-root fallbacks, and
+	// the panic-recovery fallback below.
+	writeNoStore(w)
+
 	// pathBrand is the OPTIONAL first /o/ segment on the brand-in-path route; it
 	// is "" on the legacy 4-segment route. It is the sending brand minted from the
 	// tracking domain at send time — the ONLY reliable brand signal, because our
@@ -355,6 +404,15 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 	dest := renderOfferDestinationTokens(entry.Destination, subscriber, attrBrand, campaign, tokens)
 
+	// GATEWAY — decided here, on the resolved advertiser destination, BEFORE
+	// the handoff and without contacting it (invariant 1). Shadow by default.
+	//
+	// Scoped to THIS exit only. The bad-hash and dictionary-miss paths above
+	// already returned: they redirect to the brand root, hand nothing to an
+	// advertiser, and so have no advertiser hop to suppress. Withholding there
+	// would vary OUR OWN content by visitor for no gain.
+	decision := h.ipc.Decide(realIP(r), dest)
+
 	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
 	// but has ZERO influence on what is served below. deltaSinceSend is 0 here
 	// (no send-time lookup on the redirect hot path — documented trade-off in
@@ -386,8 +444,25 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		IPAddress:    realIP(r),
 		UserAgent:    r.UserAgent(),
 		Actor:        label,
-		Timestamp:    time.Now().UTC(),
+		// Invariant 4: published for a WITHHELD request too, marked so the
+		// suppressed click is still visible to us and distinguishable from a
+		// forwarded one.
+		GatewayAction: decision.Action,
+		Timestamp:     time.Now().UTC(),
 	})
+
+	if decision.Withhold {
+		// 204: no Location, no body, no advertiser resources — and NOT the
+		// brand site. See the cloaking note in gateway.go.
+		log.Printf("OFFER WITHHELD hash=%s campaign=%s subscriber=%s ip=%s class=%s", hash, campaign, subscriber, realIP(r), decision.Class)
+		writeWithheld(w)
+		return
+	}
+	if decision.Shadow {
+		log.Printf("OFFER gateway shadow: WOULD withhold hash=%s campaign=%s subscriber=%s ip=%s class=%s (forwarding — GATEWAY_ENFORCE unset)",
+			hash, campaign, subscriber, realIP(r), decision.Class)
+	}
+
 	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
 
 	// HANDOFF — one 302 for EVERYONE, every hash, no exceptions.
