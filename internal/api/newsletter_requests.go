@@ -93,6 +93,10 @@ var campaignRequestKinds = map[string]bool{
 var NewsletterProducerStamps = []string{
 	"kumo_newsletter_stage",
 	"legacy_newsletter_stage",
+	// yahoo_family lane slot creatives (agents/jobs/yahoo_family_slot_stage.py):
+	// five article windows per legacy brand over the LOCKED skeleton, one per
+	// touch. Mirrored in worker.FamilyLaneProducerStamps.
+	"yahoo_family_slot_stage",
 }
 
 // newsletterStaleAfter mirrors the wizard's WARMUP_STALE_MS. A creative older

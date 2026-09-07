@@ -2415,6 +2415,11 @@ var criticalSendPathDDL = []struct {
 	// the column must exist before the drip worker's first tick → criticalSendPathDDL.
 	// NULL = fall back to the dataset's offer_id exactly as before (no change).
 	{"add_followup_creatives_offer_id", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS offer_id UUID`},
+	// yahoo_family lane (operator 2026-09-07): a drip touch may point at an
+	// APPROVED Creative Studio newsletter instead of a file on disk. Read
+	// unconditionally by resolveCreative / resolveFollowupCreative → critical.
+	{"sep07_drip_creatives_creative_id", `ALTER TABLE partner_drip_creatives ADD COLUMN IF NOT EXISTS creative_id UUID`},
+	{"sep07_followup_creatives_creative_id", `ALTER TABLE partner_drip_followup_creatives ADD COLUMN IF NOT EXISTS creative_id UUID`},
 	// The original PK (brand, touch_number) blocks per-vertical rows; replace
 	// with a vertical-aware unique index ('' = the NULL/global chain).
 	{"drop_followup_creatives_pk", `ALTER TABLE partner_drip_followup_creatives DROP CONSTRAINT IF EXISTS partner_drip_followup_creatives_pkey`},
@@ -11172,6 +11177,27 @@ END $$`},
 		//
 		// ⚠️ The guard literal MUST name the NEWEST vertical (v12). Reusing an
 		// older one silently no-ops the whole DO block and the list never widens.
+		// yahoo_family (operator 2026-09-07): the ONLY drip lane that mails the
+		// yahoo family. Same widen-once shape as the entry below it; the guard
+		// literal names THIS vertical (the newest) so the block cannot no-op.
+		{"sep07_partner_datasets_vertical_yahoo_family", `DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_vertical_check'
+				AND pg_get_constraintdef(oid) LIKE '%yahoo_family%') THEN
+				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
+						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
+						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
+						'consumer','internal_auto_insurance',
+						'internal_auto_insurance_v2','internal_auto_insurance_v3','internal_auto_insurance_v4',
+						'internal_auto_insurance_v5','internal_auto_insurance_v6','internal_auto_insurance_v7',
+						'internal_auto_insurance_v8','internal_auto_insurance_v9','internal_auto_insurance_v10',
+						'internal_auto_insurance_v11','internal_auto_insurance_v12',
+						'internal_auto_insurance_gmail_v1','internal_auto_insurance_gmail_v2',
+						'wcl_remail','converters_sams','converters_loans','converters_heloc',
+						'converters_auto','converters_roofing','converters_life','yahoo_family']));
+			END IF;
+		END $$`},
 		{"aug26_partner_datasets_vertical_internal_auto_v8_v12", `DO $$ BEGIN
 			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_vertical_check'
 				AND pg_get_constraintdef(oid) LIKE '%internal_auto_insurance_v12%') THEN

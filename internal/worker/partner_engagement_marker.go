@@ -366,7 +366,28 @@ func (m *PartnerEngagementMarker) markOnce(ctx context.Context, lookbackMins int
 		log.Printf("[PartnerEngagementMarker] marked %d records engaged (clicks, lookback=%dm, perRecord=%v)", n, lookbackMins, perRecord)
 	}
 
+	m.markFamilyLaneExits(ctx, lookbackMins)
 	m.markProgressionSignals(ctx, lookbackMins)
+}
+
+// markFamilyLaneExits — yahoo_family only: an OPEN engages (verdict-filtered),
+// and every engaged record's ladder is closed with terminal_reason='engaged_exit'
+// so the exit is countable per day. Clicks were already stamped above.
+func (m *PartnerEngagementMarker) markFamilyLaneExits(ctx context.Context, lookbackMins int) {
+	if lookbackMins <= 0 {
+		lookbackMins = 7 * 24 * 60
+	}
+	markOpens, closeLadder := familyEngagedExitSQL(!verdictEngagementMarkerDisabled())
+	if res, err := m.db.ExecContext(ctx, markOpens, FamilyLaneVertical, lookbackMins); err != nil {
+		log.Printf("[PartnerEngagementMarker] %s open-mark err (lookback=%dm): %v", FamilyLaneVertical, lookbackMins, err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[PartnerEngagementMarker] %s: marked %d records engaged by OPEN (lookback=%dm)", FamilyLaneVertical, n, lookbackMins)
+	}
+	if res, err := m.db.ExecContext(ctx, closeLadder, FamilyLaneVertical); err != nil {
+		log.Printf("[PartnerEngagementMarker] %s ladder-close err: %v", FamilyLaneVertical, err)
+	} else if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("[PartnerEngagementMarker] %s: %d engaged records exited the ladder (%s)", FamilyLaneVertical, n, EngagedExitReason)
+	}
 }
 
 // progressionBackfillDays is how far back the boot backfill walks the

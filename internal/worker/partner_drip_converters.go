@@ -70,7 +70,9 @@ func convertersPinDisabled() bool {
 // (orchestrator brand codes, never user input).
 func homeBrandPinSQL(vertical, brand, alias string) string {
 	lv := strings.ToLower(strings.TrimSpace(vertical))
-	if convertersPinDisabled() || !strings.HasPrefix(lv, convertersPrefix) {
+	// The family lane pins too: all five newsletter touches come from ONE
+	// sending domain so the per-domain ladder accounting is exact.
+	if convertersPinDisabled() || (!strings.HasPrefix(lv, convertersPrefix) && !IsFamilyLane(lv)) {
 		return ""
 	}
 	q := ""

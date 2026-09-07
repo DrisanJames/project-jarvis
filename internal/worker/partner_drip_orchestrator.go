@@ -1929,12 +1929,12 @@ func ensureMoneyLinkAttribution(html string) string {
 
 func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical, brand string) (creativeRec, error) {
 	var c creativeRec
-	var offerID sql.NullString
+	var offerID, creativeID sql.NullString
 	err := po.db.QueryRowContext(ctx, `
-		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id
+		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id, creative_id
 		FROM partner_drip_creatives
 		WHERE vertical = $1 AND brand = $2 AND active = true
-	`, vertical, brand).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID)
+	`, vertical, brand).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID, &creativeID)
 	if err != nil {
 		return c, fmt.Errorf("creative lookup (%s/%s): %w", vertical, brand, err)
 	}
@@ -1947,6 +1947,18 @@ func (po *PartnerDripOrchestrator) resolveCreative(ctx context.Context, vertical
 	// per-touch offer's suppression scrub + attribution. When the row DOES carry a
 	// filename its copy takes precedence (disk-read path below) and we only inherit
 	// offer_id for the scrub. Empty offer_id keeps the exact legacy behavior.
+	// Family lane / Studio-backed newsletter: the creative lives in
+	// mailing_creatives (fresh, approved), never on disk, and carries no offer.
+	if creativeID.Valid && strings.TrimSpace(creativeID.String) != "" {
+		if err := po.loadStudioCreative(ctx, strings.TrimSpace(creativeID.String), &c); err != nil {
+			return c, fmt.Errorf("creative (%s/%s): %w", vertical, brand, err)
+		}
+		c.offerID = ""
+		return c, nil
+	}
+	if IsFamilyLane(vertical) {
+		return c, fmt.Errorf("creative (%s/%s): family lane requires a Studio creative_id — disk/offer creatives are refused", vertical, brand)
+	}
 	if c.offerID != "" && strings.TrimSpace(c.filename) == "" {
 		oc, err := po.resolveOfferCreative(ctx, c.offerID, brand)
 		if err != nil {
@@ -5520,15 +5532,21 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 // records get retried on the next tick.
 func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, vertical, brand string, touchNumber int) (creativeRec, error) {
 	var c creativeRec
-	var offerID sql.NullString
+	var offerID, creativeID sql.NullString
+	// The family lane never falls back to the global (vertical IS NULL) chain:
+	// that chain is offer bodies. Its rows must be its own.
+	vertPred := "(vertical = $3 OR vertical IS NULL)"
+	if IsFamilyLane(vertical) {
+		vertPred = "vertical = $3"
+	}
 	err := po.db.QueryRowContext(ctx, `
-		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id
+		SELECT creative_filename, subject_line, COALESCE(preheader, ''), from_name, offer_id, creative_id
 		FROM partner_drip_followup_creatives
 		WHERE brand = $1 AND touch_number = $2 AND active = true
-		  AND (vertical = $3 OR vertical IS NULL)
+		  AND `+vertPred+`
 		ORDER BY (vertical = $3) DESC NULLS LAST
 		LIMIT 1
-	`, brand, touchNumber, vertical).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID)
+	`, brand, touchNumber, vertical).Scan(&c.filename, &c.subject, &c.preheader, &c.fromName, &offerID, &creativeID)
 	if err != nil {
 		// sql.ErrNoRows is preserved via %w so processFollowup can distinguish an
 		// unconfigured touch (ladder shorter than MaxTouchCount → retire terminal)
@@ -5542,6 +5560,16 @@ func (po *PartnerDripOrchestrator) resolveFollowupCreative(ctx context.Context, 
 	// from the offer-center tables for THIS touch's offer, preserving c.offerID for
 	// the deploy's per-touch suppression scrub + attribution. A configured filename
 	// takes precedence (disk read below). Empty offer_id keeps legacy behavior.
+	if creativeID.Valid && strings.TrimSpace(creativeID.String) != "" {
+		if err := po.loadStudioCreative(ctx, strings.TrimSpace(creativeID.String), &c); err != nil {
+			return c, fmt.Errorf("followup_creative (%s/%s/t%d): %w", vertical, brand, touchNumber, err)
+		}
+		c.offerID = ""
+		return c, nil
+	}
+	if IsFamilyLane(vertical) {
+		return c, fmt.Errorf("followup_creative (%s/%s/t%d): family lane requires a Studio creative_id — disk/offer creatives are refused", vertical, brand, touchNumber)
+	}
 	if c.offerID != "" && strings.TrimSpace(c.filename) == "" {
 		oc, err := po.resolveOfferCreative(ctx, c.offerID, brand)
 		if err != nil {

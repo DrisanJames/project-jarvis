@@ -92,7 +92,9 @@ func TestCanonicalCreativeQueryIsOneDefinition(t *testing.T) {
 	}
 
 	// The stamp the Python builder writes is a cross-language contract.
-	want := map[string]bool{"kumo_newsletter_stage": true, "legacy_newsletter_stage": true}
+	want := map[string]bool{"kumo_newsletter_stage": true, "legacy_newsletter_stage": true,
+		// yahoo_family lane slot creatives — mirrored in worker.FamilyLaneProducerStamps (2026-09-07).
+		"yahoo_family_slot_stage": true}
 	if len(NewsletterProducerStamps) != len(want) {
 		t.Fatalf("producer stamps changed: %v", NewsletterProducerStamps)
 	}
