@@ -1,5 +1,19 @@
 package worker
 
+// ⛔ RETIRED 2026-09-07 (operator ruling, deploy/env.manifest.json
+// BOT_NOMINATE_ENABLED=0 — keep it 0). The burst signature below counted our
+// OWN redirect hops (SES wrapper -> /o/ -> destination, logged as three
+// distinct link_url values 0.1–3s apart) as "two distinct links within 5s", so
+// every SES-routed click looked like a sweep and any IP with two subscribers
+// behind it was nominated: 2,184 IPs in two days, the operator's home IP among
+// them, and the gateway 204'd 82% of offer clicks. Classification now comes
+// from PUBLISHED provider ranges intersected with observed traffic
+// (agents/jobs/ip_published_sync.py); behaviour detection is per CREATIVE
+// (a session hitting ALL links of one creative within seconds — clicks across
+// campaigns are shopping) and writes CANDIDATES to ignite_ip_nominations, never
+// to ignite_ip_classification (agents/jobs/bot_session_detect.py). The code
+// below is kept on disk for history and must not be re-armed.
+//
 // BotIPNominator — "behaviour finds them, infrastructure blocks them", ported
 // from the laptop cron agents/jobs/bot_ip_nominate.py (commit e57deebe) into
 // the server fleet. The Python is the spec; the rule, the SQL, the containment

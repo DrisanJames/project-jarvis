@@ -242,6 +242,12 @@ func isExemptDestination(dest string) bool {
 type ipClassEntry struct {
 	net   *net.IPNet
 	class string
+	// cidr and source are OBSERVABILITY ONLY (2026-09-07): the matched row's
+	// prefix text and its evidence_source, so every gateway log line says WHICH
+	// row decided and WHERE that row came from (published-aws, observed-traffic,
+	// behaviour-promoted-…). Nothing branches on them.
+	cidr   string
+	source string
 }
 
 // IPClassifier is an in-memory, RWMutex-guarded snapshot of the active rows in
@@ -290,7 +296,7 @@ type IPClassifier struct {
 // ipClassQuery reads the same rows ignite_ip_class() resolves over. is_active is
 // the retirement switch (the table never DELETEs), so an inactive row must not
 // reach memory.
-const ipClassQuery = `SELECT cidr::text, class FROM ignite_ip_classification WHERE is_active`
+const ipClassQuery = `SELECT cidr::text, class, COALESCE(evidence_source,'') FROM ignite_ip_classification WHERE is_active`
 
 // NewIPClassifier loads the table once synchronously (so the set is warm before
 // the first click) and then reloads every refresh interval on one background
@@ -323,6 +329,8 @@ func NewIPClassifier(db *sql.DB, refresh time.Duration) *IPClassifier {
 func (c *IPClassifier) loop(ctx context.Context) {
 	t := time.NewTicker(c.refresh)
 	defer t.Stop()
+	st := time.NewTicker(gatewaySummaryEvery)
+	defer st.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -331,8 +339,85 @@ func (c *IPClassifier) loop(ctx context.Context) {
 			if err := c.reloadOnce(ctx); err != nil {
 				log.Printf("ip classifier: reload failed (keeping prior %d prefixes): %v", c.Len(), err)
 			}
+		case <-st.C:
+			log.Print(gatewayCounters.flush(gatewaySummaryEvery, c.Len(), gatewayEnforcing(), gatewayFanoutEnabled()))
 		}
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Triage summary (2026-09-07): one "GATEWAY SUMMARY" line every 5 minutes
+// -----------------------------------------------------------------------------
+//
+// The per-click "GATEWAY …" line in the handler is the trace; this is the
+// rollup a reviewer greps first: how many /o/ requests were forwarded,
+// shadow-withheld, withheld, and by WHICH evidence source. Counters are
+// process-local and reset on every flush.
+
+const gatewaySummaryEvery = 5 * time.Minute
+
+type gatewayStats struct {
+	mu       sync.Mutex
+	since    time.Time
+	byAction map[string]int
+	bySource map[string]int
+}
+
+var gatewayCounters = &gatewayStats{since: time.Now(), byAction: map[string]int{}, bySource: map[string]int{}}
+
+// gatewayActionLabel is the summary bucket for a decision.
+func gatewayActionLabel(d GatewayDecision) string {
+	switch {
+	case d.Exempt:
+		return "exempt"
+	case d.Withhold:
+		return d.Action
+	case d.Shadow:
+		return d.Action
+	default:
+		return "forward"
+	}
+}
+
+func (g *gatewayStats) count(d GatewayDecision) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.byAction[gatewayActionLabel(d)]++
+	if d.Class != "" {
+		src := d.Source
+		if src == "" {
+			src = "unknown-source"
+		}
+		g.bySource[d.Class+"/"+src]++
+	}
+}
+
+// flush renders the summary line and resets the window.
+func (g *gatewayStats) flush(window time.Duration, prefixes int, enforcing, fanout bool) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	total := 0
+	actions := make([]string, 0, len(g.byAction))
+	for k, v := range g.byAction {
+		total += v
+		actions = append(actions, k+"="+strconv.Itoa(v))
+	}
+	sort.Strings(actions)
+	sources := make([]string, 0, len(g.bySource))
+	for k, v := range g.bySource {
+		sources = append(sources, k+"="+strconv.Itoa(v))
+	}
+	sort.Strings(sources)
+	line := "GATEWAY SUMMARY window=" + window.String() + " since=" + g.since.UTC().Format(time.RFC3339) +
+		" total=" + strconv.Itoa(total) + " enforce=" + strconv.FormatBool(enforcing) + " fanout=" + strconv.FormatBool(fanout) +
+		" prefixes=" + strconv.Itoa(prefixes) + " actions[" + strings.Join(actions, " ") + "] class/source[" + strings.Join(sources, " ") + "]"
+	g.since = time.Now()
+	g.byAction = map[string]int{}
+	g.bySource = map[string]int{}
+	return line
 }
 
 // reloadOnce builds the next snapshot via loadFn and swaps it in ONLY on
@@ -379,15 +464,16 @@ func (c *IPClassifier) queryDB(ctx context.Context) ([]ipClassEntry, error) {
 
 	var next []ipClassEntry
 	for rows.Next() {
-		var cidr, class string
-		if err := rows.Scan(&cidr, &class); err != nil {
+		var cidr, class, source string
+		if err := rows.Scan(&cidr, &class, &source); err != nil {
 			return nil, err
 		}
 		_, n, perr := net.ParseCIDR(strings.TrimSpace(cidr))
 		if perr != nil || n == nil {
 			continue // unusable row — skip, don't fail the reload
 		}
-		next = append(next, ipClassEntry{net: n, class: strings.ToLower(strings.TrimSpace(class))})
+		next = append(next, ipClassEntry{net: n, class: strings.ToLower(strings.TrimSpace(class)),
+			cidr: n.String(), source: strings.TrimSpace(source)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -402,21 +488,29 @@ func (c *IPClassifier) queryDB(ctx context.Context) ([]ipClassEntry, error) {
 // Nil-receiver safe so the handler can hold a nil classifier without
 // special-casing — the same contract SmartLinkDictionary.Lookup carries.
 func (c *IPClassifier) Classify(ipStr string) string {
+	class, _, _ := c.ClassifyDetail(ipStr)
+	return class
+}
+
+// ClassifyDetail is Classify plus the matched row's cidr and evidence_source,
+// for the log line and the triage tool. Same nil/empty contract: ("", "", "")
+// forwards.
+func (c *IPClassifier) ClassifyDetail(ipStr string) (class, cidr, source string) {
 	if c == nil {
-		return ""
+		return "", "", ""
 	}
 	ip := net.ParseIP(strings.TrimSpace(ipStr))
 	if ip == nil {
-		return ""
+		return "", "", ""
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, e := range c.entries {
 		if e.net.Contains(ip) {
-			return e.class // sorted narrowest-first: first hit is the answer
+			return e.class, e.cidr, e.source // sorted narrowest-first: first hit is the answer
 		}
 	}
-	return ""
+	return "", "", ""
 }
 
 // Len is the current snapshot size (for logging/observability).
@@ -462,6 +556,11 @@ type GatewayDecision struct {
 	// (subscriber, campaign) inside the window. 0 when gate 2 did not run.
 	// Log/observability only — nothing branches on it.
 	Fanout int
+	// CIDR and Source name the classification row that matched ("" when none):
+	// the prefix text and its evidence_source. Observability only (2026-09-07
+	// triage requirement) — nothing branches on them.
+	CIDR   string
+	Source string
 }
 
 // Decide applies the gates to one request with NO session identity, so gate 2
@@ -494,19 +593,20 @@ func (c *IPClassifier) DecideSession(ip, destination, subscriber, campaign strin
 	if isExemptDestination(destination) {
 		return GatewayDecision{Exempt: true}
 	}
-	class := c.Classify(ip)
+	class, cidr, source := c.ClassifyDetail(ip)
 	if class == ClassScanner {
 		if !gatewayEnforcing() {
-			return GatewayDecision{Class: class, Shadow: true, Action: GatewayActionShadowWithheld}
+			return GatewayDecision{Class: class, Shadow: true, Action: GatewayActionShadowWithheld, CIDR: cidr, Source: source}
 		}
-		return GatewayDecision{Class: class, Withhold: true, Action: GatewayActionWithheld}
+		return GatewayDecision{Class: class, Withhold: true, Action: GatewayActionWithheld, CIDR: cidr, Source: source}
 	}
 	// GATE 2. 'vpn-or-proxy', 'residential-or-mobile', 'unknown' and the no-row
 	// NULL fall straight through this to the forward below — see the header.
 	if d, hit := c.decideFanout(class, destination, subscriber, campaign, time.Now()); hit {
+		d.CIDR, d.Source = cidr, source
 		return d
 	}
-	return GatewayDecision{Class: class}
+	return GatewayDecision{Class: class, CIDR: cidr, Source: source}
 }
 
 // decideFanout is GATE 2. It returns (decision, true) ONLY when the shape rule

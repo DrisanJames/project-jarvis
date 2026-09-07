@@ -8531,6 +8531,11 @@ END $$`},
 		// so a combined CREATE TABLE + CREATE INDEX would be probed as CREATE
 		// TABLE and the GiST index would silently never land.
 		{"create_ignite_ip_classification", igniteIPClassificationDDL},
+		// 2026-09-07: behaviour detection is SHADOW — candidates and the
+		// sessions that produced them live here, never in the classification
+		// table (agents/jobs/bot_session_detect.py owns the writes).
+		{"create_ignite_ip_nominations", igniteIPNominationsDDL},
+		{"create_ignite_bot_sessions", igniteBotSessionsDDL},
 		{"idx_ignite_ip_classification_gist", igniteIPClassificationGistDDL},
 		{"seed_ignite_ip_classification_from_dc_ranges", igniteIPClassificationSeedDDL},
 		{"create_ignite_ip_class_fn", igniteIPClassFnDDL},

@@ -27,6 +27,7 @@ package tracking
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"strings"
@@ -154,7 +155,8 @@ func expectClickWrite(t *testing.T, mock sqlmock.Sqlmock, wantOrg uuid.UUID, now
 			uaBrowser,
 			"desktop",
 			"https://www.codefortwo.com/K4C5ZLC/PS8241/?source_id=email",
-			false, // isMachineClick
+			false,            // isMachineClick
+			sql.NullString{}, // gateway_action metadata: forwarded click writes NULL (2026-09-07)
 		).
 		// RowsAffected 0 short-circuits the aggregate UPDATEs — this test is
 		// about the org binding, not the counters.
@@ -292,4 +294,28 @@ func TestOfferRedirect_PublishesResolvedOrgID(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, defaultOrgID.String(), evt.OrgID)
 	})
+}
+
+// 2026-09-07 triage: a WITHHELD click persists its gateway decision in
+// metadata so PG can answer "was this click withheld?" without CloudWatch.
+func TestProcessClick_GatewayActionPersistedInMetadata(t *testing.T) {
+	resetOrgFallbackLimiter()
+	c, mock := newConsumer(t)
+	now := time.Now().UTC()
+
+	mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`SELECT email FROM mailing_subscribers`).WillReturnRows(sqlmock.NewRows([]string{"email"}))
+	mock.ExpectExec(`INSERT INTO mailing_tracking_events`).
+		WithArgs(sqlmock.AnyArg(), uuid.MustParse(testOrgID), uuid.MustParse(testCampaignID), uuid.MustParse(testSubscriberID),
+			now, "24.117.63.53", uaBrowser, "desktop", "https://www.codefortwo.com/K4C5ZLC/PS8241/?source_id=email", false,
+			sql.NullString{String: `{"gateway_action":"withheld"}`, Valid: true}).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := c.processClick(context.Background(), TrackingEvent{
+		EventType: EventClick, OrgID: testOrgID, CampaignID: testCampaignID, SubscriberID: testSubscriberID,
+		LinkURL: "https://www.codefortwo.com/K4C5ZLC/PS8241/?source_id=email", IPAddress: "24.117.63.53",
+		UserAgent: uaBrowser, GatewayAction: GatewayActionWithheld, Timestamp: now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

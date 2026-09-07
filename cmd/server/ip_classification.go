@@ -156,3 +156,39 @@ $ipcls$
 	  AND (max_age IS NULL OR c.last_confirmed_at > now() - max_age)
 	ORDER BY masklen(c.cidr) DESC LIMIT 1
 $ipcls$`
+
+// ---------------------------------------------------------------------------
+// 2026-09-07 — behaviour detection is SHADOW. These two tables hold what the
+// per-creative detector (agents/jobs/bot_session_detect.py) saw; promotion
+// into ignite_ip_classification is an explicit operator action, never a cron.
+// ---------------------------------------------------------------------------
+
+const igniteIPNominationsDDL = `CREATE TABLE IF NOT EXISTS ignite_ip_nominations (
+	ip              inet PRIMARY KEY,
+	status          text NOT NULL DEFAULT 'candidate',
+	sessions        integer NOT NULL DEFAULT 0,
+	bot_sessions    integer NOT NULL DEFAULT 0,
+	subs            integer NOT NULL DEFAULT 0,
+	bot_subs        integer NOT NULL DEFAULT 0,
+	campaigns       integer NOT NULL DEFAULT 0,
+	first_seen      timestamptz NOT NULL DEFAULT now(),
+	last_seen       timestamptz NOT NULL DEFAULT now(),
+	evidence        jsonb,
+	source          text,
+	note            text,
+	updated_at      timestamptz NOT NULL DEFAULT now(),
+	CONSTRAINT ignite_ip_nom_status_chk CHECK (status IN ('candidate','promoted','rejected'))
+)`
+
+const igniteBotSessionsDDL = `CREATE TABLE IF NOT EXISTS ignite_bot_sessions (
+	subscriber_id   uuid NOT NULL,
+	campaign_id     uuid NOT NULL,
+	ip              inet NOT NULL,
+	window_start    timestamptz NOT NULL,
+	links_in_creative integer NOT NULL,
+	links_hit       integer NOT NULL,
+	span_ms         bigint NOT NULL,
+	source          text,
+	created_at      timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (subscriber_id, campaign_id, ip, window_start)
+)`

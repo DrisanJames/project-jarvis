@@ -458,17 +458,25 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		Timestamp:     time.Now().UTC(),
 	})
 
+	// TRIAGE LINE (2026-09-07): one greppable "GATEWAY" line per /o/ request,
+	// forwarded or not, naming the decision, the class, the ROW that decided
+	// (cidr + evidence_source) and the session. This is the per-click trace;
+	// "GATEWAY SUMMARY" (gateway.go) is the 5-minute rollup.
+	gatewayCounters.count(decision)
+	log.Printf("GATEWAY decision=%s class=%q cidr=%q src=%q ip=%s sub=%s campaign=%s hash=%s dest_host=%s fanout=%d",
+		gatewayActionLabel(decision), decision.Class, decision.CIDR, decision.Source, realIP(r), subscriber, campaign, hash, destHost(dest), decision.Fanout)
+
 	if decision.Withhold {
 		// 204: no Location, no body, no advertiser resources — and NOT the
 		// brand site. See the cloaking note in gateway.go.
-		log.Printf("OFFER WITHHELD action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d",
-			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.Fanout)
+		log.Printf("OFFER WITHHELD action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout)
 		writeWithheld(w)
 		return
 	}
 	if decision.Shadow {
-		log.Printf("OFFER gateway shadow: WOULD withhold action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
-			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.Fanout)
+		log.Printf("OFFER gateway shadow: WOULD withhold action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout)
 	}
 
 	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
@@ -487,6 +495,16 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	// scanner and human get byte-identical treatment. ClassifyClickAsMachine
 	// stays exactly where it was, labelling telemetry and changing nothing served.
 	http.Redirect(w, r, dest, http.StatusFound)
+}
+
+// destHost is the destination's host for the GATEWAY trace line — never the
+// full URL, which carries per-recipient tokens.
+func destHost(dest string) string {
+	u, err := url.Parse(dest)
+	if err != nil || u.Host == "" {
+		return "?"
+	}
+	return strings.ToLower(u.Host)
 }
 
 // domainApexRe is a cheap "does this look like a bare domain apex?" gate for the

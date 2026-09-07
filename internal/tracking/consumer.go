@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -432,17 +432,27 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	isMachineClick := ClassifyClickAsMachine(evt.UserAgent, evt.IPAddress, 0)
 
 	// Self-contained event row — see processOpen for the same rationale.
+	// gateway_action (2026-09-07 triage requirement): the offer gateway's
+	// decision rides the event (publisher.go GatewayAction) and is persisted
+	// here in metadata so a withheld / shadow-withheld click is visible in PG,
+	// not only in the tracking service's CloudWatch stream. "" (forwarded)
+	// writes NULL metadata — byte-identical to every row before this change.
+	var gatewayMeta sql.NullString
+	if a := strings.TrimSpace(evt.GatewayAction); a != "" {
+		gatewayMeta = sql.NullString{String: `{"gateway_action":"` + strings.ReplaceAll(a, `"`, "") + `"}`, Valid: true}
+	}
+
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, is_machine_click)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, link_url, sending_domain, recipient_domain, is_machine_click, metadata)
 		SELECT $1, $2, $3, $4, 'clicked', $5, $6, $7, $8, $9,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
 			LOWER(SPLIT_PART(s.email, '@', 2)),
-			$10
+			$10, $11::jsonb
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
-	`, clickID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL, isMachineClick)
+	`, clickID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), evt.LinkURL, isMachineClick, gatewayMeta)
 	if err != nil {
 		return err
 	}
