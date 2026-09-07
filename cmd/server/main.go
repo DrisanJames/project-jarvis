@@ -11184,18 +11184,11 @@ END $$`},
 			IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='partner_datasets_vertical_check'
 				AND pg_get_constraintdef(oid) LIKE '%yahoo_family%') THEN
 				ALTER TABLE partner_datasets DROP CONSTRAINT IF EXISTS partner_datasets_vertical_check;
+				-- NOT VALID: the list is the union of every vertical present on 2026-09-07 plus
+				-- yahoo_family; existing rows are not re-validated (the aug26 re-add failed at
+				-- boot on rows outside its list and the block rolled back every boot).
 				ALTER TABLE partner_datasets ADD CONSTRAINT partner_datasets_vertical_check
-					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel',
-						'direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal',
-						'flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple',
-						'consumer','internal_auto_insurance',
-						'internal_auto_insurance_v2','internal_auto_insurance_v3','internal_auto_insurance_v4',
-						'internal_auto_insurance_v5','internal_auto_insurance_v6','internal_auto_insurance_v7',
-						'internal_auto_insurance_v8','internal_auto_insurance_v9','internal_auto_insurance_v10',
-						'internal_auto_insurance_v11','internal_auto_insurance_v12',
-						'internal_auto_insurance_gmail_v1','internal_auto_insurance_gmail_v2',
-						'wcl_remail','converters_sams','converters_loans','converters_heloc',
-						'converters_auto','converters_roofing','converters_life','yahoo_family']));
+					CHECK (vertical = ANY (ARRAY['refi_heloc','personal_loans','tax_relief','remodel','direct_offer','clickers_samsclub','metal_roofing_signal','samsclub_internal','flooring','term_life','senior_care','auto_insurance','jarvis_att','jarvis_apple','consumer','internal_auto_insurance','internal_auto_insurance_v2','internal_auto_insurance_v3','internal_auto_insurance_v4','internal_auto_insurance_v5','internal_auto_insurance_v6','internal_auto_insurance_v7','internal_auto_insurance_v8','internal_auto_insurance_v9','internal_auto_insurance_v10','internal_auto_insurance_v11','internal_auto_insurance_v12','internal_auto_insurance_gmail_v1','internal_auto_insurance_gmail_v2','wcl_remail','converters_sams','converters_loans','converters_heloc','converters_auto','converters_roofing','converters_life','chw_choice','globe_choice','sams_choice','yahoo_family'])) NOT VALID;
 			END IF;
 		END $$`},
 		{"aug26_partner_datasets_vertical_internal_auto_v8_v12", `DO $$ BEGIN
