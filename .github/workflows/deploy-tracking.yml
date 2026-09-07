@@ -91,6 +91,7 @@ jobs:
           fi
           aws ecs describe-task-definition --task-definition "$CURRENT_TASK_DEF" > current-task-def.json
           python3 deploy/prepare_task_definition.py \
+            --manifest deploy/env.tracking.manifest.json \
             current-task-def.json \
             task-def.json \
             "$CONTAINER_NAME" \
