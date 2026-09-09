@@ -2136,12 +2136,13 @@ func (PlanStore) PlanRemaining(ctx context.Context, q Queryer, req ReserveReq) (
 		return 0, false, errors.New("dripsupply: PlanRemaining called with a nil queryer")
 	}
 	followup := strings.TrimSpace(req.TouchClass) == "followup"
-	var ceiling, consumed int
+	var ceiling, consumed, laneAward int
 	err := q.QueryRowContext(ctx, `
 		SELECT CASE WHEN $5::bool
 		            THEN p.followups_reserved
 		            ELSE p.award_firm + p.award_provisional END AS ceiling,
-		       COALESCE(l.consumed, 0) AS consumed
+		       COALESCE(l.consumed, 0) AS consumed,
+		       COALESCE(a.lane_award, 0) AS lane_award
 		FROM drip_daily_plan p
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM(c.reserved) - SUM(c.released), 0) AS consumed
@@ -2152,8 +2153,19 @@ func (PlanStore) PlanRemaining(ctx context.Context, q Queryer, req ReserveReq) (
 			  AND c.sending_domain = p.sending_domain
 			  AND ((c.touch_class = 'followup') = $5::bool)
 		) l ON TRUE
+		LEFT JOIN LATERAL (
+			-- The plan's award for the WHOLE lane x ISP, across every sending
+			-- domain it was split over. This is the only number comparable to
+			-- the dispatch contract's desired_daily_intros, which is stated at
+			-- the lane grain; one domain's share is legitimately far below it.
+			-- (day, lane, isp) is a prefix of drip_daily_plan's primary key, so
+			-- this is an index range scan inside Reserve's 5 s budget.
+			SELECT COALESCE(SUM(p2.award_firm + p2.award_provisional), 0) AS lane_award
+			FROM drip_daily_plan p2
+			WHERE p2.day = p.day AND p2.lane = p.lane AND p2.isp = p.isp
+		) a ON TRUE
 		WHERE p.day = $1::date AND p.lane = $2 AND p.isp = $3 AND p.sending_domain = $4
-	`, dayKey(req.Day), req.Lane, normISP(req.ISP), req.Domain, followup).Scan(&ceiling, &consumed)
+	`, dayKey(req.Day), req.Lane, normISP(req.ISP), req.Domain, followup).Scan(&ceiling, &consumed, &laneAward)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No plan row for the cell: the plan does not constrain it. Failing OPEN
 		// here is deliberate and matches WP3's contract (bounded=false) — the
@@ -2164,11 +2176,62 @@ func (PlanStore) PlanRemaining(ctx context.Context, q Queryer, req ReserveReq) (
 	if err != nil {
 		return 0, false, fmt.Errorf("dripsupply: plan_remaining %s/%s/%s: %w", req.Domain, req.ISP, req.Lane, err)
 	}
-	rem := ceiling - consumed
+	laneDesired := req.LaneContractDesired
+	if followup {
+		// desired_daily_intros governs INTROS. A follow-up is an obligation the
+		// planner reserved separately, so the contract's intro desire is not a
+		// yardstick for it and the supersede check does not apply.
+		laneDesired = 0
+	}
+	limit, bounded := planTerm(ceiling, consumed, laneAward, laneDesired)
+	if !bounded {
+		supersededPlanOnce.Do(func() {
+			log.Printf("[DripSupply] plan_share SUPERSEDED for %s/%s: the frozen plan awarded %d across the lane but the active contract asks %d — the plan term is skipped for this cell; drip_lane_balance.unfilled holds the aggregate line",
+				req.Lane, normISP(req.ISP), laneAward, laneDesired)
+		})
+	}
+	return limit, bounded, nil
+}
+
+// supersededPlanOnce keeps the plan-superseded notice to one line per process.
+// It is a per-cell condition that can be true for every wave of a lane for the
+// rest of a day, and burying the log is how the NEXT cause goes unnoticed.
+var supersededPlanOnce sync.Once
+
+// planTerm is the plan_share term, as a PURE function: inputs in, (limit,
+// bounded) out, no I/O and no mutation.
+//
+// Normally it is `ceiling - consumed`, floored at 0, exactly as before.
+//
+// The one new rule is R2. The daily plan FREEZES at 00:05 MT. When a dispatch
+// contract supersedes during the day and raises desired_daily_intros, the frozen
+// award is stale and strictly smaller — measured 2026-09-09 on yahoo_family:
+// the plan had awarded 37,640 against a contract of 106,399, leaving 77 of plan
+// headroom, and plan_share pinned the lane there for the rest of the day even
+// after the lane balance was repaired by hand.
+//
+// So: when the plan's LANE-WIDE award is below what the lane's own active
+// contract asks for that ISP, the plan is superseded and does not bind
+// (bounded=false). It is skipped, not floored, because a floored number would
+// be one this package invented; and the aggregate line is not lost —
+// drip_lane_balance.unfilled, which ReconcileLaneBalances now keeps in step with
+// the same contract (balance.go reseed), still binds as `lane_demand`.
+//
+// This deliberately does NOT remove the plan term where it is doing real work.
+// The comparison is at the LANE grain, so the ordinary case (the planner splits
+// the lane's desire across its domains, and the split sums to the desire) leaves
+// the term binding exactly as it always did; only a demonstrably superseded plan
+// is bypassed. Skipping is also the smaller change of the two the requirement
+// offers: the planner's freeze, rank, supply and unserved machinery is untouched.
+func planTerm(cellCeiling, cellConsumed, laneAward, laneContractDesired int) (int, bool) {
+	if laneContractDesired > 0 && laneAward < laneContractDesired {
+		return 0, false
+	}
+	rem := cellCeiling - cellConsumed
 	if rem < 0 {
 		rem = 0
 	}
-	return rem, true, nil
+	return rem, true
 }
 
 var _ PlanReader = PlanStore{}

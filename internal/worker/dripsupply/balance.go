@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -141,6 +142,159 @@ type LaneBalance struct {
 	Reserved           int
 	Committed          int
 	Unfilled           int
+}
+
+// -----------------------------------------------------------------------------
+// Lane reconciliation — the lane balance follows its contract, like the domain
+// balance follows its own (R1)
+// -----------------------------------------------------------------------------
+
+// reseed reconciles ONE lane balance row against the currently active dispatch
+// contract's desired_daily_intros for that ISP.
+//
+// PURE: `prev` is a value, is never written through, and a NEW LaneBalance comes
+// back. No I/O, no clock.
+//
+// The rule is a DELTA, never a reset:
+//
+//	next.unfilled = prev.unfilled + (contractDesired - prev.desired)
+//	              = contractDesired - (prev.desired - prev.unfilled)
+//
+// Those two forms are the same number, and the first says why it is the right
+// one: whatever had already reduced `unfilled` — reservations, commits, or the
+// planner's award, which is written straight into `unfilled`
+// (planner.go:2035) — stays reduced by exactly that much. A reset to the new
+// desired would hand back a day's already-spent volume; recomputing from
+// `reserved + committed` would erase the planner's award. Applying the contract
+// delta preserves both.
+//
+// This is the counterpart of what RefillDomain already does for the DOMAIN side
+// — it rewrites contracted/effective from the contract on every tick
+// (bucket.go:857) — which is why raising a DOMAIN contract took effect
+// immediately and raising a LANE contract did nothing at all: the lane rows are
+// created ON CONFLICT DO NOTHING (balance.go:253) and were never revisited.
+//
+// A contract that goes DOWN floors `unfilled` at 0. It never goes negative and
+// it never claws back capacity that is already reserved or committed — the
+// ledger owns that, not this row.
+func reseed(prev LaneBalance, contractDesired int) LaneBalance {
+	if contractDesired < 0 {
+		contractDesired = 0
+	}
+	next := prev
+	next.Desired = contractDesired
+	next.Unfilled = prev.Unfilled + (contractDesired - prev.Desired)
+	if next.Unfilled < 0 {
+		next.Unfilled = 0
+	}
+	return next
+}
+
+// ReconcileResult reports what one reconciliation pass changed.
+type ReconcileResult struct {
+	Seen    int
+	Changed int
+}
+
+// ReconcileLaneBalances rewrites every lane balance row for `day` to follow its
+// active dispatch contract, applying reseed() under the row lock.
+//
+// The FOR UPDATE is not optional and is the same reasoning as refillOne's:
+// Reserve decrements `unfilled` in its own transaction, so a read-modify-write
+// here without the lock is a lost-update window that hands the decremented
+// volume straight back.
+//
+// One short transaction per row, and rows are visited in sorted order, so two
+// orchestrator instances reconciling the same day take the same rows in the
+// same order and cannot deadlock. A row that does not exist is NOT created here
+// — EnsureDayBalances owns creation, and reconciliation never invents a lane.
+//
+// A per-row failure is returned; the caller (TickStart) logs and carries on,
+// because a lane that cannot be reconciled must degrade to "yesterday's shape",
+// never to "no tick".
+func (s *Service) ReconcileLaneBalances(ctx context.Context, day time.Time, contracts *ActiveSet) (ReconcileResult, error) {
+	var res ReconcileResult
+	if s == nil || s.db == nil {
+		return res, errors.New("dripsupply: ReconcileLaneBalances called on a nil service")
+	}
+	if contracts == nil {
+		return res, errors.New("dripsupply: ReconcileLaneBalances called with a nil contract set")
+	}
+	lanes := make([]string, 0, len(contracts.Dispatches))
+	for l := range contracts.Dispatches {
+		lanes = append(lanes, l)
+	}
+	sort.Strings(lanes)
+
+	for _, name := range lanes {
+		c := contracts.Dispatches[name]
+		if c == nil {
+			continue
+		}
+		excluded := make(map[string]struct{}, len(c.ISPExclusions))
+		for _, e := range c.ISPExclusions {
+			excluded[normISP(e)] = struct{}{}
+		}
+		for _, isp := range sortedKeys(c.DesiredDailyIntros) {
+			if err := ctx.Err(); err != nil {
+				return res, fmt.Errorf("dripsupply: ReconcileLaneBalances cancelled after %d rows: %w", res.Seen, err)
+			}
+			n := normISP(isp)
+			if _, skip := excluded[n]; skip {
+				continue
+			}
+			changed, err := s.reconcileLaneOne(ctx, day, c.Lane, n, c.DesiredDailyIntros[isp])
+			if err != nil {
+				return res, err
+			}
+			res.Seen++
+			if changed {
+				res.Changed++
+			}
+		}
+	}
+	return res, nil
+}
+
+func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp string, contractDesired int) (bool, error) {
+	changed := false
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		var prev LaneBalance
+		err := tx.QueryRowContext(ctx, `
+			SELECT desired, awarded_firm, awarded_provisional, reserved, committed, unfilled
+			FROM drip_lane_balance
+			WHERE day = $1::date AND lane = $2 AND isp = $3
+			FOR UPDATE
+		`, dayKey(day), lane, isp).Scan(&prev.Desired, &prev.AwardedFirm, &prev.AwardedProvisional,
+			&prev.Reserved, &prev.Committed, &prev.Unfilled)
+		if errors.Is(err, sql.ErrNoRows) {
+			// No row = this lane×ISP is not open today. EnsureDayBalances owns
+			// creation; a reconciliation never invents a lane.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("lock lane balance %s/%s: %w", lane, isp, err)
+		}
+		next := reseed(prev, contractDesired)
+		if next.Desired == prev.Desired && next.Unfilled == prev.Unfilled {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE drip_lane_balance
+			SET desired = $4, unfilled = $5
+			WHERE day = $1::date AND lane = $2 AND isp = $3
+		`, dayKey(day), lane, isp, next.Desired, next.Unfilled); err != nil {
+			return fmt.Errorf("update lane balance %s/%s: %w", lane, isp, err)
+		}
+		changed = true
+		log.Printf("[DripSupply] lane balance %s/%s on %s follows its contract: desired %d -> %d, unfilled %d -> %d (consumed %d preserved)",
+			lane, isp, dayKey(day), prev.Desired, next.Desired, prev.Unfilled, next.Unfilled, prev.Desired-prev.Unfilled)
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("dripsupply: reconcile lane %s/%s on %s: %w", lane, isp, dayKey(day), err)
+	}
+	return changed, nil
 }
 
 // EnsureDayResult reports what a seeding pass created.

@@ -69,10 +69,17 @@ type ReserveReq struct {
 	// MailableSupply is the §2.2 supply term. A NEGATIVE value means "unknown /
 	// not supply-bound"; 0 means there is genuinely nothing mailable and the
 	// grant is 0 with binding_reason='supply'.
-	MailableSupply  int
-	DomainVersion   int
-	DispatchVersion int
-	Win             Window
+	MailableSupply int
+	// LaneContractDesired is the ACTIVE dispatch contract's
+	// desired_daily_intros for this ISP, at the lane grain. It is not a limit —
+	// drip_lane_balance.unfilled is — it is the yardstick planTerm uses to tell
+	// a frozen plan that is still doing real work from one the contract has
+	// superseded since 00:05. 0 means "unknown / the contract says nothing",
+	// and leaves the plan term binding exactly as it did before.
+	LaneContractDesired int
+	DomainVersion       int
+	DispatchVersion     int
+	Win                 Window
 }
 
 // ReserveRes is §2.2's response.

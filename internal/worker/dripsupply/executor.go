@@ -540,6 +540,19 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	if _, err := EnsureDayBalances(ctx, m.db, now, set); err != nil {
 		log.Printf("[DripSupply] ensure day balances for %s: %v", key, err)
 	}
+	// (2a) The lane rows FOLLOW their contract, every tick, the way
+	// RefillDomain makes the domain rows follow theirs (bucket.go:857).
+	// EnsureDayBalances creates lane rows ON CONFLICT DO NOTHING
+	// (balance.go:253) and never revisits them, so before this a lane contract
+	// that stepped up mid-day left `desired`/`unfilled` on the SUPERSEDED
+	// number and the lane starved against a ceiling nobody had agreed to since
+	// midnight. A failure degrades the lane to yesterday's shape, never to no
+	// tick.
+	if rec, err := m.svc.ReconcileLaneBalances(ctx, now, set); err != nil {
+		log.Printf("[DripSupply] reconcile lane balances for %s: %v", key, err)
+	} else if rec.Changed > 0 {
+		log.Printf("[DripSupply] lane balances for %s now follow their contracts: %d of %d rows changed", key, rec.Changed, rec.Seen)
+	}
 
 	// (2b) The day's plan. The 00:05 MT PlannerWorker is the scheduled owner;
 	// this is the SAFETY NET for the day it cannot serve — a deploy at 09:00,
@@ -828,17 +841,21 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 			}
 		}
 		rr := ReserveReq{
-			Day:             day,
-			Domain:          dc.SendingDomain,
-			ISP:             isp,
-			Lane:            req.Lane,
-			TouchClass:      req.TouchClass,
-			WaveKey:         req.WaveKey,
-			Requested:       req.Requested,
-			MailableSupply:  supply,
-			DomainVersion:   dc.Version,
-			DispatchVersion: pc.Version,
-			Win:             win,
+			Day:            day,
+			Domain:         dc.SendingDomain,
+			ISP:            isp,
+			Lane:           req.Lane,
+			TouchClass:     req.TouchClass,
+			WaveKey:        req.WaveKey,
+			Requested:      req.Requested,
+			MailableSupply: supply,
+			// The lane's CURRENT contracted intent for this ISP. It is the only
+			// way Reserve can tell a frozen plan that is doing real work from
+			// one the contract has since superseded (see planTerm).
+			LaneContractDesired: laneDesiredFor(pc, isp),
+			DomainVersion:       dc.Version,
+			DispatchVersion:     pc.Version,
+			Win:                 win,
 		}
 
 		enforce := mode == ModeOn || (mode == ModeCanary && canaryMatch(canary, dc.SendingDomain, isp, req.Lane))
@@ -894,6 +911,25 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 		alloc.ID = alloc.perISP[bestISP]
 	}
 	return alloc, nil
+}
+
+// laneDesiredFor reads a dispatch contract's desired_daily_intros for one ISP.
+// Keys are normalised on the way in because contracts are operator-authored
+// JSON and "Yahoo" must resolve the same row as "yahoo"; sortedKeys keeps the
+// answer deterministic if two raw keys ever normalise to the same class.
+// 0 means "the contract says nothing about this ISP", which is also the safe
+// default for any caller that does not set the field.
+func laneDesiredFor(c *DispatchContract, isp string) int {
+	if c == nil {
+		return 0
+	}
+	n := normISP(isp)
+	for _, k := range sortedKeys(c.DesiredDailyIntros) {
+		if normISP(k) == n {
+			return c.DesiredDailyIntros[k]
+		}
+	}
+	return 0
 }
 
 // failClosed builds the Allocation for a wave whose contracts could not be
