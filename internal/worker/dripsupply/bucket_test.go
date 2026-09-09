@@ -15,11 +15,11 @@ import (
 // bucketBalance is a balance parked at the window start with an empty bucket —
 // the state EnsureDayBalances leaves behind, minus the opening credit, so each
 // test states its own starting tokens.
-func bucketBalance(t *testing.T, effective int, tokens float64) *Balance {
+func bucketBalance(t *testing.T, effective int, tokens float64) Balance {
 	t.Helper()
 	day := testDay(t)
 	start, _ := DefaultWindow().Bounds(day)
-	return &Balance{
+	return Balance{
 		Day:            day,
 		SendingDomain:  "em.historythinking.com",
 		ISP:            "aol",
@@ -79,13 +79,13 @@ func TestWindowOf_ReadsTheContractClockStrings(t *testing.T) {
 func TestRefill_DowntimeCannotBurstAboveTheCeiling(t *testing.T) {
 	w := DefaultWindow() // 76 intervals, burst 2
 	const effective = 7600
-	refill := float64(effective) / 76 // 100 per interval
-	ceiling := refill * 2             // 200
+	perInterval := float64(effective) / 76 // 100 per interval
+	ceiling := perInterval * 2             // 200
 
 	b := bucketBalance(t, effective, 0)
 	// Nine hours of downtime: the scheduler died at 01:00 and came back at 10:00.
 	now := dayOf(b.Day).Add(10 * time.Hour)
-	res := Refill(b, w, now)
+	b, res := refill(b, w, now)
 
 	if res.IntervalsElapsed != 36 {
 		t.Fatalf("intervals elapsed = %d, want 36 (9 h at 15 min)", res.IntervalsElapsed)
@@ -99,7 +99,7 @@ func TestRefill_DowntimeCannotBurstAboveTheCeiling(t *testing.T) {
 	// The negative control: without the cap this refill mints 3,600 messages of
 	// capacity in one tick. If the assertion above ever reads 3,600 the ceiling
 	// is gone and the domain blasts 36 intervals of mail at once.
-	if uncapped := refill * float64(res.IntervalsElapsed); b.Tokens >= uncapped {
+	if uncapped := perInterval * float64(res.IntervalsElapsed); b.Tokens >= uncapped {
 		t.Fatalf("tokens %v reached the UNCAPPED value %v — max_burst_intervals is not being applied", b.Tokens, uncapped)
 	}
 }
@@ -109,7 +109,7 @@ func TestRefill_NegativeControl_ShortGapAccumulatesNormally(t *testing.T) {
 	// returns 200: one interval must yield exactly one interval of tokens.
 	w := DefaultWindow()
 	b := bucketBalance(t, 7600, 0)
-	res := Refill(b, w, dayOf(b.Day).Add(time.Hour+15*time.Minute))
+	b, res := refill(b, w, dayOf(b.Day).Add(time.Hour+15*time.Minute))
 	if res.IntervalsElapsed != 1 {
 		t.Fatalf("intervals elapsed = %d, want 1", res.IntervalsElapsed)
 	}
@@ -131,7 +131,7 @@ func TestRefill_SubIntervalTicksStillAccumulate(t *testing.T) {
 	start := dayOf(b.Day).Add(time.Hour)
 	// 60 ticks at 15 s = exactly 15 minutes = one interval.
 	for i := 1; i <= 60; i++ {
-		Refill(b, w, start.Add(time.Duration(i)*15*time.Second))
+		b, _ = refill(b, w, start.Add(time.Duration(i)*15*time.Second))
 	}
 	if b.Tokens != 100 {
 		t.Fatalf("tokens = %v after 60 sub-interval ticks spanning one full interval, want 100 — last_refill_tick is being advanced past the un-earned remainder", b.Tokens)
@@ -144,7 +144,7 @@ func TestRefill_ClosedHoursMintNothing(t *testing.T) {
 	// Before the window opens.
 	b := bucketBalance(t, 7600, 0)
 	b.LastRefillTick = dayOf(b.Day)
-	res := Refill(b, w, dayOf(b.Day).Add(30*time.Minute))
+	b, res := refill(b, w, dayOf(b.Day).Add(30*time.Minute))
 	if b.Tokens != 0 || res.IntervalsElapsed != 0 {
 		t.Fatalf("tokens = %v (elapsed %d) before the window opened, want 0", b.Tokens, res.IntervalsElapsed)
 	}
@@ -155,7 +155,7 @@ func TestRefill_ClosedHoursMintNothing(t *testing.T) {
 	// After it closes: accrual stops at 20:00, it does not run to midnight.
 	b2 := bucketBalance(t, 7600, 0)
 	b2.LastRefillTick = dayOf(b2.Day).Add(19*time.Hour + 45*time.Minute)
-	res2 := Refill(b2, w, dayOf(b2.Day).Add(23*time.Hour))
+	b2, res2 := refill(b2, w, dayOf(b2.Day).Add(23*time.Hour))
 	if res2.IntervalsElapsed != 1 {
 		t.Fatalf("intervals elapsed = %d past the window close, want 1 (19:45 -> 20:00 only)", res2.IntervalsElapsed)
 	}
@@ -168,7 +168,7 @@ func TestRefill_ClosedHoursMintNothing(t *testing.T) {
 func TestRefill_DayBoundaryResetsTokens(t *testing.T) {
 	w := DefaultWindow()
 	b := bucketBalance(t, 7600, 175)
-	res := Refill(b, w, dayOf(b.Day).AddDate(0, 0, 1).Add(2*time.Hour))
+	b, res := refill(b, w, dayOf(b.Day).AddDate(0, 0, 1).Add(2*time.Hour))
 	if !res.DayRolled {
 		t.Fatal("DayRolled is false for a refill on the following day")
 	}
@@ -178,13 +178,13 @@ func TestRefill_DayBoundaryResetsTokens(t *testing.T) {
 	// Negative control: a refill on the SAME day, at the same clock time,
 	// accumulates instead of resetting.
 	b2 := bucketBalance(t, 7600, 175)
-	Refill(b2, w, dayOf(b2.Day).Add(2*time.Hour))
+	b2, _ = refill(b2, w, dayOf(b2.Day).Add(2*time.Hour))
 	if b2.Tokens == 0 {
 		t.Fatal("a same-day refill also zeroed the bucket — the reset is not keyed on the day boundary")
 	}
 	// And a clock that has gone backwards must not reset a live day either.
 	b3 := bucketBalance(t, 7600, 175)
-	Refill(b3, w, dayOf(b3.Day).AddDate(0, 0, -1).Add(2*time.Hour))
+	b3, _ = refill(b3, w, dayOf(b3.Day).AddDate(0, 0, -1).Add(2*time.Hour))
 	if b3.Tokens != 175 {
 		t.Fatalf("tokens = %v after a backwards clock, want the bucket untouched (175)", b3.Tokens)
 	}
@@ -196,7 +196,7 @@ func TestRefill_DayBoundaryResetsTokens(t *testing.T) {
 func TestRefill_ReturnedTokensAreClampedByTheNextRefill(t *testing.T) {
 	w := DefaultWindow()
 	b := bucketBalance(t, 7600, 5000) // as if a large release just landed
-	res := Refill(b, w, dayOf(b.Day).Add(time.Hour))
+	b, res := refill(b, w, dayOf(b.Day).Add(time.Hour))
 	if res.IntervalsElapsed != 0 {
 		t.Fatalf("intervals elapsed = %d, want 0", res.IntervalsElapsed)
 	}
@@ -207,7 +207,7 @@ func TestRefill_ReturnedTokensAreClampedByTheNextRefill(t *testing.T) {
 
 func TestRefill_ZeroEffectiveMintsNothing(t *testing.T) {
 	b := bucketBalance(t, 0, 0)
-	Refill(b, DefaultWindow(), dayOf(b.Day).Add(10*time.Hour))
+	b, _ = refill(b, DefaultWindow(), dayOf(b.Day).Add(10*time.Hour))
 	if b.Tokens != 0 {
 		t.Fatalf("tokens = %v with effective 0, want 0", b.Tokens)
 	}

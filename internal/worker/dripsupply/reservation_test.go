@@ -917,12 +917,36 @@ func TestReserve_StatementTimeoutGrantsZeroAndStaysRetryable(t *testing.T) {
 	if svc.TimeoutCount() != 1 {
 		t.Fatalf("TimeoutCount = %d, want 1 — a wedged reserve must be countable", svc.TimeoutCount())
 	}
-	var rows int
+	// The timeout is DURABLE (R2): one audit row, the same shape as every other
+	// zero grant, so `WHERE reserved = 0 GROUP BY binding_reason` sees it.
+	var (
+		rows        int
+		auditKey    string
+		auditStatus string
+		auditRes    int
+	)
 	if err := db.QueryRow(`SELECT COUNT(*) FROM drip_capacity_ledger`).Scan(&rows); err != nil {
 		t.Fatalf("count ledger: %v", err)
 	}
-	if rows != 0 {
-		t.Fatalf("a timeout wrote %d ledger row(s): the idempotency key is now burned and this wave can never be retried", rows)
+	if rows != 1 {
+		t.Fatalf("a timeout wrote %d ledger row(s), want exactly 1 audit row — a timeout that writes nothing is invisible to SQL", rows)
+	}
+	if err := db.QueryRow(`
+		SELECT idempotency_key, status, reserved FROM drip_capacity_ledger
+		WHERE binding_reason = $1
+	`, ReasonReserveTimeout).Scan(&auditKey, &auditStatus, &auditRes); err != nil {
+		t.Fatalf("no ledger row with binding_reason=%s: %v", ReasonReserveTimeout, err)
+	}
+	if auditRes != 0 || auditStatus != StatusReleased {
+		t.Fatalf("timeout audit row = reserved %d status %q, want 0 / %s", auditRes, auditStatus, StatusReleased)
+	}
+	// The REAL key must still be free, or the retry below cannot happen.
+	realKey := baseReq(day, "wave-1", 25).IdempotencyKey()
+	if auditKey == realKey {
+		t.Fatalf("the timeout audit row took the REAL idempotency key %q — this wave can never be retried", realKey)
+	}
+	if !strings.HasPrefix(auditKey, realKey+"|"+ReasonReserveTimeout+"|") {
+		t.Fatalf("timeout audit key = %q, want the real key plus a %s marker so an audit can attribute it", auditKey, ReasonReserveTimeout)
 	}
 
 	_ = blocker.Rollback()
@@ -935,6 +959,14 @@ func TestReserve_StatementTimeoutGrantsZeroAndStaysRetryable(t *testing.T) {
 	}
 	if retry.Granted != 25 || retry.Existing {
 		t.Fatalf("retry after timeout = %+v, want a fresh grant of 25", retry)
+	}
+	// And the audit row did not steal the retry's capacity: reserved=0 on it.
+	var reservedTotal int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(reserved), 0) FROM drip_capacity_ledger`).Scan(&reservedTotal); err != nil {
+		t.Fatalf("sum reserved: %v", err)
+	}
+	if reservedTotal != 25 {
+		t.Fatalf("ledger reserved total = %d, want 25 — the timeout audit row must hold no capacity", reservedTotal)
 	}
 }
 

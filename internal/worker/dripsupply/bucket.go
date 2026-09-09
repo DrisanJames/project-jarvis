@@ -673,21 +673,34 @@ func (g *HealthBandGovernor) CeilingFor(c *DomainContract, contracted int) (Gove
 // Refill — the token math (§2.3)
 // -----------------------------------------------------------------------------
 
-// RefillResult reports what one Refill did, for the tick-outcome surface.
+// RefillResult reports what one refill did, for the tick-outcome surface.
 type RefillResult struct {
 	RefillPerInterval float64
 	IntervalsElapsed  int
 	TokensBefore      float64
 	TokensAfter       float64
 	Capped            bool // the burst ceiling bound this refill
-	DayRolled         bool // now is past the balance's day
-	InWindow          bool
+	// Forfeited is the token allowance the burst clamp DISCARDED, in messages.
+	// Capped on its own only says "it happened"; nothing read it and nothing
+	// could size it, which is why refillOne now persists this number to
+	// drip_refill_forfeit (forfeit.go) inside the same transaction that writes
+	// the clamped bucket.
+	Forfeited float64
+	DayRolled bool // now is past the balance's day
+	InWindow  bool
 }
 
-// Refill advances b's token bucket to now, in place:
+// refill advances a token bucket to now and returns the NEW balance:
 //
 //	refill = effective / active_intervals
 //	tokens = min(tokens + refill × intervals_elapsed, refill × max_burst_intervals)
+//
+// PURE: the argument is a VALUE and is never written through. The previous
+// signature took *Balance and mutated the caller's row in place, so "what would
+// this refill do" could not be asked without doing it, and the discarded
+// overflow existed only for the instant between the clamp and the caller
+// forgetting about it. The caller now persists what it gets back — including
+// RefillResult.Forfeited.
 //
 // Three details are load-bearing:
 //
@@ -699,17 +712,20 @@ type RefillResult struct {
 //  2. Both endpoints are clamped into [window_start, window_end], so closed hours
 //     never mint tokens and an overnight gap cannot mint 24 h of them.
 //  3. A balance row whose day is already over resets to 0 rather than
-//     accumulating: tokens do not survive the day boundary (§2.3).
-func Refill(b *Balance, w Window, now time.Time) RefillResult {
+//     accumulating: tokens do not survive the day boundary (§2.3). That reset is
+//     NOT reported as Forfeited — the day is over, the allowance expired on
+//     schedule, and summing it with a burst clamp would make the forfeit table
+//     read as if pacing had lost a day's mail every night.
+func refill(b Balance, w Window, now time.Time) (Balance, RefillResult) {
 	res := RefillResult{InWindow: w.Contains(b.Day, now)}
 	res.TokensBefore = b.Tokens
 
-	refill := 0.0
+	perInterval := 0.0
 	if b.Effective > 0 {
-		refill = float64(b.Effective) / float64(w.ActiveIntervals())
+		perInterval = float64(b.Effective) / float64(w.ActiveIntervals())
 	}
-	res.RefillPerInterval = refill
-	ceiling := refill * float64(w.BurstIntervals())
+	res.RefillPerInterval = perInterval
+	ceiling := perInterval * float64(w.BurstIntervals())
 
 	balDay := dayOf(b.Day)
 	nowDay := dayOf(now.In(b.Day.Location()))
@@ -719,11 +735,11 @@ func Refill(b *Balance, w Window, now time.Time) RefillResult {
 		_, end := w.Bounds(b.Day)
 		b.Tokens, b.LastRefillTick = 0, end
 		res.DayRolled, res.TokensAfter = true, 0
-		return res
+		return b, res
 	case nowDay.Before(balDay):
 		// Clock skew, or a pre-seeded tomorrow row: do nothing.
 		res.TokensAfter = b.Tokens
-		return res
+		return b, res
 	}
 
 	start, end := w.Bounds(b.Day)
@@ -742,20 +758,22 @@ func Refill(b *Balance, w Window, now time.Time) RefillResult {
 		res.IntervalsElapsed = int(to.Sub(from) / w.Interval)
 	}
 	if res.IntervalsElapsed > 0 {
-		b.Tokens += refill * float64(res.IntervalsElapsed)
+		b.Tokens += perInterval * float64(res.IntervalsElapsed)
 		b.LastRefillTick = from.Add(time.Duration(res.IntervalsElapsed) * w.Interval)
 	}
 	// The clamp runs unconditionally: tokens handed back by Commit/Release/Expire
 	// can push the balance over the burst ceiling between ticks, and this is where
-	// that overshoot is taken back.
+	// that overshoot is taken back. Whatever it takes back is allowance the domain
+	// never gets to spend, so it is SIZED here and persisted by refillOne.
 	if b.Tokens > ceiling {
+		res.Forfeited = b.Tokens - ceiling
 		b.Tokens, res.Capped = ceiling, true
 	}
 	if b.Tokens < 0 {
 		b.Tokens = 0
 	}
 	res.TokensAfter = b.Tokens
-	return res
+	return b, res
 }
 
 // -----------------------------------------------------------------------------
@@ -788,6 +806,14 @@ func (s *Service) RefillDomain(ctx context.Context, day time.Time, c *DomainCont
 		return nil, err
 	}
 	now := s.now()
+	// The forfeit/skip tables are created here rather than in
+	// runStartupMigrations (5 s budget, "skipped, will retry next boot" is
+	// silent and permanent). A failure is logged and the refill proceeds: this
+	// is a diagnostic surface, and it must never be the reason a domain stops
+	// accruing capacity.
+	if err := s.ensureForfeitSchema(ctx); err != nil {
+		log.Printf("[DripSupply] refill %s: %v — forfeits and skips will NOT be recorded this tick", c.SendingDomain, err)
+	}
 	out := make(map[string]RefillResult, len(c.DailyMaxByISP))
 	for _, isp := range sortedKeys(c.DailyMaxByISP) {
 		if err := ctx.Err(); err != nil {
@@ -797,7 +823,16 @@ func (s *Service) RefillDomain(ctx context.Context, day time.Time, c *DomainCont
 		contracted := c.DailyMaxByISP[isp]
 		ceilings, gerr := s.governorCeilings(ctx, day, c.SendingDomain, n, w)
 		if gerr != nil {
+			// Fail closed: `effective` is left UNCHANGED and this ISP accrues
+			// nothing this tick. That is a deliberate reduction of the domain's
+			// day, so it is recorded where an audit can find it a week later —
+			// a log line is not a record (R4).
 			log.Printf("[DripSupply] refill %s/%s: %v — leaving effective UNCHANGED (fail closed)", c.SendingDomain, n, gerr)
+			if s.forfeitSchemaReady.Load() {
+				if serr := recordRefillSkip(ctx, s.db, day, c.SendingDomain, n, "governor_read: "+gerr.Error()); serr != nil {
+					log.Printf("[DripSupply] refill skip NOT recorded %s/%s: %v", c.SendingDomain, n, serr)
+				}
+			}
 			continue
 		}
 		// The health band comes off the contract we are already holding — no
@@ -849,7 +884,7 @@ func (s *Service) refillOne(ctx context.Context, day time.Time, domain, isp stri
 			b.LastRefillTick, _ = w.Bounds(day)
 		}
 		b.Contracted, b.Effective, b.EffectiveReason = contracted, effective, effectiveReason
-		res = Refill(&b, w, now)
+		b, res = refill(b, w, now)
 		// effective_reason is PERSISTED, not cached in this process: the API (§3)
 		// and the other orchestrator instance must read the same label off the
 		// same row. Empty string means the contract itself was the ceiling.
@@ -859,6 +894,15 @@ func (s *Service) refillOne(ctx context.Context, day time.Time, domain, isp stri
 			WHERE day = $1::date AND sending_domain = $2 AND isp = $3
 		`, dayKey(day), domain, isp, b.Contracted, b.Effective, b.EffectiveReason, b.Tokens, b.LastRefillTick); err != nil {
 			return fmt.Errorf("update balance: %w", err)
+		}
+		// SAME transaction as the clamped bucket: a crash between the two would
+		// otherwise leave a bucket that was clamped with no record of the clamp,
+		// which is the exact failure this row exists to prevent. No-ops when
+		// nothing was forfeited.
+		if s.forfeitSchemaReady.Load() {
+			if err := recordForfeit(ctx, tx, day, domain, isp, res, w); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

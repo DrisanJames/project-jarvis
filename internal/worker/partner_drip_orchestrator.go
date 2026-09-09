@@ -955,7 +955,22 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 			// also bail out if no more ready records remain for this
 			// vertical (the orchestrator's main goal is responsiveness).
 			fresh, err := po.refreshVerticalState(po.ctx, v.vertical)
-			if err != nil || fresh == nil || fresh.readyCount <= 0 {
+			if err != nil {
+				// D1: a refresh FAILURE (statement_timeout on the
+				// COUNT(*) ... status='ready' over a 200k+ row queue)
+				// used to share this exit with the two legitimate
+				// "nothing left to do" cases below, so one timed-out
+				// count silently cut the vertical to a SINGLE wave for
+				// the whole tick and left NO drip_tick_outcomes row —
+				// the waves that never ran were invisible to any audit.
+				// Skip this vertical for the rest of the pass (the outer
+				// loop still runs every other vertical), but name the
+				// failure on the way out.
+				log.Printf("[PartnerDripOrchestrator] refresh_vertical_state vertical=%s: %v — skipping this vertical's remaining waves this tick", v.vertical, err)
+				po.tickOutcome(po.ctx, v.vertical, dripsupply.PassWelcome, dripsupply.OutcomeFailed, reasonRefreshVerticalState, "", nil, 0, "")
+				break
+			}
+			if fresh == nil || fresh.readyCount <= 0 {
 				break
 			}
 			v = *fresh
@@ -1579,6 +1594,9 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	// rationale and the May 14 cap bump.
 	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, v.datasetID, ispCapBacklogReady)
 	if err != nil {
+		// R3: this was the one return in the welcome wave that reduced volume
+		// without leaving a row behind. Same shape as grant_capacity below.
+		po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFailed, "resolve_isp_caps", brand, nil, 0, "")
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
 	// REQ-118 D1: set when the intro-budget chain zeroed an otherwise-funded
@@ -1696,6 +1714,15 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	perISPCaps = effCaps
 
 	claimed, err := po.claimWaveByCaps(ctx, v.vertical, brand, perISPCaps, waveSize, alloc)
+	// R2 audit half, computed on the RAW claim (before deferral) because it
+	// measures the claim path: any granted ISP whose per-ISP budget came back
+	// short is named on this tick's outcome row, so a grant that went unclaimed
+	// is auditable in drip_tick_outcomes instead of only visible as a release in
+	// the capacity ledger.
+	unclaimed := unclaimedGrants(allocate(perISPCaps, waveSize), tallyISPs(claimed))
+	if unclaimed != "" {
+		log.Printf("[PartnerDripOrchestrator] vertical=%s brand=%s %s", v.vertical, brand, unclaimed)
+	}
 	if err != nil {
 		_ = alloc.Release(ctx, "claim_failed")
 		if errors.Is(err, dripsupply.ErrNoPositiveGrant) {
@@ -1762,7 +1789,7 @@ func (po *PartnerDripOrchestrator) processVerticalWith(ctx context.Context, v ve
 	// per-ISP remainder of a partially deployed wave goes back immediately
 	// rather than waiting 45 minutes for ExpireStale.
 	po.commitWave(ctx, alloc, claimed, deployedCount, lastCampaignID)
-	po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFired, "", brand, perISPCaps, deployedCount, lastCampaignID)
+	po.tickOutcome(ctx, v.vertical, pass, dripsupply.OutcomeFired, unclaimed, brand, perISPCaps, deployedCount, lastCampaignID)
 	if err := po.updateDripState(ctx, pc.stateKey, newIdx, brand, lastCampaignID, deployedCount); err != nil {
 		log.Printf("[PartnerDripOrchestrator] update_state: %v", err)
 	}
@@ -5127,6 +5154,8 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 
 	perISPCaps, err := po.resolvePerISPCaps(ctx, v.vertical, v.datasetID, ispCapBacklogFollowup)
 	if err != nil {
+		// R3: same silent return as the welcome pass had, same fix.
+		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "resolve_isp_caps", brand, nil, 0, "")
 		return fmt.Errorf("resolve_isp_caps: %w", err)
 	}
 	// ISP brand-ban on follow-ups (operator 2026-06-14 gmail; 2026-07-07 apple).
@@ -5174,7 +5203,38 @@ func (po *PartnerDripOrchestrator) processFollowupImpl(ctx context.Context, v ve
 	}
 	perISPCaps = effCaps
 
-	claimed, err := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, brand, perISPCaps, hardCap, alloc.AllocationID())
+	// D2 (follow-up half). claimFollowupRecordsByISPCaps' hardCap is a TOTAL across
+	// every ISP in perISPCaps — its `LIMIT $2` applies to the union of the per-ISP rank
+	// windows — so the ISP holding the oldest backlog could spend the whole wave and the
+	// other five ISPs' grants came back unclaimed and were released. Identical to the
+	// welcome-pass defect fixed in claimWaveByCaps; on a 5-touch lane like yahoo_family
+	// touches 2-5 are most of the volume, so leaving it here would have fixed a fifth of
+	// the problem. Split the budget per granted ISP and claim each against its OWN.
+	// The caps CTE is an INNER JOIN on isp (unlike the welcome claim, which buckets
+	// unnamed ISPs into 'other'), so a single-key map filters to that ISP and cannot
+	// sweep another's records in.
+	claimed, err := func() ([]claimedRecord, error) {
+		budgets := allocate(perISPCaps, hardCap)
+		ispOrder := make([]string, 0, len(budgets))
+		for isp := range budgets {
+			ispOrder = append(ispOrder, isp)
+		}
+		sort.Strings(ispOrder)
+		var out []claimedRecord
+		for _, isp := range ispOrder {
+			n := budgets[isp]
+			if n <= 0 {
+				continue
+			}
+			part, e := po.claimFollowupRecordsByISPCaps(ctx, v.vertical, brand,
+				map[string]int{isp: n}, n, alloc.AllocationID())
+			if e != nil {
+				return nil, e
+			}
+			out = append(out, part...)
+		}
+		return out, nil
+	}()
 	if err != nil {
 		_ = alloc.Release(ctx, "claim_failed") // REQ-118 WP5
 		po.tickOutcome(ctx, v.vertical, dripsupply.PassFollowup, dripsupply.OutcomeFailed, "claim_followup", brand, perISPCaps, 0, "")
@@ -5668,6 +5728,12 @@ func zeroAdvanceDisabled() bool {
 	return strings.TrimSpace(os.Getenv("PARTNER_DRIP_ZERO_ADVANCE_DISABLED")) == "1"
 }
 
+// reasonRefreshVerticalState is the drip_tick_outcomes reason for D1: the
+// per-vertical ready-count refresh failed (statement_timeout on a 200k+ row
+// queue is the observed cause), so the vertical is skipped for the rest of this
+// pass instead of silently shrinking to one wave.
+const reasonRefreshVerticalState = "refresh_vertical_state_failed"
+
 // tickOutcome records one drip_tick_outcomes row for (this tick, lane, pass).
 // Never returns an error: a lost outcome row must not abort a wave.
 // tickOutcomeNoMediatorOnce logs once per process when tick outcomes are
@@ -5990,6 +6056,89 @@ func (po *PartnerDripOrchestrator) waveKey(pass, brand, suffix string) string {
 	return k
 }
 
+// allocate splits a wave budget across the ISPs a wave holds grants for, in
+// proportion to each ISP's grant. It is the D2 fix: without it the whole wave
+// budget is one pot that the oldest ISP's backlog can drain (see
+// claimWaveByCaps).
+//
+// PURE: no I/O, no mutation of `grants`, deterministic for a given input.
+// Guarantees, both asserted by TestAllocate:
+//   - sum(result) <= budget
+//   - result[isp] <= grants[isp] for every isp
+//
+// When the grants all fit inside the budget nobody is competing, so nobody is
+// clamped. When they do not, the budget is apportioned by largest remainder.
+func allocate(grants map[string]int, budget int) map[string]int {
+	out := make(map[string]int, len(grants))
+	if budget <= 0 || len(grants) == 0 {
+		return out
+	}
+	isps := make([]string, 0, len(grants))
+	total := 0
+	for isp, g := range grants {
+		if g <= 0 {
+			continue
+		}
+		isps = append(isps, isp)
+		total += g
+	}
+	if total == 0 {
+		return out
+	}
+	sort.Strings(isps) // deterministic remainder order
+	if total <= budget {
+		for _, isp := range isps {
+			out[isp] = grants[isp]
+		}
+		return out
+	}
+	// Over-subscribed. floor(g*budget/total) is STRICTLY below g whenever
+	// budget < total, so the single remainder unit an ISP can receive below
+	// never pushes it past its own grant.
+	rem := budget
+	for _, isp := range isps {
+		n := grants[isp] * budget / total
+		out[isp] = n
+		rem -= n
+	}
+	byRemainder := append([]string(nil), isps...)
+	sort.SliceStable(byRemainder, func(i, j int) bool {
+		return grants[byRemainder[i]]*budget%total > grants[byRemainder[j]]*budget%total
+	})
+	for _, isp := range byRemainder {
+		if rem <= 0 {
+			break
+		}
+		if out[isp] < grants[isp] {
+			out[isp]++
+			rem--
+		}
+	}
+	return out
+}
+
+// unclaimedGrants names the ISPs whose allocated wave budget the claim could not
+// fill — the mediator funded them and the queue had nothing 'ready' to spend it
+// on. Returns "" when every budget was met, so the caller can pass it straight
+// into tickOutcome's reason. PURE: no I/O, no mutation of its inputs.
+func unclaimedGrants(budgets, claimedByISP map[string]int) string {
+	isps := make([]string, 0, len(budgets))
+	for isp := range budgets {
+		isps = append(isps, isp)
+	}
+	sort.Strings(isps)
+	parts := make([]string, 0, len(isps))
+	for _, isp := range isps {
+		if short := budgets[isp] - claimedByISP[isp]; short > 0 {
+			parts = append(parts, fmt.Sprintf("%s:%d", isp, short))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "grant_unclaimed=" + strings.Join(parts, ",")
+}
+
 // claimWaveByCaps runs the welcome claim. On the enforced branch it goes
 // through dripsupply.Transitions.ClaimByISPCaps (WP4) so the claimed rows carry
 // capacity_allocation_id; otherwise it is the untouched claimRecordsByISPCaps.
@@ -6005,11 +6154,46 @@ func (po *PartnerDripOrchestrator) claimWaveByCaps(ctx context.Context, vertical
 	if po.transitions == nil {
 		po.transitions = dripsupply.NewTransitions()
 	}
+	// D2 — CROSS-ISP STARVATION. ClaimByISPCaps' hardCap is a TOTAL across every
+	// ISP in `caps`: its final `ORDER BY r.ingested_at ASC LIMIT $2`
+	// (dripsupply/transition.go:310-317) is applied to the union of all the
+	// per-ISP rank windows, so the ISP holding the oldest backlog could spend
+	// the whole wave and the other five ISPs' grants came back unclaimed, were
+	// released, and had their accrued allowance re-clamped. Split the wave
+	// budget per granted ISP first and claim each ISP against its OWN budget.
+	budgets := allocate(caps, hardCap)
+	if len(budgets) == 0 {
+		return nil, dripsupply.ErrNoPositiveGrant
+	}
+	ispOrder := make([]string, 0, len(budgets))
+	for isp := range budgets {
+		ispOrder = append(ispOrder, isp)
+	}
+	sort.Strings(ispOrder)
 	var raw []dripsupply.ClaimedRecord
 	if err := po.withDBTimeout(ctx, func(tx *sql.Tx) error {
-		var e error
-		raw, e = po.transitions.ClaimByISPCaps(ctx, tx, vertical, brand, caps, hardCap, alloc.AllocationID())
-		return e
+		for _, isp := range ispOrder {
+			n := budgets[isp]
+			if n <= 0 {
+				continue
+			}
+			// The claim buckets any isp_family NOT named in the caps map into
+			// 'other' (transition.go:299-306), so every granted ISP must stay
+			// in the map — at 0 — or a single-key call would sweep the other
+			// ISPs' records into the one being claimed. Fresh map per ISP: the
+			// caller's `caps` is never mutated.
+			one := make(map[string]int, len(caps))
+			for k := range caps {
+				one[k] = 0
+			}
+			one[isp] = n
+			part, e := po.transitions.ClaimByISPCaps(ctx, tx, vertical, brand, one, n, alloc.AllocationID())
+			if e != nil {
+				return e
+			}
+			raw = append(raw, part...)
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}

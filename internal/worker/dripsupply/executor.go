@@ -34,7 +34,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"sort"
 	"strings"
@@ -815,6 +814,11 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 	for _, raw := range isps {
 		isp := normISP(raw)
 		if isp == "" {
+			// An empty ISP cannot be reserved (ReserveReq.validate rejects it)
+			// and therefore cannot get a ledger row, so dropping it silently
+			// would remove a slice of the wave with no record anywhere. Say so.
+			log.Printf("[DripSupply] grant %s/%s wave=%s: DROPPED an empty ISP from the request — that slice of the wave gets no cap and no ledger row",
+				dc.SendingDomain, req.Lane, req.WaveKey)
 			continue
 		}
 		supply := -1
@@ -1108,29 +1112,23 @@ func (m *Mediator) shadowReserve(ctx context.Context, req ReserveReq) (int, stri
 	return granted, reason, m.writeShadowRow(ctx, req, key, granted, status, reason, bal.Headroom()-granted, lane.Unfilled-granted)
 }
 
-// shadowTerms mirrors reservation.go's step (3) term list, INCLUDING its
-// ordering (which is the binding-reason tie-break) and its governor-label rule.
+// shadowTerms is reservation.go's step (3) — the SAME decide() (decision.go),
+// not a copy of it. It used to be a hand-maintained duplicate of the term list,
+// its ordering (which is the binding-reason tie-break) and its governor-label
+// rule; sharing the pure function is what makes
+// TestShadowReserveMatchesReserve true by construction instead of by vigilance.
+//
 // The plan term is omitted: WP6's PlanReader is called inside Reserve's
-// transaction and shadow mode has none.
+// transaction and shadow mode has none, so PlanBounded stays false and the term
+// does not participate.
 func shadowTerms(bal Balance, lane LaneBalance, req ReserveReq) (int, string) {
-	domainReason := ReasonDomainTokens
-	if bal.Effective < bal.Contracted {
-		name := strings.TrimSpace(bal.EffectiveReason)
-		if name == "" {
-			name = "reduced"
-		}
-		domainReason = ReasonGovernor + ":" + name
-	}
-	terms := []term{
-		{ReasonRequested, req.Requested},
-		{domainReason, bal.Headroom()},
-		{ReasonDomainTokens, int(math.Floor(bal.Tokens))},
-		{ReasonLaneDemand, lane.Unfilled},
-	}
-	if req.MailableSupply >= 0 {
-		terms = append(terms, term{ReasonSupply, req.MailableSupply})
-	}
-	return bindingMin(terms)
+	d := decide(GrantInputs{
+		Requested:      req.Requested,
+		Domain:         bal,
+		Lane:           lane,
+		MailableSupply: req.MailableSupply,
+	})
+	return d.Granted, d.BindingReason
 }
 
 func (m *Mediator) writeShadowRow(ctx context.Context, req ReserveReq, key string, reserved int, status, reason string, domainAfter, laneAfter int) error {

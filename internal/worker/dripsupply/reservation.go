@@ -155,8 +155,14 @@ type Service struct {
 
 	// timeouts counts reservations abandoned to a statement timeout. Exposed
 	// because a wedged reserve path must not be invisible — it returns
-	// granted=0 like any other bound and writes no ledger row.
+	// granted=0 like any other bound, plus an audit-only ledger row
+	// (recordReserveTimeout).
 	timeouts atomic.Int64
+
+	// forfeitSchemaReady is set once drip_refill_forfeit / drip_refill_skip
+	// exist (forfeit.go). Every write to them is gated on it so a database that
+	// refuses the DDL degrades to "no diagnostics" and never to "no accrual".
+	forfeitSchemaReady atomic.Bool
 
 	planWarnOnce sync.Once
 }
@@ -275,9 +281,13 @@ var errDuplicateKey = errors.New("dripsupply: duplicate idempotency key")
 // wave gets the FIRST allocation back with Existing=true and consumes nothing.
 //
 // Timeout: on a statement/lock timeout the caller gets granted=0,
-// binding_reason='reserve_timeout' and NO error (§2.2). No ledger row is written
-// for a timeout — writing one would burn the idempotency key and make a
-// transient database stall permanently unretryable for that wave.
+// binding_reason='reserve_timeout' and NO error (§2.2). The wave key stays
+// retryable — writing the timeout under the REAL idempotency key would burn it
+// and make a transient database stall permanently unretryable for that wave —
+// but an audit-only row IS written under a suffixed key
+// (recordReserveTimeout), so a wedged reserve path is visible in the same
+// `GROUP BY binding_reason` as every other zero grant instead of being
+// visible only in a log line and an in-process counter.
 func (s *Service) Reserve(ctx context.Context, req ReserveReq) (ReserveRes, error) {
 	if s == nil || s.db == nil {
 		return ReserveRes{}, errors.New("dripsupply: Reserve called on a nil service")
@@ -338,50 +348,30 @@ func (s *Service) Reserve(ctx context.Context, req ReserveReq) (ReserveRes, erro
 			return fmt.Errorf("lock lane balance %s/%s: %w", req.Lane, req.ISP, err)
 		}
 
-		// (3) the min().
-		// The governor label comes off the ROW (effective_reason, written by
-		// RefillDomain), not from process memory: both orchestrator instances and
-		// the §3 API must report the same reason for the same cell.
-		domainReason := ReasonDomainTokens
-		if bal.Effective < bal.Contracted {
-			name := strings.TrimSpace(bal.EffectiveReason)
-			if name == "" {
-				// effective was reduced but nothing claimed it — a refill that
-				// predates the column, or a hand-edited row. Say so rather than
-				// naming a governor that may not have done it.
-				name = "reduced"
-			}
-			domainReason = ReasonGovernor + ":" + name
-		}
-		// Order is the tie-break (see bindingMin). The domain HEADROOM term sits
-		// ahead of the token term on purpose: when a governor zeroes `effective`
-		// the refill also zeroes `tokens`, and both terms are 0 — reporting
-		// 'domain_tokens' there would blame pacing for a governor stop and send
-		// the operator looking at the wrong thing.
-		terms := []term{
-			{ReasonRequested, req.Requested},
-			{domainReason, bal.Headroom()},
-			{ReasonDomainTokens, int(math.Floor(bal.Tokens))},
-			{ReasonLaneDemand, lane.Unfilled},
+		// (3) the min(). The arithmetic itself is decide() (decision.go) — a
+		// pure function of the two locked rows plus the plan and supply terms —
+		// so this transaction only READS and PERSISTS; it does not also decide.
+		// The same function backs shadowReserve, so the two can no longer drift.
+		in := GrantInputs{
+			Requested:      req.Requested,
+			Domain:         bal,
+			Lane:           lane,
+			MailableSupply: req.MailableSupply,
 		}
 		if s.plan != nil {
 			limit, bounded, err := s.plan.PlanRemaining(ctx, tx, req)
 			if err != nil {
 				return fmt.Errorf("plan_remaining %s/%s/%s: %w", req.Domain, req.ISP, req.Lane, err)
 			}
-			if bounded {
-				terms = append(terms, term{ReasonPlanShare, limit})
-			}
+			in.PlanRemaining, in.PlanBounded = limit, bounded
 		} else {
 			s.planWarnOnce.Do(func() {
 				log.Printf("[DripSupply] no PlanReader wired — the plan_share term is UNBOUNDED and the daily plan does not constrain reservations")
 			})
 		}
-		if req.MailableSupply >= 0 {
-			terms = append(terms, term{ReasonSupply, req.MailableSupply})
-		}
 
-		granted, reason := bindingMin(terms)
+		d := decide(in)
+		granted, reason := d.Granted, d.BindingReason
 
 		// (4) zero grant still records why.
 		if granted <= 0 {
@@ -441,8 +431,9 @@ func (s *Service) Reserve(ctx context.Context, req ReserveReq) (ReserveRes, erro
 		return res, nil
 	case err != nil && isStatementTimeout(err):
 		n := s.timeouts.Add(1)
-		log.Printf("[DripSupply] reserve TIMED OUT (%s/%s/%s wave=%s, budget=%s, total=%d) — granting 0 with reason=%s; no ledger row is written so the wave key stays retryable: %v",
+		log.Printf("[DripSupply] reserve TIMED OUT (%s/%s/%s wave=%s, budget=%s, total=%d) — granting 0 with reason=%s; the wave key stays retryable and an audit row is written under a suffixed key: %v",
 			req.Domain, req.ISP, req.Lane, req.WaveKey, s.stmtTimeout, n, ReasonReserveTimeout, err)
+		s.recordReserveTimeout(ctx, req, key)
 		return ReserveRes{Granted: 0, BindingReason: ReasonReserveTimeout}, nil
 	case err != nil:
 		return ReserveRes{}, fmt.Errorf("dripsupply: reserve %s/%s/%s wave=%s: %w", req.Domain, req.ISP, req.Lane, req.WaveKey, err)
@@ -471,6 +462,65 @@ func bindingMin(terms []term) (int, string) {
 	return best, reason
 }
 
+// reserveTimeoutAuditBudget bounds the audit write that follows a timed-out
+// reservation. It is short on purpose: the database is already slow, and this
+// write must not become a second thing queued behind the contention that caused
+// the timeout.
+const reserveTimeoutAuditBudget = 3 * time.Second
+
+// timeoutAuditKey is the idempotency key an audit-only timeout row is written
+// under: the real key plus a marker plus the row's own allocation id.
+//
+// It MUST NOT be the real key. drip_capacity_ledger.idempotency_key is UNIQUE
+// and Reserve's fast path answers from it, so writing a timeout under the real
+// key would make one transient database stall permanently unretryable for that
+// wave — that is precisely why the timeout path wrote nothing at all before.
+// Suffixing with a fresh uuid leaves the real key free, keeps repeated timeouts
+// on the same wave from colliding with each other, and makes the row
+// unmistakable at a glance.
+func timeoutAuditKey(key string, id uuid.UUID) string {
+	return key + "|reserve_timeout|" + id.String()
+}
+
+// recordReserveTimeout writes the audit row for a reservation abandoned to a
+// statement or lock timeout: reserved=0, status='released',
+// binding_reason='reserve_timeout' — the same shape as every other zero grant,
+// so `WHERE reserved = 0 GROUP BY binding_reason` finally sees it.
+//
+// status='released' does not block a later retry. Nothing blocks a retry except
+// the unique idempotency key, and this row does not hold it.
+//
+// The write gets a context detached from the caller's: a cancelled parent
+// context is one of the shapes isStatementTimeout matches, and reusing it would
+// mean the one event that has to be durable is the one event that can never be
+// written. Best effort — a failure here is logged and never returned, because
+// the caller has already been told it got zero and why.
+func (s *Service) recordReserveTimeout(ctx context.Context, req ReserveReq, key string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reserveTimeoutAuditBudget)
+	defer cancel()
+
+	id := uuid.New()
+	inserted, err := s.insertLedgerRow(wctx, s.db, ledgerRow{
+		AllocationID:  id,
+		Key:           timeoutAuditKey(key, id),
+		Req:           req,
+		Reserved:      0,
+		Status:        StatusReleased,
+		BindingReason: ReasonReserveTimeout,
+		Tick:          s.now(),
+	})
+	if err == nil && !inserted {
+		err = fmt.Errorf("audit key %q already exists", timeoutAuditKey(key, id))
+	}
+	if err != nil {
+		log.Printf("[DripSupply] reserve timeout audit row NOT written (%s/%s/%s wave=%s) — this timeout is invisible to SQL: %v",
+			req.Domain, req.ISP, req.Lane, req.WaveKey, err)
+	}
+}
+
 // recordZeroGrant writes a standalone zero-grant ledger row (used for the
 // outside-window short circuit, which needs no balance locks).
 func (s *Service) recordZeroGrant(ctx context.Context, req ReserveReq, key, reason string) (ReserveRes, error) {
@@ -490,6 +540,7 @@ func (s *Service) recordZeroGrant(ctx context.Context, req ReserveReq, key, reas
 		}
 		if isStatementTimeout(err) {
 			s.timeouts.Add(1)
+			s.recordReserveTimeout(ctx, req, key)
 			return ReserveRes{Granted: 0, BindingReason: ReasonReserveTimeout}, nil
 		}
 		return ReserveRes{}, fmt.Errorf("dripsupply: record zero grant %s/%s/%s: %w", req.Domain, req.ISP, req.Lane, err)
@@ -536,7 +587,12 @@ type ledgerRow struct {
 	Tick          time.Time
 }
 
-func (s *Service) insertLedgerRow(ctx context.Context, tx *sql.Tx, r ledgerRow) (bool, error) {
+// insertLedgerRow takes a Queryer, not a *sql.Tx: every grant path passes its
+// transaction, and recordReserveTimeout passes the pool directly. A single
+// INSERT needs no transaction, and wrapping the timeout audit in one would put
+// it under the service's (deliberately tight) reserve budget — the budget that
+// just expired.
+func (s *Service) insertLedgerRow(ctx context.Context, q Queryer, r ledgerRow) (bool, error) {
 	if r.DomainAfter < 0 {
 		r.DomainAfter = 0
 	}
@@ -544,7 +600,7 @@ func (s *Service) insertLedgerRow(ctx context.Context, tx *sql.Tx, r ledgerRow) 
 		r.LaneUnfilled = 0
 	}
 	var got uuid.UUID
-	err := tx.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 		INSERT INTO drip_capacity_ledger (
 			allocation_id, idempotency_key, day, tick, sending_domain, isp, lane, touch_class,
 			domain_contract_version, dispatch_contract_version,
