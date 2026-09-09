@@ -59,6 +59,49 @@ func touchGapHoursFor(vertical string) int {
 	return followupTouchGapHours
 }
 
+// brandsPerTickFor returns how many brands' waves a vertical fires per tick.
+//
+// WHY THIS EXISTS. A cell's token bucket mints Effective/ActiveIntervals every
+// interval, and a cell can only SPEND when its brand's turn comes round. With the
+// estate default of 4 brands per tick and a 15-brand roster a brand turns roughly
+// hourly, so at any moment ~4 intervals of minted allowance sits unspent waiting for
+// a turn — and whatever is still unspent at the day boundary is destroyed by the
+// day-roll, not carried. Measured on yahoo_family 2026-09-09 with the burst clamp
+// already removed: spend against mint was a UNIFORM 83% across yahoo, aol, att,
+// comcast and sbcglobal (cox 60%, supply-bound). Uniform across ISPs is the
+// signature of turn cadence, not of supply or of any per-ISP ceiling.
+//
+// Raising the turn rate shrinks the unspent balance a lane is carrying when the day
+// rolls. Firing the whole roster every tick means each turn spends roughly the one
+// interval that just minted, so almost nothing is left to expire.
+//
+// It CANNOT raise the daily total: the contract still bounds spend through domain
+// Headroom (Effective - Reserved - Committed, with committed monotone for the day),
+// and per-wave ISP caps still bound each wave. It only changes how often a lane is
+// allowed to collect what it is already owed.
+//
+// Estate default stays 4. Override per lane prefix:
+//
+//	PARTNER_DRIP_BRANDS_PER_TICK_BY_PREFIX="yahoo_family=15"
+func brandsPerTickFor(vertical string, dflt int) int {
+	lv := strings.ToLower(strings.TrimSpace(vertical))
+	raw := os.Getenv("PARTNER_DRIP_BRANDS_PER_TICK_BY_PREFIX")
+	for _, pair := range strings.Split(raw, ",") {
+		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		pfx := strings.ToLower(strings.TrimSpace(kv[0]))
+		if pfx == "" || !strings.HasPrefix(lv, pfx) {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(kv[1])); err == nil && n > 0 {
+			return n
+		}
+	}
+	return dflt
+}
+
 func convertersPinDisabled() bool {
 	v := os.Getenv("PARTNER_DRIP_CONVERTERS_PIN_DISABLED")
 	return v == "1" || v == "true"

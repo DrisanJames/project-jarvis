@@ -937,7 +937,7 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		// Fire up to BrandsPerTick welcome waves per vertical per tick.
 		// Each call advances the brand round-robin pointer and processes
 		// a fresh per-ISP-capped wave for that brand.
-		brandsThisTick := po.cfg.BrandsPerTick
+		brandsThisTick := brandsPerTickFor(v.vertical, po.cfg.BrandsPerTick)
 		if brandsThisTick > len(dripBrands) {
 			brandsThisTick = len(dripBrands)
 		}
