@@ -149,41 +149,84 @@ type LaneBalance struct {
 // balance follows its own (R1)
 // -----------------------------------------------------------------------------
 
-// reseed reconciles ONE lane balance row against the currently active dispatch
-// contract's desired_daily_intros for that ISP.
+// LaneInvariant is the identity every drip_lane_balance row must satisfy:
 //
-// PURE: `prev` is a value, is never written through, and a NEW LaneBalance comes
-// back. No I/O, no clock.
+//	reserved + committed + unfilled == desired
 //
-// The rule is a DELTA, never a reset:
+// It is stated here because it was nowhere before, and that is exactly why it
+// broke. THREE writers touch these columns with three different semantics and
+// none of them owns the identity:
 //
-//	next.unfilled = prev.unfilled + (contractDesired - prev.desired)
-//	              = contractDesired - (prev.desired - prev.unfilled)
+//	Reserve decrements unfilled          (reservation.go:398)
+//	settle  adds the give-back back      (reservation.go:790)
+//	the planner writes its award into it (planner.go:2035)
 //
-// Those two forms are the same number, and the first says why it is the right
-// one: whatever had already reduced `unfilled` — reservations, commits, or the
-// planner's award, which is written straight into `unfilled`
-// (planner.go:2035) — stays reduced by exactly that much. A reset to the new
-// desired would hand back a day's already-spent volume; recomputing from
-// `reserved + committed` would erase the planner's award. Applying the contract
-// delta preserves both.
+// So the drift is permanent and ONE-DIRECTIONAL — a lane loses allowance it is
+// contractually owed and never gets it back. Measured in prod 2026-09-09
+// 13:03Z, five of six yahoo_family rows had drifted; yahoo held 46,000 records
+// ready against 3,324 of allowance and the lane stalled all day.
 //
-// This is the counterpart of what RefillDomain already does for the DOMAIN side
-// — it rewrites contracted/effective from the contract on every tick
-// (bucket.go:857) — which is why raising a DOMAIN contract took effect
-// immediately and raising a LANE contract did nothing at all: the lane rows are
-// created ON CONFLICT DO NOTHING (balance.go:253) and were never revisited.
+// laneDrift is the signed size of the violation, in messages, and it is
+// deliberately the operator's number: POSITIVE means the lane is SHORT by that
+// much. yahoo above reads 106,399 - (231 + 54,500 + 3,324) = 48,344 short.
+// Zero means the row is clean.
+func laneDrift(prev LaneBalance) int {
+	return prev.Desired - (prev.Reserved + prev.Committed + prev.Unfilled)
+}
+
+// reseed reconciles ONE lane balance row: it follows the active dispatch
+// contract AND enforces LaneInvariant, in that order, in one pass.
 //
-// A contract that goes DOWN floors `unfilled` at 0. It never goes negative and
-// it never claws back capacity that is already reserved or committed — the
-// ledger owns that, not this row.
+//	next.desired  = contractDesired
+//	next.unfilled = max(contractDesired - reserved - committed, 0)
+//
+// PURE: `prev` is a value, is never written through, and a NEW LaneBalance
+// comes back. No I/O, no clock. Idempotent by construction — it depends only on
+// the contract and on reserved/committed, neither of which it writes — which
+// matters because this now runs on EVERY tick (~15 s), not only when a contract
+// moves.
+//
+// This SUPERSEDES the earlier delta form (`unfilled + (new - old desired)`).
+// The delta form followed a contract step correctly but could only ever
+// preserve an existing drift, and preserving the drift was the bug: it is what
+// left yahoo with 3,324. Deriving `unfilled` from reserved + committed makes the
+// identity true by construction rather than by everyone remembering to
+// maintain it.
+//
+// Consumed volume is still preserved EXACTLY, and more directly than before:
+// reserved and committed are the ledger's record of what the lane has spent,
+// they are read and never written here, and the allowance is whatever the
+// contract has left over them.
+//
+// Two bounds, because R3 says under- and over-correction are both wrong:
+//
+//   - reserved + committed > desired (a contract lowered below what is already
+//     spent) floors `unfilled` at 0. It never goes negative — a negative
+//     unfilled reads as unbounded the moment anything sums it — and it never
+//     claws back capacity already reserved or committed. The ledger owns that.
+//   - a NEGATIVE reserved or committed (only reachable on a corrupt row) is
+//     read as 0, so a corrupt counter cannot INFLATE unfilled above the
+//     contract. Fixing that row is the ledger rebuild's job, not this one's.
+//
+// One consequence, stated because it is a real behaviour change: the planner's
+// award no longer survives inside `unfilled`. drip_lane_balance goes back to
+// carrying the CONTRACT's line, and the plan keeps its own line where it
+// belongs — drip_daily_plan, read as the plan_share term (planner.go
+// PlanRemaining).
 func reseed(prev LaneBalance, contractDesired int) LaneBalance {
 	if contractDesired < 0 {
 		contractDesired = 0
 	}
+	spent := 0
+	if prev.Reserved > 0 {
+		spent += prev.Reserved
+	}
+	if prev.Committed > 0 {
+		spent += prev.Committed
+	}
 	next := prev
 	next.Desired = contractDesired
-	next.Unfilled = prev.Unfilled + (contractDesired - prev.Desired)
+	next.Unfilled = contractDesired - spent
 	if next.Unfilled < 0 {
 		next.Unfilled = 0
 	}
@@ -191,13 +234,27 @@ func reseed(prev LaneBalance, contractDesired int) LaneBalance {
 }
 
 // ReconcileResult reports what one reconciliation pass changed.
+//
+// Changed and Drifted are different questions and are counted separately on
+// purpose. Changed = "this row was written", which includes the entirely
+// healthy case of a contract that stepped up overnight. Drifted = "this row
+// violated LaneInvariant against its OWN desired before we touched it", which
+// is an accounting defect in Reserve or settle and must not be filed under
+// routine maintenance. Counting a contract step as drift would make the drift
+// signal permanent noise, and a permanently noisy signal is one nobody reads.
 type ReconcileResult struct {
 	Seen    int
 	Changed int
+	Drifted int
 }
 
 // ReconcileLaneBalances rewrites every lane balance row for `day` to follow its
-// active dispatch contract, applying reseed() under the row lock.
+// active dispatch contract and to satisfy LaneInvariant, applying reseed()
+// under the row lock.
+//
+// It runs on EVERY tick, not only when a contract changed: the drift has three
+// authors (see LaneInvariant) and none of them is the contract, so a
+// contract-triggered pass would have repaired yahoo exactly never.
 //
 // The FOR UPDATE is not optional and is the same reasoning as refillOne's:
 // Reserve decrements `unfilled` in its own transaction, so a read-modify-write
@@ -243,7 +300,7 @@ func (s *Service) ReconcileLaneBalances(ctx context.Context, day time.Time, cont
 			if _, skip := excluded[n]; skip {
 				continue
 			}
-			changed, err := s.reconcileLaneOne(ctx, day, c.Lane, n, c.DesiredDailyIntros[isp])
+			changed, drift, err := s.reconcileLaneOne(ctx, day, c.Lane, n, c.DesiredDailyIntros[isp])
 			if err != nil {
 				return res, err
 			}
@@ -251,14 +308,16 @@ func (s *Service) ReconcileLaneBalances(ctx context.Context, day time.Time, cont
 			if changed {
 				res.Changed++
 			}
+			if drift {
+				res.Drifted++
+			}
 		}
 	}
 	return res, nil
 }
 
-func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp string, contractDesired int) (bool, error) {
-	changed := false
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
+func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp string, contractDesired int) (changed, drift bool, err error) {
+	err = s.inTx(ctx, func(tx *sql.Tx) error {
 		var prev LaneBalance
 		err := tx.QueryRowContext(ctx, `
 			SELECT desired, awarded_firm, awarded_provisional, reserved, committed, unfilled
@@ -277,6 +336,9 @@ func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp
 		}
 		next := reseed(prev, contractDesired)
 		if next.Desired == prev.Desired && next.Unfilled == prev.Unfilled {
+			// Already correct. No write, not counted — otherwise every tick
+			// reports the whole estate as "changed" and the number means
+			// nothing.
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -287,14 +349,24 @@ func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp
 			return fmt.Errorf("update lane balance %s/%s: %w", lane, isp, err)
 		}
 		changed = true
-		log.Printf("[DripSupply] lane balance %s/%s on %s follows its contract: desired %d -> %d, unfilled %d -> %d (consumed %d preserved)",
-			lane, isp, dayKey(day), prev.Desired, next.Desired, prev.Unfilled, next.Unfilled, prev.Desired-prev.Unfilled)
+		if d := laneDrift(prev); d != 0 {
+			// R2: a repaired invariant is a DEFECT REPORT, not maintenance.
+			// Reserve or settle lost this allowance and will keep losing it;
+			// silently fixing it every tick forever is how the cause survives.
+			drift = true
+			log.Printf("[DripSupply] lane balance DRIFT repaired %s/%s on %s: unfilled %d -> %d (delta %+d); the row was %d short of reserved+committed+unfilled == desired (%d + %d + %d != %d)",
+				lane, isp, dayKey(day), prev.Unfilled, next.Unfilled, next.Unfilled-prev.Unfilled,
+				d, prev.Reserved, prev.Committed, prev.Unfilled, prev.Desired)
+		} else {
+			log.Printf("[DripSupply] lane balance %s/%s on %s follows its contract: desired %d -> %d, unfilled %d -> %d (reserved %d + committed %d preserved)",
+				lane, isp, dayKey(day), prev.Desired, next.Desired, prev.Unfilled, next.Unfilled, prev.Reserved, prev.Committed)
+		}
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("dripsupply: reconcile lane %s/%s on %s: %w", lane, isp, dayKey(day), err)
+		return false, false, fmt.Errorf("dripsupply: reconcile lane %s/%s on %s: %w", lane, isp, dayKey(day), err)
 	}
-	return changed, nil
+	return changed, drift, nil
 }
 
 // EnsureDayResult reports what a seeding pass created.
