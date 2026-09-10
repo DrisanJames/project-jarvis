@@ -5924,6 +5924,27 @@ func (po *PartnerDripOrchestrator) keptCapLayersWithCeiling(ctx context.Context,
 	return caps, govCeil
 }
 
+// unmeteredBrands remembers which brands have already been reported as
+// unmetered spenders, so the notice is one line per brand per process rather
+// than one per wave per tick.
+var (
+	unmeteredBrandsMu sync.Mutex
+	unmeteredBrands   = map[string]bool{}
+)
+
+func (po *PartnerDripOrchestrator) unmeteredBrandOnce(brand string, fn func()) {
+	k := strings.ToLower(strings.TrimSpace(brand))
+	unmeteredBrandsMu.Lock()
+	seen := unmeteredBrands[k]
+	if !seen {
+		unmeteredBrands[k] = true
+	}
+	unmeteredBrandsMu.Unlock()
+	if !seen {
+		fn()
+	}
+}
+
 // grantWaveCapacity asks the mediator for this wave's capacity and returns the
 // caps the claim must use.
 //
@@ -5958,6 +5979,22 @@ func (po *PartnerDripOrchestrator) grantWaveCapacity(
 	}
 	domain, ok := resolveBrandSendingDomain(brand)
 	if !ok || strings.TrimSpace(domain) == "" {
+		// UNMETERED SPENDER. This wave will still mail — the old chain decides
+		// its caps below — but it draws from no contract balance, so its volume
+		// is invisible to the domain×ISP×day promise and cannot be counted
+		// against it. That is exactly the shape contract-fulfilment rule 5
+		// exists to end, and the ONLY reason it is not a refusal here is that
+		// failing a lane closed on a brand-map gap would be a worse outage than
+		// the leak.
+		//
+		// So it is made LOUD instead of silent: an unresolvable brand is a
+		// missing row in the brand→sending-domain map, a one-line fix, and it
+		// must not sit undiscovered behind an early return the way it has.
+		// Once per brand per process, because it is a standing condition.
+		po.unmeteredBrandOnce(brand, func() {
+			log.Printf("[DripSupply] UNMETERED WAVE: brand %q (lane %s, pass %s) has no resolvable sending domain — it mails on the OLD cap chain and spends NO contract balance, so its volume is absent from the domain×ISP×day contract. Fix the brand→sending-domain mapping.",
+				brand, v.vertical, pass)
+		})
 		return nil, chainCaps, nil
 	}
 
@@ -5986,11 +6023,44 @@ func (po *PartnerDripOrchestrator) grantWaveCapacity(
 	}
 	granted := alloc.EnforcedCaps()
 	if granted == nil {
-		// off / shadow / non-canary cell: the old chain decides, untouched.
-		return alloc, chainCaps, nil
+		// off / shadow / non-canary cell: the old chain decides — EXCEPT for a
+		// contracted zero, which is a prohibition and binds everywhere the mode
+		// enforces anything (REQ-118 rule 5; WP-D measured 6,823 / 4,501 / 2,656
+		// microsoft sends on 2026-09-08 against domain contracts that promised 0).
+		return alloc, applyZeroCaps(chainCaps, alloc.ZeroCapISPs()), nil
 	}
 
-	return alloc, enforcedEffectiveCaps(chainCaps, kept, govCeil, granted), nil
+	return alloc, applyZeroCaps(enforcedEffectiveCaps(chainCaps, kept, govCeil, granted), alloc.ZeroCapISPs()), nil
+}
+
+// applyZeroCaps forces every ISP the wave's domain contract holds at
+// daily_max_by_isp = 0 to a cap of 0, on BOTH branches of grantWaveCapacity.
+//
+// It only ever REDUCES, which is why it is safe to apply outside the mediator's
+// enforcement scope: the worst a wrong answer here can do is mail less, and the
+// set is empty unless the mode already enforces something
+// (Allocation.ZeroCapISPs). An ISP absent from the returned map is NOT added —
+// the map's keys are the wave's ISP set and inventing one would widen the wave.
+//
+// PURE: no I/O, the input map is not mutated, and it takes the ISP LIST rather
+// than the Allocation so it is unit-testable without standing up a mediator and
+// its four contract tables.
+func applyZeroCaps(caps map[string]int, zeros []string) map[string]int {
+	if len(zeros) == 0 {
+		return caps
+	}
+	out := cloneISPCapMap(caps)
+	hit := make([]string, 0, len(zeros))
+	for _, isp := range zeros {
+		if cur, ok := out[isp]; ok && cur > 0 {
+			out[isp] = 0
+			hit = append(hit, isp)
+		}
+	}
+	if len(hit) > 0 {
+		log.Printf("[DripSupply] CONTRACTED ZERO enforced: caps forced to 0 for %v (the domain contract's daily_max_by_isp is 0 — a prohibition, not a volume decision)", hit)
+	}
+	return out
 }
 
 // enforcedEffectiveCaps merges a reservation grant into the chain's caps.

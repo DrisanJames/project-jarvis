@@ -826,10 +826,23 @@ func TestEnsureDayBalances_SeedsOneIntervalOfOpeningCredit(t *testing.T) {
 	if res.DomainRowsCreated != 2 {
 		t.Fatalf("created %d domain rows, want 2", res.DomainRowsCreated)
 	}
-	// gmail is excluded and yahoo is desired 0: neither gets a lane row, so a
-	// reservation against them fails closed instead of granting from thin air.
-	if res.LaneRowsCreated != 1 {
-		t.Fatalf("created %d lane rows, want 1 (gmail excluded, yahoo desired 0)", res.LaneRowsCreated)
+	// CONTRACT-FULFILMENT RULE 1 (2026-09-09, reversal). gmail is excluded and
+	// yahoo is desired 0, and BOTH now get a lane row at desired=0 — because the
+	// contract SPEAKS about them, and a contracted zero is a promise of zero,
+	// not silence. Before this, neither got a row and a reservation against them
+	// came back `no_lane_balance`: the same string an unseeded day produces,
+	// which is how the 2026-09-05 11h42m outage stayed unsearchable.
+	if res.LaneRowsCreated != 3 {
+		t.Fatalf("created %d lane rows, want 3 (aol=5500, gmail excluded->0, yahoo=0)", res.LaneRowsCreated)
+	}
+	if res.LaneRowsZero != 2 {
+		t.Fatalf("seeded %d zero-desire lane rows, want 2 (gmail, yahoo)", res.LaneRowsZero)
+	}
+	for _, isp := range []string{"gmail", "yahoo"} {
+		l := readLane(t, db, day, "wcl_remail", isp)
+		if l.Desired != 0 || l.Unfilled != 0 {
+			t.Fatalf("%s lane row = %+v, want desired=0 unfilled=0", isp, l)
+		}
 	}
 
 	bal := readBalance(t, db, day, "em.historythinking.com", "aol")

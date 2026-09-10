@@ -113,6 +113,7 @@ func TestDripSupply_RoutesRegistered(t *testing.T) {
 		"GET /supply/ledger/capacity",
 		"GET /supply/ledger/supply",
 		"GET /supply/plan",
+		"GET /supply/verdict",
 		"GET /supply/contracts/{kind}/{subject}",
 		"POST /supply/contracts/{kind}/{subject}",
 		"POST /supply/contracts/{kind}/{subject}/{version}/approve",

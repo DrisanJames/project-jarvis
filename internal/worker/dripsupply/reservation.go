@@ -38,6 +38,33 @@ const (
 	ReasonReserveTimeout = "reserve_timeout" // §2.2
 	ReasonNoBalance      = "no_balance"      // fail closed: no domain balance row
 	ReasonNoLaneBalance  = "no_lane_balance" // fail closed: no lane balance row
+
+	// ReasonZeroDesired is a CONTRACTED zero: the lane balance row exists and
+	// its desired is 0, because the dispatch contract either asked for 0 on
+	// this ISP or excluded it outright.
+	//
+	// It is a different fact from ReasonNoLaneBalance and the two must never
+	// share a string again. `no_lane_balance` means the row is MISSING — an
+	// unseeded day, a contract that never loaded, an estate going dark; it is
+	// an incident (dark_alert.go classifies it as a contract denial). This
+	// means the system did exactly what it promised: nothing, on purpose.
+	//
+	// Before 2026-09-09 a contracted zero produced no row at all and therefore
+	// reported `no_lane_balance`, so the healthy case and the outage case were
+	// the same string — the shape that hid the 2026-09-05 11h42m outage.
+	ReasonZeroDesired = "zero_desired"
+
+	// ReasonZeroContracted is the DOMAIN side's contracted zero:
+	// daily_max_by_isp[isp] = 0, i.e. this sending domain may not mail this ISP
+	// at all today. The eight-brand gmail ban is exactly this shape.
+	//
+	// It is distinct from `domain_tokens` (pacing: the bucket is momentarily
+	// spent) and from `governor:<name>` (a governor reduced the day below the
+	// contract). Those two are "not right now"; this one is "not today, by
+	// contract", and it is a PROHIBITION rather than a volume decision — which
+	// is why the mediator applies it estate-wide once it enforces anything,
+	// rather than only inside the canary's scope.
+	ReasonZeroContracted = "zero_contracted"
 )
 
 // ErrAllocationNotReserved is returned by Commit/Release when the allocation is
@@ -377,7 +404,7 @@ func (s *Service) Reserve(ctx context.Context, req ReserveReq) (ReserveRes, erro
 			})
 		}
 
-		d := decide(in)
+		d := nameContractedZero(decide(in), bal, lane)
 		granted, reason := d.Granted, d.BindingReason
 
 		// (4) zero grant still records why.
@@ -446,6 +473,52 @@ func (s *Service) Reserve(ctx context.Context, req ReserveReq) (ReserveRes, erro
 		return ReserveRes{}, fmt.Errorf("dripsupply: reserve %s/%s/%s wave=%s: %w", req.Domain, req.ISP, req.Lane, req.WaveKey, err)
 	}
 	return out, nil
+}
+
+// nameContractedZero renames the lane term when the row that bound is a
+// CONTRACTED zero rather than a lane that has spent its allowance.
+//
+// decide() (decision.go) sees only numbers: a lane row at desired=0 and a lane
+// row that started at 50,000 and has been fully spent both present
+// `unfilled = 0` and both bind as `lane_demand`. Those are opposite facts. One
+// is the contract being kept to the letter; the other is a lane that wants more
+// and cannot have it, and is the operator's cue to look at capacity.
+//
+// The distinguishing evidence is `desired`, which is on the same locked row and
+// costs nothing to read, so the rename happens here rather than inside decide()
+// — decide() stays the pure min() over terms it is, and this is the one place
+// that knows a zero-desire row is a promise rather than an exhaustion.
+//
+// Applies ONLY when the lane term actually bound AND the grant is zero: a lane
+// at desired=0 cannot be the reason a POSITIVE grant was the size it was.
+//
+// PURE: no I/O, no mutation.
+func nameContractedZero(d Decision, domain Balance, lane LaneBalance) Decision {
+	if d.Granted > 0 {
+		return d
+	}
+	// Domain first: a domain contracted at 0 for this ISP is the stronger fact,
+	// and with contracted = effective = tokens = 0 the raw arithmetic reports
+	// `domain_tokens` — pacing — for what is actually a prohibition.
+	if domain.Contracted <= 0 {
+		switch d.BindingReason {
+		case ReasonDomainTokens, ReasonLaneDemand:
+			d.BindingReason = ReasonZeroContracted
+			return d
+		}
+		if strings.HasPrefix(d.BindingReason, ReasonGovernor+":") {
+			// A governor at 0 on a cell the contract already holds at 0 is not
+			// the story; the contract is.
+			d.BindingReason = ReasonZeroContracted
+			return d
+		}
+		return d
+	}
+	if d.BindingReason != ReasonLaneDemand || lane.Desired > 0 {
+		return d
+	}
+	d.BindingReason = ReasonZeroDesired
+	return d
 }
 
 // bindingMin returns the smallest term and the name of the term that bound it.

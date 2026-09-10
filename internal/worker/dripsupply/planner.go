@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -1138,16 +1139,46 @@ func assign(in Inputs) Plan {
 func splitCellSupply(c *cell, in Inputs, inv *InventoryContract) {
 	key := LaneISP{Lane: c.lane, ISP: c.isp}
 	y := yieldFor(in.Yields, c.isp)
-	firmCap := max(in.FreshMailable[key], 0)
-	remailCredit := 0
-	if inv != nil && inv.RemailEnabled {
-		remailCredit = min(max(in.RemailEligible[key], 0),
-			introShareCap(inv.MaxRemailShare, c.awardedCapacity))
-	}
-	provCap := int(math.Floor(float64(max(in.PendingEO[key], 0))*y)) + remailCredit
 
+	// The fill order is the operator's, and it is an ORDER, not a blend
+	// (2026-09-09 ruling 5, and the pilots' 66% inboxing came from keeping the
+	// promise every day this way):
+	//
+	//	1. FRESH   — records that can be introduced today. Cheapest, and the
+	//	             whole point of the lane.
+	//	2. EO      — pending validation x yield.
+	//	3. THE PAD — engaged/remail-eligible records, filling WHATEVER REMAINS
+	//	             of the award.
+	//
+	// Leg 3 is the change. It used to be capped at
+	// introShareCap(max_remail_share, award) and added to the EO credit as one
+	// undifferentiated `provCap`, so a lane whose fresh supply was thin simply
+	// under-minted: the pad was allowed to be a fixed SHARE of the day, never
+	// the REMAINDER of it, and the promise went unkept with a `supply` reason
+	// next to it. Under-delivery is a broken promise exactly like
+	// over-delivery, and filling from engaged records to reach the promise is
+	// always allowed.
+	//
+	// The pad still cannot take the cell PAST its award, so this can only close
+	// a shortfall, never create an overshoot. max_remail_share survives as the
+	// floor it guarantees when the pad is NOT needed to reach the promise, and
+	// padFillToPromiseDisabled() restores it as a hard ceiling with no deploy.
+	firmCap := max(in.FreshMailable[key], 0)
 	firmTotal := min(c.awardedCapacity, firmCap)
-	provTotal := min(c.awardedCapacity-firmTotal, max(provCap, 0))
+
+	eoCredit := int(math.Floor(float64(max(in.PendingEO[key], 0)) * y))
+	provFromEO := min(c.awardedCapacity-firmTotal, max(eoCredit, 0))
+
+	padCap := 0
+	if inv != nil && inv.RemailEnabled {
+		padCap = max(in.RemailEligible[key], 0)
+		if padFillToPromiseDisabled() {
+			padCap = min(padCap, introShareCap(inv.MaxRemailShare, c.awardedCapacity))
+		}
+	}
+	padTotal := min(c.awardedCapacity-firmTotal-provFromEO, padCap)
+
+	provTotal := provFromEO + padTotal
 
 	doms := make([]string, 0, len(c.awards))
 	for d := range c.awards {
@@ -1349,6 +1380,27 @@ func resolveDomains(allowed []string, byBrand map[string][]string, domains map[s
 
 // introShareCap is floor(share x capacity), floored at 0. A share of 0 yields 0
 // and a share >= 1 yields the whole capacity.
+// PadFillDisabledEnv is the kill switch for the engaged-pad fill-to-promise
+// (splitCellSupply leg 3). Set DRIP_SUPPLY_PAD_FILL_DISABLED=1 to put
+// max_remail_share back as a HARD ceiling on the pad, which is the pre-
+// 2026-09-09 behaviour, byte for byte, with no deploy.
+//
+// It is an opt-OUT rather than an opt-in because the ruling it implements is
+// the contract: a day that can reach its promise from engaged records and
+// chooses not to has broken it.
+const PadFillDisabledEnv = "DRIP_SUPPLY_PAD_FILL_DISABLED"
+
+// padFillToPromiseDisabled reads the switch at CALL time, not at process start,
+// so an operator can revert the behaviour with a task restart rather than a
+// build. The planner runs once a day plus replans, so this costs nothing.
+func padFillToPromiseDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(PadFillDisabledEnv))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
 func introShareCap(share float64, capacity int) int {
 	if capacity <= 0 || share <= 0 {
 		return 0
@@ -2022,17 +2074,46 @@ func (p *Planner) store(ctx context.Context, db *sql.DB, contracts *ActiveSet, p
 
 	for _, l := range plan.Lanes {
 		// reserved/committed are NEVER touched: an intraday replan must not
-		// un-spend capacity the executor has already handed out. unfilled is
-		// recomputed from the NEW award minus what is already out.
+		// un-spend capacity the executor has already handed out.
+		//
+		// `unfilled` follows the CONTRACT (desired), not the award. This is
+		// contract-fulfilment rule 3, and it is a REVERSAL of
+		//
+		//	unfilled = GREATEST(award_firm + award_provisional - reserved - committed, 0)
+		//
+		// which is the line that drained live lanes below what they were owed.
+		// award_firm + award_provisional is `desired` MINUS whatever supply the
+		// planner could not back at 00:05, so writing it into `unfilled` turned
+		// a supply forecast into a hard ceiling on the lane's whole day. When
+		// supply arrived later — an EO batch, a remail sweep, an ingest — the
+		// ceiling did not move, and the lane sat on inventory it was
+		// contractually entitled to mail. Measured on prod 2026-09-09: capped
+		// lanes ran at 65% of their mint (change ledger cl-20260909-122414-0c02,
+		// cl-20260909-130354-af16), and yahoo_family held 46,000 records ready
+		// against 3,324 of allowance for a whole day.
+		//
+		// The plan's own line is NOT lost and is not being overruled: the award
+		// still binds through the plan_share term (PlanStore.PlanRemaining reads
+		// drip_daily_plan directly), which is where a per-domain split belongs.
+		// drip_lane_balance carries the CONTRACT's aggregate line, so the
+		// LaneInvariant reserved + committed + unfilled == desired (balance.go)
+		// holds by construction at the write instead of being repaired by
+		// ReconcileLaneBalances one tick later — the window in which Reserve
+		// could read, and bind to, the drained number.
+		//
+		// GREATEST(..., 0) still floors it: a contract lowered below what the
+		// lane has already spent yields 0 allowance, never a negative (a
+		// negative `unfilled` reads as unbounded the moment anything sums it),
+		// and never claws back capacity already reserved or committed.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO drip_lane_balance
 				(day, lane, isp, desired, awarded_firm, awarded_provisional, reserved, committed, unfilled)
-			VALUES ($1::date, $2, $3, $4::int, $5::int, $6::int, 0, 0, $5::int + $6::int)
+			VALUES ($1::date, $2, $3, $4::int, $5::int, $6::int, 0, 0, GREATEST($4::int, 0))
 			ON CONFLICT (day, lane, isp) DO UPDATE SET
 				desired             = EXCLUDED.desired,
 				awarded_firm        = EXCLUDED.awarded_firm,
 				awarded_provisional = EXCLUDED.awarded_provisional,
-				unfilled            = GREATEST(EXCLUDED.awarded_firm + EXCLUDED.awarded_provisional
+				unfilled            = GREATEST(EXCLUDED.desired
 				                               - drip_lane_balance.reserved - drip_lane_balance.committed, 0)
 		`, key, l.Lane, l.ISP, l.Desired, l.AwardedFirm, l.AwardedProvisional); err != nil {
 			return fmt.Errorf("dripsupply: planner lane balance %s/%s: %w", l.Lane, l.ISP, err)

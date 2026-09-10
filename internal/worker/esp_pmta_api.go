@@ -157,9 +157,6 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	} else if s.ipPool != nil && msg.ProfileID != "" {
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		ip, err := s.ipPool.next(msg.RecipientISP)
-		if err != nil && len(s.ipPool.ips) > 0 {
-			return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", err)
-		}
 		if err == nil {
 			vmta := vmtaShortName(ip.Hostname)
 			if vmta == "" {
@@ -173,7 +170,18 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 			}
 			log.Printf("[PMTA-API] Routing %s → VMTA=%s (profile=%s, ISP=%s, poolPrefix=%s)",
 				msg.Email, vmta, profShort, msg.RecipientISP, s.ipPool.poolPrefix)
+		} else if strings.Contains(err.Error(), "strict_pool_exhausted") {
+			// Membership, not volume: this ISP's pool is strict-isolated and holds
+			// no IP of that ISP. DEFER (bounded backoff in deferStrictPool, then a
+			// dead_letter_strict with an operator alert) — the SMTP sender has
+			// always done this; the API sender used to flatten it into the
+			// "no sending IPs configured" hard failure, which markFailed treats as
+			// a terminal send error and the journey retry classifier treats as
+			// grounds to EJECT the enrollment.
+			return nil, fmt.Errorf("deferred_strict_pool: %w", err)
 		} else {
+			// vmtaPool.next only fails on membership now (see its doc comment):
+			// an empty pool. It never refuses on volume.
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}
 	} else {

@@ -95,10 +95,23 @@ func TestDripSupplyMigrationsDoubleApply(t *testing.T) {
 	}
 
 	stmts := req118Statements()
-	// 25 in the 5s slice + 3 send-path-critical + 1 concurrent index.
-	if len(stmts) != 29 {
-		t.Fatalf("expected the full 29-statement REQ-118 set, got %d", len(stmts))
+	// A LOWER BOUND, not an equality (WP-E, 2026-09-09). The original set was
+	// 25 in the 5s slice + 3 send-path-critical + 1 concurrent index = 29, and
+	// `!= 29` was asserted. The slice has since legitimately grown to 31 and
+	// this gate failed on pristine HEAD for it — an exact count turns every
+	// correct addition into a red test, which trains the next reader to edit the
+	// number rather than to ask why it moved.
+	//
+	// What the gate is actually for is that the whole set is present and applies
+	// twice cleanly. A floor says that; equality says "nobody may add a table".
+	// The per-object assertions below (req118StartupTables /
+	// req118StartupIndexes / the §1.3 columns) are what pin the CONTENT, and
+	// they do not weaken when the count moves.
+	const req118MinStatements = 29
+	if len(stmts) < req118MinStatements {
+		t.Fatalf("REQ-118 set has shrunk to %d statements (floor %d) — an entry was deleted, not added", len(stmts), req118MinStatements)
 	}
+	t.Logf("applying %d REQ-118 statements twice", len(stmts))
 	for pass := 1; pass <= 2; pass++ {
 		for _, s := range stmts {
 			if _, err := db.Exec(s.sql); err != nil {

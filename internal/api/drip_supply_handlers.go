@@ -177,6 +177,7 @@ func NewDripSupplyService(db *sql.DB) *DripSupplyService {
 //	GET  /supply/ledger/capacity
 //	GET  /supply/ledger/supply
 //	GET  /supply/plan
+//	GET  /supply/verdict
 //	GET  /supply/contracts/{kind}/{subject}
 //	POST /supply/contracts/{kind}/{subject}
 //	POST /supply/contracts/{kind}/{subject}/{version}/approve
@@ -194,6 +195,7 @@ func (s *DripSupplyService) RegisterRoutes(r chi.Router) {
 			lr.Get("/supply", s.HandleSupplyLedger)
 		})
 		sr.Get("/plan", s.HandlePlan)
+		sr.Get("/verdict", s.HandleVerdict)
 		sr.Route("/contracts", func(cr chi.Router) {
 			cr.Get("/{kind}/{subject}", s.HandleContractVersions)
 			cr.Post("/{kind}/{subject}", s.HandleContractDraft)
@@ -3909,4 +3911,284 @@ func (s *DripSupplyService) HandleManualRevenue(w http.ResponseWriter, r *http.R
 		"as_of":      time.Now().UTC(),
 		"labels":     map[string]string{"amount": dripLabelActual},
 	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /supply/verdict — THE FULFILLMENT VERDICT
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// One row per sending domain × ISP for one Denver day: what the contract
+// PROMISED, what the mediator MINTED, what was SENT, and what the lake says was
+// DELIVERED — and whether that honoured the promise inside ±5 %.
+//
+// THIS HANDLER DOES NOT COMPUTE THE VERDICT. It projects `drip_fulfillment_verdict`
+// (WP-C, cmd/server/main.go `reqcf_create_drip_fulfillment_verdict`), which the
+// offline runner `agents/reporting/supply_reconcile.py --verdict` writes at
+// window close. That split is deliberate and load-bearing:
+//
+//   - `delivered` is per-ISP delivery truth, which lives in the ATHENA LAKE
+//     (`ignite_analytics.email_events`), never in PG counters — PG `delivered`
+//     is an ingestion rate, not a delivery rate. A request-time Athena scan on a
+//     portal screen would be slow, billable per byte, and would fail the page.
+//   - The status rule (±5 % of the promise, the under/over reason ladder) has
+//     exactly ONE implementation, in Python. A second implementation here would
+//     be a second verdict, and the operator would have two answers to "was the
+//     contract honoured" — which is the specific failure this whole work package
+//     exists to remove.
+//
+// So: no row for a cell means the verdict is UNKNOWN for that cell, and the
+// response says so in `degraded` rather than rendering a healthy-looking blank.
+// `tolerance_pct` is read from the ROW, not from a constant here, so a verdict
+// computed under an older tolerance keeps being read under that tolerance.
+
+// dripVerdictRow is one domain×ISP judgement.
+type dripVerdictRow struct {
+	SendingDomain string `json:"sending_domain"`
+	ISP           string `json:"isp"`
+	// Mode is the surface the verdict was computed on: `live` when the mediator
+	// actually governed the cell, `shadow` when it only observed (mode=shadow,
+	// and every non-canary cell under mode=canary). A `shadow` verdict is a
+	// WOULD-BE reading — the numbers are real, the enforcement was not.
+	Mode                  string `json:"mode"`
+	DomainContractVersion int    `json:"domain_contract_version"`
+
+	Promised int `json:"promised"`
+	Minted   int `json:"minted"`
+	Sent     int `json:"sent"`
+	// Delivered is NULLABLE on purpose: Microsoft confirms ~3h late and the lake
+	// read can fail. null renders as "unknown", never as 0.
+	Delivered       *int   `json:"delivered"`
+	DeliveredSource string `json:"delivered_source"`
+
+	TolerancePct float64 `json:"tolerance_pct"`
+	Status       string  `json:"status"`
+	Reason       string  `json:"reason"`
+	// Verdict is the operator-facing composition, e.g. `under:no_lane_balance`
+	// or `over:internal_auto_insurance_v10`. Composed here so the screen and any
+	// other reader spell it the same way.
+	Verdict string `json:"verdict"`
+
+	// Delta / DeltaPct are delivered − promised. Presentation arithmetic on two
+	// stored numbers, not a re-derivation of the judgement.
+	Delta    *int     `json:"delta"`
+	DeltaPct *float64 `json:"delta_pct"`
+
+	WindowClosedAt *time.Time `json:"window_closed_at"`
+	ComputedAt     time.Time  `json:"computed_at"`
+}
+
+// dripVerdictSummary is the strip above the table.
+type dripVerdictSummary struct {
+	Cells      int `json:"cells"`
+	Fulfilled  int `json:"fulfilled"`
+	Under      int `json:"under"`
+	Over       int `json:"over"`
+	Pending    int `json:"pending"`
+	NoContract int `json:"no_contract"`
+	// Enforced counts the cells whose verdict was computed on the live surface.
+	Enforced int `json:"enforced"`
+	// Anomalies is under+over. The operator ruling is that they are EQUAL-WEIGHT
+	// broken promises, so they are summed, never ranked against each other.
+	Anomalies int `json:"anomalies"`
+
+	Promised  int  `json:"promised"`
+	Minted    int  `json:"minted"`
+	Sent      int  `json:"sent"`
+	Delivered *int `json:"delivered"`
+	// UnderVolume / OverVolume are the message counts behind the two anomaly
+	// classes — an operator sizes a breach by volume, not by cell count.
+	UnderVolume int        `json:"under_volume"`
+	OverVolume  int        `json:"over_volume"`
+	ComputedAt  *time.Time `json:"computed_at"`
+}
+
+type dripVerdictResponse struct {
+	dripSupplyMeta
+	Summary  dripVerdictSummary `json:"summary"`
+	Verdicts []dripVerdictRow   `json:"verdicts"`
+}
+
+func dripVerdictLabels() map[string]string {
+	return map[string]string{
+		"promised":  dripLabelContracted,
+		"minted":    dripLabelReserved,
+		"sent":      dripLabelActual,
+		"delivered": dripLabelActual,
+		"delta":     dripLabelActual,
+		"status":    dripLabelActual,
+		"tolerance": dripLabelContracted,
+		"mode":      dripLabelEffective,
+	}
+}
+
+// Verdict statuses, mirroring the table's CHECK constraint.
+const (
+	dripVerdictFulfilled  = "fulfilled"
+	dripVerdictUnder      = "under"
+	dripVerdictOver       = "over"
+	dripVerdictPending    = "pending"
+	dripVerdictNoContract = "no_contract"
+)
+
+// dripVerdictSQL projects one Denver day's verdict.
+//
+// `mode` is in the table's primary key, so a cell can carry BOTH a live and a
+// shadow judgement. This picks ONE per cell — live wins, because a live verdict
+// is the one that describes enforcement that actually happened; the shadow row
+// for the same cell is the calibration reading and is not what the operator is
+// asking about when they open this screen. DISTINCT ON does that in one pass
+// without a self-join.
+const dripVerdictSQL = `
+	SELECT DISTINCT ON (sending_domain, isp)
+	       sending_domain, isp, mode, domain_contract_version,
+	       promised, minted, sent, delivered, delivered_source,
+	       tolerance_pct, status, reason, window_closed_at, computed_at
+	  FROM drip_fulfillment_verdict
+	 WHERE day = $1
+	 ORDER BY sending_domain, isp, (mode = 'live') DESC, computed_at DESC`
+
+// dripComposeVerdict renders the operator-facing verdict string. `fulfilled`,
+// `pending` and `no_contract` stand alone; `under`/`over` always carry their
+// reason, because an unexplained breach is not reportable.
+func dripComposeVerdict(status, reason string) string {
+	switch status {
+	case dripVerdictUnder, dripVerdictOver:
+		r := strings.TrimSpace(reason)
+		if r == "" {
+			r = "unexplained"
+		}
+		return status + ":" + r
+	default:
+		return status
+	}
+}
+
+// HandleVerdict GET /api/mailing/supply/verdict?day=
+func (s *DripSupplyService) HandleVerdict(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.org(w, r); !ok {
+		return
+	}
+	day, err := dripSupplyDay(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx := r.Context()
+	tx, err := s.readTx(ctx)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "supply verdict: "+err.Error())
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, dripVerdictSQL, day)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "supply verdict: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := dripVerdictResponse{
+		dripSupplyMeta: dripMeta(day, dripVerdictLabels()),
+		Verdicts:       []dripVerdictRow{},
+	}
+	sum := dripVerdictSummary{}
+	deliveredTotal, anyDelivered := 0, false
+	versions := map[string]int{}
+
+	for rows.Next() {
+		var v dripVerdictRow
+		var delivered sql.NullInt64
+		var windowClosed sql.NullTime
+		var tolerance sql.NullFloat64
+		if err := rows.Scan(&v.SendingDomain, &v.ISP, &v.Mode, &v.DomainContractVersion,
+			&v.Promised, &v.Minted, &v.Sent, &delivered, &v.DeliveredSource,
+			&tolerance, &v.Status, &v.Reason, &windowClosed, &v.ComputedAt); err != nil {
+			respondError(w, http.StatusInternalServerError, "supply verdict scan: "+err.Error())
+			return
+		}
+		v.Delivered = dsupNullInt(delivered)
+		v.WindowClosedAt = dsupNullTime(windowClosed)
+		if tolerance.Valid {
+			v.TolerancePct = tolerance.Float64
+		}
+		v.Verdict = dripComposeVerdict(v.Status, v.Reason)
+		if delivered.Valid {
+			d := int(delivered.Int64)
+			delta := d - v.Promised
+			v.Delta = dsupInt(delta)
+			if v.Promised > 0 {
+				v.DeltaPct = dsupFloat(float64(delta) / float64(v.Promised))
+			}
+			deliveredTotal += d
+			anyDelivered = true
+			switch v.Status {
+			case dripVerdictUnder:
+				sum.UnderVolume += -delta
+			case dripVerdictOver:
+				sum.OverVolume += delta
+			}
+		}
+
+		sum.Cells++
+		sum.Promised += v.Promised
+		sum.Minted += v.Minted
+		sum.Sent += v.Sent
+		if v.Mode == "live" {
+			sum.Enforced++
+		}
+		switch v.Status {
+		case dripVerdictFulfilled:
+			sum.Fulfilled++
+		case dripVerdictUnder:
+			sum.Under++
+		case dripVerdictOver:
+			sum.Over++
+		case dripVerdictPending:
+			sum.Pending++
+		case dripVerdictNoContract:
+			sum.NoContract++
+		}
+		if v.DomainContractVersion > 0 {
+			versions[v.SendingDomain] = v.DomainContractVersion
+		}
+		if sum.ComputedAt == nil || v.ComputedAt.After(*sum.ComputedAt) {
+			sum.ComputedAt = dsupTime(v.ComputedAt)
+		}
+		out.Verdicts = append(out.Verdicts, v)
+	}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "supply verdict: "+err.Error())
+		return
+	}
+
+	sum.Anomalies = sum.Under + sum.Over
+	// Estate delivered stays UNKNOWN unless at least one cell was measured —
+	// summing nothing into 0 is exactly the silent-zero this screen must not do.
+	if anyDelivered {
+		sum.Delivered = dsupInt(deliveredTotal)
+	}
+	out.Summary = sum
+	if len(versions) > 0 {
+		out.ContractVersions = versions
+	}
+
+	if sum.Cells == 0 {
+		out.Degraded = append(out.Degraded,
+			"no drip_fulfillment_verdict rows for this day — the verdict runner "+
+				"(agents/reporting/supply_reconcile.py --verdict) has not written this day yet. "+
+				"The verdict is UNKNOWN, not fulfilled.")
+	}
+	if sum.Pending > 0 {
+		out.Degraded = append(out.Degraded, fmt.Sprintf(
+			"%d cell(s) have no delivered figure yet — delivery confirms up to ~3h late at "+
+				"Microsoft, so a pending cell is unmeasured, not under-delivered", sum.Pending))
+	}
+	if sum.Cells > 0 && sum.Enforced < sum.Cells {
+		out.Degraded = append(out.Degraded, fmt.Sprintf(
+			"%d of %d cell(s) were judged on the SHADOW surface: the mediator observed them but "+
+				"did not govern the send, so their verdict is a would-be reading",
+			sum.Cells-sum.Enforced, sum.Cells))
+	}
+	respondJSON(w, http.StatusOK, out)
 }

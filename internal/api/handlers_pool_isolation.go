@@ -9,16 +9,16 @@ import (
 )
 
 type poolIPInfo struct {
-	PoolName       string  `json:"pool_name"`
-	IPAddress      string  `json:"ip_address"`
-	IPID           string  `json:"ip_id"`
-	Hostname       string  `json:"hostname"`
-	Status         string  `json:"status"`
-	TotalSent      int     `json:"total_sent"`
-	ISPDelivered   int     `json:"isp_delivered"`
-	ISPBounced     int     `json:"isp_bounced"`
-	ISPDeferred    int     `json:"isp_deferred"`
-	AcceptancePct  *float64 `json:"acceptance_pct"`
+	PoolName      string   `json:"pool_name"`
+	IPAddress     string   `json:"ip_address"`
+	IPID          string   `json:"ip_id"`
+	Hostname      string   `json:"hostname"`
+	Status        string   `json:"status"`
+	TotalSent     int      `json:"total_sent"`
+	ISPDelivered  int      `json:"isp_delivered"`
+	ISPBounced    int      `json:"isp_bounced"`
+	ISPDeferred   int      `json:"isp_deferred"`
+	AcceptancePct *float64 `json:"acceptance_pct"`
 }
 
 type poolSummary struct {
@@ -296,12 +296,17 @@ func (s *PMTACampaignService) HandlePoolIsolationActivate(w http.ResponseWriter,
 			resp.Actions = append(resp.Actions, fmt.Sprintf("%s: paused %d non-selected IPs", req.PoolName, n))
 		}
 
+		// A standby IP is parked by MEMBERSHIP (status='paused' drops it out of
+		// vmtaPool's `status IN ('active','warmup')` load), never by a zero
+		// warmup_daily_limit: the IP layer stopped judging volume on 2026-09-09,
+		// so `warmup, limit=0` would leave the standby taking its full rotation
+		// share of the pool's traffic.
 		_, err = s.db.ExecContext(ctx, `
-			UPDATE mailing_ip_addresses SET status = 'warmup', warmup_daily_limit = 0, updated_at = NOW()
-			WHERE ip_address = $1::inet AND status NOT IN ('warmup', 'paused', 'cold')
+			UPDATE mailing_ip_addresses SET status = 'paused', updated_at = NOW()
+			WHERE ip_address = $1::inet AND status NOT IN ('paused', 'cold')
 		`, req.StandbyIP)
 		if err == nil {
-			resp.Actions = append(resp.Actions, fmt.Sprintf("%s: standby IP set to warmup (limit=0)", req.StandbyIP))
+			resp.Actions = append(resp.Actions, fmt.Sprintf("%s: standby IP parked (status=paused)", req.StandbyIP))
 		}
 	}
 

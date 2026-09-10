@@ -2864,8 +2864,6 @@ func isTransportError(errMsg string) bool {
 		"create pmta request",
 		"pmta api request to",
 		"no sender configured",
-		"all ips exhausted",
-		"deferring send",
 		"no sending ips configured",
 		"refusing to send via default-pool",
 		"no vmta routing available",

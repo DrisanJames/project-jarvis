@@ -218,8 +218,18 @@ const (
 //	  refi_heloc/aol  firm min(8000, fresh 5000)=5000; prov min(3000, 2000x0.85=1700)=1700
 //	  refi_heloc/yah  firm min(4000, fresh 6000)=4000; prov 0
 //	  consumer/aol    firm min(4000, fresh  900)= 900; prov 0
-//	  wcl_remail/aol  firm min(4800, fresh 1000)=1000; prov min(3800, remail credit
-//	                  min(50000, 0.25x4800=1200)=1200)=1200
+//	  wcl_remail/aol  firm min(4800, fresh 1000)=1000; then EO 0; then THE PAD
+//	                  fills the REMAINDER: min(4800-1000, remail 50000)=3800.
+//	                  RULE 2 (2026-09-09): the pad fills to the promise. It used
+//	                  to be share-capped at introShareCap(0.25, 4800)=1200, so
+//	                  this cell under-minted by 2,600 with 50,000 engaged records
+//	                  sitting there and reported unserved_reason='supply' — a
+//	                  supply reason on a cell that was not short of supply. It now
+//	                  reads unserved=1200 / 'domain_capacity', which is the
+//	                  constraint that is actually true (6000 desired, 4800 of db
+//	                  capacity). max_remail_share still binds when the pad is NOT
+//	                  needed to reach the promise; DRIP_SUPPLY_PAD_FILL_DISABLED=1
+//	                  restores it as a hard ceiling.
 //	  probe_v9/aol    firm min(200, fresh 400)=200
 func goldenInputs(t *testing.T) Inputs {
 	t.Helper()
@@ -983,11 +993,11 @@ func TestPlanner_StoreIsIdempotentAndPreservesLedgerCounters(t *testing.T) {
 		t.Errorf("re-store produced %d rows, want %d — the day must be replaced, not appended to", rows, len(plan.Rows))
 	}
 
-	var reserved, committed, unfilled, firm, prov int
+	var reserved, committed, unfilled, desired, firm, prov int
 	if err := db.QueryRow(`
-		SELECT reserved, committed, unfilled, awarded_firm, awarded_provisional
+		SELECT reserved, committed, unfilled, desired, awarded_firm, awarded_provisional
 		FROM drip_lane_balance WHERE day = $1::date AND lane = 'refi_heloc' AND isp = 'aol'
-	`, dayKey(in.Day)).Scan(&reserved, &committed, &unfilled, &firm, &prov); err != nil {
+	`, dayKey(in.Day)).Scan(&reserved, &committed, &unfilled, &desired, &firm, &prov); err != nil {
 		t.Fatal(err)
 	}
 	if reserved != 400 || committed != 1100 {
@@ -996,8 +1006,27 @@ func TestPlanner_StoreIsIdempotentAndPreservesLedgerCounters(t *testing.T) {
 	if firm != 5000 || prov != 1700 {
 		t.Errorf("awarded_firm/provisional = %d/%d, want 5000/1700", firm, prov)
 	}
-	if want := firm + prov - reserved - committed; unfilled != want {
-		t.Errorf("unfilled=%d, want %d (award minus what is already out)", unfilled, want)
+	// CONTRACT-FULFILMENT RULE 3 (2026-09-09, reversal). `unfilled` follows the
+	// CONTRACT, not the award. The award (5000+1700=6700) is `desired` minus the
+	// supply the planner could not back at 00:05; writing THAT into unfilled
+	// turned a 00:05 supply forecast into a hard ceiling on the lane's whole day,
+	// and when supply arrived later the ceiling did not move. Measured on prod
+	// 2026-09-09: capped lanes at 65% of mint; yahoo_family held 46,000 ready
+	// against 3,324 of allowance (cl-20260909-122414-0c02, -130354-af16).
+	//
+	// The old assertion was `firm + prov - reserved - committed` = 5200. The
+	// contract line is 1,300 higher, and those 1,300 are records this lane is
+	// owed.
+	if want := desired - reserved - committed; unfilled != want {
+		t.Errorf("unfilled=%d, want %d (CONTRACT desired=%d minus what is already out)", unfilled, want, desired)
+	}
+	// State the invariant itself, not only the arithmetic that produces it.
+	if reserved+committed+unfilled != desired {
+		t.Errorf("LaneInvariant broken after a replan: %d + %d + %d != %d", reserved, committed, unfilled, desired)
+	}
+	if unfilled <= firm+prov-reserved-committed {
+		t.Errorf("unfilled=%d did not rise above the award-derived %d — the planner is still draining the lane below its contract",
+			unfilled, firm+prov-reserved-committed)
 	}
 }
 
@@ -1337,14 +1366,23 @@ func TestAssign_SupplyReclaim_NegativeControl_NoSupplyNoReclaim(t *testing.T) {
 //
 // The headroom gate normally stops a cell taking more than its inventory can
 // back, so a second-order release needs the one case where the ceiling is a
-// genuine OVER-estimate: a remail-funded lane. supplyCeilingCap counts every
-// remail-eligible record, but splitCellSupply then caps the remail credit at
-// max_remail_share of the FINAL award — so lane_b takes 800 and can back only
-// 0.25 x 800 = 200 of it. The other 600 is released again and recorded, and it
-// must NOT be handed to lane_c however well supplied lane_c is: a loop here
-// would let a chain of supply-short lanes churn the plan into something nobody
-// can explain at 06:00.
+// genuine OVER-estimate: a remail-funded lane whose pad is SHARE-CAPPED.
+// supplyCeilingCap counts every remail-eligible record, but with the cap in
+// force splitCellSupply backs only max_remail_share of the FINAL award — so
+// lane_b takes 800 and can back only 0.25 x 800 = 200 of it. The other 600 is
+// released again and recorded, and it must NOT be handed to lane_c however well
+// supplied lane_c is: a loop here would let a chain of supply-short lanes churn
+// the plan into something nobody can explain at 06:00.
+//
+// Since RULE 2 (2026-09-09) the pad fills to the promise, which CLOSES that
+// over-estimate in the default configuration — splitCellSupply now backs exactly
+// min(award, supplyCeilingCap), so no second-order release exists to re-offer
+// (asserted by TestAssign_PadFillLeavesNoSecondOrderRelease below). The
+// one-pass bound is still the guard that matters if a future term re-opens a
+// gap, so this test keeps exercising it through the kill switch, which restores
+// the share cap exactly.
 func TestAssign_SupplyReclaimIsBoundedToOnePass(t *testing.T) {
+	t.Setenv(PadFillDisabledEnv, "1")
 	in := reclaimInputs(t, 200, 0)
 	in.Contracts.Inventories["lane_b"] = planInventory("lane_b", true, 0.25)
 	in.RemailEligible[LaneISP{"lane_b", "aol"}] = 10000

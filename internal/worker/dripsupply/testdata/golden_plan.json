@@ -173,14 +173,14 @@
       "isp": "aol",
       "sending_domain": "em.discountblog.com",
       "award_firm": 1000,
-      "award_provisional": 1200,
+      "award_provisional": 3800,
       "followups_reserved": 0,
       "plan_share": 1,
       "rank": 3,
       "rank_reason": "tier=2 contribution=$4.10/1k(mature) domains=1",
-      "unserved": 3800,
-      "unserved_reason": "supply",
-      "supply_released": 2600
+      "unserved": 1200,
+      "unserved_reason": "domain_capacity",
+      "supply_released": 0
     }
   ],
   "lanes": [
@@ -265,13 +265,13 @@
       "desired": 6000,
       "awarded_capacity": 4800,
       "awarded_firm": 1000,
-      "awarded_provisional": 1200,
+      "awarded_provisional": 3800,
       "followups_due": 0,
       "followups_reserved": 0,
-      "released": 2600,
+      "released": 0,
       "reclaimed": 0,
-      "unserved": 3800,
-      "unserved_reason": "supply",
+      "unserved": 1200,
+      "unserved_reason": "domain_capacity",
       "rank": 3
     }
   ],
@@ -331,7 +331,7 @@
   "replanned": false,
   "from_store": false,
   "supply_released": {
-    "em.discountblog.com|aol": 3690,
+    "em.discountblog.com|aol": 1090,
     "em.historythinking.com|aol": 2250,
     "em.myownhealth.net|aol": 1060
   },

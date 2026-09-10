@@ -494,6 +494,182 @@ func (t *Transitions) Reap(ctx context.Context, db Queryer, olderThan time.Durat
 }
 
 // -----------------------------------------------------------------------------
+// Window expiry — a day's volume dies with its window (rule 4)
+// -----------------------------------------------------------------------------
+
+// ExpiredAtWindowReason is stamped on mailing_campaign_queue.error_message when
+// a row is expired because its contract window closed. It is the operator's
+// search key and the reconciliation's discriminator: an ordinary permanent
+// failure is a transport verdict, this one is a POLICY decision.
+const ExpiredAtWindowReason = "expired_at_window"
+
+// ExpiredAtWindowStatus is the terminal status a window-expired row lands in.
+//
+// `cancelled`, and the choice is a RETENTION decision, not a naming one
+// (WP-C review, 2026-09-09). mailing_campaign_queue has no status CHECK in prod
+// (main.go outbox_drop_old_status_chk), so any string would be accepted — and
+// that is the trap. The janitor reaps only
+// ('accepted','cancelled','failed','dead_letter','dead_letter_strict')
+// (internal/api/data_cleanup.go, and idx_mcq_terminal_cleanup is built on
+// exactly that set), so a row parked under ANY other value — 'expired',
+// 'failed_permanent' — is terminal, unreapable and immortal on an 86 GB table.
+//
+// `cancelled` is also the honest word: the row was not rejected by a transport,
+// its day ran out. The discriminator is error_message, not the status.
+//
+// The two readers that matter both behave: the send worker's claim predicate
+// picks up only 'queued' and 'failed_retryable' (send_worker.go
+// claimISPForOne), and campaign_scheduler's "still pending" set excludes
+// 'cancelled', so the campaign can complete.
+const ExpiredAtWindowStatus = "cancelled"
+
+// maxWindowExpiryBatch bounds one sweep statement.
+const maxWindowExpiryBatch = 5000
+
+// DefaultWindowExpiryBatch is one sweep's default row budget.
+const DefaultWindowExpiryBatch = 2000
+
+// dripCampaignsForDayDomainSQL lists the campaigns the mediator funded for one
+// domain on one day, from OUR ledger rather than from mailing_campaigns.
+//
+// The ledger is the right source for three reasons: it is the only table that
+// knows a campaign was funded by a CONTRACT (mailing_campaigns has no such
+// column — partner_drip_tag is a free-text attribution stamp written after the
+// fact); (day, sending_domain, isp) is an index prefix, so this is a range scan
+// on a table sized in ledger rows rather than a scan of a multi-million-row
+// campaign table; and it cannot reach a campaign this subsystem did not fund,
+// which is what keeps a policy expiry off the broadcast board's queue rows.
+const dripCampaignsForDayDomainSQL = `
+	SELECT DISTINCT campaign_id
+	  FROM drip_capacity_ledger
+	 WHERE day = $1::date
+	   AND sending_domain = $2
+	   AND campaign_id IS NOT NULL
+	 LIMIT $3`
+
+// maxWindowExpiryCampaigns bounds the campaign id list one sweep carries, so
+// the ANY() below can never become an unbounded IN-list.
+const maxWindowExpiryCampaigns = 500
+
+// expireRetryablesSQL moves the day's still-retrying rows to terminal.
+//
+// The inner SELECT is `campaign_id = ANY($1)` (idx_queue_campaign) AND
+// `status = 'failed_retryable'`, ORDER BY id, LIMIT, FOR UPDATE SKIP LOCKED —
+// so a send worker holding a row is stepped over rather than waited on, and one
+// sweep can never hold more than `batch` row locks.
+//
+// next_attempt_at is cleared as well as the status: the status alone stops the
+// claim query, but leaving a live backoff timestamp on a terminal row is how a
+// later reader (or a hand-written requeue) resurrects it into tomorrow.
+const expireRetryablesSQL = `
+	UPDATE mailing_campaign_queue
+	   SET status          = '` + ExpiredAtWindowStatus + `',
+	       error_message   = '` + ExpiredAtWindowReason + `',
+	       next_attempt_at = NULL,
+	       locked_at       = NULL,
+	       last_attempt_at = NOW()
+	 WHERE id IN (
+	    SELECT q.id
+	      FROM mailing_campaign_queue q
+	     WHERE q.campaign_id = ANY($1::uuid[])
+	       AND q.status = 'failed_retryable'
+	     ORDER BY q.id
+	     LIMIT $2
+	     FOR UPDATE SKIP LOCKED
+	 )`
+
+// WindowExpiryResult reports one sweep.
+type WindowExpiryResult struct {
+	Campaigns int
+	Expired   int
+	// Truncated is true when the sweep hit its row budget and more rows remain.
+	// The caller re-runs on the next tick; it exists so "we expired 2,000" is
+	// never mistaken for "there were 2,000".
+	Truncated bool
+}
+
+// ExpireRetryablesAtWindowClose terminates every `failed_retryable` queue row
+// belonging to one sending domain's contract day, once that day's window has
+// closed. Contract-fulfilment rule 4.
+//
+// WHY THIS EXISTS. A day's volume expires at the end of its window; unsent
+// contract rows do not roll into tomorrow. But the durable outbox re-picks a
+// `failed_retryable` row the moment its exponential backoff elapses
+// (send_worker.go claimISPForOne: `status = 'failed_retryable' AND
+// (next_attempt_at IS NULL OR next_attempt_at <= NOW())`) and that predicate has
+// NO DAY BOUND. A row that failed at 19:50 with a long backoff therefore ships
+// TOMORROW — against tomorrow's contract, which never promised it. One row is
+// then two broken promises: today under-delivered by it and tomorrow
+// over-delivered by it, and the second is invisible because nothing counts a
+// yesterday row against today's balance.
+//
+// The capacity itself is NOT clawed back and no balance is touched. The
+// reservation was granted, the mail was minted, the day owns it. This closes
+// the door on the queue side only; the shortfall is the verdict's story.
+//
+// Deferrals are untouched by design: a deferral is a transport backoff on a row
+// that has NOT failed, it never reduces a contract, and PMTA handles it on-box.
+//
+// The caller decides WHEN (window closed) and WHETHER (mode enforces, switch
+// armed). This function only asks whether it has campaigns and rows.
+func (t *Transitions) ExpireRetryablesAtWindowClose(ctx context.Context, db Queryer, day time.Time, domain string, batch int) (WindowExpiryResult, error) {
+	var res WindowExpiryResult
+	if db == nil {
+		return res, errors.New("dripsupply: ExpireRetryablesAtWindowClose called with a nil db")
+	}
+	if strings.TrimSpace(domain) == "" {
+		return res, errors.New("dripsupply: ExpireRetryablesAtWindowClose requires a sending domain")
+	}
+	if batch <= 0 {
+		batch = DefaultWindowExpiryBatch
+	}
+	if batch > maxWindowExpiryBatch {
+		batch = maxWindowExpiryBatch
+	}
+
+	rows, err := db.QueryContext(ctx, dripCampaignsForDayDomainSQL, dayKey(day), domain, maxWindowExpiryCampaigns)
+	if err != nil {
+		return res, fmt.Errorf("dripsupply: window expiry campaigns %s on %s: %w", domain, dayKey(day), err)
+	}
+	ids := make([]string, 0, 64)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return res, fmt.Errorf("dripsupply: window expiry campaign scan: %w", err)
+		}
+		if id != uuid.Nil {
+			ids = append(ids, id.String())
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return res, fmt.Errorf("dripsupply: window expiry campaign rows: %w", err)
+	}
+	res.Campaigns = len(ids)
+	if len(ids) == 0 {
+		return res, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
+
+	out, err := db.ExecContext(ctx, expireRetryablesSQL, pq.Array(ids), batch)
+	if err != nil {
+		return res, fmt.Errorf("dripsupply: window expiry %s on %s (%d campaigns): %w", domain, dayKey(day), len(ids), err)
+	}
+	n, err := out.RowsAffected()
+	if err != nil {
+		// The statement committed; only the count is unavailable. Report zero
+		// rather than an error, or the caller re-runs a sweep that already ran.
+		return res, nil
+	}
+	res.Expired = int(n)
+	res.Truncated = res.Expired >= batch
+	return res, nil
+}
+
+// -----------------------------------------------------------------------------
 // small helpers
 // -----------------------------------------------------------------------------
 

@@ -20,7 +20,7 @@ import (
 )
 
 // =============================================================================
-// VMTA POOL — In-memory IP rotation cache with warmup enforcement
+// VMTA POOL — In-memory IP rotation cache (rotation only; see vmtaPool.next)
 // =============================================================================
 
 type vmtaEntry struct {
@@ -28,8 +28,8 @@ type vmtaEntry struct {
 	Hostname         string
 	IP               string // e.g. "15.204.22.177" or "144.225.178.7"
 	Status           string // "active" or "warmup"
-	WarmupDailyLimit int
-	TodaySent        int64 // from mailing_ip_warmup_log.actual_sent
+	WarmupDailyLimit int    // ACCOUNTING/DISPLAY ONLY — never gates selection (see next)
+	TodaySent        int64  // from mailing_ip_warmup_log.actual_sent — accounting only
 }
 
 // VMTAInfo is the exported form of vmtaEntry, used by callbacks that cross
@@ -217,18 +217,23 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 	}
 }
 
-// forceRefresh bypasses the TTL and reloads the IP pool from the database.
-// Used by the OVH self-healing path when the yahoo group appears exhausted.
-func (p *vmtaPool) forceRefresh(ctx context.Context, profileID string) {
-	p.mu.Lock()
-	p.loadedAt = time.Time{}
-	p.mu.Unlock()
-	p.refresh(ctx, profileID)
-}
-
-// next returns the next available IP for the given recipient ISP,
-// enforcing warmup daily limits. Fallback chain: ISP-specific group →
-// general pool → flat list.
+// next returns the next IP for the given recipient ISP. Fallback chain:
+// ISP-specific group → general pool → flat list.
+//
+// THE IP LAYER DOES NOT JUDGE VOLUME (operator ruling 2026-09-09). This
+// function ROTATES; it never refuses a message on account of how much an IP
+// has already sent. `warmup_daily_limit` and `TodaySent` survive as accounting
+// and log fields only — how much a sending domain may mail is decided
+// upstream (the drip supply contract for drip, the campaign/wave quota for
+// board and warm cells), and by the time a row reaches here that decision has
+// already been made and the row counts against the promise. The per-IP gate
+// that used to live here was a second, uncoordinated judge: it dead-lettered
+// 26,757 contract-approved messages on 2026-09-08 and 25,593 on 2026-09-09.
+//
+// The ONLY refusals left are membership facts, not volume judgments:
+//   - the pool holds no IPs at all,
+//   - a strict-isolation pool has no IP for this ISP (strict_pool_exhausted),
+//     which the send worker defers rather than dead-letters.
 func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -251,51 +256,41 @@ func (p *vmtaPool) next(recipientISP string) (vmtaEntry, error) {
 
 	// Tier 1: ISP-specific group
 	if group, ok := p.ispGroups[poolSuffix]; ok && len(group) > 0 {
-		counter := p.ispIdx[poolSuffix]
-		for attempts := 0; attempts < len(group); attempts++ {
-			idx := atomic.AddUint64(counter, 1) % uint64(len(group))
-			ip := group[idx]
-			if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
-				continue
-			}
-			return selectIP("isp-group:"+poolSuffix, ip)
-		}
+		return selectIP("isp-group:"+poolSuffix, group[p.rotate(p.ispIdx[poolSuffix], len(group))])
 	}
 
-	// Strict isolation: if this ISP's pool is strict, do NOT fall back.
+	// Strict isolation: MEMBERSHIP, not volume. This pool is declared strict
+	// for this ISP and holds zero IPs of that ISP, so there is no correct IP to
+	// send from. Deferred (deferred_strict_pool), never dead-lettered.
 	if p.strictPools[poolSuffix] {
-		log.Printf("[vmtaPool] STRICT_POOL_EXHAUSTED: no available IP in strict-isolation pool %s-%s-pool (ISP=%s)",
-			p.poolPrefix, poolSuffix, recipientISP)
+		log.Printf("[vmtaPool] STRICT_POOL_EXHAUSTED: no IP of ISP=%s in strict-isolation pool %s-%s-pool",
+			recipientISP, p.poolPrefix, poolSuffix)
 		return vmtaEntry{}, fmt.Errorf("strict_pool_exhausted: no available IP in strict-isolation pool %s-%s-pool", p.poolPrefix, poolSuffix)
 	}
 
 	// Tier 2: general pool fallback
 	if poolSuffix != "general" {
 		if general, ok := p.ispGroups["general"]; ok && len(general) > 0 {
-			counter := p.ispIdx["general"]
-			for attempts := 0; attempts < len(general); attempts++ {
-				idx := atomic.AddUint64(counter, 1) % uint64(len(general))
-				ip := general[idx]
-				if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
-					continue
-				}
-				return selectIP("general-fallback", ip)
-			}
+			return selectIP("general-fallback", general[p.rotate(p.ispIdx["general"], len(general))])
 		}
 	}
 
-	// Tier 3: flat list fallback
-	for attempts := 0; attempts < len(p.ips); attempts++ {
-		idx := atomic.AddUint64(&p.idx, 1) % uint64(len(p.ips))
-		ip := p.ips[idx]
-		if ip.Status == "warmup" && ip.TodaySent >= int64(ip.WarmupDailyLimit) {
-			continue
-		}
-		return selectIP("flat-list-fallback", ip)
-	}
+	// Tier 3: flat list fallback. len(p.ips) > 0 is guaranteed above, so this
+	// always yields an IP — there is no volume-based exit from this function.
+	return selectIP("flat-list-fallback", p.ips[p.rotate(&p.idx, len(p.ips))])
+}
 
-	log.Printf("[vmtaPool] EXHAUSTED all %d IPs (ISP=%s, poolPrefix=%s)", len(p.ips), recipientISP, p.poolPrefix)
-	return vmtaEntry{}, fmt.Errorf("all IPs exhausted (ISP=%s, poolPrefix=%s)", recipientISP, p.poolPrefix)
+// rotate advances a round-robin counter and returns the index to use. A nil
+// counter (an ISP group present without its companion index entry) falls back
+// to the pool-wide counter rather than panicking on the send path.
+func (p *vmtaPool) rotate(counter *uint64, n int) uint64 {
+	if n <= 0 {
+		return 0
+	}
+	if counter == nil {
+		counter = &p.idx
+	}
+	return atomic.AddUint64(counter, 1) % uint64(n)
 }
 
 // =============================================================================
@@ -450,11 +445,9 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		s.ipPool.refresh(ctx, msg.ProfileID)
 		ip, vmtaErr := s.ipPool.next(msg.RecipientISP)
 		if vmtaErr != nil {
+			// Membership failures only — next() never refuses on volume.
 			if strings.Contains(vmtaErr.Error(), "strict_pool_exhausted") {
 				return nil, fmt.Errorf("deferred_strict_pool: %w", vmtaErr)
-			}
-			if len(s.ipPool.ips) > 0 {
-				return nil, fmt.Errorf("all IPs exhausted warmup limits, deferring send: %w", vmtaErr)
 			}
 			return nil, fmt.Errorf("no sending IPs configured for profile %s — refusing to send via default-pool (server IP)", msg.ProfileID)
 		}

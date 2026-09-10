@@ -11,10 +11,14 @@ import (
 // 12,354 rows from 2026-03-18 because the counter's INSERT omitted the NOT NULL
 // planned_volume/warmup_day columns. Postgres evaluates NOT NULL BEFORE the
 // ON CONFLICT arbiter, so the statement errored 23502 on every send and the
-// DO UPDATE never ran — silently disabling BOTH warm-up brakes:
+// DO UPDATE never ran — silently disabling the warm-up brake and the accounting
+// under it:
 //   - WarmupScheduler's 3%-bounce / 0.1%-complaint auto-pause (gates on
 //     actual_sent > 10, internal/pmta/warmup.go)
-//   - vmtaPool.next()'s per-IP daily cap (reads TodaySent)
+//   - vmtaPool's TodaySent, which since 2026-09-09 is accounting/log only — the
+//     IP layer no longer judges volume (see vmtaPool.next). The counter must
+//     still be correct: the bounce/complaint brake and the operator's capacity
+//     view both read it.
 //
 // Reproduced on local dev postgres:
 //

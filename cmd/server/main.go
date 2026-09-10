@@ -3533,6 +3533,135 @@ var dripSupplyMigrations = []struct {
 	)`},
 }
 
+// contractFulfillmentMigrations is the schema for the 2026-09-09 contract-
+// fulfillment work (tasks/eng-team/findings/2026-09-09-contract-fulfillment-
+// brief.md). ONE entry: WP-D's per domain x ISP x day fulfillment verdict.
+//
+// That it is one entry is the finding, not an oversight. The brief's other
+// four schema-shaped asks (WP-B) were each checked against the live database
+// and the dripsupply package on 2026-09-09 and every one of them is already
+// expressible — see the WP-B block below. The 16 GB partner_clean_queue and
+// the 86 GB mailing_campaign_queue are NOT touched at all.
+//
+// APPENDED AFTER dripSupplyMigrations, never inlined into the `migrations`
+// literal above it: the verdict is read alongside drip_domain_contracts and
+// drip_capacity_ledger, and keeping the whole drip-supply schema contiguous
+// and in dependency order is what makes a fresh-database boot deterministic.
+// (The inline literal runs BEFORE both appended slices.)
+//
+// VEHICLE — the 5s slice (runStartupMigrations), matching every other REQ-118
+// table:
+//
+//   - CREATE TABLE on a table that does not exist is O(1) catalog work and
+//     takes no lock anything else can contend for. It is not remotely near the
+//     5s budget on a prod-sized database, and every later boot is a to_regclass
+//     read via migrationSkipProbe.
+//   - It is NOT send-path-critical: nothing in the send or claim path reads it,
+//     and its only writer is the window-close verdict job. A boot that somehow
+//     skipped it degrades the VERDICT; it does not stop mail. criticalSendPathDDL
+//     is for schema the send path cannot run without (the 2026-06-10 rule), and
+//     widening it dilutes that meaning.
+//   - It needs no index beyond its primary key, so concurrentIndexSpecs has
+//     nothing to do here.
+var contractFulfillmentMigrations = []struct {
+	name string
+	sql  string
+}{
+	// ── WP-B: no DDL. Verified against the package on 2026-09-09 ───────
+	// The short-mint anomaly needs NOTHING here. WP-B routes it through the
+	// columns drip_tick_outcomes already has: pass='mint' (its own pass, so it
+	// cannot collide with a wave's (tick, lane, pass) row), reason='short_mint'
+	// / 'mint_on_promise' (the column has no CHECK), and the shortfall number in
+	// caps_seen JSONB. A widened `outcome` CHECK was drafted here and DELETED:
+	// outcomePriority (executor.go:236) is a 4-arm switch whose default arm is
+	// priority 0, so a fifth outcome value would have been silently masked by
+	// any other outcome landing on the same grain — schema permitting a value
+	// the code demotes is worse than no schema at all.
+	//
+	// Likewise nothing is needed for the other four WP-B rules (verified in
+	// prod, 2026-09-09):
+	//   - explicit-zero balance rows: drip_lane_balance / drip_capacity_balance
+	//     already key on (day, lane|domain, isp) with every counter DEFAULT 0, so
+	//     a deliberate zero IS a row and an absent key IS the absence of one.
+	//   - the zero-grant's NAMED reason: drip_capacity_ledger.binding_reason is
+	//     TEXT with no CHECK — a new reason is a Go constant, not a migration.
+	//   - window-close expiry of a reservation: status='expired' is already in
+	//     the drip_capacity_ledger CHECK and release_reason is free text.
+	//   - expiring the rows themselves: partner_clean_queue.terminal_reason and
+	//     mailing_campaign_queue.error_message are both free text, and neither
+	//     table's status column carries a CHECK. ZERO DDL on the 16 GB claim
+	//     table and the 86 GB queue is the whole point.
+
+	// ── WP-D: the fulfillment verdict ──────────────────────────────────
+	// One row per Denver day x sending domain x ISP x mode — the CONTRACT's
+	// grain, deliberately NOT carrying `lane`. The contract is a promise made
+	// by a sending domain to an ISP; adding lane would make "the sum of the
+	// rows" mean something other than "what we promised", which is exactly
+	// the confusion the brief's over-delivery leak is made of. Per-lane
+	// attribution is a join to drip_capacity_ledger (day, lane, isp), which
+	// idx_drip_capacity_ledger_day_lane_isp already serves.
+	//
+	// A TABLE, not a VIEW. Three reasons, any one of which is decisive:
+	//   1. `delivered` comes from ATHENA (ignite_analytics.email_events), not
+	//      Postgres — a PG view cannot reach it.
+	//   2. The verdict is a point-in-time judgement AT WINDOW CLOSE. A view
+	//      recomputed next week against a re-stated ledger would silently
+	//      rewrite history, and the whole point of the record is that a broken
+	//      promise stays on the record.
+	//   3. tolerance_pct is stored WITH the verdict, so changing the tolerance
+	//      later cannot silently reinterpret yesterday's `fulfilled`.
+	//
+	// `mode` is in the PK rather than the design's shadow-twin idiom
+	// (drip_capacity_ledger_shadow et al). Those twins exist because the LIVE
+	// executor WRITES them and must not pollute the live ledger under
+	// DRIP_SUPPLY_CHAIN_MODE=shadow. The verdict is DERIVED — one writer, one
+	// query, `WHERE mode = $1` — so a twin would buy a second code path and
+	// a LIKE-drift hazard for nothing. drip_contract_watch reads mode='shadow'
+	// while DRIP_SUPPLY_CHAIN_MODE=shadow (the brief's false-alarm fix).
+	//
+	// `delivered` AND `minted` are NULLABLE ON PURPOSE — the drip_lane_economics
+	// rule, "unknown renders as unknown, never zero" (§6, METRIC_CONTRACT).
+	//   - delivered: Microsoft's confirmation lags ~3h and an Athena read can
+	//     simply fail; a 0 there reads as a total delivery failure and pages
+	//     someone.
+	//   - minted: under DRIP_SUPPLY_CHAIN_MODE=off, or for a domain x ISP with
+	//     no ledger row at all (WP-D's 2026-09-08 run:
+	//     em.learnpersonalloans.com x apple, reason `no_ledger_surface`), the
+	//     mint count is genuinely UNKNOWN. NOT NULL DEFAULT 0 would collapse
+	//     "we never looked" into "we minted nothing" — and since the verdict
+	//     compares minted against promised, that manufactures a 100% `under`
+	//     anomaly out of an absence of data. A NULL cannot be judged, which is
+	//     the correct behaviour: status stays `pending` / `no_contract`.
+	// `promised` and `sent` stay NOT NULL: promised is the contract itself (an
+	// absent contract is the separate `no_contract` status, not a NULL), and
+	// sent is a PG COUNT that is always answerable.
+	//
+	// No secondary index: ~27 domains x ~13 ISP classes x 2 modes = ~700 rows
+	// a day, and the PK's leading `day` serves both readers (the window-close
+	// upsert and the Supply tab's per-day / trailing-window scan). An unused
+	// index on a once-a-day-written table is dead weight.
+	{"reqcf_create_drip_fulfillment_verdict", `CREATE TABLE IF NOT EXISTS drip_fulfillment_verdict (
+		day                     DATE NOT NULL,                     -- Denver day of the contract window
+		sending_domain          TEXT NOT NULL,
+		isp                     TEXT NOT NULL,
+		mode                    TEXT NOT NULL DEFAULT 'live'
+			CHECK (mode IN ('live','shadow')),                     -- which ledger the numbers were read from
+		domain_contract_version INT  NOT NULL DEFAULT 0,           -- the drip_domain_contracts version that made the promise
+		promised                INT  NOT NULL DEFAULT 0,           -- daily_max_by_isp[isp] of the active contract
+		minted                  INT,                               -- rows minted (fresh + engaged pad); NULL = no ledger surface / mode=off, NEVER 0
+		sent                    INT  NOT NULL DEFAULT 0,           -- PG: messages that actually left inside the window
+		delivered               INT,                               -- LAKE (source IN ('pmta','ses','kumo')); NULL = not yet known, NEVER 0
+		delivered_source        TEXT NOT NULL DEFAULT '',          -- 'lake' when delivered is populated, empty while unknown
+		tolerance_pct           NUMERIC NOT NULL DEFAULT 0.05,     -- the tolerance THIS verdict was judged with (operator: +/-5%)
+		status                  TEXT NOT NULL DEFAULT 'pending'
+			CHECK (status IN ('pending','fulfilled','under','over','no_contract')),
+		reason                  TEXT NOT NULL DEFAULT '',          -- under:<reason> / over:<producer>; empty when fulfilled
+		window_closed_at        TIMESTAMPTZ,                       -- when the contract window for this cell closed
+		computed_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (day, sending_domain, isp, mode)
+	)`},
+}
+
 func runStartupMigrations(db *sql.DB) {
 	const migrationLockID = 8675309 // arbitrary but stable
 	// Hold the advisory lock on a DEDICATED connection pinned for the entire
@@ -11494,6 +11623,10 @@ END $$`},
 	// database; ordering is unchanged (they run last, exactly as if they had
 	// been typed at the end of the literal above).
 	migrations = append(migrations, dripSupplyMigrations...)
+
+	// Contract fulfillment (2026-09-09). Kept after dripSupplyMigrations so the
+	// whole drip-supply schema stays contiguous and in dependency order.
+	migrations = append(migrations, contractFulfillmentMigrations...)
 
 	// Use a dedicated connection with a short statement timeout so heavy
 	// backfills fail fast (~5s) instead of holding up startup for 30s each.

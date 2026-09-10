@@ -125,7 +125,7 @@ var dripObsISPVocab = func() map[string]bool {
 
 // dripObsNormalizeISPFamily normalizes a partner_clean_queue isp_family value
 // into the observatory vocabulary, mirroring the orchestrator's own claim-time
-// fallback (LOWER(COALESCE(NULLIF(isp_family,''),'other')), bucket-to-'other'
+// fallback (LOWER(COALESCE(NULLIF(isp_family,”),'other')), bucket-to-'other'
 // when unrecognized — partner_drip_orchestrator.go:2679-2687).
 func dripObsNormalizeISPFamily(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
@@ -1667,28 +1667,28 @@ func (w *DripObservatoryRollup) withHeavyTx(ctx context.Context, fn func(*sql.Tx
 // ---------------------------------------------------------------------------
 
 type obsFactRow struct {
-	org, day, vertical      string
-	touch                   int
-	brand, apex             string
-	scope, ispVal           string // dimension_scope, isp
-	recipientsPlanned       sql.NullInt64
-	dispatched              sql.NullInt64
-	dispatchBasis           string
-	delivered               sql.NullInt64
-	hard, soft, rep         sql.NullInt64
-	validation, complained  sql.NullInt64
-	opens                   sql.NullInt64
-	clicksWrapper           sql.NullInt64
-	clicksMoney             sql.NullInt64
-	actionsW, actionsR      int
-	humanClicks             int
-	clickBasis              string
-	unsubs                  sql.NullInt64
-	conversions             sql.NullInt64
-	revenue                 sql.NullFloat64
-	stDispatch, stDelivery  string
-	stBounce, stEngagement  string
-	stConversion            string
+	org, day, vertical     string
+	touch                  int
+	brand, apex            string
+	scope, ispVal          string // dimension_scope, isp
+	recipientsPlanned      sql.NullInt64
+	dispatched             sql.NullInt64
+	dispatchBasis          string
+	delivered              sql.NullInt64
+	hard, soft, rep        sql.NullInt64
+	validation, complained sql.NullInt64
+	opens                  sql.NullInt64
+	clicksWrapper          sql.NullInt64
+	clicksMoney            sql.NullInt64
+	actionsW, actionsR     int
+	humanClicks            int
+	clickBasis             string
+	unsubs                 sql.NullInt64
+	conversions            sql.NullInt64
+	revenue                sql.NullFloat64
+	stDispatch, stDelivery string
+	stBounce, stEngagement string
+	stConversion           string
 }
 
 func obsInt(n int) sql.NullInt64 { return sql.NullInt64{Int64: int64(n), Valid: true} }
@@ -1765,9 +1765,9 @@ func buildFactRows(kind string, ds obsDataset, cells map[obsCellKey]*obsCell,
 			brand: k.brand, apex: cell.apex, scope: scope, ispVal: k.isp,
 			dispatchBasis: basis,
 			actionsW:      cell.actionsW, actionsR: cell.actionsR,
-			humanClicks: cell.humanClicks,
-			clickBasis:  clickBasisLabel(cell.actionsW, cell.actionsR),
-			opens:       obsInt(cell.opens),
+			humanClicks:   cell.humanClicks,
+			clickBasis:    clickBasisLabel(cell.actionsW, cell.actionsR),
+			opens:         obsInt(cell.opens),
 			clicksWrapper: obsInt(cell.clicksWrapper), clicksMoney: obsInt(cell.clicksMoney),
 			unsubs:     obsInt(cell.unsubs),
 			validation: obsInt(cell.validation),

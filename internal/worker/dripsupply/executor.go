@@ -166,6 +166,10 @@ const (
 	PassFollowup  = "followup"
 	PassGoverned  = "governed"
 	PassAOLRotate = "aol_rotate"
+	// PassMint is not a wave pass. It is the DAY's mint verdict, written once
+	// when the plan freezes, on its own pass so it can never collide with a
+	// wave's (tick, lane, pass) row or be masked by outcomePriority.
+	PassMint = "mint"
 )
 
 // Skip / zero reasons the executor writes. Free text is allowed (the column has
@@ -186,7 +190,47 @@ const (
 	SkipNoWaveSize       = "no_wave_size"
 	ZeroNoRecordsClaimed = "no_records_claimed"
 	ZeroAllDeferred      = "all_records_deferred"
+
+	// ReasonShortMint is the day's mint verdict when the frozen plan cannot
+	// reach the contracted promise. The contract is a COMMITMENT, not a
+	// ceiling: under-delivery is a broken promise exactly like over-delivery,
+	// and a shortfall the system decided on at 00:05 must be an ANOMALY with a
+	// number and a cause on it, not a quiet `unserved` column nobody reads.
+	ReasonShortMint = "short_mint"
+	// ReasonMintOnPromise is its opposite number, written for a lane whose plan
+	// DOES reach the promise. It exists so "this lane was judged today" is
+	// always in drip_tick_outcomes — the absence of a short_mint row must mean
+	// "on promise", never "the verdict never ran".
+	ReasonMintOnPromise = "mint_on_promise"
 )
+
+// ContractTolerance is the ±5% band a domain×ISP×day mint must land inside to
+// count as fulfilled (operator ruling 2026-09-09). Outside it in EITHER
+// direction is a named anomaly.
+//
+// It is a package constant so the mint verdict here, the reconciliation report
+// and the portal cannot drift to three different definitions of "kept".
+const ContractTolerance = 0.05
+
+// shortOfPromise reports whether `got` is below `promised` by more than the
+// tolerance, and by how much.
+//
+// A promise of 0 is KEPT by minting 0 and can never be short — that is the
+// contracted-zero case (see ReasonZeroDesired), and treating it as a 100%
+// shortfall would fill the outcomes table with anomalies for every ISP the
+// estate deliberately does not mail.
+//
+// PURE.
+func shortOfPromise(promised, got int) (int, bool) {
+	if promised <= 0 {
+		return 0, false
+	}
+	short := promised - got
+	if short <= 0 {
+		return 0, false
+	}
+	return short, float64(short) > ContractTolerance*float64(promised)
+}
 
 // outcomePriority ranks the four outcomes so a lane that fired one brand's wave
 // and zeroed another's in the SAME tick reads as `fired`, and a failure always
@@ -348,6 +392,11 @@ type Mediator struct {
 	contracts *ActiveSet
 	refilled  map[string]bool // sending domain -> RefillDomain already ran this tick
 
+	// loc is the SEND-DAY's location (America/Denver), resolved once at
+	// construction. Every day key this mediator writes goes through
+	// m.denverDay, which is the seam this closes — see denverDay's header.
+	loc *time.Location
+
 	// contractKey / contractKeyErr are resolved ONCE at construction (§1.5).
 	// Re-reading the env every tick would let a key that vanished mid-life
 	// silently start failing every lane closed with no single log line saying
@@ -367,6 +416,16 @@ type Mediator struct {
 
 	plannerWarnOnce sync.Once
 	reapWarnOnce    sync.Once
+	// windowExpiryWarnOnce keeps the "expiry is switched off" notice to one
+	// line per process; it is a standing condition, not an event.
+	windowExpiryWarnOnce sync.Once
+
+	// windowExpirySwept is "day|domain" -> the instant that cell was last
+	// swept for window-closed queue rows (rule 4). Process-local on purpose:
+	// the sweep is idempotent, so the worst a restart or a second instance can
+	// cost is one redundant zero-row statement, and persisting it would be a
+	// second source of truth for something the queue itself already answers.
+	windowExpirySwept map[string]time.Time
 }
 
 // reapAllowed: the orphan-claim reap mutates partner_clean_queue, so it runs
@@ -414,6 +473,16 @@ func NewMediator(db *sql.DB, svc *Service, cfg MediatorConfig) *Mediator {
 		zeroStreak: map[string]int{},
 		darkStreak: map[string]int{},
 		lastAlert:  map[string]time.Time{},
+
+		windowExpirySwept: map[string]time.Time{},
+	}
+	if loc, err := time.LoadLocation("America/Denver"); err != nil {
+		// Loud, then UTC: the alternative is planning a UTC day in silence,
+		// which is the very seam this field exists to close.
+		log.Printf("[DripSupply] America/Denver tzdata unavailable (%v) — the mediator will key days in UTC and WILL disagree with the planner", err)
+		m.loc = time.UTC
+	} else {
+		m.loc = loc
 	}
 	if len(cfg.ContractKey) > 0 {
 		m.contractKey = cfg.ContractKey
@@ -452,6 +521,65 @@ func (m *Mediator) now() time.Time {
 	return m.cfg.Clock()
 }
 
+// denverDay is the send-day `t` belongs to, in America/Denver.
+//
+// THE BUG THIS CLOSES (WP-C, measured 2026-09-09). Two writers, two clocks, one
+// column. The planner keys drip_daily_plan and drip_lane_balance on the DENVER
+// day (planner.go DenverDay); the mediator keyed drip_capacity_ledger and both
+// balance tables on dayOf(time.Now()), and the ECS task definition sets no TZ,
+// so `time.Now()` in the server is UTC. Between 00:00 and 07:00 Denver those are
+// DIFFERENT DAYS.
+//
+// The evidence: in the 00:00-07:00Z band drip_capacity_ledger_shadow held
+// 177,951 rows keyed by the UTC date and 0 by the Denver date, while the LIVE
+// ledger held 21,895 UTC-keyed and 301 Denver-keyed — those 301 being
+// outside_window zero-grants ticked 00:03-00:11Z that carried a
+// planner-anchored day into a mediator running on a UTC one.
+//
+// It is an ENFORCEMENT bug, not a reporting one: reserved + committed +
+// unfilled == desired cannot hold across a seam where half the writes land on
+// one date and half on the next, so for seven hours a night the contract had no
+// single row to be true about.
+//
+// Fixed HERE and not by setting TZ in the task definition: TZ would move every
+// naive time.Time in a ~60-goroutine server at once, which is a far larger blast
+// radius than the seam it repairs.
+//
+// ⚠️ BLAST RADIUS, and it is not only the day column. req.Day also carries the
+// location the contract's active window is resolved in
+// (Window.Bounds(day) / Window.Contains(day, now)), so until this fix the drip's
+// "01:00-20:00" window was being evaluated in UTC — i.e. 19:00-14:00 Denver.
+// Re-anchoring moves it to 01:00-20:00 Denver, which is what the contract means
+// and what every other clock in this estate uses, but it MOVES WHEN THE DRIP
+// MAILS. UTCDayKeyEnv reverts both halves together with no deploy, and the
+// operator owns the cutover timing.
+//
+// Nil-receiver safe, and safe with a nil loc (a mediator built by a test
+// literal), because it is called from paths that must never panic.
+func (m *Mediator) denverDay(t time.Time) time.Time {
+	if m == nil || m.loc == nil || utcDayKey() {
+		return dayOf(t)
+	}
+	return dayOf(t.In(m.loc))
+}
+
+// UTCDayKeyEnv reverts the mediator to keying its day (and therefore resolving
+// the contract's active window) on the PROCESS clock, which in prod is UTC.
+// DRIP_SUPPLY_UTC_DAY_KEY=1 restores the pre-2026-09-09 behaviour exactly.
+//
+// Opt-OUT because the UTC anchoring was the bug. It exists because the fix
+// shifts the active window by seven hours, and a seven-hour shift in when the
+// estate mails must be reversible without a build.
+const UTCDayKeyEnv = "DRIP_SUPPLY_UTC_DAY_KEY"
+
+func utcDayKey() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(UTCDayKeyEnv))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
 // TickStart is §2.8's tick preamble: activate contracts if the day rolled,
 // ensure the day's balances, refill nothing yet (that happens per domain in
 // Grant), expire stale reservations and reap orphan claims.
@@ -472,7 +600,10 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	}
 	m.mu.Lock()
 	m.tick = now.UTC().Truncate(time.Second)
-	m.day = dayOf(now)
+	// DENVER, not the process clock: see denverDay. Every balance row, ledger
+	// row and outcome this tick writes is keyed off this value, and the planner
+	// keys the rows they must agree with on the Denver day.
+	m.day = m.denverDay(now)
 	m.contracts = nil
 	m.refilled = map[string]bool{}
 	mode := m.cfg.Mode
@@ -501,7 +632,8 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	// activated at 00:0xZ when nothing was due yet (prod defect 2026-09-04:
 	// 113 contracts stuck `scheduled`, shadow ledgers empty). The probe is one
 	// indexed read, so a tick with nothing due still costs no transaction.
-	key := dayKey(now)
+	day := m.denverDay(now)
+	key := dayKey(day)
 	due, dueErr := AnyDue(ctx, m.db, now)
 	if dueErr != nil {
 		log.Printf("[DripSupply] contract due probe: %v", dueErr)
@@ -537,7 +669,10 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	m.contracts = set
 	m.mu.Unlock()
 
-	if _, err := EnsureDayBalances(ctx, m.db, now, set); err != nil {
+	// `day`, not `now`: these three write the day COLUMN the planner also writes,
+	// and WindowOf(dc).Bounds(day) resolves the contract's active window in the
+	// day's own location. See denverDay.
+	if _, err := EnsureDayBalances(ctx, m.db, day, set); err != nil {
 		log.Printf("[DripSupply] ensure day balances for %s: %v", key, err)
 	}
 	// (2a) The lane rows FOLLOW their contract, every tick, the way
@@ -548,7 +683,7 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 	// number and the lane starved against a ceiling nobody had agreed to since
 	// midnight. A failure degrades the lane to yesterday's shape, never to no
 	// tick.
-	if rec, err := m.svc.ReconcileLaneBalances(ctx, now, set); err != nil {
+	if rec, err := m.svc.ReconcileLaneBalances(ctx, day, set); err != nil {
 		log.Printf("[DripSupply] reconcile lane balances for %s: %v", key, err)
 	} else if rec.Changed > 0 {
 		log.Printf("[DripSupply] lane balances for %s now follow their contracts: %d of %d rows changed", key, rec.Changed, rec.Seen)
@@ -575,6 +710,12 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 			"Run: SELECT * FROM drip_capacity_ledger WHERE status='expired' ORDER BY updated_at DESC LIMIT 20")
 	}
 
+	// (3a) The day's volume dies with its window (rule 4). Runs after
+	// ExpireStale for the same reason ExpireStale runs before the passes: a
+	// reservation with no commit is capacity, a failed_retryable row is MAIL,
+	// and the mail must not survive into tomorrow's contract.
+	m.expireClosedWindows(ctx, day, now, set)
+
 	// (4) Orphan claims (§2.4). Covers the shape releaseStaleClaims cannot:
 	// a claimed row that got as far as having a subscriber hydrated.
 	// LIVE pcq write: 1.41M rows carry this shape today (REQ-117) and releasing
@@ -591,6 +732,144 @@ func (m *Mediator) TickStart(ctx context.Context, now time.Time) {
 		m.reapWarnOnce.Do(func() {
 			log.Printf("[DripSupply] orphan-claim reap is OFF (mode=%s reap_enabled=%v) — REQ-117 §2.4 release is operator-gated", m.cfg.Mode, m.cfg.ReapEnabled)
 		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Window expiry (rule 4)
+// -----------------------------------------------------------------------------
+
+// WindowExpiryDisabledEnv is the kill switch for the window-close expiry of
+// `failed_retryable` queue rows. DRIP_SUPPLY_WINDOW_EXPIRY_DISABLED=1 restores
+// the pre-2026-09-09 behaviour — unsent rows keep retrying into tomorrow — with
+// no deploy.
+//
+// Opt-OUT, not opt-in: "a day's volume expires at the end of its window" is a
+// contract term, and a term that has to be switched on is one that is off.
+const WindowExpiryDisabledEnv = "DRIP_SUPPLY_WINDOW_EXPIRY_DISABLED"
+
+// windowExpiryEvery rate-limits the sweep per domain per day. The sweep is
+// idempotent and self-healing (a second pass finds zero rows), so re-running it
+// is only a cost, never a hazard; this keeps that cost off every 15-second tick
+// for the twelve hours between window close and midnight.
+const windowExpiryEvery = 10 * time.Minute
+
+func windowExpiryDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(WindowExpiryDisabledEnv))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// expireClosedWindows sweeps every domain whose contract window has closed for
+// `now`, terminating the queue rows that would otherwise ship tomorrow.
+//
+// GATES, in order, and each one is load-bearing:
+//
+//	kill switch      — operator stop, read at call time.
+//	mode enforces    — this is a LIVE mailing_campaign_queue write. `off` and
+//	                   `shadow` must never mutate the send path; shadow's whole
+//	                   contract is that it observes. They COUNT instead (a log
+//	                   line and nothing else), so the cutover can size the
+//	                   population before it is armed.
+//	window closed    — [start, end); at end the day is over for that domain.
+//	rate limit       — windowExpiryEvery per domain per day.
+//
+// Domains are visited in sorted order so two orchestrator instances sweeping
+// the same instant take them in the same order. Per-domain failures are logged
+// and the loop carries on: one sick domain must not stop the estate's expiry.
+func (m *Mediator) expireClosedWindows(ctx context.Context, day time.Time, now time.Time, set *ActiveSet) {
+	if m == nil || m.db == nil || m.tr == nil || set == nil {
+		return
+	}
+	if windowExpiryDisabled() {
+		m.windowExpiryWarnOnce.Do(func() {
+			log.Printf("[DripSupply] window-close expiry is OFF (%s set) — failed_retryable rows will keep retrying into tomorrow's contract", WindowExpiryDisabledEnv)
+		})
+		return
+	}
+	enforcing := m.cfg.Mode.Enforces()
+	key := dayKey(day)
+
+	domains := make([]string, 0, len(set.Domains))
+	for d := range set.Domains {
+		domains = append(domains, d)
+	}
+	sort.Strings(domains)
+
+	// Collected rather than logged per domain: in shadow this is true for the
+	// whole estate for the twelve hours between window close and midnight, and
+	// 29 identical lines every ten minutes is how the ONE line that matters gets
+	// buried.
+	var notArmed []string
+
+	for _, name := range domains {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		dc := set.Domains[name]
+		if dc == nil {
+			continue
+		}
+		w, err := WindowOf(dc)
+		if err != nil {
+			continue
+		}
+		if w.Contains(day, now) {
+			continue // still open
+		}
+		_, end := w.Bounds(day)
+		if now.In(day.Location()).Before(end) {
+			// Before the window even OPENED. Nothing was minted yet, so there
+			// is nothing of today's to expire, and sweeping here would
+			// terminate rows a late-running yesterday is still retrying.
+			continue
+		}
+
+		gkey := key + "|" + dc.SendingDomain
+		m.mu.Lock()
+		last, seen := m.windowExpirySwept[gkey]
+		due := !seen || now.Sub(last) >= windowExpiryEvery
+		if due {
+			m.windowExpirySwept[gkey] = now
+		}
+		m.mu.Unlock()
+		if !due {
+			continue
+		}
+
+		if !enforcing {
+			notArmed = append(notArmed, dc.SendingDomain)
+			continue
+		}
+
+		res, err := m.tr.ExpireRetryablesAtWindowClose(ctx, m.db, day, dc.SendingDomain, DefaultWindowExpiryBatch)
+		if err != nil {
+			log.Printf("[DripSupply] window expiry %s on %s: %v", dc.SendingDomain, key, err)
+			continue
+		}
+		if res.Expired == 0 {
+			continue
+		}
+		log.Printf("[DripSupply] window closed for %s on %s: expired %d failed_retryable rows across %d campaigns (reason=%s, truncated=%t)",
+			dc.SendingDomain, key, res.Expired, res.Campaigns, ExpiredAtWindowReason, res.Truncated)
+		if res.Truncated {
+			// Hit the row budget: the next sweep takes the rest. Say so, or
+			// "expired 2000" reads as the whole population.
+			m.mu.Lock()
+			delete(m.windowExpirySwept, gkey) // re-sweep on the very next tick
+			m.mu.Unlock()
+		}
+		m.alertOnce(ctx, "window_expiry:"+key, notify.TierWarn,
+			fmt.Sprintf("drip rows expired at window close · %d · %s", res.Expired, dc.SendingDomain),
+			fmt.Sprintf("Day: %s\nDomain: %s\nRows: %d (status=%s, error_message=%s)\nEffect: today's shortfall stays today's — these do NOT ship against tomorrow's contract",
+				key, dc.SendingDomain, res.Expired, ExpiredAtWindowStatus, ExpiredAtWindowReason),
+			"Run: SELECT campaign_id, count(*) FROM mailing_campaign_queue WHERE error_message='"+ExpiredAtWindowReason+"' GROUP BY 1 ORDER BY 2 DESC LIMIT 20")
+	}
+	if len(notArmed) > 0 {
+		log.Printf("[DripSupply] window closed on %s for %d domain(s) (mode=%s) — expiry is NOT armed, their failed_retryable rows will retry into tomorrow's contract: %s",
+			key, len(notArmed), m.cfg.Mode, strings.Join(notArmed, ", "))
 	}
 }
 
@@ -650,6 +929,10 @@ type Allocation struct {
 	// positive grant can name WHICH constraint bound. Populated for enforced
 	// ISPs only; the shadow branch never reaches it.
 	reasons map[string]string
+	// zeroCap is the set of ISPs this domain's contract holds at
+	// daily_max_by_isp = 0 today. It is populated in EVERY branch, enforced or
+	// shadowed, canary-matched or not — see ZeroCapISPs.
+	zeroCap map[string]bool
 	settled bool
 	mu      sync.Mutex
 }
@@ -723,6 +1006,81 @@ func (a *Allocation) ZeroGrantReason(base string) string {
 	return base + ":" + best
 }
 
+// ZeroCapISPs names the ISPs this wave's sending domain is contracted at ZERO
+// for today, whatever the mode's enforcement scope.
+//
+// WHY IT IS NOT SCOPED LIKE EVERYTHING ELSE. Grant's per-ISP enforcement is
+// scoped: under MODE=canary only cells matching DRIP_SUPPLY_CANARY reserve, and
+// every other cell runs the old cap chain — which knows nothing about
+// drip_domain_contracts. WP-D measured the consequence on 2026-09-08:
+//
+//	em.consumerpro.net      x microsoft   promised 0, DELIVERED 6,823
+//	em.yourinsurancehub.com x microsoft   promised 0, DELIVERED 4,501
+//	em.ratesbazar.com       x microsoft   promised 0, DELIVERED 2,656
+//
+// A contracted zero is not a volume decision the canary can defer; it is a
+// PROHIBITION — the eight-brand gmail ban lives in this column — and honouring
+// it can only ever REDUCE volume, so it cannot break a cell it was not scoped
+// to. That asymmetry is the whole argument: the rest of the contract needs
+// careful staged cutover because it MOVES numbers in both directions; a zero
+// moves them one way only, and the direction is "stop".
+//
+// Still gated on the mode ENFORCING something (canary or on), so `off` and
+// `shadow` remain byte-identical on the send path, and on ZeroCapGateDisabledEnv
+// for the operator's stop switch.
+//
+// Returns nil when there is nothing to zero, so the caller can range over it
+// unconditionally. Nil-receiver safe.
+func (a *Allocation) ZeroCapISPs() []string {
+	if a == nil || len(a.zeroCap) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, 0, len(a.zeroCap))
+	for isp, yes := range a.zeroCap {
+		if yes {
+			out = append(out, isp)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ZeroCapGateDisabledEnv is the stop switch for the estate-wide cap-0
+// prohibition (ZeroCapISPs). DRIP_SUPPLY_ZERO_CAP_GATE_DISABLED=1 restores the
+// pre-2026-09-09 behaviour, where a contracted zero bound only inside the
+// canary's scope and a cap-0 ISP on any other lane mailed freely.
+const ZeroCapGateDisabledEnv = "DRIP_SUPPLY_ZERO_CAP_GATE_DISABLED"
+
+func zeroCapGateDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ZeroCapGateDisabledEnv))) {
+	case "1", "true", "on", "yes":
+		return true
+	}
+	return false
+}
+
+// domainContractZero reports whether a domain contract holds this ISP at zero
+// for the day. An ISP the contract does not mention at all is NOT zero here:
+// absence is handled by the no_balance / no_lane_balance path, and treating it
+// as a prohibition would silently zero any ISP a contract has not been updated
+// for yet.
+//
+// PURE.
+func domainContractZero(c *DomainContract, isp string) bool {
+	if c == nil {
+		return false
+	}
+	n := normISP(isp)
+	for _, k := range sortedKeys(c.DailyMaxByISP) {
+		if normISP(k) == n {
+			return c.DailyMaxByISP[k] <= 0
+		}
+	}
+	return false
+}
+
 // ShouldSkip reports a fail-closed wave (no contract, outside window, timeout).
 func (a *Allocation) ShouldSkip() bool { return a != nil && a.Skip }
 
@@ -764,7 +1122,7 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 	m.mu.Unlock()
 
 	if day.IsZero() {
-		day = dayOf(m.now())
+		day = m.denverDay(m.now())
 	}
 	if m.contractKeyErr != nil && m.cfg.ContractSource == nil {
 		// §1.5 fail-closed: without CONTRACT_TOKEN_KEY no contract can be
@@ -819,8 +1177,10 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 		perISP:  map[string]uuid.UUID{},
 		grants:  map[string]int{},
 		reasons: map[string]string{},
+		zeroCap: map[string]bool{},
 		Caps:    map[string]int{},
 	}
+	zeroGate := mode.Enforces() && !zeroCapGateDisabled()
 
 	isps := append([]string(nil), req.ISPs...)
 	sort.Strings(isps)
@@ -833,6 +1193,12 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 			log.Printf("[DripSupply] grant %s/%s wave=%s: DROPPED an empty ISP from the request — that slice of the wave gets no cap and no ledger row",
 				dc.SendingDomain, req.Lane, req.WaveKey)
 			continue
+		}
+		if zeroGate && domainContractZero(dc, isp) {
+			// A PROHIBITION, recorded whether or not this cell is in the
+			// canary's scope. grantWaveCapacity applies it to the old chain's
+			// caps too, which is what actually stops the mail.
+			alloc.zeroCap[isp] = true
 		}
 		supply := -1
 		if req.MailableSupply != nil {
@@ -893,9 +1259,15 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 	}
 
 	if !alloc.Enforced {
-		// Shadow-only wave: caps stay nil so the old chain runs unchanged.
+		// Shadow-only wave: caps stay nil so the old chain runs unchanged EXCEPT
+		// for the cap-0 prohibition, which rides on alloc.zeroCap and is applied
+		// by grantWaveCapacity on this branch too.
 		alloc.Caps = nil
 		alloc.Reason = string(mode)
+		if len(alloc.zeroCap) > 0 {
+			log.Printf("[DripSupply] %s/%s wave=%s: %d contracted-zero ISP(s) held at 0 outside the enforcement scope: %v",
+				dc.SendingDomain, req.Lane, req.WaveKey, len(alloc.zeroCap), alloc.ZeroCapISPs())
+		}
 		return alloc, nil
 	}
 
@@ -1158,12 +1530,17 @@ func (m *Mediator) shadowReserve(ctx context.Context, req ReserveReq) (int, stri
 // transaction and shadow mode has none, so PlanBounded stays false and the term
 // does not participate.
 func shadowTerms(bal Balance, lane LaneBalance, req ReserveReq) (int, string) {
-	d := decide(GrantInputs{
+	// nameContractedZero is applied here for the same reason decide() is shared:
+	// shadow mode is the evidence the cutover is judged on, and a shadow ledger
+	// that called a contracted zero `lane_demand` while the live path called it
+	// `zero_desired` would make the two reconciliations disagree on the healthy
+	// case.
+	d := nameContractedZero(decide(GrantInputs{
 		Requested:      req.Requested,
 		Domain:         bal,
 		Lane:           lane,
 		MailableSupply: req.MailableSupply,
-	})
+	}), bal, lane)
 	return d.Granted, d.BindingReason
 }
 
@@ -1419,6 +1796,163 @@ func (m *Mediator) ensureDailyPlan(ctx context.Context, now time.Time) {
 	m.mu.Unlock()
 	log.Printf("[DripSupply] daily plan for %s ready in %s: %d rows, firm=%d provisional=%d",
 		key, m.planTable(), len(plan.Rows), plan.TotalFirm(), plan.TotalProvisional())
+	m.reportMintVerdict(ctx, day, plan)
+}
+
+// mintVerdict is one lane's answer to "can today's plan keep the promise".
+// PURE data — reportMintVerdict does the I/O.
+type mintVerdict struct {
+	Lane     string
+	Promised int
+	Planned  int
+	Short    int
+	Cause    string
+	ISPs     []string
+}
+
+// mintVerdicts folds a frozen plan into one verdict per lane: what the dispatch
+// contracts promised, what the plan can actually mint, and — when it falls
+// short — the reason that cost the most mail.
+//
+// Aggregating to the LANE is forced by the grain of drip_tick_outcomes, whose
+// primary key is (tick, lane, pass): a row per ISP would collide and
+// upsertOutcomeSQL would keep exactly one of them. So the ISPs that are short
+// are named in the reason instead, worst first, and the cause reported is the
+// one carrying the largest shortfall rather than the last one iterated.
+//
+// PURE: no I/O, no clock, deterministic ordering.
+func mintVerdicts(plan *Plan) []mintVerdict {
+	if plan == nil {
+		return nil
+	}
+	type acc struct {
+		promised, planned int
+		byCause           map[string]int
+		shortISPs         map[string]int
+	}
+	byLane := map[string]*acc{}
+	order := []string{}
+	for _, l := range plan.Lanes {
+		a, ok := byLane[l.Lane]
+		if !ok {
+			a = &acc{byCause: map[string]int{}, shortISPs: map[string]int{}}
+			byLane[l.Lane] = a
+			order = append(order, l.Lane)
+		}
+		a.promised += max(l.Desired, 0)
+		got := max(l.AwardedFirm, 0) + max(l.AwardedProvisional, 0)
+		a.planned += got
+		if short, _ := shortOfPromise(l.Desired, got); short > 0 {
+			a.shortISPs[l.ISP] += short
+			cause := strings.TrimSpace(l.UnservedReason)
+			if cause == "" {
+				cause = UnservedSupply
+			}
+			a.byCause[cause] += short
+		}
+	}
+	sort.Strings(order)
+	out := make([]mintVerdict, 0, len(order))
+	for _, lane := range order {
+		a := byLane[lane]
+		v := mintVerdict{Lane: lane, Promised: a.promised, Planned: a.planned}
+		v.Short = a.promised - a.planned
+		if v.Short < 0 {
+			v.Short = 0
+		}
+		// Dominant cause, ties broken on the name so two instances replaying
+		// the same plan write the same string.
+		best, bestN := "", 0
+		for _, c := range sortedKeys(a.byCause) {
+			if n := a.byCause[c]; n > bestN {
+				best, bestN = c, n
+			}
+		}
+		v.Cause = best
+		// Worst-affected ISPs first; the name breaks a tie.
+		isps := sortedKeys(a.shortISPs)
+		sort.SliceStable(isps, func(i, j int) bool {
+			return a.shortISPs[isps[i]] > a.shortISPs[isps[j]]
+		})
+		if len(isps) > mintVerdictMaxISPs {
+			isps = isps[:mintVerdictMaxISPs]
+		}
+		v.ISPs = isps
+		out = append(out, v)
+	}
+	return out
+}
+
+// mintVerdictMaxISPs bounds the ISP list folded into a reason string. The
+// column is free text and an estate-wide supply failure would otherwise write
+// every ISP class into every lane's row.
+const mintVerdictMaxISPs = 6
+
+// reportMintVerdict writes the day's mint verdict — one drip_tick_outcomes row
+// per lane, on PassMint — the moment the plan freezes.
+//
+// This is contract-fulfilment rule 2's alarm. The planner already computed the
+// shortfall and its cause into drip_daily_plan.unserved / unserved_reason, and
+// that is exactly where it stayed: a column in a table nobody queries until
+// someone already suspects a problem. A promise the system has ALREADY DECIDED
+// it will not keep is knowable at 00:05, so it is said at 00:05, in the same
+// place every other "this lane produced nothing" fact lives.
+//
+// Every lane gets a row, on-promise ones included, so a missing short_mint row
+// means "judged and fine" rather than "the verdict never ran" — the
+// `__meta__`-sentinel lesson.
+//
+// Best effort throughout: Outcome() never returns an error, and a verdict that
+// cannot be written must not fail the plan that is otherwise good.
+func (m *Mediator) reportMintVerdict(ctx context.Context, day time.Time, plan *Plan) {
+	if m == nil || m.db == nil || plan == nil {
+		return
+	}
+	key := dayKey(day)
+	shortLanes, shortTotal, promisedTotal := 0, 0, 0
+	for _, v := range mintVerdicts(plan) {
+		promisedTotal += v.Promised
+		_, breached := shortOfPromise(v.Promised, v.Planned)
+		if !breached {
+			m.Outcome(ctx, OutcomeRow{
+				Lane:    v.Lane,
+				Pass:    PassMint,
+				Outcome: OutcomeFired,
+				Reason: fmt.Sprintf("%s day=%s promised=%d planned=%d",
+					ReasonMintOnPromise, key, v.Promised, v.Planned),
+				Claimed: v.Planned,
+			})
+			continue
+		}
+		shortLanes++
+		shortTotal += v.Short
+		reason := fmt.Sprintf("%s day=%s promised=%d planned=%d short=%d cause=%s",
+			ReasonShortMint, key, v.Promised, v.Planned, v.Short, v.Cause)
+		if len(v.ISPs) > 0 {
+			reason += " isps=" + strings.Join(v.ISPs, ",")
+		}
+		// `failed`, not `zero`: the lane is not empty, the day's promise is
+		// unkeepable as planned. It is the strongest outcome so it survives
+		// outcomePriority, and PassMint is its own pass so it masks no wave.
+		m.Outcome(ctx, OutcomeRow{
+			Lane: v.Lane, Pass: PassMint, Outcome: OutcomeFailed,
+			Reason: reason, Claimed: v.Planned,
+		})
+		log.Printf("[DripSupply] SHORT MINT %s on %s: promised=%d planned=%d short=%d cause=%s isps=%v",
+			v.Lane, key, v.Promised, v.Planned, v.Short, v.Cause, v.ISPs)
+	}
+	if shortLanes == 0 {
+		return
+	}
+	pct := 0.0
+	if promisedTotal > 0 {
+		pct = 100 * float64(shortTotal) / float64(promisedTotal)
+	}
+	m.alertOnce(ctx, "short_mint:"+key, notify.TierAlert,
+		fmt.Sprintf("drip mint is short of contract · %d lanes · %s", shortLanes, key),
+		fmt.Sprintf("Short: %d of %d promised (%.1f%%)\nLanes: %d\nEffect: the day CANNOT keep its contracts as planned — this is decided, not predicted",
+			shortTotal, promisedTotal, pct, shortLanes),
+		"Run: SELECT lane, reason FROM drip_tick_outcomes WHERE pass='"+PassMint+"' AND outcome='failed' ORDER BY tick DESC")
 }
 
 // runPlan dispatches to the live planner or the shadow writer.
@@ -1658,5 +2192,10 @@ func (w *PlannerWorker) RunOnce(ctx context.Context, day time.Time) error {
 	w.med.mu.Unlock()
 	log.Printf("[DripPlanner] %s planned into %s: %d rows, firm=%d provisional=%d followups=%d",
 		dayKey(day), w.med.planTable(), len(plan.Rows), plan.TotalFirm(), plan.TotalProvisional(), plan.TotalFollowupsReserved())
+	// The 00:05 pass is the SCHEDULED owner of the plan, so it is also the
+	// scheduled owner of the mint verdict. Without this line the verdict would
+	// exist only on the tick's safety-net path (ensureDailyPlan) and would
+	// therefore never run on a normal day.
+	w.med.reportMintVerdict(ctx, day, plan)
 	return nil
 }

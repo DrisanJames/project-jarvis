@@ -5,14 +5,16 @@
 //
 // SHAPE: lane-driven, one section, progressive drill-down —
 //
-//     Ecosystem queue  →  Lane (record flow / contracts)  →  Domains
-//        (polls 60s)         (study surface, no poll)      (capacity + contract)
+//     Fulfillment verdict  →  Ecosystem queue  →  Lane  →  Domains
+//       (the judgement)          (polls 60s)      (study)   (capacity + contract)
 //
-// Order is deliberate and follows the operator's standing display doctrine:
-// the IN-MOTION surface first (what the mediators are doing right now), then
-// PLAN-AHEAD (contracts, scheduled for the next Denver midnight), then the
-// ledgers as history. Lifetime aggregates do not appear at all — this whole tab
-// is scoped to ONE Denver day.
+// PAGE_VERSION 2 (2026-09-09) — the Fulfillment verdict pane leads, and is the
+// default. Operator ruling 2026-09-09: "the contract is the source of truth in
+// every review", so the first thing this tab answers is whether each domain×ISP
+// got EXACTLY what its contract promised (±5%), not what the mediators happen to
+// be doing right now. The in-motion surfaces follow, then PLAN-AHEAD (contracts,
+// scheduled for the next Denver midnight), then the ledgers as history. Lifetime
+// aggregates do not appear at all — this whole tab is scoped to ONE Denver day.
 //
 // The day comes from the shared FilterBar (Denver presets + date inputs). The
 // supply chain is a single-day surface, so the bar's `To` day IS the day; a
@@ -27,11 +29,13 @@ import { FilterBar, FilterChip, denverToday, type LakeFilterDraft, type AppliedL
 import { SupplyEcosystem } from './SupplyEcosystem'
 import { SupplyLane } from './SupplyLane'
 import { SupplyDomains } from './SupplyDomains'
+import { SupplyVerdict } from './SupplyVerdict'
 import { supplyGet, type EcosystemResponse, type EcosystemLaneRow } from './supplyShared'
 
-type Pane = 'ecosystem' | 'lane' | 'domains'
+type Pane = 'verdict' | 'ecosystem' | 'lane' | 'domains'
 
 const PANES = [
+  { key: 'verdict', label: 'Fulfillment verdict' },
   { key: 'ecosystem', label: 'Ecosystem queue' },
   { key: 'lane', label: 'Lane' },
   { key: 'domains', label: 'Domains' },
@@ -47,7 +51,7 @@ const emptyDraft = (): LakeFilterDraft => ({
 })
 
 export const SupplyView: React.FC = () => {
-  const [pane, setPane] = React.useState<Pane>('ecosystem')
+  const [pane, setPane] = React.useState<Pane>('verdict')
   const [draft, setDraft] = React.useState<LakeFilterDraft>(emptyDraft)
   const [applied, setApplied] = React.useState<AppliedLakeFilters>(() => ({ ...emptyDraft(), nonce: 0 }))
   const [lane, setLane] = React.useState<string | null>(null)
@@ -69,6 +73,7 @@ export const SupplyView: React.FC = () => {
   }, [day, applied.nonce])
 
   const openLane = (l: string) => { setLane(l); setPane('lane') }
+  const openDomain = (d: string) => { setDomain(d); setPane('domains') }
 
   return (
     <div style={pageStyle}>
@@ -114,6 +119,9 @@ export const SupplyView: React.FC = () => {
       {/* Panes stay mounted once visited so their state and scroll survive a
           flip (PORTAL_DESIGN_SYSTEM §4). The Ecosystem pane is the only one
           that polls, so hiding it does not start a second poller elsewhere. */}
+      <div style={{ display: pane === 'verdict' ? 'block' : 'none' }}>
+        <SupplyVerdict day={day} onSelectDomain={openDomain} />
+      </div>
       <div style={{ display: pane === 'ecosystem' ? 'block' : 'none' }}>
         <SupplyEcosystem day={day} onSelectLane={openLane} />
       </div>

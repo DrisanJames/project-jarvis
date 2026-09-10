@@ -288,19 +288,18 @@ func (s *Service) ReconcileLaneBalances(ctx context.Context, day time.Time, cont
 		if c == nil {
 			continue
 		}
-		excluded := make(map[string]struct{}, len(c.ISPExclusions))
-		for _, e := range c.ISPExclusions {
-			excluded[normISP(e)] = struct{}{}
-		}
-		for _, isp := range sortedKeys(c.DesiredDailyIntros) {
+		// The SAME union EnsureDayBalances seeds (ContractedISPs), so the two
+		// passes cannot disagree about which rows the day is supposed to have.
+		// An excluded ISP is reconciled TO ZERO rather than skipped: skipping it
+		// left a row that had been contracted yesterday still carrying
+		// yesterday's desire after an exclusion landed, and the lane kept
+		// spending against a number the contract had withdrawn.
+		for _, isp := range ContractedISPs(c) {
 			if err := ctx.Err(); err != nil {
 				return res, fmt.Errorf("dripsupply: ReconcileLaneBalances cancelled after %d rows: %w", res.Seen, err)
 			}
-			n := normISP(isp)
-			if _, skip := excluded[n]; skip {
-				continue
-			}
-			changed, drift, err := s.reconcileLaneOne(ctx, day, c.Lane, n, c.DesiredDailyIntros[isp])
+			n := isp
+			changed, drift, err := s.reconcileLaneOne(ctx, day, c.Lane, n, ContractDesiredFor(c, n))
 			if err != nil {
 				return res, err
 			}
@@ -369,12 +368,97 @@ func (s *Service) reconcileLaneOne(ctx context.Context, day time.Time, lane, isp
 	return changed, drift, nil
 }
 
+// -----------------------------------------------------------------------------
+// What a dispatch contract SAYS about an ISP (contract-fulfilment rule 1)
+// -----------------------------------------------------------------------------
+
+// ContractedISPs is every ISP class a dispatch contract NAMES, normalised,
+// deduplicated and sorted: the keys of desired_daily_intros UNION
+// isp_exclusions.
+//
+// The union is the point. Both halves are the contract SPEAKING about an ISP —
+// one says "this many", the other says "none" — and both must produce a lane
+// balance row, because a row is what separates a contracted zero from an
+// unseeded day (see EnsureDayBalances' header). Only an ISP in NEITHER list is
+// genuinely absent, and absence is the one case that still fails Reserve closed.
+//
+// PURE: no I/O, no clock, and deterministic for a given contract — the seeding
+// pass and the reconciliation pass call it so they cannot disagree about which
+// rows the day is supposed to have.
+func ContractedISPs(c *DispatchContract) []string {
+	if c == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(c.DesiredDailyIntros)+len(c.ISPExclusions))
+	out := make([]string, 0, len(c.DesiredDailyIntros)+len(c.ISPExclusions))
+	add := func(raw string) {
+		n := normISP(raw)
+		if n == "" {
+			return
+		}
+		if _, dup := seen[n]; dup {
+			return
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	for _, k := range sortedKeys(c.DesiredDailyIntros) {
+		add(k)
+	}
+	for _, e := range c.ISPExclusions {
+		add(e)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ContractDesiredFor is the contract's desired_daily_intros for ONE normalised
+// ISP, with the two rules that make it a promise rather than a hint:
+//
+//   - an ISP in isp_exclusions is 0, whatever desired_daily_intros says. An
+//     exclusion is the stronger statement; a contract carrying both is a
+//     validation defect and the safe reading of a contradiction is "none".
+//   - a negative is 0. `unfilled` is summed by every reader and a negative
+//     reads as unbounded the moment anything adds it up.
+//
+// Keys are matched on their normalised form, so an operator-authored "Yahoo"
+// and "yahoo" resolve to the same class. When two raw keys normalise together
+// the sorted-first one wins, which is the same tie-break laneDesiredFor uses.
+//
+// PURE.
+func ContractDesiredFor(c *DispatchContract, isp string) int {
+	if c == nil {
+		return 0
+	}
+	n := normISP(isp)
+	for _, e := range c.ISPExclusions {
+		if normISP(e) == n {
+			return 0
+		}
+	}
+	for _, k := range sortedKeys(c.DesiredDailyIntros) {
+		if normISP(k) != n {
+			continue
+		}
+		if v := c.DesiredDailyIntros[k]; v > 0 {
+			return v
+		}
+		return 0
+	}
+	return 0
+}
+
 // EnsureDayResult reports what a seeding pass created.
 type EnsureDayResult struct {
 	DomainRowsCreated int
 	LaneRowsCreated   int
 	DomainRowsSeen    int
 	LaneRowsSeen      int
+	// LaneRowsZero counts the rows seeded with desired = 0 — an ISP the
+	// dispatch contract names and deliberately wants nothing on (an explicit
+	// zero, or an ISP in isp_exclusions). They exist so an explicit zero and an
+	// absent key are DIFFERENT things at Reserve time; see the header.
+	LaneRowsZero int
 }
 
 // EnsureDayBalances creates the day's drip_capacity_balance and
@@ -392,9 +476,30 @@ type EnsureDayResult struct {
 //     interval available and never more.
 //   - lane rows: unfilled = desired. The planner (WP6) overwrites awarded_* and
 //     unfilled when it freezes the day; until it does, desired is the lane ceiling.
-//   - an ISP in isp_exclusions, or with desired <= 0, gets NO lane row at all —
-//     "absent ISP = 0 (not wanted)" (§1.1), and a missing lane row fails Reserve
-//     closed rather than granting from a zero-desire lane.
+//   - EVERY ISP the dispatch contract NAMES gets a lane row, including the ones
+//     it names with desired = 0 and the ones it excludes. Both seed
+//     desired = 0 / unfilled = 0.
+//
+// That last rule is a 2026-09-09 REVERSAL of "an ISP with desired <= 0 gets NO
+// lane row at all", and it is the whole of contract-fulfilment rule 1.
+//
+// The old rule made an explicit zero and an absent key the SAME thing at
+// Reserve time: both missed the lane row, both took the sql.ErrNoRows branch,
+// and both came back `no_lane_balance`. So an operator reading a zero grant
+// could not tell "this lane wants nothing on gmail today, as contracted" from
+// "the day was never seeded and the estate is dark" — and on 2026-09-05 the
+// estate WAS dark for 11h42m behind exactly that string (44,658 denials, and
+// drip_tick_outcomes never carried the word once).
+//
+// A contract is a commitment in both directions, so a contracted 0 is a
+// PROMISE OF ZERO and has to be recorded as one: the row exists, the grant is
+// 0, and the reason names `zero_desired` (reservation.go). An ABSENT key —
+// an ISP no contract mentions — stays absent and still fails closed as
+// `no_lane_balance`, which now means only one thing.
+//
+// Cost: one extra row per contracted-zero ISP per day (the estate's gmail ban
+// is eight brands, so tens of rows, not thousands), and they are seeded by the
+// same ON CONFLICT DO NOTHING insert as every other row.
 func EnsureDayBalances(ctx context.Context, db Queryer, day time.Time, contracts *ActiveSet) (EnsureDayResult, error) {
 	var res EnsureDayResult
 	if db == nil {
@@ -458,26 +563,21 @@ func EnsureDayBalances(ctx context.Context, db Queryer, day time.Time, contracts
 		if c == nil {
 			continue
 		}
-		excluded := make(map[string]struct{}, len(c.ISPExclusions))
-		for _, e := range c.ISPExclusions {
-			excluded[normISP(e)] = struct{}{}
-		}
-		for _, isp := range sortedKeys(c.DesiredDailyIntros) {
+		for _, isp := range ContractedISPs(c) {
 			if err := ctx.Err(); err != nil {
 				return res, fmt.Errorf("dripsupply: EnsureDayBalances cancelled: %w", err)
 			}
-			n := normISP(isp)
-			desired := c.DesiredDailyIntros[isp]
-			if _, skip := excluded[n]; skip || desired <= 0 {
-				continue
-			}
+			desired := ContractDesiredFor(c, isp)
 			res.LaneRowsSeen++
+			if desired == 0 {
+				res.LaneRowsZero++
+			}
 			r, err := db.ExecContext(ctx, `
 				INSERT INTO drip_lane_balance
 					(day, lane, isp, desired, awarded_firm, awarded_provisional, reserved, committed, unfilled)
 				VALUES ($1::date, $2, $3, $4, 0, 0, 0, 0, $4)
 				ON CONFLICT (day, lane, isp) DO NOTHING
-			`, key, c.Lane, n, desired)
+			`, key, c.Lane, isp, desired)
 			if err != nil {
 				return res, fmt.Errorf("dripsupply: seed lane balance %s/%s on %s: %w", c.Lane, isp, key, err)
 			}
