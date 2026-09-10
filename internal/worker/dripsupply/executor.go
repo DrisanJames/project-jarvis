@@ -1644,13 +1644,17 @@ func (m *Mediator) trackStreak(ctx context.Context, lane, pass, outcome, reason 
 	}
 	n := m.zeroStreak[key]
 	m.mu.Unlock()
-	if n < 2 {
+	// Page only on FAILED ticks. A `zero` tick claimed nothing because nothing was
+	// claimable — a quiet lane, not a fault; dark_alert.go already classifies
+	// no_records_claimed that way. Paging on it posted "<lane> produced nothing
+	// for N ticks" once an hour forever for every idle lane (converters_*,
+	// broadcast-family.*, empty choice lanes), and the operator asked for it gone
+	// 2026-09-10. A lane that is dark WITH claimable supply under enforcement is
+	// dark_alert's job, which probes for supply before it speaks.
+	if n < 2 || outcome != OutcomeFailed {
 		return
 	}
-	tier := notify.TierWarn
-	if outcome == OutcomeFailed {
-		tier = notify.TierAlert
-	}
+	tier := notify.TierAlert
 	m.alertOnce(ctx, "lane:"+lane, tier,
 		fmt.Sprintf("%s produced nothing for %d ticks · %s", lane, n, pass),
 		"Reason: "+reason+"\nPass: "+pass,

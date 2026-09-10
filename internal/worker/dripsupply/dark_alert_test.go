@@ -490,13 +490,15 @@ func TestDarkAlertKeyIsDistinctFromZeroStreakKey(t *testing.T) {
 	defer done()
 	const lane = "key_collision_lane"
 
-	// Two zero-claim ticks first: that arms trackStreak's "lane:<lane>" key.
+	// Two FAILED ticks first: that arms trackStreak's "lane:<lane>" key. (Zero
+	// ticks no longer page at all — operator 2026-09-10 — so a failed streak is
+	// the only thing left that can occupy the shared-key window.)
 	for i := 0; i < 2; i++ {
 		f.expectOutcome()
-		f.tick(lane, PassWelcome, OutcomeZero, ZeroNoRecordsClaimed, "")
+		f.tick(lane, PassWelcome, OutcomeFailed, "claim_records", "")
 	}
 	if n := len(f.note.matching("produced nothing")); n != 1 {
-		t.Fatalf("setup: want the existing zero-streak WARN, got %d", n)
+		t.Fatalf("setup: want the failed-streak ALERT, got %d", n)
 	}
 
 	// Now the lane goes contract-dark inside the SAME window.
