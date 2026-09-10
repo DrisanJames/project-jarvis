@@ -12111,9 +12111,14 @@ END $$`},
 		log.Printf("[StartupMigration] add_pool_isolation_mode: ERROR %v", err)
 	}
 
-	// Add retry_after column to queue tables for strict-pool backoff scheduling
-	db.Exec(`ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
-	db.Exec(`ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
+	// Add retry_after column to queue tables for strict-pool backoff scheduling.
+	// Guarded: a bare ADD COLUMN IF NOT EXISTS on a hot table still queues for
+	// ACCESS EXCLUSIVE even when the column exists, and a queued AE blocks every
+	// later lock request on that table (08-20, 09-05, 09-06, 09-09 barricades).
+	addColumnIfMissing(db, "mailing_campaign_queue", "retry_after",
+		`ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
+	addColumnIfMissing(db, "mailing_campaign_queue_v2", "retry_after",
+		`ALTER TABLE IF EXISTS mailing_campaign_queue_v2 ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ`)
 
 	// ---------------------------------------------------------------------
 	// content_locked: gate fingerprint-diversification mutations for strict
@@ -12122,16 +12127,14 @@ END $$`},
 	// and mutateHTMLHash (honeypot injection remains on).
 	// Offer-level flag seeds campaign default; TruGreen is seeded = TRUE.
 	// ---------------------------------------------------------------------
-	if _, err := db.Exec(`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
-		log.Printf("[StartupMigration] add_campaigns_content_locked: ERROR %v", err)
-	} else {
-		log.Println("[StartupMigration] add_campaigns_content_locked: OK")
-	}
-	if _, err := db.Exec(`ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
-		log.Printf("[StartupMigration] add_offers_content_locked: ERROR %v", err)
-	} else {
-		log.Println("[StartupMigration] add_offers_content_locked: OK")
-	}
+	// Guarded (see addColumnIfMissing): on 2026-09-09 this exact statement — a
+	// guaranteed no-op, the column has existed since 2026-08-20 — queued 2m28s
+	// behind a CPM-planner query and barricaded 147 sessions, 122 of them
+	// tracking-event inserts, at deploy time. Fourth occurrence.
+	addColumnIfMissing(db, "mailing_campaigns", "content_locked",
+		`ALTER TABLE mailing_campaigns ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`)
+	addColumnIfMissing(db, "mailing_offers", "content_locked",
+		`ALTER TABLE mailing_offers ADD COLUMN IF NOT EXISTS content_locked BOOLEAN NOT NULL DEFAULT FALSE`)
 
 	// ---------------------------------------------------------------------
 	// late_alert_sent_at: dedup column for the CampaignHealthMonitor's
@@ -12980,4 +12983,41 @@ func (a *pipelineAlerterAdapter) SendPipelineReport(report worker.PipelineReport
 		})
 	}
 	return a.alerter.SendPipelineReport(ar)
+}
+
+// addColumnIfMissing runs an ADD COLUMN only when information_schema says the
+// column is absent, and then only under a short lock_timeout on a dedicated
+// connection. `ADD COLUMN IF NOT EXISTS` is NOT a free no-op: it still requests
+// ACCESS EXCLUSIVE on the table, and a QUEUED AE blocks every later lock
+// request behind it — which is how a no-op statement destroyed ~10 min of SES
+// events on 2026-08-20 and barricaded 147 sessions on 2026-09-09. A lock
+// timeout here fails fast and logs "will retry next boot" instead.
+func addColumnIfMissing(db *sql.DB, table, column, ddl string) {
+	name := fmt.Sprintf("add_%s_%s", table, column)
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`, table, column).Scan(&n); err != nil {
+		log.Printf("[StartupMigration] %s: probe failed (%v) — skipping, will retry next boot", name, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[StartupMigration] %s: already present, skipped (no lock taken)", name)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		log.Printf("[StartupMigration] %s: conn failed (%v) — will retry next boot", name, err)
+		return
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "SET lock_timeout = '3s'"); err != nil {
+		log.Printf("[StartupMigration] %s: SET lock_timeout failed (%v) — skipping", name, err)
+		return
+	}
+	if _, err := conn.ExecContext(ctx, ddl); err != nil {
+		log.Printf("[StartupMigration] %s: ERROR %v — skipped, will retry next boot", name, err)
+		return
+	}
+	log.Printf("[StartupMigration] %s: OK", name)
 }
