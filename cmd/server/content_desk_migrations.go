@@ -218,6 +218,17 @@ var contentDeskMigrations = []struct {
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (org_id, day)
 	)`},
+	// Latest Mac-side ops report per (org, source) — job watchdog, site
+	// probes, TRACKSIG summaries, supply runway (POST content-desk/ops-report).
+	{"content_desk_ops_reports", `CREATE TABLE IF NOT EXISTS content_ops_reports (
+		org_id       UUID NOT NULL,
+		source       TEXT NOT NULL,
+		generated_at TIMESTAMPTZ NOT NULL,
+		checks       JSONB NOT NULL DEFAULT '[]'::jsonb,
+		payload      JSONB,
+		received_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (org_id, source)
+	)`},
 	// Worker queue scan + review-queue/ops reads. Built on empty tables.
 	{"content_desk_articles_queue_idx", `CREATE INDEX IF NOT EXISTS idx_content_articles_queue
 		ON content_articles (run_requested_at) WHERE run_requested_at IS NOT NULL`},

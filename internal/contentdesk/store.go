@@ -1407,6 +1407,11 @@ type OpsStatus struct {
 	LastPipelineError            *PipelineError `json:"last_pipeline_error"`
 	NewsletterSupplyRunway       *float64       `json:"newsletter_supply_runway"`
 	NewsletterSupplyRunwayReason string         `json:"newsletter_supply_runway_reason"`
+	// Checks: server-side checks + the latest Mac-side ops reports (ops.go).
+	Checks []OpsCheck `json:"checks"`
+	Supply struct {
+		Consumers json.RawMessage `json:"consumers"` // payload.consumers of the supply_runway report; null when absent
+	} `json:"supply"`
 }
 
 // RunwayUnavailableReason explains the null runway.
