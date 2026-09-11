@@ -187,6 +187,7 @@ const reviseSystem = draftSystem + `
 You are now revising ONE block of your article after the standards editor's review. You get that block, with its inline claim markers, the findings on it, and the rest of the article for context only.
 - Fix every finding at its cause: restore an overstated sentence's lost qualifier or narrow it to exactly what the passage says; rewrite or remove an unsupported sentence; give an unreferenced factual sentence a marker or cut it; a marker citing a claim that is not listed must be replaced by a listed claim or its sentence cut; fix length or link problems where they arise.
 - Change nothing that has no finding, and keep every existing marker on sentences you do not change.
+- Add no new factual sentence unless it carries a marker for a listed claim. For an unreferenced or unsupported finding, cutting the sentence is a correct fix; prefer it to inventing new wording.
 - Return that one block, complete — every sentence, item and row it should have, with its markers — with the same id and type.
 - A marker's claim_id must be one of the listed claims (all supported). If a sentence has no supported claim, cut it.`
 
@@ -314,7 +315,10 @@ func (p *Pipeline) revise(ctx context.Context, in PipelineInput, a assessment, c
 
 // revisePromptVersion is part of the revise stage's input hash, so changing
 // the revise prompt never replays outputs cached under an older prompt.
-const revisePromptVersion = "2026-09-11.4-perblock-" + citationContractVersion
+// .5: no new uncited facts (live :1131: a round-1 rewrite of myownhealth's
+// section-2 added "check the serving size at the top of the label" with no
+// marker, which became its last hard blocker).
+const revisePromptVersion = "2026-09-11.5-perblock-nonew-" + citationContractVersion
 
 // checkDetailUnitRE finds the unit a code-check detail names: an optional
 // "ref[i] " then "<unit>#<sentence_idx>".

@@ -3,6 +3,7 @@ package contentdesk
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -89,5 +90,18 @@ func TestReviseBlock_PackageFindingsAreNotSentToBlocks(t *testing.T) {
 	}
 	if len(llm.reqs) != 0 {
 		t.Fatalf("a title finding must not trigger a block rewrite: %d calls", len(llm.reqs))
+	}
+}
+
+// Live :1131: a rewrite added an uncited factual sentence that became the
+// article's last hard blocker. The reviser's rules forbid new uncited facts
+// and name cutting as a correct fix, and they are in the revise cache key.
+func TestReviseSystem_NoNewUncitedFacts(t *testing.T) {
+	if !strings.Contains(reviseSystem, "Add no new factual sentence unless it carries a marker") ||
+		!strings.Contains(reviseSystem, "cutting the sentence is a correct fix") {
+		t.Fatal("the reviser must be told not to add uncited facts and that cutting is a correct fix")
+	}
+	if !strings.Contains(revisePromptVersion, "nonew") {
+		t.Fatalf("the rule change must be in the revise cache key: %s", revisePromptVersion)
 	}
 }
