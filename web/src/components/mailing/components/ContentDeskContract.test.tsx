@@ -227,6 +227,40 @@ describe('ops dashboard — GET ops-status', () => {
   })
 })
 
+describe('ops dashboard — absent and null fields render "unknown", never 0 or a crash', () => {
+  it('a snapshot carrying only checks', async () => {
+    install(() => resp(200, { checks: [{ name: 'server: budget', status: 'ok', detail: 'fine', checked_at: null }] }))
+    render(<ContentDeskOps />)
+    await screen.findByText('Is everything working?')
+    expect(screen.getByTitle('kill_switch not reported')).toBeTruthy()
+    expect(screen.getByTitle('today_usd not reported')).toBeTruthy()
+    expect(screen.getByTitle('nothing in review')).toBeTruthy()
+    expect(screen.getByTitle('pipeline not reported')).toBeTruthy()
+    expect(screen.getAllByTitle('releases not reported').length).toBeGreaterThan(0)
+    expect(screen.getByText(/no supply_runway report received/)).toBeTruthy()
+    expect(screen.queryByText('enabled')).toBeNull()
+    expect(screen.queryByText('killed')).toBeNull()
+    expect(screen.getByText('server: budget')).toBeTruthy()
+  })
+
+  it('a snapshot whose objects are null', async () => {
+    const o = clone(opsFx) as unknown as Record<string, unknown>
+    Object.assign(o, {
+      kill_switch: null, spend: null, models: null, pipeline: null, releases: null, checks: null,
+      last_pipeline_error: null, review_queue: { size: 0, oldest_age_seconds: null }, supply: { consumers: null },
+    })
+    install(() => resp(200, o))
+    render(<ContentDeskOps />)
+    await screen.findByText('Is everything working?')
+    expect(screen.getByText('No checks reported — state unknown.')).toBeTruthy()
+    expect(screen.getByTitle('kill_switch not reported')).toBeTruthy()
+    expect(screen.getByTitle('nothing in review')).toBeTruthy()
+    expect(screen.getAllByTitle('releases not reported').length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('last-pipeline-error')).toBeNull()
+    expect(screen.getByText(/no supply_runway report received/)).toBeTruthy()
+  })
+})
+
 describe('briefs — GET briefs / sites', () => {
   it('lists the backend briefs and offers only the backend categories', async () => {
     install(c => (c.url.startsWith(`${CD}/briefs`) ? resp(200, clone(briefsFx)) : resp(404, {})))
