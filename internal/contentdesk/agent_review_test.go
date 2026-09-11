@@ -89,6 +89,21 @@ func TestAcceptRevision_OnlyStrictImprovement(t *testing.T) {
 	if !acceptRevision(prev, testAssessment()) {
 		t.Fatal("fewer blockers must be accepted")
 	}
+
+	// Live 2026-09-11 (aadwd): fewer judgment blockers but a NEW failed code
+	// check (a broken calculation) must still be rejected.
+	many := testAssessment()
+	for _, id := range []string{"j2", "j3", "j4"} {
+		many.judgment = append(many.judgment, JudgmentItem{ID: id, Kind: "claim", BlockID: "b1", Verdict: "overstated"})
+	}
+	traded := testAssessment()
+	traded.code = append(traded.code, CheckResult{Name: "calc_recompute", Passed: false, Severity: "S1"})
+	if len(traded.blockers()) >= len(many.blockers()) {
+		t.Fatalf("test setup: traded must have fewer blockers (%d vs %d)", len(traded.blockers()), len(many.blockers()))
+	}
+	if acceptRevision(many, traded) {
+		t.Fatal("a rewrite that newly fails a code check must be rejected even with fewer blockers")
+	}
 }
 
 func TestSecondPassClean(t *testing.T) {

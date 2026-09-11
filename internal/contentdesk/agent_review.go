@@ -180,8 +180,23 @@ func degenerateRevision(prev assessment, next draftResult) string {
 	return ""
 }
 
-// acceptRevision keeps a rewrite only if it strictly reduces the blockers.
+// acceptRevision keeps a rewrite only if it introduces no code-check failure
+// the previous revision did not have AND strictly reduces the blockers. A
+// broken calculation or dangling reference is never traded for fewer flags
+// (2026-09-11: aadwd's accepted rewrite cut ~26 blockers to 12 but newly failed
+// calc_recompute and claim_refs_resolve, both S1).
 func acceptRevision(prev, cand assessment) bool {
+	failedBefore := map[string]bool{}
+	for _, c := range prev.code {
+		if !c.Passed {
+			failedBefore[c.Name] = true
+		}
+	}
+	for _, c := range cand.code {
+		if !c.Passed && !failedBefore[c.Name] {
+			return false
+		}
+	}
 	return len(cand.blockers()) < len(prev.blockers())
 }
 
