@@ -23,6 +23,8 @@ type Pipeline struct {
 	MaxAttempts       int
 	StaleAfter        time.Duration
 	SimhashMaxHamming int
+	// MaxReviseRounds bounds the revise loop (0 = defaultReviseRounds).
+	MaxReviseRounds int
 }
 
 // NewPipeline wires defaults: 3 attempts per stage input, a running row is
@@ -234,72 +236,101 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		return fmt.Errorf("draft output: %w", err)
 	}
 
-	// 4. package (LIGHT model)
-	raw, u, err = p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp}),
-		func(ctx context.Context) (any, Usage, error) { return p.packageStage(ctx, in, draft, current) })
-	total.Add(u)
-	if err != nil {
-		return err
-	}
-	pkgRaw := raw
-	var pk packageResult
-	if err := json.Unmarshal(raw, &pk); err != nil {
-		return fmt.Errorf("package output: %w", err)
-	}
-	pkg := Package{Title: pk.Title, Excerpt: pk.Excerpt, MetaTitle: pk.MetaTitle, MetaDescription: pk.MetaDescription,
-		Blocks: draft.Blocks, Subjects: pk.Subjects, Preheaders: pk.Preheaders}
-	refs := SortClaimRefs(append(append([]ClaimRef(nil), draft.ClaimRefs...), pk.ClaimRefs...))
-	revHash, err := RevisionHash(pkg, refs)
-	if err != nil {
-		return err
+	// 4–6. package → code checks → judgment, as one reusable assessment.
+	assess := func(draftRaw json.RawMessage, draft draftResult) (assessment, error) {
+		var a assessment
+		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp}),
+			func(ctx context.Context) (any, Usage, error) { return p.packageStage(ctx, in, draft, current) })
+		total.Add(u)
+		if err != nil {
+			return a, err
+		}
+		pkgRaw := raw
+		var pk packageResult
+		if err := json.Unmarshal(raw, &pk); err != nil {
+			return a, fmt.Errorf("package output: %w", err)
+		}
+		a.pkg = Package{Title: pk.Title, Excerpt: pk.Excerpt, MetaTitle: pk.MetaTitle, MetaDescription: pk.MetaDescription,
+			Blocks: draft.Blocks, Subjects: pk.Subjects, Preheaders: pk.Preheaders}
+		a.refs = SortClaimRefs(append(append([]ClaimRef(nil), draft.ClaimRefs...), pk.ClaimRefs...))
+		if a.revHash, err = RevisionHash(a.pkg, a.refs); err != nil {
+			return a, err
+		}
+
+		// code checks (deterministic)
+		taken, err := p.Store.TakenSlugs(ctx, org, in.Site.ID, articleID)
+		if err != nil {
+			return a, err
+		}
+		others, err := p.Store.OtherBodies(ctx, org, in.Site.ID, articleID)
+		if err != nil {
+			return a, err
+		}
+		otherFP := make([]string, len(others))
+		for i, o := range others {
+			otherFP[i] = fmt.Sprintf("%s:%x", o.ArticleID, Simhash(o.Body))
+		}
+		sort.Strings(otherFP)
+		checkIn := CheckInput{
+			Domain: in.Site.Domain, SourceDomains: CategoryAllowlist[in.Brief.Category], Package: a.pkg,
+			RawOutputs: [][]byte{draftRaw, pkgRaw}, Refs: a.refs, Claims: byKey, Latest: latest, Slug: in.Article.Slug,
+			TakenSlugs: taken, Others: others, SimhashMaxHamming: p.SimhashMaxHamming,
+		}
+		raw, _, err = p.RunStage(ctx, org, articleID, StageCodeChecks,
+			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "slug": in.Article.Slug,
+				"taken": taken, "others": otherFP, "max_hamming": p.SimhashMaxHamming}),
+			func(ctx context.Context) (any, Usage, error) { return RunCodeChecks(checkIn), Usage{}, nil })
+		if err != nil {
+			return a, err
+		}
+		if err := json.Unmarshal(raw, &a.code); err != nil {
+			return a, fmt.Errorf("code_checks output: %w", err)
+		}
+
+		// judgment (JUDGE model)
+		raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment,
+			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all)}),
+			func(ctx context.Context) (any, Usage, error) { return p.judge(ctx, in, a.pkg, a.refs, byKey) })
+		total.Add(u)
+		if err != nil {
+			return a, err
+		}
+		if err := json.Unmarshal(raw, &a.judgment); err != nil {
+			return a, fmt.Errorf("judgment output: %w", err)
+		}
+		return a, nil
 	}
 
-	// 5. code checks (deterministic)
-	taken, err := p.Store.TakenSlugs(ctx, org, in.Site.ID, articleID)
+	a, err := assess(draftRaw, draft)
 	if err != nil {
 		return err
 	}
-	others, err := p.Store.OtherBodies(ctx, org, in.Site.ID, articleID)
-	if err != nil {
-		return err
-	}
-	otherFP := make([]string, len(others))
-	for i, o := range others {
-		otherFP[i] = fmt.Sprintf("%s:%x", o.ArticleID, Simhash(o.Body))
-	}
-	sort.Strings(otherFP)
-	checkIn := CheckInput{
-		Domain: in.Site.Domain, SourceDomains: CategoryAllowlist[in.Brief.Category], Package: pkg,
-		RawOutputs: [][]byte{draftRaw, pkgRaw}, Refs: refs, Claims: byKey, Latest: latest, Slug: in.Article.Slug,
-		TakenSlugs: taken, Others: others, SimhashMaxHamming: p.SimhashMaxHamming,
-	}
-	raw, _, err = p.RunStage(ctx, org, articleID, StageCodeChecks,
-		mustHash(map[string]any{"revision": revHash, "claims": claimFingerprint(all), "slug": in.Article.Slug,
-			"taken": taken, "others": otherFP, "max_hamming": p.SimhashMaxHamming}),
-		func(ctx context.Context) (any, Usage, error) { return RunCodeChecks(checkIn), Usage{}, nil })
-	if err != nil {
-		return err
-	}
-	var code []CheckResult
-	if err := json.Unmarshal(raw, &code); err != nil {
-		return fmt.Errorf("code_checks output: %w", err)
+	// 7. revise loop: failed code checks and unresolved judgments go back to
+	// the writer (only flagged sentences change), then re-assess — until clean
+	// or maxReviseRounds. Whatever remains stays a review blocker.
+	for round := 1; round <= p.maxReviseRounds() && !a.clean(); round++ {
+		prev := a
+		raw, u, err = p.RunStage(ctx, org, articleID, StageRevise,
+			mustHash(map[string]any{"revision": prev.revHash, "findings": prev.findings(), "claims": fp, "round": round}),
+			func(ctx context.Context) (any, Usage, error) { return p.revise(ctx, in, prev, current) })
+		total.Add(u)
+		if err != nil {
+			return err
+		}
+		var next draftResult
+		if err := json.Unmarshal(raw, &next); err != nil {
+			return fmt.Errorf("revise output: %w", err)
+		}
+		if a, err = assess(raw, next); err != nil {
+			return err
+		}
 	}
 
-	// 6. judgment (JUDGE model)
-	raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment,
-		mustHash(map[string]any{"revision": revHash, "claims": claimFingerprint(all)}),
-		func(ctx context.Context) (any, Usage, error) { return p.judge(ctx, in, pkg, refs, byKey) })
-	total.Add(u)
-	if err != nil {
+	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
 		return err
 	}
-	var judgment []JudgmentItem
-	if err := json.Unmarshal(raw, &judgment); err != nil {
-		return fmt.Errorf("judgment output: %w", err)
-	}
-
-	_, _, err = p.Store.SaveRevision(ctx, org, articleID, pkg, refs, Checks{Code: code, Judgment: judgment}, total)
-	return err
+	// 8. agent review (CONTENT_DESK_AGENT_REVIEW=1): approve a clean revision.
+	return p.agentReview(ctx, in, org, articleID, a, byKey)
 }
 
 func keyClaims(r researchResult) []researchRef {

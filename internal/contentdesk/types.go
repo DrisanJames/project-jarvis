@@ -60,10 +60,12 @@ const (
 	StagePackage    = "package"
 	StageCodeChecks = "code_checks"
 	StageJudgment   = "judgment"
+	// StageRevise rewrites only the sentences judgment or code checks flagged.
+	StageRevise = "revise"
 )
 
 // Stages is the canonical order.
-var Stages = []string{StageResearch, StageRederive, StageDraft, StagePackage, StageCodeChecks, StageJudgment}
+var Stages = []string{StageResearch, StageRederive, StageDraft, StagePackage, StageCodeChecks, StageJudgment, StageRevise}
 
 // AllowedBlockTypes is the closed set of typed blocks a draft may contain.
 var AllowedBlockTypes = map[string]bool{
