@@ -495,15 +495,14 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 		log.Printf("[ContentDesk] agent-review article=%s: approved by %s", articleID, AgentReviewer)
 		return nil
 	}
-	// Consequential: the adversarial second pass must also find nothing.
-	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: secondReviewSystem,
-		Prompt: judgePrompt(a.pkg, a.refs, claims), Schema: judgmentSchema(), MaxTokens: 16000})
+	// Consequential: the adversarial second pass must also find nothing it
+	// cannot accept. Same coverage guard as the first judge.
+	items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims)
 	if err != nil {
 		log.Printf("[ContentDesk] agent-review article=%s: second pass failed (%v) — awaiting a second reviewer", articleID, err)
 		return nil
 	}
-	items, err := ParseJudgment(gen.JSON, a.refs)
-	if err != nil || !secondPassClean(items) {
+	if !secondPassClean(items) {
 		log.Printf("[ContentDesk] agent-review article=%s: second pass not clean — awaiting a second reviewer", articleID)
 		return nil
 	}

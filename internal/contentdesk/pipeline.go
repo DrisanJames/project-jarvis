@@ -302,7 +302,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 
 		// judgment (JUDGE model)
 		raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment,
-			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all)}),
+			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "judge": judgePromptVersion}),
 			func(ctx context.Context) (any, Usage, error) { return p.judge(ctx, in, a.pkg, a.refs, byKey) })
 		total.Add(u)
 		if err != nil {
@@ -746,7 +746,7 @@ func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error)
 		it, ok := byRef[i]
 		if !ok {
 			it = JudgmentItem{Kind: "claim", BlockID: r.BlockID, SentenceIdx: r.SentenceIdx, ClaimID: r.ClaimID,
-				Version: r.Version, Verdict: "unsupported", Note: "judge returned no verdict for this sentence — fail closed"}
+				Version: r.Version, Verdict: "unsupported", Note: failClosedNote}
 		}
 		items = append(items, it)
 	}
@@ -763,14 +763,64 @@ func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error)
 }
 
 func (p *Pipeline) judge(ctx context.Context, in PipelineInput, pkg Package, refs []ClaimRef, claims map[string]Claim) (any, Usage, error) {
-	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: judgeSystem,
-		Prompt: judgePrompt(pkg, refs, claims), Schema: judgmentSchema(), MaxTokens: 16000})
-	u := resultUsage(gen)
+	items, u, err := p.judgeCall(ctx, in, judgeSystem, pkg, refs, claims)
 	if err != nil {
 		return nil, u, err
 	}
-	items, err := ParseJudgment(gen.JSON, refs)
-	return items, u, err
+	return items, u, nil
+}
+
+const (
+	// judgePromptVersion is part of the judgment stage's input hash, so a
+	// changed judge prompt never replays a judgment cached under an old one.
+	judgePromptVersion = "2026-09-11.coverage"
+	// judgeMinCoverage is the share of references the judge must return a
+	// verdict for; below it the call is re-run. Live 2026-09-11: 3 of ~40
+	// judgments returned verdicts for about 1 reference plus flags, and fail
+	// closed turned 33–38 sentences into "unsupported" (discountblog's round
+	// 3 went from 4 hard blockers to 40).
+	judgeMinCoverage = 0.9
+	judgeAttempts    = 3
+	failClosedNote   = "judge returned no verdict for this sentence — fail closed"
+)
+
+// judgeCall runs one judge system over the package and re-runs a call that
+// returns verdicts for too few references. After judgeAttempts it fails the
+// stage rather than record fabricated "unsupported" verdicts; the article
+// stays out of review and retries next tick.
+func (p *Pipeline) judgeCall(ctx context.Context, in PipelineInput, system string, pkg Package, refs []ClaimRef, claims map[string]Claim) ([]JudgmentItem, Usage, error) {
+	var total Usage
+	for attempt := 1; ; attempt++ {
+		gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: system,
+			Prompt: judgePrompt(pkg, refs, claims), Schema: judgmentSchema(), MaxTokens: 16000})
+		total.Add(resultUsage(gen))
+		if err != nil {
+			return nil, total, err
+		}
+		items, err := ParseJudgment(gen.JSON, refs)
+		if err != nil {
+			return nil, total, err
+		}
+		got := judgedRefs(items)
+		if float64(got) >= judgeMinCoverage*float64(len(refs)) {
+			return items, total, nil
+		}
+		log.Printf("[ContentDesk] judge article=%s attempt=%d: verdicts for %d of %d references — re-running", in.Article.ID, attempt, got, len(refs))
+		if attempt >= judgeAttempts {
+			return nil, total, fmt.Errorf("%w: judge returned verdicts for %d of %d references after %d attempts", ErrNoStructuredOutput, got, len(refs), attempt)
+		}
+	}
+}
+
+// judgedRefs counts the references the judge actually returned a verdict for.
+func judgedRefs(items []JudgmentItem) int {
+	n := 0
+	for _, j := range items {
+		if j.Kind == "claim" && j.Note != failClosedNote {
+			n++
+		}
+	}
+	return n
 }
 
 func resultUsage(r *GenerateResult) Usage {

@@ -291,7 +291,8 @@ func adjudicationSchema() map[string]any {
 func judgePrompt(pkg Package, refs []ClaimRef, claims map[string]Claim) string {
 	units := Units(pkg)
 	var b strings.Builder
-	b.WriteString("References to judge:\n")
+	fmt.Fprintf(&b, "There are %d references, numbered #0 to #%d. Return exactly %d items, one for every ref_index, supported references included. A reference left out is recorded as unsupported and the judgment is re-run.\n\nReferences to judge:\n",
+		len(refs), len(refs)-1, len(refs))
 	for i, r := range refs {
 		sent := ""
 		if s := units[r.BlockID]; r.SentenceIdx >= 0 && r.SentenceIdx < len(s) {
