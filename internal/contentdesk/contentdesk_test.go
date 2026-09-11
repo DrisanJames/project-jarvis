@@ -254,7 +254,6 @@ func TestJudgment_RejectsMalformedOutput(t *testing.T) {
 	for name, raw := range map[string]string{
 		"bad verdict":   `{"items":[{"ref_index":0,"verdict":"probably","lost_qualifier":"","note":""}],"flags":[]}`,
 		"out of range":  `{"items":[{"ref_index":7,"verdict":"supported","lost_qualifier":"","note":""}],"flags":[]}`,
-		"duplicate":     `{"items":[{"ref_index":0,"verdict":"supported"},{"ref_index":0,"verdict":"unsupported"}],"flags":[]}`,
 		"bad flag kind": `{"items":[],"flags":[{"kind":"vibes","block_id":"b1","sentence_idx":0,"note":""}]}`,
 		"not json":      `nope`,
 	} {

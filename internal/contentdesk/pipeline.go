@@ -701,9 +701,13 @@ var judgeFlagKinds = map[string]bool{
 	"headline_overpromise": true, "omitted_exception": true, "low_usefulness": true, "unreferenced_claim": true,
 }
 
+// verdictRank orders claim verdicts from lenient to strict.
+var verdictRank = map[string]int{"supported": 0, "overstated": 1, "unsupported": 2}
+
 // ParseJudgment validates the judge's output against the refs it was shown
-// (in SortClaimRefs order). Unknown verdicts, out-of-range or duplicate
-// ref_index values and unknown flag kinds are errors. A ref the judge did not
+// (in SortClaimRefs order). Unknown verdicts, out-of-range ref_index values
+// and unknown flag kinds are errors; a ref_index returned twice keeps its
+// stricter verdict. A ref the judge did not
 // return a verdict for is recorded as unsupported (fail closed) — silence is
 // never approval.
 func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error) {
@@ -729,13 +733,15 @@ func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error)
 		if it.RefIndex < 0 || it.RefIndex >= len(refs) {
 			return nil, fmt.Errorf("%w: judgment ref_index %d out of range (%d refs)", ErrNoStructuredOutput, it.RefIndex, len(refs))
 		}
-		if _, dup := byRef[it.RefIndex]; dup {
-			return nil, fmt.Errorf("%w: judgment ref_index %d returned twice", ErrNoStructuredOutput, it.RefIndex)
-		}
 		switch it.Verdict {
 		case "supported", "overstated", "unsupported":
 		default:
 			return nil, fmt.Errorf("%w: judgment verdict %q", ErrNoStructuredOutput, it.Verdict)
+		}
+		// A reference returned twice keeps its stricter verdict (live
+		// 2026-09-11: "ref_index 0 returned twice" failed whole judgments).
+		if prev, dup := byRef[it.RefIndex]; dup && verdictRank[prev.Verdict] >= verdictRank[it.Verdict] {
+			continue
 		}
 		r := refs[it.RefIndex]
 		byRef[it.RefIndex] = JudgmentItem{Kind: "claim", BlockID: r.BlockID, SentenceIdx: r.SentenceIdx, ClaimID: r.ClaimID,
@@ -773,7 +779,7 @@ func (p *Pipeline) judge(ctx context.Context, in PipelineInput, pkg Package, ref
 const (
 	// judgePromptVersion is part of the judgment stage's input hash, so a
 	// changed judge prompt never replays a judgment cached under an old one.
-	judgePromptVersion = "2026-09-11.coverage"
+	judgePromptVersion = "2026-09-11.coverage2"
 	// judgeMinCoverage is the share of references the judge must return a
 	// verdict for; below it the call is re-run. Live 2026-09-11: 3 of ~40
 	// judgments returned verdicts for about 1 reference plus flags, and fail
@@ -799,7 +805,11 @@ func (p *Pipeline) judgeCall(ctx context.Context, in PipelineInput, system strin
 		}
 		items, err := ParseJudgment(gen.JSON, refs)
 		if err != nil {
-			return nil, total, err
+			if attempt >= judgeAttempts {
+				return nil, total, err
+			}
+			log.Printf("[ContentDesk] judge article=%s attempt=%d: %v — re-running", in.Article.ID, attempt, err)
+			continue
 		}
 		got := judgedRefs(items)
 		if float64(got) >= judgeMinCoverage*float64(len(refs)) {

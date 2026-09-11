@@ -77,6 +77,38 @@ func TestJudge_FailsTheStageAfterRepeatedCollapse(t *testing.T) {
 	}
 }
 
+// Live 2026-09-11: "ref_index 0 returned twice" failed whole judgments. A
+// duplicate keeps the stricter verdict, in either order.
+func TestParseJudgment_DuplicateKeepsTheStricterVerdict(t *testing.T) {
+	_, refs := tenRefs()
+	for _, raw := range []string{
+		`{"items":[{"ref_index":0,"verdict":"supported","lost_qualifier":"","note":""},{"ref_index":0,"verdict":"unsupported","lost_qualifier":"","note":"no"}],"flags":[]}`,
+		`{"items":[{"ref_index":0,"verdict":"unsupported","lost_qualifier":"","note":"no"},{"ref_index":0,"verdict":"supported","lost_qualifier":"","note":""}],"flags":[]}`,
+	} {
+		items, err := ParseJudgment(json.RawMessage(raw), refs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if items[0].Verdict != "unsupported" || items[0].Note != "no" {
+			t.Fatalf("a duplicate must keep the stricter verdict: %+v", items[0])
+		}
+	}
+}
+
+// Malformed output is re-run like a collapsed one.
+func TestJudge_ReRunsMalformedOutput(t *testing.T) {
+	pkg, refs := tenRefs()
+	llm := &seqLLM{outs: []string{`nope`, verdicts(10)}}
+	p := &Pipeline{LLM: llm}
+	if _, _, err := p.judge(context.Background(), PipelineInput{OrgID: "o"}, pkg, refs, nil); err != nil || len(llm.reqs) != 2 {
+		t.Fatalf("malformed output must be re-run: err=%v calls=%d", err, len(llm.reqs))
+	}
+	bad := &seqLLM{outs: []string{`nope`}}
+	if _, _, err := (&Pipeline{LLM: bad}).judge(context.Background(), PipelineInput{OrgID: "o"}, pkg, refs, nil); !errors.Is(err, ErrNoStructuredOutput) || len(bad.reqs) != judgeAttempts {
+		t.Fatalf("repeated malformed output must fail after %d attempts: err=%v calls=%d", judgeAttempts, err, len(bad.reqs))
+	}
+}
+
 // 9 of 10 meets the bar; the missing one still fails closed.
 func TestJudge_AcceptsNearFullCoverage(t *testing.T) {
 	pkg, refs := tenRefs()
