@@ -138,14 +138,22 @@ func blockTypeList() []string {
 	return out
 }
 
-func draftSchema() map[string]any {
-	block := sObj(map[string]any{
+func blockSchema() map[string]any {
+	return sObj(map[string]any{
 		"id": sStr(), "type": sEnum(blockTypeList()...), "heading": sStr(), "text": sStr(),
 		"items": sArr(sStr()), "rows": sArr(sArr(sStr())), "calc": sNullable(calcSchema()), "caption": sStr(),
 	})
+}
+
+func draftSchema() map[string]any {
 	// No claim_refs: the writer cites with inline markers and code computes
 	// the refs (citations.go).
-	return sObj(map[string]any{"blocks": sArr(block)})
+	return sObj(map[string]any{"blocks": sArr(blockSchema())})
+}
+
+// reviseBlockSchema is one rewritten block (per-block revise).
+func reviseBlockSchema() map[string]any {
+	return sObj(map[string]any{"block": blockSchema()})
 }
 
 func packageSchema() map[string]any {
@@ -223,8 +231,17 @@ func draftPrompt(in PipelineInput, claims []Claim) string {
 	if voice == "" || voice == "{}" {
 		voice = "(no voice guide — plain, warm, specific, second person)"
 	}
-	return fmt.Sprintf("%s\nSite voice: %s\nSite links: https://www.%s/<path>\n\n%s\n\nClaims (reference only status=supported):\n%s",
-		briefBlock(in), voice, strings.TrimPrefix(in.Site.Domain, "www."), sentenceRules, claimLines(claims))
+	// Only supported claims are shown. Listing conflicting/insufficient ones
+	// (with a "do not cite" status) still got them cited — 2026-09-11 every
+	// pilot draft failed claim_refs_resolve on a "conflicting" claim.
+	var supported []Claim
+	for _, c := range claims {
+		if c.Status == ClaimSupported {
+			supported = append(supported, c)
+		}
+	}
+	return fmt.Sprintf("%s\nSite voice: %s\nSite links: https://www.%s/<path>\n\n%s\n\nClaims (all supported — cite only these; anything not listed could not be confirmed):\n%s",
+		briefBlock(in), voice, strings.TrimPrefix(in.Site.Domain, "www."), sentenceRules, claimLines(supported))
 }
 
 func packagePrompt(in PipelineInput, d draftResult, claims []Claim) string {

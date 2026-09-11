@@ -133,6 +133,20 @@ func TestExtractPackageRefs_AndLimits(t *testing.T) {
 	}
 }
 
+// Live 2026-09-11: with conflicting claims listed (marked "do not cite"), every
+// pilot draft still cited one and failed claim_refs_resolve. The writer sees
+// supported claims only.
+func TestDraftPrompt_ListsOnlySupportedClaims(t *testing.T) {
+	claims := []Claim{
+		{ClaimID: cU1, Version: 1, Status: ClaimSupported, Text: "supported fact"},
+		{ClaimID: cU2, Version: 2, Status: ClaimConflicting, Text: "disputed fact"},
+	}
+	p := draftPrompt(PipelineInput{}, claims)
+	if !strings.Contains(p, cU1) || strings.Contains(p, cU2) || strings.Contains(p, "disputed fact") {
+		t.Fatalf("draft prompt must list only supported claims:\n%s", p)
+	}
+}
+
 // Wiring: the draft stage asks for no claim_refs and computes them from markers.
 func TestDraftStage_ComputesRefsFromMarkers(t *testing.T) {
 	if _, ok := draftSchema()["properties"].(map[string]any)["claim_refs"]; ok {

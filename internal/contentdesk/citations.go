@@ -16,7 +16,7 @@ import (
 // (myownhealth: 33 fail-closed "no verdict" items). The version is part of
 // the draft / package / revise input hashes, so a contract change never
 // replays outputs cached under the old one.
-const citationContractVersion = "2026-09-11.markers"
+const citationContractVersion = "2026-09-11.markers2-supported-only"
 
 // Any [[c:…]] is consumed; only a UUID id is recorded ("N/A" is dropped).
 var citationMarkerRE = regexp.MustCompile(`\[\[c:([^\]@]*)(?:@(\d+))?\]\]`)
