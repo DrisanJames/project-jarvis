@@ -118,6 +118,9 @@ func main() {
 	log.Printf("tracking sig: mode=%s keys=%d (TRACKING_SECRET unset => every check counts missing_key)",
 		os.Getenv(tracking.SigModeEnv), handler.SigKeyCount())
 	handler.StartSigSummary(bgCtx)
+	owned, money := tracking.DestinationRegistryCounts(dict)
+	log.Printf("tracking dest: owned_hosts=%d money_hosts=%d db=%t (money = active mailing_smart_links destination hosts + dead-link remap targets; db=false => money is remap-only)",
+		owned, money, db != nil)
 
 	srv := &http.Server{
 		Addr:         ":" + port,

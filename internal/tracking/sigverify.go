@@ -48,6 +48,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -256,21 +257,34 @@ func deadLinkRemapHosts() []string {
 // money = a host of an active mailing_smart_links.offer_url_template (the
 // in-memory dictionary) or a dead-link remap target; else unknown.
 func classifyDestination(target string, dict *SmartLinkDictionary) string {
+	cls, _ := classifyDestinationHost(target, dict)
+	return cls
+}
+
+// classifyDestinationHost also returns the normalized host (empty when the
+// target has none) so the summary can name the top UNKNOWN hosts.
+func classifyDestinationHost(target string, dict *SmartLinkDictionary) (string, string) {
 	u, err := url.Parse(target)
 	if err != nil || u.Host == "" {
-		return DestUnparseable
-	}
-	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
-		return DestBadScheme
+		return DestUnparseable, ""
 	}
 	host := normHost(u.Hostname())
+	if s := strings.ToLower(u.Scheme); s != "http" && s != "https" {
+		return DestBadScheme, host
+	}
 	if hostUnder(host, brand.Domains()) || hostUnder(host, platformOwnedHosts) {
-		return DestOwned
+		return DestOwned, host
 	}
 	if dict.HasHost(host) || hostUnder(host, deadLinkRemapHosts()) {
-		return DestMoney
+		return DestMoney, host
 	}
-	return DestUnknown
+	return DestUnknown, host
+}
+
+// DestinationRegistryCounts is the (owned, money) host-set sizes the
+// destination check is classifying against — logged at startup.
+func DestinationRegistryCounts(dict *SmartLinkDictionary) (owned, money int) {
+	return len(brand.Domains()) + len(platformOwnedHosts), dict.HostCount() + len(deadLinkRemapHosts())
 }
 
 // -----------------------------------------------------------------------------
@@ -283,10 +297,60 @@ type sigStats struct {
 	since  time.Time
 	total  map[string]int64
 	window map[string]int64
+	// unknownHosts: per-WINDOW count of click.dest.unknown by host (host only —
+	// never path/query/subscriber). Bounded: hosts are attacker-controlled.
+	unknownHosts map[string]int64
 }
 
+const (
+	unknownHostCap  = 500 // distinct hosts tracked per window; the rest -> "_overflow"
+	unknownHostsTop = 5
+)
+
+// hostSafeRe: what a normalized hostname may contain before it is logged.
+var hostSafeRe = regexp.MustCompile(`^[a-z0-9.-]{1,253}$`)
+
 func newSigStats() *sigStats {
-	return &sigStats{since: time.Now(), total: map[string]int64{}, window: map[string]int64{}}
+	return &sigStats{since: time.Now(), total: map[string]int64{}, window: map[string]int64{}, unknownHosts: map[string]int64{}}
+}
+
+func (s *sigStats) incUnknownHost(host string) {
+	if !hostSafeRe.MatchString(host) {
+		host = "_invalid"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.unknownHosts[host]; !ok && len(s.unknownHosts) >= unknownHostCap {
+		host = "_overflow"
+	}
+	s.unknownHosts[host]++
+}
+
+// topUnknownHostsLocked renders "host=n ..." for the top 5, count desc then
+// name asc. Caller holds s.mu.
+func (s *sigStats) topUnknownHostsLocked() string {
+	type hc struct {
+		h string
+		n int64
+	}
+	all := make([]hc, 0, len(s.unknownHosts))
+	for h, n := range s.unknownHosts {
+		all = append(all, hc{h, n})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].n != all[j].n {
+			return all[i].n > all[j].n
+		}
+		return all[i].h < all[j].h
+	})
+	if len(all) > unknownHostsTop {
+		all = all[:unknownHostsTop]
+	}
+	parts := make([]string, len(all))
+	for i, e := range all {
+		parts[i] = e.h + "=" + strconv.FormatInt(e.n, 10)
+	}
+	return strings.Join(parts, " ")
 }
 
 var sigCounters = newSigStats()
@@ -322,9 +386,11 @@ func (s *sigStats) flush(window time.Duration, mode sigMode, nkeys int) string {
 	sort.Strings(parts)
 	line := "TRACKSIG SUMMARY window=" + window.String() + " since=" + s.since.UTC().Format(time.RFC3339) +
 		" mode=" + mode.String() + " keys=" + strconv.Itoa(nkeys) + " checked=" + strconv.FormatInt(total, 10) +
-		" counts[" + strings.Join(parts, " ") + "]"
+		" counts[" + strings.Join(parts, " ") + "]" +
+		" unknown_top[" + s.topUnknownHostsLocked() + "]"
 	s.since = time.Now()
 	s.window = map[string]int64{}
+	s.unknownHosts = map[string]int64{}
 	return line
 }
 
