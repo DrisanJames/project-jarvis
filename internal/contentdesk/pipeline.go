@@ -239,29 +239,50 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// 4–6. package → code checks → judgment, as one reusable assessment.
 	// fix is the previous assessment in a revise round: findings on its
 	// package units go back to the packager with the previous package.
-	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment) (assessment, error) {
+	// keepPackage (the editorial trim) keeps fix's title, excerpt, meta and
+	// email lines as assessed instead of re-packaging a body that only lost
+	// sentences (live :1133: a regenerated excerpt brought a new overstated
+	// claim into the trim candidate).
+	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment, keepPackage bool) (assessment, error) {
 		var a assessment
-		pkgKey := map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion, "package_prompt": packagePromptVersion}
-		var prevPkg Package
-		var pkgFix []reviseFinding
-		if fix != nil {
-			if pkgFix = fix.packageFindings(); len(pkgFix) > 0 {
-				prevPkg = fix.pkg
-				pkgKey["fix"], pkgKey["prev_revision"], pkgKey["prompt"] = pkgFix, fix.revHash, packageRevisePromptVersion
-			}
-		}
-		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(pkgKey),
-			func(ctx context.Context) (any, Usage, error) {
-				return p.packageStage(ctx, in, draft, current, prevPkg, pkgFix)
-			})
-		total.Add(u)
-		if err != nil {
-			return a, err
-		}
-		pkgRaw := raw
+		var raw json.RawMessage
+		var u Usage
+		var err error
 		var pk packageResult
-		if err := json.Unmarshal(raw, &pk); err != nil {
-			return a, fmt.Errorf("package output: %w", err)
+		var pkgRaw json.RawMessage
+		if keepPackage && fix != nil {
+			pk = packageResult{Title: fix.pkg.Title, Excerpt: fix.pkg.Excerpt, MetaTitle: fix.pkg.MetaTitle,
+				MetaDescription: fix.pkg.MetaDescription, Subjects: fix.pkg.Subjects, Preheaders: fix.pkg.Preheaders}
+			for _, r := range fix.refs {
+				if IsReservedUnitID(r.BlockID) {
+					pk.ClaimRefs = append(pk.ClaimRefs, r)
+				}
+			}
+			if pkgRaw, err = json.Marshal(pk); err != nil {
+				return a, err
+			}
+		} else {
+			pkgKey := map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion, "package_prompt": packagePromptVersion}
+			var prevPkg Package
+			var pkgFix []reviseFinding
+			if fix != nil {
+				if pkgFix = fix.packageFindings(); len(pkgFix) > 0 {
+					prevPkg = fix.pkg
+					pkgKey["fix"], pkgKey["prev_revision"], pkgKey["prompt"] = pkgFix, fix.revHash, packageRevisePromptVersion
+				}
+			}
+			raw, u, err = p.RunStage(ctx, org, articleID, StagePackage, mustHash(pkgKey),
+				func(ctx context.Context) (any, Usage, error) {
+					return p.packageStage(ctx, in, draft, current, prevPkg, pkgFix)
+				})
+			total.Add(u)
+			if err != nil {
+				return a, err
+			}
+			pkgRaw = raw
+			if err := json.Unmarshal(raw, &pk); err != nil {
+				return a, fmt.Errorf("package output: %w", err)
+			}
 		}
 		a.pkg = Package{Title: pk.Title, Excerpt: pk.Excerpt, MetaTitle: pk.MetaTitle, MetaDescription: pk.MetaDescription,
 			Blocks: draft.Blocks, Subjects: pk.Subjects, Preheaders: pk.Preheaders}
@@ -306,13 +327,13 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		judgeKey := map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "judge": judgePromptVersion}
 		var carried map[int]JudgmentItem
 		if fix != nil {
-			if carried = carriedVerdicts(*fix, a.pkg, a.refs); len(carried) > 0 {
-				judgeKey["carry_from"] = fix.revHash
-			}
+			// Flags carry too, so the previous revision is always an input.
+			carried = carriedVerdicts(*fix, a.pkg, a.refs)
+			judgeKey["carry_from"] = fix.revHash
 		}
 		raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment, mustHash(judgeKey),
 			func(ctx context.Context) (any, Usage, error) {
-				return p.judgeIncremental(ctx, in, a.pkg, a.refs, byKey, carried)
+				return p.judgeIncremental(ctx, in, a.pkg, a.refs, byKey, carried, fix)
 			})
 		total.Add(u)
 		if err != nil {
@@ -324,7 +345,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		return a, nil
 	}
 
-	a, err := assess(draftRaw, draft, nil)
+	a, err := assess(draftRaw, draft, nil, false)
 	if err != nil {
 		return err
 	}
@@ -359,7 +380,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %s — keeping the previous revision", articleID, round, why)
 			continue
 		}
-		cand, err := assess(raw, next, &prev)
+		cand, err := assess(raw, next, &prev, false)
 		if err != nil {
 			return err
 		}
@@ -381,7 +402,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 				return err
 			}
 			prev := a
-			cand, err := assess(trimRaw, next, &prev)
+			cand, err := assess(trimRaw, next, &prev, true)
 			if err != nil {
 				return err
 			}
@@ -817,7 +838,7 @@ func (p *Pipeline) judge(ctx context.Context, in PipelineInput, pkg Package, ref
 const (
 	// judgePromptVersion is part of the judgment stage's input hash, so a
 	// changed judge prompt never replays a judgment cached under an old one.
-	judgePromptVersion = "2026-09-11.coverage2"
+	judgePromptVersion = "2026-09-11.coverage3-flagcarry"
 	// judgeMinCoverage is the share of references the judge must return a
 	// verdict for; below it the call is re-run. Live 2026-09-11: 3 of ~40
 	// judgments returned verdicts for about 1 reference plus flags, and fail

@@ -56,15 +56,23 @@ func TestCarriedVerdicts_OnlyUnchangedContext(t *testing.T) {
 func TestJudgeIncremental_JudgesOnlyChangedRefs(t *testing.T) {
 	prev, refs := incrementalFixture()
 	cur := changedB2(prev)
-	llm := &seqLLM{outs: []string{`{"items":[{"ref_index":0,"verdict":"supported","lost_qualifier":"","note":""},{"ref_index":1,"verdict":"supported","lost_qualifier":"","note":""}],"flags":[{"kind":"omitted_exception","block_id":"b2","sentence_idx":1,"note":"x"}]}`}}
+	llm := &seqLLM{outs: []string{`{"items":[{"ref_index":0,"verdict":"supported","lost_qualifier":"","note":""},{"ref_index":1,"verdict":"supported","lost_qualifier":"","note":""}],"flags":[{"kind":"omitted_exception","block_id":"b2","sentence_idx":1,"note":"x"},{"kind":"unreferenced_claim","block_id":"b1","sentence_idx":0,"note":"re-sampled"}]}`}}
 	p := &Pipeline{LLM: llm}
-	res, _, err := p.judgeIncremental(context.Background(), PipelineInput{OrgID: "o"}, cur, refs, nil, carriedVerdicts(prev, cur, refs))
+	res, _, err := p.judgeIncremental(context.Background(), PipelineInput{OrgID: "o"}, cur, refs, nil, carriedVerdicts(prev, cur, refs), &prev)
 	if err != nil {
 		t.Fatal(err)
 	}
 	items := res.([]JudgmentItem)
-	if len(items) != 5 {
-		t.Fatalf("4 refs + 1 flag: %+v", items)
+	if len(items) != 6 {
+		t.Fatalf("4 refs + b2's fresh flag + b1's carried flag: %+v", items)
+	}
+	if items[5].Kind != "low_usefulness" || items[5].BlockID != "b1" || items[5].ID != "j6" {
+		t.Fatalf("an unchanged unit keeps its previous flag: %+v", items[5])
+	}
+	for _, it := range items {
+		if it.Note == "re-sampled" {
+			t.Fatalf("a fresh flag on an unchanged unit must be dropped (live :1133): %+v", it)
+		}
 	}
 	if items[0].Verdict != "supported" || items[1].Verdict != "overstated" || items[1].LostQualifier != "by lender" {
 		t.Fatalf("b1's verdicts must carry: %+v", items[:2])
@@ -85,7 +93,7 @@ func TestJudgeIncremental_JudgesOnlyChangedRefs(t *testing.T) {
 func TestJudgeIncremental_NothingCarriedIsAFullJudgment(t *testing.T) {
 	pkg, refs := tenRefs()
 	llm := &seqLLM{outs: []string{verdicts(10)}}
-	res, _, err := (&Pipeline{LLM: llm}).judgeIncremental(context.Background(), PipelineInput{OrgID: "o"}, pkg, refs, nil, nil)
+	res, _, err := (&Pipeline{LLM: llm}).judgeIncremental(context.Background(), PipelineInput{OrgID: "o"}, pkg, refs, nil, nil, nil)
 	if err != nil || judgedRefs(res.([]JudgmentItem)) != 10 || strings.Contains(llm.reqs[0].Prompt, "already carry a judged reference") {
 		t.Fatalf("err=%v", err)
 	}
