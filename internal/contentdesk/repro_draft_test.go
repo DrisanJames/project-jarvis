@@ -37,6 +37,12 @@ func TestReproDraft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Sonnet 5 thinks by default with Thinking unset (repro 2026-09-11: a
+	// 68k-char thinking block consumed the 24k budget). REPRO_THINKING=off
+	// sends the same request with thinking disabled.
+	if os.Getenv("REPRO_THINKING") == "off" {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	stream := l.client.Messages.NewStreaming(ctx, params)
@@ -50,7 +56,9 @@ func TestReproDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	var text string
-	for _, b := range msg.Content {
+	for i, b := range msg.Content {
+		raw, _ := json.Marshal(b)
+		t.Logf("block[%d] type=%s json_chars=%d", i, b.Type, len(raw))
 		if tb, ok := b.AsAny().(anthropic.TextBlock); ok {
 			text += tb.Text
 		}
