@@ -90,6 +90,10 @@ const (
 // safety claim.
 var ConsequentialCategories = map[string]bool{
 	CatHealth: true, CatBenefits: true, CatInsurance: true, CatTax: true, CatDIY: true,
+	// Finance added 2026-09-11: APR / loan / refinance articles steer money
+	// decisions, so they get the two-reviewer path. Applies to NEW briefs —
+	// the flag is stored at brief creation.
+	CatFinance: true,
 }
 
 // Block is one typed draft block. Text fields carry plain text plus the tiny
