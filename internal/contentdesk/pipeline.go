@@ -350,9 +350,14 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		if err := json.Unmarshal(raw, &next); err != nil {
 			return fmt.Errorf("revise output: %w", err)
 		}
+		// A rejected round keeps the previous revision and the next round tries
+		// a fresh rewrite of it (the round number is in the revise hash). On
+		// :1129 stopping at the first non-improving round left myownhealth at 5
+		// hard blockers after 1 of 3 rounds; incremental judgment makes a retry
+		// cheap (only changed references are judged).
 		if why := degenerateRevision(prev, next); why != "" {
 			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %s — keeping the previous revision", articleID, round, why)
-			break
+			continue
 		}
 		cand, err := assess(raw, next, &prev)
 		if err != nil {
@@ -361,7 +366,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		if !acceptRevision(prev, cand) {
 			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %d blockers (%d hard) vs %d (%d hard) before — keeping the previous revision",
 				articleID, round, len(cand.blockers()), cand.hardBlockers(), len(prev.blockers()), prev.hardBlockers())
-			break
+			continue
 		}
 		a = cand
 	}
