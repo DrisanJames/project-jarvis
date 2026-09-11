@@ -371,6 +371,29 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		a = cand
 	}
 
+	// 7b. editorial trim: cut body sentences still flagged unreferenced or
+	// unsupported, then re-assess like a round; kept only under
+	// acceptRevision (trim.go).
+	if AgentReviewEnabled() && a.hardBlockers() > 0 {
+		if next, n := trimFlagged(a); n > 0 {
+			trimRaw, err := json.Marshal(next)
+			if err != nil {
+				return err
+			}
+			prev := a
+			cand, err := assess(trimRaw, next, &prev)
+			if err != nil {
+				return err
+			}
+			if acceptRevision(prev, cand) {
+				log.Printf("[ContentDesk] trim article=%s: cut %d flagged sentence(s) — %d hard blocker(s), was %d", articleID, n, cand.hardBlockers(), prev.hardBlockers())
+				a = cand
+			} else {
+				log.Printf("[ContentDesk] trim article=%s: cutting %d sentence(s) did not improve (%d hard vs %d) — keeping the revision", articleID, n, cand.hardBlockers(), prev.hardBlockers())
+			}
+		}
+	}
+
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
 		return err
 	}
