@@ -124,7 +124,9 @@ func contentDeskError(w http.ResponseWriter, op string, err error) {
 }
 
 func contentDeskCtx(r *http.Request) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(r.Context(), 20*time.Second)
+	// 45s: the shared PG pool queues under send-path load; 20s timed out
+	// enqueue writes on 2026-09-11 with no lock held on content rows.
+	return context.WithTimeout(r.Context(), 45*time.Second)
 }
 
 // HandleListSites — GET /content-desk/sites

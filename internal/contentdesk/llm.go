@@ -393,6 +393,11 @@ func (l *AnthropicLLM) Generate(ctx context.Context, req GenerateRequest) (*Gene
 			// Resume the server-side tool loop: re-send with the paused
 			// assistant turn appended; no extra user message.
 			params.Messages = append(params.Messages, resp.ToParam())
+			// web_*_20260209 filter results in a code-execution container; the
+			// continuation must name it or the API 400s "container_id is required".
+			if resp.Container.ID != "" {
+				params.Container = anthropic.MessageCreateParamsContainerUnion{OfString: anthropic.String(resp.Container.ID)}
+			}
 			if err := l.checkBudget(ctx, req.OrgID); err != nil {
 				return &GenerateResult{Usage: total}, err
 			}
