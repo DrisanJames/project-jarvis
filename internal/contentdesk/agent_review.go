@@ -497,7 +497,7 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 	}
 	// Consequential: the adversarial second pass must also find nothing it
 	// cannot accept. Same coverage guard as the first judge.
-	items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims)
+	items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims, nil)
 	if err != nil {
 		log.Printf("[ContentDesk] agent-review article=%s: second pass failed (%v) — awaiting a second reviewer", articleID, err)
 		return nil

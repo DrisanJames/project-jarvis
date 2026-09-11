@@ -301,9 +301,19 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		}
 
 		// judgment (JUDGE model)
-		raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment,
-			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "judge": judgePromptVersion}),
-			func(ctx context.Context) (any, Usage, error) { return p.judge(ctx, in, a.pkg, a.refs, byKey) })
+		// In a revise round, references whose context is unchanged keep their
+		// verdict; only changed ones are judged again (judge_incremental.go).
+		judgeKey := map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "judge": judgePromptVersion}
+		var carried map[int]JudgmentItem
+		if fix != nil {
+			if carried = carriedVerdicts(*fix, a.pkg, a.refs); len(carried) > 0 {
+				judgeKey["carry_from"] = fix.revHash
+			}
+		}
+		raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment, mustHash(judgeKey),
+			func(ctx context.Context) (any, Usage, error) {
+				return p.judgeIncremental(ctx, in, a.pkg, a.refs, byKey, carried)
+			})
 		total.Add(u)
 		if err != nil {
 			return a, err
@@ -769,7 +779,7 @@ func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error)
 }
 
 func (p *Pipeline) judge(ctx context.Context, in PipelineInput, pkg Package, refs []ClaimRef, claims map[string]Claim) (any, Usage, error) {
-	items, u, err := p.judgeCall(ctx, in, judgeSystem, pkg, refs, claims)
+	items, u, err := p.judgeCall(ctx, in, judgeSystem, pkg, refs, claims, nil)
 	if err != nil {
 		return nil, u, err
 	}
@@ -794,11 +804,13 @@ const (
 // returns verdicts for too few references. After judgeAttempts it fails the
 // stage rather than record fabricated "unsupported" verdicts; the article
 // stays out of review and retries next tick.
-func (p *Pipeline) judgeCall(ctx context.Context, in PipelineInput, system string, pkg Package, refs []ClaimRef, claims map[string]Claim) ([]JudgmentItem, Usage, error) {
+// referenced lists sentences that already carry a judged reference, so the
+// judge does not flag them as unreferenced (incremental judgment).
+func (p *Pipeline) judgeCall(ctx context.Context, in PipelineInput, system string, pkg Package, refs []ClaimRef, claims map[string]Claim, referenced []ClaimRef) ([]JudgmentItem, Usage, error) {
 	var total Usage
 	for attempt := 1; ; attempt++ {
 		gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: system,
-			Prompt: judgePrompt(pkg, refs, claims), Schema: judgmentSchema(), MaxTokens: 16000})
+			Prompt: judgePrompt(pkg, refs, claims, referenced), Schema: judgmentSchema(), MaxTokens: 16000})
 		total.Add(resultUsage(gen))
 		if err != nil {
 			return nil, total, err

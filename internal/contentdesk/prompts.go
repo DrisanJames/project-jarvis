@@ -288,11 +288,23 @@ func adjudicationSchema() map[string]any {
 	return sObj(map[string]any{"decisions": sArr(sObj(map[string]any{"id": sStr(), "accept": sBool(), "reason": sStr()}))})
 }
 
-func judgePrompt(pkg Package, refs []ClaimRef, claims map[string]Claim) string {
+func judgePrompt(pkg Package, refs []ClaimRef, claims map[string]Claim, referenced []ClaimRef) string {
 	units := Units(pkg)
 	var b strings.Builder
-	fmt.Fprintf(&b, "There are %d references, numbered #0 to #%d. Return exactly %d items, one for every ref_index, supported references included. A reference left out is recorded as unsupported and the judgment is re-run.\n\nReferences to judge:\n",
+	fmt.Fprintf(&b, "There are %d references, numbered #0 to #%d. Return exactly %d items, one for every ref_index, supported references included. A reference left out is recorded as unsupported and the judgment is re-run.\n\n",
 		len(refs), len(refs)-1, len(refs))
+	if len(referenced) > 0 {
+		seen := map[string]bool{}
+		var ids []string
+		for _, r := range referenced {
+			if k := fmt.Sprintf("%s#%d", r.BlockID, r.SentenceIdx); !seen[k] {
+				seen[k] = true
+				ids = append(ids, k)
+			}
+		}
+		fmt.Fprintf(&b, "Sentences that already carry a judged reference (they are not unreferenced claims; do not flag them as unreferenced_claim): %s\n\n", strings.Join(ids, ", "))
+	}
+	b.WriteString("References to judge:\n")
 	for i, r := range refs {
 		sent := ""
 		if s := units[r.BlockID]; r.SentenceIdx >= 0 && r.SentenceIdx < len(s) {
