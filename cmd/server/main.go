@@ -12242,15 +12242,19 @@ END $$`},
 	//                      is drained first then master-list fills any
 	//                      remaining ISP quota.
 	// ---------------------------------------------------------------------
-	if _, err := db.Exec(`ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`); err != nil {
-		log.Printf("[StartupMigration] add_subscribers_tags: ERROR %v", err)
-	} else {
-		log.Println("[StartupMigration] add_subscribers_tags: OK")
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_subscribers_tags_gin ON mailing_subscribers USING gin (tags)`); err != nil {
-		log.Printf("[StartupMigration] idx_subscribers_tags_gin: ERROR %v", err)
-	} else {
-		log.Println("[StartupMigration] idx_subscribers_tags_gin: OK")
+	// 2026-09-11: these ran as raw db.Exec on every boot — no catalog probe, no
+	// lock_timeout. The no-op ALTER queued ACCESS EXCLUSIVE behind one long
+	// reader for 6+ minutes and barricaded 100+ sessions incl. SES ingest (the
+	// 2026-08-20 mechanism). Skip when applied; otherwise fail fast on the lock.
+	for _, st := range subscribersTagsDDL {
+		if migrationSkipProbe(db, st.sql) {
+			continue
+		}
+		if err := execHotTableDDL(db, st.sql); err != nil {
+			log.Printf("[StartupMigration] %s: DEFERRED (%v) — retried next boot", st.name, err)
+		} else {
+			log.Printf("[StartupMigration] %s: OK", st.name)
+		}
 	}
 
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS mailing_vendor_batch_audit (

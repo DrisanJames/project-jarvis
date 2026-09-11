@@ -378,3 +378,39 @@ func partitionIndexName(indexName, table, partition string) string {
 	}
 	return name
 }
+
+// =============================================================================
+// Hot-table DDL outside the migration slice
+// =============================================================================
+
+var subscribersTagsDDL = []struct{ name, sql string }{
+	{"add_subscribers_tags", `ALTER TABLE mailing_subscribers ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`},
+	{"idx_subscribers_tags_gin", `CREATE INDEX IF NOT EXISTS idx_subscribers_tags_gin ON mailing_subscribers USING gin (tags)`},
+}
+
+// hotTableDDLLockTimeout bounds how long a boot DDL may WAIT for its lock. A
+// queued ACCESS EXCLUSIVE request blocks every later lock request on the
+// table, so waiting is the outage; failing is a retry next boot.
+const hotTableDDLLockTimeout = "3s"
+
+// execHotTableDDL runs one DDL statement in its own transaction with SET LOCAL
+// lock/statement timeouts (LOCAL: nothing leaks into the pooled connection).
+func execHotTableDDL(db *sql.DB, stmt string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, `SET LOCAL lock_timeout = '`+hotTableDDLLockTimeout+`'`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '20s'`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
