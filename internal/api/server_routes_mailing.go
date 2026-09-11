@@ -105,6 +105,13 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			poolIsolationSvc.HandlePoolIsolationActivate(w, req)
 		})
 
+		// Content Desk admin (2026-09-11): releases (manifest / create /
+		// status) and the Mac-side ops-report ingest. Root router +
+		// X-Admin-Key, closed by default (content_desk_handlers.go). The
+		// session routes register in the /mailing group below.
+		contentDeskSvc := NewContentDeskService(db)
+		contentDeskSvc.RegisterAdminRoutes(s.router)
+
 		// Admin: creative-registry sync (ReviewForge phase 2). The operator's
 		// laptop tooling (agents/scheduling/forge.py sync) POSTs pipeline-built
 		// creatives here; same X-Admin-Key gate as the other admin endpoints.
@@ -1178,6 +1185,12 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			// stream_broadcast_config.go).
 			streamBroadcastSvc := NewStreamBroadcastService(db)
 			streamBroadcastSvc.RegisterRoutes(r)
+
+			// === CONTENT DESK (2026-09-11) === editorial pipeline under full
+			// human review: /api/mailing/content-desk/{sites, briefs, articles,
+			// articles/{id}/{run,reviews,withdraw}, claims/{id}/versions,
+			// ops-status}. Releases + ops-report are admin routes (above).
+			contentDeskSvc.RegisterRoutes(r)
 
 			// === FRESH BROADCAST RUNNER (operator 2026-07-27) ===
 			// The fresh-data introduction loop as software: POST/GET

@@ -1383,6 +1383,15 @@ func main() {
 			// deploy turns it on via env.manifest.json BOT_NOMINATE_ENABLED=1.
 			botIPNominator := worker.NewBotIPNominator(mailingDB, redisClient)
 			botIPNominator.Start(ctx)
+			// ContentDeskWorker (2026-09-11): drafts brand-site articles under
+			// full human review (internal/contentdesk) — queued article →
+			// research/rederive/draft/package/code_checks/judgment → in_review.
+			// Never publishes. Per-article distlock; stages idempotent per
+			// (article, stage, input_hash); CONTENT_DESK_CONCURRENCY (default 2);
+			// hard daily budget CONTENT_DESK_DAILY_USD (default 25, fails closed).
+			// Kill switch: CONTENT_DESK_ENABLED, code default OFF.
+			contentDeskWorker := worker.NewContentDeskWorker(mailingDB, redisClient)
+			contentDeskWorker.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
@@ -11627,6 +11636,10 @@ END $$`},
 	// Contract fulfillment (2026-09-09). Kept after dripSupplyMigrations so the
 	// whole drip-supply schema stays contiguous and in dependency order.
 	migrations = append(migrations, contractFulfillmentMigrations...)
+
+	// Content Desk (2026-09-11): editorial pipeline schema — new content_*
+	// tables only, nothing on the send path (content_desk_migrations.go).
+	migrations = append(migrations, contentDeskMigrations...)
 
 	// Use a dedicated connection with a short statement timeout so heavy
 	// backfills fail fast (~5s) instead of holding up startup for 30s each.
