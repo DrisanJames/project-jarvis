@@ -1,0 +1,51 @@
+{
+  "article": {
+    "brief_id": "00000000-0000-4000-8000-000000000029",
+    "consequential": false,
+    "current_revision_id": "",
+    "domain": "financialcalculate.com",
+    "harvestable": false,
+    "id": "00000000-0000-4000-8000-000000000028",
+    "open_findings": {
+      "S1": 0,
+      "S2": 0,
+      "S3": 0
+    },
+    "revision_hash": "",
+    "run_requested": false,
+    "site_id": "00000000-0000-4000-8000-000000000007",
+    "slug": "unused-hsa-balance",
+    "status": "withdrawn",
+    "title": "",
+    "updated_at": "2026-09-11T12:00:00Z"
+  },
+  "brief": {
+    "angle": "",
+    "article_id": "00000000-0000-4000-8000-000000000028",
+    "category": "finance",
+    "consequential": false,
+    "created_at": "2026-09-11T12:00:00Z",
+    "created_by": "contract",
+    "format": "explainer",
+    "id": "00000000-0000-4000-8000-000000000029",
+    "outline": null,
+    "reader_question": "What happens to an unused HSA balance?",
+    "site_id": "00000000-0000-4000-8000-000000000007",
+    "status": "open"
+  },
+  "claims": [],
+  "pairs": [],
+  "reviews": [],
+  "revision": null,
+  "runs": [],
+  "site": {
+    "adapter": {},
+    "brand_code": "FC",
+    "categories": [],
+    "domain": "financialcalculate.com",
+    "enabled": true,
+    "id": "00000000-0000-4000-8000-000000000007",
+    "surface": "static",
+    "voice": {}
+  }
+}

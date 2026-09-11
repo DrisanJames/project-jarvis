@@ -1,0 +1,22 @@
+{
+  "manifest": [
+    {
+      "article_id": "00000000-0000-4000-8000-000000000032",
+      "revision_hash": "63fe46d4a87d4afe519937c77e36c7e2694d8b45106a3d8085e72b37ffa6fdf3",
+      "revision_id": "00000000-0000-4000-8000-000000000034",
+      "slug": "ira-contribution-limit"
+    }
+  ],
+  "manifest_hash": "b5bf92604e85cb1f6ecce1053485f4c0bdd9df985b90e35a5e4d14faf5ee9375",
+  "site": {
+    "adapter": {},
+    "brand_code": "FC",
+    "categories": [],
+    "domain": "financialcalculate.com",
+    "enabled": true,
+    "id": "00000000-0000-4000-8000-000000000007",
+    "surface": "static",
+    "voice": {}
+  },
+  "site_id": "00000000-0000-4000-8000-000000000007"
+}

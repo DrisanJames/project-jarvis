@@ -66,6 +66,44 @@ func TestContentDeskReview_HashMismatchIs409(t *testing.T) {
 	}
 }
 
+// The publisher asks by DOMAIN; an unknown domain is 404 (its "not a Content
+// Desk site" NOOP), never an empty manifest.
+func TestContentDeskManifest_ResolvesDomainAnd404s(t *testing.T) {
+	t.Setenv("ADMIN_API_KEY", "k")
+	h, mock, _ := newCDRouter(t)
+	site := "44444444-4444-4444-4444-444444444444"
+	mock.ExpectQuery(regexp.QuoteMeta("FROM content_sites WHERE org_id = $1 AND domain = $2")).WithArgs(cdOrg, "aadwd.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "brand_code", "domain", "surface", "enabled", "voice", "categories", "adapter"}).
+			AddRow(site, "AAD", "aadwd.com", "static", true, []byte(`{}`), []byte(`[]`), []byte(`{}`)))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT a.id, r.id, r.revision_hash, a.slug")).WithArgs(cdOrg, site).
+		WillReturnRows(sqlmock.NewRows([]string{"a", "r", "h", "s"}).AddRow("a1", "r1", strings.Repeat("c", 64), "brake-costs"))
+	rec := cdDo(h, http.MethodGet, "/api/mailing/content-desk/releases/manifest?site=AADWD.com", "", map[string]string{"X-Admin-Key": "k"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Site     contentdesk.Site            `json:"site"`
+		SiteID   string                      `json:"site_id"`
+		Manifest []contentdesk.ManifestEntry `json:"manifest"`
+		Hash     string                      `json:"manifest_hash"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Site.ID != site || got.Site.Domain != "aadwd.com" || got.SiteID != site || len(got.Manifest) != 1 || len(got.Hash) != 64 {
+		t.Fatalf("manifest body: %s", rec.Body.String())
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM content_sites WHERE org_id = $1 AND domain = $2")).WithArgs(cdOrg, "not-a-desk-site.com").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	if rec := cdDo(h, http.MethodGet, "/api/mailing/content-desk/releases/manifest?site=not-a-desk-site.com", "", map[string]string{"X-Admin-Key": "k"}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown domain: want 404, got %d %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestContentDeskAdminRoutes_ClosedByDefault(t *testing.T) {
 	h, mock, _ := newCDRouter(t)
 	report := `{"source":"site_probes","generated_at":"2026-09-11T11:00:00Z","checks":[{"name":"db","status":"ok","detail":"200"}]}`

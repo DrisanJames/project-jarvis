@@ -1,0 +1,274 @@
+{
+  "sites": [
+    {
+      "adapter": {},
+      "brand_code": "AAD",
+      "categories": [],
+      "domain": "aadwd.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000001",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "BCC",
+      "categories": [],
+      "domain": "bestcreditcare.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000002",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "BW",
+      "categories": [],
+      "domain": "businessweeklypro.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000003",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "CI",
+      "categories": [],
+      "domain": "casainsure.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000004",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "CP",
+      "categories": [],
+      "domain": "consumerpro.net",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000005",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "DB",
+      "categories": [],
+      "domain": "discountblog.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000006",
+      "surface": "mongo",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "FC",
+      "categories": [],
+      "domain": "financialcalculate.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000007",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "FTH",
+      "categories": [],
+      "domain": "firsttimebuyerhomeloan.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000008",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "HFC",
+      "categories": [],
+      "domain": "hfcl.net",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000009",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "HLJ",
+      "categories": [],
+      "domain": "homeloansbyjaime.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000010",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "HT",
+      "categories": [],
+      "domain": "historythinking.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000011",
+      "surface": "mongo",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "HTM",
+      "categories": [],
+      "domain": "hometracmortgage.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000012",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "HW",
+      "categories": [],
+      "domain": "homewarrantyservices.org",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000013",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "LP",
+      "categories": [],
+      "domain": "learnpersonalloans.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000014",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "MH",
+      "categories": [],
+      "domain": "myownhealth.net",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000015",
+      "surface": "mongo",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "MP",
+      "categories": [],
+      "domain": "mypersonalfinancial.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000016",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "MR",
+      "categories": [],
+      "domain": "myrepairdiy.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000017",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "PD",
+      "categories": [],
+      "domain": "paymydebit.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000018",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "QF",
+      "categories": [],
+      "domain": "quizfiesta.com",
+      "enabled": false,
+      "id": "00000000-0000-4000-8000-000000000019",
+      "surface": "qf",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "RB",
+      "categories": [],
+      "domain": "ratesbazar.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000020",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "RR",
+      "categories": [],
+      "domain": "refinanceratesusa.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000021",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "TR",
+      "categories": [],
+      "domain": "theretirementblog.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000022",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "TT",
+      "categories": [],
+      "domain": "thingoftheday.org",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000023",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "USF",
+      "categories": [],
+      "domain": "us-finance.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000024",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "WF",
+      "categories": [],
+      "domain": "warrantyforyou.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000025",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "YFB",
+      "categories": [],
+      "domain": "yourfinancialblog.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000026",
+      "surface": "static",
+      "voice": {}
+    },
+    {
+      "adapter": {},
+      "brand_code": "YI",
+      "categories": [],
+      "domain": "yourinsurancehub.com",
+      "enabled": true,
+      "id": "00000000-0000-4000-8000-000000000027",
+      "surface": "static",
+      "voice": {}
+    }
+  ]
+}

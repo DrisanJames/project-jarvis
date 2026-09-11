@@ -1,0 +1,311 @@
+{
+  "checks": [
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "mode=off keys=0 checked=0 invalid=0 — verification off",
+      "name": "server: track_sig",
+      "status": "warn"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "CONTENT_DESK_ENABLED=1",
+      "name": "server: content_desk_enabled",
+      "status": "ok"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "$0.00 of $25.00 (2026-09-11)",
+      "name": "server: budget",
+      "status": "ok"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "no failed stage runs",
+      "name": "server: last_pipeline_error",
+      "status": "ok"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "PREFERENCES_MODE=shadow",
+      "name": "server: preferences_mode",
+      "status": "ok"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "last run OK",
+      "name": "job_watchdog: content_desk_publish",
+      "status": "ok"
+    },
+    {
+      "checked_at": "2026-09-11T12:00:00Z",
+      "detail": "1 consumer under 3 days",
+      "name": "supply_runway: newsletter runway",
+      "status": "warn"
+    }
+  ],
+  "generated_at": "2026-09-11T12:00:00Z",
+  "kill_switch": {
+    "enabled": true,
+    "env": "CONTENT_DESK_ENABLED"
+  },
+  "last_pipeline_error": null,
+  "models": {
+    "judge": "model-judge",
+    "light": "model-light",
+    "write": "model-write"
+  },
+  "newsletter_supply_runway": null,
+  "newsletter_supply_runway_reason": "the newsletter article harvest pool is laptop-local (.scratch/brand_articles.json written by agents/content/harvest.py), not in Postgres — the server cannot read it",
+  "pipeline": [
+    {
+      "count": 2,
+      "stage": "code_checks",
+      "status": "succeeded"
+    },
+    {
+      "count": 2,
+      "stage": "draft",
+      "status": "succeeded"
+    },
+    {
+      "count": 2,
+      "stage": "judgment",
+      "status": "succeeded"
+    },
+    {
+      "count": 2,
+      "stage": "package",
+      "status": "succeeded"
+    },
+    {
+      "count": 2,
+      "stage": "rederive",
+      "status": "succeeded"
+    },
+    {
+      "count": 2,
+      "stage": "research",
+      "status": "succeeded"
+    }
+  ],
+  "releases": [
+    {
+      "domain": "aadwd.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000001",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "bestcreditcare.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000002",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "businessweeklypro.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000003",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "casainsure.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000004",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "consumerpro.net",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000005",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "discountblog.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000006",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "financialcalculate.com",
+      "finished_at": null,
+      "release_id": "00000000-0000-4000-8000-000000000038",
+      "site_id": "00000000-0000-4000-8000-000000000007",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "building"
+    },
+    {
+      "domain": "firsttimebuyerhomeloan.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000008",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "hfcl.net",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000009",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "historythinking.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000011",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "homeloansbyjaime.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000010",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "hometracmortgage.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000012",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "homewarrantyservices.org",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000013",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "learnpersonalloans.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000014",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "myownhealth.net",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000015",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "mypersonalfinancial.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000016",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "myrepairdiy.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000017",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "paymydebit.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000018",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "quizfiesta.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000019",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "ratesbazar.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000020",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "refinanceratesusa.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000021",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "theretirementblog.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000022",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "thingoftheday.org",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000023",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "us-finance.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000024",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "warrantyforyou.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000025",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "yourfinancialblog.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000026",
+      "started_at": null,
+      "status": ""
+    },
+    {
+      "domain": "yourinsurancehub.com",
+      "finished_at": null,
+      "site_id": "00000000-0000-4000-8000-000000000027",
+      "started_at": null,
+      "status": ""
+    }
+  ],
+  "review_queue": {
+    "oldest_age_seconds": 5400,
+    "size": 1
+  },
+  "spend": {
+    "budget_usd": 25,
+    "day": "2026-09-11",
+    "exceeded": false,
+    "today_usd": 0
+  },
+  "supply": {
+    "consumers": [
+      {
+        "brand": "FC",
+        "eligible": 9,
+        "name": "yahoo_family",
+        "runway_days": 2.5,
+        "status": "warn"
+      },
+      {
+        "brand": "LP",
+        "eligible": 40,
+        "name": "legacy_newsletter",
+        "runway_days": 12,
+        "status": "ok"
+      }
+    ]
+  }
+}

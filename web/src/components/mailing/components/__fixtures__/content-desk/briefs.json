@@ -1,0 +1,46 @@
+{
+  "briefs": [
+    {
+      "angle": "",
+      "article_id": "00000000-0000-4000-8000-000000000028",
+      "category": "finance",
+      "consequential": false,
+      "created_at": "2026-09-11T12:00:00Z",
+      "created_by": "contract",
+      "format": "explainer",
+      "id": "00000000-0000-4000-8000-000000000029",
+      "outline": null,
+      "reader_question": "What happens to an unused HSA balance?",
+      "site_id": "00000000-0000-4000-8000-000000000007",
+      "status": "open"
+    },
+    {
+      "angle": "who qualifies",
+      "article_id": "00000000-0000-4000-8000-000000000030",
+      "category": "finance",
+      "consequential": true,
+      "created_at": "2026-09-11T12:00:00Z",
+      "created_by": "contract",
+      "format": "explainer",
+      "id": "00000000-0000-4000-8000-000000000031",
+      "outline": null,
+      "reader_question": "Does the IRA contribution limit apply to me?",
+      "site_id": "00000000-0000-4000-8000-000000000014",
+      "status": "open"
+    },
+    {
+      "angle": "",
+      "article_id": "00000000-0000-4000-8000-000000000032",
+      "category": "finance",
+      "consequential": false,
+      "created_at": "2026-09-11T12:00:00Z",
+      "created_by": "contract",
+      "format": "explainer",
+      "id": "00000000-0000-4000-8000-000000000033",
+      "outline": null,
+      "reader_question": "What is the 2026 IRA contribution limit?",
+      "site_id": "00000000-0000-4000-8000-000000000007",
+      "status": "open"
+    }
+  ]
+}

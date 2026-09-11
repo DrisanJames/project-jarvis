@@ -192,6 +192,9 @@ type JudgmentItem struct {
 	Kind          string `json:"kind"`
 	BlockID       string `json:"block_id"`
 	SentenceIdx   int    `json:"sentence_idx"`
+	// Sentence is the unit text at (block_id, sentence_idx), filled at read
+	// time by GetArticleDetail (never trusted from the model, never hashed).
+	Sentence      string `json:"sentence,omitempty"`
 	ClaimID       string `json:"claim_id,omitempty"`
 	Version       int    `json:"version,omitempty"`
 	Verdict       string `json:"verdict"`

@@ -335,21 +335,26 @@ func (s *ContentDeskService) HandleOpsStatus(w http.ResponseWriter, r *http.Requ
 	respondJSON(w, http.StatusOK, o)
 }
 
-// HandleManifest — admin GET /api/mailing/content-desk/releases/manifest?site=
+// HandleManifest — admin GET /api/mailing/content-desk/releases/manifest?site=<id|domain>.
+// An unknown site is 404 (the publisher reads that as "not a Content Desk site").
 func (s *ContentDeskService) HandleManifest(w http.ResponseWriter, r *http.Request) {
 	org, ok := contentDeskOrg(w, r)
 	if !ok {
 		return
 	}
-	site := r.URL.Query().Get("site")
 	ctx, cancel := contentDeskCtx(r)
 	defer cancel()
-	m, hash, err := s.store.Manifest(ctx, org, site)
+	site, err := s.store.ResolveSite(ctx, org, r.URL.Query().Get("site"))
 	if err != nil {
 		contentDeskError(w, "manifest", err)
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"site_id": site, "manifest": m, "manifest_hash": hash})
+	m, hash, err := s.store.Manifest(ctx, org, site.ID)
+	if err != nil {
+		contentDeskError(w, "manifest", err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"site": site, "site_id": site.ID, "manifest": m, "manifest_hash": hash})
 }
 
 // HandleCreateRelease — admin POST /api/mailing/content-desk/releases {site_id}

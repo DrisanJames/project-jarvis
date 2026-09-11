@@ -114,6 +114,23 @@ func (s *Store) getSite(ctx context.Context, q querier, org, id string) (Site, e
 	return st, err
 }
 
+// ResolveSite finds a site by id OR by domain (the static-site publisher
+// knows domains, the portal knows ids).
+func (s *Store) ResolveSite(ctx context.Context, org, key string) (Site, error) {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return Site{}, fmt.Errorf("%w: site (id or domain) is required", ErrInvalid)
+	}
+	if validUUID(key) == nil {
+		return s.getSite(ctx, s.db, org, key)
+	}
+	st, err := scanSite(s.db.QueryRowContext(ctx, `SELECT `+siteCols+` FROM content_sites WHERE org_id = $1 AND domain = $2`, org, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return st, ErrNotFound
+	}
+	return st, err
+}
+
 // SitePatch is the PATCH sites/{id} body; nil fields are untouched.
 type SitePatch struct {
 	Enabled    *bool           `json:"enabled"`
@@ -296,30 +313,58 @@ func (s *Store) getBrief(ctx context.Context, q querier, org, id string) (Brief,
 
 // ── Articles ────────────────────────────────────────────────────────────
 
-// Article is one content_articles row with its current revision's hash/title.
-type Article struct {
-	ID                string    `json:"id"`
-	SiteID            string    `json:"site_id"`
-	BriefID           string    `json:"brief_id"`
-	Slug              string    `json:"slug"`
-	Status            string    `json:"status"`
-	CurrentRevisionID string    `json:"current_revision_id"`
-	RevisionHash      string    `json:"revision_hash"`
-	Title             string    `json:"title"`
-	Harvestable       bool      `json:"harvestable"`
-	RunRequested      bool      `json:"run_requested"`
-	UpdatedAt         time.Time `json:"updated_at"`
+// FindingCounts is the open findings on an article's CURRENT revision by
+// severity: every finding of every review bound to that revision. A new
+// revision starts at zero — findings never carry across revisions (the same
+// scope ApprovalBlockers uses for prior S1s).
+type FindingCounts struct {
+	S1 int `json:"S1"`
+	S2 int `json:"S2"`
+	S3 int `json:"S3"`
 }
 
-const articleSelect = `SELECT a.id, a.site_id, COALESCE(a.brief_id::text, ''), a.slug, a.status,
+// Article is one content_articles row with its current revision's hash/title,
+// its site's domain, its brief's consequential flag and its open findings.
+type Article struct {
+	ID                string        `json:"id"`
+	SiteID            string        `json:"site_id"`
+	Domain            string        `json:"domain"`
+	BriefID           string        `json:"brief_id"`
+	Consequential     bool          `json:"consequential"`
+	Slug              string        `json:"slug"`
+	Status            string        `json:"status"`
+	CurrentRevisionID string        `json:"current_revision_id"`
+	RevisionHash      string        `json:"revision_hash"`
+	Title             string        `json:"title"`
+	Harvestable       bool          `json:"harvestable"`
+	RunRequested      bool          `json:"run_requested"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	OpenFindings      FindingCounts `json:"open_findings"`
+}
+
+const articleSelect = `SELECT a.id, a.site_id, COALESCE(s.domain, ''), COALESCE(a.brief_id::text, ''),
+	COALESCE(b.consequential, FALSE), a.slug, a.status,
 	COALESCE(a.current_revision_id::text, ''), COALESCE(r.revision_hash, ''), COALESCE(r.package->>'title', ''),
-	a.harvestable, a.run_requested_at IS NOT NULL, a.updated_at
-	FROM content_articles a LEFT JOIN content_revisions r ON r.id = a.current_revision_id`
+	a.harvestable, a.run_requested_at IS NOT NULL, a.updated_at,
+	COALESCE(f.s1, 0), COALESCE(f.s2, 0), COALESCE(f.s3, 0)
+	FROM content_articles a
+	LEFT JOIN content_revisions r ON r.id = a.current_revision_id
+	LEFT JOIN content_sites s ON s.id = a.site_id
+	LEFT JOIN content_briefs b ON b.id = a.brief_id
+	LEFT JOIN LATERAL (
+		SELECT COUNT(*) FILTER (WHERE fi->>'severity' = 'S1') AS s1,
+		       COUNT(*) FILTER (WHERE fi->>'severity' = 'S2') AS s2,
+		       COUNT(*) FILTER (WHERE fi->>'severity' = 'S3') AS s3
+		FROM content_reviews rv
+		CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(rv.findings) = 'array' THEN rv.findings ELSE '[]'::jsonb END) fi
+		WHERE rv.revision_id = a.current_revision_id AND rv.org_id = a.org_id
+	) f ON TRUE`
 
 func scanArticle(sc scanner) (Article, error) {
 	var a Article
-	err := sc.Scan(&a.ID, &a.SiteID, &a.BriefID, &a.Slug, &a.Status, &a.CurrentRevisionID, &a.RevisionHash,
-		&a.Title, &a.Harvestable, &a.RunRequested, &a.UpdatedAt)
+	err := sc.Scan(&a.ID, &a.SiteID, &a.Domain, &a.BriefID, &a.Consequential, &a.Slug, &a.Status, &a.CurrentRevisionID,
+		&a.RevisionHash, &a.Title, &a.Harvestable, &a.RunRequested, &a.UpdatedAt,
+		&a.OpenFindings.S1, &a.OpenFindings.S2, &a.OpenFindings.S3)
 	return a, err
 }
 
@@ -488,6 +533,13 @@ func (s *Store) GetArticleDetail(ctx context.Context, org, id string) (*ArticleD
 	if d.Article.CurrentRevisionID != "" {
 		if d.Revision, err = s.getRevision(ctx, s.db, org, d.Article.CurrentRevisionID); err != nil {
 			return nil, err
+		}
+		units := Units(d.Revision.Package)
+		for i := range d.Revision.Checks.Judgment {
+			j := &d.Revision.Checks.Judgment[i]
+			if u := units[j.BlockID]; j.SentenceIdx >= 0 && j.SentenceIdx < len(u) {
+				j.Sentence = u[j.SentenceIdx]
+			}
 		}
 		ids := map[string]bool{}
 		var list []string

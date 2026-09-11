@@ -1,0 +1,64 @@
+{
+  "articles": [
+    {
+      "brief_id": "00000000-0000-4000-8000-000000000033",
+      "consequential": false,
+      "current_revision_id": "00000000-0000-4000-8000-000000000034",
+      "domain": "financialcalculate.com",
+      "harvestable": false,
+      "id": "00000000-0000-4000-8000-000000000032",
+      "open_findings": {
+        "S1": 0,
+        "S2": 0,
+        "S3": 1
+      },
+      "revision_hash": "63fe46d4a87d4afe519937c77e36c7e2694d8b45106a3d8085e72b37ffa6fdf3",
+      "run_requested": false,
+      "site_id": "00000000-0000-4000-8000-000000000007",
+      "slug": "ira-contribution-limit",
+      "status": "publishing",
+      "title": "How the 2026 IRA contribution limit works",
+      "updated_at": "2026-09-11T12:00:00Z"
+    },
+    {
+      "brief_id": "00000000-0000-4000-8000-000000000029",
+      "consequential": false,
+      "current_revision_id": "",
+      "domain": "financialcalculate.com",
+      "harvestable": false,
+      "id": "00000000-0000-4000-8000-000000000028",
+      "open_findings": {
+        "S1": 0,
+        "S2": 0,
+        "S3": 0
+      },
+      "revision_hash": "",
+      "run_requested": false,
+      "site_id": "00000000-0000-4000-8000-000000000007",
+      "slug": "unused-hsa-balance",
+      "status": "withdrawn",
+      "title": "",
+      "updated_at": "2026-09-11T12:00:00Z"
+    },
+    {
+      "brief_id": "00000000-0000-4000-8000-000000000031",
+      "consequential": true,
+      "current_revision_id": "00000000-0000-4000-8000-000000000035",
+      "domain": "learnpersonalloans.com",
+      "harvestable": false,
+      "id": "00000000-0000-4000-8000-000000000030",
+      "open_findings": {
+        "S1": 0,
+        "S2": 1,
+        "S3": 1
+      },
+      "revision_hash": "88b085ca26861fe2516ae6aeddfaeccded7f2afd5adc60da97bd220e44378d6a",
+      "run_requested": false,
+      "site_id": "00000000-0000-4000-8000-000000000014",
+      "slug": "ira-limit-who-qualifies",
+      "status": "in_review",
+      "title": "How the 2026 IRA contribution limit works",
+      "updated_at": "2026-09-11T12:00:00Z"
+    }
+  ]
+}
