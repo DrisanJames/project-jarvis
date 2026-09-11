@@ -101,7 +101,8 @@ const reviseSystem = draftSystem + `
 You are now revising your own draft after the standards editor's review. You get the current blocks with their claim_refs and a list of findings.
 - Fix every finding at its cause: restore an overstated sentence's lost qualifier or narrow it to exactly what the passage says; rewrite or remove an unsupported sentence; give an unreferenced factual sentence a claim_ref or cut it; fix a failed code check (length limits, unresolved references, links) where it arises.
 - Change nothing that has no finding. Keep block ids stable.
-- Return the complete revised blocks and claim_refs, not a diff.`
+- Return EVERY block of the article, unchanged ones included, and every claim_ref — the complete article, never a fragment or a diff.
+- A claim_ref's claim_id must be one of the listed claim ids with status=supported. Never write "N/A" or an empty id: if a sentence has no supported claim, cut it.`
 
 const secondReviewSystem = judgeSystem + `
 
@@ -144,6 +145,44 @@ func (p *Pipeline) revise(ctx context.Context, in PipelineInput, a assessment, c
 		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
 	}
 	return d, u, nil
+}
+
+// revisePromptVersion is part of the revise stage's input hash, so changing
+// the revise prompt never replays outputs cached under an older prompt.
+const revisePromptVersion = "2026-09-11.2"
+
+// degenerateRevision names why a rewrite lost the article, or "". The live
+// model sometimes returns a minimal valid object (2026-09-11: 1 block and 0
+// claim_refs in two of three rounds on discountblog; a claim_id of "N/A").
+func degenerateRevision(prev assessment, next draftResult) string {
+	pb := len(prev.pkg.Blocks)
+	if len(next.Blocks) == 0 || (pb >= 4 && len(next.Blocks)*2 < pb) {
+		return fmt.Sprintf("%d blocks (was %d)", len(next.Blocks), pb)
+	}
+	inBody := map[string]bool{}
+	for _, b := range prev.pkg.Blocks {
+		inBody[b.ID] = true
+	}
+	prevRefs := 0
+	for _, r := range prev.refs {
+		if inBody[r.BlockID] {
+			prevRefs++
+		}
+	}
+	if prevRefs > 0 && len(next.ClaimRefs) == 0 {
+		return fmt.Sprintf("0 claim_refs (was %d)", prevRefs)
+	}
+	for _, r := range next.ClaimRefs {
+		if validUUID(r.ClaimID) != nil {
+			return fmt.Sprintf("claim_ref with a non-UUID claim_id %q", clip(r.ClaimID, 40))
+		}
+	}
+	return ""
+}
+
+// acceptRevision keeps a rewrite only if it strictly reduces the blockers.
+func acceptRevision(prev, cand assessment) bool {
+	return len(cand.blockers()) < len(prev.blockers())
 }
 
 // secondPassClean: every item is a supported claim and there is at least one.

@@ -637,11 +637,20 @@ func scanClaim(sc scanner) (Claim, error) {
 // ClaimsByIDs returns every version of the given claims.
 func (s *Store) ClaimsByIDs(ctx context.Context, org string, ids []string) ([]Claim, error) {
 	out := []Claim{}
-	if len(ids) == 0 {
+	// A non-UUID id can never match and would fail the whole ::uuid[] cast
+	// (2026-09-11: a revise output wrote claim_id "N/A" and the article page
+	// returned 500). Skip it; the claim_refs_resolve code check still fails it.
+	valid := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if validUUID(id) == nil {
+			valid = append(valid, id)
+		}
+	}
+	if len(valid) == 0 {
 		return out, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+claimCols+` FROM content_claims
-		WHERE org_id = $1 AND claim_id = ANY($2::uuid[]) ORDER BY claim_id, version`, org, pq.Array(ids))
+		WHERE org_id = $1 AND claim_id = ANY($2::uuid[]) ORDER BY claim_id, version`, org, pq.Array(valid))
 	if err != nil {
 		return nil, err
 	}

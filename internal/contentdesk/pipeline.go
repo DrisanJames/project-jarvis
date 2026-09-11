@@ -308,10 +308,16 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// 7. revise loop: failed code checks and unresolved judgments go back to
 	// the writer (only flagged sentences change), then re-assess — until clean
 	// or maxReviseRounds. Whatever remains stays a review blocker.
-	for round := 1; round <= p.maxReviseRounds() && !a.clean(); round++ {
+	// The loop runs only under agent review, and it can only keep or improve:
+	// a collapsed rewrite is rejected outright, and a revision is kept only if
+	// it has strictly fewer blockers than the one before (2026-09-11: without
+	// this guard two drafts degraded into 1-block stubs and judge-coverage
+	// collapse). The prompt version is in the input hash so a revised prompt
+	// never replays revise outputs cached under an old one.
+	for round := 1; AgentReviewEnabled() && round <= p.maxReviseRounds() && !a.clean(); round++ {
 		prev := a
 		raw, u, err = p.RunStage(ctx, org, articleID, StageRevise,
-			mustHash(map[string]any{"revision": prev.revHash, "findings": prev.findings(), "claims": fp, "round": round}),
+			mustHash(map[string]any{"revision": prev.revHash, "findings": prev.findings(), "claims": fp, "round": round, "prompt": revisePromptVersion}),
 			func(ctx context.Context) (any, Usage, error) { return p.revise(ctx, in, prev, current) })
 		total.Add(u)
 		if err != nil {
@@ -321,9 +327,20 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		if err := json.Unmarshal(raw, &next); err != nil {
 			return fmt.Errorf("revise output: %w", err)
 		}
-		if a, err = assess(raw, next); err != nil {
+		if why := degenerateRevision(prev, next); why != "" {
+			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %s — keeping the previous revision", articleID, round, why)
+			break
+		}
+		cand, err := assess(raw, next)
+		if err != nil {
 			return err
 		}
+		if !acceptRevision(prev, cand) {
+			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %d blockers vs %d before — keeping the previous revision",
+				articleID, round, len(cand.blockers()), len(prev.blockers()))
+			break
+		}
+		a = cand
 	}
 
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {

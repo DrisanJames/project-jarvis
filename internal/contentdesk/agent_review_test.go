@@ -51,6 +51,46 @@ func TestAssessment_CleanOnlyWithoutBlockers(t *testing.T) {
 	}
 }
 
+// Live 2026-09-11: revise rounds returned 1 block / 0 claim_refs (discountblog)
+// and a claim_id "N/A"; each must be rejected before it replaces the article.
+func TestDegenerateRevision(t *testing.T) {
+	prev := testAssessment()
+	prev.pkg.Blocks = append(prev.pkg.Blocks, Block{ID: "b3", Type: "section", Text: "x"}, Block{ID: "b4", Type: "faq"})
+	prev.refs = []ClaimRef{{BlockID: "b1", SentenceIdx: 0, ClaimID: "11111111-1111-4111-8111-111111111111", Version: 1}}
+	good := draftResult{Blocks: prev.pkg.Blocks, ClaimRefs: prev.refs}
+	if why := degenerateRevision(prev, good); why != "" {
+		t.Fatalf("a complete rewrite must pass: %s", why)
+	}
+	if degenerateRevision(prev, draftResult{Blocks: prev.pkg.Blocks[:1], ClaimRefs: prev.refs}) == "" {
+		t.Fatal("1 block where there were 4 must be rejected")
+	}
+	if degenerateRevision(prev, draftResult{Blocks: prev.pkg.Blocks}) == "" {
+		t.Fatal("0 claim_refs where there was 1 must be rejected")
+	}
+	bad := draftResult{Blocks: prev.pkg.Blocks, ClaimRefs: []ClaimRef{{BlockID: "b1", ClaimID: "N/A", Version: 1}}}
+	if degenerateRevision(prev, bad) == "" {
+		t.Fatal("a non-UUID claim_id must be rejected")
+	}
+}
+
+func TestAcceptRevision_OnlyStrictImprovement(t *testing.T) {
+	prev := testAssessment()
+	prev.code[0].Passed = false // 1 blocker
+	worse := testAssessment()
+	worse.code[0].Passed = false
+	worse.judgment = append(worse.judgment, JudgmentItem{ID: "j9", Kind: "claim", BlockID: "b1", Verdict: "unsupported"})
+	if acceptRevision(prev, worse) {
+		t.Fatal("more blockers must be rejected")
+	}
+	same := prev
+	if acceptRevision(prev, same) {
+		t.Fatal("equal blockers must be rejected (no churn)")
+	}
+	if !acceptRevision(prev, testAssessment()) {
+		t.Fatal("fewer blockers must be accepted")
+	}
+}
+
 func TestSecondPassClean(t *testing.T) {
 	if secondPassClean(nil) {
 		t.Fatal("nothing to verify is not a pass")
