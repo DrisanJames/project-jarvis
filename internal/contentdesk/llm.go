@@ -231,12 +231,23 @@ type AnthropicLLM struct {
 	MaxContinuations int
 }
 
+// ContentDeskAPIKey returns the Content Desk's own Anthropic key when one is
+// configured. The desk's spend is capped by CONTENT_DESK_DAILY_USD, so it can run
+// on a separately funded account without moving the rest of the platform's
+// Anthropic traffic. Empty = no override (the SDK reads ANTHROPIC_API_KEY).
+func ContentDeskAPIKey() string {
+	return strings.TrimSpace(os.Getenv("CONTENT_DESK_ANTHROPIC_API_KEY"))
+}
+
 // NewAnthropicLLM builds the client. The SDK's own retries are disabled so
 // retry/backoff is explicit here (429/5xx only). The key comes from
-// ANTHROPIC_API_KEY (SDK default), the same variable the rest of internal/api
-// reads.
+// CONTENT_DESK_ANTHROPIC_API_KEY when set, else ANTHROPIC_API_KEY (SDK default),
+// the same variable the rest of internal/api reads.
 func NewAnthropicLLM(budget BudgetLedger, opts ...option.RequestOption) *AnthropicLLM {
 	base := []option.RequestOption{option.WithMaxRetries(0), option.WithRequestTimeout(10 * time.Minute)}
+	if k := ContentDeskAPIKey(); k != "" {
+		base = append(base, option.WithAPIKey(k))
+	}
 	return &AnthropicLLM{
 		client:           anthropic.NewClient(append(base, opts...)...),
 		Models:           ModelsFromEnv(),
