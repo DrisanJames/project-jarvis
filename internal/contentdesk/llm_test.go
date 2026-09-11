@@ -223,6 +223,28 @@ func TestLLM_PauseTurnCarriesContainer(t *testing.T) {
 	}
 }
 
+// Live 2026-09-11 (repro): Sonnet 5 thinks by default with Thinking unset; a
+// 68k-char thinking block consumed the draft's whole output budget. Stages
+// that only transcribe verified input send thinking disabled.
+func TestLLM_NoThinkingSendsDisabled(t *testing.T) {
+	l, _, bodies := newTestLLM(t, &memBudget{}, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, msgText) })
+	r := req()
+	r.NoThinking = true
+	if _, err := l.Generate(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains((*bodies)[0], `"thinking":{"type":"disabled"}`) {
+		t.Fatalf("NoThinking must send thinking disabled: %s", (*bodies)[0])
+	}
+	l2, _, bodies2 := newTestLLM(t, &memBudget{}, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, msgText) })
+	if _, err := l2.Generate(context.Background(), req()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains((*bodies2)[0], `"thinking"`) {
+		t.Fatal("other stages leave thinking to the model default")
+	}
+}
+
 func TestCostUSD(t *testing.T) {
 	if v := CostUSD("claude-opus-5", 1_000_000, 0, 0, 1_000_000, 0); math.Abs(v-30) > 1e-9 {
 		t.Fatalf("opus: %v", v)

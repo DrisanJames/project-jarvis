@@ -204,6 +204,10 @@ type GenerateRequest struct {
 	ToolName    string
 	WebCategory string
 	MaxTokens   int64
+	// NoThinking disables the model's default thinking for stages that only
+	// transcribe verified input (the draft). Thinking tokens count against
+	// MaxTokens.
+	NoThinking bool
 }
 
 // GenerateResult is the structured JSON plus what it cost.
@@ -317,6 +321,9 @@ func (l *AnthropicLLM) buildParams(req GenerateRequest, model string) (anthropic
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(req.Prompt)),
 		},
+	}
+	if req.NoThinking {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
 	}
 	if req.WebCategory == "" {
 		params.OutputConfig = anthropic.OutputConfigParam{

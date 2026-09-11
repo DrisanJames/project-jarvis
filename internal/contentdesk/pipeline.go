@@ -438,7 +438,7 @@ type rederiveAnswer struct {
 }
 
 var (
-	numberRE = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
+	numberRE  = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
 	nonWordRE = regexp.MustCompile(`[^a-z0-9]+`)
 )
 
@@ -590,14 +590,16 @@ func (p *Pipeline) rederive(ctx context.Context, in PipelineInput, keys []resear
 
 // ── draft / package ─────────────────────────────────────────────────────
 
-// draftMaxTokens: 16000 truncated a live draft (aadwd, 2026-09-11) whose
-// prompt had no length bound. The bound is now in draftSystem; this is the
-// headroom — ~4 min at the observed ~100 tok/s, inside the 10-min request timeout.
+// draftMaxTokens: headroom for the article JSON (~3-4k tokens for a
+// 1,400-word draft). The 2026-09-11 truncations were NOT length: Sonnet 5
+// thinks by default and a 68k-char thinking block consumed the whole budget
+// (repro, 54-claim fixture). The draft only transcribes verified claims into
+// blocks, so it runs with thinking disabled (NoThinking below).
 const draftMaxTokens = 24000
 
 func (p *Pipeline) draft(ctx context.Context, in PipelineInput, claims []Claim) (any, Usage, error) {
 	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierWrite, System: draftSystem,
-		Prompt: draftPrompt(in, claims), Schema: draftSchema(), MaxTokens: draftMaxTokens})
+		Prompt: draftPrompt(in, claims), Schema: draftSchema(), MaxTokens: draftMaxTokens, NoThinking: true})
 	u := resultUsage(gen)
 	if err != nil {
 		return nil, u, err
