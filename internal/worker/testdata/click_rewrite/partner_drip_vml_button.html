@@ -1,0 +1,202 @@
+{%- assign p_first = first_name | default: "" -%}
+{%- assign p_city  = custom.city | default: "" -%}
+{%- assign p_state = custom.state | default: "" -%}
+{%- assign p_loan  = custom.loan_type | default: "" -%}
+{%- assign p_prop  = custom.property_type | default: "" -%}
+{%- assign pub_name = brand.name | default: "" -%}
+{%- assign pub_dom  = brand.domain | default: "" -%}
+{%- assign dispatch = system.dispatch_date | default: "" -%}
+{%- assign p_equity  = custom.equity_estimate | default: "" -%}
+{%- assign p_purpose = custom.loan_purpose | default: "" -%}
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="supported-color-schemes" content="light dark" />
+  <title>Your home equity estimate</title>
+  <!--[if mso]>
+  <noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+  <![endif]-->
+  <style>
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; display: block; }
+    body { margin: 0; padding: 0; width: 100% !important; height: 100% !important;
+           font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+           background-color: #f7f8fe; color: #1f2937; }
+    a { color: #006df4; }
+    @media only screen and (max-width: 620px) {
+      .wrap  { width: 100% !important; }
+      .px    { padding-left: 22px !important; padding-right: 22px !important; }
+      .h1    { font-size: 26px !important; line-height: 32px !important; }
+      .cta a { display: block !important; width: auto !important; }
+      .num   { font-size: 20px !important; }
+    }
+    @media (prefers-color-scheme: dark) {
+      body, .bg  { background-color: #0f1729 !important; }
+      .card      { background-color: #16213c !important; }
+      .panel     { background-color: #1d2a4a !important; }
+      .t-dark    { color: #e8edf7 !important; }
+      .t-mid     { color: #b9c4d9 !important; }
+      .t-muted   { color: #8e9ab2 !important; }
+      .rule      { border-color: #2b3a5c !important; }
+      .logo-wrap { background-color: #ffffff !important; border-radius: 8px !important; }
+    }
+    [data-ogsc] body, [data-ogsc] .bg { background-color: #0f1729 !important; }
+    [data-ogsc] .card    { background-color: #16213c !important; }
+    [data-ogsc] .panel   { background-color: #1d2a4a !important; }
+    [data-ogsc] .t-dark  { color: #e8edf7 !important; }
+    [data-ogsc] .t-mid   { color: #b9c4d9 !important; }
+    [data-ogsc] .t-muted { color: #8e9ab2 !important; }
+    [data-ogsc] .rule    { border-color: #2b3a5c !important; }
+  </style>
+</head>
+<body class="bg" style="margin:0;padding:0;background-color:#f7f8fe;">
+
+  <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">
+    An estimate built from the numbers you provided &mdash; no SSN, no impact on your credit to look.
+  </div>
+  <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">
+    &#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;&#847;&zwnj;&nbsp;
+  </div>
+
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="bg" bgcolor="#f7f8fe" style="background-color:#f7f8fe;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <!--[if mso]>
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" align="center"><tr><td>
+        <![endif]-->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="wrap" style="max-width:600px;width:100%;">
+
+          <tr>
+            <td class="px" style="padding:0 8px 10px;font-size:11px;line-height:16px;color:#8b94a3;" align="center">
+              <span class="t-muted" style="color:#8b94a3;">
+                {%- if pub_name != "" -%}
+                  Presented by {{ pub_name }} &middot; advertisement from West Capital Lending
+                {%- else -%}
+                  Advertisement from West Capital Lending
+                {%- endif -%}
+              </span>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="card" bgcolor="#ffffff" style="background:#ffffff;border-radius:14px;overflow:hidden;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+
+                <tr>
+                  <td class="px" align="center" style="padding:30px 36px 18px;">
+                    <a href="https://e.wcl-heloc.com/GZHPZ/91Z47C/?source_id=email&amp;sub1={{subscriber.id}}&amp;sub2={{ brand.domain }}" style="text-decoration:none;">
+                      <span class="logo-wrap">
+                        <img src="https://img.projectjarvis.io/images/00000000-0000-0000-0000-000000000001/2026/07/d1ba9e58-3133-4090-8b6d-66a20ac13d61_original.png" width="150" alt="West Capital Lending"
+                             style="width:150px;max-width:150px;height:auto;margin:0 auto;" />
+                      </span>
+                    </a>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px" style="padding:0 36px 14px;">
+                    <h1 class="h1 t-dark" style="margin:0;font-size:30px;line-height:36px;font-weight:700;color:#003066;text-align:center;">
+                      Your equity estimate<br />is ready.
+                    </h1>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px" style="padding:0 36px 22px;">
+                    <p class="t-mid" style="margin:0;font-size:16px;line-height:25px;color:#374151;">
+                      {%- if p_first != "" -%}
+                        Hi {{ p_first | capitalize }} &mdash;
+                      {%- else -%}
+                        Hi there &mdash;
+                      {%- endif %}
+                      you looked into home financing recently.{%- if p_equity != "" %} Based on the numbers you provided, you have an estimated <strong>${{ p_equity }}</strong> in available equity.{%- else %} A line of credit against the equity you have already built can cover it.{%- endif %}{%- if p_city != "" %} That is real money sitting in your {{ p_city }} home.{%- endif %}
+                    </p>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px cta" align="center" style="padding:20px 36px 10px;">
+                    <!--[if mso]>
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
+                      href="https://e.wcl-heloc.com/GZHPZ/91Z47C/?source_id=email&amp;sub1={{subscriber.id}}&amp;sub2={{ brand.domain }}"
+                      style="height:52px;v-text-anchor:middle;width:330px;" arcsize="25%" stroke="f" fillcolor="#006df4">
+                      <w:anchorlock/>
+                      <center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:17px;font-weight:bold;">See My Options</center>
+                    </v:roundrect>
+                    <![endif]-->
+                    <!--[if !mso]><!-- -->
+                    <a href="https://e.wcl-heloc.com/GZHPZ/91Z47C/?source_id=email&amp;sub1={{subscriber.id}}&amp;sub2={{ brand.domain }}"
+                       style="display:inline-block;background:#006df4;color:#ffffff;font-size:17px;line-height:20px;font-weight:700;text-decoration:none;padding:16px 34px;border-radius:13px;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                      See My Options &rarr;
+                    </a>
+                    <!--<![endif]-->
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px" align="center" style="padding:0 36px 20px;">
+                    <p class="t-muted" style="margin:0;font-size:13px;line-height:19px;color:#6b7280;">About a minute, and no impact on your credit to look.</p>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px" style="padding:0 36px 8px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="rule" style="border-top:1px solid #e9ebf9;">
+                      <tr><td style="padding-top:18px;">
+                        <p class="t-mid" style="margin:0 0 8px;font-size:14px;line-height:21px;color:#4b5563;">&#10003;&nbsp; Your information is never sold &mdash; you speak directly with one licensed professional.</p>
+                        <p class="t-mid" style="margin:0 0 8px;font-size:14px;line-height:21px;color:#4b5563;">&#10003;&nbsp; No Social Security number required to see your options.</p>
+                        <p class="t-mid" style="margin:0;font-size:14px;line-height:21px;color:#4b5563;">&#10003;&nbsp; Checking has zero impact on your credit.</p>
+                      </td></tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="px panel" bgcolor="#f7f8fe" style="background-color:#f7f8fe;padding:28px 36px 32px;">
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      *Borrower must occupy home as primary residence and remain current on property taxes, homeowner&rsquo;s insurance, the costs of home maintenance, and any HOA fees.
+                    </p>
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      This information is intended to be general and educational in nature and should not be construed as financial advice. Consult your financial advisor before implementing financial strategies for your retirement.
+                    </p>
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      NMLS 1025894. This is an advertisement.
+                    </p>
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      Sample product
+                    </p>
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      WCL is an Equal Housing Lender. As prohibited by federal law, we do not engage in business practices that discriminate based on race, color, religion, national origin, sex, marital status, age (provided you have the capacity to enter into a binding contract) because all or part of your income may be derived from any public assistance program, or because you have, in good faith, exercised any right under the Consumer Credit Protection Act. The federal agency that administers our compliance with these federal laws is the Federal Trade Commission, Equal Credit Opportunity, Washington, DC, 20580.
+                    </p>
+                    {%- if pub_name != "" %}
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      You are receiving this because you subscribed at {{ pub_name }}{% if pub_dom != "" %} ({{ pub_dom }}){% endif %}. {{ pub_name }} is a marketing partner of West Capital Lending and may be compensated when you complete a request.
+                    </p>
+                    {%- endif %}
+                    <p class="t-muted" style="margin:0 0 12px;font-size:11px;line-height:17px;color:#8b94a3;">
+                      To unsubscribe from West Capital <a href="{{ system.unsubscribe_url }}" style="color:#8b94a3;text-decoration:underline;">Click Here</a>
+                    </p>
+                    <p class="t-muted" style="margin:0;font-size:11px;line-height:17px;color:#8b94a3;">
+                      West Capital Lending<br />
+                      17911 Von Karman Ave, Suite 400, Irvine, CA 92614
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+        <!--[if mso]>
+        </td></tr></table>
+        <![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

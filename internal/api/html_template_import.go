@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 // rehostedImageRecord holds info about an image rehosted to S3 during HTML import.
@@ -137,8 +138,11 @@ func classifyAndRewriteHTML(
 		return prefix + rec.cdnURL + suffix
 	})
 
-	// Step 3: Process all href="..." attributes (links)
-	html = hrefAttrRe.ReplaceAllStringFunc(html, func(match string) string {
+	// Step 3: Process href="..." attributes of clickable tags (<a>/<area>/VML)
+	// only. A <link href="https://fonts.googleapis.com/…"> is NOT a CTA: swapping
+	// it for the offer tracking link makes every render fetch the offer URL
+	// (2026-09-11).
+	html = worker.RewriteInClickableTags(html, hrefAttrRe, func(match string) string {
 		parts := hrefAttrRe.FindStringSubmatch(match)
 		if len(parts) < 4 {
 			return match

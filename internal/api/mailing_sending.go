@@ -1455,8 +1455,10 @@ func (svc *MailingService) injectTrackingWithURL(html string, orgID, campaignID,
 		html += pixel
 	}
 
-	linkRegex := regexp.MustCompile(`href=["'](https?://[^"']+)["']`)
-	html = linkRegex.ReplaceAllStringFunc(html, func(match string) string {
+	// Clickable tags only (<a>/<area>/VML) — a <link rel=stylesheet> href
+	// wrapped into /track/click records a click on render (2026-09-11).
+	linkRegex := regexp.MustCompile(`(?i)href=["'](https?://[^"']+)["']`)
+	html = worker.RewriteInClickableTags(html, linkRegex, func(match string) string {
 		urlMatch := linkRegex.FindStringSubmatch(match)
 		if len(urlMatch) < 2 {
 			return match
