@@ -42,6 +42,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brandident"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/contractmeta"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
+	"github.com/ignite/sparkpost-monitor/internal/preferences"
 	"github.com/ignite/sparkpost-monitor/internal/segmentation"
 	"github.com/ignite/sparkpost-monitor/internal/ses"
 	"github.com/ignite/sparkpost-monitor/internal/snowflake"
@@ -677,6 +678,14 @@ func main() {
 
 			// Start Send Worker Pool (processes the queue and sends emails)
 			sendWorkerPool := worker.NewSendWorkerPool(mailingDB, 25)
+			// Subscriber preferences hub (internal/preferences): loaded now and
+			// reloaded every 2 min so the sibling task's page writes converge.
+			// PREFERENCES_MODE=shadow (default) only counts would-skips on
+			// /health.preferences; enforce makes the gates skip.
+			prefsHub := preferences.NewHub(mailingDB, "00000000-0000-0000-0000-000000000001")
+			prefsHub.Start(ctx, 2*time.Minute)
+			preferences.SetCurrent(prefsHub)
+			sendWorkerPool.SetPreferencesGate(prefsHub)
 			profileSender := worker.NewProfileBasedSender(mailingDB)
 			sendWorkerPool.SetESPSenders(profileSender, profileSender, profileSender, profileSender)
 			sendWorkerPool.SetPMTASender(profileSender)
@@ -1385,6 +1394,13 @@ func main() {
 			botIPNominator.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
+			// Send-time suppression for click-drip reminders (compliance fix
+			// 2026-09-11): the sender reads the pool's late-wired hub per send,
+			// so the check is live the moment the late pass attaches it and
+			// defers (transient journey retry) until then. Kill switch:
+			// DISABLE_CLICKDRIP_SUPPRESSION_CHECK=true.
+			journeyClickDripSender.SetSuppressionSource(sendWorkerPool.GlobalSuppressionHub)
+			journeyClickDripSender.SetPreferencesGate(prefsHub)
 			journeyExecutor := worker.NewJourneyExecutor(mailingDB)
 			journeyExecutor.SetClickDripSender(journeyClickDripSender)
 			journeyExecutor.Start()
@@ -3703,6 +3719,27 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// ── subscriber preferences (2026-09-11) ─────────────────────────────
+		// Recipient pause / frequency / topic store behind the preference page
+		// and the in-memory preferences hub (internal/preferences). A NEW,
+		// empty table: CREATE TABLE and a unique index on it are O(1) and fit
+		// the 5s slice. The unique index leads with (organization_id,
+		// email_hash), so it is also the per-address lookup index.
+		// brand_root NULL = all brands. email_hash = sha256(lower(trim(email))).
+		// SQL verified on Postgres 16 (internal/preferences/store_pg_test.go).
+		{"subscriber_preferences_table", `CREATE TABLE IF NOT EXISTS mailing_subscriber_preferences (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			email_hash      TEXT NOT NULL,
+			brand_root      TEXT,
+			paused_until    TIMESTAMPTZ,
+			frequency       TEXT NOT NULL DEFAULT 'normal' CHECK (frequency IN ('normal','reduced','weekly')),
+			topics          JSONB NOT NULL DEFAULT '{}'::jsonb,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			source          TEXT
+		)`},
+		{"subscriber_preferences_uq", `CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriber_prefs_org_hash_brand ON mailing_subscriber_preferences (organization_id, email_hash, (COALESCE(brand_root, '')))`},
+
 		// ── click-funnel retry hardening (2026-08-25) ──────────────────────
 		// Attempt state for the journey retry policy (internal/worker/
 		// journey_retry.go). Before this, a failing node retried on the claim

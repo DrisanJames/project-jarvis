@@ -48,19 +48,29 @@ func BuildListUnsubscribeHeaders(orgID, campaignID, subscriberID, brandRoot, fro
 	// RFC 8058: both mailto: and https: for maximum ISP compatibility.
 	// mailto: must be domain-aligned with the From address for ISP trust.
 	// The HTTPS leg uses the brand-scoped URL so ISP one-click POSTs hit the
-	// brand suppression path. The mailto leg stays 3-part global — there is no
-	// inbound handler for unsub+<token>@<domain> in this repo (the mailto is
-	// ceremonial for ISP trust scoring); extending its payload shape would
-	// propagate the pre-existing unsigned-mailto bug at a wider scope for zero
-	// functional gain.
+	// brand suppression path. The mailto leg carries the 3-part payload the
+	// inbound webhook (api HandleInboundMailtoUnsubscribe) acts on globally,
+	// now SIGNED: "<base64>.<TrackSign>" — the same HMAC the /track/unsubscribe
+	// {data}/{sig} links use, so the webhook verifies it with the same key.
 	fromDomain := fromEmail
 	if atIdx := strings.LastIndex(fromEmail, "@"); atIdx >= 0 {
 		fromDomain = fromEmail[atIdx+1:]
 	}
 	unsubData := fmt.Sprintf("%s|%s|%s", orgID, campaignID, subscriberID)
 	unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-	mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
+	mailtoAddr := fmt.Sprintf("unsub+%s@%s", SignedMailtoToken(unsubEncoded, secret), fromDomain)
 	headers["List-Unsubscribe"] = fmt.Sprintf("<mailto:%s?subject=unsubscribe>, <%s>", mailtoAddr, brandUnsubURL)
 	headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 	return unsubURL, brandUnsubURL
+}
+
+// SignedMailtoToken returns "<unsubEncoded>.<TrackSign(unsubEncoded)>", the
+// signed mailto local-part token. base64.URLEncoding never emits '.', so the
+// inbound webhook splits on the last '.' unambiguously. An empty secret
+// yields the legacy unsigned form rather than a signature over an empty key.
+func SignedMailtoToken(unsubEncoded, secret string) string {
+	if secret == "" {
+		return unsubEncoded
+	}
+	return unsubEncoded + "." + TrackSign(unsubEncoded, secret)
 }

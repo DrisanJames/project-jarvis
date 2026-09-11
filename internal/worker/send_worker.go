@@ -112,6 +112,7 @@ type SendWorkerPool struct {
 	suppressionWiringMu sync.RWMutex
 	globalHub           GlobalSuppressionChecker
 	globalSuppressor    GlobalSuppressionSuppressor
+	prefsGate           PreferenceGate // subscriber preferences (shadow by default)
 
 	// Offer-level suppression (Bloom filter O(1) with DB fallback)
 	offerSuppChecker OfferSuppressionChecker
@@ -460,6 +461,27 @@ func (p *SendWorkerPool) getGlobalSuppressionHub() GlobalSuppressionChecker {
 	p.suppressionWiringMu.RLock()
 	defer p.suppressionWiringMu.RUnlock()
 	return p.globalHub
+}
+
+// GlobalSuppressionHub exposes the late-wired hub to other send paths: the
+// click-drip sender reads it per send, so it inherits this pool's wiring
+// instead of racing its own.
+func (p *SendWorkerPool) GlobalSuppressionHub() GlobalSuppressionChecker {
+	return p.getGlobalSuppressionHub()
+}
+
+// SetPreferencesGate wires the subscriber-preference hub (preferences.Hub).
+// Safe before or after Start.
+func (p *SendWorkerPool) SetPreferencesGate(g PreferenceGate) {
+	p.suppressionWiringMu.Lock()
+	p.prefsGate = g
+	p.suppressionWiringMu.Unlock()
+}
+
+func (p *SendWorkerPool) getPreferencesGate() PreferenceGate {
+	p.suppressionWiringMu.RLock()
+	defer p.suppressionWiringMu.RUnlock()
+	return p.prefsGate
 }
 
 // SetGlobalSuppressionWriter connects the worker pool to the global
@@ -1816,6 +1838,16 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		return p.markSkipped(ctx, item.ID, "global_suppressed")
 	}
 
+	// Subscriber preferences (pause / topic). Shadow by default: Gate counts
+	// "send_worker.<reason>" on /health.preferences and returns skip=true
+	// only under PREFERENCES_MODE=enforce. In-memory, one read lock.
+	if g := p.getPreferencesGate(); g != nil {
+		if skip, reason := g.Gate("send_worker", item.Email, item.BrandRoot, "", time.Now()); skip {
+			atomic.AddInt64(&p.totalSkipped, 1)
+			return p.markSkipped(ctx, item.ID, "preference_"+reason)
+		}
+	}
+
 	// Offer-level suppression — Bloom filter first (O(1)), DB fallback for false positives
 	if item.OfferID != uuid.Nil {
 		offerIDStr := item.OfferID.String()
@@ -2061,7 +2093,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
 		textContent = strings.ReplaceAll(textContent, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
 		textContent = strings.ReplaceAll(textContent, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
-		prefsURL := fmt.Sprintf("%s/preferences?sid=%s", trackBase, item.SubscriberID.String())
+		prefsURL := GeneratePreferencesURL(p.orgID, item.SubscriberID.String(), item.BrandRoot, trackBase, p.trackingSecret, time.Now())
 		htmlContent = strings.ReplaceAll(htmlContent, "{{ system.preferences_url }}", prefsURL)
 		htmlContent = strings.ReplaceAll(htmlContent, "{{system.preferences_url}}", prefsURL)
 		textContent = strings.ReplaceAll(textContent, "{{ system.preferences_url }}", prefsURL)
@@ -3382,7 +3414,7 @@ func (p *SendWorkerPool) buildRenderContext(item QueueItem, trackBase string) ma
 		// this falls back to the same shape as the global URL for safety —
 		// callers that embed it in a template still get a working link.
 		system["brand_unsubscribe_url"] = p.generateBrandUnsubscribeURL(item.CampaignID.String(), item.SubscriberID.String(), item.BrandRoot, tBase)
-		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", tBase, item.SubscriberID.String())
+		system["preferences_url"] = GeneratePreferencesURL(p.orgID, item.SubscriberID.String(), item.BrandRoot, tBase, p.trackingSecret, time.Now())
 		system["view_in_browser_url"] = fmt.Sprintf("%s/view?cid=%s&sid=%s", tBase, item.CampaignID.String(), item.SubscriberID.String())
 		// Scheme+host of the SENDING profile's tracking domain, no trailing
 		// slash (operator 2026-09-06: the brand resolves from the sending

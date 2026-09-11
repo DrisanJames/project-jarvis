@@ -98,6 +98,13 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		// the global suppression hub every send pipeline consults.
 		"mailing_routes":  map[string]interface{}{"registered": MailingRoutesReady()},
 		"suppression_hub": map[string]interface{}{"wired": SuppressionHubWired()},
+		// Subscriber preferences: mode (shadow|enforce), loaded rows, and
+		// would_skip / skipped keyed "<site>.<reason>" (site = planner,
+		// send_worker, clickdrip). Shadow never changes a send.
+		"preferences":      preferencesHealth(),
+		"preferences_page": PreferencesPageStatus(),
+		// Click-drip send-time suppression check (compliance fix 2026-09-11).
+		"clickdrip_suppression": worker.ClickDripSuppressionStatus(),
 		// SES webhook ingest health — non-zero failed/rejected/engagement_failed
 		// means SES delivery/open/click telemetry was lost for that window.
 		"ses_webhook": CurrentSESWebhookStatus(),

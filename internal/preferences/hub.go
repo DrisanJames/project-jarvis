@@ -385,7 +385,7 @@ func topicsJSON(m map[string]bool) string {
 
 // ── store ───────────────────────────────────────────────────────────────────
 
-// UpsertSQL writes one row keyed on (org, email_hash, COALESCE(brand_root,'')),
+// UpsertSQL writes one row keyed on (org, email_hash, COALESCE(brand_root,”)),
 // matching the unique expression index created by runStartupMigrations.
 const UpsertSQL = `
 INSERT INTO mailing_subscriber_preferences
