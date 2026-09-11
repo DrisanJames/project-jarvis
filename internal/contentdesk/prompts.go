@@ -40,6 +40,7 @@ const sentenceRules = `Sentence indexing (sentence_idx) — code counts sentence
 const draftSystem = `You write evidence-bound consumer articles for a brand site. A human editor reviews every word before anything publishes.
 
 Output typed blocks only. Allowed types: lede, section, key_takeaways, worked_example, document_anatomy, stat, comparison_table, steps, faq, pull_quote, callout.
+- Length: 700–1,400 words across all blocks, at most 12 blocks, at most 6 faq pairs. Answer the reader's question and stop; depth comes from the claims, not from restating them.
 - Text is plain text plus only this inline markdown: **bold**, *italic*, [label](https://…). NO HTML, no tags, no entities.
 - comparison_table: "rows" with a header row first, every row the same number of cells (≥2).
 - steps / key_takeaways / faq: use "items" (faq items alternate question, answer).
