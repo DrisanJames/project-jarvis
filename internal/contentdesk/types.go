@@ -93,8 +93,9 @@ const (
 var ConsequentialCategories = map[string]bool{
 	CatHealth: true, CatBenefits: true, CatInsurance: true, CatTax: true, CatDIY: true,
 	// Finance added 2026-09-11: APR / loan / refinance articles steer money
-	// decisions, so they get the two-reviewer path. Applies to NEW briefs —
-	// the flag is stored at brief creation.
+	// decisions, so they get the two-reviewer path. The flag is stored at
+	// brief creation; the review gate reads consequentialSQL (store.go), so
+	// briefs created before a category was added are covered too.
 	CatFinance: true,
 }
 

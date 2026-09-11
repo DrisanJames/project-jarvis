@@ -342,8 +342,22 @@ type Article struct {
 	OpenFindings      FindingCounts `json:"open_findings"`
 }
 
-const articleSelect = `SELECT a.id, a.site_id, COALESCE(s.domain, ''), COALESCE(a.brief_id::text, ''),
-	COALESCE(b.consequential, FALSE), a.slug, a.status,
+// consequentialSQL is an article's effective consequential flag at the review
+// gate: the brief's stored flag OR a consequential category. The stored flag is
+// set at brief creation, so a brief created before its category joined
+// ConsequentialCategories (financialcalculate, 2026-09-11) would otherwise skip
+// the second reviewer. Needs content_briefs aliased b.
+var consequentialSQL = func() string {
+	cats := make([]string, 0, len(ConsequentialCategories))
+	for c := range ConsequentialCategories {
+		cats = append(cats, "'"+strings.ReplaceAll(c, "'", "''")+"'")
+	}
+	sort.Strings(cats)
+	return "(COALESCE(b.consequential, FALSE) OR COALESCE(b.category, '') IN (" + strings.Join(cats, ", ") + "))"
+}()
+
+var articleSelect = `SELECT a.id, a.site_id, COALESCE(s.domain, ''), COALESCE(a.brief_id::text, ''),
+	` + consequentialSQL + `, a.slug, a.status,
 	COALESCE(a.current_revision_id::text, ''), COALESCE(r.revision_hash, ''), COALESCE(r.package->>'title', ''),
 	a.harvestable, a.run_requested_at IS NOT NULL, a.updated_at,
 	COALESCE(f.s1, 0), COALESCE(f.s2, 0), COALESCE(f.s3, 0)
@@ -839,7 +853,7 @@ func (s *Store) SubmitReview(ctx context.Context, org, articleID string, in Revi
 	var consequential bool
 	err = tx.QueryRowContext(ctx, `
 		SELECT a.status, COALESCE(r.id::text, ''), COALESCE(r.revision_hash, ''), COALESCE(r.checks, '{}'::jsonb),
-		       COALESCE(b.consequential, FALSE)
+		       `+consequentialSQL+`
 		FROM content_articles a
 		LEFT JOIN content_briefs b ON b.id = a.brief_id
 		LEFT JOIN content_revisions r ON r.id = a.current_revision_id

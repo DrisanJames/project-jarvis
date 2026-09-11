@@ -55,6 +55,67 @@ func (a assessment) blockers() []string {
 
 func (a assessment) clean() bool { return len(a.blockers()) == 0 }
 
+// adjudicableFlags are the judge's editorial flags an agent may accept with a
+// written reason. Claim verdicts and unreferenced_claim (a factual sentence
+// with no source) never are; neither are S1 or non-heuristic code checks.
+var adjudicableFlags = map[string]bool{"headline_overpromise": true, "omitted_exception": true, "low_usefulness": true}
+
+// adjItem is one item the managing editor may accept.
+type adjItem struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Unit     string `json:"unit,omitempty"`
+	Sentence string `json:"sentence,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// adjudicable lists the blockers an agent may accept: failed S2 heuristic
+// code checks and editorial flags.
+func (a assessment) adjudicable() []adjItem {
+	units := Units(a.pkg)
+	var out []adjItem
+	for _, c := range a.code {
+		if !c.Passed && c.Severity == "S2" && c.Heuristic {
+			out = append(out, adjItem{ID: "code:" + c.Name, Kind: "code check " + c.Name, Detail: clip(strings.Join(c.Details, "; "), 800)})
+		}
+	}
+	for _, j := range a.judgment {
+		if !adjudicableFlags[j.Kind] {
+			continue
+		}
+		it := adjItem{ID: j.ID, Kind: j.Kind, Unit: fmt.Sprintf("%s#%d", j.BlockID, j.SentenceIdx), Detail: j.Note}
+		if s := units[j.BlockID]; j.SentenceIdx >= 0 && j.SentenceIdx < len(s) {
+			it.Sentence = s[j.SentenceIdx]
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// hardBlockerList is what still blocks if every adjudicable item is accepted —
+// by construction, ApprovalBlockers with those ids accepted.
+func (a assessment) hardBlockerList() []string {
+	var ids []string
+	for _, it := range a.adjudicable() {
+		ids = append(ids, it.ID)
+	}
+	return ApprovalBlockers(Checks{Code: a.code, Judgment: a.judgment}, nil, ReviewInput{AcceptedIDs: ids})
+}
+
+func (a assessment) hardBlockers() int { return len(a.hardBlockerList()) }
+
+// packageFindings are the findings on package units (title, excerpt, meta,
+// subjects, preheaders); the package stage fixes them, not the block reviser.
+func (a assessment) packageFindings() []reviseFinding {
+	var out []reviseFinding
+	for _, f := range a.findings() {
+		if IsReservedUnitID(f.BlockID) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // reviseFinding is one thing the writer must fix.
 type reviseFinding struct {
 	BlockID     string `json:"block_id,omitempty"`
@@ -287,10 +348,13 @@ func degenerateRevision(prev assessment, next draftResult) string {
 }
 
 // acceptRevision keeps a rewrite only if it introduces no code-check failure
-// the previous revision did not have AND strictly reduces the blockers. A
-// broken calculation or dangling reference is never traded for fewer flags
+// the previous revision did not have AND improves: fewer hard blockers (those
+// no agent may accept), or as many hard and fewer in total. A broken
+// calculation or dangling reference is never traded for fewer flags
 // (2026-09-11: aadwd's accepted rewrite cut ~26 blockers to 12 but newly failed
-// calc_recompute and claim_refs_resolve, both S1).
+// calc_recompute and claim_refs_resolve, both S1). Hard blockers rank first
+// because the judge re-samples its editorial flags every round: on :1125 a
+// round that fixed claims could be rejected for 3 new flags elsewhere.
 func acceptRevision(prev, cand assessment) bool {
 	failedBefore := map[string]bool{}
 	for _, c := range prev.code {
@@ -303,21 +367,94 @@ func acceptRevision(prev, cand assessment) bool {
 			return false
 		}
 	}
+	if ch, ph := cand.hardBlockers(), prev.hardBlockers(); ch != ph {
+		return ch < ph
+	}
 	return len(cand.blockers()) < len(prev.blockers())
 }
 
-// secondPassClean: every item is a supported claim and there is at least one.
-// Nothing to verify is not a pass.
+// secondPassClean: at least one item (nothing to verify is not a pass), every
+// claim supported, and no flag an agent may not accept. The editorial flags it
+// raises go to the managing editor like the first pass's.
 func secondPassClean(items []JudgmentItem) bool {
 	if len(items) == 0 {
 		return false
 	}
 	for _, j := range items {
-		if j.Kind != "claim" || j.Verdict != "supported" {
+		if j.Kind == "claim" {
+			if j.Verdict != "supported" {
+				return false
+			}
+			continue
+		}
+		if !adjudicableFlags[j.Kind] {
 			return false
 		}
 	}
 	return true
+}
+
+// minAdjudicationReason is the shortest reason that counts as written.
+const minAdjudicationReason = 20
+
+// packageText is the article as the managing editor reads it.
+func packageText(pkg Package) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "title: %s\nexcerpt: %s\nmeta_title: %s\nmeta_description: %s\n", pkg.Title, pkg.Excerpt, pkg.MetaTitle, pkg.MetaDescription)
+	for i, s := range pkg.Subjects {
+		fmt.Fprintf(&b, "subject:%d: %s\n", i, s)
+	}
+	for i, s := range pkg.Preheaders {
+		fmt.Fprintf(&b, "preheader:%d: %s\n", i, s)
+	}
+	for _, bl := range pkg.Blocks {
+		fmt.Fprintf(&b, "[%s:%s] %s\n", bl.ID, bl.Type, BlockParagraph(bl))
+	}
+	return b.String()
+}
+
+// adjudicate asks the managing editor (Opus) which items may stand. An item is
+// accepted only when the model accepts it with a written reason; a missing,
+// refused or unreasoned decision leaves it a blocker. Each accepted item is
+// recorded as an S3 finding carrying the reason.
+func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package, items []adjItem) (accepted []string, findings []Finding, refused []string, err error) {
+	ij, _ := json.Marshal(items)
+	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: adjudicateSystem,
+		Prompt: fmt.Sprintf("%s\n\nThe article:\n%s\nItems to decide:\n%s", briefBlock(in), packageText(pkg), ij),
+		Schema: adjudicationSchema(), MaxTokens: 8000})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var res struct {
+		Decisions []struct {
+			ID     string `json:"id"`
+			Accept bool   `json:"accept"`
+			Reason string `json:"reason"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal(gen.JSON, &res); err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
+	}
+	type decision struct {
+		accept bool
+		reason string
+	}
+	byID := map[string]decision{}
+	for _, d := range res.Decisions {
+		byID[d.ID] = decision{d.Accept, strings.TrimSpace(d.Reason)}
+	}
+	for _, it := range items {
+		d, ok := byID[it.ID]
+		if !ok || !d.accept || len(d.reason) < minAdjudicationReason {
+			refused = append(refused, it.ID)
+			continue
+		}
+		accepted = append(accepted, it.ID)
+		block, _, _ := strings.Cut(it.Unit, "#")
+		findings = append(findings, Finding{Severity: "S3", CaughtBy: "judgment", BlockID: block,
+			Text: clip("accepted "+it.ID+" ("+it.Kind+"): "+d.reason, 500)})
+	}
+	return accepted, findings, refused, nil
 }
 
 // agentReview approves a clean revision. Anything it cannot approve stays in
@@ -326,12 +463,31 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 	if !AgentReviewEnabled() {
 		return nil
 	}
-	if b := a.blockers(); len(b) > 0 {
-		log.Printf("[ContentDesk] agent-review article=%s: held for a person — %d blocker(s) left after revise: %s",
-			articleID, len(b), clip(strings.Join(b, "; "), 300))
+	if hard := a.hardBlockerList(); len(hard) > 0 {
+		log.Printf("[ContentDesk] agent-review article=%s: held for a person — %d blocker(s) no agent may accept (of %d): %s",
+			articleID, len(hard), len(a.blockers()), clip(strings.Join(hard, "; "), 300))
 		return nil
 	}
-	_, out, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentReviewer, Role: "primary", Decision: "approve"})
+	// What remains is editorial flags and heuristic checks: the managing
+	// editor accepts each with a written reason, or the article is held.
+	var accepted []string
+	var findings []Finding
+	if items := a.adjudicable(); len(items) > 0 {
+		acc, fs, refused, err := p.adjudicate(ctx, in, a.pkg, items)
+		if err != nil {
+			log.Printf("[ContentDesk] agent-review article=%s: adjudication failed (%v) — held for a person", articleID, err)
+			return nil
+		}
+		if len(refused) > 0 {
+			log.Printf("[ContentDesk] agent-review article=%s: held for a person — the managing editor did not accept %s (accepted %d of %d)",
+				articleID, strings.Join(refused, ", "), len(acc), len(items))
+			return nil
+		}
+		accepted, findings = acc, fs
+		log.Printf("[ContentDesk] agent-review article=%s: managing editor accepted %d item(s) with reasons: %s", articleID, len(acc), strings.Join(acc, ", "))
+	}
+	_, out, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentReviewer, Role: "primary", Decision: "approve",
+		AcceptedIDs: accepted, Findings: findings})
 	if err != nil {
 		return fmt.Errorf("agent review (primary): %w", err)
 	}
@@ -351,7 +507,19 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 		log.Printf("[ContentDesk] agent-review article=%s: second pass not clean — awaiting a second reviewer", articleID)
 		return nil
 	}
-	if _, _, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentSecondReviewer, Role: "second", Decision: "approve"}); err != nil {
+	secondFindings := append([]Finding(nil), findings...)
+	if flags := (assessment{pkg: a.pkg, judgment: items}).adjudicable(); len(flags) > 0 {
+		_, fs, refused, err := p.adjudicate(ctx, in, a.pkg, flags)
+		if err != nil || len(refused) > 0 {
+			log.Printf("[ContentDesk] agent-review article=%s: second pass raised %d flag(s), not all accepted (err=%v) — awaiting a second reviewer", articleID, len(flags), err)
+			return nil
+		}
+		secondFindings = append(secondFindings, fs...)
+	}
+	// The second review is gated on the revision's stored checks, so it
+	// carries the same accepted ids as the primary.
+	if _, _, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentSecondReviewer, Role: "second", Decision: "approve",
+		AcceptedIDs: accepted, Findings: secondFindings}); err != nil {
 		return fmt.Errorf("agent review (second): %w", err)
 	}
 	log.Printf("[ContentDesk] agent-review article=%s: approved (primary + adversarial second pass)", articleID)

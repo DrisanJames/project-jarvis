@@ -260,6 +260,34 @@ func packagePrompt(in PipelineInput, d draftResult, claims []Claim) string {
 	return fmt.Sprintf("%s\n%s\n\nArticle body:\n%s\nSupported claims:\n%s", briefBlock(in), sentenceRules, body.String(), claimLines(supported))
 }
 
+// packageRevisePromptVersion is part of the package stage's input hash when
+// the package is re-run with findings.
+const packageRevisePromptVersion = "2026-09-11.1"
+
+// packageRevisePrompt re-packages with the previous package and the findings
+// on its units (title, excerpt, meta, subjects, preheaders). The block reviser
+// never touches those units, so without this their findings could not clear.
+func packageRevisePrompt(in PipelineInput, d draftResult, claims []Claim, prev Package, fs []reviseFinding) string {
+	pj, _ := json.Marshal(map[string]any{"title": prev.Title, "excerpt": prev.Excerpt, "meta_title": prev.MetaTitle,
+		"meta_description": prev.MetaDescription, "subjects": prev.Subjects, "preheaders": prev.Preheaders})
+	fj, _ := json.Marshal(fs)
+	return packagePrompt(in, d, claims) + fmt.Sprintf("\n\nThe previous package and the standards editor's findings on it. Fix each finding at its cause: narrow a headline or excerpt to exactly what the body delivers, cite a number with a marker or cut it, restore a lost qualifier. Keep what has no finding.\n%s\n\nFindings (unit ids: title, excerpt, meta_title, meta_description, subject:N, preheader:N):\n%s", pj, fj)
+}
+
+// adjudicateSystem is the managing editor: it decides whether editorial flags
+// and heuristic check failures may stand. It is never shown claim verdicts,
+// unreferenced factual sentences, or hard check failures — those cannot be
+// accepted by anyone short of a new revision.
+const adjudicateSystem = `You are the managing editor. The standards editor and the automated checks raised the items below on an article whose facts are already sourced. For each item, decide whether the article may be published with it as it stands.
+- Accept an item only if it is mistaken, or immaterial: a careful reader would not be misled or left worse informed by the text as written. The reason must name the text you relied on.
+- Do not accept an item because it is small, common practice, or easy to fix later. If a headline promises more than the body delivers, a material exception or limit is missing, or the article does not answer its reader question, do not accept.
+- For "has a number but no claim ref": accept a number that is arithmetic on the article's own worked example, a count of the article's own sections, or a restatement of a body sentence that carries a citation. Do not accept a number that states a fact about the world.
+- Decide every item. Output only the decisions.`
+
+func adjudicationSchema() map[string]any {
+	return sObj(map[string]any{"decisions": sArr(sObj(map[string]any{"id": sStr(), "accept": sBool(), "reason": sStr()}))})
+}
+
 func judgePrompt(pkg Package, refs []ClaimRef, claims map[string]Claim) string {
 	units := Units(pkg)
 	var b strings.Builder

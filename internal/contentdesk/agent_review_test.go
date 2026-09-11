@@ -117,8 +117,11 @@ func TestSecondPassClean(t *testing.T) {
 	if secondPassClean(append(ok, JudgmentItem{Kind: "claim", Verdict: "overstated"})) {
 		t.Fatal("an overstated item must fail the second pass")
 	}
-	if secondPassClean(append(ok, JudgmentItem{Kind: "omitted_exception", Verdict: "flag"})) {
-		t.Fatal("a flag must fail the second pass")
+	if !secondPassClean(append(ok, JudgmentItem{Kind: "omitted_exception", Verdict: "flag"})) {
+		t.Fatal("an editorial flag goes to the managing editor, it does not fail the second pass by itself")
+	}
+	if secondPassClean(append(ok, JudgmentItem{Kind: "unreferenced_claim", Verdict: "flag"})) {
+		t.Fatal("an unreferenced factual sentence must fail the second pass")
 	}
 }
 

@@ -237,10 +237,23 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	}
 
 	// 4–6. package → code checks → judgment, as one reusable assessment.
-	assess := func(draftRaw json.RawMessage, draft draftResult) (assessment, error) {
+	// fix is the previous assessment in a revise round: findings on its
+	// package units go back to the packager with the previous package.
+	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment) (assessment, error) {
 		var a assessment
-		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion}),
-			func(ctx context.Context) (any, Usage, error) { return p.packageStage(ctx, in, draft, current) })
+		pkgKey := map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion}
+		var prevPkg Package
+		var pkgFix []reviseFinding
+		if fix != nil {
+			if pkgFix = fix.packageFindings(); len(pkgFix) > 0 {
+				prevPkg = fix.pkg
+				pkgKey["fix"], pkgKey["prev_revision"], pkgKey["prompt"] = pkgFix, fix.revHash, packageRevisePromptVersion
+			}
+		}
+		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(pkgKey),
+			func(ctx context.Context) (any, Usage, error) {
+				return p.packageStage(ctx, in, draft, current, prevPkg, pkgFix)
+			})
 		total.Add(u)
 		if err != nil {
 			return a, err
@@ -301,7 +314,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		return a, nil
 	}
 
-	a, err := assess(draftRaw, draft)
+	a, err := assess(draftRaw, draft, nil)
 	if err != nil {
 		return err
 	}
@@ -331,13 +344,13 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %s — keeping the previous revision", articleID, round, why)
 			break
 		}
-		cand, err := assess(raw, next)
+		cand, err := assess(raw, next, &prev)
 		if err != nil {
 			return err
 		}
 		if !acceptRevision(prev, cand) {
-			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %d blockers vs %d before — keeping the previous revision",
-				articleID, round, len(cand.blockers()), len(prev.blockers()))
+			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %d blockers (%d hard) vs %d (%d hard) before — keeping the previous revision",
+				articleID, round, len(cand.blockers()), cand.hardBlockers(), len(prev.blockers()), prev.hardBlockers())
 			break
 		}
 		a = cand
@@ -660,9 +673,15 @@ func (p *Pipeline) draft(ctx context.Context, in PipelineInput, claims []Claim) 
 	return d, u, nil
 }
 
-func (p *Pipeline) packageStage(ctx context.Context, in PipelineInput, d draftResult, claims []Claim) (any, Usage, error) {
+// packageStage packages the draft; with findings (a revise round) it also gets
+// the previous package and fixes what was flagged on it.
+func (p *Pipeline) packageStage(ctx context.Context, in PipelineInput, d draftResult, claims []Claim, prev Package, fix []reviseFinding) (any, Usage, error) {
+	prompt := packagePrompt(in, d, claims)
+	if len(fix) > 0 {
+		prompt = packageRevisePrompt(in, d, claims, prev, fix)
+	}
 	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierLight, System: packageSystem,
-		Prompt: packagePrompt(in, d, claims), Schema: packageSchema(), MaxTokens: 4000})
+		Prompt: prompt, Schema: packageSchema(), MaxTokens: 4000})
 	u := resultUsage(gen)
 	if err != nil {
 		return nil, u, err
