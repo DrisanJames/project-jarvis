@@ -78,7 +78,9 @@ func sBool() map[string]any { return map[string]any{"type": "boolean"} }
 func sEnum(vals ...string) map[string]any {
 	return map[string]any{"type": "string", "enum": vals}
 }
-func sArr(items map[string]any) map[string]any { return map[string]any{"type": "array", "items": items} }
+func sArr(items map[string]any) map[string]any {
+	return map[string]any{"type": "array", "items": items}
+}
 func sNullable(s map[string]any) map[string]any {
 	return map[string]any{"anyOf": []any{s, map[string]any{"type": "null"}}}
 }

@@ -194,10 +194,10 @@ type CheckResult struct {
 // JudgmentItem is one judge verdict (a claim-restating sentence) or one flag
 // (headline overpromise, omitted exception, usefulness, unreferenced claim).
 type JudgmentItem struct {
-	ID            string `json:"id"`
-	Kind          string `json:"kind"`
-	BlockID       string `json:"block_id"`
-	SentenceIdx   int    `json:"sentence_idx"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	BlockID     string `json:"block_id"`
+	SentenceIdx int    `json:"sentence_idx"`
 	// Sentence is the unit text at (block_id, sentence_idx), filled at read
 	// time by GetArticleDetail (never trusted from the model, never hashed).
 	Sentence      string `json:"sentence,omitempty"`
@@ -262,12 +262,12 @@ type ManifestEntry struct {
 
 // Sentinel errors mapped to HTTP statuses by the handler.
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrConflict       = errors.New("conflict")
-	ErrHashMismatch   = errors.New("revision_hash does not match the article's current revision")
-	ErrInvalid        = errors.New("invalid request")
-	ErrInFlight       = errors.New("stage run already in flight")
-	ErrRunExhausted   = errors.New("stage run exhausted its attempts")
+	ErrNotFound        = errors.New("not found")
+	ErrConflict        = errors.New("conflict")
+	ErrHashMismatch    = errors.New("revision_hash does not match the article's current revision")
+	ErrInvalid         = errors.New("invalid request")
+	ErrInFlight        = errors.New("stage run already in flight")
+	ErrRunExhausted    = errors.New("stage run exhausted its attempts")
 	ErrApprovalBlocked = errors.New("approval blocked")
-	ErrManifestDrop   = errors.New("manifest drops a live_confirmed article that was not withdrawn")
+	ErrManifestDrop    = errors.New("manifest drops a live_confirmed article that was not withdrawn")
 )

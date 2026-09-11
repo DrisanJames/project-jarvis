@@ -29,9 +29,9 @@ var moneyHostExtras = []string{"xnonu.com", "jyqye.com"}
 var moneyMarkerRE = regexp.MustCompile(`(?i)everflow|trkclk|/aff/|[?&]aff=`)
 
 var (
-	slugRE          = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	trustTextRE     = regexp.MustCompile(`(?i)\b\d(?:\.\d)?\s*(?:out of 5\s*)?stars?\b|\b\d[\d,]*\s+(?:reviews|ratings|testimonials|reviewers)\b|\brated\s+\d`)
-	fabricatedKeys  = map[string]bool{
+	slugRE         = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	trustTextRE    = regexp.MustCompile(`(?i)\b\d(?:\.\d)?\s*(?:out of 5\s*)?stars?\b|\b\d[\d,]*\s+(?:reviews|ratings|testimonials|reviewers)\b|\brated\s+\d`)
+	fabricatedKeys = map[string]bool{
 		"comments": true, "comment_count": true, "rating": true, "ratings": true,
 		"aggregate_rating": true, "aggregaterating": true, "stars": true,
 		"testimonials": true, "testimonial": true, "review_count": true,
@@ -41,16 +41,16 @@ var (
 
 // Length limits for package text (characters).
 const (
-	MaxTitleLen           = 110
-	MaxMetaTitleLen       = 60
-	MaxMetaDescriptionLen = 160
-	MaxExcerptLen         = 300
-	MaxSubjectLen         = 90
-	MaxPreheaderLen       = 120
-	MaxSlugLen            = 80
-	MaxBlockTextLen       = 4000
-	MaxSubjects           = 8
-	MaxPreheaders         = 8
+	MaxTitleLen              = 110
+	MaxMetaTitleLen          = 60
+	MaxMetaDescriptionLen    = 160
+	MaxExcerptLen            = 300
+	MaxSubjectLen            = 90
+	MaxPreheaderLen          = 120
+	MaxSlugLen               = 80
+	MaxBlockTextLen          = 4000
+	MaxSubjects              = 8
+	MaxPreheaders            = 8
 	DefaultSimhashMaxHamming = 3
 )
 
