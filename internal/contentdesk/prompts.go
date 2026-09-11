@@ -56,7 +56,8 @@ const packageSystem = `You package an approved-for-review article draft: headlin
 - The title must not promise more than the body delivers; no clickbait, no urgency you cannot support.
 - meta_title ≤ 60 characters, meta_description ≤ 160, excerpt ≤ 300, each subject ≤ 90, each preheader ≤ 120. Give 3–5 subjects and 3–5 preheaders.
 - Plain text only, no HTML. No advertiser names, offers, ratings or testimonials.
-- Any title/excerpt/meta/subject/preheader sentence that states a fact or a number carries an inline marker [[c:<claim_id>@<version>]] for a supported claim, as the citation rules describe.`
+- Any title/excerpt/meta/subject/preheader sentence that states a fact or a number carries an inline marker [[c:<claim_id>@<version>]] for a supported claim, as the citation rules describe.
+- When such a sentence restates a body sentence, carry that body sentence's marker exactly as it appears in the body. Say nothing the body does not say, and keep its counts and qualifiers ("three ways" must list three; an estimate stays an estimate).`
 
 const judgeSystem = `You are the standards editor. You check every sentence that restates a claim against that claim's source passage and scope.
 
@@ -247,8 +248,12 @@ func draftPrompt(in PipelineInput, claims []Claim) string {
 }
 
 func packagePrompt(in PipelineInput, d draftResult, claims []Claim) string {
+	// The body carries its inline markers so a package line that restates a
+	// cited body sentence can carry the same marker (live :1130: myownhealth's
+	// last hard blocker was an excerpt sentence restating the cited lede-1#0
+	// with no marker; the packager had only seen plain text).
 	var body strings.Builder
-	for _, bl := range d.Blocks {
+	for _, bl := range markedBlocks(d.Blocks, d.ClaimRefs) {
 		fmt.Fprintf(&body, "[%s:%s] %s\n", bl.ID, bl.Type, BlockParagraph(bl))
 	}
 	var supported []Claim
@@ -257,12 +262,16 @@ func packagePrompt(in PipelineInput, d draftResult, claims []Claim) string {
 			supported = append(supported, c)
 		}
 	}
-	return fmt.Sprintf("%s\n%s\n\nArticle body:\n%s\nSupported claims:\n%s", briefBlock(in), sentenceRules, body.String(), claimLines(supported))
+	return fmt.Sprintf("%s\n%s\n\nArticle body, with its inline claim markers:\n%s\nSupported claims:\n%s", briefBlock(in), sentenceRules, body.String(), claimLines(supported))
 }
 
 // packageRevisePromptVersion is part of the package stage's input hash when
 // the package is re-run with findings.
 const packageRevisePromptVersion = "2026-09-11.1"
+
+// packagePromptVersion is part of the package stage's input hash, so a
+// changed package prompt never replays a package cached under an old one.
+const packagePromptVersion = "2026-09-11.body-markers"
 
 // packageRevisePrompt re-packages with the previous package and the findings
 // on its units (title, excerpt, meta, subjects, preheaders). The block reviser

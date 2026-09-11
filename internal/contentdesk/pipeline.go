@@ -241,7 +241,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// package units go back to the packager with the previous package.
 	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment) (assessment, error) {
 		var a assessment
-		pkgKey := map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion}
+		pkgKey := map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion, "package_prompt": packagePromptVersion}
 		var prevPkg Package
 		var pkgFix []reviseFinding
 		if fix != nil {
