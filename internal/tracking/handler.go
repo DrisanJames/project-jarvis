@@ -173,7 +173,11 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 
 	// DESTINATION (shadow-only in every mode but off): counted, never acted on.
 	if mode != sigModeOff {
-		sigCounters.inc("click.dest." + classifyDestination(target, h.dict))
+		cls, host := classifyDestinationHost(target, h.dict)
+		sigCounters.inc("click.dest." + cls)
+		if cls == DestUnknown {
+			sigCounters.incUnknownHost(host)
+		}
 	}
 
 	// GATEWAY — decided in memory, BEFORE the handoff, and without contacting

@@ -118,8 +118,18 @@ func (d *SmartLinkDictionary) reloadOnce(ctx context.Context) error {
 	d.entries = next
 	d.hosts = hosts
 	d.mu.Unlock()
-	log.Printf("smartlink dictionary: loaded %d active links", len(next))
+	log.Printf("smartlink dictionary: loaded %d active links (%d destination hosts)", len(next), len(hosts))
 	return nil
+}
+
+// HostCount is the size of the destination-host set. Nil-safe.
+func (d *SmartLinkDictionary) HostCount() int {
+	if d == nil {
+		return 0
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(d.hosts)
 }
 
 // destinationHosts extracts the normalized (lowercase, no "www.") host of every
