@@ -1,7 +1,9 @@
 // ContentDeskArticle.tsx — Pane 2 of the Content Desk: one article, reviewed.
 //
-// The article renders as reviewers will see it, block by block. Every sentence
-// the judgment pass covered is marked in place; clicking it opens the evidence
+// The article renders as reviewers will see it, block by block — every one of
+// the backend's block types (contentdesk.AllowedBlockTypes) with every field it
+// carries (heading · text · items · rows · calc · caption). Every sentence the
+// judgment pass covered is marked in place; clicking it opens the evidence
 // panel: the sentence next to its source passage, context, dates, scope,
 // conditions, claim status and derivation.
 //
@@ -11,9 +13,12 @@
 //     with a visible marker.
 //   · The review is bound to revision.revision_hash — the revision on screen. A
 //     409 means it moved: toast, reload, keep the reviewer's findings.
+//   · An approve carries accepted_ids: every non-supported judgment item and
+//     every failed S2 code check must be explicitly accepted (the server
+//     refuses otherwise, 422 with the blockers shown).
 //   · Blind second review hides the primary review AND the judgment verdicts
-//     (including lost qualifiers, which imply the verdict) until the second
-//     reviewer has submitted.
+//     (including lost qualifiers and notes, which imply the verdict) until the
+//     second reviewer has submitted.
 //   · "Never built" (no revision) and "built empty" (a revision with no blocks)
 //     are different displays.
 
@@ -32,10 +37,11 @@ import { Unknown, LoadingRow, ScrollX, fmtTime, tableStyle, tdStyle } from './su
 import {
   useCdGet, articlePath, runPipeline, withdrawArticle, errMsg, buildReviewPayload, submitReview,
   groupJudgments, segmentPieces, claimKey, asText, containsHtml, safeUrl, worstVerdict, verdictColor,
-  decisionColor, sevColor, SEVERITIES, SafeText, EscapedMarker, VerdictChip, CheckPill, Hash, FetchNote,
-  toneBtn, mono,
-  type ArticleDetail, type ArticlePackage, type Block, type Claim, type SentenceGroup, type FindingDraft, type ReviewRole,
-  type ReviewDecision, type ReviewPayload, type ReviewRecord, type Severity, type Judgment,
+  decisionColor, sevColor, SEVERITIES, CAUGHT_BY, BLOCK_TYPES, SafeText, EscapedMarker, VerdictChip, CheckPill, Hash,
+  FetchNote, toneBtn, mono, blockParts,
+  type ArticleDetail, type ArticlePackage, type Block, type BlockPart, type Claim, type CodeCheck, type SentenceGroup,
+  type SentencePair, type FindingDraft, type ReviewRole, type ReviewDecision, type ReviewPayload, type ReviewRecord,
+  type Severity, type Judgment, type CaughtBy,
 } from './contentDeskShared'
 
 type Mode = ReviewRole
@@ -45,7 +51,15 @@ const MODES = [
   { key: 'second', label: 'Second reviewer (blind)' },
 ]
 
-const CAUGHT_BY_SUGGESTIONS = ['reviewer', 'code_check', 'judgment']
+/** An item the reviewer must explicitly accept before an approve is recorded. */
+interface Acceptable {
+  id: string
+  label: string
+  revealLabel: string
+}
+
+const pairKey = (blockId: string, idx: number, claimId: string, version: number | string) =>
+  `${blockId}#${idx}@${claimKey(claimId, version)}`
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PANE
@@ -72,6 +86,7 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
   const pkg = rev?.package ?? null
   const blocks: Block[] = React.useMemo(() => (Array.isArray(pkg?.blocks) ? (pkg?.blocks as Block[]) : []), [pkg])
   const judgments: Judgment[] = React.useMemo(() => rev?.checks?.judgment ?? [], [rev])
+  const codeChecks: CodeCheck[] | null = rev?.checks?.code ?? null
   const groups = React.useMemo(() => groupJudgments(judgments), [judgments])
   const groupsByBlock = React.useMemo(() => {
     const m = new Map<string, SentenceGroup[]>()
@@ -80,8 +95,31 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
   }, [groups])
   const groupByKey = React.useMemo(() => new Map(groups.map(g => [g.key, g])), [groups])
   const claims = React.useMemo(() => new Map((d?.claims ?? []).map(c => [claimKey(c.claim_id, c.version), c])), [d])
+  const pairs = React.useMemo(
+    () => new Map((d?.pairs ?? []).map(p => [pairKey(p.block_id, p.sentence_idx, p.claim_id, p.version), p])),
+    [d],
+  )
+  const acceptables: Acceptable[] = React.useMemo(() => {
+    const out: Acceptable[] = []
+    judgments.forEach(j => {
+      if (j.kind === 'claim' && j.verdict === 'supported') return
+      const where = `${j.block_id}#${j.sentence_idx}`
+      out.push({
+        id: j.id,
+        label: `${j.id} · ${where}`,
+        revealLabel: `${j.id} · ${j.kind === 'claim' ? j.verdict : `flag ${j.kind}`} · ${where}`,
+      })
+    })
+    ;(codeChecks ?? []).forEach(c => {
+      if (!c.passed && c.severity !== 'S1') {
+        out.push({ id: `code:${c.name}`, label: `code:${c.name}`, revealLabel: `code:${c.name} (${c.severity} failed)` })
+      }
+    })
+    return out
+  }, [judgments, codeChecks])
   const blockIds = React.useMemo(() => new Set(blocks.map(b => b.id)), [blocks])
-  const orphanGroups = groups.filter(g => !blockIds.has(g.blockId))
+  const outsideGroups = groups.filter(g => !blockIds.has(g.blockId))
+  const s1Failed = (codeChecks ?? []).filter(c => !c.passed && c.severity === 'S1').map(c => c.name)
 
   if (!articleId) {
     return (
@@ -135,7 +173,7 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
               <span>{a.domain || <Unknown />}</span>
               <span style={mono} title={a.slug}>/{a.slug}</span>
               {a.status ? <Pill color={stateColor(a.status)} style={{ fontSize: 10, padding: '1px 8px' }}>{a.status}</Pill> : <Unknown hint="no status" />}
-              <span>revision <Hash value={rev?.revision_hash ?? a.current_revision_hash} /></span>
+              <span>revision <Hash value={rev?.revision_hash || a.revision_hash || null} /></span>
               <span>updated {a.updated_at ? `${fmtTime(a.updated_at)} MT` : <Unknown />}</span>
               <FetchNote stamp={detail.stamp} />
             </div>
@@ -165,7 +203,7 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
             <FontAwesomeIcon icon={faTriangleExclamation} />
             <strong style={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 13 }}>Mandatory human review</strong>
             <span style={{ fontSize: 12, color: colors.dangerFaint }}>
-              This article is consequential — it cannot ship on machine checks alone.
+              This article is consequential — a primary AND a different second reviewer must approve the same revision.
             </span>
           </div>
         </Panel>
@@ -237,20 +275,20 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
                   />
                 ))
               )}
-              {orphanGroups.length > 0 && (
-                <div style={{ marginTop: 10, fontSize: 11, color: colors.warningText }}>
-                  Judged sentences whose block_id is not in this revision:
-                  {orphanGroups.map(g => (
+              {outsideGroups.length > 0 && (
+                <div data-testid="judged-outside-body" style={{ marginTop: 10, fontSize: 11, color: colors.textMuted }}>
+                  Judged sentences outside the body (package fields — title, excerpt, meta, subjects, preheaders):
+                  {outsideGroups.map(g => (
                     <div key={g.key} style={{ marginTop: 4 }}>
                       <span style={mono}>{g.blockId}</span>{' '}
-                      <SentenceMark group={g} text={g.sentence} reveal={reveal} selected={selected} onSelect={setSelected} />
+                      <SentenceMark group={g} text={g.sentence || '(sentence not resolved)'} reveal={reveal} selected={selected} onSelect={setSelected} />
                     </div>
                   ))}
                 </div>
               )}
             </Panel>
 
-            <CodeChecksPanel checks={rev.checks?.code} />
+            <CodeChecksPanel checks={codeChecks} />
 
             {reveal ? (
               <ReviewsPanel reviews={d.reviews} currentHash={rev.revision_hash} />
@@ -266,13 +304,16 @@ export const ContentDeskArticle: React.FC<{ articleId: string | null; onBack: ()
 
           {/* ── Right: evidence + review form ────────────────────────── */}
           <div style={{ flex: '1 1 340px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, position: 'sticky', top: 12 }}>
-            <EvidencePanel group={selectedGroup} claims={claims} reveal={reveal} />
+            <EvidencePanel group={selectedGroup} claims={claims} pairs={pairs} reveal={reveal} />
             <ReviewForm
               articleId={articleId}
               revisionHash={rev.revision_hash}
               role={mode}
               blockIds={blocks.map(b => b.id)}
               flag={flag}
+              acceptables={acceptables}
+              s1Failed={s1Failed}
+              reveal={reveal}
               onSubmitted={() => {
                 if (mode === 'second') setBlindSubmitted(true)
                 detail.reload()
@@ -332,7 +373,7 @@ const PackagePanel: React.FC<{ pkg: ArticlePackage | null }> = ({ pkg }) => {
           <Field label="Meta description"><SafeText value={pkg.meta_description} /></Field>
           <Field label="Hero image">
             {pkg.hero_image == null ? (
-              <Unknown hint="no hero_image in the package" />
+              <span style={{ color: colors.textFaint, fontStyle: 'italic' }}>none — the pipeline never invents an image</span>
             ) : hero.url ? (
               <div>
                 <img src={hero.url} alt={hero.alt} style={{ maxWidth: '100%', maxHeight: 220, borderRadius: 6, display: 'block' }} />
@@ -356,12 +397,8 @@ const PackagePanel: React.FC<{ pkg: ArticlePackage | null }> = ({ pkg }) => {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BLOCKS
+// BLOCKS — one renderer per backend block type; every field is shown
 // ═══════════════════════════════════════════════════════════════════════════
-
-const HEADING_TYPES = new Set(['heading', 'h1', 'h2', 'h3', 'h4', 'title', 'subheading'])
-const QUOTE_TYPES = new Set(['quote', 'blockquote', 'pullquote'])
-const ORDERED_TYPES = new Set(['ol', 'ordered_list', 'numbered_list', 'steps'])
 
 const SentenceMark: React.FC<{
   group: SentenceGroup
@@ -395,6 +432,8 @@ const SentenceMark: React.FC<{
   )
 }
 
+const KNOWN_TYPES = new Set<string>(BLOCK_TYPES)
+
 const BlockView: React.FC<{
   block: Block
   groups: SentenceGroup[]
@@ -404,16 +443,17 @@ const BlockView: React.FC<{
   onFlag: (blockId: string) => void
 }> = ({ block, groups, reveal, selected, onSelect, onFlag }) => {
   const type = String(block.type ?? '').toLowerCase()
-  const text = block.text != null ? asText(block.text) : null
-  const items = Array.isArray(block.items) ? (block.items as unknown[]).map(asText) : null
-  const rows = Array.isArray(block.rows)
-    ? (block.rows as unknown[]).map(r => (Array.isArray(r) ? (r as unknown[]).map(asText) : [asText(r)]))
-    : null
-  const pieces: string[] = text != null ? [text] : items ?? (rows ? rows.flat() : [])
-  const { pieces: segs, unplaced } = segmentPieces(pieces, groups)
-  const html = pieces.some(containsHtml)
+  const parts = blockParts(block)
+  const { pieces: segs, unplaced } = segmentPieces(parts.map(p => p.text), groups)
+  const html = parts.some(p => containsHtml(p.text))
+  const at = (kind: BlockPart['kind']) => parts.map((p, i) => ({ p, i })).filter(x => x.p.kind === kind)
+  const heading = at('heading')[0]
+  const text = at('text')[0]
+  const items = at('item')
+  const rows = at('row')
+  const caption = at('caption')[0]
 
-  const renderPiece = (i: number) =>
+  const seg = (i: number) =>
     (segs[i] ?? []).map((s, j) =>
       s.group ? (
         <SentenceMark key={j} group={s.group} text={s.text} reveal={reveal} selected={selected} onSelect={onSelect} />
@@ -421,57 +461,101 @@ const BlockView: React.FC<{
         <React.Fragment key={j}>{s.text}</React.Fragment>
       ),
     )
+  // A table row is ONE unit (cells joined " | "); a judged row is marked whole.
+  const rowGroup = (i: number) => (segs[i] ?? []).find(s => s.group != null && s.text === parts[i].text)?.group ?? null
 
-  let body: React.ReactNode
-  if (text != null) {
-    if (HEADING_TYPES.has(type)) body = <div style={{ fontSize: 17, fontWeight: 700, color: colors.heading }}>{renderPiece(0)}</div>
-    else if (QUOTE_TYPES.has(type)) {
-      body = (
-        <blockquote style={{ margin: 0, paddingLeft: 12, borderLeft: `3px solid ${colors.panelBorderStrong}`, color: colors.textMuted, fontStyle: 'italic' }}>
-          {renderPiece(0)}
-        </blockquote>
+  const headingEl = heading && (
+    type === 'stat' ? (
+      <div data-testid="stat-figure" style={{ fontSize: 26, fontWeight: 800, color: colors.heading, fontVariantNumeric: 'tabular-nums' }}>{seg(heading.i)}</div>
+    ) : (
+      <div style={{ fontSize: 16, fontWeight: 700, color: colors.heading, marginBottom: 4 }}>{seg(heading.i)}</div>
+    )
+  )
+  const textEl = text && (
+    type === 'pull_quote' ? (
+      <blockquote style={{ margin: 0, paddingLeft: 12, borderLeft: `3px solid ${colors.panelBorderStrong}`, color: colors.heading, fontStyle: 'italic', fontSize: 16 }}>
+        {seg(text.i)}
+      </blockquote>
+    ) : (
+      <p style={{ margin: '0 0 4px', lineHeight: 1.65, fontSize: type === 'lede' ? 15 : 14 }}>{seg(text.i)}</p>
+    )
+  )
+  let itemsEl: React.ReactNode = null
+  if (items.length > 0) {
+    if (type === 'faq') {
+      itemsEl = (
+        <dl data-testid="faq" style={{ margin: 0 }}>
+          {items.map((x, k) =>
+            k % 2 === 0 ? (
+              <dt key={x.i} style={{ fontWeight: 700, marginTop: k ? 8 : 0 }}>{seg(x.i)}</dt>
+            ) : (
+              <dd key={x.i} style={{ margin: '2px 0 0 14px' }}>{seg(x.i)}</dd>
+            ),
+          )}
+          {items.length % 2 === 1 && (
+            <dd style={{ margin: '2px 0 0 14px', color: colors.warningText, fontSize: 11 }}>no answer — faq items must alternate question, answer</dd>
+          )}
+        </dl>
       )
-    } else body = <p style={{ margin: 0, lineHeight: 1.65 }}>{renderPiece(0)}</p>
-  } else if (items) {
-    const List = ORDERED_TYPES.has(type) ? 'ol' : 'ul'
-    body = <List style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>{items.map((_, i) => <li key={i}>{renderPiece(i)}</li>)}</List>
-  } else if (rows) {
-    const offsets: number[] = []
-    rows.reduce((acc, r) => { offsets.push(acc); return acc + r.length }, 0)
-    body = (
-      <ScrollX>
-        <table style={tableStyle}>
-          <tbody>
-            {rows.map((r, ri) => (
-              <tr key={ri}>
-                {r.map((_, ci) => (
-                  <td key={ci} style={{ ...tdStyle, fontWeight: ri === 0 ? 700 : 400 }}>{renderPiece(offsets[ri] + ci)}</td>
+    } else {
+      const List = type === 'steps' ? 'ol' : 'ul'
+      itemsEl = <List style={{ margin: 0, paddingLeft: 20, lineHeight: 1.6 }}>{items.map(x => <li key={x.i}>{seg(x.i)}</li>)}</List>
+    }
+  }
+  const rowsEl = rows.length > 0 && (
+    <ScrollX>
+      <table style={tableStyle}>
+        <tbody>
+          {rows.map(({ p, i }, ri) => {
+            const g = rowGroup(i)
+            const c = g ? (reveal ? verdictColor(worstVerdict(g.judgments) ?? '') : colors.indigo400) : null
+            return (
+              <tr
+                key={ri}
+                data-testid={g ? 'judged-sentence' : undefined}
+                onClick={g ? () => onSelect(g.key) : undefined}
+                style={g && c ? { background: alpha(c, selected === g.key ? '33' : '14'), cursor: 'pointer' } : undefined}
+              >
+                {(p.cells ?? []).map((cell, ci) => (
+                  <td key={ci} style={{ ...tdStyle, fontWeight: ri === 0 ? 700 : 400 }}>{cell}</td>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </ScrollX>
-    )
-  } else {
-    const { id: _id, type: _type, ...rest } = block
-    void _id
-    void _type
-    const img = safeUrl(rest.url ?? rest.src)
-    body = (
-      <div>
-        {img && <img src={img} alt={asText(rest.alt ?? '')} style={{ maxWidth: '100%', maxHeight: 260, borderRadius: 6, display: 'block', marginBottom: 6 }} />}
-        <div style={{ fontSize: 11, color: colors.textFaint }}>{type || 'untyped'} block — no text / items / rows; fields shown as escaped JSON:</div>
-        <pre style={{ ...mono, margin: '4px 0 0', whiteSpace: 'pre-wrap', color: colors.textMuted }}>{JSON.stringify(rest, null, 2)}</pre>
-      </div>
-    )
+            )
+          })}
+        </tbody>
+      </table>
+    </ScrollX>
+  )
+  const calc = block.calc
+  const calcEl = calc && (
+    <div data-testid="calc" style={{ ...mono, fontSize: 12, margin: '6px 0', padding: '6px 8px', border: `1px solid ${colors.hairline}`, borderRadius: 6 }}>
+      {(calc.inputs ?? []).map((inp, k) => <div key={k}>{asText(inp.name)} = {asText(inp.value)}</div>)}
+      <div>formula: {asText(calc.formula)}</div>
+      <div>result: {asText(calc.result)}</div>
+    </div>
+  )
+  const captionEl = caption && (
+    <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: 'italic', marginTop: 4 }}>{seg(caption.i)}</div>
+  )
+  let body = (
+    <>
+      {headingEl}
+      {textEl}
+      {itemsEl}
+      {rowsEl}
+      {calcEl}
+      {captionEl}
+    </>
+  )
+  if (type === 'callout') {
+    body = <div style={{ border: `1px solid ${alpha(colors.indigo400, '44')}`, borderLeft: `3px solid ${colors.indigo400}`, borderRadius: 6, padding: '8px 10px' }}>{body}</div>
   }
 
   return (
-    <div style={{ display: 'flex', gap: 10, padding: '10px 0', borderTop: `1px solid ${colors.divider}` }}>
-      <div style={{ width: 92, flexShrink: 0, fontSize: 10, color: colors.textFaint }}>
+    <div data-testid={`block-${block.id}`} style={{ display: 'flex', gap: 10, padding: '10px 0', borderTop: `1px solid ${colors.divider}` }}>
+      <div style={{ width: 110, flexShrink: 0, fontSize: 10, color: colors.textFaint }}>
         <div title={`block id ${block.id}`} style={{ ...mono, fontSize: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.id}</div>
-        <div>{type || 'untyped'}</div>
+        <div data-testid="block-type">{type || 'untyped'}</div>
         <button
           type="button"
           onClick={() => onFlag(block.id)}
@@ -482,7 +566,12 @@ const BlockView: React.FC<{
         </button>
       </div>
       <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: colors.text }}>
-        {body}
+        {!KNOWN_TYPES.has(type) && (
+          <div style={{ fontSize: 11, color: colors.warningText, marginBottom: 4 }}>
+            block type “{type || 'untyped'}” is not in the backend's allowed set — shown generically
+          </div>
+        )}
+        {parts.length === 0 && !calc ? <span style={{ color: colors.textFaint, fontStyle: 'italic' }}>empty block</span> : body}
         {html && <div style={{ marginTop: 4 }}><EscapedMarker /></div>}
         {unplaced.length > 0 && (
           <div style={{ marginTop: 6, fontSize: 11, color: colors.warningText }}>
@@ -504,7 +593,7 @@ const BlockView: React.FC<{
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DateVal: React.FC<{ v: string | null | undefined }> = ({ v }) =>
-  v ? <span title={v}>{fmtTime(v)} MT</span> : <Unknown hint="not recorded on the claim" />
+  v ? <span title={v}>{/T/.test(v) ? `${fmtTime(v)} MT` : v}</span> : <Unknown hint="not recorded on the claim" />
 
 const ClaimFields: React.FC<{ claim: Claim }> = ({ claim }) => {
   const href = safeUrl(claim.source_url)
@@ -543,7 +632,12 @@ const ClaimFields: React.FC<{ claim: Claim }> = ({ claim }) => {
   )
 }
 
-const EvidencePanel: React.FC<{ group: SentenceGroup | null; claims: Map<string, Claim>; reveal: boolean }> = ({ group, claims, reveal }) => (
+const EvidencePanel: React.FC<{
+  group: SentenceGroup | null
+  claims: Map<string, Claim>
+  pairs: Map<string, SentencePair>
+  reveal: boolean
+}> = ({ group, claims, pairs, reveal }) => (
   <Panel>
     <SectionHeader title="Evidence" icon={faMagnifyingGlass} />
     {!group ? (
@@ -561,16 +655,44 @@ const EvidencePanel: React.FC<{ group: SentenceGroup | null; claims: Map<string,
           <SafeText value={group.sentence} />
         </div>
         {group.judgments.map((j, i) => {
-          const c = claims.get(claimKey(j.claim_id, j.version))
+          if (j.kind !== 'claim') {
+            return (
+              <div key={i} style={{ border: `1px solid ${colors.hairline}`, borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: 12 }}>
+                {reveal ? (
+                  <>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                      <VerdictChip verdict={j.verdict} /> <span style={mono}>{j.kind}</span> <span style={{ ...mono, color: colors.textFaint }}>{j.id}</span>
+                    </div>
+                    {j.note && <SafeText value={j.note} />}
+                  </>
+                ) : (
+                  <Pill color={colors.idle} style={{ fontSize: 10, padding: '1px 8px' }}>judge item {j.id} — hidden (blind)</Pill>
+                )}
+              </div>
+            )
+          }
+          const ck = claimKey(j.claim_id ?? '', j.version ?? 0)
+          const c = claims.get(ck)
+          const pair = pairs.get(pairKey(j.block_id, j.sentence_idx, j.claim_id ?? '', j.version ?? 0))
           return (
             <div key={i} style={{ border: `1px solid ${colors.hairline}`, borderRadius: 8, padding: '8px 10px', marginBottom: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                 {reveal ? <VerdictChip verdict={j.verdict} /> : <Pill color={colors.idle} style={{ fontSize: 10, padding: '1px 8px' }}>verdict hidden</Pill>}
                 <span style={{ ...mono, color: colors.textMuted }} title="claim_id @ version">{j.claim_id} v{String(j.version)}</span>
               </div>
+              {pair?.stale && (
+                <div style={{ fontSize: 12, color: colors.warningText, marginBottom: 4 }}>
+                  Stale: this sentence cites v{String(j.version)}; the claim is now at v{pair.latest_version}.
+                </div>
+              )}
               {reveal && j.lost_qualifier && (
                 <div style={{ fontSize: 12, color: colors.warningText, marginBottom: 4 }}>
                   Lost qualifier: <SafeText value={j.lost_qualifier} />
+                </div>
+              )}
+              {reveal && j.note && (
+                <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 4 }}>
+                  Judge note: <SafeText value={j.note} />
                 </div>
               )}
               {c ? (
@@ -592,7 +714,7 @@ const EvidencePanel: React.FC<{ group: SentenceGroup | null; claims: Map<string,
 // CODE CHECKS + PRIOR REVIEWS
 // ═══════════════════════════════════════════════════════════════════════════
 
-const CodeChecksPanel: React.FC<{ checks: { name: string; passed: boolean; detail?: string | null }[] | null | undefined }> = ({ checks }) => {
+const CodeChecksPanel: React.FC<{ checks: CodeCheck[] | null | undefined }> = ({ checks }) => {
   const passed = (checks ?? []).filter(c => c.passed).length
   return (
     <Panel>
@@ -607,10 +729,17 @@ const CodeChecksPanel: React.FC<{ checks: { name: string; passed: boolean; detai
         <div style={{ fontSize: 12, color: colors.textFaint }}>No code checks ran on this revision.</div>
       ) : (
         [...checks].sort((x, y) => Number(x.passed) - Number(y.passed)).map((c, i) => (
-          <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline', padding: '4px 0', borderTop: `1px solid ${colors.divider}`, fontSize: 12 }}>
-            <CheckPill status={c.passed ? 'ok' : 'fail'} label={c.passed ? 'pass' : 'fail'} />
-            <span style={{ color: colors.text, minWidth: 140 }}><SafeText value={c.name} /></span>
-            <span style={{ color: colors.textMuted, overflowWrap: 'anywhere' }}>{c.detail ? <SafeText value={c.detail} /> : ''}</span>
+          <div key={i} data-testid="code-check" style={{ padding: '4px 0', borderTop: `1px solid ${colors.divider}`, fontSize: 12 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <CheckPill status={c.passed ? 'ok' : c.severity === 'S1' ? 'fail' : 'warn'} label={c.passed ? 'pass' : `fail ${c.severity}`} />
+              <span style={{ color: colors.text, minWidth: 140 }}><SafeText value={c.name} /></span>
+              <span style={{ color: colors.textFaint, fontSize: 11 }}>{c.severity}{c.heuristic ? ' · heuristic' : ''}</span>
+            </div>
+            {(c.details ?? []).length > 0 && (
+              <ul style={{ margin: '4px 0 0', paddingLeft: 20, color: colors.textMuted, overflowWrap: 'anywhere' }}>
+                {(c.details ?? []).map((d, k) => <li key={k}><SafeText value={d} /></li>)}
+              </ul>
+            )}
           </div>
         ))
       )}
@@ -631,14 +760,19 @@ const ReviewsPanel: React.FC<{ reviews: ReviewRecord[] | null; currentHash: stri
         return (
           <div key={r.id ?? i} style={{ borderTop: `1px solid ${colors.divider}`, padding: '8px 0', fontSize: 12 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <Pill color={colors.indigo400} style={{ fontSize: 10, padding: '1px 8px' }}>{r.role ?? 'role?'}</Pill>
-              <Pill color={decisionColor(r.decision)} style={{ fontSize: 10, padding: '1px 8px' }}>{r.decision ?? 'decision?'}</Pill>
+              <Pill color={colors.indigo400} style={{ fontSize: 10, padding: '1px 8px' }}>{r.role || 'role?'}</Pill>
+              <Pill color={decisionColor(r.decision)} style={{ fontSize: 10, padding: '1px 8px' }}>{r.decision || 'decision?'}</Pill>
               {r.reviewer && <span style={{ color: colors.textMuted }}><SafeText value={r.reviewer} /></span>}
               <span style={{ color: colors.textMuted }}>{r.minutes == null ? <Unknown hint="minutes not recorded" /> : `${r.minutes} min`}</span>
               {r.created_at && <span style={{ color: colors.textFaint }}>{fmtTime(r.created_at)} MT</span>}
               <span>rev <Hash value={r.revision_hash} /></span>
               {stale && <span style={{ color: colors.warningText, fontSize: 11 }}>on an older revision</span>}
             </div>
+            {(r.accepted_ids ?? []).length > 0 && (
+              <div style={{ marginTop: 4, paddingLeft: 6, fontSize: 11, color: colors.textFaint }}>
+                accepted: <span style={mono}>{(r.accepted_ids ?? []).join(', ')}</span>
+              </div>
+            )}
             {(r.findings ?? []).map((f, k) => (
               <div key={k} style={{ display: 'flex', gap: 8, marginTop: 4, paddingLeft: 6 }}>
                 <span style={{ color: sevColor(f.severity), fontWeight: 700, fontSize: 11 }}>{f.severity}</span>
@@ -663,25 +797,49 @@ const DECISIONS: Array<{ d: ReviewDecision; label: string; color: string }> = [
   { d: 'reject', label: 'Reject', color: colors.danger },
 ]
 
+const REVIEWER_KEY = 'contentDesk.reviewer'
+const readReviewer = (): string => {
+  try {
+    return window.localStorage.getItem(REVIEWER_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+const saveReviewer = (v: string) => {
+  try {
+    window.localStorage.setItem(REVIEWER_KEY, v)
+  } catch {
+    /* storage blocked — the field just is not remembered */
+  }
+}
+
+const newFinding = (blockId = ''): FindingDraft => ({ severity: 'S2', caught_by: 'human', block_id: blockId, text: '' })
+
 const ReviewForm: React.FC<{
   articleId: string
   revisionHash: string | null
   role: ReviewRole
   blockIds: string[]
   flag: { blockId: string; nonce: number } | null
+  acceptables: Acceptable[]
+  s1Failed: string[]
+  reveal: boolean
   onSubmitted: () => void
   onConflict: () => void
-}> = ({ articleId, revisionHash, role, blockIds, flag, onSubmitted, onConflict }) => {
+}> = ({ articleId, revisionHash, role, blockIds, flag, acceptables, s1Failed, reveal, onSubmitted, onConflict }) => {
   const toast = useToast()
   const [findings, setFindings] = React.useState<FindingDraft[]>([])
   const [minutes, setMinutes] = React.useState('')
+  const [reviewer, setReviewer] = React.useState<string>(readReviewer)
+  const [accepted, setAccepted] = React.useState<Set<string>>(() => new Set())
   const [submitting, setSubmitting] = React.useState<ReviewDecision | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  const uid = React.useId()
 
   React.useEffect(() => {
-    if (flag) setFindings(f => [...f, { severity: 'S2', caught_by: '', block_id: flag.blockId, text: '' }])
+    if (flag) setFindings(f => [...f, newFinding(flag.blockId)])
   }, [flag])
+  // Acceptances are per revision — a new revision has new items.
+  React.useEffect(() => setAccepted(new Set()), [revisionHash])
 
   const patch = (i: number, p: Partial<FindingDraft>) => setFindings(fs => fs.map((f, k) => (k === i ? { ...f, ...p } : f)))
 
@@ -689,7 +847,7 @@ const ReviewForm: React.FC<{
     setError(null)
     let payload: ReviewPayload
     try {
-      payload = buildReviewPayload({ revisionHash, role, decision, findings, minutes })
+      payload = buildReviewPayload({ revisionHash, reviewer, role, decision, findings, minutes, acceptedIds: Array.from(accepted) })
     } catch (e) {
       setError(errMsg(e))
       return
@@ -698,6 +856,7 @@ const ReviewForm: React.FC<{
     const res = await submitReview(articleId, payload)
     setSubmitting(null)
     if (res.kind === 'ok') {
+      saveReviewer(payload.reviewer)
       toast.addToast({ type: 'success', title: 'Review recorded', message: `${decision} · ${role} · revision ${payload.revision_hash.slice(0, 10)}` })
       setFindings([])
       setMinutes('')
@@ -734,14 +893,9 @@ const ReviewForm: React.FC<{
               </select>
             </label>
             <label style={filterFieldLabelStyle}>caught by
-              <input
-                aria-label={`Finding ${i + 1} caught by`}
-                list={`${uid}-caught`}
-                value={f.caught_by}
-                placeholder="who/what caught it"
-                onChange={e => patch(i, { caught_by: e.target.value })}
-                style={{ ...filterInputStyle, width: 130 }}
-              />
+              <select aria-label={`Finding ${i + 1} caught by`} value={f.caught_by} onChange={e => patch(i, { caught_by: e.target.value as CaughtBy })} style={{ ...filterInputStyle, width: 110 }}>
+                {CAUGHT_BY.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
             </label>
             <label style={filterFieldLabelStyle}>block
               <select aria-label={`Finding ${i + 1} block`} value={f.block_id} onChange={e => patch(i, { block_id: e.target.value })} style={{ ...filterInputStyle, width: 130 }}>
@@ -764,14 +918,46 @@ const ReviewForm: React.FC<{
           />
         </div>
       ))}
-      <datalist id={`${uid}-caught`}>
-        {CAUGHT_BY_SUGGESTIONS.map(s => <option key={s} value={s} />)}
-      </datalist>
-      <button type="button" style={{ ...btnStyle, marginBottom: 12 }} onClick={() => setFindings(fs => [...fs, { severity: 'S2', caught_by: '', block_id: '', text: '' }])}>
+      <button type="button" style={{ ...btnStyle, marginBottom: 12 }} onClick={() => setFindings(fs => [...fs, newFinding()])}>
         <FontAwesomeIcon icon={faPlus} /> Add finding
       </button>
 
+      {acceptables.length > 0 && (
+        <div data-testid="accept-list" style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 2 }}>
+            Accept to approve ({accepted.size}/{acceptables.length})
+          </div>
+          <div style={{ fontSize: 11, color: colors.textFaint, marginBottom: 4 }}>
+            An approve is refused while any of these is unaccepted.{reveal ? '' : ' Verdicts stay hidden until your blind review is in.'}
+          </div>
+          {acceptables.map(x => (
+            <label key={x.id} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+              <input
+                type="checkbox"
+                aria-label={`Accept ${x.id}`}
+                checked={accepted.has(x.id)}
+                onChange={e => setAccepted(s => {
+                  const n = new Set(s)
+                  if (e.target.checked) n.add(x.id)
+                  else n.delete(x.id)
+                  return n
+                })}
+              />
+              <span style={mono}>{reveal ? x.revealLabel : x.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {s1Failed.length > 0 && (
+        <div style={{ fontSize: 12, color: colors.dangerText, marginBottom: 10 }}>
+          S1 code check failed ({s1Failed.join(', ')}) — it cannot be accepted; approval needs a new revision.
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={filterFieldLabelStyle}>reviewer *
+          <input aria-label="Reviewer" value={reviewer} onChange={e => setReviewer(e.target.value)} placeholder="your name" style={{ ...filterInputStyle, width: 130 }} />
+        </label>
         <label style={filterFieldLabelStyle}>minutes spent
           <input
             aria-label="Minutes spent"

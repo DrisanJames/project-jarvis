@@ -17,7 +17,7 @@
 import React from 'react'
 import { colors, pageStyle } from '../shared/theme'
 import { SubNav } from '../shared/SubNav'
-import { useCdGet, type Site } from './contentDeskShared'
+import { useCdGet, type Site, type Loadable } from './contentDeskShared'
 import { ContentDeskQueue } from './ContentDeskQueue'
 import { ContentDeskArticle } from './ContentDeskArticle'
 import { ContentDeskOps } from './ContentDeskOps'
@@ -36,7 +36,8 @@ export const ContentDesk: React.FC = () => {
   const [pane, setPane] = React.useState<Pane>('queue')
   const [visited, setVisited] = React.useState<Set<Pane>>(() => new Set<Pane>(['queue']))
   const [articleId, setArticleId] = React.useState<string | null>(null)
-  const sites = useCdGet<Site[]>('/sites')
+  const sitesRes = useCdGet<{ sites: Site[] | null }>('/sites')
+  const sites: Loadable<Site[]> = { ...sitesRes, data: sitesRes.data?.sites ?? null }
 
   const go = (p: Pane) => {
     setPane(p)

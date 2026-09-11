@@ -21,7 +21,11 @@ import { Pill } from '../shared/ui'
 import { Unknown, fmtClock } from './supplyShared'
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TYPES — the API contract (every field the backend may omit is optional/nullable)
+// TYPES — the API contract. The BACKEND is the source of truth: these mirror
+// internal/contentdesk (store.go / types.go / ops.go) field for field, and the
+// tests render from the backend's own golden responses
+// (__fixtures__/content-desk/*.json, kept identical to
+// internal/contentdesk/testdata/contract by scripts/check-content-desk-contract.sh).
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface Site {
@@ -30,33 +34,61 @@ export interface Site {
   domain: string
   surface: string
   enabled: boolean
+  voice?: unknown
+  categories?: unknown
+  adapter?: unknown
 }
 
 export type Severity = 'S1' | 'S2' | 'S3'
 export const SEVERITIES: Severity[] = ['S1', 'S2', 'S3']
 
+/** Open findings = findings of the reviews on the article's CURRENT revision. */
 export type FindingCounts = Partial<Record<Severity, number | null>>
 
 export interface ArticleRow {
   id: string
   site_id: string
   domain: string
+  brief_id: string
+  consequential: boolean
   slug: string
   status: string
+  current_revision_id: string
+  revision_hash: string
   title: string
-  consequential: boolean
-  current_revision_hash: string | null
+  harvestable: boolean
+  run_requested: boolean
   updated_at: string | null
   open_findings: FindingCounts | null
 }
 
+/** internal/contentdesk AllowedBlockTypes — the closed set a draft may contain. */
+export const BLOCK_TYPES = [
+  'lede', 'section', 'key_takeaways', 'worked_example', 'document_anatomy', 'stat',
+  'comparison_table', 'steps', 'faq', 'pull_quote', 'callout',
+] as const
+
+export interface Calc {
+  inputs: Array<{ name: string; value: number }>
+  formula: string
+  result: number
+}
+
+/**
+ * One typed block. Its units (the sentence_idx space judgments point into) are,
+ * in order: heading (one unit) · text sentences · each item's sentences · each
+ * table row (cells joined " | ") · caption sentences (contentdesk.BlockSentences).
+ * faq items alternate question, answer; comparison_table rows[0] is the header.
+ */
 export interface Block {
   id: string
   type: string
-  text?: unknown
-  items?: unknown
-  rows?: unknown
-  [k: string]: unknown
+  heading?: string
+  text?: string
+  items?: string[]
+  rows?: string[][]
+  calc?: Calc | null
+  caption?: string
 }
 
 export interface ArticlePackage {
@@ -65,7 +97,7 @@ export interface ArticlePackage {
   meta_title?: string | null
   meta_description?: string | null
   blocks?: Block[] | null
-  hero_image?: unknown
+  hero_image?: { url?: string; alt?: string; credit?: string } | null
   subjects?: string[] | null
   preheaders?: string[] | null
 }
@@ -73,32 +105,48 @@ export interface ArticlePackage {
 export interface CodeCheck {
   name: string
   passed: boolean
-  detail?: string | null
+  severity: string
+  heuristic?: boolean
+  details?: string[] | null
 }
 
-export type Verdict = 'supported' | 'overstated' | 'unsupported'
+export type Verdict = 'supported' | 'overstated' | 'unsupported' | 'flag'
 
+/** A judge verdict on a claim sentence (kind 'claim') or a flag (kind = flag kind, verdict 'flag'). */
 export interface Judgment {
+  id: string
+  kind: string
   block_id: string
   sentence_idx: number
-  sentence: string
+  sentence?: string
+  claim_id?: string
+  version?: number
   verdict: Verdict | string
   lost_qualifier?: string | null
+  note?: string | null
+}
+
+export interface ClaimRef {
+  block_id: string
+  sentence_idx: number
   claim_id: string
-  version: number | string
+  version: number
 }
 
 export interface Revision {
   id: string
+  article_id?: string
   revision_hash: string
   package: ArticlePackage | null
+  claim_refs?: ClaimRef[] | null
   checks: { code?: CodeCheck[] | null; judgment?: Judgment[] | null } | null
-  usage?: unknown
+  usage?: { model?: string; input_tokens?: number; output_tokens?: number; web_searches?: number; usd?: number } | null
+  created_at?: string
 }
 
 export interface Claim {
   claim_id: string
-  version: number | string
+  version: number
   text?: string | null
   type?: string | null
   source_url?: string | null
@@ -109,35 +157,72 @@ export interface Claim {
   retrieved_at?: string | null
   jurisdiction?: string | null
   population?: string | null
-  conditions?: unknown
+  conditions?: string | null
   status?: string | null
-  derivation?: unknown
+  derivation?: string | null
+  calc?: Calc | null
+  claim_key?: string
+  question?: string
+  answer?: string
+  created_at?: string
 }
+
+/** One sentence↔passage row (contentdesk.SentencePair): stale = a newer claim version exists. */
+export interface SentencePair {
+  block_id: string
+  sentence_idx: number
+  sentence: string
+  paragraph: string
+  claim_id: string
+  version: number
+  latest_version: number
+  stale: boolean
+  claim: Claim | null
+  judgment?: Judgment | null
+}
+
+/** contentdesk.ReviewInput.Validate: caught_by is code | judgment | human. */
+export type CaughtBy = 'code' | 'judgment' | 'human'
+export const CAUGHT_BY: CaughtBy[] = ['human', 'judgment', 'code']
 
 export interface ReviewFinding {
   severity: Severity
-  caught_by: string
+  caught_by: CaughtBy
   block_id: string
   text: string
 }
 
 export interface ReviewRecord {
-  id?: string
-  role?: string | null
-  decision?: string | null
-  revision_hash?: string | null
-  minutes?: number | null
-  findings?: ReviewFinding[] | null
-  reviewer?: string | null
-  created_at?: string | null
-  [k: string]: unknown
+  id: string
+  revision_id?: string
+  revision_hash: string
+  reviewer: string
+  role: string
+  decision: string
+  findings: ReviewFinding[] | null
+  accepted_ids?: string[] | null
+  minutes: number | null
+  created_at: string | null
+}
+
+export interface RunSummary {
+  stage: string
+  status: string
+  attempts: number
+  error?: string
+  started_at: string | null
+  finished_at: string | null
 }
 
 export interface ArticleDetail {
   article: ArticleRow
+  brief?: Brief | null
+  site?: Site | null
   revision: Revision | null
   claims: Claim[] | null
   reviews: ReviewRecord[] | null
+  pairs?: SentencePair[] | null
+  runs?: RunSummary[] | null
 }
 
 export type ReviewRole = 'primary' | 'second'
@@ -145,11 +230,18 @@ export type ReviewDecision = 'approve' | 'reject' | 'changes'
 
 export interface ReviewPayload {
   revision_hash: string
+  reviewer: string
   role: ReviewRole
   decision: ReviewDecision
   findings: ReviewFinding[]
   minutes: number
+  accepted_ids: string[]
 }
+
+/** internal/contentdesk CategoryAllowlist keys — the only categories a brief may name. */
+export const CATEGORIES = ['finance', 'tax', 'health', 'benefits', 'insurance', 'history', 'diy'] as const
+/** contentdesk.ConsequentialCategories — the server forces consequential=true for these. */
+export const CONSEQUENTIAL_CATEGORIES = new Set(['health', 'benefits', 'insurance', 'tax', 'diy'])
 
 export interface BriefInput {
   site_id: string
@@ -157,20 +249,22 @@ export interface BriefInput {
   format: string
   category: string
   angle?: string
+  consequential?: boolean
 }
 
 export interface Brief {
-  id?: string
-  site_id?: string | null
-  reader_question?: string | null
-  format?: string | null
-  category?: string | null
-  angle?: string | null
-  status?: string | null
-  article_id?: string | null
-  article?: { id?: string | null } | null
-  created_at?: string | null
-  [k: string]: unknown
+  id: string
+  site_id: string
+  format: string
+  reader_question: string
+  angle?: string
+  outline?: unknown
+  category: string
+  consequential: boolean
+  status: string
+  created_by?: string
+  created_at: string | null
+  article_id?: string
 }
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'unknown'
@@ -182,38 +276,65 @@ export interface OpsCheck {
   checked_at?: string | null
 }
 
-export interface StageCounts {
-  queued?: number | null
-  running?: number | null
-  failed?: number | null
-  done?: number | null
-}
-
-export interface SupplyConsumer {
-  name: string
-  brand: string
-  eligible: number | null
-  runway_days: number | null
+/** Pipeline runs per (stage, status); run statuses are running | succeeded | failed. */
+export interface StageCount {
+  stage: string
   status: string
+  count: number
 }
 
+/**
+ * payload.consumers of the Mac-side supply_runway ops report — passed through
+ * by the server UNVALIDATED (ops.go SupplyConsumers), so every field is optional.
+ */
+export interface SupplyConsumer {
+  name?: string
+  brand?: string
+  eligible?: number | null
+  runway_days?: number | null
+  status?: string
+}
+
+/** A site's latest release (status '' = never released). */
 export interface OpsRelease {
+  site_id: string
   domain: string
-  last_status: string | null
-  last_at: string | null
-  error: string | null
+  release_id?: string
+  status: string
+  error?: string
+  started_at: string | null
+  finished_at: string | null
 }
 
 export interface OpsStatus {
-  pipeline: { by_stage: Record<string, StageCounts> | null } | null
-  review_queue: { size: number | null; oldest_age_hours: number | null } | null
+  generated_at: string
+  pipeline: StageCount[] | null
+  review_queue: { size: number; oldest_age_seconds: number | null }
   releases: OpsRelease[] | null
-  spend: { today_usd: number | null; budget_usd: number | null } | null
-  enabled: boolean | null
-  models: { write?: string | null; judge?: string | null; light?: string | null } | null
-  last_error: string | null
-  supply: { consumers: SupplyConsumer[] | null } | null
+  spend: { day: string; today_usd: number; budget_usd: number; exceeded: boolean }
+  kill_switch: { env: string; enabled: boolean }
+  models: { write: string; judge: string; light: string }
+  last_pipeline_error: { article_id: string; stage: string; error: string; at: string | null } | null
+  newsletter_supply_runway: number | null
+  newsletter_supply_runway_reason: string
   checks: OpsCheck[] | null
+  supply: { consumers: SupplyConsumer[] | null }
+}
+
+/** Known run statuses first, then any other the backend reports. */
+export const RUN_STATUSES = ['running', 'succeeded', 'failed']
+
+/** Pivot ops-status.pipeline rows into stage × status counts (a display pivot, not a recomputation). */
+export function pivotPipeline(rows: StageCount[]): { stages: string[]; statuses: string[]; count: (stage: string, status: string) => number } {
+  const m = new Map<string, number>()
+  const stages: string[] = []
+  const extra: string[] = []
+  rows.forEach(r => {
+    if (!stages.includes(r.stage)) stages.push(r.stage)
+    if (!RUN_STATUSES.includes(r.status) && !extra.includes(r.status)) extra.push(r.status)
+    m.set(`${r.stage} ${r.status}`, (m.get(`${r.stage} ${r.status}`) ?? 0) + r.count)
+  })
+  return { stages, statuses: [...RUN_STATUSES, ...extra.sort()], count: (s, st) => m.get(`${s} ${st}`) ?? 0 }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -239,6 +360,8 @@ async function parseError(res: Response): Promise<ContentDeskError> {
     if (body && typeof body === 'object') {
       const rec = body as Record<string, unknown>
       if (typeof rec.error === 'string' && rec.error.trim()) message = `HTTP ${res.status}: ${rec.error}`
+      // 422 on a blocked approve carries the reasons (content_desk_handlers.go HandleReview)
+      if (Array.isArray(rec.blockers) && rec.blockers.length) message += ` — ${rec.blockers.map(String).join('; ')}`
     }
   } catch {
     /* a non-JSON error body stays as the status line */
@@ -366,19 +489,26 @@ export function useCdGet<T>(path: string | null, params: Record<string, string |
 export type FindingDraft = ReviewFinding
 
 /**
- * Build the review body. Throws (with an operator-readable message) when the
- * revision hash is missing or minutes is not a number ≥ 0. Findings with blank
- * text are dropped; the rest are trimmed.
+ * Build the review body (contentdesk.ReviewInput). Throws (with an
+ * operator-readable message) when the revision hash or reviewer is missing or
+ * minutes is not a number ≥ 0. Findings with blank text are dropped; the rest
+ * are trimmed. accepted_ids = the judgment ids ("j3") and failed S2 code checks
+ * ("code:<name>") the reviewer explicitly accepts — an approve is refused (422)
+ * while any is unaccepted.
  */
 export function buildReviewPayload(input: {
   revisionHash: string | null | undefined
+  reviewer: string | null | undefined
   role: ReviewRole
   decision: ReviewDecision
   findings: FindingDraft[]
   minutes: number | string
+  acceptedIds?: string[]
 }): ReviewPayload {
   const hash = (input.revisionHash ?? '').trim()
   if (!hash) throw new Error('No revision hash — reload the article before submitting a review.')
+  const reviewer = (input.reviewer ?? '').trim()
+  if (!reviewer) throw new Error('Reviewer is required — the review is recorded under your name.')
   const raw = String(input.minutes).trim()
   const minutes = Number(raw)
   if (raw === '' || !Number.isFinite(minutes) || minutes < 0) {
@@ -386,8 +516,9 @@ export function buildReviewPayload(input: {
   }
   const findings = input.findings
     .filter(f => f.text.trim() !== '')
-    .map(f => ({ severity: f.severity, caught_by: f.caught_by.trim(), block_id: f.block_id.trim(), text: f.text.trim() }))
-  return { revision_hash: hash, role: input.role, decision: input.decision, findings, minutes }
+    .map(f => ({ severity: f.severity, caught_by: f.caught_by, block_id: f.block_id.trim(), text: f.text.trim() }))
+  const accepted_ids = Array.from(new Set(input.acceptedIds ?? []))
+  return { revision_hash: hash, reviewer, role: input.role, decision: input.decision, findings, minutes, accepted_ids }
 }
 
 export type SubmitResult =
@@ -536,14 +667,40 @@ export function segmentPieces(pieces: string[], groups: SentenceGroup[]): { piec
 
 export const claimKey = (id: string, version: number | string) => `${id}@${String(version)}`
 
+/** One renderable part of a block; `text` is what a judgment's sentence is located in. */
+export interface BlockPart {
+  kind: 'heading' | 'text' | 'item' | 'row' | 'caption'
+  text: string
+  cells?: string[]
+}
+
+/**
+ * A block's parts in contentdesk.BlockSentences unit order: heading · text ·
+ * items · rows (cells joined " | ", one unit per row) · caption. Every field
+ * the backend sends is represented — nothing is silently dropped.
+ */
+export function blockParts(b: Block): BlockPart[] {
+  const s = (v: unknown) => (typeof v === 'string' ? v : asText(v))
+  const out: BlockPart[] = []
+  if (s(b.heading).trim()) out.push({ kind: 'heading', text: s(b.heading).trim() })
+  if (s(b.text).trim()) out.push({ kind: 'text', text: s(b.text) })
+  ;(Array.isArray(b.items) ? b.items : []).forEach(it => out.push({ kind: 'item', text: s(it) }))
+  ;(Array.isArray(b.rows) ? b.rows : []).forEach(r => {
+    const cells = Array.isArray(r) ? r.map(s) : [s(r)]
+    out.push({ kind: 'row', text: cells.join(' | '), cells })
+  })
+  if (s(b.caption).trim()) out.push({ kind: 'caption', text: s(b.caption) })
+  return out
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE → FORM (colour AND icon, so state never rides on colour alone)
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const verdictColor = (v: string): string =>
-  v === 'supported' ? colors.success : v === 'overstated' ? colors.warning : v === 'unsupported' ? colors.danger : colors.idle
+  v === 'supported' ? colors.success : v === 'overstated' || v === 'flag' ? colors.warning : v === 'unsupported' ? colors.danger : colors.idle
 
-const VERDICT_RANK: Record<string, number> = { unsupported: 3, overstated: 2, supported: 1 }
+const VERDICT_RANK: Record<string, number> = { unsupported: 3, overstated: 2, flag: 2, supported: 1 }
 
 export const worstVerdict = (js: Judgment[]): string | null =>
   js.reduce<string | null>((w, j) => ((VERDICT_RANK[j.verdict] ?? 0) > (w ? VERDICT_RANK[w] ?? 0 : -1) ? j.verdict : w), null)

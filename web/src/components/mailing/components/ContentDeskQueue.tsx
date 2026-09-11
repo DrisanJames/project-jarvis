@@ -65,8 +65,8 @@ export const ContentDeskQueue: React.FC<{
     React.useCallback(
       async (signal: AbortSignal) => {
         const t0 = performance.now()
-        const rows = await cdGet<ArticleRow[] | null>('/articles', { site: applied.siteId || undefined }, signal)
-        return { rows: Array.isArray(rows) ? rows : [], stamp: { at: Date.now(), ms: Math.round(performance.now() - t0) } }
+        const res = await cdGet<{ articles: ArticleRow[] | null } | null>('/articles', { site: applied.siteId || undefined }, signal)
+        return { rows: Array.isArray(res?.articles) ? res.articles : [], stamp: { at: Date.now(), ms: Math.round(performance.now() - t0) } }
       },
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [applied.siteId, lakeApplied.nonce],
@@ -291,7 +291,7 @@ export const ContentDeskQueue: React.FC<{
                           <td style={numTd} title={r.updated_at ? `updated ${fmtTime(r.updated_at)} MT` : undefined}>
                             {h == null ? <Unknown hint="no updated_at" /> : fmtHours(h)}
                           </td>
-                          <td style={tdStyle}><Hash value={r.current_revision_hash} /></td>
+                          <td style={tdStyle}><Hash value={r.revision_hash || null} /></td>
                         </tr>
                       )
                     })}

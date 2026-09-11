@@ -14,25 +14,20 @@ import { useToast } from '../shared/ToastSystem'
 import { filterFieldLabelStyle, filterInputStyle } from '../shared/filters'
 import { ScrollX, LoadingRow, Unknown, fmtTime, tableStyle, thStyle, tdStyle } from './supplyShared'
 import {
-  useCdGet, cdPost, runPipeline, errMsg, SafeText, asText, FetchNote,
+  useCdGet, cdPost, runPipeline, errMsg, SafeText, asText, FetchNote, CATEGORIES, CONSEQUENTIAL_CATEGORIES,
   type Site, type Brief, type BriefInput, type Loadable,
 } from './contentDeskShared'
 
-const briefArticleId = (b: Brief | null | undefined): string | null => {
-  if (!b) return null
-  if (typeof b.article_id === 'string' && b.article_id) return b.article_id
-  if (b.article && typeof b.article.id === 'string' && b.article.id) return b.article.id
-  return null
-}
+const briefArticleId = (b: Brief | null | undefined): string | null => (b && b.article_id ? b.article_id : null)
 
-const EMPTY: BriefInput = { site_id: '', reader_question: '', format: '', category: '', angle: '' }
+const EMPTY: BriefInput = { site_id: '', reader_question: '', format: '', category: '', angle: '', consequential: false }
 
 export const ContentDeskBrief: React.FC<{
   sites: Loadable<Site[]>
   onOpenArticle: (id: string) => void
 }> = ({ sites, onOpenArticle }) => {
   const toast = useToast()
-  const briefs = useCdGet<Brief[]>('/briefs')
+  const briefs = useCdGet<{ briefs: Brief[] | null }>('/briefs')
   const [form, setForm] = React.useState<BriefInput>(EMPTY)
   const [submitting, setSubmitting] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -61,12 +56,13 @@ export const ContentDeskBrief: React.FC<{
       site_id: form.site_id,
       reader_question: form.reader_question.trim(),
       format: form.format.trim(),
-      category: form.category.trim(),
+      category: form.category,
+      consequential: Boolean(form.consequential) || CONSEQUENTIAL_CATEGORIES.has(form.category),
       ...(angle ? { angle } : {}),
     }
     try {
-      const res = await cdPost<Brief>('/briefs', body)
-      setCreated(res ?? { ...body })
+      const res = await cdPost<{ brief: Brief }>('/briefs', body)
+      setCreated(res?.brief ?? null)
       toast.addToast({ type: 'success', title: 'Brief created', message: body.reader_question })
       setForm(f => ({ ...f, reader_question: '', angle: '' }))
       briefs.reload()
@@ -91,8 +87,8 @@ export const ContentDeskBrief: React.FC<{
   }
 
   const createdArticle = briefArticleId(created)
-  const list = Array.isArray(briefs.data)
-    ? [...briefs.data].sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+  const list = Array.isArray(briefs.data?.briefs)
+    ? [...briefs.data.briefs].sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
     : null
 
   return (
@@ -122,7 +118,20 @@ export const ContentDeskBrief: React.FC<{
                 <input aria-label="Format" value={form.format} onChange={e => setForm(f => ({ ...f, format: e.target.value }))} style={{ ...filterInputStyle, width: 160 }} />
               </label>
               <label style={filterFieldLabelStyle}>category *
-                <input aria-label="Category" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} style={{ ...filterInputStyle, width: 180 }} />
+                <select aria-label="Category" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} style={{ ...filterInputStyle, width: 160 }}>
+                  <option value="">— choose —</option>
+                  {CATEGORIES.map(c => <option key={c} value={c}>{c}{CONSEQUENTIAL_CATEGORIES.has(c) ? ' (consequential)' : ''}</option>)}
+                </select>
+              </label>
+              <label style={{ ...filterFieldLabelStyle, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  aria-label="Consequential"
+                  checked={Boolean(form.consequential) || CONSEQUENTIAL_CATEGORIES.has(form.category)}
+                  disabled={CONSEQUENTIAL_CATEGORIES.has(form.category)}
+                  onChange={e => setForm(f => ({ ...f, consequential: e.target.checked }))}
+                />
+                consequential (second reviewer required)
               </label>
             </div>
             <label style={filterFieldLabelStyle}>reader question *
