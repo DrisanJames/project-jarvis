@@ -161,6 +161,18 @@ func TestBriefChangeChangesStageInputHash(t *testing.T) {
 	}
 }
 
+// A stage output reused from content_pipeline_runs comes back through JSONB
+// (whitespace added, keys reordered — observed on real PG). The next stage's
+// input_hash is computed over it, so the hash must not see the difference or
+// a resumed pipeline would re-run (and re-pay for) every later stage.
+func TestHashJSON_InvariantToJSONBReformatting(t *testing.T) {
+	fresh := mustHash(map[string]any{"draft": json.RawMessage(`{"blocks":[{"id":"b1","type":"lede"}],"claim_refs":[]}`)})
+	fromDB := mustHash(map[string]any{"draft": json.RawMessage(`{"claim_refs": [], "blocks": [{"type": "lede", "id": "b1"}]}`)})
+	if fresh != fromDB {
+		t.Fatal("input hash must be stable across a JSONB round trip")
+	}
+}
+
 func TestEvalFormula(t *testing.T) {
 	v, err := EvalFormula("(a + b) * 2 ^ 2 - -1", map[string]float64{"a": 1, "b": 2})
 	if err != nil || v != 13 {

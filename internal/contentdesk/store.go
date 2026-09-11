@@ -927,9 +927,6 @@ func (s *Store) CreateRelease(ctx context.Context, org, siteID string) (Release,
 	if err != nil {
 		return rel, err
 	}
-	if len(entries) == 0 {
-		return rel, fmt.Errorf("%w: manifest is empty", ErrInvalid)
-	}
 	var prevRaw []byte
 	var prev []ManifestEntry
 	err = tx.QueryRowContext(ctx, `SELECT manifest FROM content_releases
@@ -942,6 +939,11 @@ func (s *Store) CreateRelease(ctx context.Context, org, siteID string) (Release,
 		if err := json.Unmarshal(prevRaw, &prev); err != nil {
 			return rel, fmt.Errorf("previous live manifest unreadable: %w", err)
 		}
+	}
+	// An empty manifest is a valid TAKEDOWN when something is live (the last
+	// article was withdrawn); with nothing live it is a no-op, refused.
+	if len(entries) == 0 && len(prev) == 0 {
+		return rel, fmt.Errorf("%w: manifest is empty and nothing is live", ErrInvalid)
 	}
 	withdrawn := map[string]bool{}
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM content_articles WHERE org_id = $1 AND site_id = $2 AND status = 'withdrawn'`, org, siteID)
