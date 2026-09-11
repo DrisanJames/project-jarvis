@@ -25,7 +25,9 @@ const (
 	EnvAgentReview      = "CONTENT_DESK_AGENT_REVIEW"
 	AgentReviewer       = "content-desk-agent"
 	AgentSecondReviewer = "content-desk-agent-second-pass"
-	defaultReviseRounds = 3
+	// 5, not 3: on :1129 discountblog and financialcalculate accepted all 3
+	// rounds, each one improving, and ran out of rounds at 3 hard blockers.
+	defaultReviseRounds = 5
 )
 
 // AgentReviewEnabled reports CONTENT_DESK_AGENT_REVIEW=1. Unset = humans review.
