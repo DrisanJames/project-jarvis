@@ -41,11 +41,10 @@ func (w *ListRefreshWorker) Start(ctx context.Context) {
 func (w *ListRefreshWorker) refresh(ctx context.Context) {
 	start := time.Now()
 
-	// Ensure columns exist
-	w.db.ExecContext(ctx, `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS subscriber_count INT DEFAULT 0`)
-	w.db.ExecContext(ctx, `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS active_count INT DEFAULT 0`)
-	w.db.ExecContext(ctx, `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS mailed_to INT DEFAULT 0`)
-	w.db.ExecContext(ctx, `ALTER TABLE mailing_lists ADD COLUMN IF NOT EXISTS last_refreshed_at TIMESTAMPTZ`)
+	// The four columns come from runStartupMigrations (add_list_*,
+	// cmd/server/main.go, catalog-probed). Re-issuing them here queued an
+	// ACCESS EXCLUSIVE lock on mailing_lists every tick (2026-09-11: one
+	// waited behind a 190s segment insert with sessions queued behind it).
 
 	// Update subscriber_count (total confirmed/active subscribers per list)
 	res, err := w.db.ExecContext(ctx, `
