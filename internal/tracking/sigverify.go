@@ -166,15 +166,17 @@ func SignTrackingMsg(key, msg []byte) string {
 // encoded is the {data} path segment EXACTLY as received — no re-encoding and
 // no padding normalization (the enc format signs those bytes).
 func VerifyTrackingToken(encoded, sig string, keys [][]byte, formats []string) SigResult {
+	// missing_key FIRST: with no key nothing can be judged, and enforce must
+	// fail open (a sig-less link is not blockable on a key-less process).
+	if len(keys) == 0 {
+		return SigResult{Class: SigMissingKey}
+	}
 	if sig == "" {
 		return SigResult{Class: SigNoSig}
 	}
 	raw, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
 		return SigResult{Class: SigUndecodable}
-	}
-	if len(keys) == 0 {
-		return SigResult{Class: SigMissingKey}
 	}
 	if len(sig) != sigHexLen {
 		return SigResult{Class: SigInvalid}
@@ -328,17 +330,57 @@ func (s *sigStats) flush(window time.Duration, mode sigMode, nkeys int) string {
 
 // checkSig verifies and counts one request. endpoint is click|open|unsub.
 func (h *Handler) checkSig(endpoint, encoded, sig string) SigResult {
+	return CheckAndCountSig(endpoint, encoded, sig, h.sigKeys)
+}
+
+// -----------------------------------------------------------------------------
+// Exported surface for the API server's own /track/* routes
+// (internal/api/mailing_tracking.go) — same verifier, same mode switch, same
+// counter keys. The two processes never share memory; each reports its own.
+// -----------------------------------------------------------------------------
+
+// CheckAndCountSig verifies one token with the endpoint's accepted formats
+// (open: enc+raw; click/unsub: enc) and increments <endpoint>.sig.<class>.
+func CheckAndCountSig(endpoint, encoded, sig string, keys [][]byte) SigResult {
 	formats := sigFormatsEncOnly
 	if endpoint == "open" {
 		formats = sigFormatsOpen
 	}
-	res := VerifyTrackingToken(encoded, sig, h.sigKeys, formats)
+	res := VerifyTrackingToken(encoded, sig, keys, formats)
 	sigCounters.inc(endpoint + ".sig." + res.Class)
 	if res.Format != "" {
 		sigCounters.inc(endpoint + ".fmt." + res.Format)
 	}
 	return res
 }
+
+// CountSig increments one counter key (e.g. "click.enforce.blocked").
+func CountSig(key string) { sigCounters.inc(key) }
+
+// SigModeOff / SigModeEnforce read TRACKING_SIG_MODE (per call).
+func SigModeOff() bool     { return currentSigMode() == sigModeOff }
+func SigModeEnforce() bool { return currentSigMode() == sigModeEnforce }
+
+// LoadSigKeysFromEnv parses TRACKING_SECRET (comma list for rotation).
+func LoadSigKeysFromEnv() [][]byte { return loadSigKeysFromEnv() }
+
+// BlocksInEnforce: invalid or no_sig.
+func (r SigResult) BlocksInEnforce() bool { return r.blocksInEnforce() }
+
+// TokenHashPrefix is the only token-derived value safe to log.
+func TokenHashPrefix(encoded string) string { return tokenHashPrefix(encoded) }
+
+// SigStatus is the health block: mode, key COUNT (never keys), cumulative counters.
+func SigStatus(keyCount int) map[string]any {
+	return map[string]any{
+		"mode":     currentSigMode().String(),
+		"keys":     keyCount,
+		"counters": sigCounters.snapshot(),
+	}
+}
+
+// SigCountersSnapshot is a copy of the cumulative counters.
+func SigCountersSnapshot() map[string]int64 { return sigCounters.snapshot() }
 
 // SigKeyCount is the number of candidate keys loaded (never the keys).
 func (h *Handler) SigKeyCount() int { return len(h.sigKeys) }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
+	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	"github.com/ignite/sparkpost-monitor/internal/worker"
 	"github.com/redis/go-redis/v9"
 )
@@ -91,6 +92,9 @@ func (hc *HealthChecker) HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime":    formatUptime(time.Since(hc.startTime)),
 		"build":     buildinfo.Current(),
 		"event_bus": CurrentEventBusStatus(),
+		// /track/* signature verification on THIS host's tracking routes
+		// (TRACKING_SIG_MODE; tracking/sigverify.go): mode, key count, counters.
+		"track_sig": tracking.SigStatus(len(tracking.LoadSigKeysFromEnv())),
 		// Both of these register on a BACKGROUND goroutine that can take >10
 		// minutes (mailing_routes_readiness.go). /health stays an unconditional
 		// 200 for the ALB, but the operator and the deploy scripts need to see

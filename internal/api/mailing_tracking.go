@@ -62,6 +62,11 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	encoded := chi.URLParam(r, "data")
 	sig := chi.URLParam(r, "sig")
 
+	// TRACKING_SIG_MODE: open is COUNT ONLY in every mode (tracking/sigverify.go).
+	if !tracking.SigModeOff() {
+		tracking.CheckAndCountSig("open", encoded, sig, tracking.LoadSigKeysFromEnv())
+	}
+
 	if sig != "" && !svc.verifySig(encoded, sig) {
 		log.Printf("TRACK OPEN: invalid signature for data=%s", encoded[:min(32, len(encoded))])
 		svc.serveTrackingPixel(w)
@@ -281,7 +286,27 @@ func (svc *MailingService) HandleTrackClick(w http.ResponseWriter, r *http.Reque
 	encoded := chi.URLParam(r, "data")
 	sig := chi.URLParam(r, "sig")
 
-	if sig != "" && !svc.verifySig(encoded, sig) {
+	// TRACKING_SIG_MODE (tracking/sigverify.go), default shadow:
+	//   shadow  count only — the pre-existing verifySig path below is untouched
+	//           (sig-less links still pass, present-but-bad still 403).
+	//   enforce the shared verifier is authoritative: invalid or no_sig ->
+	//           neutral 400, no event, no redirect; valid (any rotation key)
+	//           skips verifySig; missing_key falls through (fail open).
+	sigAuthoritative := false
+	if !tracking.SigModeOff() {
+		sr := tracking.CheckAndCountSig("click", encoded, sig, tracking.LoadSigKeysFromEnv())
+		if tracking.SigModeEnforce() {
+			if sr.BlocksInEnforce() {
+				tracking.CountSig("click.enforce.blocked")
+				log.Printf("TRACKSIG reject endpoint=click class=%s tok=%s", sr.Class, tracking.TokenHashPrefix(encoded))
+				http.Error(w, "bad link", http.StatusBadRequest)
+				return
+			}
+			sigAuthoritative = sr.Class == tracking.SigValid
+		}
+	}
+
+	if !sigAuthoritative && sig != "" && !svc.verifySig(encoded, sig) {
 		log.Printf("TRACK CLICK: invalid signature for data=%s", encoded[:min(32, len(encoded))])
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -484,6 +509,11 @@ func (svc *MailingService) HandleTrackUnsubscribe(w http.ResponseWriter, r *http
 	sig := chi.URLParam(r, "sig")
 
 	w.Header().Set("X-Api-Version", VersionTrackUnsubscribe)
+
+	// TRACKING_SIG_MODE: unsubscribe is COUNT ONLY in every mode — never blocked.
+	if !tracking.SigModeOff() {
+		tracking.CheckAndCountSig("unsub", encoded, sig, tracking.LoadSigKeysFromEnv())
+	}
 
 	if sig != "" && !svc.verifySig(encoded, sig) {
 		log.Printf("TRACK UNSUB: invalid signature for data=%s", encoded[:min(32, len(encoded))])
