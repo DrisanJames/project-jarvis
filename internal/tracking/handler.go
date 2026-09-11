@@ -38,6 +38,9 @@ type Handler struct {
 	// nil for every caller of NewHandler: a nil classifier classifies nothing
 	// and every click forwards, which is the fail-open default.
 	ipc *IPClassifier
+	// sigKeys are the /track/* token signing keys (TRACKING_SECRET, comma list
+	// for rotation) — see sigverify.go. Empty = every check is missing_key.
+	sigKeys [][]byte
 }
 
 // NewHandler wires the tracking handler. dict may be nil (or a nil-db
@@ -48,7 +51,7 @@ type Handler struct {
 // The offer gateway is OFF for handlers built this way (nil classifier). Use
 // NewHandlerWithClassifier to arm it.
 func NewHandler(pub eventPublisher, dict *SmartLinkDictionary) *Handler {
-	return &Handler{pub: pub, dict: dict}
+	return &Handler{pub: pub, dict: dict, sigKeys: loadSigKeysFromEnv()}
 }
 
 // NewHandlerWithClassifier is NewHandler plus the offer gateway's IP
@@ -57,7 +60,7 @@ func NewHandler(pub eventPublisher, dict *SmartLinkDictionary) *Handler {
 // rather than a widened NewHandler so the existing two-arg contract (and every
 // test built on it) stays exactly as it was.
 func NewHandlerWithClassifier(pub eventPublisher, dict *SmartLinkDictionary, ipc *IPClassifier) *Handler {
-	return &Handler{pub: pub, dict: dict, ipc: ipc}
+	return &Handler{pub: pub, dict: dict, ipc: ipc, sigKeys: loadSigKeysFromEnv()}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -92,6 +95,10 @@ func (h *Handler) Routes() chi.Router {
 
 func (h *Handler) HandleOpen(w http.ResponseWriter, r *http.Request) {
 	encoded := chi.URLParam(r, "data")
+	// Signature: COUNT ONLY in every mode — an open never changes on it.
+	if currentSigMode() != sigModeOff {
+		h.checkSig("open", encoded, chi.URLParam(r, "sig"))
+	}
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -128,6 +135,14 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 
 	encoded := chi.URLParam(r, "data")
 
+	// SIGNATURE (sigverify.go): verified + counted unless TRACKING_SIG_MODE=off.
+	// Only enforce acts on it, below, after the pre-existing bad-link checks.
+	mode := currentSigMode()
+	var sigRes SigResult
+	if mode != sigModeOff {
+		sigRes = h.checkSig("click", encoded, chi.URLParam(r, "sig"))
+	}
+
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
 		http.Error(w, "bad link", http.StatusBadRequest)
@@ -140,11 +155,26 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if mode == sigModeEnforce && sigRes.blocksInEnforce() {
+		// Neutral: same 400 as a malformed token, no event, no redirect. Log the
+		// failure class and a token HASH prefix only — never the token, the
+		// subscriber or the destination.
+		sigCounters.inc("click.enforce.blocked")
+		log.Printf("TRACKSIG reject endpoint=click class=%s tok=%s", sigRes.Class, tokenHashPrefix(encoded))
+		http.Error(w, "bad link", http.StatusBadRequest)
+		return
+	}
+
 	originalURL := parts[4]
 	// target is what the visitor would actually be handed off to, so it is what
 	// the gateway's destination exemption must be tested against. Identical to
 	// originalURL for everything not in the dead-link remap.
 	target := applyDeadLinkRemap(originalURL)
+
+	// DESTINATION (shadow-only in every mode but off): counted, never acted on.
+	if mode != sigModeOff {
+		sigCounters.inc("click.dest." + classifyDestination(target, h.dict))
+	}
 
 	// GATEWAY — decided in memory, BEFORE the handoff, and without contacting
 	// the destination (invariant 1). Shadow by default: withholds nothing
@@ -548,6 +578,10 @@ func brandRootFromHost(host string) string {
 
 func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	encoded := chi.URLParam(r, "data")
+	// Signature: COUNT ONLY in every mode — an unsubscribe must never fail.
+	if currentSigMode() != sigModeOff {
+		h.checkSig("unsub", encoded, chi.URLParam(r, "sig"))
+	}
 
 	decoded, err := base64.URLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -605,7 +639,16 @@ func (h *Handler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
+	// sig: cumulative /track/* signature + destination counters since boot
+	// (sigverify.go). Key COUNT only — never key material.
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok",
+		"sig": map[string]any{
+			"mode":     currentSigMode().String(),
+			"keys":     len(h.sigKeys),
+			"counters": sigCounters.snapshot(),
+		},
+	})
 }
 
 func (h *Handler) HandleVersion(w http.ResponseWriter, r *http.Request) {

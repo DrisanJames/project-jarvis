@@ -46,6 +46,10 @@ type SmartLinkDictionary struct {
 
 	mu      sync.RWMutex
 	entries map[string]smartLinkEntry
+	// hosts is the set of normalized destination hosts of entries, rebuilt on
+	// every successful reload — the registered money-host set read by the
+	// /track/click destination check (sigverify.go). Never on the /o/ path.
+	hosts map[string]bool
 
 	cancel context.CancelFunc
 }
@@ -109,11 +113,48 @@ func (d *SmartLinkDictionary) reloadOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	hosts := destinationHosts(next)
 	d.mu.Lock()
 	d.entries = next
+	d.hosts = hosts
 	d.mu.Unlock()
 	log.Printf("smartlink dictionary: loaded %d active links", len(next))
 	return nil
+}
+
+// destinationHosts extracts the normalized (lowercase, no "www.") host of every
+// entry's offer_url_template. Unparseable templates are skipped.
+func destinationHosts(entries map[string]smartLinkEntry) map[string]bool {
+	out := make(map[string]bool)
+	for _, e := range entries {
+		u, err := url.Parse(e.Destination)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		out[normHost(u.Hostname())] = true
+	}
+	return out
+}
+
+// HasHost reports whether host (or a parent of it) is a destination host of an
+// active smart link. Nil-safe; host must already be normalized (normHost).
+func (d *SmartLinkDictionary) HasHost(host string) bool {
+	if d == nil || host == "" {
+		return false
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for h := host; h != ""; {
+		if d.hosts[h] {
+			return true
+		}
+		i := strings.IndexByte(h, '.')
+		if i < 0 {
+			break
+		}
+		h = h[i+1:]
+	}
+	return false
 }
 
 // queryDB is the DB-backed loader. It reads the full active set into a fresh

@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/tracking"
 	_ "github.com/lib/pq"
 )
@@ -94,7 +95,29 @@ func main() {
 	ipc := tracking.NewIPClassifier(db, 15*time.Minute)
 	defer ipc.Close()
 
+	// Owned-domain registry for the /track/click destination check (shadow
+	// counters only): union of the compile-time list and mailing_owned_domains,
+	// same source the server uses. Optional db — without it Domains() serves the
+	// compile-time list. A failed read keeps the prior list.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	if db != nil {
+		rctx, rcancel := context.WithTimeout(bgCtx, 5*time.Second)
+		if err := brand.RefreshFromDB(rctx, db); err != nil {
+			log.Printf("owned-domains: initial load failed (compile-time list in use): %v", err)
+		}
+		rcancel()
+		brand.StartRefresher(bgCtx, db, 10*time.Minute)
+	}
+
 	handler := tracking.NewHandlerWithClassifier(pub, dict, ipc)
+
+	// /track/* signature check: TRACKING_SIG_MODE (off|shadow|enforce, default
+	// shadow) read per request; key(s) from TRACKING_SECRET. One TRACKSIG
+	// SUMMARY line every 5 minutes; cumulative counters on /health.
+	log.Printf("tracking sig: mode=%s keys=%d (TRACKING_SECRET unset => every check counts missing_key)",
+		os.Getenv(tracking.SigModeEnv), handler.SigKeyCount())
+	handler.StartSigSummary(bgCtx)
 
 	srv := &http.Server{
 		Addr:         ":" + port,
