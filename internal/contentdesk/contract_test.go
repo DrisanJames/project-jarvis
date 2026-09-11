@@ -45,7 +45,7 @@ func TestContractGoldensDecodeIntoBackendTypes(t *testing.T) {
 	var list struct {
 		Articles []Article `json:"articles"`
 	}
-	var detail, withdrawn ArticleDetail
+	var detail, withdrawn, released ArticleDetail
 	var ops OpsStatus
 	var manifest struct {
 		Site         Site            `json:"site"`
@@ -61,6 +61,7 @@ func TestContractGoldensDecodeIntoBackendTypes(t *testing.T) {
 	strictDecode(t, "list.json", &list)
 	strictDecode(t, "detail.json", &detail)
 	strictDecode(t, "detail_withdrawn.json", &withdrawn)
+	strictDecode(t, "detail_released.json", &released)
 	strictDecode(t, "ops_status.json", &ops)
 	strictDecode(t, "manifest.json", &manifest)
 	strictDecode(t, "release_create.json", &rel)
@@ -84,6 +85,10 @@ func TestContractGoldensDecodeIntoBackendTypes(t *testing.T) {
 	}
 	if withdrawn.Article.Status != StatusWithdrawn {
 		t.Errorf("detail_withdrawn.json status = %q", withdrawn.Article.Status)
+	}
+	if len(manifest.Manifest) != 1 || released.Revision == nil || manifest.Manifest[0].ArticleID != released.Article.ID ||
+		manifest.Manifest[0].RevisionHash != released.Revision.RevisionHash {
+		t.Errorf("detail_released.json must be the manifest's article at the manifest's revision")
 	}
 	if manifest.Site.Domain == "" || manifest.Site.ID != manifest.SiteID || manifest.ManifestHash != rel.Release.ManifestHash {
 		t.Errorf("manifest/release goldens disagree: site=%+v release hash %s", manifest.Site, rel.Release.ManifestHash)

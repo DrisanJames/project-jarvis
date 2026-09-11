@@ -283,12 +283,13 @@ func TestContentDeskContractGoldens(t *testing.T) {
 	golden["list"] = c.do("GET", base+"/articles", nil, false, 200)
 	golden["detail"] = c.do("GET", base+"/articles/"+artB, nil, false, 200)
 	golden["detail_withdrawn"] = c.do("GET", base+"/articles/"+artC, nil, false, 200)
+	golden["detail_released"] = c.do("GET", base+"/articles/"+artA, nil, false, 200) // the manifest's article (publisher)
 	golden["ops_status"] = c.do("GET", base+"/ops-status", nil, false, 200)
 
 	// One normalizer across every file, in a fixed order, so an id maps to the
 	// same placeholder everywhere (manifest article_id == list id == detail id).
 	n := newContractNorm()
-	order := []string{"sites", "briefs", "list", "detail", "detail_withdrawn", "manifest", "release_create", "ops_status"}
+	order := []string{"sites", "briefs", "list", "detail", "detail_withdrawn", "detail_released", "manifest", "release_create", "ops_status"}
 	update := os.Getenv("CONTENT_DESK_CONTRACT_UPDATE") == "1"
 	if update {
 		cdMust(t, os.MkdirAll(contractGoldenDir, 0o755), "mkdir goldens")

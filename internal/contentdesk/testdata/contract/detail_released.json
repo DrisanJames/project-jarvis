@@ -1,0 +1,603 @@
+{
+  "article": {
+    "brief_id": "00000000-0000-4000-8000-000000000033",
+    "consequential": false,
+    "current_revision_id": "00000000-0000-4000-8000-000000000034",
+    "domain": "financialcalculate.com",
+    "harvestable": false,
+    "id": "00000000-0000-4000-8000-000000000032",
+    "open_findings": {
+      "S1": 0,
+      "S2": 0,
+      "S3": 1
+    },
+    "revision_hash": "63fe46d4a87d4afe519937c77e36c7e2694d8b45106a3d8085e72b37ffa6fdf3",
+    "run_requested": false,
+    "site_id": "00000000-0000-4000-8000-000000000007",
+    "slug": "ira-contribution-limit",
+    "status": "publishing",
+    "title": "How the 2026 IRA contribution limit works",
+    "updated_at": "2026-09-11T12:00:00Z"
+  },
+  "brief": {
+    "angle": "",
+    "article_id": "00000000-0000-4000-8000-000000000032",
+    "category": "finance",
+    "consequential": false,
+    "created_at": "2026-09-11T12:00:00Z",
+    "created_by": "contract",
+    "format": "explainer",
+    "id": "00000000-0000-4000-8000-000000000033",
+    "outline": null,
+    "reader_question": "What is the 2026 IRA contribution limit?",
+    "site_id": "00000000-0000-4000-8000-000000000007",
+    "status": "open"
+  },
+  "claims": [
+    {
+      "answer": "7000",
+      "claim_id": "00000000-0000-4000-8000-000000000038",
+      "claim_key": "ira_limit_2026",
+      "conditions": "earned income at least equal to the contribution",
+      "context": "IRS retirement plans page, contribution limits table",
+      "created_at": "2026-09-11T12:00:00Z",
+      "derivation": "primary",
+      "effective_at": "2026-01-01",
+      "jurisdiction": "US federal",
+      "passage": "The annual contribution limit for 2026 is $7,000 for savers under age 50.",
+      "population": "savers under 50",
+      "published_at": "2025-11-13",
+      "question": "What is the 2026 IRA contribution limit for savers under 50?",
+      "retrieved_at": "2026-09-11T12:00:00Z",
+      "source_url": "https://www.irs.gov/retirement-plans/ira-contribution-limits",
+      "status": "supported",
+      "text": "The 2026 IRA contribution limit is $7,000.",
+      "type": "sourced_fact",
+      "version": 1
+    }
+  ],
+  "pairs": [
+    {
+      "block_id": "b1",
+      "claim": {
+        "answer": "7000",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "claim_key": "ira_limit_2026",
+        "conditions": "earned income at least equal to the contribution",
+        "context": "IRS retirement plans page, contribution limits table",
+        "created_at": "2026-09-11T12:00:00Z",
+        "derivation": "primary",
+        "effective_at": "2026-01-01",
+        "jurisdiction": "US federal",
+        "passage": "The annual contribution limit for 2026 is $7,000 for savers under age 50.",
+        "population": "savers under 50",
+        "published_at": "2025-11-13",
+        "question": "What is the 2026 IRA contribution limit for savers under 50?",
+        "retrieved_at": "2026-09-11T12:00:00Z",
+        "source_url": "https://www.irs.gov/retirement-plans/ira-contribution-limits",
+        "status": "supported",
+        "text": "The 2026 IRA contribution limit is $7,000.",
+        "type": "sourced_fact",
+        "version": 1
+      },
+      "claim_id": "00000000-0000-4000-8000-000000000038",
+      "judgment": {
+        "block_id": "b1",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "id": "j1",
+        "kind": "claim",
+        "sentence": "Most savers can put $7,000 into an IRA for 2026.",
+        "sentence_idx": 0,
+        "verdict": "supported",
+        "version": 1
+      },
+      "latest_version": 1,
+      "paragraph": "Most savers can put $7,000 into an IRA for 2026. The limit is shared across all of your IRAs.",
+      "sentence": "Most savers can put $7,000 into an IRA for 2026.",
+      "sentence_idx": 0,
+      "stale": false,
+      "version": 1
+    },
+    {
+      "block_id": "b10",
+      "claim": {
+        "answer": "7000",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "claim_key": "ira_limit_2026",
+        "conditions": "earned income at least equal to the contribution",
+        "context": "IRS retirement plans page, contribution limits table",
+        "created_at": "2026-09-11T12:00:00Z",
+        "derivation": "primary",
+        "effective_at": "2026-01-01",
+        "jurisdiction": "US federal",
+        "passage": "The annual contribution limit for 2026 is $7,000 for savers under age 50.",
+        "population": "savers under 50",
+        "published_at": "2025-11-13",
+        "question": "What is the 2026 IRA contribution limit for savers under 50?",
+        "retrieved_at": "2026-09-11T12:00:00Z",
+        "source_url": "https://www.irs.gov/retirement-plans/ira-contribution-limits",
+        "status": "supported",
+        "text": "The 2026 IRA contribution limit is $7,000.",
+        "type": "sourced_fact",
+        "version": 1
+      },
+      "claim_id": "00000000-0000-4000-8000-000000000038",
+      "judgment": {
+        "block_id": "b10",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "id": "j2",
+        "kind": "claim",
+        "lost_qualifier": "for savers under 50",
+        "note": "the sentence drops the age scope of the passage",
+        "sentence": "The limit applies per person, not per account.",
+        "sentence_idx": 0,
+        "verdict": "overstated",
+        "version": 1
+      },
+      "latest_version": 1,
+      "paragraph": "The limit applies per person, not per account. IRS contribution guidance",
+      "sentence": "The limit applies per person, not per account.",
+      "sentence_idx": 0,
+      "stale": false,
+      "version": 1
+    },
+    {
+      "block_id": "b6",
+      "claim": {
+        "answer": "7000",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "claim_key": "ira_limit_2026",
+        "conditions": "earned income at least equal to the contribution",
+        "context": "IRS retirement plans page, contribution limits table",
+        "created_at": "2026-09-11T12:00:00Z",
+        "derivation": "primary",
+        "effective_at": "2026-01-01",
+        "jurisdiction": "US federal",
+        "passage": "The annual contribution limit for 2026 is $7,000 for savers under age 50.",
+        "population": "savers under 50",
+        "published_at": "2025-11-13",
+        "question": "What is the 2026 IRA contribution limit for savers under 50?",
+        "retrieved_at": "2026-09-11T12:00:00Z",
+        "source_url": "https://www.irs.gov/retirement-plans/ira-contribution-limits",
+        "status": "supported",
+        "text": "The 2026 IRA contribution limit is $7,000.",
+        "type": "sourced_fact",
+        "version": 1
+      },
+      "claim_id": "00000000-0000-4000-8000-000000000038",
+      "judgment": {
+        "block_id": "b6",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "id": "j3",
+        "kind": "claim",
+        "sentence": "The 2026 IRA contribution limit.",
+        "sentence_idx": 1,
+        "verdict": "supported",
+        "version": 1
+      },
+      "latest_version": 1,
+      "paragraph": "$7,000 The 2026 IRA contribution limit. Savers aged 50 and over can add a catch-up contribution.",
+      "sentence": "The 2026 IRA contribution limit.",
+      "sentence_idx": 1,
+      "stale": false,
+      "version": 1
+    },
+    {
+      "block_id": "excerpt",
+      "claim": {
+        "answer": "7000",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "claim_key": "ira_limit_2026",
+        "conditions": "earned income at least equal to the contribution",
+        "context": "IRS retirement plans page, contribution limits table",
+        "created_at": "2026-09-11T12:00:00Z",
+        "derivation": "primary",
+        "effective_at": "2026-01-01",
+        "jurisdiction": "US federal",
+        "passage": "The annual contribution limit for 2026 is $7,000 for savers under age 50.",
+        "population": "savers under 50",
+        "published_at": "2025-11-13",
+        "question": "What is the 2026 IRA contribution limit for savers under 50?",
+        "retrieved_at": "2026-09-11T12:00:00Z",
+        "source_url": "https://www.irs.gov/retirement-plans/ira-contribution-limits",
+        "status": "supported",
+        "text": "The 2026 IRA contribution limit is $7,000.",
+        "type": "sourced_fact",
+        "version": 1
+      },
+      "claim_id": "00000000-0000-4000-8000-000000000038",
+      "judgment": {
+        "block_id": "excerpt",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "id": "j4",
+        "kind": "claim",
+        "sentence": "Most savers can contribute $7,000.",
+        "sentence_idx": 0,
+        "verdict": "supported",
+        "version": 1
+      },
+      "latest_version": 1,
+      "paragraph": "Most savers can contribute $7,000.",
+      "sentence": "Most savers can contribute $7,000.",
+      "sentence_idx": 0,
+      "stale": false,
+      "version": 1
+    }
+  ],
+  "reviews": [
+    {
+      "accepted_ids": [
+        "j2",
+        "j5",
+        "code:numeric_sentences_referenced"
+      ],
+      "created_at": "2026-09-11T12:00:00Z",
+      "decision": "approve",
+      "findings": [
+        {
+          "block_id": "b2",
+          "caught_by": "human",
+          "severity": "S3",
+          "text": "Tighten the second sentence."
+        }
+      ],
+      "id": "00000000-0000-4000-8000-000000000039",
+      "minutes": 14,
+      "reviewer": "ann",
+      "revision_hash": "63fe46d4a87d4afe519937c77e36c7e2694d8b45106a3d8085e72b37ffa6fdf3",
+      "revision_id": "00000000-0000-4000-8000-000000000034",
+      "role": "primary"
+    }
+  ],
+  "revision": {
+    "article_id": "00000000-0000-4000-8000-000000000032",
+    "checks": {
+      "code": [
+        {
+          "name": "schema",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "claim_refs_resolve",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "details": [
+            "b5#1 has a number but no claim ref: \"Your IRA custodian reports contributions on Form 5498.\"",
+            "b5#2 has a number but no claim ref: \"Box 1 shows traditional IRA contributions.\"",
+            "b5#3 has a number but no claim ref: \"Box 10 shows Roth IRA contributions.\"",
+            "b6#0 has a number but no claim ref: \"$7,000\"",
+            "b6#2 has a number but no claim ref: \"Savers aged 50 and over can add a catch-up contribution.\"",
+            "meta_description#0 has a number but no claim ref: \"What the 2026 IRA contribution limit is and who it applies to.\"",
+            "meta_title#0 has a number but no claim ref: \"IRA contribution limit 2026\"",
+            "subject:0#0 has a number but no claim ref: \"Your 2026 IRA limit, explained\"",
+            "title#0 has a number but no claim ref: \"How the 2026 IRA contribution limit works\""
+          ],
+          "heuristic": true,
+          "name": "numeric_sentences_referenced",
+          "passed": false,
+          "severity": "S2"
+        },
+        {
+          "name": "calc_recompute",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "banned_terms",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "no_money_links",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "url_form",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "no_raw_html",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "slug_unique",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "name": "no_fabricated_trust",
+          "passed": true,
+          "severity": "S1"
+        },
+        {
+          "heuristic": true,
+          "name": "near_duplicate",
+          "passed": true,
+          "severity": "S2"
+        },
+        {
+          "name": "length_limits",
+          "passed": true,
+          "severity": "S1"
+        }
+      ],
+      "judgment": [
+        {
+          "block_id": "b1",
+          "claim_id": "00000000-0000-4000-8000-000000000038",
+          "id": "j1",
+          "kind": "claim",
+          "sentence": "Most savers can put $7,000 into an IRA for 2026.",
+          "sentence_idx": 0,
+          "verdict": "supported",
+          "version": 1
+        },
+        {
+          "block_id": "b10",
+          "claim_id": "00000000-0000-4000-8000-000000000038",
+          "id": "j2",
+          "kind": "claim",
+          "lost_qualifier": "for savers under 50",
+          "note": "the sentence drops the age scope of the passage",
+          "sentence": "The limit applies per person, not per account.",
+          "sentence_idx": 0,
+          "verdict": "overstated",
+          "version": 1
+        },
+        {
+          "block_id": "b6",
+          "claim_id": "00000000-0000-4000-8000-000000000038",
+          "id": "j3",
+          "kind": "claim",
+          "sentence": "The 2026 IRA contribution limit.",
+          "sentence_idx": 1,
+          "verdict": "supported",
+          "version": 1
+        },
+        {
+          "block_id": "excerpt",
+          "claim_id": "00000000-0000-4000-8000-000000000038",
+          "id": "j4",
+          "kind": "claim",
+          "sentence": "Most savers can contribute $7,000.",
+          "sentence_idx": 0,
+          "verdict": "supported",
+          "version": 1
+        },
+        {
+          "block_id": "b5",
+          "id": "j5",
+          "kind": "low_usefulness",
+          "note": "names the box without telling the reader what to check",
+          "sentence": "Your IRA custodian reports contributions on Form 5498.",
+          "sentence_idx": 1,
+          "verdict": "flag"
+        }
+      ]
+    },
+    "claim_refs": [
+      {
+        "block_id": "b1",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "sentence_idx": 0,
+        "version": 1
+      },
+      {
+        "block_id": "b10",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "sentence_idx": 0,
+        "version": 1
+      },
+      {
+        "block_id": "b6",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "sentence_idx": 1,
+        "version": 1
+      },
+      {
+        "block_id": "excerpt",
+        "claim_id": "00000000-0000-4000-8000-000000000038",
+        "sentence_idx": 0,
+        "version": 1
+      }
+    ],
+    "created_at": "2026-09-11T12:00:00Z",
+    "id": "00000000-0000-4000-8000-000000000034",
+    "package": {
+      "blocks": [
+        {
+          "id": "b1",
+          "text": "Most savers can put $7,000 into an IRA for 2026. The limit is shared across all of your IRAs.",
+          "type": "lede"
+        },
+        {
+          "heading": "Who the limit applies to",
+          "id": "b2",
+          "text": "The limit applies to people with earned income. You cannot contribute more than you earned.",
+          "type": "section"
+        },
+        {
+          "id": "b3",
+          "items": [
+            "Check your earned income first.",
+            "The limit is shared across traditional and Roth IRAs."
+          ],
+          "type": "key_takeaways"
+        },
+        {
+          "calc": {
+            "formula": "traditional + roth",
+            "inputs": [
+              {
+                "name": "traditional",
+                "value": 4000
+              },
+              {
+                "name": "roth",
+                "value": 3000
+              }
+            ],
+            "result": 7000
+          },
+          "caption": "Together the two contributions stay within the limit.",
+          "heading": "Splitting the limit across two IRAs",
+          "id": "b4",
+          "text": "Suppose you fund a traditional IRA and a Roth IRA in the same year.",
+          "type": "worked_example"
+        },
+        {
+          "heading": "Where contributions are reported",
+          "id": "b5",
+          "items": [
+            "Box 1 shows traditional IRA contributions.",
+            "Box 10 shows Roth IRA contributions."
+          ],
+          "text": "Your IRA custodian reports contributions on Form 5498.",
+          "type": "document_anatomy"
+        },
+        {
+          "caption": "Savers aged 50 and over can add a catch-up contribution.",
+          "heading": "$7,000",
+          "id": "b6",
+          "text": "The 2026 IRA contribution limit.",
+          "type": "stat"
+        },
+        {
+          "caption": "Both accounts count toward the same limit.",
+          "heading": "Traditional and Roth IRAs",
+          "id": "b7",
+          "rows": [
+            [
+              "Feature",
+              "Traditional",
+              "Roth"
+            ],
+            [
+              "Contributions",
+              "Often deductible",
+              "Not deductible"
+            ],
+            [
+              "Qualified withdrawals",
+              "Taxed as income",
+              "Tax-free"
+            ]
+          ],
+          "type": "comparison_table"
+        },
+        {
+          "heading": "How to stay under the limit",
+          "id": "b8",
+          "items": [
+            "Add up every IRA contribution for the year.",
+            "Compare the total with the limit.",
+            "Withdraw any excess before your tax deadline."
+          ],
+          "type": "steps"
+        },
+        {
+          "heading": "Common questions",
+          "id": "b9",
+          "items": [
+            "Can I contribute to a traditional and a Roth IRA in the same year?",
+            "Yes, but the combined total cannot exceed the limit.",
+            "Does a workplace plan count toward the IRA limit?",
+            "No, workplace plans have their own separate limit."
+          ],
+          "type": "faq"
+        },
+        {
+          "caption": "IRS contribution guidance",
+          "id": "b10",
+          "text": "The limit applies per person, not per account.",
+          "type": "pull_quote"
+        },
+        {
+          "heading": "Check before you contribute",
+          "id": "b11",
+          "text": "Excess contributions are taxed every year until you remove them.",
+          "type": "callout"
+        }
+      ],
+      "excerpt": "Most savers can contribute $7,000.",
+      "hero_image": null,
+      "meta_description": "What the 2026 IRA contribution limit is and who it applies to.",
+      "meta_title": "IRA contribution limit 2026",
+      "preheaders": [
+        "Who it applies to and how to stay under it"
+      ],
+      "subjects": [
+        "Your 2026 IRA limit, explained"
+      ],
+      "title": "How the 2026 IRA contribution limit works"
+    },
+    "revision_hash": "63fe46d4a87d4afe519937c77e36c7e2694d8b45106a3d8085e72b37ffa6fdf3",
+    "usage": {
+      "input_tokens": 500,
+      "model": "fake-model",
+      "output_tokens": 250,
+      "usd": 0.05,
+      "web_searches": 0
+    }
+  },
+  "runs": [
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "code_checks",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    },
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "draft",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    },
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "judgment",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    },
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "package",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    },
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "rederive",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    },
+    {
+      "attempts": 1,
+      "finished_at": "2026-09-11T12:00:00Z",
+      "stage": "research",
+      "started_at": "2026-09-11T12:00:00Z",
+      "status": "succeeded"
+    }
+  ],
+  "site": {
+    "adapter": {},
+    "brand_code": "FC",
+    "categories": [],
+    "domain": "financialcalculate.com",
+    "enabled": true,
+    "id": "00000000-0000-4000-8000-000000000007",
+    "surface": "static",
+    "voice": {}
+  }
+}
