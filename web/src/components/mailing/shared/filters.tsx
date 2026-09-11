@@ -195,6 +195,11 @@ const fstyles: Record<string, React.CSSProperties> = {
   },
 };
 
+// Field + input styles, exported so screen-specific fields passed through the
+// FilterBar's `extraFields` slot render identically to the built-in ones.
+export const filterFieldLabelStyle: React.CSSProperties = fstyles.fieldLabel;
+export const filterInputStyle: React.CSSProperties = fstyles.input;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -233,11 +238,19 @@ export const FilterBar: React.FC<{
   onRun: (next: LakeFilterDraft) => void;
   show?: FilterBarShow;
   activeLabel?: string; // chip-row scope label, e.g. 'Active (Overview & Dimensions):'
-}> = ({ draft, setDraft, applied, onRun, show, activeLabel }) => {
+  // State-based surfaces (e.g. a review queue) hide the date controls: a date
+  // window there would silently drop the oldest waiting item.
+  hideDates?: boolean;
+  // Screen-specific fields rendered INSIDE the one bar (use
+  // filterFieldLabelStyle / filterInputStyle) and their chips in the same chip
+  // row — so a screen with its own dimensions still has ONE bar, ONE chip style.
+  extraFields?: React.ReactNode;
+  extraChips?: Array<{ label: string; tone?: string; onRemove?: () => void }>;
+}> = ({ draft, setDraft, applied, onRun, show, activeLabel, hideDates, extraFields, extraChips }) => {
   const on = show ?? SHOW_ALL;
   const uid = React.useId(); // unique datalist ids — the bar can mount more than once per page
 
-  const chips: Array<{ label: string; tone?: string; onRemove?: () => void }> = [
+  const chips: Array<{ label: string; tone?: string; onRemove?: () => void }> = hideDates ? [] : [
     { label: `${applied.from} → ${applied.to}` },
   ];
   if (on.isp && applied.ispGroup.trim()) chips.push({
@@ -256,10 +269,12 @@ export const FilterBar: React.FC<{
     label: `transport=${applied.transport === 'mta' ? 'MTA' : 'SES'}`, tone: theme.success,
     onRemove: () => { const next = { ...draft, transport: 'combined' as Transport }; setDraft(next); onRun(next); },
   });
+  if (extraChips) chips.push(...extraChips);
 
   return (
     <div style={fstyles.toolbar}>
       <div style={fstyles.toolbarRow}>
+        {!hideDates && (<>
         <div style={fstyles.presetRow}>
           {DENVER_PRESETS.map((p) => {
             const active = draft.from === p.from() && draft.to === p.to();
@@ -287,6 +302,7 @@ export const FilterBar: React.FC<{
           <input type="date" value={draft.to} min={draft.from} max={denverToday()}
             onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))} style={fstyles.input} />
         </label>
+        </>)}
         {on.isp && (
           <>
             <label style={fstyles.fieldLabel}>isp_group
@@ -351,12 +367,14 @@ export const FilterBar: React.FC<{
             </div>
           </div>
         )}
+        {extraFields}
         <button style={fstyles.primaryBtn} onClick={() => onRun(draft)}>
           <FontAwesomeIcon icon={faSearch} /> Run
         </button>
       </div>
       <div style={fstyles.chipRow}>
         <span style={fstyles.chipRowLabel}>{activeLabel ?? 'Active:'}</span>
+        {chips.length === 0 && <span style={{ fontSize: 12, color: theme.textFaint }}>none</span>}
         {chips.map((c, i) => <FilterChip key={i} label={c.label} tone={c.tone} onRemove={c.onRemove} />)}
       </div>
     </div>
