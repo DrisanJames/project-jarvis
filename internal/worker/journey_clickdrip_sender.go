@@ -108,6 +108,14 @@ type JourneyClickDripSender struct {
 	trackingURL    string // global fallback tracking base URL
 	trackingSecret string
 
+	// suppressionSource returns the global suppression hub at send time. It
+	// is the send worker pool's late-wired hub (see SetSuppressionSource);
+	// prefsGate is the subscriber-preference hub. Both are set at boot before
+	// the executor starts, so they need no lock.
+	suppressionSource  func() GlobalSuppressionChecker
+	prefsGate          PreferenceGate
+	unconfiguredWarned sync.Once
+
 	// shadowIDCache memoizes resolveShadowCampaignID. The mapping from
 	// (offer, node, content hash) to a campaign id is IMMUTABLE once
 	// established — version 0 keeps the legacy id forever and a new version
@@ -214,6 +222,14 @@ func (s *JourneyClickDripSender) Send(ctx context.Context, p ClickDripSendParams
 		// which would send the brand's creative from the wrong domain (DKIM/
 		// SPF misalignment → spam). Refuse rather than send misaligned mail.
 		return fmt.Errorf("click-drip sender: no sending_profile_id for subscriber %s (offer %s) — refusing to send on default pool", p.SubscriberEmail, p.EverflowOfferID)
+	}
+
+	// Send-time suppression + preference gate (compliance fix 2026-09-11).
+	// An enrollment outlives the subscriber's unsubscribe by days and nothing
+	// upstream re-checks it; the hub is the only place that knows. Runs
+	// before any DB work. skip -> nil so the executor advances.
+	if skip, err := s.sendTimeSkip(p); err != nil || skip {
+		return err
 	}
 
 	orgID := s.resolveOrgID(ctx, p.SubscriberID)
@@ -369,7 +385,7 @@ func brandRootFromEmail(fromEmail string) string {
 // SystemURLs returns the broadcast-parity {{ system.* }} URL values for one
 // click-drip touch, built with the SAME generators the campaign send worker
 // uses in buildRenderContext (send_worker.go: GenerateUnsubscribeURL /
-// GenerateBrandUnsubscribeURL / "%s/preferences?sid=%s"). The executor merges
+// GenerateBrandUnsubscribeURL / GeneratePreferencesURL). The executor merges
 // these into the Liquid render context so the creative's footer links render
 // to real signed URLs — BuildContext is called there with campaign=nil, so it
 // cannot populate them itself. The campaign id is the deterministic per-offer
@@ -389,7 +405,7 @@ func (s *JourneyClickDripSender) SystemURLs(ctx context.Context, everflowOfferID
 	return map[string]interface{}{
 		"unsubscribe_url":       GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret),
 		"brand_unsubscribe_url": GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRootFromEmail(fromEmail), trackBase, s.trackingSecret),
-		"preferences_url":       fmt.Sprintf("%s/preferences?sid=%s", trackBase, subscriberID),
+		"preferences_url":       GeneratePreferencesURL(orgID, subscriberID, brand.RootFromEmail(fromEmail), trackBase, s.trackingSecret, time.Now()),
 		"view_in_browser_url":   fmt.Sprintf("%s/view?cid=%s&sid=%s", trackBase, campaignID, subscriberID),
 		// Profile tracking host for {{ system.tracking_base }}/o/... links —
 		// overrides the GLOBAL base BuildContext stamped (journey_executor
@@ -413,7 +429,7 @@ var residualMustacheRe = regexp.MustCompile(`\{\{[^{}]*\}\}`)
 func (s *JourneyClickDripSender) renderSystemURLTokens(html, orgID, campaignID, subscriberID, brandRoot, trackBase string) string {
 	unsubURL := GenerateUnsubscribeURL(orgID, campaignID, subscriberID, trackBase, s.trackingSecret)
 	brandUnsubURL := GenerateBrandUnsubscribeURL(orgID, campaignID, subscriberID, brandRoot, trackBase, s.trackingSecret)
-	prefsURL := fmt.Sprintf("%s/preferences?sid=%s", trackBase, subscriberID)
+	prefsURL := GeneratePreferencesURL(orgID, subscriberID, brand.Root(brandRoot), trackBase, s.trackingSecret, time.Now())
 	for tag, url := range map[string]string{
 		"{{ system.unsubscribe_url }}":       unsubURL,
 		"{{system.unsubscribe_url}}":         unsubURL,

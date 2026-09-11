@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -419,37 +417,38 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			pg.Get("/api/partner-ingest/v1/batches/{id}", partnerIngest.HandleGetBatch)
 		})
 
-		// Public preferences page — redirects to frontend or serves minimal page
+		// Recipient preference page + token unsubscribe (preferences_page.go).
+		// Public: recipients arrive from email links with no session. The
+		// page needs the suppression hub, which is built later in this
+		// goroutine; until preferencesHandler is published it answers 503.
+		// (Replaces the 2026-09-11 stub: static page, reflected XSS via sid,
+		// and a GET /unsubscribe that ignored its token and globally
+		// unsubscribed any subscriber UUID.)
 		s.router.Get("/preferences", func(w http.ResponseWriter, r *http.Request) {
-			sid := r.URL.Query().Get("sid")
-			token := r.URL.Query().Get("token")
-			if sid == "" && token == "" {
-				http.Error(w, "Missing subscriber ID", http.StatusBadRequest)
+			if h := preferencesHandler.Load(); h != nil {
+				h.HandleGet(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Email Preferences</title>
-<style>body{font-family:Arial,sans-serif;max-width:500px;margin:60px auto;padding:20px;color:#333;text-align:center}
-h1{font-size:22px}p{color:#666;line-height:1.6}.btn{display:inline-block;padding:12px 24px;background:#667eea;color:#fff;
-text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
-<h1>Email Preferences</h1><p>To manage your email preferences, please use the link provided in the email you received.</p>
-<p>If you'd like to unsubscribe from all emails, <a href="/track/unsubscribe/` + sid + `">click here</a>.</p>
-</body></html>`))
+			renderPrefsNeutral(w, http.StatusServiceUnavailable, neutralUnavailable, "", "")
+		})
+		s.router.Post("/preferences", func(w http.ResponseWriter, r *http.Request) {
+			if h := preferencesHandler.Load(); h != nil {
+				h.HandlePost(w, r)
+				return
+			}
+			renderPrefsNeutral(w, http.StatusServiceUnavailable, neutralUnavailable, "", "")
+		})
+		s.router.Post("/preferences/fresh-link", func(w http.ResponseWriter, r *http.Request) {
+			if h := preferencesHandler.Load(); h != nil {
+				h.HandleFreshLink(w, r)
+				return
+			}
+			renderPrefsNeutral(w, http.StatusServiceUnavailable, neutralUnavailable, "", "")
 		})
 
-		// Public unsubscribe page with query params (context_builder format)
-		s.router.Get("/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
-			sid := r.URL.Query().Get("sid")
-			cid := r.URL.Query().Get("cid")
-			token := r.URL.Query().Get("token")
-			if sid == "" {
-				http.Error(w, "Missing parameters", http.StatusBadRequest)
-				return
-			}
-			_ = token
-			data := base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", cid, sid)))
-			http.Redirect(w, r, "/track/unsubscribe/"+data, http.StatusFound)
-		})
+		// GET /unsubscribe: a v1 token goes to the preference page; the legacy
+		// ?sid=&cid=&token=<md5> links (context_builder) authorize nothing.
+		s.router.Get("/unsubscribe", handleUnsubscribeLanding)
 
 		// One-click unsubscribe — public (RFC 8058, email clients POST directly)
 		var oneClickHandler http.HandlerFunc
@@ -1825,6 +1824,14 @@ text-decoration:none;border-radius:6px;margin-top:16px}</style></head><body>
 			s.GlobalHub = globalHub
 			// Make the wiring observable on /health (suppression_hub.wired).
 			MarkSuppressionHubWired()
+
+			// Preference page + fresh-link mail: publish the live handler now
+			// that the hub exists (the public routes answer 503 until here).
+			var prefsFreshSender freshLinkSender
+			if s.mailingSvc != nil {
+				prefsFreshSender = s.mailingSvc.sendPreferenceLinkEmail
+			}
+			preferencesHandler.Store(NewPreferencesHandler(db, globalHub, prefsFreshSender))
 
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)

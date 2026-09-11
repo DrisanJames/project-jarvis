@@ -966,6 +966,12 @@ func planPMTAAudience(
 		if globalHub != nil && globalHub.IsSuppressedForBrand(emailLower, campaignBrandRoot) {
 			return deny("global_or_brand_suppression")
 		}
+		// Subscriber preferences (pause / topic). Shadow by default: counts
+		// "planner.<reason>" on /health.preferences and denies only under
+		// PREFERENCES_MODE=enforce. In-memory; no DB round-trip.
+		if skip, reason := planPreferenceGate(emailLower, campaignBrandRoot); skip {
+			return deny("preference_" + reason)
+		}
 		if len(exclusionIDs) > 0 && suppMatcher.IsSuppressedMD5(md5Hex, exclusionIDs) {
 			return deny("exclusion_list")
 		}

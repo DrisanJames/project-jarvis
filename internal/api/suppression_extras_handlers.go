@@ -688,35 +688,17 @@ func (s *SuppressionService) HandleSuppressionAudit(w http.ResponseWriter, r *ht
 	json.NewEncoder(w).Encode(map[string]interface{}{"audit_log": entries})
 }
 
-// HandleOneClickUnsubscribe handles RFC 8058 one-click unsubscribe.
-// Uses GlobalSuppressionHub as the single source of truth.
+// HandleOneClickUnsubscribe handles RFC 8058 one-click unsubscribe:
+// POST /unsubscribe/one-click?t=<v1 token> with body List-Unsubscribe=One-Click.
+// The signed token is the ONLY authorization (no cookie, no session) and its
+// scope decides brand vs all. Until 2026-09-11 this globally suppressed any
+// bare `email` (or `token`) form value — anyone could unsubscribe anyone.
 func (s *SuppressionService) HandleOneClickUnsubscribe(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
+	var hub preferenceSuppressor
+	if s.globalHub != nil {
+		hub = s.globalHub
 	}
-
-	email := r.PostFormValue("email")
-	if email == "" {
-		token := r.PostFormValue("token")
-		if token != "" {
-			email = token
-		}
-	}
-	if email == "" {
-		http.Error(w, "Email required", http.StatusBadRequest)
-		return
-	}
-
-	emailLower := strings.ToLower(strings.TrimSpace(email))
-
-	s.AddToGlobalSuppression(emailLower, "unsubscribe", "rfc8058_one_click")
-
-	s.db.Exec(`UPDATE mailing_subscribers SET status = 'unsubscribed', updated_at = NOW() WHERE LOWER(email) = $1`, emailLower)
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Unsubscribed successfully"))
-	log.Printf("One-click unsubscribe → global suppression: %s", logger.RedactEmail(email))
+	serveTokenOneClick(w, r, s.db, hub)
 }
 
 // HandleListUnsubscribeHeader returns the List-Unsubscribe header value

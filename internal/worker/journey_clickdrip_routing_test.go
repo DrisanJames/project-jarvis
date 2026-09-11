@@ -215,7 +215,10 @@ func TestRenderSystemURLTokens_SafetyNet(t *testing.T) {
 		if !strings.Contains(out, trackBase+"/track/unsubscribe/") {
 			t.Fatalf("unsubscribe URL missing — the reminder must ship a working unsub link: %s", out)
 		}
-		if !strings.Contains(out, trackBase+"/preferences?sid="+subID) {
+		// 2026-09-11: v1 preference link on the tracking host. This fixture's
+		// subscriber id is not a UUID, so no token is minted (the link lands
+		// on the neutral page) — never the old unsigned ?sid= form.
+		if !strings.Contains(out, trackBase+"/track/preferences") || strings.Contains(out, "preferences?sid=") {
 			t.Fatalf("preferences URL missing: %s", out)
 		}
 		// Parity check: the global unsub token must render to the exact URL

@@ -214,7 +214,9 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 		brandUnsubURL = worker.GenerateBrandUnsubscribeURL(orgID, testCampaignID, testSubID, br, trackBase, svc.signingKey)
 		system["unsubscribe_url"] = unsubURL
 		system["brand_unsubscribe_url"] = brandUnsubURL
-		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, testSubID)
+		// Proof/test send: the subscriber id is random, so there is no one to
+		// sign a preference token for — token-less link, neutral page.
+		system["preferences_url"] = trackBase + "/track/preferences"
 	}
 
 	rc := mailing.RenderContext{
@@ -332,7 +334,20 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			pmtaExtraHeaders = map[string]string{"X-Virtual-MTA": *profile.IPPool}
 			log.Printf("[SendTest] Routing via bare VMTA pool %s (profile has no pool_prefix)", *profile.IPPool)
 		}
-		if unsubURL != "" {
+		txnSpec, isTxn := ctx.Value(txnListUnsubKey{}).(txnListUnsub)
+		if isTxn {
+			// Transactional send (HandleSendTransactional / fresh-link mail):
+			// the caller built the header for the REAL subscriber, or none
+			// when there is no subscriber row — never the fake test ids,
+			// whose https leg names no campaign and cannot be enforced.
+			if txnSpec.Header != "" {
+				if pmtaExtraHeaders == nil {
+					pmtaExtraHeaders = make(map[string]string)
+				}
+				pmtaExtraHeaders["List-Unsubscribe"] = txnSpec.Header
+				pmtaExtraHeaders["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+			}
+		} else if unsubURL != "" {
 			if pmtaExtraHeaders == nil {
 				pmtaExtraHeaders = make(map[string]string)
 			}
@@ -342,10 +357,10 @@ func (svc *MailingService) HandleSendTestEmail(w http.ResponseWriter, r *http.Re
 			}
 			unsubData := fmt.Sprintf("%s|%s|%s", "00000000-0000-0000-0000-000000000001", testCampaignID, testSubID)
 			unsubEncoded := base64.URLEncoding.EncodeToString([]byte(unsubData))
-			mailtoAddr := fmt.Sprintf("unsub+%s@%s", unsubEncoded, fromDomain)
+			mailtoAddr := fmt.Sprintf("unsub+%s@%s", worker.SignedMailtoToken(unsubEncoded, svc.signingKey), fromDomain)
 			// HTTPS leg uses the brand-scoped URL so ISP one-click POSTs land
 			// on the brand suppression path (consistent with send_worker). The
-			// mailto leg stays 3-part global — there is no inbound handler.
+			// mailto leg is signed and handled by HandleInboundMailtoUnsubscribe.
 			httpsLeg := unsubURL
 			if brandUnsubURL != "" {
 				httpsLeg = brandUnsubURL
@@ -480,11 +495,14 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	rc := make(map[string]interface{})
 
 	// Look up subscriber data if they exist in the system
-	var firstName, lastName, customFieldsJSON string
+	// realSubID carries the subscriber into the unsubscribe links (2026-09-11).
+	// lower(TRIM(email)) is the ONLY expression the subscriber email index
+	// matches; the previous LOWER(email) seq-scanned the table.
+	var realSubID, firstName, lastName, customFieldsJSON string
 	svc.db.QueryRowContext(ctx, `
-		SELECT COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(custom_fields::text,'{}')
-		FROM mailing_subscribers WHERE LOWER(email) = $1 LIMIT 1
-	`, email).Scan(&firstName, &lastName, &customFieldsJSON)
+		SELECT id::text, COALESCE(first_name,''), COALESCE(last_name,''), COALESCE(custom_fields::text,'{}')
+		FROM mailing_subscribers WHERE lower(TRIM(email)) = $1 AND organization_id = $2 LIMIT 1
+	`, email, orgID).Scan(&realSubID, &firstName, &lastName, &customFieldsJSON)
 
 	rc["first_name"] = firstName
 	rc["last_name"] = lastName
@@ -549,17 +567,24 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		}
 	}
 
-	// Generate transactional IDs for tracking
+	// Generate transactional IDs for tracking. The txn id stands in as the
+	// pixel's subscriber slot (unchanged); it is NEVER an unsubscribe target.
 	txnID := uuid.New().String()
-	subID := txnID // use txn ID as pseudo-subscriber for unsub URL
+	subID := txnID
 
-	// Unsubscribe + preferences URLs
-	if trackBase != "" && svc.signingKey != "" {
-		orgIDStr := orgID.String()
-		system["unsubscribe_url"] = worker.GenerateUnsubscribeURL(orgIDStr, txnID, subID, trackBase, svc.signingKey)
-		br := brand.RootFromEmail(input.FromEmail)
-		system["brand_unsubscribe_url"] = worker.GenerateBrandUnsubscribeURL(orgIDStr, txnID, subID, br, trackBase, svc.signingKey)
-		system["preferences_url"] = fmt.Sprintf("%s/preferences?sid=%s", trackBase, subID)
+	// Unsubscribe + preferences links for the REAL subscriber (2026-09-11).
+	// They used to mint the txn id as the "subscriber" — a link that resolved
+	// to no one. No subscriber row -> no link and no List-Unsubscribe
+	// (transactional mail to a non-subscriber has nothing to unsubscribe from).
+	fromForBrand := input.FromEmail
+	if fromForBrand == "" && input.SendingDomain != "" {
+		fromForBrand = "noreply@" + input.SendingDomain
+	}
+	txnLinks := buildTxnUnsubLinks(orgID.String(), txnID, realSubID, fromForBrand, trackBase, svc.signingKey, time.Now())
+	if txnLinks.PrefsURL != "" {
+		system["unsubscribe_url"] = txnLinks.PrefsURL + "&intent=unsubscribe"
+		system["brand_unsubscribe_url"] = txnLinks.PrefsURL + "&intent=unsubscribe"
+		system["preferences_url"] = txnLinks.PrefsURL
 	}
 	rc["system"] = system
 
@@ -606,7 +631,9 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 
 	// ── CAN-SPAM: inject bottom unsub if not present ──
 	if unsub, ok := system["unsubscribe_url"].(string); ok && unsub != "" {
-		if !strings.Contains(strings.ToLower(htmlContent), "/track/unsubscribe/") {
+		// The link is now the preference page (/track/preferences); a body
+		// that already carries it must not get a second, duplicate block.
+		if lower := strings.ToLower(htmlContent); !strings.Contains(lower, "/track/unsubscribe/") && !strings.Contains(lower, "/track/preferences") {
 			unsubBlock := fmt.Sprintf(
 				`<div style="text-align:center;padding:16px;font-size:12px;color:#999;font-family:Arial,sans-serif;">`+
 					`<a href="%s" style="color:#999;text-decoration:underline;">Unsubscribe</a></div>`, unsub)
@@ -636,7 +663,9 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 		"sending_domain":     input.SendingDomain,
 	})
 	rec := &responseRecorder{header: http.Header{}, code: 200}
-	syntheticReq, _ := http.NewRequestWithContext(ctx, "POST", "/api/mailing/send-test", strings.NewReader(string(testBody)))
+	// The transport builds List-Unsubscribe from this (real subscriber, or
+	// none) instead of its fake test ids — see txnListUnsubKey.
+	syntheticReq, _ := http.NewRequestWithContext(context.WithValue(ctx, txnListUnsubKey{}, txnLinks.Header), "POST", "/api/mailing/send-test", strings.NewReader(string(testBody)))
 	syntheticReq.Header = r.Header
 	svc.HandleSendTestEmail(rec, syntheticReq)
 

@@ -493,7 +493,10 @@ func TestClickDripSystemURLs_BroadcastParity(t *testing.T) {
 	require.Equal(t,
 		GenerateBrandUnsubscribeURL(orgID, campaignID, subID, "discountblog.com", trackBase, secret),
 		urls["brand_unsubscribe_url"], "brand root must derive from the em.<apex> sending address")
-	require.Equal(t, trackBase+"/preferences?sid="+subID, urls["preferences_url"])
+	// 2026-09-11: signed v1 preference link on the tracking host (the
+	// unsigned ?sid= form authorized nothing and 403'd at the edge).
+	require.Contains(t, urls["preferences_url"], trackBase+"/track/preferences?t=")
+	require.NotContains(t, urls["preferences_url"], "sid=")
 	require.Equal(t, trackBase+"/view?cid="+campaignID+"&sid="+subID, urls["view_in_browser_url"])
 
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -549,7 +552,7 @@ func TestMergeClickDripSystemURLs_RenderLeavesNoRawTokens(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, out, "{{", "no raw template token may survive to the QP encoder")
 	require.Contains(t, out, "/track/unsubscribe/", "unsubscribe links must be REAL signed URLs, not stripped")
-	require.Contains(t, out, "/preferences?sid="+subID)
+	require.Contains(t, out, "/track/preferences?t=")
 
 	require.NoError(t, mock.ExpectationsWereMet())
 

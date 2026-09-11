@@ -3,7 +3,6 @@ package mailing
 
 import (
 	"context"
-	"crypto/md5"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/prefilltoken"
+	"github.com/ignite/sparkpost-monitor/internal/preferences"
 )
 
 // RenderContext is the data structure exposed to Liquid templates
@@ -123,9 +123,17 @@ func (cb *ContextBuilder) BuildContext(ctx context.Context, sub *Subscriber, cam
 
 	// Generate tracking URLs
 	if campaign != nil {
-		system["unsubscribe_url"] = cb.generateUnsubscribeURL(sub.ID, campaign.ID)
-		system["brand_unsubscribe_url"] = cb.generateBrandUnsubscribeURL(sub.ID, campaign.ID, campaign.FromEmail)
-		system["preferences_url"] = cb.generatePreferencesURL(sub.ID)
+		// Signed v1 preference links (context_links.go). unsubscribe_url keeps
+		// its all-brands meaning, brand_unsubscribe_url its brand meaning; both
+		// open the page with the choice up front (GET never mutates).
+		orgID := sub.OrganizationID
+		if orgID == uuid.Nil {
+			orgID = campaign.OrganizationID
+		}
+		br := brand.RootFromEmail(campaign.FromEmail)
+		system["unsubscribe_url"] = cb.recipientLink(orgID, sub.ID, br, preferences.ScopeAll, true)
+		system["brand_unsubscribe_url"] = cb.recipientLink(orgID, sub.ID, br, preferences.ScopeBrand, true)
+		system["preferences_url"] = cb.recipientLink(orgID, sub.ID, br, preferences.ScopeBrand, false)
 		system["view_in_browser_url"] = cb.generateViewInBrowserURL(campaign.ID, sub.ID)
 	}
 	// {{ system.tracking_base }} — scheme+host, no trailing slash — mirrors
@@ -436,44 +444,14 @@ func (cb *ContextBuilder) loadSubscriberIntelligence(ctx context.Context, subscr
 	return result, nil
 }
 
-// generateUnsubscribeURL creates a signed unsubscribe link
-func (cb *ContextBuilder) generateUnsubscribeURL(subscriberID, campaignID uuid.UUID) string {
-	token := generateToken(subscriberID.String(), campaignID.String(), cb.signingKey)
-	return fmt.Sprintf("%s/unsubscribe?sid=%s&cid=%s&token=%s",
-		cb.baseURL, subscriberID.String(), campaignID.String(), token)
-}
-
-// generateBrandUnsubscribeURL creates a brand-scoped preview unsubscribe
-// link for the context builder used by previews/test renders. Mirrors the
-// legacy preview URL shape — send-time brand URLs come from send_worker's
-// GenerateBrandUnsubscribeURL which emits a /track/unsubscribe/ token.
-func (cb *ContextBuilder) generateBrandUnsubscribeURL(subscriberID, campaignID uuid.UUID, fromEmail string) string {
-	br := brand.RootFromEmail(fromEmail)
-	token := generateToken(subscriberID.String(), campaignID.String(), br, cb.signingKey)
-	return fmt.Sprintf("%s/unsubscribe?sid=%s&cid=%s&brand=%s&token=%s",
-		cb.baseURL, subscriberID.String(), campaignID.String(), br, token)
-}
-
-// generatePreferencesURL creates a link to email preferences
-func (cb *ContextBuilder) generatePreferencesURL(subscriberID uuid.UUID) string {
-	token := generateToken(subscriberID.String(), "preferences", cb.signingKey)
-	return fmt.Sprintf("%s/preferences?sid=%s&token=%s",
-		cb.baseURL, subscriberID.String(), token)
-}
+// Unsubscribe / preferences links: see recipientLink (context_links.go). The
+// md5(sid|cid|key)[:16] generateToken that used to sign them is gone — no
+// handler ever verified it.
 
 // generateViewInBrowserURL creates a view-in-browser link
 func (cb *ContextBuilder) generateViewInBrowserURL(campaignID, subscriberID uuid.UUID) string {
 	return fmt.Sprintf("%s/view?cid=%s&sid=%s",
 		cb.baseURL, campaignID.String(), subscriberID.String())
-}
-
-// generateToken creates a simple HMAC token for URL verification
-func generateToken(parts ...string) string {
-	// Simple implementation - in production use proper HMAC
-	combined := strings.Join(parts, "|")
-	hash := md5.Sum([]byte(combined))
-	// Return first 16 chars of a hash for brevity
-	return fmt.Sprintf("%x", hash)[:16]
 }
 
 // coalesceString returns the first non-empty string
