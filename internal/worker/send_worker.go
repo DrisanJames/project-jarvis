@@ -3027,7 +3027,40 @@ func ReplaceTrackingMergeTags(html string, campaignID string, subscriberID strin
 // Tracking injection: open pixel, click redirects, unsubscribe URL
 // ---------------------------------------------------------------------------
 
-var linkRe = regexp.MustCompile(`href=["'](https?://[^"']+)["']`)
+var linkRe = regexp.MustCompile(`(?i)href=["'](https?://[^"']+)["']`)
+
+// clickTagRe matches the opening tag of an element a HUMAN clicks:
+//   - <a ...> — the hyperlink;
+//   - <area ...> — an image-map hotspot: a user-clicked hyperlink with <a>
+//     semantics, never fetched by a client or proxy;
+//   - <v:roundrect ...> (any <v:*> VML shape) — Outlook desktop's bulletproof
+//     button, emitted inside <!--[if mso]> blocks. Its href is the ONLY click
+//     target Outlook renders, so skipping it would drop tracking on those clicks.
+//
+// Everything else that carries an href is a resource or a document hint that
+// clients/proxies fetch WITHOUT a click — <link rel=stylesheet|preconnect>,
+// <base> — and wrapping it into /track/click records a click on render
+// (2026-09-11: fonts.googleapis.com was the largest /track/click destination).
+// Quoted attribute values may contain '>', so the attribute run is matched as
+// quoted strings or non-quote/non-'>' bytes. Comments are not special: an <a>
+// inside an MSO conditional comment is still rewritten, as before.
+var clickTagRe = regexp.MustCompile(`(?i)<(?:a|area|v:[a-z]+)(?:\s(?:"[^"]*"|'[^']*'|[^"'>])*)?>`)
+
+// RewriteInClickableTags applies re.ReplaceAllStringFunc(…, fn) to the opening
+// tags of clickable elements only (clickTagRe); every other byte of html is
+// returned untouched. Shared by every click rewriter (worker send path, api
+// campaign-builder sync send, offer creative import) so they cannot drift.
+// Rollback: CLICK_WRAP_ANY_TAG=true restores the historical whole-document
+// match (re applied to every href on every tag). Read per call, like
+// DISABLE_SES_CLICK_WRAP, so an env flip applies from the next process start.
+func RewriteInClickableTags(html string, re *regexp.Regexp, fn func(string) string) string {
+	if os.Getenv("CLICK_WRAP_ANY_TAG") == "true" {
+		return re.ReplaceAllStringFunc(html, fn)
+	}
+	return clickTagRe.ReplaceAllStringFunc(html, func(tag string) string {
+		return re.ReplaceAllStringFunc(tag, fn)
+	})
+}
 
 // TrackSign computes a truncated HMAC-SHA256 signature for tracking URLs.
 func TrackSign(data, secret string) string {
@@ -3100,6 +3133,9 @@ func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseUR
 // InjectTrackingPixelAndLinks, factored out (2026-07-13) so the SES relay
 // path can restore click tracking without double-injecting the open pixel.
 // Skip rules are inherited verbatim from the original loop:
+//   - only hrefs inside clickable tags (<a>, <area>, VML <v:*>) are touched
+//     (2026-09-11, RewriteInClickableTags) — <link>/<base> hrefs are fetched
+//     on render, so wrapping them recorded fake clicks;
 //   - linkRe only matches absolute href="http(s)://..." values, so mailto:,
 //     tel:, in-page anchors (#...) and relative links never match at all;
 //   - URLs containing "/track/" (unsubscribe/open/already-wrapped click
@@ -3112,7 +3148,7 @@ func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseUR
 // parts[4] and 307-redirects to it).
 func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
-	return linkRe.ReplaceAllStringFunc(html, func(match string) string {
+	return RewriteInClickableTags(html, linkRe, func(match string) string {
 		parts := linkRe.FindStringSubmatch(match)
 		if len(parts) < 2 {
 			return match
