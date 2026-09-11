@@ -1,0 +1,717 @@
+package contentdesk
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Pipeline runs research → rederive → draft → package → code_checks →
+// judgment for one article, each stage idempotent per (article, stage,
+// input_hash), then writes the revision and moves the article to in_review.
+type Pipeline struct {
+	Store             *Store
+	LLM               LLM
+	MaxAttempts       int
+	StaleAfter        time.Duration
+	SimhashMaxHamming int
+}
+
+// NewPipeline wires defaults: 3 attempts per stage input, a running row is
+// retakeable after 45 min (longer than the worker's 30 min lock TTL).
+func NewPipeline(store *Store, llm LLM) *Pipeline {
+	return &Pipeline{Store: store, LLM: llm, MaxAttempts: 3, StaleAfter: 45 * time.Minute,
+		SimhashMaxHamming: SimhashMaxHammingFromEnv()}
+}
+
+func (p *Pipeline) maxAttempts() int {
+	if p.MaxAttempts <= 0 {
+		return 3
+	}
+	return p.MaxAttempts
+}
+
+func (p *Pipeline) staleAfter() time.Duration {
+	if p.StaleAfter <= 0 {
+		return 45 * time.Minute
+	}
+	return p.StaleAfter
+}
+
+type stageEnvelope struct {
+	Result json.RawMessage `json:"result"`
+	Usage  Usage           `json:"usage"`
+}
+
+// StageFunc produces a stage result and what it cost.
+type StageFunc func(ctx context.Context) (any, Usage, error)
+
+// RunStage is the idempotency unit. A stage whose (article, stage,
+// input_hash) already succeeded returns the stored output without calling
+// fn; a concurrent claim (double fire) returns ErrInFlight without calling fn.
+func (p *Pipeline) RunStage(ctx context.Context, org, articleID, stage, inputHash string, fn StageFunc) (json.RawMessage, Usage, error) {
+	claim, err := p.Store.ClaimRun(ctx, org, articleID, stage, inputHash, p.maxAttempts(), p.staleAfter())
+	if err != nil {
+		return nil, Usage{}, fmt.Errorf("%s: %w", stage, err)
+	}
+	if claim.Prior != nil {
+		var env stageEnvelope
+		if err := json.Unmarshal(claim.Prior, &env); err != nil {
+			return nil, Usage{}, fmt.Errorf("%s: stored output unreadable: %w", stage, err)
+		}
+		return env.Result, env.Usage, nil
+	}
+	res, u, err := fn(ctx)
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err != nil {
+		mode := FailCount
+		switch {
+		case errors.Is(err, ErrDisabled), errors.Is(err, ErrBudgetExceeded), errors.Is(err, ErrBudgetUnavailable),
+			errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			mode = FailRefund
+		case errors.Is(err, ErrRefused), errors.Is(err, ErrNoAllowlist):
+			mode = FailTerminal
+		}
+		if ferr := p.Store.FailRun(bg, claim.RunID, err.Error(), mode, p.maxAttempts()); ferr != nil {
+			log.Printf("[ContentDesk] ERROR step=fail-run article=%s stage=%s: %v", articleID, stage, ferr)
+		}
+		return nil, u, fmt.Errorf("%s: %w", stage, err)
+	}
+	b, err := json.Marshal(res)
+	if err != nil {
+		return nil, u, fmt.Errorf("%s: marshal output: %w", stage, err)
+	}
+	env, _ := json.Marshal(stageEnvelope{Result: b, Usage: u})
+	if err := p.Store.FinishRun(bg, claim.RunID, env); err != nil {
+		return nil, u, fmt.Errorf("%s: record output: %w", stage, err)
+	}
+	return b, u, nil
+}
+
+// ── stage payloads ──────────────────────────────────────────────────────
+
+type researchRef struct {
+	ClaimID  string `json:"claim_id"`
+	Version  int    `json:"version"`
+	Key      bool   `json:"key"`
+	ClaimKey string `json:"claim_key"`
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+	Status   string `json:"status"`
+}
+
+type researchResult struct {
+	Claims []researchRef `json:"claims"`
+}
+
+// Comparison is one primary-vs-rederived outcome.
+type Comparison struct {
+	ClaimID         string `json:"claim_id"`
+	PrimaryVersion  int    `json:"primary_version"`
+	RederiveClaimID string `json:"rederive_claim_id,omitempty"`
+	Outcome         string `json:"outcome"` // match | mismatch | unconfirmed
+	Detail          string `json:"detail,omitempty"`
+}
+
+type rederiveResult struct {
+	Comparisons []Comparison `json:"comparisons"`
+	Conflicting []string     `json:"conflicting"`
+}
+
+type draftResult struct {
+	Blocks    []Block    `json:"blocks"`
+	ClaimRefs []ClaimRef `json:"claim_refs"`
+}
+
+type packageResult struct {
+	Title           string     `json:"title"`
+	Excerpt         string     `json:"excerpt"`
+	MetaTitle       string     `json:"meta_title"`
+	MetaDescription string     `json:"meta_description"`
+	Subjects        []string   `json:"subjects"`
+	Preheaders      []string   `json:"preheaders"`
+	ClaimRefs       []ClaimRef `json:"claim_refs"`
+}
+
+func briefKey(b Brief) map[string]any {
+	return map[string]any{
+		"id": b.ID, "site_id": b.SiteID, "format": b.Format, "reader_question": b.ReaderQuestion,
+		"angle": b.Angle, "outline": b.Outline, "category": b.Category, "consequential": b.Consequential,
+	}
+}
+
+func claimFingerprint(claims []Claim) []string {
+	out := make([]string, 0, len(claims))
+	for _, c := range claims {
+		out = append(out, fmt.Sprintf("%s@%d:%s", c.ClaimID, c.Version, c.Status))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mustHash(v any) string {
+	h, err := HashJSON(v)
+	if err != nil {
+		// Only reachable with an unmarshalable value — a programming error.
+		panic(err)
+	}
+	return h
+}
+
+// Run executes the whole pipeline for one drafting article.
+func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
+	in, err := p.Store.LoadPipelineInput(ctx, org, articleID)
+	if err != nil {
+		return err
+	}
+	var total Usage
+	briefHash := mustHash(briefKey(in.Brief))
+
+	// 1. research
+	raw, u, err := p.RunStage(ctx, org, articleID, StageResearch, briefHash, func(ctx context.Context) (any, Usage, error) {
+		return p.research(ctx, in)
+	})
+	total.Add(u)
+	if err != nil {
+		return err
+	}
+	var research researchResult
+	if err := json.Unmarshal(raw, &research); err != nil {
+		return fmt.Errorf("research output: %w", err)
+	}
+
+	// 2. rederive — its input is the brief plus the key QUESTIONS only.
+	keys := keyClaims(research)
+	questions := make([]string, len(keys))
+	for i, k := range keys {
+		questions[i] = k.Question
+	}
+	_, u, err = p.RunStage(ctx, org, articleID, StageRederive, mustHash(map[string]any{"brief": briefHash, "questions": questions}),
+		func(ctx context.Context) (any, Usage, error) { return p.rederive(ctx, in, keys) })
+	total.Add(u)
+	if err != nil {
+		return err
+	}
+
+	// Current claim versions (rederive may have appended 'conflicting' versions).
+	ids := make([]string, 0, len(research.Claims))
+	for _, c := range research.Claims {
+		ids = append(ids, c.ClaimID)
+	}
+	all, err := p.Store.ClaimsByIDs(ctx, org, ids)
+	if err != nil {
+		return err
+	}
+	byKey, latest, latestClaim := IndexClaims(all)
+	current := make([]Claim, 0, len(latestClaim))
+	for _, id := range ids {
+		if c, ok := latestClaim[id]; ok {
+			current = append(current, c)
+		}
+	}
+	fp := claimFingerprint(current)
+
+	// 3. draft
+	raw, u, err = p.RunStage(ctx, org, articleID, StageDraft,
+		mustHash(map[string]any{"brief": briefHash, "voice": in.Site.Voice, "claims": fp}),
+		func(ctx context.Context) (any, Usage, error) { return p.draft(ctx, in, current) })
+	total.Add(u)
+	if err != nil {
+		return err
+	}
+	draftRaw := raw
+	var draft draftResult
+	if err := json.Unmarshal(raw, &draft); err != nil {
+		return fmt.Errorf("draft output: %w", err)
+	}
+
+	// 4. package (LIGHT model)
+	raw, u, err = p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp}),
+		func(ctx context.Context) (any, Usage, error) { return p.packageStage(ctx, in, draft, current) })
+	total.Add(u)
+	if err != nil {
+		return err
+	}
+	pkgRaw := raw
+	var pk packageResult
+	if err := json.Unmarshal(raw, &pk); err != nil {
+		return fmt.Errorf("package output: %w", err)
+	}
+	pkg := Package{Title: pk.Title, Excerpt: pk.Excerpt, MetaTitle: pk.MetaTitle, MetaDescription: pk.MetaDescription,
+		Blocks: draft.Blocks, Subjects: pk.Subjects, Preheaders: pk.Preheaders}
+	refs := SortClaimRefs(append(append([]ClaimRef(nil), draft.ClaimRefs...), pk.ClaimRefs...))
+	revHash, err := RevisionHash(pkg, refs)
+	if err != nil {
+		return err
+	}
+
+	// 5. code checks (deterministic)
+	taken, err := p.Store.TakenSlugs(ctx, org, in.Site.ID, articleID)
+	if err != nil {
+		return err
+	}
+	others, err := p.Store.OtherBodies(ctx, org, in.Site.ID, articleID)
+	if err != nil {
+		return err
+	}
+	otherFP := make([]string, len(others))
+	for i, o := range others {
+		otherFP[i] = fmt.Sprintf("%s:%x", o.ArticleID, Simhash(o.Body))
+	}
+	sort.Strings(otherFP)
+	checkIn := CheckInput{
+		Domain: in.Site.Domain, SourceDomains: CategoryAllowlist[in.Brief.Category], Package: pkg,
+		RawOutputs: [][]byte{draftRaw, pkgRaw}, Refs: refs, Claims: byKey, Latest: latest, Slug: in.Article.Slug,
+		TakenSlugs: taken, Others: others, SimhashMaxHamming: p.SimhashMaxHamming,
+	}
+	raw, _, err = p.RunStage(ctx, org, articleID, StageCodeChecks,
+		mustHash(map[string]any{"revision": revHash, "claims": claimFingerprint(all), "slug": in.Article.Slug,
+			"taken": taken, "others": otherFP, "max_hamming": p.SimhashMaxHamming}),
+		func(ctx context.Context) (any, Usage, error) { return RunCodeChecks(checkIn), Usage{}, nil })
+	if err != nil {
+		return err
+	}
+	var code []CheckResult
+	if err := json.Unmarshal(raw, &code); err != nil {
+		return fmt.Errorf("code_checks output: %w", err)
+	}
+
+	// 6. judgment (JUDGE model)
+	raw, u, err = p.RunStage(ctx, org, articleID, StageJudgment,
+		mustHash(map[string]any{"revision": revHash, "claims": claimFingerprint(all)}),
+		func(ctx context.Context) (any, Usage, error) { return p.judge(ctx, in, pkg, refs, byKey) })
+	total.Add(u)
+	if err != nil {
+		return err
+	}
+	var judgment []JudgmentItem
+	if err := json.Unmarshal(raw, &judgment); err != nil {
+		return fmt.Errorf("judgment output: %w", err)
+	}
+
+	_, _, err = p.Store.SaveRevision(ctx, org, articleID, pkg, refs, Checks{Code: code, Judgment: judgment}, total)
+	return err
+}
+
+func keyClaims(r researchResult) []researchRef {
+	var out []researchRef
+	for _, c := range r.Claims {
+		if c.Key && c.Status == ClaimSupported && strings.TrimSpace(c.Question) != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// ── research ────────────────────────────────────────────────────────────
+
+type modelClaim struct {
+	Text         string `json:"text"`
+	Type         string `json:"type"`
+	SourceURL    string `json:"source_url"`
+	Passage      string `json:"passage"`
+	Context      string `json:"context"`
+	PublishedAt  string `json:"published_at"`
+	EffectiveAt  string `json:"effective_at"`
+	Jurisdiction string `json:"jurisdiction"`
+	Population   string `json:"population"`
+	Conditions   string `json:"conditions"`
+	Status       string `json:"status"`
+	Key          bool   `json:"key"`
+	ClaimKey     string `json:"claim_key"`
+	Question     string `json:"question"`
+	Answer       string `json:"answer"`
+	Calc         *Calc  `json:"calc"`
+}
+
+// NormalizeClaim validates a model-produced claim deterministically. It can
+// only DOWNGRADE: an unsourced or off-allow-list "supported" fact becomes
+// insufficient_evidence; a calculation that does not recompute becomes
+// conflicting. It never upgrades.
+func NormalizeClaim(m modelClaim, allow []string, derivation string) (Claim, bool) {
+	c := Claim{Text: strings.TrimSpace(m.Text), Type: m.Type, SourceURL: strings.TrimSpace(m.SourceURL),
+		Passage: strings.TrimSpace(m.Passage), Context: m.Context, PublishedAt: m.PublishedAt, EffectiveAt: m.EffectiveAt,
+		Jurisdiction: m.Jurisdiction, Population: m.Population, Conditions: m.Conditions, Status: m.Status,
+		Derivation: derivation, Calc: m.Calc, ClaimKey: m.ClaimKey, Question: strings.TrimSpace(m.Question),
+		Answer: strings.TrimSpace(m.Answer)}
+	if c.Text == "" {
+		return c, false
+	}
+	demote := func(status, why string) {
+		c.Status = status
+		c.Context = strings.TrimSpace(c.Context + " [desk: " + why + "]")
+	}
+	switch c.Type {
+	case ClaimSourcedFact, ClaimCalculation, ClaimAssumption, ClaimInterpretation:
+	default:
+		c.Type = ClaimAssumption
+		demote(ClaimInsufficientEvidence, "unknown claim type")
+	}
+	switch c.Status {
+	case ClaimSupported, ClaimInsufficientEvidence, ClaimConflicting:
+	default:
+		demote(ClaimInsufficientEvidence, "unknown status")
+	}
+	if c.Status == ClaimSupported && c.Type == ClaimSourcedFact {
+		u, err := url.Parse(c.SourceURL)
+		switch {
+		case c.SourceURL == "" || c.Passage == "":
+			demote(ClaimInsufficientEvidence, "no source passage")
+		case err != nil || u.Scheme != "https" || !hostAllowed(strings.ToLower(u.Host), allow):
+			demote(ClaimInsufficientEvidence, "source not on the category allow-list")
+		}
+	}
+	if c.Type == ClaimCalculation {
+		if c.Calc == nil {
+			demote(ClaimInsufficientEvidence, "calculation without calc")
+		} else if _, ok, err := CalcMatches(*c.Calc); err != nil || !ok {
+			demote(ClaimConflicting, "calc does not recompute")
+		}
+	}
+	return c, true
+}
+
+func (p *Pipeline) research(ctx context.Context, in PipelineInput) (any, Usage, error) {
+	res, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierWrite, System: researchSystem,
+		Prompt: researchPrompt(in), Schema: researchSchema(), ToolName: "submit_research",
+		WebCategory: in.Brief.Category, MaxTokens: 16000})
+	u := resultUsage(res)
+	if err != nil {
+		return nil, u, err
+	}
+	var out struct {
+		Claims []modelClaim `json:"claims"`
+	}
+	if err := json.Unmarshal(res.JSON, &out); err != nil {
+		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
+	}
+	allow := CategoryAllowlist[in.Brief.Category]
+	var claims []Claim
+	var keyFlags []bool
+	for _, m := range out.Claims {
+		c, ok := NormalizeClaim(m, allow, DerivationPrimary)
+		if !ok {
+			continue
+		}
+		claims = append(claims, c)
+		keyFlags = append(keyFlags, m.Key)
+	}
+	if len(claims) == 0 {
+		return nil, u, fmt.Errorf("%w: research produced no claims", ErrNoStructuredOutput)
+	}
+	saved, err := p.Store.InsertClaims(ctx, in.OrgID, in.Article.ID, claims)
+	if err != nil {
+		return nil, u, err
+	}
+	r := researchResult{}
+	for i, c := range saved {
+		r.Claims = append(r.Claims, researchRef{ClaimID: c.ClaimID, Version: c.Version, Key: keyFlags[i],
+			ClaimKey: c.ClaimKey, Question: c.Question, Answer: c.Answer, Status: c.Status})
+	}
+	return r, u, nil
+}
+
+// ── rederive ────────────────────────────────────────────────────────────
+
+type rederiveAnswer struct {
+	QuestionIndex int    `json:"question_index"`
+	Text          string `json:"text"`
+	Answer        string `json:"answer"`
+	SourceURL     string `json:"source_url"`
+	Passage       string `json:"passage"`
+	Context       string `json:"context"`
+	PublishedAt   string `json:"published_at"`
+	EffectiveAt   string `json:"effective_at"`
+	Jurisdiction  string `json:"jurisdiction"`
+	Population    string `json:"population"`
+	Conditions    string `json:"conditions"`
+	Status        string `json:"status"`
+}
+
+var (
+	numberRE = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
+	nonWordRE = regexp.MustCompile(`[^a-z0-9]+`)
+)
+
+func numberSet(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range numberRE.FindAllString(s, -1) {
+		if f, err := strconv.ParseFloat(strings.ReplaceAll(m, ",", ""), 64); err == nil {
+			out[strconv.FormatFloat(f, 'f', -1, 64)] = true
+		}
+	}
+	return out
+}
+
+// AnswersMatch compares a primary and an independently re-derived answer.
+// When either carries numbers, the number SETS must be equal (thousands
+// separators and trailing zeros normalized); otherwise the normalized text
+// must be equal. Deterministic and deliberately strict — a false mismatch
+// costs a human look, a false match ships a wrong number.
+func AnswersMatch(a, b string) bool {
+	na, nb := numberSet(a), numberSet(b)
+	if len(na) > 0 || len(nb) > 0 {
+		if len(na) != len(nb) {
+			return false
+		}
+		for k := range na {
+			if !nb[k] {
+				return false
+			}
+		}
+		return true
+	}
+	norm := func(s string) string { return strings.Trim(nonWordRE.ReplaceAllString(strings.ToLower(s), " "), " ") }
+	return norm(a) != "" && norm(a) == norm(b)
+}
+
+// CompareRederivation pairs key claims with the independent answers.
+func CompareRederivation(keys []researchRef, answers []rederiveAnswer) []Comparison {
+	byIdx := map[int]rederiveAnswer{}
+	for _, a := range answers {
+		if _, dup := byIdx[a.QuestionIndex]; !dup {
+			byIdx[a.QuestionIndex] = a
+		}
+	}
+	out := make([]Comparison, 0, len(keys))
+	for i, k := range keys {
+		c := Comparison{ClaimID: k.ClaimID, PrimaryVersion: k.Version}
+		a, ok := byIdx[i]
+		switch {
+		case !ok:
+			c.Outcome, c.Detail = "unconfirmed", "no independent answer returned"
+		case a.Status != ClaimSupported:
+			c.Outcome, c.Detail = "unconfirmed", "independent pass: "+a.Status
+		case AnswersMatch(k.Answer, a.Answer):
+			c.Outcome = "match"
+		default:
+			c.Outcome = "mismatch"
+			c.Detail = fmt.Sprintf("primary %q vs independent %q (%s)", k.Answer, a.Answer, a.SourceURL)
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (p *Pipeline) rederive(ctx context.Context, in PipelineInput, keys []researchRef) (any, Usage, error) {
+	res := rederiveResult{Comparisons: []Comparison{}, Conflicting: []string{}}
+	if len(keys) == 0 {
+		return res, Usage{}, nil
+	}
+	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: rederiveSystem,
+		Prompt: rederivePrompt(in, keys), Schema: rederiveSchema(), ToolName: "submit_rederivation",
+		WebCategory: in.Brief.Category, MaxTokens: 16000})
+	u := resultUsage(gen)
+	if err != nil {
+		return nil, u, err
+	}
+	var out struct {
+		Answers []rederiveAnswer `json:"answers"`
+	}
+	if err := json.Unmarshal(gen.JSON, &out); err != nil {
+		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
+	}
+	allow := CategoryAllowlist[in.Brief.Category]
+	var rclaims []Claim
+	var idxOf []int
+	for _, a := range out.Answers {
+		if a.QuestionIndex < 0 || a.QuestionIndex >= len(keys) {
+			continue
+		}
+		c, ok := NormalizeClaim(modelClaim{Text: a.Text, Type: ClaimSourcedFact, SourceURL: a.SourceURL, Passage: a.Passage,
+			Context: a.Context, PublishedAt: a.PublishedAt, EffectiveAt: a.EffectiveAt, Jurisdiction: a.Jurisdiction,
+			Population: a.Population, Conditions: a.Conditions, Status: a.Status, ClaimKey: keys[a.QuestionIndex].ClaimKey,
+			Question: keys[a.QuestionIndex].Question, Answer: a.Answer}, allow, DerivationRederive)
+		if !ok {
+			continue
+		}
+		rclaims = append(rclaims, c)
+		idxOf = append(idxOf, a.QuestionIndex)
+	}
+	// The comparison uses the NORMALIZED status (an off-allow-list "supported"
+	// answer is unconfirmed, not a match).
+	normalized := make([]rederiveAnswer, len(rclaims))
+	for i, c := range rclaims {
+		normalized[i] = rederiveAnswer{QuestionIndex: idxOf[i], Answer: c.Answer, Status: c.Status, SourceURL: c.SourceURL}
+	}
+	saved := []Claim{}
+	if len(rclaims) > 0 {
+		if saved, err = p.Store.InsertClaims(ctx, in.OrgID, in.Article.ID, rclaims); err != nil {
+			return nil, u, err
+		}
+	}
+	res.Comparisons = CompareRederivation(keys, normalized)
+	rid := map[int]string{}
+	for i, c := range saved {
+		rid[idxOf[i]] = c.ClaimID
+	}
+	var mismatchIDs []string
+	for i := range res.Comparisons {
+		res.Comparisons[i].RederiveClaimID = rid[i]
+		if res.Comparisons[i].Outcome == "mismatch" {
+			mismatchIDs = append(mismatchIDs, res.Comparisons[i].ClaimID)
+		}
+	}
+	if len(mismatchIDs) == 0 {
+		return res, u, nil
+	}
+	existing, err := p.Store.ClaimsByIDs(ctx, in.OrgID, mismatchIDs)
+	if err != nil {
+		return nil, u, err
+	}
+	_, _, latestClaim := IndexClaims(existing)
+	for _, cmp := range res.Comparisons {
+		if cmp.Outcome != "mismatch" {
+			continue
+		}
+		c, ok := latestClaim[cmp.ClaimID]
+		if !ok || c.Status == ClaimConflicting {
+			continue
+		}
+		c.Status = ClaimConflicting
+		c.Derivation = DerivationPrimary
+		c.Context = strings.TrimSpace(c.Context + " [rederive mismatch: " + cmp.Detail + "]")
+		if _, _, err := p.Store.NewClaimVersion(ctx, in.OrgID, c.ClaimID, c); err != nil {
+			return nil, u, err
+		}
+		res.Conflicting = append(res.Conflicting, c.ClaimID)
+	}
+	return res, u, nil
+}
+
+// ── draft / package ─────────────────────────────────────────────────────
+
+func (p *Pipeline) draft(ctx context.Context, in PipelineInput, claims []Claim) (any, Usage, error) {
+	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierWrite, System: draftSystem,
+		Prompt: draftPrompt(in, claims), Schema: draftSchema(), MaxTokens: 16000})
+	u := resultUsage(gen)
+	if err != nil {
+		return nil, u, err
+	}
+	var d draftResult
+	if err := json.Unmarshal(gen.JSON, &d); err != nil {
+		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
+	}
+	return d, u, nil
+}
+
+func (p *Pipeline) packageStage(ctx context.Context, in PipelineInput, d draftResult, claims []Claim) (any, Usage, error) {
+	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierLight, System: packageSystem,
+		Prompt: packagePrompt(in, d, claims), Schema: packageSchema(), MaxTokens: 4000})
+	u := resultUsage(gen)
+	if err != nil {
+		return nil, u, err
+	}
+	var pk packageResult
+	if err := json.Unmarshal(gen.JSON, &pk); err != nil {
+		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
+	}
+	return pk, u, nil
+}
+
+// ── judgment ────────────────────────────────────────────────────────────
+
+var judgeFlagKinds = map[string]bool{
+	"headline_overpromise": true, "omitted_exception": true, "low_usefulness": true, "unreferenced_claim": true,
+}
+
+// ParseJudgment validates the judge's output against the refs it was shown
+// (in SortClaimRefs order). Unknown verdicts, out-of-range or duplicate
+// ref_index values and unknown flag kinds are errors. A ref the judge did not
+// return a verdict for is recorded as unsupported (fail closed) — silence is
+// never approval.
+func ParseJudgment(raw json.RawMessage, refs []ClaimRef) ([]JudgmentItem, error) {
+	var out struct {
+		Items []struct {
+			RefIndex      int    `json:"ref_index"`
+			Verdict       string `json:"verdict"`
+			LostQualifier string `json:"lost_qualifier"`
+			Note          string `json:"note"`
+		} `json:"items"`
+		Flags []struct {
+			Kind        string `json:"kind"`
+			BlockID     string `json:"block_id"`
+			SentenceIdx int    `json:"sentence_idx"`
+			Note        string `json:"note"`
+		} `json:"flags"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("%w: judgment: %v", ErrNoStructuredOutput, err)
+	}
+	byRef := map[int]JudgmentItem{}
+	for _, it := range out.Items {
+		if it.RefIndex < 0 || it.RefIndex >= len(refs) {
+			return nil, fmt.Errorf("%w: judgment ref_index %d out of range (%d refs)", ErrNoStructuredOutput, it.RefIndex, len(refs))
+		}
+		if _, dup := byRef[it.RefIndex]; dup {
+			return nil, fmt.Errorf("%w: judgment ref_index %d returned twice", ErrNoStructuredOutput, it.RefIndex)
+		}
+		switch it.Verdict {
+		case "supported", "overstated", "unsupported":
+		default:
+			return nil, fmt.Errorf("%w: judgment verdict %q", ErrNoStructuredOutput, it.Verdict)
+		}
+		r := refs[it.RefIndex]
+		byRef[it.RefIndex] = JudgmentItem{Kind: "claim", BlockID: r.BlockID, SentenceIdx: r.SentenceIdx, ClaimID: r.ClaimID,
+			Version: r.Version, Verdict: it.Verdict, LostQualifier: it.LostQualifier, Note: it.Note}
+	}
+	items := make([]JudgmentItem, 0, len(refs)+len(out.Flags))
+	for i, r := range refs {
+		it, ok := byRef[i]
+		if !ok {
+			it = JudgmentItem{Kind: "claim", BlockID: r.BlockID, SentenceIdx: r.SentenceIdx, ClaimID: r.ClaimID,
+				Version: r.Version, Verdict: "unsupported", Note: "judge returned no verdict for this sentence — fail closed"}
+		}
+		items = append(items, it)
+	}
+	for _, f := range out.Flags {
+		if !judgeFlagKinds[f.Kind] {
+			return nil, fmt.Errorf("%w: judgment flag kind %q", ErrNoStructuredOutput, f.Kind)
+		}
+		items = append(items, JudgmentItem{Kind: f.Kind, BlockID: f.BlockID, SentenceIdx: f.SentenceIdx, Verdict: "flag", Note: f.Note})
+	}
+	for i := range items {
+		items[i].ID = "j" + strconv.Itoa(i+1)
+	}
+	return items, nil
+}
+
+func (p *Pipeline) judge(ctx context.Context, in PipelineInput, pkg Package, refs []ClaimRef, claims map[string]Claim) (any, Usage, error) {
+	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: judgeSystem,
+		Prompt: judgePrompt(pkg, refs, claims), Schema: judgmentSchema(), MaxTokens: 16000})
+	u := resultUsage(gen)
+	if err != nil {
+		return nil, u, err
+	}
+	items, err := ParseJudgment(gen.JSON, refs)
+	return items, u, err
+}
+
+func resultUsage(r *GenerateResult) Usage {
+	if r == nil {
+		return Usage{}
+	}
+	return r.Usage
+}
+
+// Slugify makes a lowercase-hyphenated slug ≤ MaxSlugLen, cut at a hyphen.
+func Slugify(s string) string {
+	out := strings.Trim(nonWordRE.ReplaceAllString(strings.ToLower(s), "-"), "-")
+	if len(out) > MaxSlugLen {
+		out = out[:MaxSlugLen]
+		if i := strings.LastIndex(out, "-"); i > 20 {
+			out = out[:i]
+		}
+		out = strings.Trim(out, "-")
+	}
+	return out
+}
