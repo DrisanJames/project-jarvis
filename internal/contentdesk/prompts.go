@@ -32,10 +32,11 @@ Rules:
 
 // sentenceRules is shared by the draft and package prompts — it is the
 // contract SplitSentences/BlockSentences implement.
-const sentenceRules = `Sentence indexing (sentence_idx) — code counts sentences exactly this way, so your refs must too:
-- Within a block the units are, in order: the heading (if non-empty) = one unit; then each sentence of "text"; then each sentence of each entry in "items"; then each row of "rows" (one unit per row); then each sentence of "caption".
-- A sentence ends at ".", "!" or "?" followed by a space or the end of the text. Do not put abbreviations with periods inside sentences you need to reference.
-- Package-level units use these block_id values: "title", "excerpt", "meta_title", "meta_description", "subject:<i>", "preheader:<i>" (0-based).`
+const sentenceRules = `Citations — cite with inline markers. Code computes every position, so never write sentence indexes or a claim_refs list:
+- Put [[c:<claim_id>@<version>]] right after the words it supports, before the sentence's closing punctuation, e.g. "The APR includes the origination fee [[c:0f8e2a1c-…@1]]." Several markers may follow one sentence; one marker per claim.
+- Every factual sentence — anything a reader could check, and every sentence containing a number — carries at least one marker, in body text, items, table rows and captions, and in title, excerpt, meta_description, subjects and preheaders alike.
+- A marker's claim_id must be a listed claim with status=supported, with its exact version. If a point has no supported claim, leave it out or say plainly that it could not be confirmed. Never write "N/A" or an empty id.
+- A sentence ends at ".", "!" or "?" followed by a space. Avoid abbreviations with periods ("e.g.") inside cited sentences.`
 
 const draftSystem = `You write evidence-bound consumer articles for a brand site. A human editor reviews every word before anything publishes.
 
@@ -45,7 +46,7 @@ Output typed blocks only. Allowed types: lede, section, key_takeaways, worked_ex
 - comparison_table: "rows" with a header row first, every row the same number of cells (≥2).
 - steps / key_takeaways / faq: use "items" (faq items alternate question, answer).
 - worked_example: must carry calc {inputs:[{name,value}], formula, result}; the formula uses only + - * / ^, parentheses and input names, and result must equal the formula.
-- Every factual sentence — anything a reader could check, and every sentence containing a number — must reference a claim via claim_refs with the exact claim_id and version. Reference ONLY claims whose status is "supported". If a point has no supported claim, leave it out or say plainly that it could not be confirmed.
+- Cite every factual sentence — anything a reader could check, and every sentence containing a number — with an inline claim marker as the citation rules describe. Reference ONLY claims whose status is "supported". If a point has no supported claim, leave it out or say plainly that it could not be confirmed.
 - Keep each claim's scope: never drop its jurisdiction, population, effective date or conditions when you restate it.
 - Links to the site itself use exactly https://www.<site domain>/<path> with no trailing slash. External links only to the claim source URLs. No advertiser or brand names, no offers, no affiliate links.
 - Never invent ratings, stars, reviews, testimonials, comments, reader counts or quotes.
@@ -55,7 +56,7 @@ const packageSystem = `You package an approved-for-review article draft: headlin
 - The title must not promise more than the body delivers; no clickbait, no urgency you cannot support.
 - meta_title ≤ 60 characters, meta_description ≤ 160, excerpt ≤ 300, each subject ≤ 90, each preheader ≤ 120. Give 3–5 subjects and 3–5 preheaders.
 - Plain text only, no HTML. No advertiser names, offers, ratings or testimonials.
-- Any title/excerpt/meta/subject/preheader sentence that states a fact or a number must reference a supported claim in claim_refs, using the package-level block_id values.`
+- Any title/excerpt/meta/subject/preheader sentence that states a fact or a number carries an inline marker [[c:<claim_id>@<version>]] for a supported claim, as the citation rules describe.`
 
 const judgeSystem = `You are the standards editor. You check every sentence that restates a claim against that claim's source passage and scope.
 
@@ -142,13 +143,15 @@ func draftSchema() map[string]any {
 		"id": sStr(), "type": sEnum(blockTypeList()...), "heading": sStr(), "text": sStr(),
 		"items": sArr(sStr()), "rows": sArr(sArr(sStr())), "calc": sNullable(calcSchema()), "caption": sStr(),
 	})
-	return sObj(map[string]any{"blocks": sArr(block), "claim_refs": sArr(claimRefSchema())})
+	// No claim_refs: the writer cites with inline markers and code computes
+	// the refs (citations.go).
+	return sObj(map[string]any{"blocks": sArr(block)})
 }
 
 func packageSchema() map[string]any {
 	return sObj(map[string]any{
 		"title": sStr(), "excerpt": sStr(), "meta_title": sStr(), "meta_description": sStr(),
-		"subjects": sArr(sStr()), "preheaders": sArr(sStr()), "claim_refs": sArr(claimRefSchema()),
+		"subjects": sArr(sStr()), "preheaders": sArr(sStr()),
 	})
 }
 

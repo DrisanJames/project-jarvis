@@ -98,11 +98,11 @@ func (a assessment) findings() []reviseFinding {
 
 const reviseSystem = draftSystem + `
 
-You are now revising your own draft after the standards editor's review. You get the current blocks with their claim_refs and a list of findings.
-- Fix every finding at its cause: restore an overstated sentence's lost qualifier or narrow it to exactly what the passage says; rewrite or remove an unsupported sentence; give an unreferenced factual sentence a claim_ref or cut it; fix a failed code check (length limits, unresolved references, links) where it arises.
-- Change nothing that has no finding. Keep block ids stable.
-- Return EVERY block of the article, unchanged ones included, and every claim_ref — the complete article, never a fragment or a diff.
-- A claim_ref's claim_id must be one of the listed claim ids with status=supported. Never write "N/A" or an empty id: if a sentence has no supported claim, cut it.`
+You are now revising your own draft after the standards editor's review. You get the current blocks, with their inline claim markers, and a list of findings.
+- Fix every finding at its cause: restore an overstated sentence's lost qualifier or narrow it to exactly what the passage says; rewrite or remove an unsupported sentence; give an unreferenced factual sentence a marker or cut it; fix a failed code check (length limits, links) where it arises.
+- Change nothing that has no finding. Keep block ids stable, and keep every existing marker on sentences you do not change.
+- Return EVERY block of the article, unchanged ones included, with all their markers — the complete article, never a fragment or a diff.
+- A marker's claim_id must be one of the listed claim ids with status=supported. If a sentence has no supported claim, cut it.`
 
 const secondReviewSystem = judgeSystem + `
 
@@ -125,7 +125,7 @@ func revisePrompt(in PipelineInput, a assessment, claims []Claim) string {
 			supported = append(supported, c)
 		}
 	}
-	cur, _ := json.Marshal(map[string]any{"blocks": a.pkg.Blocks, "claim_refs": draftRefs})
+	cur, _ := json.Marshal(map[string]any{"blocks": markedBlocks(a.pkg.Blocks, draftRefs)})
 	fs, _ := json.Marshal(a.findings())
 	return fmt.Sprintf("%s\n%s\n\nCurrent draft (blocks + claim_refs):\n%s\n\nFindings to fix:\n%s\n\nClaims (reference only status=supported):\n%s",
 		briefBlock(in), sentenceRules, cur, fs, claimLines(supported))
@@ -144,12 +144,13 @@ func (p *Pipeline) revise(ctx context.Context, in PipelineInput, a assessment, c
 	if err := json.Unmarshal(gen.JSON, &d); err != nil {
 		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
 	}
+	d.ClaimRefs = extractDraftRefs(d.Blocks, claims)
 	return d, u, nil
 }
 
 // revisePromptVersion is part of the revise stage's input hash, so changing
 // the revise prompt never replays outputs cached under an older prompt.
-const revisePromptVersion = "2026-09-11.2"
+const revisePromptVersion = "2026-09-11.3-" + citationContractVersion
 
 // degenerateRevision names why a rewrite lost the article, or "". The live
 // model sometimes returns a minimal valid object (2026-09-11: 1 block and 0

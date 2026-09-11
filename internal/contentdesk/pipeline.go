@@ -224,7 +224,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 
 	// 3. draft
 	raw, u, err = p.RunStage(ctx, org, articleID, StageDraft,
-		mustHash(map[string]any{"brief": briefHash, "voice": in.Site.Voice, "claims": fp}),
+		mustHash(map[string]any{"brief": briefHash, "voice": in.Site.Voice, "claims": fp, "contract": citationContractVersion}),
 		func(ctx context.Context) (any, Usage, error) { return p.draft(ctx, in, current) })
 	total.Add(u)
 	if err != nil {
@@ -239,7 +239,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// 4–6. package → code checks → judgment, as one reusable assessment.
 	assess := func(draftRaw json.RawMessage, draft draftResult) (assessment, error) {
 		var a assessment
-		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp}),
+		raw, u, err := p.RunStage(ctx, org, articleID, StagePackage, mustHash(map[string]any{"draft": draftRaw, "claims": fp, "contract": citationContractVersion}),
 			func(ctx context.Context) (any, Usage, error) { return p.packageStage(ctx, in, draft, current) })
 		total.Add(u)
 		if err != nil {
@@ -656,6 +656,7 @@ func (p *Pipeline) draft(ctx context.Context, in PipelineInput, claims []Claim) 
 	if err := json.Unmarshal(gen.JSON, &d); err != nil {
 		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
 	}
+	d.ClaimRefs = extractDraftRefs(d.Blocks, claims)
 	return d, u, nil
 }
 
@@ -670,6 +671,8 @@ func (p *Pipeline) packageStage(ctx context.Context, in PipelineInput, d draftRe
 	if err := json.Unmarshal(gen.JSON, &pk); err != nil {
 		return nil, u, fmt.Errorf("%w: %v", ErrNoStructuredOutput, err)
 	}
+	pk.ClaimRefs = extractPackageRefs(&pk, claims)
+	enforcePackageLimits(&pk)
 	return pk, u, nil
 }
 
