@@ -22,9 +22,11 @@ const maxTrimPasses = 3
 //     would orphan its question (live :1134: myownhealth's last hard blocker).
 //   - A flagged subject or preheader line is dropped — they are
 //     interchangeable alternates (live :1135: discountblog's preheader:1).
-//   - Never a heading, table row, caption, title, excerpt or meta line, and
-//     never a block's last text sentence, item or FAQ pair, or the last
-//     subject or preheader.
+//   - A flagged caption sentence is cut; a caption is optional (live :1135:
+//     financialcalculate's table caption).
+//   - Never a heading, table row, title, excerpt or meta line, and never a
+//     block's last text sentence, item or FAQ pair, or the last subject or
+//     preheader.
 //
 // Returns the trimmed body and package with every reference re-indexed, and
 // how many units were removed.
@@ -115,11 +117,30 @@ func trimFlagged(a assessment) (draftResult, packageResult, int) {
 			}
 		}
 
+		// Caption sentences follow the rows. A caption is optional, so a
+		// flagged one may be cut entirely (live :1135: financialcalculate's
+		// table caption asserted an APR difference it never computed).
+		cs := SplitSentences(b.Caption)
+		cbase := u + len(b.Rows)
+		var keptCap []string
+		capCut := false
+		for i, s := range cs {
+			if flagged[cbase+i] {
+				removed[cbase+i] = true
+				capCut = true
+				continue
+			}
+			keptCap = append(keptCap, s)
+		}
+
 		if textCut {
 			b.Text = strings.Join(keptText, " ")
 		}
 		if len(drop) > 0 {
 			b.Items = keptItems
+		}
+		if capCut {
+			b.Caption = strings.Join(keptCap, " ")
 		}
 		n += len(removed)
 		out.Blocks = append(out.Blocks, b)

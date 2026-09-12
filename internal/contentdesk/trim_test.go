@@ -144,6 +144,25 @@ func TestTrimFlagged_SubjectAndPreheaderAlternates(t *testing.T) {
 	}
 }
 
+// Live :1135: financialcalculate's table caption claimed an APR difference it
+// never computed. The flagged caption sentence is cut (a caption is
+// optional); the heading and rows stay, and refs on the rows keep landing.
+func TestTrimFlagged_CaptionSentence(t *testing.T) {
+	a := assessment{
+		pkg: Package{Blocks: []Block{{ID: "cmp-1", Type: "comparison_table", Heading: "Two loans",
+			Rows:    [][]string{{"Loan", "Charge"}, {"A", "$978"}},
+			Caption: "Both carry $978. So the APRs differ."}}},
+		// units: 0 heading, 1-2 rows, 3-4 caption sentences
+		refs:     []ClaimRef{ref("cmp-1", 2, cU1, 1), ref("cmp-1", 3, cU1, 1), ref("cmp-1", 4, cU2, 3)},
+		judgment: []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "cmp-1", SentenceIdx: 4, Verdict: "overstated"}},
+	}
+	d, _, n := trimFlagged(a)
+	if n != 1 || d.Blocks[0].Caption != "Both carry $978." || d.Blocks[0].Heading != "Two loans" || len(d.Blocks[0].Rows) != 2 {
+		t.Fatalf("exactly the second caption sentence must go: n=%d %+v", n, d.Blocks[0])
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("cmp-1", 2, cU1, 1): "A | $978", ref("cmp-1", 3, cU1, 1): "Both carry $978."})
+}
+
 // Editorial flags are for the managing editor, never cut.
 func TestTrimFlagged_NothingToCut(t *testing.T) {
 	a := assessment{
