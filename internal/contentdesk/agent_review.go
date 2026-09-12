@@ -431,11 +431,15 @@ func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// verdict comes after reason in the schema (keys sort alphabetically), so
+	// the editor writes its reasoning before deciding. Live :1139: with an
+	// "accept" boolean first, the editor wrote "The two FAQ questions are
+	// acceptable…" and returned accept=false.
 	var res struct {
 		Decisions []struct {
-			ID     string `json:"id"`
-			Accept bool   `json:"accept"`
-			Reason string `json:"reason"`
+			ID      string `json:"id"`
+			Reason  string `json:"reason"`
+			Verdict string `json:"verdict"`
 		} `json:"decisions"`
 	}
 	if err := json.Unmarshal(gen.JSON, &res); err != nil {
@@ -447,7 +451,7 @@ func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package
 	}
 	byID := map[string]decision{}
 	for _, d := range res.Decisions {
-		byID[d.ID] = decision{d.Accept, strings.TrimSpace(d.Reason)}
+		byID[d.ID] = decision{d.Verdict == "accept", strings.TrimSpace(d.Reason)}
 	}
 	for _, it := range items {
 		d, ok := byID[it.ID]

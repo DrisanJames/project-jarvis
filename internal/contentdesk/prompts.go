@@ -291,10 +291,12 @@ const adjudicateSystem = `You are the managing editor. The standards editor and 
 - Accept an item only if it is mistaken, or immaterial: a careful reader would not be misled or left worse informed by the text as written. The reason must name the text you relied on.
 - Do not accept an item because it is small, common practice, or easy to fix later. If a headline promises more than the body delivers, a material exception or limit is missing, or the article does not answer its reader question, do not accept.
 - For "has a number but no claim ref": accept a number that is arithmetic on the article's own worked example, or a count of the article's own sections. In a heading, title, subject, preheader or meta line, also accept a number or date that restates the same number or date in a body sentence that carries a citation — name that body sentence in the reason. Do not accept a number that states a fact about the world found nowhere in a cited body sentence.
-- Decide every item. Output only the decisions.`
+- Decide every item: write the reason first, then the verdict, and make the verdict follow from the reason. Output only the decisions.`
 
+// adjudicationSchema: properties come out in alphabetical order, so "verdict"
+// is generated after "reason" — the decision follows the reasoning.
 func adjudicationSchema() map[string]any {
-	return sObj(map[string]any{"decisions": sArr(sObj(map[string]any{"id": sStr(), "accept": sBool(), "reason": sStr()}))})
+	return sObj(map[string]any{"decisions": sArr(sObj(map[string]any{"id": sStr(), "reason": sStr(), "verdict": sEnum("accept", "refuse")}))})
 }
 
 func judgePrompt(pkg Package, refs []ClaimRef, claims map[string]Claim, referenced []ClaimRef) string {

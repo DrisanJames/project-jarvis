@@ -66,9 +66,9 @@ func TestAcceptRevision_HardBlockersRankFirst(t *testing.T) {
 // ids stay blockers; each acceptance is recorded as an S3 finding.
 func TestAdjudicate_NeedsAcceptanceWithAReason(t *testing.T) {
 	llm := &fakeLLM{out: `{"decisions":[
-		{"id":"code:numeric_sentences_referenced","accept":true,"reason":"the meta description restates the cited body sentence in [b1] verbatim"},
-		{"id":"j2","accept":false,"reason":"the title promises a complete guide; the body covers two cases"},
-		{"id":"j5","accept":true,"reason":"ok"}]}`}
+		{"id":"code:numeric_sentences_referenced","reason":"the meta description restates the cited body sentence in [b1] verbatim","verdict":"accept"},
+		{"id":"j2","reason":"the title promises a complete guide; the body covers two cases","verdict":"refuse"},
+		{"id":"j5","reason":"ok","verdict":"accept"}]}`}
 	p := &Pipeline{LLM: llm}
 	items := []adjItem{{ID: "code:numeric_sentences_referenced", Kind: "code check numeric_sentences_referenced"},
 		{ID: "j2", Kind: "headline_overpromise", Unit: "title#0"}, {ID: "j5", Kind: "omitted_exception", Unit: "b2#1"}, {ID: "j7", Kind: "low_usefulness", Unit: "b1#0"}}

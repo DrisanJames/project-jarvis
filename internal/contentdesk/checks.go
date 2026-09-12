@@ -192,7 +192,7 @@ func checkClaimRefs(in CheckInput) CheckResult {
 
 // codeChecksVersion is part of the code_checks stage's input hash, so a
 // changed check never replays a result cached under an old one.
-const codeChecksVersion = "2026-09-12.headline-restates"
+const codeChecksVersion = "2026-09-12.headline-restates-faq-questions"
 
 // numTokenRE finds number tokens ("2", "37" of "37%", "978.52", "1,176").
 var numTokenRE = regexp.MustCompile(`\d[\d,.]*\d|\d`)
@@ -211,13 +211,34 @@ func checkNumericSentencesReferenced(in CheckInput) CheckResult {
 		refd[fmt.Sprintf("%s#%d", r.BlockID, r.SentenceIdx)] = true
 	}
 	units := Units(in.Package)
-	headed := map[string]bool{} // block ids whose unit 0 is a heading
+	headed := map[string]bool{}            // block ids whose unit 0 is a heading
+	questions := map[string]map[int]bool{} // faq block id -> unit indices of its questions
 	for _, b := range in.Package.Blocks {
+		h := 0
 		if strings.TrimSpace(b.Heading) != "" {
 			headed[b.ID] = true
+			h = 1
+		}
+		if b.Type == "faq" {
+			// A question restates; its answer carries the claim (live :1139:
+			// the history pilot was held on "Did anyone sign the Declaration
+			// after August 2, 1776?").
+			u := h + len(SplitSentences(b.Text))
+			questions[b.ID] = map[int]bool{}
+			for k, it := range b.Items {
+				n := len(SplitSentences(it))
+				if k%2 == 0 {
+					for x := 0; x < n; x++ {
+						questions[b.ID][u+x] = true
+					}
+				}
+				u += n
+			}
 		}
 	}
-	isHeadline := func(id string, i int) bool { return IsReservedUnitID(id) || (headed[id] && i == 0) }
+	isHeadline := func(id string, i int) bool {
+		return IsReservedUnitID(id) || (headed[id] && i == 0) || questions[id][i]
+	}
 	cited := map[string]bool{} // number tokens in cited body sentences
 	for id, sents := range units {
 		for i, s := range sents {

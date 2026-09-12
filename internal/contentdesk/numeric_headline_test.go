@@ -32,6 +32,31 @@ func TestNumericCheck_HeadlineRestatingACitedNumberPasses(t *testing.T) {
 	}
 }
 
+// Live :1139: an FAQ question restating a cited date ("Did anyone sign the
+// Declaration after August 2, 1776?") passes like a heading; the answer is
+// still a body sentence and still needs its own reference.
+func TestNumericCheck_FAQQuestionRestatingACitedNumberPasses(t *testing.T) {
+	pkg := Package{Blocks: []Block{
+		{ID: "l1", Type: "lede", Text: "Most delegates signed on August 2, 1776."},
+		{ID: "faq-1", Type: "faq", Items: []string{
+			"Did anyone sign after August 2, 1776?", "Yes, a few signed later in 1776.",
+			"What happened in 1999?", "Nothing relevant.",
+		}},
+	}}
+	refs := []ClaimRef{{BlockID: "l1", SentenceIdx: 0, ClaimID: cU1, Version: 1}}
+	r := checkNumericSentencesReferenced(CheckInput{Package: pkg, Refs: refs})
+	details := strings.Join(r.Details, "\n")
+	if strings.Contains(details, "faq-1#0") {
+		t.Fatalf("a question restating a cited date must pass:\n%s", details)
+	}
+	if !strings.Contains(details, "faq-1#1") {
+		t.Fatalf("an uncited answer with a number must still fail:\n%s", details)
+	}
+	if !strings.Contains(details, "faq-1#2") {
+		t.Fatalf("a question with a number found in no cited sentence must still fail:\n%s", details)
+	}
+}
+
 // Body sentences are unchanged: an uncited number still fails.
 func TestNumericCheck_UncitedBodyNumberStillFails(t *testing.T) {
 	pkg := Package{Blocks: []Block{{ID: "l1", Type: "lede", Text: "Rates rose 5% in 2024. Fees apply."}}}
