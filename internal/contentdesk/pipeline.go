@@ -414,6 +414,42 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		a = cand
 	}
 
+	// 7c. repair: the trim can leave a dangling reference (live :1136:
+	// discountblog's "Divide that total…" lost the sentence listing what to
+	// add up; financialcalculate's "that new payment" had no antecedent), and
+	// the managing editor rightly refused those flags. With no hard blocker
+	// left, one revise round on the remaining editorial flags; kept only if
+	// it strictly improves and stays at 0 hard blockers.
+	if AgentReviewEnabled() && a.hardBlockers() == 0 && !a.clean() {
+		prev := a
+		raw, u, err = p.RunStage(ctx, org, articleID, StageRevise,
+			mustHash(map[string]any{"revision": prev.revHash, "findings": prev.findings(), "claims": fp, "round": "repair", "prompt": revisePromptVersion}),
+			func(ctx context.Context) (any, Usage, error) { return p.revise(ctx, in, prev, current) })
+		total.Add(u)
+		if err != nil {
+			return err
+		}
+		var next draftResult
+		if err := json.Unmarshal(raw, &next); err != nil {
+			return fmt.Errorf("revise output: %w", err)
+		}
+		if why := degenerateRevision(prev, next); why != "" {
+			log.Printf("[ContentDesk] repair article=%s rejected: %s — keeping the revision", articleID, why)
+		} else {
+			cand, err := assess(raw, next, &prev, nil)
+			if err != nil {
+				return err
+			}
+			if acceptRevision(prev, cand) && cand.hardBlockers() == 0 {
+				log.Printf("[ContentDesk] repair article=%s: %d blocker(s), was %d", articleID, len(cand.blockers()), len(prev.blockers()))
+				a = cand
+			} else {
+				log.Printf("[ContentDesk] repair article=%s did not improve (%d blockers, %d hard vs %d) — keeping the revision",
+					articleID, len(cand.blockers()), cand.hardBlockers(), len(prev.blockers()))
+			}
+		}
+	}
+
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
 		return err
 	}
