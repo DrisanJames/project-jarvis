@@ -71,7 +71,7 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 		}
 	}
 	var out draftResult
-	n := 0
+	n, droppedBlocks := 0, 0
 	for _, b := range a.pkg.Blocks {
 		// A worked_example the model never gave a calc fails schema (S1), and
 		// no revise round added one (live :1145: bestcreditcare held on it
@@ -171,6 +171,17 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 			keptCap = append(keptCap, s)
 		}
 
+		// A section this pass cut down to one sentence, with nothing else in
+		// it, is dropped whole: a heading over a single leftover sentence is
+		// what the managing editor refuses (live :1148: discountblog's "three
+		// layers" section was left opening at "The second layer…"). Never the
+		// lede, never below two blocks.
+		if textCut && b.Type != "lede" && len(keptText) <= 1 && len(b.Items) == 0 && len(b.Rows) == 0 &&
+			len(a.pkg.Blocks)-droppedBlocks-1 >= 2 {
+			droppedBlocks++
+			n += len(BlockSentences(b))
+			continue
+		}
 		if textCut {
 			b.Text = strings.Join(keptText, " ")
 		}

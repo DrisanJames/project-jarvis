@@ -62,6 +62,20 @@ func (a assessment) clean() bool { return len(a.blockers()) == 0 }
 // with no source) never are; neither are S1 or non-heuristic code checks.
 var adjudicableFlags = map[string]bool{"headline_overpromise": true, "omitted_exception": true, "low_usefulness": true}
 
+// EnvEditorialBlocks restores the old gate when "1": editorial flags the
+// managing editor refuses hold the article. Unset/0 (operator 2026-09-12,
+// "the sites should be agentic… generate rich content"): the gate is the
+// material facts — claim verdicts, unreferenced factual sentences, S1 code
+// checks. Editorial flags are recorded as findings with the editor's reason
+// and never block; the editor cut still removes what it refuses where that
+// holds up. Live :1144–:1148: 7 consequential articles with every claim
+// supported were held on editorial flags; cutting to satisfy them hollowed
+// the articles out.
+const EnvEditorialBlocks = "CONTENT_DESK_EDITORIAL_BLOCKS"
+
+// EditorialFlagsBlock reports whether refused editorial flags hold an article.
+func EditorialFlagsBlock() bool { return strings.TrimSpace(os.Getenv(EnvEditorialBlocks)) == "1" }
+
 // adjItem is one item the managing editor may accept.
 type adjItem struct {
 	ID       string `json:"id"`
@@ -464,6 +478,9 @@ func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package
 			}
 			log.Printf("[ContentDesk] adjudicate article=%s: refused %s (%s): %s", in.Article.ID, it.ID, it.Kind, why)
 			refused = append(refused, it.ID)
+			block, _, _ := strings.Cut(it.Unit, "#")
+			findings = append(findings, Finding{Severity: "S3", CaughtBy: "judgment", BlockID: block,
+				Text: clip("editor refused "+it.ID+" ("+it.Kind+"): "+why, 500)})
 			continue
 		}
 		accepted = append(accepted, it.ID)
@@ -495,12 +512,17 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 			log.Printf("[ContentDesk] agent-review article=%s: adjudication failed (%v) — held for a person", articleID, err)
 			return nil
 		}
-		if len(refused) > 0 {
+		if len(refused) > 0 && EditorialFlagsBlock() {
 			log.Printf("[ContentDesk] agent-review article=%s: held for a person — the managing editor did not accept %s (accepted %d of %d)",
 				articleID, strings.Join(refused, ", "), len(acc), len(items))
 			return nil
 		}
 		accepted, findings = acc, fs
+		if len(refused) > 0 {
+			accepted = append(append([]string(nil), acc...), refused...)
+			log.Printf("[ContentDesk] agent-review article=%s: %d editorial flag(s) the editor refused are recorded, not blocking: %s",
+				articleID, len(refused), strings.Join(refused, ", "))
+		}
 		log.Printf("[ContentDesk] agent-review article=%s: managing editor accepted %d item(s) with reasons: %s", articleID, len(acc), strings.Join(acc, ", "))
 	}
 	_, out, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentReviewer, Role: "primary", Decision: "approve",
@@ -546,7 +568,7 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 	secondFindings := append([]Finding(nil), findings...)
 	if flags := (assessment{pkg: a.pkg, judgment: items}).adjudicable(); len(flags) > 0 {
 		_, fs, refused, err := p.adjudicate(ctx, in, a.pkg, flags)
-		if err != nil || len(refused) > 0 {
+		if err != nil || (len(refused) > 0 && EditorialFlagsBlock()) {
 			log.Printf("[ContentDesk] agent-review article=%s: second pass raised %d flag(s), not all accepted (err=%v) — awaiting a second reviewer", articleID, len(flags), err)
 			return nil
 		}
@@ -620,8 +642,8 @@ func (p *Pipeline) secondPassConverge(ctx context.Context, in PipelineInput, art
 				log.Printf("[ContentDesk] second-pass article=%s pass=%d: adjudication failed (%v) — held", articleID, pass, err)
 				return nil
 			}
-			if len(refused) == 0 {
-				log.Printf("[ContentDesk] second-pass article=%s pass=%d: clean (managing editor accepted %d flag(s))", articleID, pass, len(fs))
+			if len(refused) == 0 || !EditorialFlagsBlock() {
+				log.Printf("[ContentDesk] second-pass article=%s pass=%d: clean on claims (%d editorial flag(s) recorded, %d refused, not blocking)", articleID, pass, len(fs), len(refused))
 				return &secondPassResult{revHash: a.revHash, clean: true, findings: fs}
 			}
 			for _, id := range refused {

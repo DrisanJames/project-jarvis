@@ -63,7 +63,9 @@ func TestAcceptRevision_HardBlockersRankFirst(t *testing.T) {
 }
 
 // Accepted only with accept=true AND a written reason; missing and refused
-// ids stay blockers; each acceptance is recorded as an S3 finding.
+// ids stay in refused; every decision — acceptance or refusal — is recorded
+// as an S3 finding on its unit (a refusal no longer blocks by default, so its
+// reason must survive on the review).
 func TestAdjudicate_NeedsAcceptanceWithAReason(t *testing.T) {
 	llm := &fakeLLM{out: `{"decisions":[
 		{"id":"code:numeric_sentences_referenced","reason":"the meta description restates the cited body sentence in [b1] verbatim","verdict":"accept"},
@@ -79,8 +81,14 @@ func TestAdjudicate_NeedsAcceptanceWithAReason(t *testing.T) {
 	if !reflect.DeepEqual(acc, []string{"code:numeric_sentences_referenced"}) || !reflect.DeepEqual(refused, []string{"j2", "j5", "j7"}) {
 		t.Fatalf("accepted %v refused %v", acc, refused)
 	}
-	if len(fs) != 1 || fs[0].Severity != "S3" || fs[0].CaughtBy != "judgment" || !strings.Contains(fs[0].Text, "restates the cited body sentence") {
+	if len(fs) != 4 || fs[0].Severity != "S3" || fs[0].CaughtBy != "judgment" || !strings.Contains(fs[0].Text, "restates the cited body sentence") {
 		t.Fatalf("finding %+v", fs)
+	}
+	for i, want := range []struct{ block, id string }{{"title", "j2"}, {"b2", "j5"}, {"b1", "j7"}} {
+		f := fs[i+1]
+		if f.Severity != "S3" || f.BlockID != want.block || !strings.Contains(f.Text, "editor refused "+want.id) {
+			t.Fatalf("refusal %s must be recorded on %s: %+v", want.id, want.block, f)
+		}
 	}
 	r := llm.reqs[0]
 	if r.Tier != TierJudge || r.System != adjudicateSystem || !strings.Contains(r.Prompt, "Rates vary by lender") {
