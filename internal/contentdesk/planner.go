@@ -23,14 +23,16 @@ import (
 )
 
 const (
-	EnvPlannerPerDay = "CONTENT_DESK_PLANNER_PER_DAY"
+	EnvPlannerPerDay       = "CONTENT_DESK_PLANNER_PER_DAY"
+	EnvPlannerSiteGapHours = "CONTENT_DESK_PLANNER_SITE_GAP_HOURS"
+	EnvPlannerSpendShare   = "CONTENT_DESK_PLANNER_SPEND_SHARE"
 	// PlannerCreatedBy marks the briefs the planner files.
 	PlannerCreatedBy = "content-desk-planner"
-	// plannerSpendShare: the planner stops filing once this share of the
-	// daily budget is spent, so queued articles can still finish.
-	plannerSpendShare = 0.5
-	// plannerSiteGap: a site gets at most one new brief per this window.
-	plannerSiteGap = 20 * time.Hour
+	// Operator 2026-09-12: "I don't want the content generated daily. I
+	// wanna generate it every other day." — a site gets at most one new
+	// brief per 48h by default.
+	defaultPlannerSiteGap    = 48 * time.Hour
+	defaultPlannerSpendShare = 0.5
 	// plannerMaxExisting bounds the existing questions shown to the planner.
 	plannerMaxExisting = 60
 )
@@ -41,6 +43,25 @@ func PlannerPerDay() int {
 		return v
 	}
 	return 0
+}
+
+// PlannerSiteGap is the minimum time between two briefs for one site
+// (default 48h; 12h..14d).
+func PlannerSiteGap() time.Duration {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(EnvPlannerSiteGapHours)), 64); err == nil && v >= 12 && v <= 336 {
+		return time.Duration(v * float64(time.Hour))
+	}
+	return defaultPlannerSiteGap
+}
+
+// PlannerSpendShare: the planner stops filing once this share of the daily
+// budget is spent, so queued articles can still finish (default 0.5;
+// 0.1..0.95).
+func PlannerSpendShare() float64 {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv(EnvPlannerSpendShare)), 64); err == nil && v >= 0.1 && v <= 0.95 {
+		return v
+	}
+	return defaultPlannerSpendShare
 }
 
 // SiteDefaultCategory is each property's desk category (the research
@@ -145,7 +166,7 @@ func (pl *Planner) Plan(ctx context.Context, maxInFlight int) (int, error) {
 		if planned, err := pl.Store.PlannedToday(ctx, org); err != nil || planned >= per {
 			continue
 		}
-		if spent, err := pl.Store.SpentToday(ctx, org); err != nil || spent >= plannerSpendShare*DailyBudgetUSD() {
+		if spent, err := pl.Store.SpentToday(ctx, org); err != nil || spent >= PlannerSpendShare()*DailyBudgetUSD() {
 			continue
 		}
 		if queued, err := pl.Store.QueuedArticles(ctx, org); err != nil || queued >= maxInFlight {
@@ -153,7 +174,7 @@ func (pl *Planner) Plan(ctx context.Context, maxInFlight int) (int, error) {
 		}
 		for _, st := range byOrg[org] { // least recently briefed first
 			cat := SiteCategory(st.Site)
-			if cat == "" || st.InFlight > 0 || pl.Now().Sub(st.LastBrief) < plannerSiteGap {
+			if cat == "" || st.InFlight > 0 || pl.Now().Sub(st.LastBrief) < PlannerSiteGap() {
 				continue
 			}
 			b, err := pl.planSite(ctx, org, st, cat)
@@ -170,6 +191,91 @@ func (pl *Planner) Plan(ctx context.Context, maxInFlight int) (int, error) {
 		}
 	}
 	return filed, nil
+}
+
+// PlannerSiteStatus is one site's row in the planner status report.
+type PlannerSiteStatus struct {
+	Site         string     `json:"site"`
+	BrandCode    string     `json:"brand_code"`
+	Category     string     `json:"category"`
+	Briefs       int        `json:"briefs"`
+	InFlight     int        `json:"in_flight"`
+	LastBrief    *time.Time `json:"last_brief,omitempty"`
+	NextEligible *time.Time `json:"next_eligible,omitempty"`
+	EligibleNow  bool       `json:"eligible_now"`
+	Reason       string     `json:"reason"`
+}
+
+// PlannerStatusReport is the live proof of what the planner will do: its
+// settings, today's budget position, and every enabled site's standing.
+type PlannerStatusReport struct {
+	Enabled           bool                `json:"enabled"`
+	PerDay            int                 `json:"per_day"`
+	SiteGapHours      float64             `json:"site_gap_hours"`
+	SpendShare        float64             `json:"spend_share"`
+	DailyBudgetUSD    float64             `json:"daily_budget_usd"`
+	SpentTodayUSD     float64             `json:"spent_today_usd"`
+	FilingStopsAtUSD  float64             `json:"filing_stops_at_usd"`
+	PlannedToday      int                 `json:"planned_today"`
+	Queued            int                 `json:"queued"`
+	SitesTotal        int                 `json:"sites_total"`
+	SitesWithCategory int                 `json:"sites_with_category"`
+	EligibleNow       int                 `json:"eligible_now"`
+	Sites             []PlannerSiteStatus `json:"sites"`
+}
+
+// Status reports the planner's settings and every enabled site in org, in
+// the order the planner would serve them.
+func (pl *Planner) Status(ctx context.Context, org string) (PlannerStatusReport, error) {
+	now := pl.Now()
+	rep := PlannerStatusReport{PerDay: PlannerPerDay(), SiteGapHours: PlannerSiteGap().Hours(), SpendShare: PlannerSpendShare(),
+		DailyBudgetUSD: DailyBudgetUSD(), Sites: []PlannerSiteStatus{}}
+	rep.Enabled = rep.PerDay > 0
+	rep.FilingStopsAtUSD = rep.SpendShare * rep.DailyBudgetUSD
+	sites, err := pl.Store.PlannerSites(ctx)
+	if err != nil {
+		return rep, err
+	}
+	if rep.SpentTodayUSD, err = pl.Store.SpentToday(ctx, org); err != nil {
+		return rep, err
+	}
+	if rep.PlannedToday, err = pl.Store.PlannedToday(ctx, org); err != nil {
+		return rep, err
+	}
+	if rep.Queued, err = pl.Store.QueuedArticles(ctx, org); err != nil {
+		return rep, err
+	}
+	gap := PlannerSiteGap()
+	for _, st := range sites {
+		if st.OrgID != org {
+			continue
+		}
+		row := PlannerSiteStatus{Site: st.Domain, BrandCode: st.BrandCode, Category: SiteCategory(st.Site), Briefs: len(st.Questions), InFlight: st.InFlight}
+		if !st.LastBrief.IsZero() && st.LastBrief.Year() > 1970 {
+			lb, next := st.LastBrief, st.LastBrief.Add(gap)
+			row.LastBrief, row.NextEligible = &lb, &next
+		}
+		switch {
+		case row.Category == "":
+			row.Reason = "no category — the planner skips this site"
+		case st.InFlight > 0:
+			row.Reason = "an article is being written"
+		case row.NextEligible != nil && now.Before(*row.NextEligible):
+			row.Reason = "next brief due " + row.NextEligible.UTC().Format("2006-01-02 15:04Z")
+		default:
+			row.EligibleNow = true
+			row.Reason = "eligible now"
+		}
+		rep.SitesTotal++
+		if row.Category != "" {
+			rep.SitesWithCategory++
+		}
+		if row.EligibleNow {
+			rep.EligibleNow++
+		}
+		rep.Sites = append(rep.Sites, row)
+	}
+	return rep, nil
 }
 
 const plannerSystem = `You are the editorial planner for one brand website. Propose ONE article brief.

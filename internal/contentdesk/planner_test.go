@@ -3,6 +3,7 @@ package contentdesk
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,6 +98,51 @@ func TestPlanner_RefusesARepeatedQuestion(t *testing.T) {
 	n, _ := (&Planner{Store: st, LLM: &seqLLM{outs: []string{dup}}, Now: func() time.Time { return plannerNow }}).Plan(context.Background(), 2)
 	if n != 0 || len(st.briefs) != 0 {
 		t.Fatalf("a repeated question must not be filed: %+v", st.briefs)
+	}
+}
+
+// Operator 2026-09-12: every other day, not daily — a site briefed 30h ago
+// is not eligible; one briefed 49h ago is.
+func TestPlanner_SiteGapDefaultsToEveryOtherDay(t *testing.T) {
+	t.Setenv(EnvPlannerPerDay, "13")
+	t.Setenv(EnvPlannerSiteGapHours, "")
+	if PlannerSiteGap() != 48*time.Hour {
+		t.Fatalf("default gap %s, want 48h", PlannerSiteGap())
+	}
+	sites := []PlannerSite{
+		{OrgID: "o", Site: Site{ID: "s30", Domain: "myrepairdiy.com"}, LastBrief: plannerNow.Add(-30 * time.Hour)},
+		{OrgID: "o", Site: Site{ID: "s49", Domain: "myownhealth.net"}, LastBrief: plannerNow.Add(-49 * time.Hour)},
+	}
+	st := &fakePlannerStore{sites: sites}
+	n, _ := (&Planner{Store: st, LLM: &seqLLM{outs: []string{plannerOut}}, Now: func() time.Time { return plannerNow }}).Plan(context.Background(), 2)
+	if n != 1 || st.briefs[0].SiteID != "s49" {
+		t.Fatalf("only the site briefed more than 48h ago may get a brief: %+v", st.briefs)
+	}
+	t.Setenv(EnvPlannerSiteGapHours, "6") // out of bounds -> default
+	if PlannerSiteGap() != 48*time.Hour {
+		t.Fatal("gap below 12h must fall back to the default")
+	}
+}
+
+func TestPlanner_StatusReportsEverySiteAndWhy(t *testing.T) {
+	t.Setenv(EnvPlannerPerDay, "13")
+	t.Setenv(EnvDailyUSD, "120")
+	t.Setenv(EnvPlannerSpendShare, "0.75")
+	st := &fakePlannerStore{sites: plannerSites(), spent: 30, planned: 2, queued: 1}
+	rep, err := (&Planner{Store: st, Now: func() time.Time { return plannerNow }}).Status(context.Background(), "o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Enabled || rep.PerDay != 13 || rep.SiteGapHours != 48 || rep.FilingStopsAtUSD != 90 || rep.SitesTotal != 5 || rep.SitesWithCategory != 4 {
+		t.Fatalf("settings: %+v", rep)
+	}
+	why := map[string]string{}
+	for _, s := range rep.Sites {
+		why[s.Site] = s.Reason
+	}
+	if why["example.org"] != "no category — the planner skips this site" || why["financialcalculate.com"] != "an article is being written" ||
+		!strings.HasPrefix(why["discountblog.com"], "next brief due") || why["myrepairdiy.com"] != "eligible now" || rep.EligibleNow != 2 {
+		t.Fatalf("per-site reasons: %v (eligible %d)", why, rep.EligibleNow)
 	}
 }
 

@@ -67,6 +67,7 @@ func (s *ContentDeskService) RegisterRoutes(r chi.Router) {
 		cr.Post("/articles/{id}/withdraw", s.HandleWithdraw)
 		cr.Post("/claims/{claim_id}/versions", s.HandleClaimVersion)
 		cr.Get("/ops-status", s.HandleOpsStatus)
+		cr.Get("/planner", s.HandlePlannerStatus)
 	})
 }
 
@@ -130,6 +131,24 @@ func contentDeskCtx(r *http.Request) (context.Context, context.CancelFunc) {
 }
 
 // HandleListSites — GET /content-desk/sites
+// HandlePlannerStatus — GET /content-desk/planner: the planner's live settings
+// (briefs/day, per-site gap, spend share, today's spend) and every enabled
+// site's category, last brief, next due time and why it is or isn't eligible.
+func (s *ContentDeskService) HandlePlannerStatus(w http.ResponseWriter, r *http.Request) {
+	org, ok := contentDeskOrg(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := contentDeskCtx(r)
+	defer cancel()
+	rep, err := (&contentdesk.Planner{Store: s.store, Now: s.now}).Status(ctx, org)
+	if err != nil {
+		contentDeskError(w, "planner status", err)
+		return
+	}
+	respondJSON(w, http.StatusOK, rep)
+}
+
 func (s *ContentDeskService) HandleListSites(w http.ResponseWriter, r *http.Request) {
 	org, ok := contentDeskOrg(w, r)
 	if !ok {
