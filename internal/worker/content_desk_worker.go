@@ -62,12 +62,21 @@ type contentDeskQueue interface {
 	StopRun(ctx context.Context, org, id string) error
 }
 
+type contentDeskPlanner interface {
+	Plan(ctx context.Context, maxInFlight int) (int, error)
+}
+
+// contentDeskPlanEvery spaces planner passes (each files at most one brief per org).
+const contentDeskPlanEvery = 10 * time.Minute
+
 // ContentDeskWorker is the scheduler; the pipeline does the work.
 type ContentDeskWorker struct {
 	db          *sql.DB
 	redis       *redis.Client
 	queue       contentDeskQueue
 	runner      contentDeskRunner
+	planner     contentDeskPlanner // nil = no planner
+	lastPlan    time.Time
 	interval    time.Duration
 	concurrency int
 	enabled     func() bool
@@ -82,9 +91,11 @@ type ContentDeskWorker struct {
 // back to a PG advisory lock.
 func NewContentDeskWorker(db *sql.DB, redisClient *redis.Client) *ContentDeskWorker {
 	store := contentdesk.NewStore(db)
+	llm := contentdesk.NewAnthropicLLM(store)
 	w := &ContentDeskWorker{
 		db: db, redis: redisClient, queue: store,
-		runner:      contentdesk.NewPipeline(store, contentdesk.NewAnthropicLLM(store)),
+		runner:      contentdesk.NewPipeline(store, llm),
+		planner:     contentdesk.NewPlanner(store, llm),
 		interval:    contentDeskDefaultInterval,
 		concurrency: ContentDeskConcurrency(),
 		enabled:     contentdesk.Enabled,
@@ -135,6 +146,7 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 	if !on {
 		return "disabled"
 	}
+	w.maybePlan(ctx)
 	arts, err := w.queue.PendingArticles(ctx, w.concurrency*4)
 	if err != nil {
 		log.Printf("[ContentDesk] ERROR step=queue: %v", err)
@@ -159,6 +171,24 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 	}
 	wg.Wait()
 	return "ran"
+}
+
+// maybePlan runs the brief planner at most every contentDeskPlanEvery, under a
+// cluster-wide lock so two ECS tasks never file the same site's brief twice.
+func (w *ContentDeskWorker) maybePlan(ctx context.Context) {
+	if w.planner == nil || time.Since(w.lastPlan) < contentDeskPlanEvery {
+		return
+	}
+	w.lastPlan = time.Now()
+	lock := w.newLock("content_desk:planner")
+	acquired, err := lock.Acquire(ctx)
+	if err != nil || !acquired {
+		return
+	}
+	defer func() { _ = lock.Release(context.Background()) }()
+	if _, err := w.planner.Plan(ctx, w.concurrency); err != nil {
+		log.Printf("[ContentDesk] ERROR step=planner: %v", err)
+	}
 }
 
 // runOne leases one article and runs its pipeline. Returns the outcome label.
