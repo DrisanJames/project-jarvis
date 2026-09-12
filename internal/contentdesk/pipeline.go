@@ -406,8 +406,8 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 			return err
 		}
 		if !trimAcceptable(prev, cand) {
-			log.Printf("[ContentDesk] trim article=%s pass=%d: cutting %d unit(s) made it worse (%d hard vs %d) — keeping the revision",
-				articleID, pass, n, cand.hardBlockers(), prev.hardBlockers())
+			log.Printf("[ContentDesk] trim article=%s pass=%d: cutting %d unit(s) made it worse (%d hard vs %d) — keeping the revision: %s",
+				articleID, pass, n, cand.hardBlockers(), prev.hardBlockers(), clip(strings.Join(cand.hardBlockerList(), "; "), 400))
 			break
 		}
 		log.Printf("[ContentDesk] trim article=%s pass=%d: cut %d flagged unit(s) — %d hard blocker(s), was %d", articleID, pass, n, cand.hardBlockers(), prev.hardBlockers())
@@ -444,8 +444,8 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 				log.Printf("[ContentDesk] repair article=%s: %d blocker(s), was %d", articleID, len(cand.blockers()), len(prev.blockers()))
 				a = cand
 			} else {
-				log.Printf("[ContentDesk] repair article=%s did not improve (%d blockers, %d hard vs %d) — keeping the revision",
-					articleID, len(cand.blockers()), cand.hardBlockers(), len(prev.blockers()))
+				log.Printf("[ContentDesk] repair article=%s did not improve (%d blockers, %d hard vs %d) — keeping the revision: %s",
+					articleID, len(cand.blockers()), cand.hardBlockers(), len(prev.blockers()), clip(strings.Join(cand.hardBlockerList(), "; "), 400))
 			}
 		}
 	}
@@ -478,8 +478,8 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 							articleID, n, strings.Join(refused, ", "), len(cand.blockers()), cand.hardBlockers())
 						a = cand
 					} else {
-						log.Printf("[ContentDesk] editor-cut article=%s: cutting %s made it worse (%d hard) — keeping the revision",
-							articleID, strings.Join(refused, ", "), cand.hardBlockers())
+						log.Printf("[ContentDesk] editor-cut article=%s: cutting %s made it worse (%d hard) — keeping the revision: %s",
+							articleID, strings.Join(refused, ", "), cand.hardBlockers(), clip(strings.Join(cand.hardBlockerList(), "; "), 400))
 					}
 				}
 			}

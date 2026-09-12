@@ -640,7 +640,8 @@ func (p *Pipeline) secondPassConverge(ctx context.Context, in PipelineInput, art
 			return nil
 		}
 		if !trimAcceptable(prev, cand) || cand.hardBlockers() > 0 {
-			log.Printf("[ContentDesk] second-pass article=%s pass=%d: cutting %d unit(s) made it worse (%d hard) — held", articleID, pass, n, cand.hardBlockers())
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: cutting %d unit(s) made it worse (%d hard) — held: %s", articleID, pass, n, cand.hardBlockers(),
+				clip(strings.Join(cand.hardBlockerList(), "; "), 400))
 			return nil
 		}
 		log.Printf("[ContentDesk] second-pass article=%s pass=%d: cut %d unit(s) it would not pass", articleID, pass, n)
