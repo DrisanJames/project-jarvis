@@ -73,6 +73,14 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 	var out draftResult
 	n := 0
 	for _, b := range a.pkg.Blocks {
+		// A worked_example the model never gave a calc fails schema (S1), and
+		// no revise round added one (live :1145: bestcreditcare held on it
+		// after 5 rounds). Its prose stands as a plain section: units and
+		// references are unchanged, since BlockSentences ignores the type.
+		if b.Type == "worked_example" && b.Calc == nil && (strings.TrimSpace(b.Text) != "" || len(b.Items) > 0) {
+			b.Type = "section"
+			n++
+		}
 		flagged := cut[b.ID]
 		removed := map[int]bool{} // unit indices (BlockSentences order) removed from this block
 

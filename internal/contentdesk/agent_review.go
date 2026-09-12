@@ -562,8 +562,12 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 	return nil
 }
 
-// maxSecondPasses bounds the second-pass convergence loop.
-const maxSecondPasses = 3
+// maxSecondPasses bounds the second-pass convergence loop; maxSingleCutTries
+// bounds the one-unit-at-a-time retries after a rejected batch cut.
+const (
+	maxSecondPasses   = 5
+	maxSingleCutTries = 3
+)
 
 // secondPassResult is the adversarial second pass run in Run on the revision
 // about to be saved.
@@ -624,25 +628,61 @@ func (p *Pipeline) secondPassConverge(ctx context.Context, in PipelineInput, art
 				cut[id] = true
 			}
 		}
-		next, pk, n := trimWhere(assessment{pkg: a.pkg, refs: a.refs, judgment: items}, func(j JudgmentItem) bool { return cut[j.ID] })
-		if n == 0 {
-			log.Printf("[ContentDesk] second-pass article=%s pass=%d: %d item(s) it will not pass, none cuttable — held", articleID, pass, len(cut))
-			return nil
+		// try cuts the picked items and re-assesses; ok = kept under
+		// trimAcceptable at 0 hard blockers.
+		try := func(pick map[string]bool) (cand assessment, n int, ok bool, err error) {
+			next, pk, n := trimWhere(assessment{pkg: a.pkg, refs: a.refs, judgment: items}, func(j JudgmentItem) bool { return pick[j.ID] })
+			if n == 0 {
+				return assessment{}, 0, false, nil
+			}
+			raw, err := json.Marshal(next)
+			if err != nil {
+				return assessment{}, n, false, err
+			}
+			prev := *a
+			cand, err = assess(raw, next, &prev, &pk)
+			if err != nil {
+				return assessment{}, n, false, err
+			}
+			return cand, n, trimAcceptable(prev, cand) && cand.hardBlockers() == 0, nil
 		}
-		raw, err := json.Marshal(next)
-		if err != nil {
-			return nil
-		}
-		prev := *a
-		cand, err := assess(raw, next, &prev, &pk)
+		cand, n, ok, err := try(cut)
 		if err != nil {
 			log.Printf("[ContentDesk] second-pass article=%s pass=%d: re-assess failed (%v) — held", articleID, pass, err)
 			return nil
 		}
-		if !trimAcceptable(prev, cand) || cand.hardBlockers() > 0 {
-			log.Printf("[ContentDesk] second-pass article=%s pass=%d: cutting %d unit(s) made it worse (%d hard) — held: %s", articleID, pass, n, cand.hardBlockers(),
-				clip(strings.Join(cand.hardBlockerList(), "; "), 400))
+		if n == 0 {
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: %d item(s) it will not pass, none cuttable — held", articleID, pass, len(cut))
 			return nil
+		}
+		if !ok {
+			// A batch cut re-judges every block it touched at once, and one
+			// cut can strip the context the next sentence relied on (live
+			// :1145: discountblog's 5-unit cut raised a new unsupported
+			// takeaway; financialcalculate's 2-unit cut raised 3 items on one
+			// anatomy sentence). Retry one unit at a time.
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: cutting %d unit(s) made it worse (%d hard) — retrying one unit at a time: %s", articleID, pass, n, cand.hardBlockers(),
+				clip(strings.Join(cand.hardBlockerList(), "; "), 400))
+			found, tries := false, 0
+			for _, j := range items {
+				if !cut[j.ID] || tries >= maxSingleCutTries {
+					continue
+				}
+				tries++
+				c1, n1, ok1, err := try(map[string]bool{j.ID: true})
+				if err != nil {
+					log.Printf("[ContentDesk] second-pass article=%s pass=%d: re-assess failed (%v) — held", articleID, pass, err)
+					return nil
+				}
+				if n1 > 0 && ok1 {
+					cand, n, found = c1, n1, true
+					break
+				}
+			}
+			if !found {
+				log.Printf("[ContentDesk] second-pass article=%s pass=%d: no single cut held up (%d tried) — held", articleID, pass, tries)
+				return nil
+			}
 		}
 		log.Printf("[ContentDesk] second-pass article=%s pass=%d: cut %d unit(s) it would not pass", articleID, pass, n)
 		*a = cand
