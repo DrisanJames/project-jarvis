@@ -486,11 +486,19 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		}
 	}
 
+	// 7e. second pass (consequential): converge before the revision is saved
+	// (agent_review.go secondPassConverge); agent review files the second
+	// approval from this verdict.
+	var second *secondPassResult
+	if AgentReviewEnabled() && (in.Brief.Consequential || ConsequentialCategories[in.Brief.Category]) && a.hardBlockers() == 0 {
+		second = p.secondPassConverge(ctx, in, articleID, &a, byKey, assess)
+	}
+
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
 		return err
 	}
 	// 8. agent review (CONTENT_DESK_AGENT_REVIEW=1): approve a clean revision.
-	return p.agentReview(ctx, in, org, articleID, a, byKey)
+	return p.agentReview(ctx, in, org, articleID, a, byKey, second)
 }
 
 func keyClaims(r researchResult) []researchRef {

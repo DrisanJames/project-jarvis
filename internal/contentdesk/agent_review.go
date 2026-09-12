@@ -476,7 +476,7 @@ func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package
 
 // agentReview approves a clean revision. Anything it cannot approve stays in
 // review for a person, with the reason logged.
-func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, articleID string, a assessment, claims map[string]Claim) error {
+func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, articleID string, a assessment, claims map[string]Claim, second *secondPassResult) error {
 	if !AgentReviewEnabled() {
 		return nil
 	}
@@ -512,8 +512,19 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 		log.Printf("[ContentDesk] agent-review article=%s: approved by %s", articleID, AgentReviewer)
 		return nil
 	}
-	// Consequential: the adversarial second pass must also find nothing it
-	// cannot accept. Same coverage guard as the first judge.
+	// Consequential: the second pass already ran in Run on this exact
+	// revision and converged clean — file the second approval from it rather
+	// than re-sample a fresh verdict that could disagree.
+	if second != nil && second.clean && second.revHash == a.revHash {
+		if _, _, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentSecondReviewer, Role: "second", Decision: "approve",
+			AcceptedIDs: accepted, Findings: append(append([]Finding(nil), findings...), second.findings...)}); err != nil {
+			return fmt.Errorf("agent review (second): %w", err)
+		}
+		log.Printf("[ContentDesk] agent-review article=%s: approved (primary + adversarial second pass, converged before save)", articleID)
+		return nil
+	}
+	// Otherwise the adversarial second pass runs here and must find nothing
+	// it cannot accept. Same coverage guard as the first judge.
 	items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims, nil)
 	if err != nil {
 		log.Printf("[ContentDesk] agent-review article=%s: second pass failed (%v) — awaiting a second reviewer", articleID, err)
@@ -548,5 +559,93 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 		return fmt.Errorf("agent review (second): %w", err)
 	}
 	log.Printf("[ContentDesk] agent-review article=%s: approved (primary + adversarial second pass)", articleID)
+	return nil
+}
+
+// maxSecondPasses bounds the second-pass convergence loop.
+const maxSecondPasses = 3
+
+// secondPassResult is the adversarial second pass run in Run on the revision
+// about to be saved.
+type secondPassResult struct {
+	revHash  string
+	clean    bool
+	findings []Finding // the managing editor's accepted second-pass flags
+}
+
+// secondPassBlocking are the second-pass items no agent may accept: claims
+// not judged supported, and flags outside adjudicableFlags.
+func secondPassBlocking(items []JudgmentItem) []JudgmentItem {
+	var out []JudgmentItem
+	for _, j := range items {
+		if (j.Kind == "claim" && j.Verdict != "supported") || (j.Kind != "claim" && !adjudicableFlags[j.Kind]) {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// secondPassConverge runs the adversarial second pass on a consequential
+// article before its revision is saved. What it will not pass — claims not
+// judged supported, unreferenced sentences, and flags the managing editor
+// refuses — is cut under the trim's rules and the article re-assessed, kept
+// under trimAcceptable and only while it stays at 0 hard blockers, up to
+// maxSecondPasses. Returns the clean verdict for agent review, or nil (held).
+// Live :1135/:1136: myownhealth's primary approval stood while a fresh second
+// pass found 12 items and nothing acted on them.
+func (p *Pipeline) secondPassConverge(ctx context.Context, in PipelineInput, articleID string, a *assessment, claims map[string]Claim,
+	assess func(json.RawMessage, draftResult, *assessment, *packageResult) (assessment, error)) *secondPassResult {
+	for pass := 1; pass <= maxSecondPasses; pass++ {
+		items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims, nil)
+		if err != nil {
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: %v — held", articleID, pass, err)
+			return nil
+		}
+		cut := map[string]bool{}
+		for _, j := range secondPassBlocking(items) {
+			cut[j.ID] = true
+		}
+		if len(cut) == 0 {
+			flags := (assessment{pkg: a.pkg, judgment: items}).adjudicable()
+			if len(flags) == 0 {
+				log.Printf("[ContentDesk] second-pass article=%s pass=%d: clean", articleID, pass)
+				return &secondPassResult{revHash: a.revHash, clean: true}
+			}
+			_, fs, refused, err := p.adjudicate(ctx, in, a.pkg, flags)
+			if err != nil {
+				log.Printf("[ContentDesk] second-pass article=%s pass=%d: adjudication failed (%v) — held", articleID, pass, err)
+				return nil
+			}
+			if len(refused) == 0 {
+				log.Printf("[ContentDesk] second-pass article=%s pass=%d: clean (managing editor accepted %d flag(s))", articleID, pass, len(fs))
+				return &secondPassResult{revHash: a.revHash, clean: true, findings: fs}
+			}
+			for _, id := range refused {
+				cut[id] = true
+			}
+		}
+		next, pk, n := trimWhere(assessment{pkg: a.pkg, refs: a.refs, judgment: items}, func(j JudgmentItem) bool { return cut[j.ID] })
+		if n == 0 {
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: %d item(s) it will not pass, none cuttable — held", articleID, pass, len(cut))
+			return nil
+		}
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return nil
+		}
+		prev := *a
+		cand, err := assess(raw, next, &prev, &pk)
+		if err != nil {
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: re-assess failed (%v) — held", articleID, pass, err)
+			return nil
+		}
+		if !trimAcceptable(prev, cand) || cand.hardBlockers() > 0 {
+			log.Printf("[ContentDesk] second-pass article=%s pass=%d: cutting %d unit(s) made it worse (%d hard) — held", articleID, pass, n, cand.hardBlockers())
+			return nil
+		}
+		log.Printf("[ContentDesk] second-pass article=%s pass=%d: cut %d unit(s) it would not pass", articleID, pass, n)
+		*a = cand
+	}
+	log.Printf("[ContentDesk] second-pass article=%s: not clean after %d passes — held", articleID, maxSecondPasses)
 	return nil
 }
