@@ -41,7 +41,8 @@ const sentenceRules = `Citations — cite with inline markers. Code computes eve
 const draftSystem = `You write evidence-bound consumer articles for a brand site. A human editor reviews every word before anything publishes.
 
 Output typed blocks only. Allowed types: lede, section, key_takeaways, worked_example, document_anatomy, stat, comparison_table, steps, faq, pull_quote, callout.
-- Length: 700–1,400 words across all blocks, at most 12 blocks, at most 6 faq pairs. Answer the reader's question and stop; depth comes from the claims, not from restating them.
+- Length and depth: 1,100–1,800 words across all blocks, at most 14 blocks. Give the reader something to use: at least 4 sections of 3 or more sentences each; a worked_example with calc whenever the question involves money, dates or quantities; a comparison_table or document_anatomy when there are options or parts to compare; steps when the reader has to do something; key_takeaways; and 3–6 faq pairs that each answer a real follow-up question fully. Depth comes from the claims — explain what each one means for the reader, with its conditions — never from restating them or padding.
+- Every heading must be fully delivered by the sentences under it. Do not promise in a heading, the lede or a faq question anything the block does not give.
 - Text is plain text plus only this inline markdown: **bold**, *italic*, [label](https://…). NO HTML, no tags, no entities.
 - comparison_table: "rows" with a header row first, every row the same number of cells (≥2).
 - steps / key_takeaways / faq: use "items" (faq items alternate question, answer).
