@@ -76,6 +76,22 @@ const EnvEditorialBlocks = "CONTENT_DESK_EDITORIAL_BLOCKS"
 // EditorialFlagsBlock reports whether refused editorial flags hold an article.
 func EditorialFlagsBlock() bool { return strings.TrimSpace(os.Getenv(EnvEditorialBlocks)) == "1" }
 
+// EnvSecondReview: "advisory" (operator 2026-09-12, "Publish 5 now + one
+// reviewer going forward") = a consequential article is approved by the
+// fact-checking reviewer alone — every claim supported by its source, no
+// unsourced factual sentence, no S1 check; the strict second pass runs once
+// and its objections are recorded on the approval, never blocking. Unset or
+// "required" = a different reviewer must also approve. Live :1144–:1151: 5
+// money/insurance articles had every claim supported and were held only by
+// the second pass; cutting to satisfy it hollowed them out.
+const EnvSecondReview = "CONTENT_DESK_SECOND_REVIEW"
+
+// SecondReviewRequired reports whether consequential articles need a second
+// approval by a different reviewer.
+func SecondReviewRequired() bool {
+	return strings.TrimSpace(os.Getenv(EnvSecondReview)) != "advisory"
+}
+
 // adjItem is one item the managing editor may accept.
 type adjItem struct {
 	ID       string `json:"id"`
@@ -524,6 +540,24 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 				articleID, len(refused), strings.Join(refused, ", "))
 		}
 		log.Printf("[ContentDesk] agent-review article=%s: managing editor accepted %d item(s) with reasons: %s", articleID, len(acc), strings.Join(acc, ", "))
+	}
+	// Advisory second review: the strict pass reads the article once and its
+	// objections are recorded on the approval (they do not block).
+	if !SecondReviewRequired() && (in.Brief.Consequential || ConsequentialCategories[in.Brief.Category]) {
+		if items, _, err := p.judgeCall(ctx, in, secondReviewSystem, a.pkg, a.refs, claims, nil); err != nil {
+			log.Printf("[ContentDesk] agent-review article=%s: advisory second pass failed (%v) — approving on the fact check", articleID, err)
+		} else {
+			n := 0
+			for _, j := range items {
+				if j.Kind == "claim" && j.Verdict == "supported" {
+					continue
+				}
+				n++
+				findings = append(findings, Finding{Severity: "S3", CaughtBy: "judgment", BlockID: j.BlockID,
+					Text: clip(fmt.Sprintf("second reviewer (advisory): %s %s at %s#%d: %s", j.Kind, j.Verdict, j.BlockID, j.SentenceIdx, j.Note), 500)})
+			}
+			log.Printf("[ContentDesk] agent-review article=%s: advisory second pass recorded %d note(s), not blocking", articleID, n)
+		}
 	}
 	_, out, err := p.Store.SubmitReview(ctx, org, articleID, ReviewInput{RevisionHash: a.revHash, Reviewer: AgentReviewer, Role: "primary", Decision: "approve",
 		AcceptedIDs: accepted, Findings: findings})

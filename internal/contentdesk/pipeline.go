@@ -490,7 +490,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// (agent_review.go secondPassConverge); agent review files the second
 	// approval from this verdict.
 	var second *secondPassResult
-	if AgentReviewEnabled() && (in.Brief.Consequential || ConsequentialCategories[in.Brief.Category]) && a.hardBlockers() == 0 {
+	if AgentReviewEnabled() && SecondReviewRequired() && (in.Brief.Consequential || ConsequentialCategories[in.Brief.Category]) && a.hardBlockers() == 0 {
 		second = p.secondPassConverge(ctx, in, articleID, &a, byKey, assess)
 	}
 

@@ -894,7 +894,7 @@ func (s *Store) SubmitReview(ctx context.Context, org, articleID string, in Revi
 	if err := rows.Err(); err != nil {
 		return rv, ReviewOutcome{}, err
 	}
-	outcome := DecideReview(checks, consequential, prior, in)
+	outcome := DecideReview(checks, consequential && SecondReviewRequired(), prior, in)
 	if in.Decision == "approve" && len(outcome.Blockers) > 0 {
 		return rv, outcome, ErrApprovalBlocked
 	}
