@@ -417,6 +417,20 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			pg.Get("/api/partner-ingest/v1/batches/{id}", partnerIngest.HandleGetBatch)
 		})
 
+		// Site contract (site_contract.go) — the ONE server-to-server
+		// contract brand sites use to push subscribe / preferences /
+		// unsubscribe events. Public routes: the X-Site-Key is checked in the
+		// handler (same posture as partner ingest above). Until the
+		// suppression hub is built the events route answers 503.
+		s.router.Get("/api/sites/v1/schema", HandleSiteContractSchema)
+		s.router.Post("/api/sites/v1/events", func(w http.ResponseWriter, r *http.Request) {
+			if h := siteContractHandler.Load(); h != nil {
+				h.HandleEvent(w, r)
+				return
+			}
+			siteErr(w, http.StatusServiceUnavailable, "unavailable", "the platform is starting; retry with the same event_id")
+		})
+
 		// Recipient preference page + token unsubscribe (preferences_page.go).
 		// Public: recipients arrive from email links with no session. The
 		// page needs the suppression hub, which is built later in this
@@ -984,6 +998,13 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			r.Get("/preferences/{email}", suppSvc.HandleGetPreferences)
 			r.Put("/preferences/{email}", suppSvc.HandleUpdatePreferences)
 			r.Post("/preferences/unsubscribe", suppSvc.HandleUnsubscribeAll)
+
+			// Site contract keys (site_contract.go): mint / list / revoke the
+			// per-site X-Site-Key. Admin-only (inherits this group's auth).
+			siteKeys := NewSiteKeyAdmin(db)
+			r.Get("/site-keys", siteKeys.HandleList)
+			r.Post("/site-keys", siteKeys.HandleMint)
+			r.Post("/site-keys/{id}/revoke", siteKeys.HandleRevoke)
 
 			// Optizmo Integration (Enhanced)
 			r.Post("/optizmo/sync", suppSvc.HandleOptizmoSync)
@@ -1832,6 +1853,8 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				prefsFreshSender = s.mailingSvc.sendPreferenceLinkEmail
 			}
 			preferencesHandler.Store(NewPreferencesHandler(db, globalHub, prefsFreshSender))
+			// Site contract events need the same hub (unsubscribe → suppression).
+			siteContractHandler.Store(NewSiteContractHandler(db, globalHub))
 
 			// Global Suppression API
 			globalSuppAPI := NewGlobalSuppressionAPI(globalHub, engineOrgID)

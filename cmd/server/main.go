@@ -3749,6 +3749,33 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"subscriber_preferences_uq", `CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriber_prefs_org_hash_brand ON mailing_subscriber_preferences (organization_id, email_hash, (COALESCE(brand_root, '')))`},
 
+		// ── site contract (2026-09-12, internal/api/site_contract.go) ───────
+		// One key per brand site (hash only) and an idempotency/audit row per
+		// pushed event. New, empty tables — each statement fits the 5s slice.
+		{"site_contract_keys_table", `CREATE TABLE IF NOT EXISTS mailing_site_contract_keys (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			site_domain     TEXT NOT NULL,
+			list_id         UUID NOT NULL,
+			key_hash        TEXT NOT NULL UNIQUE,
+			key_prefix      TEXT NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_used_at    TIMESTAMPTZ,
+			revoked_at      TIMESTAMPTZ
+		)`},
+		{"site_contract_events_table", `CREATE TABLE IF NOT EXISTS mailing_site_contract_events (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			site_domain     TEXT NOT NULL,
+			event_id        TEXT NOT NULL,
+			event_type      TEXT NOT NULL,
+			email_hash      TEXT NOT NULL,
+			occurred_at     TIMESTAMPTZ,
+			result          JSONB,
+			received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"site_contract_events_uq", `CREATE UNIQUE INDEX IF NOT EXISTS uq_site_contract_events_site_event ON mailing_site_contract_events (site_domain, event_id)`},
+
 		// ── click-funnel retry hardening (2026-08-25) ──────────────────────
 		// Attempt state for the journey retry policy (internal/worker/
 		// journey_retry.go). Before this, a failing node retried on the claim
