@@ -36,18 +36,21 @@ func assertRefsLand(t *testing.T, d draftResult, want map[ClaimRef]string) {
 func TestTrimFlagged_TextSentence(t *testing.T) {
 	a := assessment{
 		pkg:  Package{Blocks: []Block{{ID: "s1", Type: "section", Heading: "Rates", Text: "A holds. B holds. C holds.", Items: []string{"Item one."}}}},
-		refs: []ClaimRef{ref("s1", 1, cU1, 1), ref("s1", 3, cU2, 3), ref("s1", 4, cU1, 1), ref("title", 0, cU1, 1)},
+		refs: []ClaimRef{ref("s1", 1, cU1, 1), ref("s1", 3, cU2, 3), ref("s1", 4, cU1, 1), ref(UnitTitle, 0, cU1, 1)},
 		judgment: []JudgmentItem{
 			{ID: "j1", Kind: "unreferenced_claim", BlockID: "s1", SentenceIdx: 2, Verdict: "flag"}, // B
 			{ID: "j2", Kind: "claim", BlockID: "s1", SentenceIdx: 0, Verdict: "unsupported"},       // heading: never cut
-			{ID: "j3", Kind: "headline_overpromise", BlockID: "title", Verdict: "flag"},
+			{ID: "j3", Kind: "headline_overpromise", BlockID: UnitTitle, Verdict: "flag"},
 		},
 	}
-	d, n := trimFlagged(a)
+	d, pk, n := trimFlagged(a)
 	if n != 1 || d.Blocks[0].Text != "A holds. C holds." || d.Blocks[0].Heading != "Rates" {
 		t.Fatalf("exactly B must be cut: n=%d %+v", n, d.Blocks[0])
 	}
 	assertRefsLand(t, d, map[ClaimRef]string{ref("s1", 1, cU1, 1): "A holds.", ref("s1", 2, cU2, 3): "C holds.", ref("s1", 3, cU1, 1): "Item one."})
+	if !reflect.DeepEqual(pk.ClaimRefs, []ClaimRef{ref(UnitTitle, 0, cU1, 1)}) {
+		t.Fatalf("package refs must be kept: %+v", pk.ClaimRefs)
+	}
 }
 
 // An overstated claim no rewrite fixed is cut too, with its own reference.
@@ -57,7 +60,7 @@ func TestTrimFlagged_OverstatedSentenceAndItsRef(t *testing.T) {
 		refs:     []ClaimRef{ref("l1", 0, cU1, 1), ref("l1", 1, cU2, 3)},
 		judgment: []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "l1", SentenceIdx: 0, Verdict: "overstated"}},
 	}
-	d, n := trimFlagged(a)
+	d, _, n := trimFlagged(a)
 	if n != 1 || d.Blocks[0].Text != "B holds." {
 		t.Fatalf("A must be cut: n=%d %q", n, d.Blocks[0].Text)
 	}
@@ -75,7 +78,7 @@ func TestTrimFlagged_FAQPair(t *testing.T) {
 		refs:     []ClaimRef{ref("faq-1", 1, cU1, 1), ref("faq-1", 4, cU2, 3)},
 		judgment: []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "faq-1", SentenceIdx: 1, Verdict: "overstated"}},
 	}
-	d, n := trimFlagged(a)
+	d, _, n := trimFlagged(a)
 	if n != 2 || !reflect.DeepEqual(d.Blocks[0].Items, []string{"Is it per serving?", "Yes. Always per serving."}) {
 		t.Fatalf("the first pair must go: n=%d %q", n, d.Blocks[0].Items)
 	}
@@ -96,7 +99,7 @@ func TestTrimFlagged_NeverEmptiesABlock(t *testing.T) {
 			{ID: "j3", Kind: "claim", BlockID: "l1", SentenceIdx: 0, Verdict: "unsupported"},
 		},
 	}
-	if d, n := trimFlagged(a); n != 0 || !reflect.DeepEqual(d.Blocks, a.pkg.Blocks) {
+	if d, _, n := trimFlagged(a); n != 0 || !reflect.DeepEqual(d.Blocks, a.pkg.Blocks) {
 		t.Fatalf("nothing may be cut: n=%d %+v", n, d.Blocks)
 	}
 }
@@ -108,20 +111,46 @@ func TestTrimFlagged_ListItem(t *testing.T) {
 		refs:     []ClaimRef{ref("st-1", 0, cU1, 1), ref("st-1", 2, cU2, 3)},
 		judgment: []JudgmentItem{{ID: "j1", Kind: "unreferenced_claim", BlockID: "st-1", SentenceIdx: 1, Verdict: "flag"}},
 	}
-	d, n := trimFlagged(a)
+	d, _, n := trimFlagged(a)
 	if n != 1 || !reflect.DeepEqual(d.Blocks[0].Items, []string{"One.", "Three."}) {
 		t.Fatalf("Two must go: n=%d %q", n, d.Blocks[0].Items)
 	}
 	assertRefsLand(t, d, map[ClaimRef]string{ref("st-1", 0, cU1, 1): "One.", ref("st-1", 1, cU2, 3): "Three."})
 }
 
+// Live :1135: discountblog held on an overstated preheader. A flagged subject
+// or preheader alternate is dropped and the survivors renumbered — never the
+// last one, and never the title, excerpt or meta.
+func TestTrimFlagged_SubjectAndPreheaderAlternates(t *testing.T) {
+	a := assessment{
+		pkg: Package{Title: "T", Excerpt: "E.", MetaTitle: "M", MetaDescription: "D.",
+			Subjects: []string{"S0", "S1", "S2"}, Preheaders: []string{"P0"},
+			Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds."}}},
+		refs: []ClaimRef{ref(UnitTitle, 0, cU1, 1), ref(SubjectUnit(1), 0, cU1, 1), ref(SubjectUnit(2), 0, cU2, 3), ref(PreheaderUnit(0), 0, cU2, 3)},
+		judgment: []JudgmentItem{
+			{ID: "j1", Kind: "claim", BlockID: SubjectUnit(1), SentenceIdx: 0, Verdict: "overstated"},
+			{ID: "j2", Kind: "claim", BlockID: PreheaderUnit(0), SentenceIdx: 0, Verdict: "overstated"}, // the only preheader: kept
+			{ID: "j3", Kind: "claim", BlockID: UnitTitle, SentenceIdx: 0, Verdict: "overstated"},        // title: never cut
+		},
+	}
+	_, pk, n := trimFlagged(a)
+	if n != 1 || !reflect.DeepEqual(pk.Subjects, []string{"S0", "S2"}) || !reflect.DeepEqual(pk.Preheaders, []string{"P0"}) ||
+		pk.Title != "T" || pk.Excerpt != "E." || pk.MetaTitle != "M" || pk.MetaDescription != "D." {
+		t.Fatalf("exactly subject 1 must go: n=%d %+v", n, pk)
+	}
+	want := []ClaimRef{ref(UnitTitle, 0, cU1, 1), ref(SubjectUnit(1), 0, cU2, 3), ref(PreheaderUnit(0), 0, cU2, 3)}
+	if !reflect.DeepEqual(pk.ClaimRefs, want) {
+		t.Fatalf("package refs %+v, want %+v", pk.ClaimRefs, want)
+	}
+}
+
 // Editorial flags are for the managing editor, never cut.
 func TestTrimFlagged_NothingToCut(t *testing.T) {
 	a := assessment{
-		pkg:      Package{Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds. B holds."}}},
+		pkg:      Package{Subjects: []string{"S0", "S1"}, Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds. B holds."}}},
 		judgment: []JudgmentItem{{ID: "j1", Kind: "low_usefulness", BlockID: "l1", SentenceIdx: 1, Verdict: "flag"}},
 	}
-	if _, n := trimFlagged(a); n != 0 {
+	if _, _, n := trimFlagged(a); n != 0 {
 		t.Fatalf("an adjudicable flag must not be cut: %d", n)
 	}
 }

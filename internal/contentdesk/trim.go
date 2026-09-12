@@ -2,7 +2,12 @@ package contentdesk
 
 import "strings"
 
-// trimFlagged is the editor's last resort after the revise loop: it cuts body
+// maxTrimPasses bounds the editorial trim: it repeats while each pass improves
+// (live :1135: discountblog's single pass took 5 hard blockers to 2, and the
+// re-judged takeaways block raised one more a second pass can cut).
+const maxTrimPasses = 3
+
+// trimFlagged is the editor's last resort after the revise loop: it cuts
 // content that still carries a hard claim finding no rewrite cleared — an
 // unreferenced_claim flag, or a claim judged unsupported or overstated.
 // Cutting only removes content; it never adds an unchecked fact. The trimmed
@@ -14,19 +19,18 @@ import "strings"
 //     for 4 rounds).
 //   - A flagged sentence inside a list item removes that item; inside an FAQ
 //     it removes the whole question/answer pair, since an answer cut alone
-//     would orphan its question (live :1134: myownhealth's last hard blocker
-//     was an overstated FAQ answer).
-//   - Never a heading, table row or caption, and never a block's last text
-//     sentence, last item or last FAQ pair.
+//     would orphan its question (live :1134: myownhealth's last hard blocker).
+//   - A flagged subject or preheader line is dropped — they are
+//     interchangeable alternates (live :1135: discountblog's preheader:1).
+//   - Never a heading, table row, caption, title, excerpt or meta line, and
+//     never a block's last text sentence, item or FAQ pair, or the last
+//     subject or preheader.
 //
-// Returns the trimmed body with its references re-indexed, and how many
-// sentences (units) were removed.
-func trimFlagged(a assessment) (draftResult, int) {
+// Returns the trimmed body and package with every reference re-indexed, and
+// how many units were removed.
+func trimFlagged(a assessment) (draftResult, packageResult, int) {
 	cut := map[string]map[int]bool{}
 	for _, j := range a.judgment {
-		if IsReservedUnitID(j.BlockID) {
-			continue
-		}
 		if j.Kind == "unreferenced_claim" || (j.Kind == "claim" && (j.Verdict == "unsupported" || j.Verdict == "overstated")) {
 			if cut[j.BlockID] == nil {
 				cut[j.BlockID] = map[int]bool{}
@@ -133,5 +137,45 @@ func trimFlagged(a assessment) (draftResult, int) {
 			out.ClaimRefs = append(out.ClaimRefs, r)
 		}
 	}
-	return out, n
+
+	// Package: title, excerpt and meta stay; flagged subject/preheader
+	// alternates are dropped and the survivors' unit ids renumbered.
+	pk := packageResult{Title: a.pkg.Title, Excerpt: a.pkg.Excerpt, MetaTitle: a.pkg.MetaTitle, MetaDescription: a.pkg.MetaDescription}
+	rename := map[string]string{} // surviving old unit id → new unit id
+	keepAlts := func(lines []string, unit func(int) string) []string {
+		var keep []int
+		for i := range lines {
+			if len(cut[unit(i)]) == 0 {
+				keep = append(keep, i)
+			}
+		}
+		if len(keep) == 0 { // never drop the last alternate
+			for i := range lines {
+				keep = append(keep, i)
+			}
+		}
+		kept := make([]string, 0, len(keep))
+		for ni, oi := range keep {
+			kept = append(kept, lines[oi])
+			rename[unit(oi)] = unit(ni)
+		}
+		n += len(lines) - len(keep)
+		return kept
+	}
+	pk.Subjects = keepAlts(a.pkg.Subjects, SubjectUnit)
+	pk.Preheaders = keepAlts(a.pkg.Preheaders, PreheaderUnit)
+	for _, r := range a.refs {
+		if !IsReservedUnitID(r.BlockID) {
+			continue
+		}
+		if strings.HasPrefix(r.BlockID, unitSubjectPrefix) || strings.HasPrefix(r.BlockID, unitPreheaderPrefix) {
+			id, ok := rename[r.BlockID]
+			if !ok {
+				continue // its line was dropped
+			}
+			r.BlockID = id
+		}
+		pk.ClaimRefs = append(pk.ClaimRefs, r)
+	}
+	return out, pk, n
 }

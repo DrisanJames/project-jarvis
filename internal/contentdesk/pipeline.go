@@ -243,21 +243,15 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 	// email lines as assessed instead of re-packaging a body that only lost
 	// sentences (live :1133: a regenerated excerpt brought a new overstated
 	// claim into the trim candidate).
-	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment, keepPackage bool) (assessment, error) {
+	assess := func(draftRaw json.RawMessage, draft draftResult, fix *assessment, keep *packageResult) (assessment, error) {
 		var a assessment
 		var raw json.RawMessage
 		var u Usage
 		var err error
 		var pk packageResult
 		var pkgRaw json.RawMessage
-		if keepPackage && fix != nil {
-			pk = packageResult{Title: fix.pkg.Title, Excerpt: fix.pkg.Excerpt, MetaTitle: fix.pkg.MetaTitle,
-				MetaDescription: fix.pkg.MetaDescription, Subjects: fix.pkg.Subjects, Preheaders: fix.pkg.Preheaders}
-			for _, r := range fix.refs {
-				if IsReservedUnitID(r.BlockID) {
-					pk.ClaimRefs = append(pk.ClaimRefs, r)
-				}
-			}
+		if keep != nil {
+			pk = *keep
 			if pkgRaw, err = json.Marshal(pk); err != nil {
 				return a, err
 			}
@@ -345,7 +339,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		return a, nil
 	}
 
-	a, err := assess(draftRaw, draft, nil, false)
+	a, err := assess(draftRaw, draft, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -380,7 +374,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 			log.Printf("[ContentDesk] revise article=%s round=%d rejected: %s — keeping the previous revision", articleID, round, why)
 			continue
 		}
-		cand, err := assess(raw, next, &prev, false)
+		cand, err := assess(raw, next, &prev, nil)
 		if err != nil {
 			return err
 		}
@@ -392,27 +386,32 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		a = cand
 	}
 
-	// 7b. editorial trim: cut body sentences still flagged unreferenced or
-	// unsupported, then re-assess like a round; kept only under
-	// acceptRevision (trim.go).
-	if AgentReviewEnabled() && a.hardBlockers() > 0 {
-		if next, n := trimFlagged(a); n > 0 {
-			trimRaw, err := json.Marshal(next)
-			if err != nil {
-				return err
-			}
-			prev := a
-			cand, err := assess(trimRaw, next, &prev, true)
-			if err != nil {
-				return err
-			}
-			if acceptRevision(prev, cand) {
-				log.Printf("[ContentDesk] trim article=%s: cut %d flagged sentence(s) — %d hard blocker(s), was %d", articleID, n, cand.hardBlockers(), prev.hardBlockers())
-				a = cand
-			} else {
-				log.Printf("[ContentDesk] trim article=%s: cutting %d sentence(s) did not improve (%d hard vs %d) — keeping the revision", articleID, n, cand.hardBlockers(), prev.hardBlockers())
-			}
+	// 7b. editorial trim: cut content still carrying a hard claim finding,
+	// then re-assess like a round; kept only under acceptRevision (trim.go).
+	// Repeated while it improves, at most maxTrimPasses (live :1135:
+	// discountblog's single pass took 5 hard blockers to 2, and the re-judged
+	// takeaways block raised one more that a second pass can cut).
+	for pass := 1; AgentReviewEnabled() && pass <= maxTrimPasses && a.hardBlockers() > 0; pass++ {
+		next, pk, n := trimFlagged(a)
+		if n == 0 {
+			break
 		}
+		trimRaw, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		prev := a
+		cand, err := assess(trimRaw, next, &prev, &pk)
+		if err != nil {
+			return err
+		}
+		if !acceptRevision(prev, cand) {
+			log.Printf("[ContentDesk] trim article=%s pass=%d: cutting %d unit(s) did not improve (%d hard vs %d) — keeping the revision",
+				articleID, pass, n, cand.hardBlockers(), prev.hardBlockers())
+			break
+		}
+		log.Printf("[ContentDesk] trim article=%s pass=%d: cut %d flagged unit(s) — %d hard blocker(s), was %d", articleID, pass, n, cand.hardBlockers(), prev.hardBlockers())
+		a = cand
 	}
 
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
