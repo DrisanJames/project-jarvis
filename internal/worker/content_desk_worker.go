@@ -182,6 +182,20 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 		default:
 			return map[bool]string{true: "ran", false: "busy"}[launched > 0] // every slot taken
 		}
+		// Take the article lock before committing the slot: an article running
+		// on the other task must not hold a slot here even briefly (live
+		// :1146: the two oldest articles, each running on the other task, took
+		// this task's free slots every tick, failed their locks after the
+		// tick had already given up, and three newer articles never started).
+		lock := w.newLock("content_desk:article:" + a.ArticleID)
+		acquired, err := lock.Acquire(ctx)
+		if err != nil || !acquired {
+			<-w.slots
+			if err != nil {
+				log.Printf("[ContentDesk] ERROR step=lock article=%s: %v", a.ArticleID, err)
+			}
+			continue
+		}
 		w.mu.Lock()
 		if w.inflight == nil {
 			w.inflight = map[string]bool{}
@@ -190,7 +204,7 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 		w.mu.Unlock()
 		launched++
 		w.running.Add(1)
-		go func(a contentdesk.PendingArticle) {
+		go func(a contentdesk.PendingArticle, lock distlock.DistLock) {
 			defer w.running.Done()
 			defer func() {
 				w.mu.Lock()
@@ -198,8 +212,13 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 				w.mu.Unlock()
 				<-w.slots
 			}()
-			w.runOne(ctx, a)
-		}(a)
+			defer func() {
+				if err := lock.Release(context.Background()); err != nil {
+					log.Printf("[ContentDesk] ERROR step=lock-release article=%s: %v", a.ArticleID, err)
+				}
+			}()
+			w.runLocked(ctx, a)
+		}(a, lock)
 	}
 	if launched == 0 {
 		return "busy"
@@ -225,24 +244,11 @@ func (w *ContentDeskWorker) maybePlan(ctx context.Context) {
 	}
 }
 
-// runOne leases one article and runs its pipeline. Returns the outcome label.
-func (w *ContentDeskWorker) runOne(ctx context.Context, a contentdesk.PendingArticle) string {
-	lock := w.newLock("content_desk:article:" + a.ArticleID)
-	acquired, err := lock.Acquire(ctx)
-	if err != nil {
-		log.Printf("[ContentDesk] ERROR step=lock article=%s: %v", a.ArticleID, err)
-		return "lock-error"
-	}
-	if !acquired {
-		return "lock-held"
-	}
-	defer func() {
-		if err := lock.Release(context.Background()); err != nil {
-			log.Printf("[ContentDesk] ERROR step=lock-release article=%s: %v", a.ArticleID, err)
-		}
-	}()
+// runLocked runs one article's pipeline; the caller holds its lock. Returns
+// the outcome label.
+func (w *ContentDeskWorker) runLocked(ctx context.Context, a contentdesk.PendingArticle) string {
 	start := time.Now()
-	err = w.runner.Run(ctx, a.OrgID, a.ArticleID)
+	err := w.runner.Run(ctx, a.OrgID, a.ArticleID)
 	switch {
 	case err == nil:
 		log.Printf("[ContentDesk] article=%s → in_review (%s)", a.ArticleID, time.Since(start).Round(time.Second))

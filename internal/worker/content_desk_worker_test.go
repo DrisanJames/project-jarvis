@@ -152,6 +152,28 @@ func TestContentDeskWorker_TickDoesNotWaitAndFillsFreedSlots(t *testing.T) {
 	}
 }
 
+type keyedCDLock struct {
+	key  string
+	held map[string]bool
+}
+
+func (l keyedCDLock) Acquire(context.Context) (bool, error) { return !l.held[l.key], nil }
+func (l keyedCDLock) Release(context.Context) error         { return nil }
+
+// Live :1146: the two oldest queued articles were running on the other task;
+// every tick they took this task's free slots, failed their locks after the
+// tick had given up, and three newer articles never started. An article
+// locked elsewhere now never holds a slot, so the newer ones launch.
+func TestContentDeskWorker_ArticlesLockedElsewhereDoNotStarveTheQueue(t *testing.T) {
+	q, r := &fakeCDQueue{pending: pending(5)}, &fakeCDRunner{hold: 20 * time.Millisecond}
+	w := newFakeCDWorker(q, r, true, true)
+	held := map[string]bool{"content_desk:article:a0": true, "content_desk:article:a1": true}
+	w.newLock = func(key string) distlock.DistLock { return keyedCDLock{key: key, held: held} }
+	if got := tickAndWait(w); got != "ran" || r.runs != 2 {
+		t.Fatalf("a2 and a3 must run in the two free slots: tick=%q runs=%d", got, r.runs)
+	}
+}
+
 func TestContentDeskConcurrencyEnv(t *testing.T) {
 	t.Setenv(EnvContentDeskConcurrency, "")
 	if ContentDeskConcurrency() != 2 {
