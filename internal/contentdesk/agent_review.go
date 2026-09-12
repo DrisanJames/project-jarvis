@@ -509,7 +509,16 @@ func (p *Pipeline) agentReview(ctx context.Context, in PipelineInput, org, artic
 		return nil
 	}
 	if !secondPassClean(items) {
-		log.Printf("[ContentDesk] agent-review article=%s: second pass not clean — awaiting a second reviewer", articleID)
+		// Name what the second editor objected to (live :1135: myownhealth's
+		// first primary approval stopped here with no detail logged).
+		var why []string
+		for _, j := range items {
+			if (j.Kind == "claim" && j.Verdict != "supported") || (j.Kind != "claim" && !adjudicableFlags[j.Kind]) {
+				why = append(why, fmt.Sprintf("%s %s at %s#%d: %s", j.Kind, j.Verdict, j.BlockID, j.SentenceIdx, clip(j.Note, 140)))
+			}
+		}
+		log.Printf("[ContentDesk] agent-review article=%s: second pass not clean (%d item(s)) — awaiting a second reviewer: %s",
+			articleID, len(why), clip(strings.Join(why, " | "), 900))
 		return nil
 	}
 	secondFindings := append([]Finding(nil), findings...)
