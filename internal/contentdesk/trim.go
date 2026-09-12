@@ -189,9 +189,16 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 		}
 	}
 
-	// Package: title, excerpt and meta stay; flagged subject/preheader
-	// alternates are dropped and the survivors' unit ids renumbered.
-	pk := packageResult{Title: a.pkg.Title, Excerpt: a.pkg.Excerpt, MetaTitle: a.pkg.MetaTitle, MetaDescription: a.pkg.MetaDescription}
+	// Package: title and meta title stay. Flagged excerpt / meta description
+	// sentences go through trimHeadline. Flagged subject/preheader alternates
+	// are dropped and the survivors' unit ids renumbered.
+	pk := packageResult{Title: a.pkg.Title, MetaTitle: a.pkg.MetaTitle}
+	var headRefs []ClaimRef
+	var hn int
+	pk.Excerpt, headRefs, hn = trimHeadline(a, UnitExcerpt, a.pkg.Excerpt, cut)
+	pk.ClaimRefs, n = append(pk.ClaimRefs, headRefs...), n+hn
+	pk.MetaDescription, headRefs, hn = trimHeadline(a, UnitMetaDescription, a.pkg.MetaDescription, cut)
+	pk.ClaimRefs, n = append(pk.ClaimRefs, headRefs...), n+hn
 	rename := map[string]string{} // surviving old unit id → new unit id
 	keepAlts := func(lines []string, unit func(int) string) []string {
 		var keep []int
@@ -216,7 +223,7 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 	pk.Subjects = keepAlts(a.pkg.Subjects, SubjectUnit)
 	pk.Preheaders = keepAlts(a.pkg.Preheaders, PreheaderUnit)
 	for _, r := range a.refs {
-		if !IsReservedUnitID(r.BlockID) {
+		if !IsReservedUnitID(r.BlockID) || r.BlockID == UnitExcerpt || r.BlockID == UnitMetaDescription {
 			continue
 		}
 		if strings.HasPrefix(r.BlockID, unitSubjectPrefix) || strings.HasPrefix(r.BlockID, unitPreheaderPrefix) {
@@ -229,4 +236,81 @@ func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, package
 		pk.ClaimRefs = append(pk.ClaimRefs, r)
 	}
 	return out, pk, n
+}
+
+// trimHeadline cuts the flagged sentences of an excerpt or meta description.
+// When every sentence is flagged the unit falls back to the lede's first
+// sentence with no hard finding, carrying that sentence's references — text
+// already judged in the body, so no unchecked fact is added. With no such
+// sentence the unit is left as is. Live :1144: myownhealth's one-sentence
+// excerpt dropped a qualifier ("only nutrients with a Daily Value"), stayed
+// overstated through 5 package revisions, and nothing could cut it.
+// Returns the text, its references and the number of sentences removed.
+func trimHeadline(a assessment, unit, text string, cut map[string]map[int]bool) (string, []ClaimRef, int) {
+	var refs []ClaimRef
+	for _, r := range a.refs {
+		if r.BlockID == unit {
+			refs = append(refs, r)
+		}
+	}
+	sents := SplitSentences(text)
+	newIdx := map[int]int{}
+	var kept []string
+	for i, s := range sents {
+		if !cut[unit][i] {
+			newIdx[i] = len(kept)
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == len(sents) {
+		return text, refs, 0
+	}
+	if len(kept) > 0 {
+		var out []ClaimRef
+		for _, r := range refs {
+			if ni, ok := newIdx[r.SentenceIdx]; ok {
+				r.SentenceIdx = ni
+				out = append(out, r)
+			}
+		}
+		return strings.Join(kept, " "), out, len(sents) - len(kept)
+	}
+	s, srefs, ok := ledeFallback(a, cut)
+	if !ok {
+		return text, refs, 0
+	}
+	out := make([]ClaimRef, 0, len(srefs))
+	for _, r := range srefs {
+		r.BlockID, r.SentenceIdx = unit, 0
+		out = append(out, r)
+	}
+	return s, out, len(sents)
+}
+
+// ledeFallback is the lede's first text sentence (≥40 chars) with no hard
+// finding, and its references.
+func ledeFallback(a assessment, cut map[string]map[int]bool) (string, []ClaimRef, bool) {
+	for _, b := range a.pkg.Blocks {
+		if b.Type != "lede" {
+			continue
+		}
+		h := 0
+		if strings.TrimSpace(b.Heading) != "" {
+			h = 1
+		}
+		for i, s := range SplitSentences(b.Text) {
+			if cut[b.ID][h+i] || len(s) < 40 {
+				continue
+			}
+			var refs []ClaimRef
+			for _, r := range a.refs {
+				if r.BlockID == b.ID && r.SentenceIdx == h+i {
+					refs = append(refs, r)
+				}
+			}
+			return s, refs, true
+		}
+		return "", nil, false
+	}
+	return "", nil, false
 }
