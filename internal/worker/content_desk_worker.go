@@ -34,8 +34,12 @@ const (
 	EnvContentDeskConcurrency  = "CONTENT_DESK_CONCURRENCY"
 	contentDeskDefaultInterval = time.Minute
 	// Longer than one pipeline pass is expected to take; a stage row that
-	// outlives it is retaken only after contentdesk's StaleAfter (45m).
-	contentDeskLockTTL = 30 * time.Minute
+	// outlives it is retaken only after contentdesk's StaleAfter (45m). 90m,
+	// not 30m: with up to 5 revise rounds, trim passes and a repair round a
+	// run takes 40m+ (live :1136: the history pilot ran 40m33s, the lock
+	// expired mid-run, and a second task replayed the article and ran the
+	// uncached agent review twice — two identical primary approvals).
+	contentDeskLockTTL = 90 * time.Minute
 )
 
 // ContentDeskConcurrency is the bounded article concurrency (default 2, 1..8).
