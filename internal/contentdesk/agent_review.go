@@ -452,6 +452,13 @@ func (p *Pipeline) adjudicate(ctx context.Context, in PipelineInput, pkg Package
 	for _, it := range items {
 		d, ok := byID[it.ID]
 		if !ok || !d.accept || len(d.reason) < minAdjudicationReason {
+			// Log why (live :1138: the history pilot's last item was refused
+			// twice with no reason visible).
+			why := "no decision returned"
+			if ok {
+				why = fmt.Sprintf("accept=%v reason=%q", d.accept, clip(d.reason, 240))
+			}
+			log.Printf("[ContentDesk] adjudicate article=%s: refused %s (%s): %s", in.Article.ID, it.ID, it.Kind, why)
 			refused = append(refused, it.ID)
 			continue
 		}

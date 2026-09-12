@@ -306,7 +306,7 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		}
 		raw, _, err = p.RunStage(ctx, org, articleID, StageCodeChecks,
 			mustHash(map[string]any{"revision": a.revHash, "claims": claimFingerprint(all), "slug": in.Article.Slug,
-				"taken": taken, "others": otherFP, "max_hamming": p.SimhashMaxHamming}),
+				"taken": taken, "others": otherFP, "max_hamming": p.SimhashMaxHamming, "checks": codeChecksVersion}),
 			func(ctx context.Context) (any, Usage, error) { return RunCodeChecks(checkIn), Usage{}, nil })
 		if err != nil {
 			return a, err

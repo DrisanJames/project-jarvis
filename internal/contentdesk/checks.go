@@ -190,14 +190,57 @@ func checkClaimRefs(in CheckInput) CheckResult {
 	return result("claim_refs_resolve", "S1", d)
 }
 
+// codeChecksVersion is part of the code_checks stage's input hash, so a
+// changed check never replays a result cached under an old one.
+const codeChecksVersion = "2026-09-12.headline-restates"
+
+// numTokenRE finds number tokens ("2", "37" of "37%", "978.52", "1,176").
+var numTokenRE = regexp.MustCompile(`\d[\d,.]*\d|\d`)
+
 // checkNumericSentencesReferenced — HEURISTIC: a sentence carrying a digit is
 // treated as factual and must reference a claim. The judge covers the rest.
+// A headline line — a block heading, or the title, excerpt, meta, subject or
+// preheader — whose every number already appears in a cited body sentence
+// makes no new numeric claim: it restates one (live :1137/:1138: the history
+// pilot, 49/49 references supported, was held on "August 2: The parchment is
+// signed" and "July 2 vote, July 4 text, August 2 signing"). A number found
+// in no cited body sentence still fails, and body sentences are unchanged.
 func checkNumericSentencesReferenced(in CheckInput) CheckResult {
 	refd := map[string]bool{}
 	for _, r := range in.Refs {
 		refd[fmt.Sprintf("%s#%d", r.BlockID, r.SentenceIdx)] = true
 	}
 	units := Units(in.Package)
+	headed := map[string]bool{} // block ids whose unit 0 is a heading
+	for _, b := range in.Package.Blocks {
+		if strings.TrimSpace(b.Heading) != "" {
+			headed[b.ID] = true
+		}
+	}
+	isHeadline := func(id string, i int) bool { return IsReservedUnitID(id) || (headed[id] && i == 0) }
+	cited := map[string]bool{} // number tokens in cited body sentences
+	for id, sents := range units {
+		for i, s := range sents {
+			if isHeadline(id, i) || !refd[fmt.Sprintf("%s#%d", id, i)] {
+				continue
+			}
+			for _, t := range numTokenRE.FindAllString(s, -1) {
+				cited[t] = true
+			}
+		}
+	}
+	restatesCited := func(s string) bool {
+		toks := numTokenRE.FindAllString(s, -1)
+		if len(toks) == 0 {
+			return false
+		}
+		for _, t := range toks {
+			if !cited[t] {
+				return false
+			}
+		}
+		return true
+	}
 	ids := make([]string, 0, len(units))
 	for id := range units {
 		ids = append(ids, id)
@@ -206,9 +249,13 @@ func checkNumericSentencesReferenced(in CheckInput) CheckResult {
 	var d []string
 	for _, id := range ids {
 		for i, s := range units[id] {
-			if digitRE.MatchString(s) && !refd[fmt.Sprintf("%s#%d", id, i)] {
-				d = append(d, fmt.Sprintf("%s#%d has a number but no claim ref: %q", id, i, clip(s, 100)))
+			if !digitRE.MatchString(s) || refd[fmt.Sprintf("%s#%d", id, i)] {
+				continue
 			}
+			if isHeadline(id, i) && restatesCited(s) {
+				continue
+			}
+			d = append(d, fmt.Sprintf("%s#%d has a number but no claim ref: %q", id, i, clip(s, 100)))
 		}
 	}
 	r := result("numeric_sentences_referenced", "S2", d)
