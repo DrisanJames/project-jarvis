@@ -290,7 +290,7 @@ func packageRevisePrompt(in PipelineInput, d draftResult, claims []Claim, prev P
 const adjudicateSystem = `You are the managing editor. The standards editor and the automated checks raised the items below on an article whose facts are already sourced. For each item, decide whether the article may be published with it as it stands.
 - Accept an item only if it is mistaken, or immaterial: a careful reader would not be misled or left worse informed by the text as written. The reason must name the text you relied on.
 - Do not accept an item because it is small, common practice, or easy to fix later. If a headline promises more than the body delivers, a material exception or limit is missing, or the article does not answer its reader question, do not accept.
-- For "has a number but no claim ref": accept a number that is arithmetic on the article's own worked example, a count of the article's own sections, or a restatement of a body sentence that carries a citation. Do not accept a number that states a fact about the world.
+- For "has a number but no claim ref": accept a number that is arithmetic on the article's own worked example, or a count of the article's own sections. In a heading, title, subject, preheader or meta line, also accept a number or date that restates the same number or date in a body sentence that carries a citation — name that body sentence in the reason. Do not accept a number that states a fact about the world found nowhere in a cited body sentence.
 - Decide every item. Output only the decisions.`
 
 func adjudicationSchema() map[string]any {
