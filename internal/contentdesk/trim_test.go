@@ -5,72 +5,122 @@ import (
 	"testing"
 )
 
-func trimFixture() assessment {
-	return assessment{
-		pkg: Package{Blocks: []Block{
-			{ID: "s1", Type: "section", Heading: "Rates", Text: "A holds. B holds. C holds.", Items: []string{"Item one."}},
-			{ID: "s2", Type: "section", Text: "Only sentence."},
-		}},
-		refs: []ClaimRef{
-			{BlockID: "s1", SentenceIdx: 1, ClaimID: cU1, Version: 1},    // A
-			{BlockID: "s1", SentenceIdx: 3, ClaimID: cU2, Version: 3},    // C
-			{BlockID: "s1", SentenceIdx: 4, ClaimID: cU1, Version: 1},    // the item
-			{BlockID: "title", SentenceIdx: 0, ClaimID: cU1, Version: 1}, // package ref: rebuilt by the packager
-		},
-		judgment: []JudgmentItem{
-			{ID: "j1", Kind: "unreferenced_claim", BlockID: "s1", SentenceIdx: 2, Verdict: "flag"}, // B
-			{ID: "j2", Kind: "claim", BlockID: "s2", SentenceIdx: 0, Verdict: "unsupported"},       // a block's only sentence
-			{ID: "j3", Kind: "headline_overpromise", BlockID: "title", Verdict: "flag"},
-			{ID: "j4", Kind: "claim", BlockID: "s1", SentenceIdx: 0, Verdict: "unsupported"}, // the heading
-			{ID: "j5", Kind: "claim", BlockID: "s1", SentenceIdx: 1, Verdict: "overstated"},  // not cut: fixable
-		},
-	}
+func ref(block string, idx int, claim string, v int) ClaimRef {
+	return ClaimRef{BlockID: block, SentenceIdx: idx, ClaimID: claim, Version: v}
 }
 
-// Live :1132: an uncited sentence the reviser kept for 4 rounds was
-// myownhealth's only hard blocker. Trim cuts exactly the flagged text
-// sentence, never a heading, item or a block's last sentence, and every
-// remaining reference still points at the sentence it cited.
-func TestTrimFlagged_CutsFlaggedTextSentencesAndShiftsRefs(t *testing.T) {
-	d, n := trimFlagged(trimFixture())
-	if n != 1 {
-		t.Fatalf("exactly B must be cut: %d", n)
+// Every remaining reference must still point at the sentence it cited.
+func assertRefsLand(t *testing.T, d draftResult, want map[ClaimRef]string) {
+	t.Helper()
+	byID := map[string]Block{}
+	for _, b := range d.Blocks {
+		byID[b.ID] = b
 	}
-	if d.Blocks[0].Text != "A holds. C holds." || d.Blocks[0].Heading != "Rates" || d.Blocks[1].Text != "Only sentence." {
-		t.Fatalf("blocks %+v", d.Blocks)
-	}
-	want := []ClaimRef{
-		{BlockID: "s1", SentenceIdx: 1, ClaimID: cU1, Version: 1},
-		{BlockID: "s1", SentenceIdx: 2, ClaimID: cU2, Version: 3},
-		{BlockID: "s1", SentenceIdx: 3, ClaimID: cU1, Version: 1},
-	}
-	if !reflect.DeepEqual(d.ClaimRefs, want) {
-		t.Fatalf("refs %+v, want %+v", d.ClaimRefs, want)
-	}
-	bs := BlockSentences(d.Blocks[0])
-	if bs[1] != "A holds." || bs[2] != "C holds." || bs[3] != "Item one." {
-		t.Fatalf("each ref must still land on its sentence: %q", bs)
-	}
-}
-
-// A cut sentence's own reference goes with it.
-func TestTrimFlagged_DropsTheCutSentencesRef(t *testing.T) {
-	a := trimFixture()
-	a.judgment = []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "s1", SentenceIdx: 3, Verdict: "unsupported"}} // C
-	d, n := trimFlagged(a)
-	if n != 1 || d.Blocks[0].Text != "A holds. B holds." {
-		t.Fatalf("C must be cut: n=%d %q", n, d.Blocks[0].Text)
+	if len(d.ClaimRefs) != len(want) {
+		t.Fatalf("refs %+v, want %d", d.ClaimRefs, len(want))
 	}
 	for _, r := range d.ClaimRefs {
-		if r.ClaimID == cU2 {
-			t.Fatalf("the cut sentence's ref must be dropped: %+v", d.ClaimRefs)
+		s, ok := want[r]
+		if !ok {
+			t.Fatalf("unexpected ref %+v (want %+v)", r, want)
+		}
+		if bs := BlockSentences(byID[r.BlockID]); r.SentenceIdx >= len(bs) || bs[r.SentenceIdx] != s {
+			t.Fatalf("ref %+v must land on %q: %q", r, s, bs)
 		}
 	}
 }
 
+// Live :1132: an uncited text sentence the reviser kept for 4 rounds. Trim
+// cuts exactly that sentence — never the heading — and re-indexes refs,
+// including the ones on items after the text.
+func TestTrimFlagged_TextSentence(t *testing.T) {
+	a := assessment{
+		pkg:  Package{Blocks: []Block{{ID: "s1", Type: "section", Heading: "Rates", Text: "A holds. B holds. C holds.", Items: []string{"Item one."}}}},
+		refs: []ClaimRef{ref("s1", 1, cU1, 1), ref("s1", 3, cU2, 3), ref("s1", 4, cU1, 1), ref("title", 0, cU1, 1)},
+		judgment: []JudgmentItem{
+			{ID: "j1", Kind: "unreferenced_claim", BlockID: "s1", SentenceIdx: 2, Verdict: "flag"}, // B
+			{ID: "j2", Kind: "claim", BlockID: "s1", SentenceIdx: 0, Verdict: "unsupported"},       // heading: never cut
+			{ID: "j3", Kind: "headline_overpromise", BlockID: "title", Verdict: "flag"},
+		},
+	}
+	d, n := trimFlagged(a)
+	if n != 1 || d.Blocks[0].Text != "A holds. C holds." || d.Blocks[0].Heading != "Rates" {
+		t.Fatalf("exactly B must be cut: n=%d %+v", n, d.Blocks[0])
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("s1", 1, cU1, 1): "A holds.", ref("s1", 2, cU2, 3): "C holds.", ref("s1", 3, cU1, 1): "Item one."})
+}
+
+// An overstated claim no rewrite fixed is cut too, with its own reference.
+func TestTrimFlagged_OverstatedSentenceAndItsRef(t *testing.T) {
+	a := assessment{
+		pkg:      Package{Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds. B holds."}}},
+		refs:     []ClaimRef{ref("l1", 0, cU1, 1), ref("l1", 1, cU2, 3)},
+		judgment: []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "l1", SentenceIdx: 0, Verdict: "overstated"}},
+	}
+	d, n := trimFlagged(a)
+	if n != 1 || d.Blocks[0].Text != "B holds." {
+		t.Fatalf("A must be cut: n=%d %q", n, d.Blocks[0].Text)
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("l1", 0, cU2, 3): "B holds."})
+}
+
+// Live :1134: an overstated FAQ answer. The whole question/answer pair goes,
+// so no question is left without its answer.
+func TestTrimFlagged_FAQPair(t *testing.T) {
+	a := assessment{
+		pkg: Package{Blocks: []Block{{ID: "faq-1", Type: "faq", Items: []string{
+			"Where do DVs come from?", "They are set by FDA.", "Is it per serving?", "Yes. Always per serving.",
+		}}}},
+		// units: 0 Q1, 1 A1, 2 Q2, 3 A2a, 4 A2b
+		refs:     []ClaimRef{ref("faq-1", 1, cU1, 1), ref("faq-1", 4, cU2, 3)},
+		judgment: []JudgmentItem{{ID: "j1", Kind: "claim", BlockID: "faq-1", SentenceIdx: 1, Verdict: "overstated"}},
+	}
+	d, n := trimFlagged(a)
+	if n != 2 || !reflect.DeepEqual(d.Blocks[0].Items, []string{"Is it per serving?", "Yes. Always per serving."}) {
+		t.Fatalf("the first pair must go: n=%d %q", n, d.Blocks[0].Items)
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("faq-1", 2, cU2, 3): "Always per serving."})
+}
+
+// Never the last FAQ pair, the last list item, or a block's last sentence.
+func TestTrimFlagged_NeverEmptiesABlock(t *testing.T) {
+	a := assessment{
+		pkg: Package{Blocks: []Block{
+			{ID: "faq-1", Type: "faq", Items: []string{"Only question?", "Only answer."}},
+			{ID: "st-1", Type: "steps", Items: []string{"Only step."}},
+			{ID: "l1", Type: "lede", Text: "Only sentence."},
+		}},
+		judgment: []JudgmentItem{
+			{ID: "j1", Kind: "claim", BlockID: "faq-1", SentenceIdx: 1, Verdict: "overstated"},
+			{ID: "j2", Kind: "unreferenced_claim", BlockID: "st-1", SentenceIdx: 0, Verdict: "flag"},
+			{ID: "j3", Kind: "claim", BlockID: "l1", SentenceIdx: 0, Verdict: "unsupported"},
+		},
+	}
+	if d, n := trimFlagged(a); n != 0 || !reflect.DeepEqual(d.Blocks, a.pkg.Blocks) {
+		t.Fatalf("nothing may be cut: n=%d %+v", n, d.Blocks)
+	}
+}
+
+// A flagged list item goes on its own; the others keep their refs.
+func TestTrimFlagged_ListItem(t *testing.T) {
+	a := assessment{
+		pkg:      Package{Blocks: []Block{{ID: "st-1", Type: "steps", Items: []string{"One.", "Two.", "Three."}}}},
+		refs:     []ClaimRef{ref("st-1", 0, cU1, 1), ref("st-1", 2, cU2, 3)},
+		judgment: []JudgmentItem{{ID: "j1", Kind: "unreferenced_claim", BlockID: "st-1", SentenceIdx: 1, Verdict: "flag"}},
+	}
+	d, n := trimFlagged(a)
+	if n != 1 || !reflect.DeepEqual(d.Blocks[0].Items, []string{"One.", "Three."}) {
+		t.Fatalf("Two must go: n=%d %q", n, d.Blocks[0].Items)
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("st-1", 0, cU1, 1): "One.", ref("st-1", 1, cU2, 3): "Three."})
+}
+
+// Editorial flags are for the managing editor, never cut.
 func TestTrimFlagged_NothingToCut(t *testing.T) {
-	a := trimFixture()
-	a.judgment = []JudgmentItem{{ID: "j1", Kind: "low_usefulness", BlockID: "s1", SentenceIdx: 1, Verdict: "flag"}}
+	a := assessment{
+		pkg:      Package{Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds. B holds."}}},
+		judgment: []JudgmentItem{{ID: "j1", Kind: "low_usefulness", BlockID: "l1", SentenceIdx: 1, Verdict: "flag"}},
+	}
 	if _, n := trimFlagged(a); n != 0 {
 		t.Fatalf("an adjudicable flag must not be cut: %d", n)
 	}
