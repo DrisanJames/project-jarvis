@@ -163,6 +163,34 @@ func TestTrimFlagged_CaptionSentence(t *testing.T) {
 	assertRefsLand(t, d, map[ClaimRef]string{ref("cmp-1", 2, cU1, 1): "A | $978", ref("cmp-1", 3, cU1, 1): "Both carry $978."})
 }
 
+// Live :1140: a trim pass that held hard blockers level was rejected as "no
+// improvement" and the article stalled. A pass is kept unless it adds hard
+// blockers or newly fails a code check.
+func TestTrimAcceptable_KeepsLevelPassesRejectsWorse(t *testing.T) {
+	hard := func(n int) assessment {
+		a := assessment{pkg: Package{Blocks: []Block{{ID: "l1", Type: "lede", Text: "A holds."}}},
+			code: []CheckResult{{Name: "length_limits", Passed: true, Severity: "S2"}}}
+		for i := 0; i < n; i++ {
+			a.judgment = append(a.judgment, JudgmentItem{ID: "j" + string(rune('1'+i)), Kind: "claim", BlockID: "l1", Verdict: "unsupported"})
+		}
+		return a
+	}
+	if !trimAcceptable(hard(1), hard(1)) {
+		t.Fatal("a pass that holds hard blockers level must be kept (it converges)")
+	}
+	if !trimAcceptable(hard(2), hard(0)) {
+		t.Fatal("a pass that clears hard blockers must be kept")
+	}
+	if trimAcceptable(hard(1), hard(2)) {
+		t.Fatal("a pass that adds a hard blocker must be rejected")
+	}
+	broke := hard(0)
+	broke.code = []CheckResult{{Name: "length_limits", Passed: false, Severity: "S2"}}
+	if trimAcceptable(hard(1), broke) {
+		t.Fatal("a pass that newly fails a code check must be rejected")
+	}
+}
+
 // Editorial flags are for the managing editor, never cut.
 func TestTrimFlagged_NothingToCut(t *testing.T) {
 	a := assessment{

@@ -5,7 +5,28 @@ import "strings"
 // maxTrimPasses bounds the editorial trim: it repeats while each pass improves
 // (live :1135: discountblog's single pass took 5 hard blockers to 2, and the
 // re-judged takeaways block raised one more a second pass can cut).
-const maxTrimPasses = 3
+const maxTrimPasses = 5
+
+// trimAcceptable keeps a trim pass unless it makes things worse: no code
+// check newly fails and there are no more hard blockers than before. Unlike a
+// revise round it need not strictly improve — a cut only removes content, and
+// only the changed units are re-judged, so repeated passes converge on 0 hard
+// blockers (live :1140: pass 2 came back at 1 hard vs 1, was rejected as "no
+// improvement", and the article stalled one blocker short).
+func trimAcceptable(prev, cand assessment) bool {
+	failedBefore := map[string]bool{}
+	for _, c := range prev.code {
+		if !c.Passed {
+			failedBefore[c.Name] = true
+		}
+	}
+	for _, c := range cand.code {
+		if !c.Passed && !failedBefore[c.Name] {
+			return false
+		}
+	}
+	return cand.hardBlockers() <= prev.hardBlockers()
+}
 
 // trimFlagged is the editor's last resort after the revise loop: it cuts
 // content that still carries a hard claim finding no rewrite cleared — an

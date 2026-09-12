@@ -405,8 +405,8 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		if err != nil {
 			return err
 		}
-		if !acceptRevision(prev, cand) {
-			log.Printf("[ContentDesk] trim article=%s pass=%d: cutting %d unit(s) did not improve (%d hard vs %d) — keeping the revision",
+		if !trimAcceptable(prev, cand) {
+			log.Printf("[ContentDesk] trim article=%s pass=%d: cutting %d unit(s) made it worse (%d hard vs %d) — keeping the revision",
 				articleID, pass, n, cand.hardBlockers(), prev.hardBlockers())
 			break
 		}
