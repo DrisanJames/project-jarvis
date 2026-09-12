@@ -796,6 +796,13 @@ func (p *Pipeline) rederive(ctx context.Context, in PipelineInput, keys []resear
 // blocks, so it runs with thinking disabled (NoThinking below).
 const draftMaxTokens = 24000
 
+// judgeMaxTokens: thinking counts against max_tokens, and a 40-50 reference
+// article's verdicts plus the adversarial pass's notes overran 16000 (live
+// :1147: discountblog's and bestcreditcare's second pass were "truncated at
+// max_tokens" and held with no verdict). 24000 is the ceiling the draft
+// stage already runs at on this client.
+const judgeMaxTokens = 24000
+
 func (p *Pipeline) draft(ctx context.Context, in PipelineInput, claims []Claim) (any, Usage, error) {
 	gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierWrite, System: draftSystem,
 		Prompt: draftPrompt(in, claims), Schema: draftSchema(), MaxTokens: draftMaxTokens, NoThinking: true})
@@ -938,7 +945,7 @@ func (p *Pipeline) judgeCall(ctx context.Context, in PipelineInput, system strin
 	var total Usage
 	for attempt := 1; ; attempt++ {
 		gen, err := p.LLM.Generate(ctx, GenerateRequest{OrgID: in.OrgID, Tier: TierJudge, System: system,
-			Prompt: judgePrompt(pkg, refs, claims, referenced), Schema: judgmentSchema(), MaxTokens: 16000})
+			Prompt: judgePrompt(pkg, refs, claims, referenced), Schema: judgmentSchema(), MaxTokens: judgeMaxTokens})
 		total.Add(resultUsage(gen))
 		if err != nil {
 			return nil, total, err
