@@ -16,7 +16,9 @@ import (
 // (myownhealth: 33 fail-closed "no verdict" items). The version is part of
 // the draft / package / revise input hashes, so a contract change never
 // replays outputs cached under the old one.
-const citationContractVersion = "2026-09-11.markers2-supported-only"
+// .initials: the splitter no longer breaks after initials or abbreviations,
+// so stored drafts must re-split (indices changed).
+const citationContractVersion = "2026-09-12.markers2-supported-only-initials"
 
 // Any [[c:…]] is consumed; only a UUID id is recorded ("N/A" is dropped).
 var citationMarkerRE = regexp.MustCompile(`\[\[c:([^\]@]*)(?:@(\d+))?\]\]`)
@@ -79,8 +81,7 @@ func sentenceSpans(text string) []sentSpan {
 	}
 	start := 0
 	for i := 0; i < len(rs); i++ {
-		c := rs[i]
-		if (c == '.' || c == '!' || c == '?') && (i+1 == len(rs) || rs[i+1] == ' ' || rs[i+1] == '\n' || rs[i+1] == '\t') {
+		if isSentenceEnd(rs, i) {
 			emit(start, i+1)
 			start = i + 1
 		}

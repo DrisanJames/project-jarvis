@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Reserved unit ids for package-level text. Blocks may not use these ids.
@@ -29,11 +30,58 @@ func IsReservedUnitID(id string) bool {
 	return strings.HasPrefix(id, unitSubjectPrefix) || strings.HasPrefix(id, unitPreheaderPrefix)
 }
 
+// noBreakAbbrev are words whose trailing period never ends a sentence.
+var noBreakAbbrev = map[string]bool{
+	"mr": true, "mrs": true, "ms": true, "dr": true, "st": true, "jr": true, "sr": true, "vs": true,
+	"gen": true, "gov": true, "sen": true, "rep": true, "rev": true, "col": true, "capt": true, "lt": true,
+	"mt": true, "ft": true, "no": true, "vol": true, "fig": true, "approx": true, "etc": true, "inc": true,
+}
+
+// isSentenceEnd is the ONE boundary rule, shared by SplitSentences and
+// sentenceSpans: . ! or ? followed by whitespace or the end (so "3.5%" never
+// splits) — except a period after a single-letter initial ("Robert R.
+// Livingston"), a dotted abbreviation ("U.S.", "e.g.") or a listed title
+// ("Dr.", "St."). Live :1140: "Robert R. Livingston" split in two, the
+// citation marker landed on the second half, and the uncited first half
+// became the history pilot's last hard blocker.
+func isSentenceEnd(rs []rune, i int) bool {
+	c := rs[i]
+	if c != '.' && c != '!' && c != '?' {
+		return false
+	}
+	if i+1 < len(rs) && rs[i+1] != ' ' && rs[i+1] != '\n' && rs[i+1] != '\t' {
+		return false
+	}
+	if c != '.' || i+1 == len(rs) {
+		return true
+	}
+	j := i
+	for j > 0 && !unicode.IsSpace(rs[j-1]) {
+		j--
+	}
+	tok := strings.TrimLeft(string(rs[j:i]), "\"'“‘([")
+	if n := []rune(tok); len(n) == 1 && unicode.IsUpper(n[0]) {
+		return false // an initial
+	}
+	if strings.Contains(tok, ".") {
+		dotted := true
+		for _, seg := range strings.Split(tok, ".") {
+			if len([]rune(seg)) != 1 || !unicode.IsLetter([]rune(seg)[0]) {
+				dotted = false
+				break
+			}
+		}
+		if dotted {
+			return false // U.S. / e.g. / i.e.
+		}
+	}
+	return !noBreakAbbrev[strings.ToLower(tok)]
+}
+
 // SplitSentences is the ONE sentence splitter: code checks, the judge prompt
 // and the review UI's sentence↔passage pairs all index through it, so a
-// sentence_idx means the same sentence everywhere. A boundary is . ! or ?
-// followed by whitespace (so "3.5%" never splits). Deterministic, not
-// linguistic: "e.g. x" splits — the model sees the same indices it is judged on.
+// sentence_idx means the same sentence everywhere. Boundaries: isSentenceEnd.
+// Deterministic — the model sees the same indices it is judged on.
 func SplitSentences(text string) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -43,8 +91,7 @@ func SplitSentences(text string) []string {
 	start := 0
 	rs := []rune(text)
 	for i := 0; i < len(rs); i++ {
-		c := rs[i]
-		if (c == '.' || c == '!' || c == '?') && (i+1 == len(rs) || rs[i+1] == ' ' || rs[i+1] == '\n' || rs[i+1] == '\t') {
+		if isSentenceEnd(rs, i) {
 			if s := strings.TrimSpace(string(rs[start : i+1])); s != "" {
 				out = append(out, s)
 			}
