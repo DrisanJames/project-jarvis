@@ -84,6 +84,14 @@ type ContentDeskWorker struct {
 
 	mu          sync.Mutex
 	lastEnabled *bool
+
+	// Article slots persist across ticks: a tick fills free slots and returns
+	// without waiting (live :1145: the tick waited for its whole batch, so a
+	// task running one 40-minute article left its other slot idle and three
+	// re-queued articles sat unclaimed).
+	slots    chan struct{}
+	inflight map[string]bool // guarded by mu
+	running  sync.WaitGroup
 }
 
 // NewContentDeskWorker wires the store, the Anthropic client (budget-gated by
@@ -155,21 +163,47 @@ func (w *ContentDeskWorker) tick(ctx context.Context) string {
 	if len(arts) == 0 {
 		return "idle"
 	}
-	sem := make(chan struct{}, w.concurrency)
-	var wg sync.WaitGroup
+	if w.slots == nil {
+		w.slots = make(chan struct{}, w.concurrency)
+	}
+	launched := 0
 	for _, a := range arts {
 		if ctx.Err() != nil {
 			break
 		}
-		sem <- struct{}{}
-		wg.Add(1)
+		w.mu.Lock()
+		busy := w.inflight[a.ArticleID]
+		w.mu.Unlock()
+		if busy {
+			continue
+		}
+		select {
+		case w.slots <- struct{}{}:
+		default:
+			return map[bool]string{true: "ran", false: "busy"}[launched > 0] // every slot taken
+		}
+		w.mu.Lock()
+		if w.inflight == nil {
+			w.inflight = map[string]bool{}
+		}
+		w.inflight[a.ArticleID] = true
+		w.mu.Unlock()
+		launched++
+		w.running.Add(1)
 		go func(a contentdesk.PendingArticle) {
-			defer wg.Done()
-			defer func() { <-sem }()
+			defer w.running.Done()
+			defer func() {
+				w.mu.Lock()
+				delete(w.inflight, a.ArticleID)
+				w.mu.Unlock()
+				<-w.slots
+			}()
 			w.runOne(ctx, a)
 		}(a)
 	}
-	wg.Wait()
+	if launched == 0 {
+		return "busy"
+	}
 	return "ran"
 }
 

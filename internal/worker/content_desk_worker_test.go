@@ -84,9 +84,16 @@ func TestContentDeskWorker_KillSwitchOffDoesNothing(t *testing.T) {
 	}
 }
 
+// tickAndWait runs one tick and waits for the articles it launched.
+func tickAndWait(w *ContentDeskWorker) string {
+	got := w.tick(context.Background())
+	w.running.Wait()
+	return got
+}
+
 func TestContentDeskWorker_LockHeldElsewhereSkips(t *testing.T) {
 	q, r := &fakeCDQueue{pending: pending(2)}, &fakeCDRunner{}
-	newFakeCDWorker(q, r, true, false).tick(context.Background())
+	tickAndWait(newFakeCDWorker(q, r, true, false))
 	if r.runs != 0 {
 		t.Fatalf("a held article lock must skip the run, got %d runs", r.runs)
 	}
@@ -95,7 +102,7 @@ func TestContentDeskWorker_LockHeldElsewhereSkips(t *testing.T) {
 func TestContentDeskWorker_ExhaustedStageDequeues(t *testing.T) {
 	q := &fakeCDQueue{pending: pending(1)}
 	r := &fakeCDRunner{err: fmt.Errorf("research: %w", contentdesk.ErrRunExhausted)}
-	newFakeCDWorker(q, r, true, true).tick(context.Background())
+	tickAndWait(newFakeCDWorker(q, r, true, true))
 	if len(q.stopped) != 1 || q.stopped[0] != "a0" {
 		t.Fatalf("an exhausted article must be dequeued, stopped=%v", q.stopped)
 	}
@@ -104,17 +111,44 @@ func TestContentDeskWorker_ExhaustedStageDequeues(t *testing.T) {
 func TestContentDeskWorker_BudgetHoldKeepsQueued(t *testing.T) {
 	q := &fakeCDQueue{pending: pending(1)}
 	r := &fakeCDRunner{err: fmt.Errorf("research: %w", contentdesk.ErrBudgetExceeded)}
-	newFakeCDWorker(q, r, true, true).tick(context.Background())
+	tickAndWait(newFakeCDWorker(q, r, true, true))
 	if len(q.stopped) != 0 {
 		t.Fatal("budget exhaustion must keep the article queued for tomorrow")
 	}
 }
 
+// Slots bound concurrency across ticks; repeated ticks drain the queue.
 func TestContentDeskWorker_ConcurrencyIsBounded(t *testing.T) {
-	q, r := &fakeCDQueue{pending: pending(6)}, &fakeCDRunner{hold: 20 * time.Millisecond}
-	newFakeCDWorker(q, r, true, true).tick(context.Background())
+	all := pending(6)
+	q, r := &fakeCDQueue{}, &fakeCDRunner{hold: 20 * time.Millisecond}
+	w := newFakeCDWorker(q, r, true, true)
+	for i := 0; i < 3; i++ {
+		q.pending = all[2*i:] // finished articles leave the queue
+		tickAndWait(w)
+	}
 	if r.runs != 6 || r.maxSeen > 2 {
 		t.Fatalf("runs=%d maxConcurrent=%d (limit 2)", r.runs, r.maxSeen)
+	}
+}
+
+// Live :1145: a tick waited for its whole batch, so a free slot sat idle
+// behind one long article. Now a tick returns at once, a busy article is not
+// launched twice, and the next tick fills a freed slot.
+func TestContentDeskWorker_TickDoesNotWaitAndFillsFreedSlots(t *testing.T) {
+	q, r := &fakeCDQueue{pending: pending(3)}, &fakeCDRunner{hold: 150 * time.Millisecond}
+	w := newFakeCDWorker(q, r, true, true)
+	start := time.Now()
+	if got := w.tick(context.Background()); got != "ran" || time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("tick must return without waiting: %q after %s", got, time.Since(start))
+	}
+	if got := w.tick(context.Background()); got != "busy" {
+		t.Fatalf("both slots taken and a0/a1 in flight — nothing new to launch: %q", got)
+	}
+	w.running.Wait()
+	q.pending = pending(3)[2:] // a0, a1 finished and left the queue
+	tickAndWait(w)
+	if r.runs != 3 || r.maxSeen > 2 {
+		t.Fatalf("a2 must run in a freed slot: runs=%d maxConcurrent=%d", r.runs, r.maxSeen)
 	}
 }
 
