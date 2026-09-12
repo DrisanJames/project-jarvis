@@ -450,6 +450,42 @@ func (p *Pipeline) Run(ctx context.Context, org, articleID string) error {
 		}
 	}
 
+	// 7d. editor cut: once only adjudicable items remain, the managing editor
+	// rules now; what it refuses is cut under the trim's rules and the result
+	// re-assessed once, kept under trimAcceptable. Agent review then rules on
+	// what remains. Live :1142: the history pilot (12/12 checks, 54/54
+	// references) was held because the editor refused one omitted_exception
+	// on an FAQ answer — cutting that question/answer pair clears it.
+	if AgentReviewEnabled() && a.hardBlockers() == 0 && !a.clean() {
+		if items := a.adjudicable(); len(items) > 0 {
+			if _, _, refused, err := p.adjudicate(ctx, in, a.pkg, items); err == nil && len(refused) > 0 {
+				ref := map[string]bool{}
+				for _, id := range refused {
+					ref[id] = true
+				}
+				if next, pk, n := trimWhere(a, func(j JudgmentItem) bool { return ref[j.ID] }); n > 0 {
+					edRaw, err := json.Marshal(next)
+					if err != nil {
+						return err
+					}
+					prev := a
+					cand, err := assess(edRaw, next, &prev, &pk)
+					if err != nil {
+						return err
+					}
+					if trimAcceptable(prev, cand) {
+						log.Printf("[ContentDesk] editor-cut article=%s: cut %d unit(s) the managing editor refused (%s) — %d blocker(s), %d hard",
+							articleID, n, strings.Join(refused, ", "), len(cand.blockers()), cand.hardBlockers())
+						a = cand
+					} else {
+						log.Printf("[ContentDesk] editor-cut article=%s: cutting %s made it worse (%d hard) — keeping the revision",
+							articleID, strings.Join(refused, ", "), cand.hardBlockers())
+					}
+				}
+			}
+		}
+	}
+
 	if _, _, err := p.Store.SaveRevision(ctx, org, articleID, a.pkg, a.refs, Checks{Code: a.code, Judgment: a.judgment}, total); err != nil {
 		return err
 	}

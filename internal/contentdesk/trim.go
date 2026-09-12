@@ -52,9 +52,18 @@ func trimAcceptable(prev, cand assessment) bool {
 // Returns the trimmed body and package with every reference re-indexed, and
 // how many units were removed.
 func trimFlagged(a assessment) (draftResult, packageResult, int) {
+	return trimWhere(a, func(j JudgmentItem) bool {
+		return j.Kind == "unreferenced_claim" || (j.Kind == "claim" && (j.Verdict == "unsupported" || j.Verdict == "overstated"))
+	})
+}
+
+// trimWhere cuts the units of the judgment items pick selects, under the same
+// rules as trimFlagged (FAQ pairs, list items, alternates; never the last).
+// The editor-cut step uses it for items the managing editor refused.
+func trimWhere(a assessment, pick func(JudgmentItem) bool) (draftResult, packageResult, int) {
 	cut := map[string]map[int]bool{}
 	for _, j := range a.judgment {
-		if j.Kind == "unreferenced_claim" || (j.Kind == "claim" && (j.Verdict == "unsupported" || j.Verdict == "overstated")) {
+		if pick(j) {
 			if cut[j.BlockID] == nil {
 				cut[j.BlockID] = map[int]bool{}
 			}

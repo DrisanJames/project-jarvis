@@ -191,6 +191,29 @@ func TestTrimAcceptable_KeepsLevelPassesRejectsWorse(t *testing.T) {
 	}
 }
 
+// Live :1142: the managing editor refused an omitted_exception on an FAQ
+// answer and the article stalled. trimWhere cuts exactly what the editor
+// refused — here the whole question/answer pair — and trimFlagged still never
+// cuts an editorial flag on its own.
+func TestTrimWhere_CutsWhatTheEditorRefused(t *testing.T) {
+	a := assessment{
+		pkg:  Package{Blocks: []Block{{ID: "faq-1", Type: "faq", Items: []string{"Q1?", "A1.", "Q2?", "A2."}}}},
+		refs: []ClaimRef{ref("faq-1", 3, cU1, 1)},
+		judgment: []JudgmentItem{
+			{ID: "j5", Kind: "omitted_exception", BlockID: "faq-1", SentenceIdx: 1, Verdict: "flag"},
+			{ID: "j6", Kind: "low_usefulness", BlockID: "faq-1", SentenceIdx: 3, Verdict: "flag"},
+		},
+	}
+	d, _, n := trimWhere(a, func(j JudgmentItem) bool { return j.ID == "j5" })
+	if n != 2 || !reflect.DeepEqual(d.Blocks[0].Items, []string{"Q2?", "A2."}) {
+		t.Fatalf("the refused pair must go: n=%d %q", n, d.Blocks[0].Items)
+	}
+	assertRefsLand(t, d, map[ClaimRef]string{ref("faq-1", 1, cU1, 1): "A2."})
+	if _, _, n := trimFlagged(a); n != 0 {
+		t.Fatalf("trimFlagged must not cut editorial flags: %d", n)
+	}
+}
+
 // Editorial flags are for the managing editor, never cut.
 func TestTrimFlagged_NothingToCut(t *testing.T) {
 	a := assessment{
