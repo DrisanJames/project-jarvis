@@ -95,3 +95,14 @@ func TestRequiredVerifier(t *testing.T) {
 		}
 	}
 }
+
+// A credential pasted into a claim body never reaches the store.
+func TestClaimInputRedactsSecrets(t *testing.T) {
+	in := ClaimInput{ClaimType: "system_fact", Title: "t", Body: "Authorization: sso-key ABC:DEF and AKIAABCDEFGHIJKLMNOP"}
+	if err := in.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(in.Body, "sso-key ABC") >= 0 || indexOf(in.Body, "AKIAABCDEFGHIJKLMNOP") >= 0 {
+		t.Fatalf("secret survived validate: %q", in.Body)
+	}
+}

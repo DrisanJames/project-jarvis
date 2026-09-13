@@ -96,8 +96,12 @@ func (in *ClaimInput) validate() error {
 	if !contains(Authorities, in.Authority) {
 		return fmt.Errorf("%w: authority must be one of %v", ErrBadInput, Authorities)
 	}
-	in.Title = strings.TrimSpace(in.Title)
-	in.Body = strings.TrimSpace(in.Body)
+	// Claims are institutional memory read by every agent and snapshotted to
+	// S3: a credential in a body is an exposure, so the same redaction that
+	// guards evidence runs here (2026-09-13: 5 imported memory files carried
+	// live keys).
+	in.Title = Redact(strings.TrimSpace(in.Title))
+	in.Body = Redact(strings.TrimSpace(in.Body))
 	if in.Title == "" || in.Body == "" {
 		return fmt.Errorf("%w: title and body are required", ErrBadInput)
 	}
