@@ -664,7 +664,24 @@ day+0 as a share of the day+7 value:
 A VDM-comparable figure read with less than 3 days of tail is an **undercount,
 not a discrepancy**. Label the maturity or do not publish the number.
 
-### 12.4 What did NOT close — yahoo
+**Ingest settle is per metric (measured 2026-09-12, lake `source='ses'`, dt
+2026-08-26..09-08, `event_at → ingested_at`):** attempted (25.1M) / delivered
+(23.7M) / open (11.9M) / click (242k) — p99 ≤ 1 min, max 15 min, **zero rows
+later than 3 days**; bounced (1.48M) p99 14 h, max 7 d, 34 rows > 3 d;
+**complaint (8.4k) p50 7.3 h, p99 10.9 d, 15% land after day 3** (ISP
+feedback-loop latency, not our pipeline). Send/delivered/engagement/bounce are
+final at T-3; complaints are read at T-14. The earlier "12-day settle" was the
+Warmy seed offset varying by day, not lag (`vdm_reconcile.py` `SETTLE_DAYS`).
+
+### 12.4 What did NOT close — yahoo (CLOSED for the dated findings, 2026-09-12)
+
+> **2026-09-12:** the yahoo gap below did not reproduce. Hand-run reconciliation
+> on five settled days (08-28, 08-31, 09-03, 09-06, 09-09; `agents/reporting/
+> vdm_reconcile.py`): yahoo opens and clicks PASS (within ±5%) or PASS-seed
+> (Warmy fingerprint) on all five, e.g. 09-03 opens 5,046 vs VDM 5,098, clicks
+> 716 vs 729. This closes the 09-01..03 findings only; the daily job is the
+> standing guard and any future yahoo miss is a new finding, not a re-open of
+> this one. The table below is retained as the historical record.
 
 | bucket | opens vs VDM | clicks vs VDM |
 |---|---|---|
@@ -728,6 +745,12 @@ open; do not smooth it into a total.
   records vs messages never summed; the health colour as a single API-side implementation; and
   "unknown is not zero", including the one exception (an absent append-only Supply-Ledger event key
   is a measured zero).
+- 2026-09-12: §12.3 per-metric ingest settle measured on 14 lake days (core metrics
+  final at T-3, complaints T-14 — the "12-day settle" was the Warmy seed offset, not
+  lag); §12.4 yahoo dated findings CLOSED on five hand-run settled days (daily job
+  remains the guard); zero-traffic VDM buckets (gmail off by ruling since 09-06) are
+  out of scope, printed with the reason, never findings. Evidence in
+  `agents/reporting/vdm_reconcile.py` header comments.
 - 2026-09-04: §12 The two engagement bases — the inclusive event count named the
   OPERATING basis that governs audience selection, and the VDM-comparable
   unique-message/send-cohort count confined to a reporting lens, under the

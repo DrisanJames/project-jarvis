@@ -23,6 +23,7 @@ import (
 	"github.com/ignite/sparkpost-monitor/internal/api"
 	"github.com/ignite/sparkpost-monitor/internal/auth"
 	"github.com/ignite/sparkpost-monitor/internal/azure"
+	"github.com/ignite/sparkpost-monitor/internal/brain"
 	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/config"
 	"github.com/ignite/sparkpost-monitor/internal/datainjections"
@@ -1401,6 +1402,21 @@ func main() {
 			// Kill switch: CONTENT_DESK_ENABLED, code default OFF.
 			contentDeskWorker := worker.NewContentDeskWorker(mailingDB, redisClient)
 			contentDeskWorker.Start(ctx)
+
+			// BrainEvalWorker (2026-09-12): re-runs every active jarvis_brain_evals
+			// row daily and records the run (retained-competence check for the
+			// platform-hosted brain, internal/brain). Lake evals go through
+			// analytics.RunSQL (fail-soft when the reader is disabled); http
+			// evals call this server on BRAIN_HTTP_BASE with the admin key.
+			// Kill switch: BRAIN_EVAL_DISABLED.
+			brainHTTPBase := os.Getenv("BRAIN_HTTP_BASE")
+			if brainHTTPBase == "" {
+				brainHTTPBase = fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port)
+			}
+			brainRunner := brain.NewRunner(mailingDB, brain.NewStore(mailingDB), analytics.RunSQL,
+				brainHTTPBase, os.Getenv("ADMIN_API_KEY"), buildinfo.Current().GitSHA)
+			brainEval := worker.NewBrainEvalWorker(mailingDB, redisClient, brainRunner)
+			brainEval.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			// Send-time suppression for click-drip reminders (compliance fix
@@ -5278,6 +5294,108 @@ func runStartupMigrations(db *sql.DB) {
 			PRIMARY KEY (day, identity, isp, region)
 		)`},
 		// ── end Property Ledger P2 ──────────────────────────────────────────
+
+		// ── JARVIS BRAIN (operator 2026-09-12) ──────────────────────────────
+		// The platform-hosted operational memory: CLAIMS (typed, with authority,
+		// validity and status), EVIDENCE (checker + the result it returned),
+		// CAPABILITIES (task → maintained tool, versioned) and EVALS (known
+		// answers a fresh session must reproduce; every run recorded). Owned by
+		// internal/brain.Store; served by internal/api/brain_handlers.go; re-run
+		// daily by internal/worker/brain_eval_worker.go. Org-scoped like every
+		// other table. The trigram index needs pg_trgm (installed in prod,
+		// verified 2026-09-12); it is its own entry so a dev DB without the
+		// extension loses only the fuzzy-title fallback.
+		{"create_jarvis_brain_claims", `CREATE TABLE IF NOT EXISTS jarvis_brain_claims (
+			id BIGSERIAL PRIMARY KEY,
+			org_id UUID NOT NULL,
+			claim_type TEXT NOT NULL CHECK (claim_type IN ('policy','definition','system_fact','historical_finding','procedure','hypothesis')),
+			authority TEXT NOT NULL CHECK (authority IN ('operator','contract','runtime','review')),
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			scope TEXT[] NOT NULL DEFAULT '{}',
+			status TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate','active','superseded','retracted')),
+			effective_from DATE,
+			effective_until DATE,
+			supersedes BIGINT REFERENCES jarvis_brain_claims(id),
+			superseded_by BIGINT REFERENCES jarvis_brain_claims(id),
+			source TEXT NOT NULL,
+			source_ref TEXT,
+			created_by TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			verified_at TIMESTAMPTZ,
+			verified_by TEXT,
+			tsv TSVECTOR GENERATED ALWAYS AS (
+				setweight(to_tsvector('english', coalesce(title,'')), 'A') ||
+				setweight(to_tsvector('english', coalesce(body,'')), 'B')) STORED
+		)`},
+		{"idx_jarvis_brain_claims_source_ref", `CREATE UNIQUE INDEX IF NOT EXISTS idx_jarvis_brain_claims_source_ref
+			ON jarvis_brain_claims (org_id, source, source_ref) WHERE source_ref IS NOT NULL`},
+		{"idx_jarvis_brain_claims_tsv", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_claims_tsv ON jarvis_brain_claims USING gin (tsv)`},
+		{"idx_jarvis_brain_claims_scope", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_claims_scope ON jarvis_brain_claims USING gin (scope)`},
+		{"idx_jarvis_brain_claims_org_status", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_claims_org_status ON jarvis_brain_claims (org_id, status, claim_type)`},
+		{"idx_jarvis_brain_claims_title_trgm", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_claims_title_trgm ON jarvis_brain_claims USING gin (title gin_trgm_ops)`},
+		{"create_jarvis_brain_evidence", `CREATE TABLE IF NOT EXISTS jarvis_brain_evidence (
+			id BIGSERIAL PRIMARY KEY,
+			claim_id BIGINT NOT NULL REFERENCES jarvis_brain_claims(id) ON DELETE CASCADE,
+			checker TEXT NOT NULL,
+			result TEXT NOT NULL,
+			observed_at TIMESTAMPTZ NOT NULL,
+			environment TEXT NOT NULL,
+			code_version TEXT NOT NULL DEFAULT '',
+			verdict TEXT NOT NULL CHECK (verdict IN ('supports','refutes','inconclusive')),
+			recorded_by TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		{"idx_jarvis_brain_evidence_claim", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_evidence_claim ON jarvis_brain_evidence (claim_id, observed_at DESC)`},
+		{"create_jarvis_brain_capabilities", `CREATE TABLE IF NOT EXISTS jarvis_brain_capabilities (
+			id BIGSERIAL PRIMARY KEY,
+			org_id UUID NOT NULL,
+			name TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			task TEXT NOT NULL,
+			tool TEXT NOT NULL,
+			inputs TEXT NOT NULL DEFAULT '',
+			required_evidence TEXT NOT NULL DEFAULT '',
+			completion_condition TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+			created_by TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (org_id, name, version)
+		)`},
+		{"create_jarvis_brain_evals", `CREATE TABLE IF NOT EXISTS jarvis_brain_evals (
+			id BIGSERIAL PRIMARY KEY,
+			org_id UUID NOT NULL,
+			name TEXT NOT NULL,
+			question TEXT NOT NULL,
+			checker TEXT NOT NULL CHECK (checker IN ('pg_sql','lake_sql','http')),
+			spec JSONB NOT NULL DEFAULT '{}'::jsonb,
+			expected JSONB NOT NULL,
+			tolerance_pct NUMERIC NOT NULL DEFAULT 0,
+			as_of DATE,
+			claim_id BIGINT REFERENCES jarvis_brain_claims(id),
+			capability_id BIGINT REFERENCES jarvis_brain_capabilities(id),
+			status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','retired')),
+			last_run_at TIMESTAMPTZ,
+			last_pass BOOLEAN,
+			last_result JSONB,
+			last_code_version TEXT,
+			created_by TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (org_id, name)
+		)`},
+		{"create_jarvis_brain_eval_runs", `CREATE TABLE IF NOT EXISTS jarvis_brain_eval_runs (
+			id BIGSERIAL PRIMARY KEY,
+			eval_id BIGINT NOT NULL REFERENCES jarvis_brain_evals(id) ON DELETE CASCADE,
+			ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			pass BOOLEAN NOT NULL,
+			result JSONB,
+			error TEXT,
+			code_version TEXT NOT NULL DEFAULT '',
+			duration_ms BIGINT NOT NULL DEFAULT 0
+		)`},
+		{"idx_jarvis_brain_eval_runs_eval", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_eval_runs_eval ON jarvis_brain_eval_runs (eval_id, ran_at DESC)`},
+		// ── end JARVIS BRAIN ────────────────────────────────────────────────
 
 		// ── Property Ledger P4 (Vector A plan rev4, Step 14) ────────────────
 		// Daily intro-counter materialization: one row per (Denver day, brand,

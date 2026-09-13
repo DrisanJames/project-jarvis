@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/analytics"
+	"github.com/ignite/sparkpost-monitor/internal/brain"
+	"github.com/ignite/sparkpost-monitor/internal/buildinfo"
 	"github.com/ignite/sparkpost-monitor/internal/datanorm"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/ipxo"
@@ -1184,6 +1187,22 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// (§1.5). See internal/api/drip_supply_handlers.go.
 			dripSupplySvc := NewDripSupplyService(db)
 			dripSupplySvc.RegisterRoutes(r)
+
+			// === JARVIS BRAIN (operator 2026-09-12) ===
+			// Platform-hosted operational memory: claims / evidence /
+			// capabilities / evals. Session path here (/api/mailing/brain/*);
+			// the X-Admin-Key path for the console client is registered on
+			// the root router below (/api/admin/brain/*). See
+			// internal/api/brain_handlers.go and internal/brain.
+			brainHTTPBase := os.Getenv("BRAIN_HTTP_BASE")
+			if brainHTTPBase == "" {
+				brainHTTPBase = "http://127.0.0.1:8080"
+			}
+			brainStore := brain.NewStore(db)
+			brainSvc := NewBrainService(brainStore, brain.NewRunner(db, brainStore, analytics.RunSQL,
+				brainHTTPBase, os.Getenv("ADMIN_API_KEY"), buildinfo.Current().GitSHA))
+			brainSvc.RegisterRoutes(r)
+			brainSvc.RegisterAdminRoutes(s.router)
 
 			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
 			// The Optizmo compliance loop as software: GET

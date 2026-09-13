@@ -1080,6 +1080,25 @@ func Breakdown(ctx context.Context, f BreakdownFilter) ([]BreakdownRow, error) {
 	return r.Breakdown(ctx, f)
 }
 
+// RunSQL executes a caller-built READ-ONLY query against the lake and returns
+// column headers + string rows (header row stripped), bounded by ctx. Added
+// 2026-09-12 for brain evals (internal/brain.Runner); the caller must have
+// passed the query through brain.AssertReadOnlySQL — this method does not
+// validate SQL.
+func (r *Reader) RunSQL(ctx context.Context, sql string) (cols []string, rows [][]string, err error) {
+	return r.runQuery(ctx, sql)
+}
+
+// RunSQL runs against the global reader. Returns errDisabled when the reader
+// is not configured (IsDisabledErr reports it).
+func RunSQL(ctx context.Context, sql string) (cols []string, rows [][]string, err error) {
+	r := getReader()
+	if r == nil {
+		return nil, nil, errDisabled
+	}
+	return r.RunSQL(ctx, sql)
+}
+
 // IsDisabledErr reports whether err is the "lake read disabled" sentinel so
 // handlers can return a graceful 200 instead of a 5xx.
 func IsDisabledErr(err error) bool {
