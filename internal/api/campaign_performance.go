@@ -44,6 +44,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -73,9 +74,18 @@ const (
 	// campaignPerformanceLakeChunk mirrors analytics.maxBreakdownCampaignIDs
 	// (reader.go:148, unexported) — the reader rejects a longer IN-list.
 	campaignPerformanceLakeChunk = 2000
-	// campaignPerformanceTimeout bounds the whole request; the PG scan is
-	// partition-pruned and ≤50 campaigns, the lake query is one Athena run.
-	campaignPerformanceTimeout = 30 * time.Second
+	// campaignPerformanceTimeout bounds the whole request (apex-alb idle
+	// timeout is 300s, verified 2026-09-13). The engagement half is loaded ONE
+	// CAMPAIGN PER STATEMENT, campaignPerformanceEngagementWorkers at a time,
+	// each under campaignPerformanceStmtTimeout: measured on prod 2026-09-13,
+	// one settled board campaign (32k sent / 54k opens / 661 clicks) takes
+	// ~26s on the (campaign_id, event_at) index — five campaigns in one
+	// statement blew the pool's 30s statement_timeout (main.go DSN options).
+	// SET LOCAL overrides that per transaction; splitting bounds each statement
+	// by one campaign's volume and parallelises the heap fetches.
+	campaignPerformanceTimeout           = 240 * time.Second
+	campaignPerformanceStmtTimeout       = "120s"
+	campaignPerformanceEngagementWorkers = 4
 	// campaignPerformanceMaturityDays — §12.3: a cohort number read with less
 	// than ~3 days of tail is an undercount, not a discrepancy.
 	campaignPerformanceMaturityDays = 3.0
@@ -187,6 +197,9 @@ type CampaignPerformanceService struct {
 	lake        lakeBreakdownFn
 	lakeEnabled func() bool
 	now         func() time.Time
+	// engWorkers bounds concurrent per-campaign engagement statements (tests
+	// set 1 so sqlmock expectations stay ordered).
+	engWorkers int
 }
 
 // NewCampaignPerformanceService builds the service bound to the global lake
@@ -197,6 +210,7 @@ func NewCampaignPerformanceService(db *sql.DB) *CampaignPerformanceService {
 		lake:        analytics.Breakdown,
 		lakeEnabled: analytics.ReaderEnabled,
 		now:         time.Now,
+		engWorkers:  campaignPerformanceEngagementWorkers,
 	}
 }
 
@@ -622,8 +636,65 @@ func cpEngKey(campaignID, ispName string) string {
 	return campaignID + "|" + ispName
 }
 
+// loadEngagement runs one statement per campaign, engWorkers at a time, and
+// merges the rows. Every statement runs in its own READ ONLY transaction with
+// SET LOCAL statement_timeout so one long campaign cannot be cut by the pool
+// default and cannot hold a write lock. Rows are filtered to the requested
+// campaign so a merge can never double-count.
 func (s *CampaignPerformanceService) loadEngagement(ctx context.Context, orgID uuid.UUID, ids []string, from, to time.Time, byISP bool) (map[string]cpEngagement, error) {
-	rs, err := s.db.QueryContext(ctx, campaignPerformanceEngagementSQL(byISP), orgID.String(), pq.Array(ids), from, to)
+	workers := s.engWorkers
+	if workers <= 0 {
+		workers = 1
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	out := map[string]cpEngagement{}
+	var (
+		mu    sync.Mutex
+		wg    sync.WaitGroup
+		sem   = make(chan struct{}, workers)
+		errCh = make(chan error, len(ids))
+	)
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{} // acquire BEFORE go so workers==1 stays strictly sequential
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			part, err := s.loadEngagementOne(ctx, orgID, id, from, to, byISP)
+			if err != nil {
+				errCh <- fmt.Errorf("campaign %s: %w", id, err)
+				cancel()
+				return
+			}
+			mu.Lock()
+			for k, v := range part {
+				out[k] = v
+			}
+			mu.Unlock()
+		}(id)
+	}
+	wg.Wait()
+	close(errCh)
+	if err, ok := <-errCh; ok {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *CampaignPerformanceService) loadEngagementOne(ctx context.Context, orgID uuid.UUID, id string, from, to time.Time, byISP bool) (map[string]cpEngagement, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '`+campaignPerformanceStmtTimeout+`'`); err != nil {
+		return nil, err
+	}
+	rs, err := tx.QueryContext(ctx, campaignPerformanceEngagementSQL(byISP), orgID.String(), pq.Array([]string{id}), from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -645,6 +716,9 @@ func (s *CampaignPerformanceService) loadEngagement(ctx context.Context, orgID u
 		)
 		if err := rs.Scan(dest...); err != nil {
 			return nil, err
+		}
+		if cid != id {
+			continue
 		}
 		e.Source = "pg"
 		if !byISP {

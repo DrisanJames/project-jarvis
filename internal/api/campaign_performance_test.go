@@ -41,6 +41,7 @@ func newCampaignPerformanceServiceWithMock(t *testing.T) (*CampaignPerformanceSe
 	t.Cleanup(func() { db.Close() })
 	s := NewCampaignPerformanceService(db)
 	s.now = func() time.Time { return cpTestNow }
+	s.engWorkers = 1 // sequential so sqlmock's ordered expectations hold
 	return s, mock
 }
 
@@ -70,14 +71,23 @@ func cpGet(t *testing.T, s *CampaignPerformanceService, query string) (*httptest
 
 // cpStandardMocks: campaign 1 (pmta, scheduled 1 day ago) + campaign 2 (kumo,
 // scheduled 10 days ago); one engagement row for campaign 1; one conversion.
+// cpExpectEngagement mirrors loadEngagementOne: one READ ONLY tx per campaign,
+// SET LOCAL statement_timeout, the grouped scan, rollback.
+func cpExpectEngagement(mock sqlmock.Sqlmock, pattern string, rows *sqlmock.Rows) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(pattern).WillReturnRows(rows)
+	mock.ExpectRollback()
+}
+
 func cpStandardMocks(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(`FROM mailing_campaigns c`).
 		WillReturnRows(sqlmock.NewRows(cpCampaignColumns()).
 			AddRow(cpTestCID1, "09112026 - DB - OFR-CLK", "sent", cpTestNow.Add(-24*time.Hour), cpTestNow.Add(-30*time.Hour), "em.discountblog.com", "pmta").
 			AddRow(cpTestCID2, "09022026 - AAD - KUMO", "sent", cpTestNow.Add(-10*24*time.Hour), cpTestNow.Add(-11*24*time.Hour), "em.aadwd.com", "kumo"))
-	mock.ExpectQuery(`FROM mailing_tracking_events`).
-		WillReturnRows(sqlmock.NewRows(cpEngagementColumns()).
-			AddRow(cpTestCID1, 1000, 1900, 400, 90, 300, 60, 45, 120, 30, 100, 20, 15))
+	cpExpectEngagement(mock, `FROM mailing_tracking_events`, sqlmock.NewRows(cpEngagementColumns()).
+		AddRow(cpTestCID1, 1000, 1900, 400, 90, 300, 60, 45, 120, 30, 100, 20, 15))
+	cpExpectEngagement(mock, `FROM mailing_tracking_events`, sqlmock.NewRows(cpEngagementColumns()))
 	mock.ExpectQuery(`FROM mailing_everflow_conversions`).
 		WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "n", "payout"}).
 			AddRow(cpTestCID1, 2, 45.5))
@@ -303,7 +313,7 @@ func TestCampaignPerformance_NameModeResolvesByOrgAndDenverRange(t *testing.T) {
 		WithArgs(cpTestOrg, `OFR\_CLK 100\%`, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows(cpCampaignColumns()).
 			AddRow(cpTestCID1, "OFR_CLK 100%", "sent", cpTestNow.Add(-48*time.Hour), cpTestNow.Add(-50*time.Hour), "em.discountblog.com", "ses"))
-	mock.ExpectQuery(`FROM mailing_tracking_events`).WillReturnRows(sqlmock.NewRows(cpEngagementColumns()))
+	cpExpectEngagement(mock, `FROM mailing_tracking_events`, sqlmock.NewRows(cpEngagementColumns()))
 	mock.ExpectQuery(`FROM mailing_everflow_conversions`).WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "n", "payout"}))
 	s.SetLakeBreakdown(func(context.Context, analytics.BreakdownFilter) ([]analytics.BreakdownRow, error) { return nil, nil })
 
@@ -362,11 +372,10 @@ func TestCampaignPerformance_ISPBreakdownJoinsOnLabel(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(cpCampaignColumns()).
 			AddRow(cpTestCID1, "x", "sent", cpTestNow.Add(-5*24*time.Hour), cpTestNow.Add(-6*24*time.Hour), "em.discountblog.com", "pmta"))
 	cols := append([]string{"campaign_id", "recipient_domain"}, cpEngagementColumns()[1:]...)
-	mock.ExpectQuery(`COALESCE\(recipient_domain,''\)`).
-		WillReturnRows(sqlmock.NewRows(cols).
-			AddRow(cpTestCID1, "gmail.com", 10, 10, 8, 2, 6, 2, 1, 3, 1, 3, 1, 1).
-			AddRow(cpTestCID1, "googlemail.com", 5, 5, 2, 0, 2, 0, 0, 1, 0, 1, 0, 0).
-			AddRow(cpTestCID1, "", 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0))
+	cpExpectEngagement(mock, `COALESCE\(recipient_domain,''\)`, sqlmock.NewRows(cols).
+		AddRow(cpTestCID1, "gmail.com", 10, 10, 8, 2, 6, 2, 1, 3, 1, 3, 1, 1).
+		AddRow(cpTestCID1, "googlemail.com", 5, 5, 2, 0, 2, 0, 0, 1, 0, 1, 0, 0).
+		AddRow(cpTestCID1, "", 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0))
 	mock.ExpectQuery(`FROM mailing_everflow_conversions`).WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "n", "payout"}))
 
 	calls := 0
