@@ -125,6 +125,15 @@ func (w *BrainEvalWorker) tick(ctx context.Context) {
 // RunOnce executes every active eval once. Exported for tests and the API's
 // "run all now"; the caller owns locking.
 func (w *BrainEvalWorker) RunOnce(ctx context.Context) (passed, failed int) {
+	// Both ECS tasks boot within seconds of each other and the first pass
+	// releases the lease when it finishes, so the second task re-ran the whole
+	// suite 20s later and posted a second digest (observed 2026-09-13 19:43:20
+	// and 19:43:41). A pass that ran less than half an interval ago is skipped.
+	if since, ok := w.lastPassAge(ctx); ok && since < w.interval/2 {
+		log.Printf("[BrainEval] last pass %s ago (< %s) — skipping", since.Round(time.Second), w.interval/2)
+		EmitHeartbeat(ctx, w.db, brainEvalWorkerName, int(w.interval.Seconds()), "ok", "skipped: recent pass")
+		return 0, 0
+	}
 	evals, err := w.store.ListEvalsAllOrgs(ctx)
 	if err != nil {
 		log.Printf("[BrainEval] list evals: %v", err)
@@ -201,4 +210,13 @@ func (w *BrainEvalWorker) postDigest(passed, failed int, failing []string) {
 	if err := notify.Deliver(w.notifier, msg); err != nil {
 		log.Printf("[BrainEval] digest post failed: %v", err)
 	}
+}
+
+// lastPassAge reports how long ago the newest eval run was recorded (any org).
+func (w *BrainEvalWorker) lastPassAge(ctx context.Context) (time.Duration, bool) {
+	var last sql.NullTime
+	if err := w.db.QueryRowContext(ctx, `SELECT max(ran_at) FROM jarvis_brain_eval_runs`).Scan(&last); err != nil || !last.Valid {
+		return 0, false
+	}
+	return time.Since(last.Time), true
 }

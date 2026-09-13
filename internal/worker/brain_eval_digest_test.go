@@ -1,8 +1,13 @@
 package worker
 
 import (
+	"context"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 
 	"github.com/ignite/sparkpost-monitor/internal/brain"
 )
@@ -34,5 +39,25 @@ func TestBrainEvalDigest(t *testing.T) {
 	got := strings.Join(c.titles, " ") + " " + strings.Join(c.bodies, " ")
 	if !strings.Contains(got, "7/8") || !strings.Contains(got, "fc_moo_20260909_lake_delivery") || !strings.Contains(got, "WARN") {
 		t.Fatalf("failing digest = %q", got)
+	}
+}
+
+// A pass that ran less than half an interval ago is skipped (double-boot guard);
+// nothing is listed or run.
+func TestBrainEvalSkipsRecentPass(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT max(ran_at) FROM jarvis_brain_eval_runs")).
+		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(time.Now().Add(-30 * time.Second)))
+	mock.ExpectExec("INSERT INTO mailing_worker_heartbeats").WillReturnResult(sqlmock.NewResult(0, 1))
+	w := NewBrainEvalWorker(db, nil, brain.NewRunner(db, brain.NewStore(db), nil, "", "", "test"))
+	if p, f := w.RunOnce(context.Background()); p != 0 || f != 0 {
+		t.Fatalf("expected skip, got %d/%d", p, f)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("suite must not be listed after a recent pass: %v", err)
 	}
 }
