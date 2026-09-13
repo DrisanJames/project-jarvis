@@ -7,7 +7,7 @@ import {
   /* faArrowLeft, */ faGlobe, /* faStore (offer-center nav retired 2026-08-17), */
   faSpinner, faSeedling, faWandMagicSparkles,
   faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup, faSliders,
-  faRightLeft, faUsers, faNewspaper,
+  faRightLeft, faUsers, faNewspaper, faBook,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -78,6 +78,9 @@ const ClickFunnels = lazy(() => import('../components/ClickFunnels').then(m => (
 // REQ-118 WP10 — the drip supply chain's operator surface (three panes:
 // ecosystem queue / lane / domains) over /api/mailing/supply/*.
 const SupplyView = lazy(() => import('../components/SupplyView').then(m => ({ default: m.SupplyView })));
+// Brain (2026-09-13) — the platform-hosted operational memory (claims +
+// evidence, capabilities, evals) over /api/mailing/brain/*.
+const Brain = lazy(() => import('../components/Brain').then(m => ({ default: m.Brain })));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -86,7 +89,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain';
 
 interface Tab {
   id: TabId;
@@ -119,6 +122,7 @@ const tabs: Tab[] = [
   // replacements: Property Ledger lane panel + Creative Studio.
   { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.' },
   { id: 'content-desk', label: 'Content Desk', icon: faNewspaper, description: 'Article review queue, block-by-block review against source evidence, pipeline operations, and new briefs.' },
+  { id: 'brain', label: 'Brain', icon: faBook, description: 'The platform\'s operational memory — claims with their evidence and verification status, the capabilities that answer recognised tasks, and the evals that pin known answers.' },
   { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
   { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
@@ -301,6 +305,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><ClickFunnels /></Suspense>;
       case 'supply':
         return <Suspense fallback={<ChunkLoader />}><SupplyView /></Suspense>;
+      case 'brain':
+        return <Suspense fallback={<ChunkLoader />}><Brain /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
