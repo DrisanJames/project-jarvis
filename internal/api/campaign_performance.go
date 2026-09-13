@@ -82,9 +82,13 @@ const (
 	// ~26s on the (campaign_id, event_at) index — five campaigns in one
 	// statement blew the pool's 30s statement_timeout (main.go DSN options).
 	// SET LOCAL overrides that per transaction; splitting bounds each statement
-	// by one campaign's volume and parallelises the heap fetches.
+	// by one campaign's volume and parallelises the heap fetches. The first
+	// COLD call after a deploy still hit 120s on one of four concurrent scans
+	// (500 at 2m0.0s, then 40.7s warm) — 200s covers the cold case inside the
+	// 240s handler budget. The durable fix is a precomputed per-campaign
+	// engagement rollup; until then the first call on a cold set is slow, not wrong.
 	campaignPerformanceTimeout           = 240 * time.Second
-	campaignPerformanceStmtTimeout       = "120s"
+	campaignPerformanceStmtTimeout       = "200s"
 	campaignPerformanceEngagementWorkers = 4
 	// campaignPerformanceMaturityDays — §12.3: a cohort number read with less
 	// than ~3 days of tail is an undercount, not a discrepancy.
