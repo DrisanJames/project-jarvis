@@ -400,3 +400,24 @@ echo "Image: $IMAGE_URI"
 echo "Task Definition: $NEW_TASK_DEF_ARN"
 echo "Env manifest sha: $ENV_MANIFEST_SHA"
 echo "Rollback target: ${CURRENT_TASK_DEF_ARN##*/}"
+
+# Learning loop (operator 2026-09-13): every deploy is a brain fact, verified by
+# the deploy_log line itself. Best-effort — a brain outage never fails a deploy.
+BRAIN_PY="$(cd "$(dirname "$0")/../.." && pwd)/agents/dbknowledge/.venv/bin/python"
+if [ -x "$BRAIN_PY" ]; then
+  DEPLOY_REV="${NEW_TASK_DEF_ARN##*/}" DEPLOY_PREV="${CURRENT_TASK_DEF_ARN##*/}" DEPLOY_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
+  "$BRAIN_PY" - <<'PY' 2>/dev/null || echo "brain: deploy record skipped"
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(os.environ.get("BRAIN_REPO", "."))), ""))
+sys.path.insert(0, "/Users/mrjames/Desktop/jamesventures/mailing-saas")
+from agents.brain.client import Brain
+rev, prev, sha = os.environ["DEPLOY_REV"], os.environ["DEPLOY_PREV"], os.environ["DEPLOY_SHA"]
+b = Brain(actor="deploy.sh", timeout=20)
+c = b.record("system_fact", f"Deployed {rev} (git {sha[:8]}); rollback {prev}",
+             f"ECS service ignite-service now runs task definition {rev} built from upside-down {sha}. Previous revision {prev} is the one-move rollback. Recorded by deploy/deploy.sh after verification passed.",
+             ["source:deploy", "system:deploy", "system:ecs"], source="deploy", source_ref=f"deploy:{rev}")
+b.verify(c["id"], "deploy/deploy_log.jsonl (deploy.sh verification passed: task def, single deployment, running tasks, /health build sha, send liveness)",
+         f"revision={rev} previous={prev} git_sha={sha} result=ok", "ecs", verifier_role="checker", code_version=sha[:8])
+print(f"brain: deploy {rev} recorded as claim #{c['id']}")
+PY
+fi

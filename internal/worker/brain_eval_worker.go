@@ -155,6 +155,7 @@ func (w *BrainEvalWorker) RunOnce(ctx context.Context) (passed, failed int) {
 			failed++
 			log.Printf("[BrainEval] FAIL %s (org %s): %s", e.Name, e.OrgID, run.Error)
 			failing = append(failing, brainEvalFailLine(e, run))
+			w.recordFailure(ctx, e, run)
 		}
 	}
 	w.postDigest(passed, failed, failing)
@@ -219,4 +220,50 @@ func (w *BrainEvalWorker) lastPassAge(ctx context.Context) (time.Duration, bool)
 		return 0, false
 	}
 	return time.Since(last.Time), true
+}
+
+// recordFailure turns a failing eval into a brain fact (learning loop, step D):
+// the platform records what drifted, with the run as evidence, so the next
+// session and the nightly checker see it without anyone remembering to write
+// it down. One claim per eval per day (source_ref carries the date).
+func (w *BrainEvalWorker) recordFailure(ctx context.Context, e brain.Eval, run brain.EvalRun) {
+	day := time.Now().UTC().Format("2006-01-02")
+	ref := "eval-fail:" + e.Name + ":" + day
+	why := run.Error
+	if why == "" {
+		if m, ok := run.Result.(map[string]any); ok {
+			if diffs, ok := m["diffs"].([]string); ok && len(diffs) > 0 {
+				why = strings.Join(diffs, "; ")
+			}
+		}
+	}
+	c, err := w.store.RecordClaim(ctx, e.OrgID, brain.ClaimInput{
+		ClaimType: "system_fact",
+		Title:     "Eval " + e.Name + " FAILED on " + day,
+		Body: "Question: " + e.Question + "\nChecker: " + e.Checker + "\nDiff: " + why +
+			"\nEither the platform drifted or the pinned expectation aged out (as_of " + strOrDash(e.AsOf) + "). Decide: fix or re-baseline.",
+		Scope:     []string{"source:eval-worker", "eval:" + e.Name},
+		Source:    "eval-worker",
+		SourceRef: &ref,
+		CreatedBy: brainEvalWorkerName,
+	})
+	if err != nil {
+		log.Printf("[BrainEval] record failure claim: %v", err)
+		return
+	}
+	if _, err := w.store.Verify(ctx, e.OrgID, c.ID, "checker", brainEvalWorkerName, brain.EvidenceInput{
+		Checker:     "jarvis_brain_eval_runs eval_id=" + strconv.FormatInt(e.ID, 10) + " ran_at=" + run.RanAt.UTC().Format(time.RFC3339),
+		Result:      why,
+		Environment: "ecs",
+		CodeVersion: run.CodeVersion,
+	}); err != nil {
+		log.Printf("[BrainEval] verify failure claim: %v", err)
+	}
+}
+
+func strOrDash(s *string) string {
+	if s == nil || *s == "" {
+		return "-"
+	}
+	return *s
 }
