@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,3 +122,27 @@ func TestBrainEvalRejectsWriteSQL(t *testing.T) {
 }
 
 var _ = sql.ErrNoRows
+
+// A source_ref that already names a DIFFERENT claim is refused (400), not
+// silently overwritten — the 2026-09-13 #759 collision.
+func TestBrainRecordRefusesSourceRefReuseForDifferentClaim(t *testing.T) {
+	srv, mock, done := brainTestServer(t)
+	defer done()
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT title FROM jarvis_brain_claims WHERE org_id=$1 AND source=$2 AND source_ref=$3")).
+		WithArgs(brainTestOrg, "session", "ref-1").
+		WillReturnRows(sqlmock.NewRows([]string{"title"}).AddRow("an unrelated existing claim"))
+	mock.ExpectRollback()
+	body, _ := json.Marshal(map[string]any{"claim_type": "historical_finding", "title": "a new fact", "body": "b",
+		"source": "session", "source_ref": "ref-1"})
+	req := httptest.NewRequest(http.MethodPost, "/api/mailing/brain/claims/", bytes.NewReader(body))
+	req.Header.Set("X-Organization-ID", brainTestOrg)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "already names a different claim") {
+		t.Fatalf("want 400 source_ref conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

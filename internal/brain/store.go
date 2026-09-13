@@ -176,6 +176,21 @@ func (s *Store) RecordClaim(ctx context.Context, orgID string, in ClaimInput) (C
 		return Claim{}, err
 	}
 	defer tx.Rollback()
+	// A source_ref names ONE claim. Re-recording the same claim (same title)
+	// updates it in place; reusing a source_ref for a DIFFERENT claim is
+	// refused — the idempotent upsert silently overwrote an unrelated claim on
+	// 2026-09-13 (#759) when a checker passed one ref for two facts.
+	if in.SourceRef != nil {
+		var existingTitle string
+		err := tx.QueryRowContext(ctx, `SELECT title FROM jarvis_brain_claims WHERE org_id=$1 AND source=$2 AND source_ref=$3`,
+			orgID, in.Source, *in.SourceRef).Scan(&existingTitle)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Claim{}, err
+		}
+		if err == nil && !strings.EqualFold(strings.TrimSpace(existingTitle), in.Title) {
+			return Claim{}, fmt.Errorf("%w: source_ref %q already names a different claim (%q); use a new source_ref or supersede it", ErrBadInput, *in.SourceRef, existingTitle)
+		}
+	}
 	var id int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO jarvis_brain_claims
