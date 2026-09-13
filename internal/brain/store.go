@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -487,9 +488,9 @@ func (s *Store) Supersede(ctx context.Context, orgID string, oldID, newID int64,
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE jarvis_brain_claims
 		SET status='superseded', superseded_by=$1,
-		    body = body || E'\n\n[superseded ' || to_char(now(),'YYYY-MM-DD') || ' by ' || $2 || ' → #' || $1 || '] ' || $3,
+		    body = body || E'\n\n[superseded ' || to_char(now(),'YYYY-MM-DD') || ' by ' || $2 || ' → #' || $6 || '] ' || $3,
 		    updated_at=now()
-		WHERE id=$4 AND org_id=$5 AND status IN ('active','candidate')`, newID, by, reason, oldID, orgID)
+		WHERE id=$4 AND org_id=$5 AND status IN ('active','candidate')`, newID, by, reason, oldID, orgID, strconv.FormatInt(newID, 10))
 	if err != nil {
 		return Claim{}, err
 	}
