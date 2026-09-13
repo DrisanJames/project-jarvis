@@ -16,9 +16,11 @@ package api
 //     COUNT(DISTINCT subscriber_id) FILTER (event_type AND human-verdict),
 //     bounded to TODAY-MT by event_at. Apple-MPP / scanner traffic is excluded
 //     via ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))
-//     — the ONLY working human classifier (METRIC_CONTRACT.md §6). The legacy
-//     is_machine_open / is_machine_click columns are INERT (never populated;
-//     verified 2026-06-24) and MUST NOT be used as a filter. Same predicate as
+//     — the ONLY working human classifier (METRIC_CONTRACT.md §6). The
+//     is_machine_open / is_machine_click columns are LABELS (is_machine_open IS
+//     written by both pixel paths, ~0.1% true — measured 2026-09-13; the
+//     2026-06-24 "never populated" reading was wrong) and MUST NOT be used as
+//     a filter (§12.1). Same predicate as
 //     handlers_analytics_engagement.go (engagementSummaryQuery).
 //   - Partition pruning: every mailing_tracking_events query keeps a RAW
 //     (unwrapped) event_at >= <timestamptz> bound so the planner prunes the

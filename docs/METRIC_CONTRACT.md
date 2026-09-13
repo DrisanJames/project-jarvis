@@ -714,10 +714,17 @@ open; do not smooth it into a total.
   every row before 2026-09-04 because the SES handler computed the verdict and
   never put it on the lake event. Non-click rows stay NULL so
   `is_machine_click IS NOT NULL` remains an honest coverage measure.
-- **NOT written: `is_machine_open`.** It is read by ~15 opt-in `ExcludeMPP`
-  filters that are inert only because nothing writes the column. Populating it
-  would silently switch those screens from inclusive to filtered counting —
-  exactly the undercount §12.1 forbids. Use `ses_bot_event` instead.
+- **`is_machine_open` IS written — the 2026-09-04 sentence below was wrong
+  (corrected 2026-09-13, brain fact-check).** Both pixel ingest paths set it:
+  `internal/api/mailing_tracking.go:170` and `internal/tracking/consumer.go:326`,
+  since March 2026. Measured 2026-09-07..13: **18,425 true of 18,360,088 opened
+  rows (0.10%), zero NULLs.** So the ~15 opt-in `ExcludeMPP` filters are not
+  inert; they drop ~0.1% of opens — small, but it is a filter on the operating
+  basis and §12.1 says labels never gate. Treat it as a label; do not widen its
+  writer. The code comments in `performance_snapshot.go` and
+  `handlers_analytics_engagement.go` that call it "never populated" are stale.
+  ~~NOT written: `is_machine_open`. It is read by ~15 opt-in `ExcludeMPP`
+  filters that are inert only because nothing writes the column.~~
 
 ## Amendment log
 
@@ -745,6 +752,9 @@ open; do not smooth it into a total.
   records vs messages never summed; the health colour as a single API-side implementation; and
   "unknown is not zero", including the one exception (an absent append-only Supply-Ledger event key
   is a measured zero).
+- 2026-09-13: §12.5 corrected — `is_machine_open` IS written by both pixel ingest paths
+  (0.10% true over 7 days, measured); the "NOT written / filters inert" sentence of
+  2026-09-04 was false. Found by the brain fact-check pass (claim #750), re-verified.
 - 2026-09-12: §12.3 per-metric ingest settle measured on 14 lake days (core metrics
   final at T-3, complaints T-14 — the "12-day settle" was the Warmy seed offset, not
   lag); §12.4 yahoo dated findings CLOSED on five hand-run settled days (daily job

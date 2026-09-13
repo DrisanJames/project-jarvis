@@ -12,9 +12,10 @@ package api
 //     open/click events from the SES webhook (source='ses') plus a polluted
 //     'app' stream; the lake's pmta/ses open/click slice the Overview card read
 //     under-reports clicks by ~3 orders of magnitude (3 vs reality).
-//   - The is_machine_open / is_machine_click columns are INERT in this DB
-//     (verified 2026-06-24: COUNT(... NOT is_machine_click) == COUNT(*)), so
-//     filtering on them is a no-op. ignite_event_verdict() is the ONLY working
+//   - The is_machine_open / is_machine_click columns are LABELS, not filters
+//     (METRIC_CONTRACT §12.1). is_machine_open IS written by both pixel paths
+//     (~0.1% true, measured 2026-09-13 — the 2026-06-24 "inert" reading was
+//     wrong); is_machine_click fires rarely. ignite_event_verdict() is the ONLY working
 //     human classifier — it is what human_engagement and the verdict crons use.
 //
 // Semantics:
