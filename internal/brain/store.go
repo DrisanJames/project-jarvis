@@ -291,9 +291,38 @@ func (s *Store) Recall(ctx context.Context, orgID, query string, o RecallOptions
 		return nil, err
 	}
 	out, err := collectClaims(rows, true)
-	if err != nil || len(out) > 0 {
-		return out, err
+	if err != nil {
+		return nil, err
 	}
+	// Tier 2 — ANY-term match. websearch_to_tsquery ANDs every word, so a
+	// natural-language question ("what alarms cut off the WAF if it
+	// misbehaves?") returns nothing when one word is absent from the claim.
+	// Fill the remaining slots with claims sharing the most lexemes.
+	if len(out) < o.Limit {
+		seen := make([]int64, 0, len(out))
+		for _, c := range out {
+			seen = append(seen, c.ID)
+		}
+		args2 := append(append([]any{}, args[:qi]...), pq.Array(seen), o.Limit-len(out))
+		rows, err = s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT `+claimCols+`, ts_rank_cd(c.tsv, q, 32) AS rank
+		FROM jarvis_brain_claims c,
+		     to_tsquery('english', replace(plainto_tsquery('english', $%d)::text, '&', '|')) q
+		WHERE %s AND NOT (c.id = ANY($%d)) AND c.tsv @@ q
+		ORDER BY (c.status='active') DESC, rank DESC, c.updated_at DESC LIMIT $%d`, qi, w, qi+1, qi+2), args2...)
+		if err != nil {
+			return nil, err
+		}
+		more, err := collectClaims(rows, true)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, more...)
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	// Tier 3 — fuzzy title match for typos / partial names.
 	rows, err = s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT `+claimCols+`, similarity(c.title, $%d) AS rank
 		FROM jarvis_brain_claims c
