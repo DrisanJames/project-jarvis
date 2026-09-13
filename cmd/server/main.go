@@ -1415,8 +1415,15 @@ func main() {
 			}
 			brainRunner := brain.NewRunner(mailingDB, brain.NewStore(mailingDB), analytics.RunSQL,
 				brainHTTPBase, os.Getenv("ADMIN_API_KEY"), buildinfo.Current().GitSHA)
-			brainEval := worker.NewBrainEvalWorker(mailingDB, redisClient, brainRunner)
+			brainEval := worker.NewBrainEvalWorker(mailingDB, redisClient, brainRunner).
+				SetNotifier(notify.SlackChannelFromEnv("SLACK_BRAIN_CHANNEL", "#jarvis"))
 			brainEval.Start(ctx)
+			// BrainSnapshotWorker (governance 2026-09-13): nightly JSONL export of
+			// every jarvis_brain_* table to S3 (default ENGINE_S3_BUCKET, versioned,
+			// never deletes) — the brain owns its own durability independent of the
+			// 3-day RDS retention. Kill switch: BRAIN_SNAPSHOT_DISABLED.
+			brainSnapshot := worker.NewBrainSnapshotWorker(mailingDB, redisClient)
+			brainSnapshot.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			// Send-time suppression for click-drip reminders (compliance fix

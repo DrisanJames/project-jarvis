@@ -14,6 +14,7 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ignite/sparkpost-monitor/internal/brain"
+	"github.com/ignite/sparkpost-monitor/internal/notify"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 	"github.com/redis/go-redis/v9"
 )
@@ -48,6 +50,14 @@ type BrainEvalWorker struct {
 	interval time.Duration
 	runner   *brain.Runner
 	store    *brain.Store
+	notifier notify.Notifier // daily digest per docs/SLACK_MESSAGE_STANDARD.md; nil = no post
+}
+
+// SetNotifier enables the daily Slack digest (learning-loop step D: the
+// operator sees every failing eval without opening the portal).
+func (w *BrainEvalWorker) SetNotifier(n notify.Notifier) *BrainEvalWorker {
+	w.notifier = n
+	return w
 }
 
 func NewBrainEvalWorker(db *sql.DB, redisClient *redis.Client, runner *brain.Runner) *BrainEvalWorker {
@@ -124,6 +134,7 @@ func (w *BrainEvalWorker) RunOnce(ctx context.Context) (passed, failed int) {
 	if len(evals) > brainEvalMaxEvalsPerPass {
 		evals = evals[:brainEvalMaxEvalsPerPass]
 	}
+	var failing []string
 	for _, e := range evals {
 		if ctx.Err() != nil {
 			break
@@ -134,8 +145,10 @@ func (w *BrainEvalWorker) RunOnce(ctx context.Context) (passed, failed int) {
 		} else {
 			failed++
 			log.Printf("[BrainEval] FAIL %s (org %s): %s", e.Name, e.OrgID, run.Error)
+			failing = append(failing, brainEvalFailLine(e, run))
 		}
 	}
+	w.postDigest(passed, failed, failing)
 	status := "ok"
 	msg := ""
 	if failed > 0 {
@@ -145,4 +158,47 @@ func (w *BrainEvalWorker) RunOnce(ctx context.Context) (passed, failed int) {
 	EmitHeartbeat(ctx, w.db, brainEvalWorkerName, int(w.interval.Seconds()), status, msg)
 	log.Printf("[BrainEval] pass complete: %d passed, %d failed", passed, failed)
 	return passed, failed
+}
+
+// brainEvalFailLine renders one failing eval as a "Label: value" line — the
+// name, then the first diff or the error, clipped so the body stays ≤ 6 lines.
+func brainEvalFailLine(e brain.Eval, run brain.EvalRun) string {
+	why := run.Error
+	if why == "" {
+		if m, ok := run.Result.(map[string]any); ok {
+			if diffs, ok := m["diffs"].([]string); ok && len(diffs) > 0 {
+				why = diffs[0]
+			}
+		}
+	}
+	if len(why) > 140 {
+		why = why[:140] + "…"
+	}
+	return "`" + e.Name + "`: " + why
+}
+
+// postDigest posts the daily result. EVENT when everything passes (a job
+// finished), WARN with the failing names when not. No post without a notifier.
+func (w *BrainEvalWorker) postDigest(passed, failed int, failing []string) {
+	if w.notifier == nil {
+		return
+	}
+	total := passed + failed
+	if total == 0 {
+		return
+	}
+	msg := notify.Message{Scope: notify.ScopeReport, Tier: notify.TierEvent,
+		Headline: fmt.Sprintf("brain evals · %d/%d pass", passed, total)}
+	if failed > 0 {
+		msg.Tier = notify.TierWarn
+		msg.Headline = fmt.Sprintf("brain evals · %d/%d pass · %d failing", passed, total, failed)
+		if len(failing) > 5 {
+			failing = append(failing[:5], fmt.Sprintf("… and %d more", len(failing)-5))
+		}
+		msg.Body = strings.Join(failing, "\n")
+		msg.Action = "Decide: fix the platform, or re-baseline the eval (Brain tab › Evals) with a new as_of"
+	}
+	if err := notify.Deliver(w.notifier, msg); err != nil {
+		log.Printf("[BrainEval] digest post failed: %v", err)
+	}
 }
