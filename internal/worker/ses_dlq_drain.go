@@ -176,13 +176,22 @@ func (w *SESDLQDrainWorker) tick(ctx context.Context) {
 			log.Printf("[SESDLQDrain] lock release error: %v", err)
 		}
 	}()
+	// The webhook is registered at router construction but answers 503 until
+	// SetMailingDB (async, minutes) wires the handler. The boot tick on :1163
+	// hit that window and churned 16,843 messages for nothing — skip the pass
+	// while it lasts; the next tick picks the queue up.
+	if !w.webhookReady(ctx) {
+		log.Printf("[SESDLQDrain] webhook %s not ready (503) — pass skipped", w.webhookURL)
+		EmitHeartbeat(ctx, w.db, sesDLQWorkerName, int(w.interval.Seconds()), "ok", "webhook not ready yet (startup); pass skipped")
+		return
+	}
 	st, err := w.RunOnce(ctx)
 	if err != nil {
 		log.Printf("[SESDLQDrain] %v", err)
 		EmitHeartbeat(ctx, w.db, sesDLQWorkerName, int(w.interval.Seconds()), "error", err.Error())
 		return
 	}
-	status, msg := "ok", fmt.Sprintf("replayed %d, failed %d, depth after %d", st.Replayed, st.Failed, st.DepthAfter)
+	status, msg := "ok", fmt.Sprintf("replayed %d, failed %d, unavailable %d, depth after %d", st.Replayed, st.Failed, st.Unavailable, st.DepthAfter)
 	if st.DepthAfter > w.alertDepth || st.Failed > 0 {
 		status = "error"
 		msg = "SES DLQ not drained: " + msg
@@ -192,11 +201,12 @@ func (w *SESDLQDrainWorker) tick(ctx context.Context) {
 
 // SESDLQStats is one pass's result.
 type SESDLQStats struct {
-	Received   int
-	Replayed   int
-	Failed     int
-	Deleted    int
-	DepthAfter int
+	Received    int
+	Replayed    int
+	Failed      int // non-2xx other than 503 (or transport error) — left in the queue
+	Unavailable int // 503 from the webhook — the pass stops at the first one
+	Deleted     int
+	DepthAfter  int
 }
 
 // RunOnce drains up to maxPerTick messages. Exported for tests; the caller
@@ -207,7 +217,8 @@ func (w *SESDLQDrainWorker) RunOnce(ctx context.Context) (SESDLQStats, error) {
 	if err != nil {
 		return st, err
 	}
-	for st.Received < w.maxPerTick && ctx.Err() == nil {
+	stop := false
+	for !stop && st.Received < w.maxPerTick && ctx.Err() == nil {
 		out, err := c.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(w.queueURL),
 			MaxNumberOfMessages: 10,
@@ -227,14 +238,23 @@ func (w *SESDLQDrainWorker) RunOnce(ctx context.Context) (SESDLQStats, error) {
 				st.Failed++
 				continue
 			}
-			if w.replay(ctx, *m.Body) {
+			if stop {
+				continue // webhook went unavailable mid-batch; leave the rest to reappear
+			}
+			switch code := w.replay(ctx, *m.Body); {
+			case code >= 200 && code < 300:
 				st.Replayed++
 				id := aws.ToString(m.MessageId)
 				if len(id) > 80 {
 					id = id[:80]
 				}
 				del = append(del, sqstypes.DeleteMessageBatchRequestEntry{Id: aws.String(id), ReceiptHandle: m.ReceiptHandle})
-			} else {
+			case code == http.StatusServiceUnavailable:
+				// Startup window or ingest queue full: nothing after this will
+				// land either. Stop receiving instead of churning the queue.
+				st.Unavailable++
+				stop = true
+			default:
 				st.Failed++
 			}
 		}
@@ -252,25 +272,34 @@ func (w *SESDLQDrainWorker) RunOnce(ctx context.Context) (SESDLQStats, error) {
 		st.DepthAfter, _ = strconv.Atoi(attrs.Attributes[string(sqstypes.QueueAttributeNameApproximateNumberOfMessages)])
 	}
 	if st.Received > 0 {
-		log.Printf("[SESDLQDrain] received=%d replayed=%d failed=%d deleted=%d depth_after=%d", st.Received, st.Replayed, st.Failed, st.Deleted, st.DepthAfter)
+		log.Printf("[SESDLQDrain] received=%d replayed=%d failed=%d unavailable=%d deleted=%d depth_after=%d", st.Received, st.Replayed, st.Failed, st.Unavailable, st.Deleted, st.DepthAfter)
 	}
 	return st, nil
 }
 
-// replay POSTs the SNS envelope to the local webhook exactly as SNS would.
-func (w *SESDLQDrainWorker) replay(ctx context.Context, body string) bool {
+// webhookReady probes the webhook with an empty POST. A wired handler answers
+// 400 (invalid envelope); the boot-time placeholder answers 503. Anything but
+// 503 (or a transport error) means a replay would be judged on its merits.
+func (w *SESDLQDrainWorker) webhookReady(ctx context.Context) bool {
+	code := w.replay(ctx, "")
+	return code != 0 && code != http.StatusServiceUnavailable
+}
+
+// replay POSTs the SNS envelope to the local webhook exactly as SNS would and
+// returns the HTTP status (0 on transport error).
+func (w *SESDLQDrainWorker) replay(ctx context.Context, body string) int {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.webhookURL, strings.NewReader(body))
 	if err != nil {
-		return false
+		return 0
 	}
 	req.Header.Set("Content-Type", "text/plain; charset=UTF-8")
 	req.Header.Set("x-amz-sns-message-type", "Notification")
 	req.Header.Set("User-Agent", "Amazon Simple Notification Service Agent (replay: SESDLQDrainWorker)")
 	resp, err := w.http.Do(req)
 	if err != nil {
-		return false
+		return 0
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	return resp.StatusCode
 }

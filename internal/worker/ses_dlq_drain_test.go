@@ -84,6 +84,45 @@ func TestSESDLQDrainDeletesOnlyOn2xx(t *testing.T) {
 	}
 }
 
+// A 503 (boot-time placeholder / ingest queue full) stops the pass at the
+// first one: nothing is deleted, nothing further is received, and the
+// readiness probe reports not-ready. Regression for :1163's boot tick, which
+// churned 16,843 messages against a 503 webhook.
+func TestSESDLQDrainStopsOn503(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		posts++
+		http.Error(w, "ses webhook not ready", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	f := &fakeSESDLQ{}
+	for i := 0; i < 30; i++ {
+		f.msgs = append(f.msgs, sqstypes.Message{MessageId: aws.String("m"), ReceiptHandle: aws.String("r"), Body: aws.String(`{}`)})
+	}
+	w := NewSESDLQDrainWorker(nil, nil, 8080).SetClient(f)
+	w.webhookURL = srv.URL
+	if w.webhookReady(context.Background()) {
+		t.Fatal("503 webhook reported ready")
+	}
+	st, err := w.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Received != 10 || st.Unavailable != 1 || st.Failed != 0 || st.Deleted != 0 || len(f.deleted) != 0 {
+		t.Fatalf("stats = %+v deleted=%v; want one batch received, stop at first 503, nothing deleted", st, f.deleted)
+	}
+	if posts != 2 || f.receive != 1 || len(f.msgs) != 20 { // probe + the one replay that got the 503
+		t.Fatalf("posts=%d receives=%d left=%d; want 2/1/20", posts, f.receive, len(f.msgs))
+	}
+	// A wired handler answers 400 to an empty envelope — that IS ready.
+	ready := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "invalid envelope", 400) }))
+	defer ready.Close()
+	w.webhookURL = ready.URL
+	if !w.webhookReady(context.Background()) {
+		t.Fatal("400 webhook reported not ready")
+	}
+}
+
 // Kill switch and per-tick cap are honoured.
 func TestSESDLQDrainMaxPerTick(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) }))
