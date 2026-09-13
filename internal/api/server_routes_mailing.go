@@ -1204,6 +1204,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			brainSvc.RegisterRoutes(r)
 			brainSvc.RegisterAdminRoutes(s.router)
 
+			// campaign_performance — the brain's first MAINTAINED capability
+			// (METRIC_CONTRACT §1/§2/§2.1/§12): lake delivery + PG engagement
+			// (inclusive AND human) + disclosed denominators + maturity.
+			// GET /api/mailing/campaign-performance (internal/api/campaign_performance.go).
+			NewCampaignPerformanceService(db).RegisterRoutes(r)
+
 			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
 			// The Optizmo compliance loop as software: GET
 			// /api/mailing/send-day/{date}/audience-md5[/summary] streams the
