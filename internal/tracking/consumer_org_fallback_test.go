@@ -319,3 +319,56 @@ func TestProcessClick_GatewayActionPersistedInMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// 2026-09-13 WAF REQ §2.2: the CloudFront request id and the WAF-token
+// presence flag persist beside gateway_action in metadata. Field order is the
+// clickMetadata struct order; every key is omitempty.
+func TestProcessClick_EdgeCorrelationPersistedInMetadata(t *testing.T) {
+	const cfid = "Ab3dEfGh1jKlMnOpQrStUvWxYz0123456789abcdefghijklmnop=="
+	yes, no := true, false
+	base := TrackingEvent{
+		EventType: EventClick, OrgID: testOrgID, CampaignID: testCampaignID, SubscriberID: testSubscriberID,
+		LinkURL: "https://www.codefortwo.com/K4C5ZLC/PS8241/?source_id=email", IPAddress: "24.117.63.53", UserAgent: uaBrowser,
+	}
+	cases := []struct {
+		name     string
+		mutate   func(*TrackingEvent)
+		wantMeta sql.NullString
+	}{
+		{"withheld + cfid + token present", func(e *TrackingEvent) {
+			e.GatewayAction, e.CFRequestID, e.WAFTokenPresent = GatewayActionWithheld, cfid, &yes
+		}, sql.NullString{String: `{"gateway_action":"withheld","cf_request_id":"` + cfid + `","waf_token_present":true}`, Valid: true}},
+		{"forwarded + cfid + no token (false is persisted, not dropped)", func(e *TrackingEvent) {
+			e.CFRequestID, e.WAFTokenPresent = cfid, &no
+		}, sql.NullString{String: `{"cf_request_id":"` + cfid + `","waf_token_present":false}`, Valid: true}},
+		{"forwarded + cfid only", func(e *TrackingEvent) {
+			e.CFRequestID = cfid
+		}, sql.NullString{String: `{"cf_request_id":"` + cfid + `"}`, Valid: true}},
+		{"withheld only — unchanged since 2026-09-07", func(e *TrackingEvent) {
+			e.GatewayAction = GatewayActionWithheld
+		}, sql.NullString{String: `{"gateway_action":"withheld"}`, Valid: true}},
+		// Negative control: no header, no cookie, forwarded ⇒ NULL exactly as today.
+		{"no edge, forwarded ⇒ NULL", func(*TrackingEvent) {}, sql.NullString{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetOrgFallbackLimiter()
+			c, mock := newConsumer(t)
+			now := time.Now().UTC()
+			evt := base
+			evt.Timestamp = now
+			tc.mutate(&evt)
+
+			mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+			mock.ExpectQuery(`SELECT email FROM mailing_subscribers`).WillReturnRows(sqlmock.NewRows([]string{"email"}))
+			mock.ExpectExec(clickInsertRegex.String()).
+				WithArgs(sqlmock.AnyArg(), uuid.MustParse(testOrgID), uuid.MustParse(testCampaignID), uuid.MustParse(testSubscriberID),
+					now, "24.117.63.53", uaBrowser, "desktop", "https://www.codefortwo.com/K4C5ZLC/PS8241/?source_id=email", false,
+					tc.wantMeta).
+				WillReturnResult(sqlmock.NewResult(0, 0))
+
+			require.NoError(t, c.processClick(context.Background(), evt))
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

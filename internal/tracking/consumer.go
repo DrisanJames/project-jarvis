@@ -396,6 +396,16 @@ func clickDeterministicID(campaignID, subscriberID uuid.UUID, ts time.Time, link
 	return uuid.NewSHA1(clickNamespace, []byte(key))
 }
 
+// clickMetadata is the mailing_tracking_events.metadata document for a
+// 'clicked' row. Field order is the key order on disk; every field is
+// omitempty so an unset one contributes no key (negative controls in
+// consumer_org_fallback_test.go pin `{"gateway_action":"withheld"}` and NULL).
+type clickMetadata struct {
+	GatewayAction   string `json:"gateway_action,omitempty"`
+	CFRequestID     string `json:"cf_request_id,omitempty"`
+	WAFTokenPresent *bool  `json:"waf_token_present,omitempty"`
+}
+
 func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	orgID := resolveOrgID(evt.OrgID, EventClick)
 	campaignID, _ := uuid.Parse(evt.CampaignID)
@@ -435,11 +445,22 @@ func (c *Consumer) processClick(ctx context.Context, evt TrackingEvent) error {
 	// gateway_action (2026-09-07 triage requirement): the offer gateway's
 	// decision rides the event (publisher.go GatewayAction) and is persisted
 	// here in metadata so a withheld / shadow-withheld click is visible in PG,
-	// not only in the tracking service's CloudWatch stream. "" (forwarded)
-	// writes NULL metadata — byte-identical to every row before this change.
+	// not only in the tracking service's CloudWatch stream.
+	// cf_request_id / waf_token_present (2026-09-13 WAF REQ §2.2): the
+	// CloudFront request id and the WAF-token PRESENCE flag ride the same
+	// event (publisher.go CFRequestID / WAFTokenPresent) and land beside
+	// gateway_action — the join key to the WAF logs. metadata stays NULL only
+	// when none of the three is set, so a forwarded click from a request that
+	// never touched the edge is byte-identical to every row before this change.
 	var gatewayMeta sql.NullString
-	if a := strings.TrimSpace(evt.GatewayAction); a != "" {
-		gatewayMeta = sql.NullString{String: `{"gateway_action":"` + strings.ReplaceAll(a, `"`, "") + `"}`, Valid: true}
+	if m := (clickMetadata{
+		GatewayAction:   strings.TrimSpace(evt.GatewayAction),
+		CFRequestID:     strings.TrimSpace(evt.CFRequestID),
+		WAFTokenPresent: evt.WAFTokenPresent,
+	}); m.GatewayAction != "" || m.CFRequestID != "" || m.WAFTokenPresent != nil {
+		if b, err := json.Marshal(m); err == nil {
+			gatewayMeta = sql.NullString{String: string(b), Valid: true}
+		}
 	}
 
 	res, err := c.db.ExecContext(ctx, `

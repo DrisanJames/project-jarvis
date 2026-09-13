@@ -189,6 +189,10 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 	// disables gate 2 for this request — it forwards.
 	decision := h.ipc.DecideSession(realIP(r), target, parts[2], parts[1])
 
+	// Edge correlation (WAF REQ §2.2): CloudFront request id + WAF token
+	// PRESENCE ride the event and the log lines. Observability only.
+	cfid, wafToken := edgeCorrelation(r)
+
 	evt := TrackingEvent{
 		EventType:    EventClick,
 		OrgID:        parts[0],
@@ -201,20 +205,22 @@ func (h *Handler) HandleClick(w http.ResponseWriter, r *http.Request) {
 		// Invariant 4: the event is published for a WITHHELD request too, and
 		// carries the marker that tells it apart from a forwarded one. We
 		// suppress the advertiser hop, never our own visibility.
-		GatewayAction: decision.Action,
-		Timestamp:     time.Now().UTC(),
+		GatewayAction:   decision.Action,
+		CFRequestID:     cfid,
+		WAFTokenPresent: wafToken,
+		Timestamp:       time.Now().UTC(),
 	}
 	h.pub.Publish(r.Context(), evt)
 
 	if decision.Withhold {
-		log.Printf("CLICK WITHHELD action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d url=%s",
-			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout, originalURL)
+		log.Printf("CLICK WITHHELD action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d url=%s cfid=%q",
+			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout, originalURL, cfid)
 		writeWithheld(w)
 		return
 	}
 	if decision.Shadow {
-		log.Printf("CLICK gateway shadow: WOULD withhold action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
-			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout)
+		log.Printf("CLICK gateway shadow: WOULD withhold action=%s campaign=%s subscriber=%s ip=%s class=%s fanout=%d cfid=%q (forwarding — GATEWAY_ENFORCE unset)",
+			decision.Action, evt.CampaignID, evt.SubscriberID, evt.IPAddress, decision.Class, decision.Fanout, cfid)
 	}
 
 	log.Printf("CLICK campaign=%s subscriber=%s url=%s", evt.CampaignID, evt.SubscriberID, originalURL)
@@ -454,6 +460,11 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	// gate 2 for this request.
 	decision := h.ipc.DecideSession(realIP(r), dest, subscriber, campaign)
 
+	// Edge correlation (WAF REQ §2.2): CloudFront request id + WAF token
+	// PRESENCE ride the event and every log line below — the join key to the
+	// WAF logs. Observability only; nothing served depends on either.
+	cfid, wafToken := edgeCorrelation(r)
+
 	// TELEMETRY — async, LABEL ONLY. ClassifyClickAsMachine decides the label
 	// but has ZERO influence on what is served below. deltaSinceSend is 0 here
 	// (no send-time lookup on the redirect hot path — documented trade-off in
@@ -488,8 +499,10 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 		// Invariant 4: published for a WITHHELD request too, marked so the
 		// suppressed click is still visible to us and distinguishable from a
 		// forwarded one.
-		GatewayAction: decision.Action,
-		Timestamp:     time.Now().UTC(),
+		GatewayAction:   decision.Action,
+		CFRequestID:     cfid,
+		WAFTokenPresent: wafToken,
+		Timestamp:       time.Now().UTC(),
 	})
 
 	// TRIAGE LINE (2026-09-07): one greppable "GATEWAY" line per /o/ request,
@@ -497,23 +510,23 @@ func (h *Handler) HandleOfferRedirect(w http.ResponseWriter, r *http.Request) {
 	// (cidr + evidence_source) and the session. This is the per-click trace;
 	// "GATEWAY SUMMARY" (gateway.go) is the 5-minute rollup.
 	gatewayCounters.count(decision)
-	log.Printf("GATEWAY decision=%s class=%q cidr=%q src=%q ip=%s sub=%s campaign=%s hash=%s dest_host=%s fanout=%d",
-		gatewayActionLabel(decision), decision.Class, decision.CIDR, decision.Source, realIP(r), subscriber, campaign, hash, destHost(dest), decision.Fanout)
+	log.Printf("GATEWAY decision=%s class=%q cidr=%q src=%q ip=%s sub=%s campaign=%s hash=%s dest_host=%s fanout=%d cfid=%q waf_token=%t",
+		gatewayActionLabel(decision), decision.Class, decision.CIDR, decision.Source, realIP(r), subscriber, campaign, hash, destHost(dest), decision.Fanout, cfid, wafTokenFlag(wafToken))
 
 	if decision.Withhold {
 		// 204: no Location, no body, no advertiser resources — and NOT the
 		// brand site. See the cloaking note in gateway.go.
-		log.Printf("OFFER WITHHELD action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d",
-			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout)
+		log.Printf("OFFER WITHHELD action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d cfid=%q",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout, cfid)
 		writeWithheld(w)
 		return
 	}
 	if decision.Shadow {
-		log.Printf("OFFER gateway shadow: WOULD withhold action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d (forwarding — GATEWAY_ENFORCE unset)",
-			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout)
+		log.Printf("OFFER gateway shadow: WOULD withhold action=%s hash=%s campaign=%s subscriber=%s ip=%s class=%s cidr=%s src=%s fanout=%d cfid=%q (forwarding — GATEWAY_ENFORCE unset)",
+			decision.Action, hash, campaign, subscriber, realIP(r), decision.Class, decision.CIDR, decision.Source, decision.Fanout, cfid)
 	}
 
-	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s", hash, campaign, subscriber, label, entry.RiskProfile)
+	log.Printf("OFFER hit hash=%s campaign=%s subscriber=%s actor=%s risk=%s cfid=%q", hash, campaign, subscriber, label, entry.RiskProfile, cfid)
 
 	// HANDOFF — one 302 for EVERYONE, every hash, no exceptions.
 	//
@@ -667,6 +680,29 @@ func (h *Handler) servePixel(w http.ResponseWriter) {
 	w.Header().Set("Expires", "0")
 	w.Write(pixelGIF)
 }
+
+// wafTokenCookie is the cookie AWS WAF sets after a silent Challenge is
+// solved. Only its PRESENCE is ever read — the value is never logged, stored
+// or forwarded (2026-09-13 WAF Bot Control REQ §2.2).
+const wafTokenCookie = "aws-waf-token"
+
+// edgeCorrelation reads the CloudFront request id (X-Amz-Cf-Id) and whether
+// the request carries the WAF token cookie. The token flag is nil when the
+// request carried neither, so an event from a request that never touched the
+// edge (direct-origin hosts, tests) stays byte-identical on the wire.
+func edgeCorrelation(r *http.Request) (cfid string, tokenPresent *bool) {
+	cfid = r.Header.Get("X-Amz-Cf-Id")
+	_, err := r.Cookie(wafTokenCookie)
+	present := err == nil
+	if cfid != "" || present {
+		tokenPresent = &present
+	}
+	return cfid, tokenPresent
+}
+
+// wafTokenFlag renders the nil-able token flag for a log line: false when the
+// request carried neither the edge id nor the cookie.
+func wafTokenFlag(p *bool) bool { return p != nil && *p }
 
 func realIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {

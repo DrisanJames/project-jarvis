@@ -43,8 +43,19 @@ type TrackingEvent struct {
 	// omitempty, exactly like Actor above, so every forwarded open/click/unsub
 	// event stays byte-identical on the wire and the SQS consumer — which
 	// ignores unknown fields — is unaffected.
-	GatewayAction string    `json:"gateway_action,omitempty"`
-	Timestamp     time.Time `json:"timestamp"`
+	GatewayAction string `json:"gateway_action,omitempty"`
+	// CFRequestID is the CloudFront request id (X-Amz-Cf-Id) of the click
+	// request, the join key between this event, the tracking service's
+	// GATEWAY line and the WAF logs (2026-09-13 WAF Bot Control REQ §2.2).
+	// Empty for requests that did not pass CloudFront (direct-origin hosts).
+	CFRequestID string `json:"cf_request_id,omitempty"`
+	// WAFTokenPresent records whether the request carried an aws-waf-token
+	// cookie — PRESENCE ONLY, never the value. nil when the request carried
+	// neither the CloudFront request id nor the cookie, so an event from a
+	// request that never touched the edge stays byte-identical on the wire
+	// (same omitempty contract as Actor and GatewayAction above).
+	WAFTokenPresent *bool     `json:"waf_token_present,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 type Publisher struct {
