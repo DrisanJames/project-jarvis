@@ -1424,6 +1424,13 @@ func main() {
 			// 3-day RDS retention. Kill switch: BRAIN_SNAPSHOT_DISABLED.
 			brainSnapshot := worker.NewBrainSnapshotWorker(mailingDB, redisClient)
 			brainSnapshot.Start(ctx)
+			// SESDLQDrainWorker (2026-09-13): replays dead-lettered SES event
+			// notifications (ses-events-prod-dlq, us-west-1) through the local
+			// webhook every 5 min so lost opens/clicks/deliveries never linger
+			// past the queue's 14-day expiry again. Deletes only on 2xx.
+			// Kill switch: SES_DLQ_DRAIN_DISABLED.
+			sesDLQDrain := worker.NewSESDLQDrainWorker(mailingDB, redisClient, cfg.Server.Port)
+			sesDLQDrain.Start(ctx)
 
 			journeyClickDripSender := worker.NewJourneyClickDripSender(mailingDB, profileSender, trackURL, trackSecret)
 			// Send-time suppression for click-drip reminders (compliance fix
