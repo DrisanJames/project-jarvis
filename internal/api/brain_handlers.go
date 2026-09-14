@@ -85,6 +85,11 @@ func (s *BrainService) mount(r chi.Router, admin bool) {
 		cr.Post("/", s.HandleUpsertCapability)
 		cr.Get("/{name}", s.HandleResolveCapability)
 	})
+	r.Route("/observations", func(or chi.Router) {
+		or.Get("/", s.HandleListObservations)
+		or.Post("/", s.HandleUpsertObservations)
+		or.Get("/days", s.HandleObservationDays)
+	})
 	r.Route("/evals", func(er chi.Router) {
 		er.Get("/", s.HandleListEvals)
 		er.Post("/", s.HandleUpsertEval)
@@ -475,6 +480,65 @@ func (s *BrainService) HandleResolveCapability(w http.ResponseWriter, r *http.Re
 }
 
 // ---------------------------------------------------------------- evals
+
+// ---------------------------------------------------------------- observations
+
+// HandleUpsertObservations writes a batch of measured values (the observer's
+// daily pass). Body: {"observations": [{metric, grain, day, value, unit,
+// source, meta}]}. Whole batch validated before any write.
+func (s *BrainService) HandleUpsertObservations(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.org(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Observations []brain.ObservationInput `json:"observations"`
+	}
+	if err := brainDecode(r, &in); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	n, err := s.store.UpsertObservations(r.Context(), org, in.Observations)
+	if err != nil {
+		brainErr(w, err)
+		return
+	}
+	respondJSON(w, http.StatusCreated, map[string]any{"written": n})
+}
+
+// HandleListObservations returns a series: ?metric=lake.delivered|lake.
+// (prefix) &grain=isp:gmail &end=YYYY-MM-DD &days=35 &limit=5000.
+func (s *BrainService) HandleListObservations(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.org(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	days, _ := strconv.Atoi(q.Get("days"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	out, err := s.store.ListObservations(r.Context(), org, brain.ObservationQuery{
+		Metric: q.Get("metric"), Grain: q.Get("grain"), End: q.Get("end"), Days: days, Limit: limit})
+	if err != nil {
+		brainErr(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"observations": out})
+}
+
+// HandleObservationDays lists observed days for a metric prefix.
+func (s *BrainService) HandleObservationDays(w http.ResponseWriter, r *http.Request) {
+	org, ok := s.org(w, r)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	out, err := s.store.ObservationDays(r.Context(), org, r.URL.Query().Get("metric"), limit)
+	if err != nil {
+		brainErr(w, err)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"days": out})
+}
 
 func (s *BrainService) HandleListEvals(w http.ResponseWriter, r *http.Request) {
 	org, ok := s.org(w, r)

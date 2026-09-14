@@ -5409,6 +5409,24 @@ func runStartupMigrations(db *sql.DB) {
 			duration_ms BIGINT NOT NULL DEFAULT 0
 		)`},
 		{"idx_jarvis_brain_eval_runs_eval", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_eval_runs_eval ON jarvis_brain_eval_runs (eval_id, ran_at DESC)`},
+		// Observations (2026-09-13): one measured number per metric × grain ×
+		// Denver day, written daily by agents/brain/observer.py from the
+		// platform's own capabilities (no LLM). Baselines/deviations and the
+		// daily "state of the system" claim are derived from this series.
+		{"create_jarvis_brain_observations", `CREATE TABLE IF NOT EXISTS jarvis_brain_observations (
+			id BIGSERIAL PRIMARY KEY,
+			org_id UUID NOT NULL,
+			metric TEXT NOT NULL,
+			grain TEXT NOT NULL DEFAULT 'all',
+			day DATE NOT NULL,
+			value DOUBLE PRECISION NOT NULL,
+			unit TEXT NOT NULL DEFAULT 'count',
+			source TEXT NOT NULL DEFAULT '',
+			meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+			observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (org_id, metric, grain, day)
+		)`},
+		{"idx_jarvis_brain_observations_metric_day", `CREATE INDEX IF NOT EXISTS idx_jarvis_brain_observations_metric_day ON jarvis_brain_observations (org_id, metric, day DESC)`},
 		// ── end JARVIS BRAIN ────────────────────────────────────────────────
 
 		// ── Property Ledger P4 (Vector A plan rev4, Step 14) ────────────────

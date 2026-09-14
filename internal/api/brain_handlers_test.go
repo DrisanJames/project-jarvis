@@ -146,3 +146,52 @@ func TestBrainRecordRefusesSourceRefReuseForDifferentClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Observations: a batch with one bad row is rejected before any write (no
+// DB expectation set — sqlmock would fail the test on an unexpected call).
+func TestBrainObservationsRejectBadRowBeforeWrite(t *testing.T) {
+	os.Setenv("ADMIN_API_KEY", "adm")
+	defer os.Unsetenv("ADMIN_API_KEY")
+	srv, _, done := brainTestServer(t)
+	defer done()
+	body, _ := json.Marshal(map[string]any{"observations": []map[string]any{
+		{"metric": "lake.delivered", "grain": "all", "day": "2026-09-13", "value": 1, "unit": "count", "source": "t"},
+		{"metric": "BAD METRIC", "grain": "all", "day": "2026-09-13", "value": 1, "unit": "count", "source": "t"},
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/brain/observations/", bytes.NewReader(body))
+	req.Header.Set("X-Admin-Key", "adm")
+	req.Header.Set("X-Organization-ID", brainTestOrg)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "row 1") {
+		t.Fatalf("want 400 naming row 1, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Observations: a valid batch is written in one transaction with upsert
+// semantics and the count comes back.
+func TestBrainObservationsUpsertBatch(t *testing.T) {
+	os.Setenv("ADMIN_API_KEY", "adm")
+	defer os.Unsetenv("ADMIN_API_KEY")
+	srv, mock, done := brainTestServer(t)
+	defer done()
+	mock.ExpectBegin()
+	mock.ExpectPrepare(regexp.QuoteMeta("INSERT INTO jarvis_brain_observations")).
+		ExpectExec().WithArgs(brainTestOrg, "lake.delivered", "isp:gmail", "2026-09-13", 12345.0, "count", "observer", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	body, _ := json.Marshal(map[string]any{"observations": []map[string]any{
+		{"metric": "lake.delivered", "grain": "isp:gmail", "day": "2026-09-13", "value": 12345, "unit": "count", "source": "observer"},
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/brain/observations/", bytes.NewReader(body))
+	req.Header.Set("X-Admin-Key", "adm")
+	req.Header.Set("X-Organization-ID", brainTestOrg)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"written":1`) {
+		t.Fatalf("want 201 written=1, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
