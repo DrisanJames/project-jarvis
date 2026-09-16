@@ -374,6 +374,63 @@ func TestHandleCreatePartner_DuplicateConflict(t *testing.T) {
 
 // ---------------- HandleListDatasets ----------------
 
+// datasetRosterRows is the shape every HandleListDatasets variant returns.
+func datasetRosterRows(batchCount, readyCount, mailedCount int) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{
+		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
+		"paused_emergency", "paused_reason", "status", "created_at",
+		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
+	}).AddRow(
+		"00000000-0000-0000-0000-0000000abc01",
+		"00000000-0000-0000-0000-000000000abc",
+		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
+		false, "", "active", time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
+		"Attribits", "attribits", batchCount, readyCount, mailedCount,
+	)
+}
+
+// ?counts=0 must drop the three correlated aggregates. They scan
+// partner_clean_queue (15.0M rows) and partner_inbound_batches (11.2M) once
+// PER dataset: measured against prod 2026-09-16, the mailed count for a single
+// dataset took 4.0s and the full statement exceeded the pool's 30s
+// statement_timeout, so this endpoint answered 500 and every dataset picker in
+// the portal silently rendered empty. The expectation matches the zeroed
+// columns, so reinstating the subqueries on this path fails the test.
+func TestHandleListDatasets_CountsZeroSkipsTheExpensiveAggregates(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	mock.ExpectQuery(`0 AS batch_count, 0 AS ready_count, 0 AS mailed_count`).
+		WillReturnRows(datasetRosterRows(0, 0, 0))
+
+	h := NewPartnerAdminHandler(db)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mailing/data-partners/datasets?counts=0", nil)
+	h.HandleListDatasets(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	datasets := body["datasets"].([]interface{})
+	require.Len(t, datasets, 1)
+	require.Equal(t, "Attribits-HELOC", datasets[0].(map[string]interface{})["name"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The default path keeps the counts — ?counts=0 is opt-in, so existing callers
+// (the Data Partners dataset table) are unaffected.
+func TestHandleListDatasets_DefaultKeepsTheCounts(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM partner_inbound_batches`).
+		WillReturnRows(datasetRosterRows(3, 1500, 4500))
+
+	h := NewPartnerAdminHandler(db)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mailing/data-partners/datasets", nil)
+	h.HandleListDatasets(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestHandleListDatasets(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
 	rows := sqlmock.NewRows([]string{

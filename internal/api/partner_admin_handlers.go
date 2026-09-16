@@ -262,13 +262,28 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	partnerFilter := strings.TrimSpace(q.Get("partner_id"))
+	// The three per-dataset counts are correlated aggregates over
+	// partner_clean_queue (15.0M rows) and partner_inbound_batches (11.2M).
+	// Measured against prod 2026-09-16: the mailed count for ONE dataset took
+	// 4.0s, and across 62 datasets the whole statement blew the pool's 30s
+	// statement_timeout — this endpoint was answering
+	// 500 "list_datasets_failed: canceling statement due to statement timeout",
+	// which silently emptied every dataset picker in the portal.
+	// ?counts=0 returns the same shape with the counts zeroed, in ~0.5s, for
+	// callers that only need the roster (the upload target pickers).
+	countCols := `
+		       (SELECT COUNT(*) FROM partner_inbound_batches b WHERE b.dataset_id = d.id) AS batch_count,
+		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'ready') AS ready_count,
+		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'mailed') AS mailed_count`
+	countsOmitted := q.Get("counts") == "0"
+	if countsOmitted {
+		countCols = `
+		       0 AS batch_count, 0 AS ready_count, 0 AS mailed_count`
+	}
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT d.id, d.partner_id, d.name, d.slug, d.vertical, d.flush_window_hours,
 		       d.paused_emergency, COALESCE(d.paused_reason, ''), d.status, d.created_at,
-		       p.name AS partner_name, p.slug AS partner_slug,
-		       (SELECT COUNT(*) FROM partner_inbound_batches b WHERE b.dataset_id = d.id) AS batch_count,
-		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'ready') AS ready_count,
-		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'mailed') AS mailed_count
+		       p.name AS partner_name, p.slug AS partner_slug,`+countCols+`
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
 		WHERE ($1 = '' OR d.partner_id::text = $1)

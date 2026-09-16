@@ -20,7 +20,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
@@ -146,6 +148,68 @@ func TestReservoir_RefreshBypassesCache(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec2.Code, rec2.Body.String())
 	require.EqualValues(t, 1, decodeReservoir(t, rec2)["total"])
 
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Single-flight: N callers arriving during one in-progress scan share it.
+// ONE scan is queued for 8 concurrent callers — a second would fail both at
+// the call site and at ExpectationsWereMet. Two overlapping 9-16s scans of a
+// 15M-row table is exactly the load this endpoint must never generate, and
+// nothing exercised this path until now.
+func TestReservoir_ConcurrentCallersShareOneScan(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout = '90s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_clean_queue`).
+		WillDelayFor(150 * time.Millisecond).
+		WillReturnRows(reservoirRows())
+	mock.ExpectRollback()
+
+	h := NewPartnerReservoirHandler(db)
+	const callers = 8
+	var wg sync.WaitGroup
+	codes := make([]int, callers)
+	totals := make([]interface{}, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.HandleGetReservoir(rec, httptest.NewRequest(http.MethodGet, "/reservoir", nil))
+			codes[i] = rec.Code
+			var out map[string]interface{}
+			_ = json.Unmarshal(rec.Body.Bytes(), &out)
+			totals[i] = out["total"]
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < callers; i++ {
+		require.Equal(t, http.StatusOK, codes[i], "caller %d", i)
+		require.EqualValues(t, 2196089, totals[i], "caller %d got a different answer", i)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Only refresh=1 forces a rescan. Anything else — a typo, refresh=0, an
+// unrelated query param — must be served from cache, or a crawler with a
+// stray query string could drive a 9-16s scan per request.
+func TestReservoir_OnlyRefreshEquals1ForcesAScan(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	expectReservoirScan(mock, reservoirRows())
+
+	h := NewPartnerReservoirHandler(db)
+	rec := httptest.NewRecorder()
+	h.HandleGetReservoir(rec, httptest.NewRequest(http.MethodGet, "/reservoir", nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	for _, q := range []string{"?refresh=banana", "?refresh=0", "?refresh=", "?refresh=true", "?vertical=refi_heloc"} {
+		rec2 := httptest.NewRecorder()
+		h.HandleGetReservoir(rec2, httptest.NewRequest(http.MethodGet, "/reservoir"+q, nil))
+		require.Equal(t, http.StatusOK, rec2.Code, q)
+		require.EqualValues(t, 2196089, decodeReservoir(t, rec2)["total"], q)
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

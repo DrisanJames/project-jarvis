@@ -92,7 +92,9 @@ export const DripCsvUpload: React.FC<{
     let cancelled = false;
     void (async () => {
       try {
-        const r = await apiFetch('/api/mailing/data-partners/datasets');
+        // counts=0: this roster only supplies the target picker, and the
+        // counted variant 500s at prod table sizes (30s statement timeout).
+        const r = await apiFetch('/api/mailing/data-partners/datasets?counts=0');
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = (await r.json()) as { datasets?: Array<{ id: string; name: string; partner_name?: string; vertical: string }> };
         if (cancelled) return;

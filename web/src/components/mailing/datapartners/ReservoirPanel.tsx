@@ -77,6 +77,7 @@ export const ReservoirPanel: React.FC = () => {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [feeds, setFeeds] = useState<CsvFeedOption[]>([]);
+  const [feedsErr, setFeedsErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async (refresh = false) => {
@@ -95,21 +96,37 @@ export const ReservoirPanel: React.FC = () => {
 
   useEffect(() => { void load(false); }, [load]);
 
-  // Dataset roster for the upload target picker. Non-fatal on failure.
+  // Dataset roster for the upload target picker. A failure here is NOT fatal
+  // to the totals above, but it must be visible: /data-partners/datasets was
+  // answering 500 in prod on 2026-09-16 (its per-dataset correlated counts
+  // exceed the pool's 30s statement_timeout), which leaves the picker empty.
+  // An empty picker with no reason reads as "there are no datasets".
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const r = await apiFetch('/api/mailing/data-partners/datasets');
-        if (!r.ok) return;
+        // counts=0: the picker needs id/name/vertical only, and the counted
+        // variant exceeds the DB's 30s statement timeout at this table size.
+        const r = await apiFetch('/api/mailing/data-partners/datasets?counts=0');
+        if (!r.ok) {
+          let detail = `HTTP ${r.status}`;
+          try {
+            const j = (await r.json()) as { error?: string };
+            if (j.error) detail = j.error;
+          } catch { /* non-JSON error body */ }
+          throw new Error(detail);
+        }
         const j = (await r.json()) as { datasets?: Array<{ id: string; name: string; partner_name?: string; vertical: string }> };
         if (cancelled) return;
+        setFeedsErr(null);
         setFeeds((j.datasets ?? []).map((d) => ({
           dataset_id: d.id,
           name: d.partner_name ? `${d.partner_name} / ${d.name}` : d.name,
           vertical: d.vertical,
         })));
-      } catch { /* roster is optional */ }
+      } catch (e) {
+        if (!cancelled) setFeedsErr(e instanceof Error ? e.message : 'dataset roster fetch failed');
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -149,6 +166,13 @@ export const ReservoirPanel: React.FC = () => {
 
       {notice && (
         <div style={{ ...card, borderColor: 'rgba(16,185,129,0.4)', marginBottom: 12, fontSize: 13 }}>{notice}</div>
+      )}
+
+      {uploadOpen && feedsErr && (
+        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.45)', color: '#fecaca', marginBottom: 12 }}>
+          <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
+          The dataset list could not be loaded, so there is nothing to upload into: {feedsErr}
+        </div>
       )}
 
       {uploadOpen && (
