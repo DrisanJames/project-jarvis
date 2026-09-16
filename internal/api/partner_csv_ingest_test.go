@@ -17,10 +17,12 @@ package api
 
 import (
 	"bytes"
+	"database/sql/driver"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -221,6 +223,72 @@ func TestCSVCommit_UnmappedColumnsBecomeMetadata(t *testing.T) {
 	rec := httptest.NewRecorder()
 	svc.HandleCommit(rec, csvMultipartRequest(t, "/api/mailing/partner-ingest-csv/commit",
 		map[string]string{"dataset_id": csvTestDatasetID, "mapping": mapping}, "feed.csv", csvBody))
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// csvMetaMatch matches the ingest_metadata JSON argument ($8) on the batch
+// INSERT. Operator-assigned metadata must reach the ROW — a field the handler
+// parses and then drops is the inert-column defect, and only an assertion at
+// the write proves it landed.
+type csvMetaMatch struct {
+	want    []string
+	notWant []string
+}
+
+func (c csvMetaMatch) Match(v driver.Value) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	for _, w := range c.want {
+		if !strings.Contains(s, w) {
+			return false
+		}
+	}
+	for _, n := range c.notWant {
+		if strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
+}
+
+// Operator metadata rides the batch row: label / source_ref / offer_intent are
+// stamped alongside the existing csv_upload marker, and a BLANK field is
+// omitted rather than written as an empty string, so a reader can tell "not
+// provided" from "provided empty".
+func TestCSVCommit_StampsOperatorMetadata(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	expectCSVDatasetResolve(mock)
+	mock.ExpectExec(`INSERT INTO partner_inbound_batches`).
+		WithArgs(
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
+			csvMetaMatch{
+				want: []string{
+					`"source":"csv_upload"`,
+					`"label":"WCL mortgage 09-16"`,
+					`"source_ref":"sftp drop 2026-09-16"`,
+					`"offer_intent":"wcl-heloc"`,
+				},
+				notWant: []string{`"notes"`},
+			},
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	svc := NewPartnerCSVIngestService(db, newRawSampleFakeS3(t))
+	rec := httptest.NewRecorder()
+	svc.HandleCommit(rec, csvMultipartRequest(t, "/api/mailing/partner-ingest-csv/commit",
+		map[string]string{
+			"dataset_id":   csvTestDatasetID,
+			"mapping":      `{"email":0}`,
+			"label":        "WCL mortgage 09-16",
+			"source_ref":   "sftp drop 2026-09-16",
+			"offer_intent": "wcl-heloc",
+			"notes":        "   ", // whitespace-only → trimmed away, never stamped
+		}, "wcl.csv", "email\na@gmail.com\n"))
 	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 	require.NoError(t, mock.ExpectationsWereMet())
 }

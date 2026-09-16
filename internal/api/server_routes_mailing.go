@@ -595,6 +595,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				// Allowed verticals — sourced from api.PartnerVerticals (the
 				// ONE Go source; the DB CHECK constraint enforces it).
 				dp.Get("/verticals", partnerAdmin.HandleListVerticals)
+				// Reservoir totals (partner_reservoir_handlers.go) — one
+				// grouped scan of partner_clean_queue behind a 60s cache;
+				// ?refresh=1 forces it. Read-only.
+				dp.Get("/reservoir", NewPartnerReservoirHandler(db).HandleGetReservoir)
 			})
 
 			// Operator CSV ingestion for partner datasets

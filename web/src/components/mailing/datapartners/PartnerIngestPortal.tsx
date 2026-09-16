@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faPlus, faSync, faSpinner, faExclamationTriangle, faPause, faPlay,
   faSeedling, faFingerprint, faRoute, faChartBar, faClipboardList, faGaugeHigh,
-  faKey,
+  faKey, faDatabase,
 } from '@fortawesome/free-solid-svg-icons';
 import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { DatasetKeysPanel } from './DatasetKeysPanel';
@@ -17,6 +17,7 @@ import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { PreviousActivationsPanel } from './PreviousActivationsPanel';
 import { LaneHealthPanel } from './LaneHealthPanel';
+import { ReservoirPanel } from './ReservoirPanel';
 import { apiFetch } from '../shared/apiFetch';
 import { labelForVertical } from './verticalLabels';
 
@@ -72,7 +73,7 @@ interface DashboardResponse {
   recent_batches: BatchSummary[];
 }
 
-type TabId = 'overview' | 'lane-health' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
+type TabId = 'overview' | 'reservoir' | 'lane-health' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
 
 // isRealLandingVertical hides the noise landing cards: a partner_drip_state row
 // that is a governed-pass pointer ("<vertical>:governed") or the internal
@@ -181,6 +182,7 @@ export const PartnerIngestPortal: React.FC = () => {
 
   const tabs: { id: TabId; label: string; icon: typeof faSeedling }[] = [
     { id: 'overview', label: 'Overview', icon: faRoute },
+    { id: 'reservoir', label: 'Reservoir', icon: faDatabase },
     { id: 'lane-health', label: 'Lane Health', icon: faGaugeHigh },
     { id: 'warmup', label: 'Warm-Up', icon: faGaugeHigh },
     { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
@@ -442,6 +444,8 @@ export const PartnerIngestPortal: React.FC = () => {
       )}
 
       {activeTab === 'creatives' && <CreativesPanel />}
+
+      {activeTab === 'reservoir' && <ReservoirPanel />}
 
       {activeTab === 'activations' && <PreviousActivationsPanel />}
       {activeTab === 'audit' && <AuditLogPanel />}

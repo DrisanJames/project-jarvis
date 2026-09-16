@@ -226,6 +226,13 @@ type csvUpload struct {
 	dataset  string
 	mapping  string
 	filename string
+	// Operator-assigned batch metadata. All optional, all free text, stamped
+	// into partner_inbound_batches.ingest_metadata so a batch can be traced
+	// back to the drop it came from long after the file is gone.
+	label       string // human name for this drop, e.g. "WCL mortgage 09-16"
+	sourceRef   string // where it came from: supplier, SFTP path, email thread
+	offerIntent string // the offer this drop was acquired for, e.g. wcl-heloc
+	notes       string
 }
 
 // openCSVUpload enforces the byte cap and extracts file + fields. The file
@@ -264,12 +271,25 @@ func openCSVUpload(w http.ResponseWriter, r *http.Request) (*csvUpload, bool) {
 	cr.FieldsPerRecord = -1
 	cr.LazyQuotes = true
 	cr.TrimLeadingSpace = true
+	// Operator metadata: capped so a pasted document can't bloat every batch
+	// row's ingest_metadata.
+	meta := func(field string, max int) string {
+		v := strings.TrimSpace(r.FormValue(field))
+		if len(v) > max {
+			v = v[:max]
+		}
+		return v
+	}
 	return &csvUpload{
-		csv:      cr,
-		closeFn:  func() { file.Close() },
-		dataset:  datasetID,
-		mapping:  strings.TrimSpace(r.FormValue("mapping")),
-		filename: hdr.Filename,
+		csv:         cr,
+		closeFn:     func() { file.Close() },
+		dataset:     datasetID,
+		mapping:     strings.TrimSpace(r.FormValue("mapping")),
+		filename:    hdr.Filename,
+		label:       meta("label", 200),
+		sourceRef:   meta("source_ref", 400),
+		offerIntent: meta("offer_intent", 120),
+		notes:       meta("notes", 2000),
 	}, true
 }
 
@@ -572,6 +592,24 @@ func (s *PartnerCSVIngestService) HandleCommit(w http.ResponseWriter, r *http.Re
 		indexDeferred  int
 		chunk          = make([]ingestRecord, 0, partnerCSVMaxRecordsPerBatch)
 	)
+	// Batch metadata is identical for every chunk of one upload: build it once.
+	// Operator fields are omitted when blank rather than stamped empty, so a
+	// reader can tell "not provided" from "provided as empty".
+	ingestMeta := map[string]interface{}{
+		"source":      "csv_upload",
+		"uploaded_by": actor,
+		"filename":    up.filename,
+	}
+	for k, v := range map[string]string{
+		"label":        up.label,
+		"source_ref":   up.sourceRef,
+		"offer_intent": up.offerIntent,
+		"notes":        up.notes,
+	} {
+		if v != "" {
+			ingestMeta[k] = v
+		}
+	}
 	flush := func() bool {
 		if len(chunk) == 0 {
 			return true
@@ -587,11 +625,7 @@ func (s *PartnerCSVIngestService) HandleCommit(w http.ResponseWriter, r *http.Re
 			ReceivedAt:  receivedAt,
 			ContentType: "text/csv",
 			Records:     chunk,
-			IngestMeta: map[string]interface{}{
-				"source":      "csv_upload",
-				"uploaded_by": actor,
-				"filename":    up.filename,
-			},
+			IngestMeta: ingestMeta,
 		})
 		if err != nil {
 			// Batches already flushed stay flushed (each is independently

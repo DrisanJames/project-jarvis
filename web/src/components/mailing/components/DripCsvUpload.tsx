@@ -130,6 +130,15 @@ export const DripCsvUpload: React.FC<{
   // Manual mapping override: target -> column ('' = unmapped).
   const [mapping, setMapping] = useState<Record<string, string>>({});
 
+  // Operator-assigned batch metadata — stamped into
+  // partner_inbound_batches.ingest_metadata at commit so the drop stays
+  // traceable after the file is gone. Deliberately NOT cleared by resetFlow:
+  // re-previewing a file should not wipe what the operator typed.
+  const [metaLabel, setMetaLabel] = useState('');
+  const [metaSourceRef, setMetaSourceRef] = useState('');
+  const [metaOfferIntent, setMetaOfferIntent] = useState('');
+  const [metaNotes, setMetaNotes] = useState('');
+
   const [committing, setCommitting] = useState(false);
   const [commitErr, setCommitErr] = useState<string | null>(null);
   const [result, setResult] = useState<CommitResponse | null>(null);
@@ -188,6 +197,17 @@ export const DripCsvUpload: React.FC<{
       fd.append('file', file);
       fd.append('dataset_id', datasetId);
       fd.append('mapping', JSON.stringify(finalMapping));
+      // Blank fields are omitted, never sent empty — the backend distinguishes
+      // "not provided" from "provided as empty".
+      for (const [field, value] of Object.entries({
+        label: metaLabel,
+        source_ref: metaSourceRef,
+        offer_intent: metaOfferIntent,
+        notes: metaNotes,
+      })) {
+        const v = value.trim();
+        if (v) fd.append(field, v);
+      }
       const r = await apiFetch('/api/mailing/partner-ingest-csv/commit', { method: 'POST', body: fd });
       let j: Record<string, unknown> = {};
       try { j = (await r.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
@@ -249,6 +269,36 @@ export const DripCsvUpload: React.FC<{
           onClick={() => void runPreview()}>
           {previewing ? 'Previewing…' : 'Preview'}
         </button>
+      </div>
+
+      {/* Step 1b: what this drop IS. Optional, stamped on every batch this
+          upload creates, and the only record of provenance once the file is
+          gone from whoever's desktop it arrived on. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '6px 14px', marginTop: 10 }}>
+        <label style={{ ...label, display: 'grid', gap: 3 }}>
+          Label
+          <input style={input} value={metaLabel} maxLength={200}
+            placeholder="WCL mortgage 09-16"
+            onChange={(e) => setMetaLabel(e.target.value)} />
+        </label>
+        <label style={{ ...label, display: 'grid', gap: 3 }}>
+          Where it came from
+          <input style={input} value={metaSourceRef} maxLength={400}
+            placeholder="supplier, SFTP path, email thread"
+            onChange={(e) => setMetaSourceRef(e.target.value)} />
+        </label>
+        <label style={{ ...label, display: 'grid', gap: 3 }}>
+          Acquired for offer
+          <input style={input} value={metaOfferIntent} maxLength={120}
+            placeholder="wcl-heloc"
+            onChange={(e) => setMetaOfferIntent(e.target.value)} />
+        </label>
+        <label style={{ ...label, display: 'grid', gap: 3 }}>
+          Notes
+          <input style={input} value={metaNotes} maxLength={2000}
+            placeholder="anything the next person should know"
+            onChange={(e) => setMetaNotes(e.target.value)} />
+        </label>
       </div>
       {options.length === 0 && (
         <div style={{ fontSize: 11, color: colors.warningText, marginTop: 6 }}>
