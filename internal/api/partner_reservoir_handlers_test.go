@@ -1,16 +1,19 @@
 package api
 
 // Reservoir handler fixtures. What these PIN:
-//   - the single grouped scan is shaped into buckets correctly, and an
-//     UNKNOWN status is counted in the total and in by_status but is never
-//     folded into mailable/reserve/exhausted (silently bucketing a status we
-//     don't know would overstate what can mail);
-//   - the 60s cache actually serves the second call WITHOUT a second scan —
-//     the whole reason the cache exists is that this query costs 8.7s over
-//     15M rows in prod;
-//   - ?refresh=1 bypasses the cache and scans again;
+//   - the scan runs inside a transaction that RAISES statement_timeout: the
+//     primary pool's DSN pins 30s (cmd/server/main.go:226) and this scan costs
+//     8.4-9.2s against prod, so a busy moment answered 500 on 2026-09-16
+//     instead of returning totals;
+//   - the single grouped scan is shaped into buckets correctly, and an UNKNOWN
+//     status is counted in the total and in by_status but is never folded into
+//     mailable/reserve/exhausted (silently bucketing an unrecognised status
+//     would overstate what can send);
+//   - the 60s cache serves the next call WITHOUT a second scan (per process —
+//     prod runs 2 tasks, so a caller can still land on a cold one);
+//   - ?refresh=1 bypasses it and scans again;
 //   - a query failure surfaces as 500, never as an empty reservoir (a
-//     zero-looking reservoir would read as "we hold nothing").
+//     zero-looking reservoir reads as "we hold nothing").
 
 import (
 	"encoding/json"
@@ -35,6 +38,25 @@ func reservoirRows() *sqlmock.Rows {
 		AddRow("term_life", "quarantined_by_a_future_release", "apple", 7)
 }
 
+// expectReservoirScan queues one full scan: tx → raised timeout → grouped
+// query → rollback. The SET LOCAL is matched explicitly because it is the
+// whole defence against the pool's 30s cap.
+func expectReservoirScan(mock sqlmock.Sqlmock, rows *sqlmock.Rows) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout = '90s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnRows(rows)
+	mock.ExpectRollback()
+}
+
+func expectReservoirScanFails(mock sqlmock.Sqlmock, err error) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout = '90s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnError(err)
+	mock.ExpectRollback()
+}
+
 func decodeReservoir(t *testing.T, rec *httptest.ResponseRecorder) map[string]interface{} {
 	t.Helper()
 	var out map[string]interface{}
@@ -42,9 +64,23 @@ func decodeReservoir(t *testing.T, rec *httptest.ResponseRecorder) map[string]in
 	return out
 }
 
+// The scan must raise its own statement_timeout. Without the SET LOCAL the
+// expectation below goes unmet and this test fails — which is the point: the
+// 30s pool default is what broke the endpoint in prod.
+func TestReservoir_RaisesStatementTimeoutInsideTx(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	expectReservoirScan(mock, reservoirRows())
+
+	h := NewPartnerReservoirHandler(db)
+	rec := httptest.NewRecorder()
+	h.HandleGetReservoir(rec, httptest.NewRequest(http.MethodGet, "/reservoir", nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestReservoir_BucketsAndUnknownStatus(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnRows(reservoirRows())
+	expectReservoirScan(mock, reservoirRows())
 
 	h := NewPartnerReservoirHandler(db)
 	rec := httptest.NewRecorder()
@@ -80,9 +116,9 @@ func TestReservoir_BucketsAndUnknownStatus(t *testing.T) {
 
 func TestReservoir_SecondCallServedFromCache(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	// Exactly ONE scan is queued. A second scan would fail the test at the
-	// call site AND at ExpectationsWereMet.
-	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnRows(reservoirRows())
+	// Exactly ONE scan is queued. A second scan fails at the call site AND at
+	// ExpectationsWereMet.
+	expectReservoirScan(mock, reservoirRows())
 
 	h := NewPartnerReservoirHandler(db)
 	for i := 0; i < 3; i++ {
@@ -96,10 +132,9 @@ func TestReservoir_SecondCallServedFromCache(t *testing.T) {
 
 func TestReservoir_RefreshBypassesCache(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnRows(reservoirRows())
-	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnRows(
-		sqlmock.NewRows([]string{"vertical", "status", "isp_family", "n"}).
-			AddRow("refi_heloc", "ready", "gmail", 1))
+	expectReservoirScan(mock, reservoirRows())
+	expectReservoirScan(mock, sqlmock.NewRows([]string{"vertical", "status", "isp_family", "n"}).
+		AddRow("refi_heloc", "ready", "gmail", 1))
 
 	h := NewPartnerReservoirHandler(db)
 	rec := httptest.NewRecorder()
@@ -116,7 +151,7 @@ func TestReservoir_RefreshBypassesCache(t *testing.T) {
 
 func TestReservoir_QueryFailureIs500NotEmpty(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	mock.ExpectQuery(`FROM partner_clean_queue`).WillReturnError(errReservoirTest)
+	expectReservoirScanFails(mock, errReservoirTest)
 
 	h := NewPartnerReservoirHandler(db)
 	rec := httptest.NewRecorder()

@@ -175,7 +175,24 @@ func (h *PartnerReservoirHandler) snapshot(ctx context.Context, force bool) (*re
 
 func (h *PartnerReservoirHandler) query(ctx context.Context) (*reservoirResponse, error) {
 	started := time.Now()
-	rows, err := h.db.QueryContext(ctx, `
+
+	// The primary pool pins statement_timeout=30000 in its DSN
+	// (cmd/server/main.go:226), and this scan measures 8.4-9.2s against prod —
+	// only ~3x of headroom. On 2026-09-16 the first prod call landed during the
+	// deploy's boot storm, ran past 30s, and the endpoint answered 500 instead
+	// of returning totals. SET LOCAL binds only inside a transaction, which is
+	// the same reason internal/domainagent/scorecard.go:76 opens one for its
+	// rollup. Read-only tx, rolled back — nothing here writes.
+	tx, err := h.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only scan; nothing to commit
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '90s'`); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
 		SELECT COALESCE(vertical, '(none)')   AS vertical,
 		       COALESCE(status, '(none)')     AS status,
 		       COALESCE(isp_family, '(none)') AS isp_family,
