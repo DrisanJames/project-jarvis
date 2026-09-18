@@ -151,6 +151,16 @@ func checkSchema(p Package) CheckResult {
 			if len(b.Items) == 0 {
 				d = append(d, where+": "+b.Type+" needs items")
 			}
+			// A faq is question/answer pairs. An odd list means one of them
+			// was lost, and every pair after the gap reads wrong — the
+			// publishers refuse to render it, so an approved article with an
+			// odd faq can never go live (live 2026-09-15..18: casainsure,
+			// us-finance, yourfinancialblog and aadwd sat approved and
+			// unpublishable, "faq items must alternate question, answer (got
+			// 11)"). S1: the block has to be written again.
+			if b.Type == "faq" && len(b.Items)%2 == 1 {
+				d = append(d, fmt.Sprintf("%s: faq needs question/answer pairs (got %d items — one is missing)", where, len(b.Items)))
+			}
 		case "worked_example":
 			if b.Calc == nil {
 				d = append(d, where+": worked_example needs calc {inputs, formula, result}")
@@ -192,7 +202,7 @@ func checkClaimRefs(in CheckInput) CheckResult {
 
 // codeChecksVersion is part of the code_checks stage's input hash, so a
 // changed check never replays a result cached under an old one.
-const codeChecksVersion = "2026-09-12.headline-restates-faq-questions"
+const codeChecksVersion = "2026-09-18.faq-pairs"
 
 // numTokenRE finds number tokens ("2", "37" of "37%", "978.52", "1,176").
 var numTokenRE = regexp.MustCompile(`\d[\d,.]*\d|\d`)
