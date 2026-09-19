@@ -107,6 +107,20 @@ func ApprovalBlockers(checks Checks, prior []PriorReview, in ReviewInput) []stri
 	return b
 }
 
+// reviewAllowedFor reports whether a review with this decision may be filed on
+// an article in this status. Reviews belong to an article in review; the one
+// exception is an article that is approved but not yet live, which must be
+// able to go back to the desk — live 2026-09-15..18, four articles were
+// approved with an odd faq block the publishers refuse to render, and neither
+// they nor any newer article on those four sites could publish, because a
+// "changes" decision was refused on an approved article.
+func reviewAllowedFor(status, decision string) bool {
+	if status == StatusInReview {
+		return true
+	}
+	return status == StatusApproved && (decision == "changes" || decision == "reject")
+}
+
 // DecideReview computes the next article status. Pure; the store applies it.
 // A consequential article needs a primary approve AND a second approve by a
 // different reviewer on the same hash — there is no path that skips it.

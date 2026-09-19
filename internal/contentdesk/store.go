@@ -868,7 +868,7 @@ func (s *Store) SubmitReview(ctx context.Context, org, articleID string, in Revi
 	if revHash == "" || revHash != in.RevisionHash {
 		return rv, ReviewOutcome{}, fmt.Errorf("%w (current %q)", ErrHashMismatch, revHash)
 	}
-	if status != StatusInReview {
+	if !reviewAllowedFor(status, in.Decision) {
 		return rv, ReviewOutcome{}, fmt.Errorf("%w: article is %q, not in_review", ErrConflict, status)
 	}
 	var checks Checks
