@@ -97,11 +97,11 @@ func expectDayQueries(mock sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
 		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "status", "n"}))
-	mock.ExpectRollback()
 	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
-		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
-		WillReturnRows(sqlmock.NewRows([]string{"with_object", "without"}).AddRow(int64(0), int64(0)))
+		WillReturnRows(sqlmock.NewRows([]string{"org", "with_object", "without"}))
+	mock.ExpectRollback()
 	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_rollup")).
 		WillReturnRows(sqlmock.NewRows([]string{"day", "supply_class", "n"}))
 }
@@ -199,6 +199,10 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 			AddRow(ds1, "pending_eo", int64(30)).
 			AddRow(ds1, "mailed", int64(900)).
 			AddRow(ds2, "held", int64(7)))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
+		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnRows(sqlmock.NewRows([]string{"org", "with_object", "without"}))
 	mock.ExpectRollback()
 
 	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/feeds", "", sessionHdr())
@@ -352,8 +356,6 @@ func TestDataIngestRollup_503WithoutCounters(t *testing.T) {
 func TestDataIngestState_NotMeasuredOnQueryFailure(t *testing.T) {
 	h, mock, _ := newDIRouter(t)
 	mock.MatchExpectationsInOrder(false)
-	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
-		WillReturnError(errTestNoDB)
 	mock.ExpectBegin().WillReturnError(errTestNoDB)
 	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/state", "", sessionHdr())
 	if rec.Code != http.StatusOK {
@@ -556,10 +558,6 @@ func TestDataIngestHours_ShapeAndNotMeasured(t *testing.T) {
 func TestDataIngestState_RefresherOnNeverScansInline(t *testing.T) {
 	h, mock, svc := newDIRouter(t)
 	svc.refresherOn = true // the flag StartQueueStateRefresher sets; no goroutine in tests
-	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
-		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(int64(0)))
-	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
-		WillReturnRows(sqlmock.NewRows([]string{"with_object", "without"}).AddRow(int64(0), int64(0)))
 
 	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/state", "", sessionHdr())
 	if rec.Code != http.StatusOK {
@@ -572,7 +570,7 @@ func TestDataIngestState_RefresherOnNeverScansInline(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"parked_in_db", "staged", "inflight", "mailed", "removed"} {
+	for _, f := range []string{"parked_in_db", "staged", "inflight", "mailed", "removed", "static_objects", "loads_without_object"} {
 		if got.Fields[f] != fieldNotMeasured {
 			t.Errorf("field %s = %q, want not_measured while warming", f, got.Fields[f])
 		}
@@ -589,10 +587,6 @@ func TestDataIngestState_RefresherOnNeverScansInline(t *testing.T) {
 	svc.cached = &queueStateSnapshot{GeneratedAt: time.Now(), ByStatus: map[string]int64{"held": 5, "ready": 7}, ByDataset: map[string]map[string]int64{}}
 	svc.cachedAt = time.Now()
 	svc.mu.Unlock()
-	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
-		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(int64(0)))
-	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
-		WillReturnRows(sqlmock.NewRows([]string{"with_object", "without"}).AddRow(int64(0), int64(0)))
 	rec = diDo(h, http.MethodGet, "/api/mailing/data-ingest/state", "", sessionHdr())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
@@ -629,6 +623,10 @@ func TestDataIngestFeeds_FallsBackWithoutLastBatch(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
 		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "status", "n"}).AddRow(ds1, "ready", int64(120)))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
+		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnRows(sqlmock.NewRows([]string{"org", "with_object", "without"}))
 	mock.ExpectRollback()
 
 	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/feeds", "", sessionHdr())

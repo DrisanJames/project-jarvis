@@ -283,6 +283,17 @@ type queueStateSnapshot struct {
 	ByDataset map[string]map[string]int64
 	ByStatus  map[string]int64
 	Total     int64
+	// Objects[orgID] = the two at-rest object tiles, computed in the same
+	// background scan: the batch-side count is a full pass over 10.6M
+	// partner_inbound_batches rows (30s statement timeout inline on
+	// 2026-09-20), so it lives here and never on a request.
+	Objects         map[string]objectCounts
+	ObjectsMeasured bool
+}
+
+type objectCounts struct {
+	StaticObjects      int64
+	LoadsWithoutObject int64
 }
 
 type queueStateFlight struct {
@@ -457,6 +468,12 @@ func (s *DataIngestService) queryQueueState(ctx context.Context) (*queueStateSna
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	rows.Close()
+	if objs, err := queryObjectAccounting(ctx, tx); err != nil {
+		log.Printf("[data-ingest] object accounting failed (tiles not_measured this cycle): %v", err)
+	} else {
+		snap.Objects, snap.ObjectsMeasured = objs, true
 	}
 	snap.QueryMillis = time.Since(started).Milliseconds()
 	return snap, nil
@@ -640,8 +657,9 @@ func (s *DataIngestService) HandleDay(w http.ResponseWriter, r *http.Request) {
 		out.mark("yesterday", fieldNotMeasured)
 	}
 
-	// ── reservoir state (the ONE heavy query, cached 60s) ──
-	if snap, err := s.queueState(r.Context(), r.URL.Query().Get("refresh") == "1"); err == nil {
+	// ── reservoir state (the ONE heavy query, refreshed in the background) ──
+	snap, snapErr := s.queueState(r.Context(), r.URL.Query().Get("refresh") == "1")
+	if snapErr == nil {
 		f := foldStates(snap.ByStatus)
 		out.AtRest.Raw = i64(f.Raw)
 		out.AtRest.Staged = i64(f.Staged)
@@ -654,10 +672,11 @@ func (s *DataIngestService) HandleDay(w http.ResponseWriter, r *http.Request) {
 		out.markAll(fieldNotMeasured, "raw", "staged", "inflight", "mailed", "removed", "parked_in_db")
 	}
 
-	// ── object accounting ──
-	if objects, orphans, err := s.objectAccounting(r.Context(), dataIngestOrgID(r)); err == nil {
-		out.AtRest.StaticObjects = i64(objects)
-		out.AtRest.LoadsWithoutObject = i64(orphans)
+	// ── object accounting (same snapshot, per org) ──
+	if snapErr == nil && snap.ObjectsMeasured {
+		oc := snap.Objects[dataIngestOrgID(r)]
+		out.AtRest.StaticObjects = i64(oc.StaticObjects)
+		out.AtRest.LoadsWithoutObject = i64(oc.LoadsWithoutObject)
 		out.markAll(fieldDerived, "static_objects", "loads_without_object")
 	} else {
 		out.markAll(fieldNotMeasured, "static_objects", "loads_without_object")
@@ -700,7 +719,8 @@ func elapsedDenverHours(day string, now time.Time) float64 {
 	return elapsed
 }
 
-// objectAccounting answers the two at-rest tiles:
+// queryObjectAccounting answers the two at-rest tiles for EVERY org in one
+// pass, inside the refresher's transaction (90s budget), never per request:
 //
 //	static_objects       — objects we actually hold: data_ingest_static_objects
 //	                       past the upload stage, plus batches whose s3_bucket
@@ -708,34 +728,59 @@ func elapsedDenverHours(day string, now time.Time) float64 {
 //	loads_without_object  — the RED tile: batches that exist only as DB rows
 //	                       (bucket is not the repository AND no object_sha256).
 //	                       brain #3589: the Mac is not a repository.
-func (s *DataIngestService) objectAccounting(ctx context.Context, orgID string) (int64, int64, error) {
-	if s.db == nil {
-		return 0, 0, sql.ErrConnDone
-	}
-	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+func queryObjectAccounting(ctx context.Context, tx *sql.Tx) (map[string]objectCounts, error) {
 	bucket := dataIngestRealBucket()
+	out := map[string]objectCounts{}
 
-	var staticRows int64
-	if err := s.db.QueryRowContext(qctx, `
-		SELECT COUNT(*) FROM data_ingest_static_objects
-		WHERE organization_id = $1 AND status IN ('object','registered','loaded')`,
-		orgID).Scan(&staticRows); err != nil {
-		return 0, 0, err
+	srows, err := tx.QueryContext(ctx, `
+		SELECT organization_id::text, COUNT(*)
+		FROM data_ingest_static_objects
+		WHERE status IN ('object','registered','loaded')
+		GROUP BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	for srows.Next() {
+		var org string
+		var n int64
+		if err := srows.Scan(&org, &n); err != nil {
+			srows.Close()
+			return nil, err
+		}
+		c := out[org]
+		c.StaticObjects += n
+		out[org] = c
+	}
+	srows.Close()
+	if err := srows.Err(); err != nil {
+		return nil, err
 	}
 
-	var withObject, withoutObject int64
-	if err := s.db.QueryRowContext(qctx, `
-		SELECT COUNT(*) FILTER (WHERE b.s3_bucket = $2),
-		       COUNT(*) FILTER (WHERE b.s3_bucket IS DISTINCT FROM $2
+	brows, err := tx.QueryContext(ctx, `
+		SELECT p.organization_id::text,
+		       COUNT(*) FILTER (WHERE b.s3_bucket = $1),
+		       COUNT(*) FILTER (WHERE b.s3_bucket IS DISTINCT FROM $1
 		                          AND (b.object_sha256 IS NULL OR b.object_sha256 = ''))
 		FROM partner_inbound_batches b
 		JOIN partner_datasets d ON d.id = b.dataset_id
 		JOIN data_partners p ON p.id = d.partner_id
-		WHERE p.organization_id = $1`, orgID, bucket).Scan(&withObject, &withoutObject); err != nil {
-		return 0, 0, err
+		GROUP BY 1`, bucket)
+	if err != nil {
+		return nil, err
 	}
-	return staticRows + withObject, withoutObject, nil
+	defer brows.Close()
+	for brows.Next() {
+		var org string
+		var withObject, withoutObject int64
+		if err := brows.Scan(&org, &withObject, &withoutObject); err != nil {
+			return nil, err
+		}
+		c := out[org]
+		c.StaticObjects += withObject
+		c.LoadsWithoutObject += withoutObject
+		out[org] = c
+	}
+	return out, brows.Err()
 }
 
 // daySeries reads the last 30 days of ARRIVAL volume per class from
@@ -1649,19 +1694,19 @@ func (s *DataIngestService) HandleState(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if objects, orphans, err := s.objectAccounting(r.Context(), dataIngestOrgID(r)); err == nil {
-		out.Tiles.StaticObjects = i64(objects)
-		out.Tiles.LoadsWithoutObject = i64(orphans)
+	snap, err := s.queueState(r.Context(), r.URL.Query().Get("refresh") == "1")
+	if err != nil {
+		out.markAll(fieldNotMeasured, "parked_in_db", "staged", "inflight", "mailed", "removed", "static_objects", "loads_without_object")
+		respondJSON(w, http.StatusOK, out)
+		return
+	}
+	if snap.ObjectsMeasured {
+		oc := snap.Objects[dataIngestOrgID(r)]
+		out.Tiles.StaticObjects = i64(oc.StaticObjects)
+		out.Tiles.LoadsWithoutObject = i64(oc.LoadsWithoutObject)
 		out.markAll(fieldDerived, "static_objects", "loads_without_object")
 	} else {
 		out.markAll(fieldNotMeasured, "static_objects", "loads_without_object")
-	}
-
-	snap, err := s.queueState(r.Context(), r.URL.Query().Get("refresh") == "1")
-	if err != nil {
-		out.markAll(fieldNotMeasured, "parked_in_db", "staged", "inflight", "mailed", "removed")
-		respondJSON(w, http.StatusOK, out)
-		return
 	}
 	f := foldStates(snap.ByStatus)
 	out.Tiles.ParkedInDB = i64(f.Parked)
