@@ -175,22 +175,25 @@ func TestDataIngestDay_RejectsBadDate(t *testing.T) {
 }
 
 // /feeds composes the three switches that can each independently close a feed:
-// dataset status, paused_emergency, and the partner's own status. The drip-state
-// row presence becomes send_row.
+// dataset status, intake_paused, and the partner's own status. The drip-state
+// row presence becomes send_row. paused_emergency is the SENDING pause and is
+// surfaced as sending_paused without closing the door (brain #3823).
 func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 	h, mock, _ := newDIRouter(t)
-	ds1, ds2 := uuid.NewString(), uuid.NewString()
+	ds1, ds2, ds3 := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	p1 := uuid.NewString()
 
-	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency",
+	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency", "intake_paused",
 		"express", "pid", "pname", "pstatus", "has_drip_state", "has_contract",
 		"supply_class", "source_path", "received_at", "s3_bucket"}
 	recv := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_datasets d")).WithArgs(diOrg).
 		WillReturnRows(sqlmock.NewRows(cols).
-			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, true,
+			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, false, true,
 				p1, "Partner A", "active", true, true, "dynamic", "partner_api", recv, "jarvis-partner-ingest").
-			AddRow(ds2, "Feed Two", "feed-two", "remodel", "active", true, false,
+			AddRow(ds2, "Feed Two", "feed-two", "remodel", "active", true, false, false,
+				p1, "Partner A", "active", false, false, "at_rest", "csv_upload", nil, "").
+			AddRow(ds3, "Feed Three", "feed-three", "remodel", "active", false, true, false,
 				p1, "Partner A", "active", false, false, "at_rest", "csv_upload", nil, ""))
 
 	// The ONE heavy query, behind the 60s cache.
@@ -227,10 +230,12 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 			SupplyClass   string `json:"supply_class"`
 			SourceChannel string `json:"source_channel"`
 			Status        struct {
-				IngestOpen bool `json:"ingest_open"`
-				SendRow    bool `json:"send_row"`
-				Express    bool `json:"express"`
-				Contract   bool `json:"contract"`
+				IngestOpen    bool `json:"ingest_open"`
+				SendRow       bool `json:"send_row"`
+				Express       bool `json:"express"`
+				Contract      bool `json:"contract"`
+				SendingPaused bool `json:"sending_paused"`
+				IntakePaused  bool `json:"intake_paused"`
 			} `json:"status"`
 			Raw       *int64 `json:"raw"`
 			Staged    *int64 `json:"staged"`
@@ -247,10 +252,10 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v — %s", err, rec.Body.String())
 	}
-	if len(got.Feeds) != 2 {
-		t.Fatalf("want 2 feeds, got %d", len(got.Feeds))
+	if len(got.Feeds) != 3 {
+		t.Fatalf("want 3 feeds, got %d", len(got.Feeds))
 	}
-	f1, f2 := got.Feeds[0], got.Feeds[1]
+	f1, f2, f3 := got.Feeds[0], got.Feeds[1], got.Feeds[2]
 	if !f1.Status.IngestOpen || !f1.Status.SendRow || !f1.Status.Express || !f1.Status.Contract {
 		t.Fatalf("feed one status wrong: %+v", f1.Status)
 	}
@@ -261,12 +266,17 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 		t.Fatalf("feed one counts wrong: raw=%d staged=%d mailed=%d records=%d",
 			*f1.Raw, *f1.Staged, *f1.Mailed, *f1.Records)
 	}
-	// paused_emergency closes the door even though the dataset row says active.
-	if f2.Status.IngestOpen {
-		t.Fatalf("paused_emergency feed must NOT be ingest_open: %+v", f2.Status)
+	// paused_emergency is the SENDING pause: it is surfaced, but the door
+	// stays open (operator ruling, brain #3823).
+	if !f2.Status.IngestOpen || !f2.Status.SendingPaused || f2.Status.IntakePaused {
+		t.Fatalf("sending-paused feed must stay ingest_open: %+v", f2.Status)
 	}
 	if f2.Status.SendRow || f2.Status.Contract {
 		t.Fatalf("no drip-state / no active contract => both false: %+v", f2.Status)
+	}
+	// intake_paused closes the door even though the dataset row says active.
+	if f3.Status.IngestOpen || !f3.Status.IntakePaused || f3.Status.SendingPaused {
+		t.Fatalf("intake_paused feed must NOT be ingest_open: %+v", f3.Status)
 	}
 	if *f2.Raw != 7 {
 		t.Fatalf("held must fold into raw, got %d", *f2.Raw)
@@ -617,14 +627,14 @@ func TestDataIngestFeeds_FallsBackWithoutLastBatch(t *testing.T) {
 	h, mock, _ := newDIRouter(t)
 	ds1 := uuid.NewString()
 	p1 := uuid.NewString()
-	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency",
+	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency", "intake_paused",
 		"express", "pid", "pname", "pstatus", "has_drip_state", "has_contract",
 		"supply_class", "source_path", "received_at", "s3_bucket"}
 	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY received_at DESC")).WithArgs(diOrg).
 		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
 	mock.ExpectQuery(regexp.QuoteMeta("''::text, ''::text, NULL::timestamptz")).WithArgs(diOrg).
 		WillReturnRows(sqlmock.NewRows(cols).
-			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, true,
+			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, false, true,
 				p1, "Partner A", "active", true, true, "", "", nil, ""))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).

@@ -581,6 +581,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				dp.Get("/lanes/{vertical}/health", partnerAdmin.HandleGetLaneHealth)
 				dp.Post("/datasets/{id}/emergency-stop", partnerAdmin.HandleEmergencyStopDataset)
 				dp.Post("/datasets/{id}/resume", partnerAdmin.HandleResumeDataset)
+				// Intake pause/resume (intake_paused) — independent of the
+				// sending pause above (operator ruling, brain #3823).
+				dp.Post("/datasets/{id}/intake-pause", partnerAdmin.HandleIntakePauseDataset)
+				dp.Post("/datasets/{id}/intake-resume", partnerAdmin.HandleIntakeResumeDataset)
 				// express_dispatch toggle (mail-on-arrival). The orchestrator
 				// reads the flag live per wave — next-tick effect, no deploy.
 				dp.Post("/datasets/{id}/express", partnerAdmin.HandleSetDatasetExpress)

@@ -145,7 +145,8 @@ interface SupplyISP { isp: string; ready: number; }
 interface SupplyFeed {
   dataset_id: string; name: string; vertical: string; status: string;
   daily_cap: number;          // SUPPLY-RELEASE budget (lane), not the claim-side ISP cap
-  paused_emergency: boolean;
+  paused_emergency: boolean;  // SENDING pause (drip/broadcast claims stop)
+  intake_paused: boolean;     // INTAKE pause (partner door) — read-only here, independent (brain #3823)
   shared_brands: string[];    // rotation brands this dataset's supply is shared across
   tranche_total: number;
   cleaning: number; pending_eo: number; eo_in_flight: number;
@@ -1020,8 +1021,16 @@ export const SupplyStrip: React.FC<{
                 <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.55)' }}>{f.vertical}</span>
                 {f.paused_emergency && (
                   <span style={{ fontSize: 9, color: '#e94560', fontWeight: 700,
-                                 border: '1px solid rgba(233,69,96,0.4)', borderRadius: 4, padding: '1px 6px' }}>
-                    PAUSED
+                                 border: '1px solid rgba(233,69,96,0.4)', borderRadius: 4, padding: '1px 6px' }}
+                    title="partner_datasets.paused_emergency: drip/broadcast claims stop. Intake keeps landing.">
+                    SENDING PAUSED
+                  </span>
+                )}
+                {f.intake_paused && (
+                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700,
+                                 border: '1px solid rgba(245,158,11,0.4)', borderRadius: 4, padding: '1px 6px' }}
+                    title="partner_datasets.intake_paused: partner posts / CSV uploads refused, batches not sliced. Toggle on the Data Partners screen.">
+                    INTAKE PAUSED
                   </span>
                 )}
                 <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}

@@ -379,12 +379,14 @@ func datasetRosterRows(batchCount, readyCount, mailedCount int) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
 		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
 		"paused_emergency", "paused_reason", "status", "created_at",
+		"intake_paused", "intake_paused_reason",
 		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
 	}).AddRow(
 		"00000000-0000-0000-0000-0000000abc01",
 		"00000000-0000-0000-0000-000000000abc",
 		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
 		false, "", "active", time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
+		false, "",
 		"Attribits", "attribits", batchCount, readyCount, mailedCount,
 	)
 }
@@ -436,12 +438,14 @@ func TestHandleListDatasets(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
 		"paused_emergency", "paused_reason", "status", "created_at",
+		"intake_paused", "intake_paused_reason",
 		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
 	}).AddRow(
 		"00000000-0000-0000-0000-0000000abc01",
 		"00000000-0000-0000-0000-000000000abc",
 		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
 		false, "", "active", mustParseTime(t, "2026-05-12T00:00:00Z"),
+		false, "",
 		"Attribits", "attribits", 3, 1500, 4500,
 	)
 	mock.ExpectQuery(`SELECT d\.id, d\.partner_id.*FROM partner_datasets d\s*JOIN data_partners p`).

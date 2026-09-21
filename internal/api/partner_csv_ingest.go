@@ -311,7 +311,8 @@ func openCSVUpload(w http.ResponseWriter, r *http.Request) (*csvUpload, bool) {
 }
 
 // csvDatasetIdent validates the dataset: must exist, be active, and not be
-// emergency-paused. (The partner tables carry no org column — org context is
+// intake-paused (paused_emergency is the SENDING pause and never closes
+// intake — operator ruling, brain #3823). (The partner tables carry no org column — org context is
 // echoed by the handlers, not filtered here.)
 type csvDatasetIdent struct {
 	PartnerID   string
@@ -330,7 +331,7 @@ func (s *PartnerCSVIngestService) resolveDataset(w http.ResponseWriter, r *http.
 	)
 	err := s.db.QueryRowContext(r.Context(), `
 		SELECT d.partner_id, d.slug, d.name, d.vertical, COALESCE(d.status, ''),
-		       COALESCE(d.paused_emergency, false),
+		       COALESCE(d.intake_paused, false),
 		       p.slug, COALESCE(p.status, 'active')
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
@@ -350,7 +351,7 @@ func (s *PartnerCSVIngestService) resolveDataset(w http.ResponseWriter, r *http.
 		return ident, false
 	}
 	if paused {
-		respondError(w, http.StatusConflict, "dataset is emergency-paused — resume it before uploading")
+		respondError(w, http.StatusConflict, "dataset intake is paused — resume intake before uploading")
 		return ident, false
 	}
 	return ident, true

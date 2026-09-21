@@ -998,6 +998,11 @@ type feedStatus struct {
 	SendRow    bool `json:"send_row"`
 	Express    bool `json:"express"`
 	Contract   bool `json:"contract"`
+	// SendingPaused = partner_datasets.paused_emergency (drip/broadcast claims
+	// stop). IntakePaused = partner_datasets.intake_paused (the door closes).
+	// Independent switches by operator ruling (brain #3823).
+	SendingPaused bool `json:"sending_paused"`
+	IntakePaused  bool `json:"intake_paused"`
 }
 
 type feedRow struct {
@@ -1147,7 +1152,7 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 	// state this column exists to make visible.
 	const q = `
 		SELECT d.id::text, d.name, d.slug, d.vertical, d.status,
-		       d.paused_emergency, COALESCE(d.express_dispatch, FALSE),
+		       d.paused_emergency, COALESCE(d.intake_paused, FALSE), COALESCE(d.express_dispatch, FALSE),
 		       p.id::text, p.name, p.status,
 		       (ds.vertical IS NOT NULL) AS has_drip_state,
 		       (dc.lane IS NOT NULL) AS has_contract,
@@ -1174,7 +1179,7 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 	// three batch-derived ones NULL, so the scan below is shared.
 	const qWiringOnly = `
 		SELECT d.id::text, d.name, d.slug, d.vertical, d.status,
-		       d.paused_emergency, COALESCE(d.express_dispatch, FALSE),
+		       d.paused_emergency, COALESCE(d.intake_paused, FALSE), COALESCE(d.express_dispatch, FALSE),
 		       p.id::text, p.name, p.status,
 		       (ds.vertical IS NOT NULL) AS has_drip_state,
 		       (dc.lane IS NOT NULL) AS has_contract,
@@ -1206,12 +1211,12 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 	for rows.Next() {
 		var f feedRow
 		var slug, datasetStatus, partnerStatus string
-		var pausedEmergency bool
+		var pausedEmergency, intakePaused bool
 		var lastLoaded sql.NullTime
 		var lastBucket string
 		if err := rows.Scan(
 			&f.DatasetID, &f.Name, &slug, &f.Lane, &datasetStatus,
-			&pausedEmergency, &f.Status.Express,
+			&pausedEmergency, &intakePaused, &f.Status.Express,
 			&f.PartnerID, &f.Partner, &partnerStatus,
 			&f.Status.SendRow, &f.Status.Contract,
 			&f.SupplyClass, &f.SourceChannel, &lastLoaded, &lastBucket,
@@ -1223,9 +1228,12 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 			f.LastLoaded = lastLoaded.Time.UTC().Format(time.RFC3339)
 		}
 		// ingest_open = the door accepts records: the dataset is active, not
-		// emergency-paused, and its partner is active. Three separate switches,
-		// each of which has silently closed a feed before.
-		f.Status.IngestOpen = datasetStatus == "active" && !pausedEmergency && partnerStatus == "active"
+		// intake-paused, and its partner is active. Three separate switches,
+		// each of which has silently closed a feed before. paused_emergency is
+		// the SENDING pause and never closes the door (brain #3823).
+		f.Status.SendingPaused = pausedEmergency
+		f.Status.IntakePaused = intakePaused
+		f.Status.IngestOpen = datasetStatus == "active" && !intakePaused && partnerStatus == "active"
 		out = append(out, f)
 	}
 	return out, rows.Err()

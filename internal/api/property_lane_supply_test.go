@@ -140,8 +140,8 @@ type laneSupplyResp struct {
 
 func expectSupplyFeedQueries(mock sqlmock.Sqlmock, vertical, dsID string, withAnatomyRow bool) {
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
-			AddRow(dsID, "feed-one", "active", 5000, false, true))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch", "intake_paused"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, true, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db").AddRow("ht").AddRow("mh"))
 	anatomy := sqlmock.NewRows([]string{"dataset_id", "tranche_total", "cleaning", "pending_eo",
@@ -242,8 +242,8 @@ func TestLaneSupplyEmptyDatasetIsZerosNotError(t *testing.T) {
 	// Anatomy GROUP BY returns no row for an empty dataset — the handler must
 	// render zeros (the queue's true state), not fail.
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
-			AddRow(dsID, "feed-empty", "active", 0, true, false))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch", "intake_paused"}).
+			AddRow(dsID, "feed-empty", "active", 0, true, false, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
 	mock.ExpectQuery(`AS tranche_total`).
@@ -340,8 +340,8 @@ func TestLaneSupplyCacheCollapse(t *testing.T) {
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
-			AddRow(dsID, "feed-one", "active", 5000, false, true))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch", "intake_paused"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, true, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db").AddRow("ht").AddRow("mh"))
 
@@ -397,8 +397,8 @@ func TestLaneSupplyReadyByISPErrorDegradesPartial(t *testing.T) {
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
-			AddRow(dsID, "feed-one", "active", 5000, false, false))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch", "intake_paused"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, false, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
 	// Anatomy succeeds, the ready-by-isp split times out.
@@ -465,8 +465,8 @@ func TestLaneSupplyPartialServesExpiredCache(t *testing.T) {
 	mock.ExpectQuery(`SELECT vertical`).
 		WillReturnRows(sqlmock.NewRows([]string{"vertical"}).AddRow("homeimprovement"))
 	mock.ExpectQuery(`FROM partner_datasets`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch"}).
-			AddRow(dsID, "feed-one", "active", 5000, false, true))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "daily_cap", "paused_emergency", "express_dispatch", "intake_paused"}).
+			AddRow(dsID, "feed-one", "active", 5000, false, true, false))
 	mock.ExpectQuery(`SELECT brand FROM partner_drip_vertical_roster`).
 		WillReturnRows(sqlmock.NewRows([]string{"brand"}).AddRow("db"))
 	mock.ExpectQuery(`AS tranche_total`).WillReturnError(fmt.Errorf("pq: canceling statement due to statement timeout"))

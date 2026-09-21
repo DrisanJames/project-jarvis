@@ -283,6 +283,7 @@ func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT d.id, d.partner_id, d.name, d.slug, d.vertical, d.flush_window_hours,
 		       d.paused_emergency, COALESCE(d.paused_reason, ''), d.status, d.created_at,
+		       COALESCE(d.intake_paused, false), COALESCE(d.intake_paused_reason, ''),
 		       p.name AS partner_name, p.slug AS partner_slug,`+countCols+`
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
@@ -300,13 +301,15 @@ func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.
 		var (
 			id, partnerID, name, slug, vertical, status   string
 			pausedReason, partnerName, partnerSlug         string
+			intakePausedReason                             string
 			flushWindow                                    int
-			pausedEmergency                                bool
+			pausedEmergency, intakePaused                  bool
 			createdAt                                      time.Time
 			batchCount, readyCount, mailedCount            int
 		)
 		if err := rows.Scan(&id, &partnerID, &name, &slug, &vertical, &flushWindow,
 			&pausedEmergency, &pausedReason, &status, &createdAt,
+			&intakePaused, &intakePausedReason,
 			&partnerName, &partnerSlug, &batchCount, &readyCount, &mailedCount); err != nil {
 			continue
 		}
@@ -321,6 +324,8 @@ func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.
 			"flush_window_hours":  flushWindow,
 			"paused_emergency":    pausedEmergency,
 			"paused_reason":       pausedReason,
+			"intake_paused":        intakePaused,
+			"intake_paused_reason": intakePausedReason,
 			"status":              status,
 			"created_at":          createdAt.Format(time.RFC3339),
 			"batch_count":         batchCount,
@@ -396,6 +401,73 @@ func (h *PartnerAdminHandler) HandleResumeDataset(w http.ResponseWriter, r *http
 	}
 	writeAuditLog(r.Context(), h.db, actorFromRequest(r), "resume_dataset", "partner_dataset", datasetID, nil, nil)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"dataset_id": datasetID, "paused_emergency": false})
+}
+
+// ============ POST /api/mailing/data-partners/datasets/{id}/intake-pause ============
+
+// HandleIntakePauseDataset closes the INTAKE door only (partner_datasets.
+// intake_paused): the partner-key middleware, the CSV ingest resolver and the
+// slicer's batch claim refuse; drip/broadcast claims are untouched. The
+// sending pause is HandleEmergencyStopDataset (paused_emergency) — the two are
+// independent by operator ruling (brain #3823): a sending pause must never
+// close partner intake.
+func (h *PartnerAdminHandler) HandleIntakePauseDataset(w http.ResponseWriter, r *http.Request) {
+	datasetID := chi.URLParam(r, "id")
+	if !isValidUUID(datasetID) {
+		writeJSONError(w, "invalid dataset id", http.StatusBadRequest)
+		return
+	}
+	var req emergencyStopRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if strings.TrimSpace(req.Reason) == "" {
+		req.Reason = "operator intake pause"
+	}
+	res, err := h.db.ExecContext(r.Context(), `
+		UPDATE partner_datasets
+		SET intake_paused = true,
+		    intake_paused_reason = $2,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, datasetID, req.Reason)
+	if err != nil {
+		writeJSONError(w, "intake_pause_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		writeJSONError(w, "dataset not found", http.StatusNotFound)
+		return
+	}
+	writeAuditLog(r.Context(), h.db, actorFromRequest(r), "intake_pause_dataset", "partner_dataset", datasetID, nil, map[string]string{
+		"reason": req.Reason,
+	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"dataset_id": datasetID, "intake_paused": true, "reason": req.Reason})
+}
+
+func (h *PartnerAdminHandler) HandleIntakeResumeDataset(w http.ResponseWriter, r *http.Request) {
+	datasetID := chi.URLParam(r, "id")
+	if !isValidUUID(datasetID) {
+		writeJSONError(w, "invalid dataset id", http.StatusBadRequest)
+		return
+	}
+	res, err := h.db.ExecContext(r.Context(), `
+		UPDATE partner_datasets
+		SET intake_paused = false,
+		    intake_paused_reason = NULL,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, datasetID)
+	if err != nil {
+		writeJSONError(w, "intake_resume_failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		writeJSONError(w, "dataset not found", http.StatusNotFound)
+		return
+	}
+	writeAuditLog(r.Context(), h.db, actorFromRequest(r), "intake_resume_dataset", "partner_dataset", datasetID, nil, nil)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"dataset_id": datasetID, "intake_paused": false})
 }
 
 // ============ POST /api/mailing/data-partners/datasets/{id}/express ============

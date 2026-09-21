@@ -2692,6 +2692,17 @@ var criticalSendPathDDL = []struct {
 	{"di_batches_supply_class", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS supply_class TEXT`},
 	{"di_batches_object_sha256", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS object_sha256 TEXT`},
 	{"di_batches_source_path", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS source_path TEXT`},
+	// Intake pause (operator ruling, brain #3823): a SENDING pause
+	// (paused_emergency) must never close partner intake. The partner-key
+	// middleware (partner_api_key_middleware.go resolvePartnerKey), the CSV
+	// ingest resolver (partner_csv_ingest.go) and the slicer's batch claim +
+	// mid-batch re-check (partner_slicer.go) read d.intake_paused
+	// UNCONDITIONALLY, so the column must exist before the API serves a
+	// partner post or the worker fleet starts. Catalog-only ADD COLUMN with a
+	// constant default (no rewrite); same lock-bounded slice as di_batches_*
+	// because partner_datasets is read on every partner post.
+	{"dp_datasets_intake_paused", `ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS intake_paused BOOLEAN NOT NULL DEFAULT FALSE`},
+	{"dp_datasets_intake_paused_reason", `ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS intake_paused_reason TEXT`},
 }
 
 // pcqAllocationFence is the timestamptz literal (UTC) from which every
@@ -12866,6 +12877,12 @@ END $$`},
 		// ADD CONSTRAINT takes SHARE ROW EXCLUSIVE on a table the slicer and
 		// the partner API write continuously.
 		{"di_batches_lock_timeout", api.CampaignRequestLockTimeoutDDL},
+		// partner_datasets.intake_paused(+_reason) live in criticalSendPathDDL
+		// (dp_datasets_intake_paused* there) for the same reason; mirrored here
+		// as a no-op safety so a boot that skipped the critical slice still
+		// converges. IF NOT EXISTS => no-op after the first boot.
+		{"dp_datasets_intake_paused_mirror", `ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS intake_paused BOOLEAN NOT NULL DEFAULT FALSE`},
+		{"dp_datasets_intake_paused_reason_mirror", `ALTER TABLE partner_datasets ADD COLUMN IF NOT EXISTS intake_paused_reason TEXT`},
 		// The CHECK goes in via a DO block because ADD CONSTRAINT has no IF NOT
 		// EXISTS: a bare ADD would fail on every boot after the first and burn a
 		// permanent error line in the migration report. NOT VALID so the ALTER

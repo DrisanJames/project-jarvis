@@ -71,7 +71,8 @@ func seedLeaseFixture(t *testing.T, db *sql.DB, schema string, batches int) {
 
 	mustExec(`CREATE TABLE partner_datasets (
 		id UUID PRIMARY KEY, vertical TEXT, status TEXT,
-		paused_emergency BOOLEAN DEFAULT false, express_dispatch BOOLEAN DEFAULT false)`)
+		paused_emergency BOOLEAN DEFAULT false, intake_paused BOOLEAN DEFAULT false,
+		express_dispatch BOOLEAN DEFAULT false)`)
 	mustExec(`CREATE TABLE partner_inbound_batches (
 		id UUID PRIMARY KEY, dataset_id UUID, partner_id UUID,
 		s3_bucket TEXT, s3_key TEXT, record_count INT, next_record_offset INT DEFAULT 0,

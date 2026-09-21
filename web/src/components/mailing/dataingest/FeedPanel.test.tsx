@@ -65,3 +65,63 @@ describe('FeedPanel (real /feeds/{id} body)', () => {
     expect(screen.getByText('open')).toBeInTheDocument();
   });
 });
+
+// Intake/sending split (operator ruling, brain #3823): the panel renders the
+// two dataset pauses as INDEPENDENT switches and drives them through their own
+// endpoints — the sending stop (emergency-stop/resume) never touches intake,
+// and the intake pause (intake-pause/intake-resume) never touches sending.
+describe('FeedPanel intake vs sending switches', () => {
+  beforeEach(() => {
+    stubResizeObserver();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(window, 'prompt').mockReturnValue('test reason');
+  });
+
+  it('shows sending stopped + intake open for a dataset paused for sending only', async () => {
+    installRoutes(apiFetch, (url) => {
+      if (url.includes(`/data-ingest/feeds/${DATASET}?`)) {
+        return resp(200, { ...detailFx, status: { ...listRow.status, ingest_open: true, sending_paused: true, intake_paused: false } });
+      }
+      return undefined;
+    });
+    render(<FeedPanel datasetId={DATASET} date="2026-09-20" listRow={listRow} onBack={() => {}} />);
+    await screen.findByText('387,323');
+    expect(screen.getByText('open')).toBeInTheDocument();        // intake row
+    expect(screen.getByText('stopped')).toBeInTheDocument();     // sending row
+    expect(screen.queryByText('paused')).not.toBeInTheDocument();
+    expect(screen.getByText('Resume sending')).toBeInTheDocument();
+    expect(screen.getByText('Pause intake')).toBeInTheDocument();
+  });
+
+  it('shows intake paused + sending live for a dataset paused for intake only', async () => {
+    installRoutes(apiFetch, (url) => {
+      if (url.includes(`/data-ingest/feeds/${DATASET}?`)) {
+        return resp(200, { ...detailFx, status: { ...listRow.status, ingest_open: false, sending_paused: false, intake_paused: true } });
+      }
+      return undefined;
+    });
+    render(<FeedPanel datasetId={DATASET} date="2026-09-20" listRow={listRow} onBack={() => {}} />);
+    await screen.findByText('387,323');
+    expect(screen.getAllByText('paused').length).toBe(2);        // header pill + intake row
+    expect(screen.getByText('sending')).toBeInTheDocument();     // sending row
+    expect(screen.getByText('Resume intake')).toBeInTheDocument();
+    expect(screen.getByText('Stop sending')).toBeInTheDocument();
+  });
+
+  it('drives the intake switch through /intake-pause and /intake-resume, never /emergency-stop', async () => {
+    const seen = installRoutes(apiFetch, (url) => {
+      if (url.includes(`/data-ingest/feeds/${DATASET}?`)) {
+        return resp(200, { ...detailFx, status: { ...listRow.status, ingest_open: true, sending_paused: true, intake_paused: false } });
+      }
+      if (url.endsWith('/intake-pause') || url.endsWith('/intake-resume')) return resp(200, { ok: true });
+      return undefined;
+    });
+    render(<FeedPanel datasetId={DATASET} date="2026-09-20" listRow={listRow} onBack={() => {}} />);
+    await screen.findByText('387,323');
+    screen.getByText('Pause intake').click();
+    await screen.findByText('387,323');
+    const posts = seen.filter((u) => u.includes('/data-partners/datasets/'));
+    expect(posts.some((u) => u.endsWith(`/datasets/${DATASET}/intake-pause`))).toBe(true);
+    expect(posts.some((u) => u.includes('emergency-stop'))).toBe(false);
+  });
+});

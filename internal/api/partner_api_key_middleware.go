@@ -80,7 +80,7 @@ func PartnerKeyAuth(db *sql.DB) func(http.Handler) http.Handler {
 					return
 				}
 				if errors.Is(err, errPartnerKeyDatasetPaused) {
-					partnerErrorResponse(w, http.StatusServiceUnavailable, "dataset_paused", "Dataset is paused (emergency stop or admin pause). Contact your account manager.")
+					partnerErrorResponse(w, http.StatusServiceUnavailable, "dataset_paused", "Dataset intake is paused. Contact your account manager.")
 					return
 				}
 				partnerErrorResponse(w, http.StatusInternalServerError, "auth_lookup_failed", "Unable to validate API key right now")
@@ -145,7 +145,7 @@ func resolvePartnerKey(ctx context.Context, db *sql.DB, rawKey string) (PartnerA
 		SELECT k.id, k.partner_id, k.dataset_id, COALESCE(k.key_prefix, ''),
 		       p.slug, p.name,
 		       d.slug, d.name, d.vertical,
-		       d.paused_emergency, COALESCE(d.status, 'active'),
+		       COALESCE(d.intake_paused, false), COALESCE(d.status, 'active'),
 		       COALESCE(p.status, 'active'),
 		       COALESCE(k.status, 'active')
 		FROM partner_api_keys k
@@ -156,15 +156,15 @@ func resolvePartnerKey(ctx context.Context, db *sql.DB, rawKey string) (PartnerA
 	`, hash)
 
 	var (
-		auth                                                                          PartnerAuthContext
-		datasetPaused                                                                 bool
-		datasetStatus, partnerStatus, keyStatus                                       string
+		auth                                    PartnerAuthContext
+		datasetIntakePaused                     bool
+		datasetStatus, partnerStatus, keyStatus string
 	)
 	if err := row.Scan(
 		&auth.APIKeyID, &auth.PartnerID, &auth.DatasetID, &auth.KeyPrefix,
 		&auth.PartnerSlug, &auth.PartnerName,
 		&auth.DatasetSlug, &auth.DatasetName, &auth.Vertical,
-		&datasetPaused, &datasetStatus,
+		&datasetIntakePaused, &datasetStatus,
 		&partnerStatus,
 		&keyStatus,
 	); err != nil {
@@ -176,7 +176,10 @@ func resolvePartnerKey(ctx context.Context, db *sql.DB, rawKey string) (PartnerA
 	if keyStatus != "active" || partnerStatus != "active" {
 		return PartnerAuthContext{}, errPartnerKeyRevoked
 	}
-	if datasetPaused || datasetStatus == "paused" || datasetStatus == "archived" {
+	// The door is gated on intake_paused ONLY. paused_emergency is the SENDING
+	// pause (drip claims, fresh broadcast) and must never close intake
+	// (operator ruling, brain #3823).
+	if datasetIntakePaused || datasetStatus == "paused" || datasetStatus == "archived" {
 		return PartnerAuthContext{}, errPartnerKeyDatasetPaused
 	}
 	return auth, nil

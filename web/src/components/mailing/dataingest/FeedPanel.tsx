@@ -30,6 +30,7 @@ import { AT_REST, DYNAMIC, TRANSFER, FeedStatusPill } from './OverviewPanel';
 import {
   dataIngestApi, datasetAction, measured, presentString,
   type FeedDetailResponse, type FeedRow, type FeedStatus,
+  type DatasetAction,
 } from './api';
 
 const POLL_MS = 30_000;
@@ -86,7 +87,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
   const lastLoaded = presentString(d?.last_loaded) ?? presentString(listRow?.last_loaded) ?? null;
 
   const run = async (
-    action: 'emergency-stop' | 'resume' | 'express',
+    action: DatasetAction,
     confirmText: string,
     payload?: Record<string, unknown>,
     failMsg?: string,
@@ -104,17 +105,31 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
     }
   };
 
-  const pause = () => {
-    const reason = window.prompt('Reason for pausing ingestion:', 'operator emergency stop');
+  // Two independent switches (brain #3823): the SENDING pause
+  // (paused_emergency — drip/broadcast claims stop, intake keeps landing) and
+  // the INTAKE pause (intake_paused — the partner door closes).
+  const pauseSending = () => {
+    const reason = window.prompt('Reason for stopping sending:', 'operator emergency stop');
     if (reason === null) return;
     void run(
       'emergency-stop',
-      'Pause ingestion for this dataset? Inbound records stop being processed at the next safe point.',
+      'Stop SENDING for this dataset? Drip and broadcast claims halt; partner intake keeps landing.',
       { reason },
-      'EMERGENCY STOP',
+      'EMERGENCY STOP (sending)',
     );
   };
-  const resume = () => void run('resume', 'Resume ingestion for this dataset?', undefined, 'RESUME');
+  const resumeSending = () => void run('resume', 'Resume SENDING for this dataset?', undefined, 'RESUME SENDING');
+  const pauseIntake = () => {
+    const reason = window.prompt('Reason for pausing intake:', 'operator intake pause');
+    if (reason === null) return;
+    void run(
+      'intake-pause',
+      'Pause INTAKE for this dataset? Partner posts and CSV uploads are refused and inbound batches stop slicing. Sending is unaffected.',
+      { reason },
+      'INTAKE PAUSE',
+    );
+  };
+  const resumeIntake = () => void run('intake-resume', 'Resume INTAKE for this dataset?', undefined, 'RESUME INTAKE');
   const toggleExpress = (next: boolean) =>
     void run(
       'express',
@@ -185,26 +200,39 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
         <Panel>
           <SectionHeader title="Status and controls" icon={faRoute} />
           <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
-            The four real switches, shown as one status. Every change writes the audit log.
+            The five real switches, shown as one status. Every change writes the audit log.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <SwitchRow label="Ingestion (paused_emergency)" state={status ? status.ingest_open : null} onLabel="open" offLabel="paused" />
+            <SwitchRow label="Intake (intake_paused)" state={status ? status.ingest_open : null} onLabel="open" offLabel="paused" />
+            <SwitchRow label="Sending (paused_emergency)" state={status ? !status.sending_paused : null} onLabel="sending" offLabel="stopped" />
             <SwitchRow label="Send (partner_drip_state row)" state={status ? status.send_row : null} onLabel="present" offLabel="absent" />
             <SwitchRow label="Express dispatch" state={status ? status.express : null} onLabel="on" offLabel="off" />
             <SwitchRow label="Supply contract (mediator)" state={status ? status.contract : null} onLabel="active" offLabel="none" />
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={pause}
-              style={{ ...btnStyle, color: colors.dangerText, borderColor: 'rgba(239,68,68,0.45)', background: 'rgba(239,68,68,0.10)' }}
-            >
-              <FontAwesomeIcon icon={faPause} style={{ marginRight: 6 }} /> Pause ingestion
-            </button>
-            <button type="button" disabled={busy} onClick={resume} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
-              <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume ingestion
-            </button>
+            {status?.sending_paused ? (
+              <button type="button" disabled={busy} onClick={resumeSending} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
+                <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume sending
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={pauseSending}
+                style={{ ...btnStyle, color: colors.dangerText, borderColor: 'rgba(239,68,68,0.45)', background: 'rgba(239,68,68,0.10)' }}
+              >
+                <FontAwesomeIcon icon={faPause} style={{ marginRight: 6 }} /> Stop sending
+              </button>
+            )}
+            {status?.intake_paused ? (
+              <button type="button" disabled={busy} onClick={resumeIntake} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
+                <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume intake
+              </button>
+            ) : (
+              <button type="button" disabled={busy} onClick={pauseIntake} style={{ ...btnStyle, color: colors.warningText, borderColor: 'rgba(245,158,11,0.45)', background: 'rgba(245,158,11,0.10)' }}>
+                <FontAwesomeIcon icon={faPause} style={{ marginRight: 6 }} /> Pause intake
+              </button>
+            )}
             <button type="button" disabled={busy} onClick={() => toggleExpress(!(status?.express === true))} style={btnStyle}>
               <FontAwesomeIcon icon={faBolt} style={{ marginRight: 6 }} />
               {status?.express === true ? 'Turn express off' : 'Turn express on'}

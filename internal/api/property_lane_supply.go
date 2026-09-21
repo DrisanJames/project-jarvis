@@ -90,6 +90,9 @@ type laneSupplyFeed struct {
 	// (partner_isp_distribution_overrides) — two distinct systems.
 	DailyCap int  `json:"daily_cap"`
 	Paused   bool `json:"paused_emergency"`
+	// IntakePaused: the INTAKE door (partner_datasets.intake_paused) —
+	// independent of the sending pause above (brain #3823). Read-only here.
+	IntakePaused bool `json:"intake_paused"`
 	// ExpressDispatch: mail-on-arrival flag (partner_datasets.express_dispatch).
 	// Read live per wave by the orchestrator; toggled via
 	// POST /api/mailing/data-partners/datasets/{id}/express.
@@ -470,7 +473,8 @@ func (s *PMTACampaignService) laneSupplyResolveFeeds(ctx context.Context, brand 
 			rows, err := s.db.QueryContext(ctx, `
 				SELECT id::text, name, COALESCE(status, ''), COALESCE(daily_cap, 0),
 				       COALESCE(paused_emergency, false),
-				       COALESCE(express_dispatch, false)
+				       COALESCE(express_dispatch, false),
+				       COALESCE(intake_paused, false)
 				FROM partner_datasets
 				WHERE vertical = $1 AND status = 'active'
 				ORDER BY name`, vertical)
@@ -481,7 +485,7 @@ func (s *PMTACampaignService) laneSupplyResolveFeeds(ctx context.Context, brand 
 			for rows.Next() {
 				f := laneSupplyFeed{Vertical: vertical, ReadyByISP: []laneSupplyISP{}, SharedBrands: []string{}}
 				if err := rows.Scan(&f.DatasetID, &f.Name, &f.Status,
-					&f.DailyCap, &f.Paused, &f.ExpressDispatch); err != nil {
+					&f.DailyCap, &f.Paused, &f.ExpressDispatch, &f.IntakePaused); err != nil {
 					return err
 				}
 				tmp = append(tmp, f)

@@ -134,6 +134,10 @@ export interface FeedStatus {
   send_row: boolean;
   express: boolean;
   contract: boolean;
+  /** partner_datasets.paused_emergency — the SENDING pause (drip/broadcast claims stop). */
+  sending_paused: boolean;
+  /** partner_datasets.intake_paused — the INTAKE door. Independent of sending_paused (brain #3823). */
+  intake_paused: boolean;
 }
 
 /** feedRow (:934-956). Flags: today yesterday raw staged inflight mailed records consumed remaining last_event last_loaded supply_class source_channel */
@@ -468,13 +472,16 @@ export const dataIngestApi = {
     post<RegisterRequest, RegisterResponse>('/static/register', req, signal),
 };
 
-// ── the four dataset switches (existing data-partners endpoints) ───────────
-// FeedPanel drives the REAL controls, not new ones: emergency-stop / resume /
-// express already exist under /api/mailing/data-partners/datasets/{id}/…
+// ── the dataset switches (existing data-partners endpoints) ────────────────
+// FeedPanel drives the REAL controls, not new ones: emergency-stop / resume
+// (SENDING), intake-pause / intake-resume (INTAKE) and express all live under
+// /api/mailing/data-partners/datasets/{id}/…
+
+export type DatasetAction = 'emergency-stop' | 'resume' | 'intake-pause' | 'intake-resume' | 'express';
 
 export async function datasetAction(
   datasetId: string,
-  action: 'emergency-stop' | 'resume' | 'express',
+  action: DatasetAction,
   payload?: Record<string, unknown>,
 ): Promise<void> {
   const r = await apiFetch(`/api/mailing/data-partners/datasets/${encodeURIComponent(datasetId)}/${action}`, {

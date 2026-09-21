@@ -269,7 +269,7 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 		     OR (b.status = 'slicing'
 		         AND COALESCE(b.slicing_started_at, 'epoch'::timestamptz) < NOW() - $1::interval)
 		      )
-		  AND d.paused_emergency = false
+		  AND d.intake_paused = false
 		  AND d.status = 'active'
 		ORDER BY COALESCE(d.express_dispatch, false) DESC, b.received_at ASC
 		FOR UPDATE OF b SKIP LOCKED
@@ -696,10 +696,14 @@ func (ps *PartnerSlicer) emitSliceEvent(ctx context.Context, b *partnerBatch, tr
 	})
 }
 
+// isDatasetPaused is the INTAKE gate (intake_paused). paused_emergency is the
+// SENDING pause and is deliberately not consulted here: a dataset paused for
+// sending keeps slicing into partner_clean_queue as 'ready' (operator ruling,
+// brain #3823).
 func (ps *PartnerSlicer) isDatasetPaused(ctx context.Context, datasetID string) (bool, error) {
 	var paused bool
 	err := ps.db.QueryRowContext(ctx,
-		`SELECT paused_emergency FROM partner_datasets WHERE id = $1`, datasetID).Scan(&paused)
+		`SELECT intake_paused FROM partner_datasets WHERE id = $1`, datasetID).Scan(&paused)
 	if err != nil {
 		return false, err
 	}

@@ -59,8 +59,10 @@ interface DatasetSummary {
   slug: string;
   vertical: string;
   flush_window_hours: number;
-  paused_emergency: boolean;
+  paused_emergency: boolean;   // SENDING pause — drip/broadcast claims stop
   paused_reason: string;
+  intake_paused: boolean;      // INTAKE pause — the partner door closes (independent, brain #3823)
+  intake_paused_reason: string;
   status: string;
   created_at: string;
   batch_count: number;
@@ -142,8 +144,8 @@ export const PartnerIngestPortal: React.FC = () => {
   }, [fetchAll]);
 
   const handlePauseDataset = async (id: string) => {
-    if (!window.confirm('Pause this dataset? List processing will halt at the next safe point.')) return;
-    const reason = window.prompt('Reason for pause:', 'operator emergency stop') ?? '';
+    if (!window.confirm('Stop SENDING for this dataset? Drip and broadcast claims halt at the next safe point; partner intake keeps landing.')) return;
+    const reason = window.prompt('Reason for stopping sending:', 'operator emergency stop') ?? '';
     try {
       const res = await apiFetch(`/api/mailing/data-partners/datasets/${id}/emergency-stop`, {
         method: 'POST',
@@ -175,6 +177,47 @@ export const PartnerIngestPortal: React.FC = () => {
       setActionError(null);
     } catch (err) {
       setActionError(`Resume failed (${String(err)}) — the dataset is still emergency-stopped.`);
+      return;
+    }
+    fetchAll();
+  };
+
+  // Intake pause/resume — the INTAKE door only (partner_datasets.intake_paused).
+  // Independent of the sending stop above (operator ruling, brain #3823).
+  const handleIntakePause = async (id: string) => {
+    if (!window.confirm('Pause INTAKE for this dataset? Partner posts and CSV uploads are refused and inbound batches stop slicing. Sending is unaffected.')) return;
+    const reason = window.prompt('Reason for pausing intake:', 'operator intake pause') ?? '';
+    try {
+      const res = await apiFetch(`/api/mailing/data-partners/datasets/${id}/intake-pause`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setActionError(`INTAKE PAUSE FAILED (HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}) — the partner door is still open. Retry or pause it server-side.`);
+        return;
+      }
+      setActionError(null);
+    } catch (err) {
+      setActionError(`INTAKE PAUSE FAILED (${String(err)}) — the partner door is still open. Retry or pause it server-side.`);
+      return;
+    }
+    fetchAll();
+  };
+
+  const handleIntakeResume = async (id: string) => {
+    try {
+      const res = await apiFetch(`/api/mailing/data-partners/datasets/${id}/intake-resume`, { method: 'POST', credentials: 'include' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setActionError(`Intake resume failed (HTTP ${res.status}${body?.error ? `: ${body.error}` : ''}) — intake is still paused.`);
+        return;
+      }
+      setActionError(null);
+    } catch (err) {
+      setActionError(`Intake resume failed (${String(err)}) — intake is still paused.`);
       return;
     }
     fetchAll();
@@ -332,13 +375,19 @@ export const PartnerIngestPortal: React.FC = () => {
                   <td style={tdNum}>{d.ready_queue_count.toLocaleString()}</td>
                   <td style={tdNum}>{d.mailed_count.toLocaleString()}</td>
                   <td style={td}>
-                    {d.paused_emergency ? (
-                      <span style={{ color: '#f59e0b' }}>
-                        <FontAwesomeIcon icon={faPause} /> {d.paused_reason || 'paused'}
-                      </span>
-                    ) : (
-                      <span style={{ color: '#10b981' }}>active</span>
-                    )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {d.paused_emergency && (
+                        <span style={{ color: '#f59e0b', fontSize: 11, fontWeight: 700 }} title={d.paused_reason || 'sending stopped'}>
+                          <FontAwesomeIcon icon={faPause} /> SENDING PAUSED
+                        </span>
+                      )}
+                      {d.intake_paused && (
+                        <span style={{ color: '#e94560', fontSize: 11, fontWeight: 700 }} title={d.intake_paused_reason || 'intake paused'}>
+                          <FontAwesomeIcon icon={faPause} /> INTAKE PAUSED
+                        </span>
+                      )}
+                      {!d.paused_emergency && !d.intake_paused && <span style={{ color: '#10b981' }}>active</span>}
+                    </div>
                   </td>
                   <td style={td}>
                     <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
@@ -357,12 +406,21 @@ export const PartnerIngestPortal: React.FC = () => {
                         <FontAwesomeIcon icon={faKey} /> Keys
                       </button>
                       {d.paused_emergency ? (
-                        <button onClick={() => handleResumeDataset(d.id)} style={ghostBtn}>
-                          <FontAwesomeIcon icon={faPlay} /> Resume
+                        <button onClick={() => handleResumeDataset(d.id)} style={ghostBtn} title="Resume drip/broadcast claims (sending only)">
+                          <FontAwesomeIcon icon={faPlay} /> Resume sending
                         </button>
                       ) : (
-                        <button onClick={() => handlePauseDataset(d.id)} style={dangerBtn}>
-                          <FontAwesomeIcon icon={faPause} /> Stop
+                        <button onClick={() => handlePauseDataset(d.id)} style={dangerBtn} title="Emergency stop: halts drip/broadcast claims. Intake keeps landing.">
+                          <FontAwesomeIcon icon={faPause} /> Stop sending
+                        </button>
+                      )}
+                      {d.intake_paused ? (
+                        <button onClick={() => handleIntakeResume(d.id)} style={ghostBtn} title="Reopen the partner door (API posts, CSV uploads, slicing)">
+                          <FontAwesomeIcon icon={faPlay} /> Resume intake
+                        </button>
+                      ) : (
+                        <button onClick={() => handleIntakePause(d.id)} style={ghostBtn} title="Close the partner door: API posts and CSV uploads refused, batches stop slicing. Sending unaffected.">
+                          <FontAwesomeIcon icon={faPause} /> Pause intake
                         </button>
                       )}
                     </div>

@@ -18,12 +18,14 @@ package api
 //      (partner_admin_handlers.go HandleEmergencyStopDataset :336 /
 //      HandleResumeDataset :365).
 //
-// ── What paused_emergency actually stops (verified 2026-08-22) ──────────────
-// The flag is consulted at THREE claim points, so a lane pause stops the whole
-// pipeline for the dataset — including follow-up touches already laddered:
-//   - ingest slicing: partner_slicer.go:224 claimNextBatch requires
-//     `d.paused_emergency = false` (and isDatasetPaused :589 re-checks
-//     mid-batch), so no new records are sliced into the queue;
+// ── What paused_emergency actually stops (verified 2026-08-22; intake split
+// out 2026-09-21) ────────────────────────────────────────────────────────────
+// paused_emergency is the SENDING pause. Ingest slicing is NOT gated on it any
+// more: partner_slicer.go claimNextBatch / isDatasetPaused read
+// partner_datasets.intake_paused (operator ruling, brain #3823 — a sending
+// pause must never close partner intake). The flag is consulted at TWO claim
+// points, so a lane pause stops mailing for the dataset — including follow-up
+// touches already laddered — while intake keeps landing rows as 'ready':
 //   - welcome (first-touch) claims: datasetNotEmergencyPausedSQL
 //     (partner_drip_orchestrator.go:2149-2155) is appended to the
 //     status='ready' claim in claimRecords;
@@ -118,7 +120,7 @@ const laneJourneyAdvanceNote = "Rows are now due (next_touch_at = NOW()); nothin
 // lanePauseSQL / laneResumeSQL — byte-for-byte the semantics of
 // HandleEmergencyStopDataset / HandleResumeDataset (partner_admin_handlers.go
 // :336 / :365), applied per dataset id. See the file header for exactly what
-// this flag stops (ingest slicing + welcome claims + follow-up claims).
+// this flag stops (welcome claims + follow-up claims; NOT ingest slicing).
 const lanePauseSQL = `
 	UPDATE partner_datasets
 	SET paused_emergency = true,
@@ -343,9 +345,9 @@ func (s *PMTACampaignService) HandleLanePause(w http.ResponseWriter, r *http.Req
 		"reason":            reason,
 		"datasets_affected": affected,
 		"dataset_ids":       datasetIDs,
-		// Honest semantics: this stops ingest slicing AND both drip claim
-		// passes (welcome + follow-ups) for every dataset of the lane.
-		"scope_note":      "paused_emergency blocks the slicer batch claim and BOTH drip claim passes (welcome and follow-up) — ladders already in motion stop until resume",
+		// Honest semantics: this stops both drip claim passes (welcome +
+		// follow-ups) for every dataset of the lane; intake keeps landing.
+		"scope_note":      "paused_emergency blocks BOTH drip claim passes (welcome and follow-up) — ladders already in motion stop until resume; partner intake and slicing continue (intake_paused is the separate intake switch)",
 		"organization_id": orgID,
 	})
 }
