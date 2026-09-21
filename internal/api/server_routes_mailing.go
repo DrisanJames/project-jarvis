@@ -601,6 +601,16 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				dp.Get("/reservoir", NewPartnerReservoirHandler(db).HandleGetReservoir)
 			})
 
+			// Data Ingest dashboard (REQ 2026-09-20). Counters live in Redis
+			// (s.redisClient is set at main.go:312, BEFORE this function runs,
+			// and may be nil — the service then renders every live field
+			// not_measured rather than a confident zero). Sibling routes under
+			// /data-ingest/static (the S3 upload door) mount separately.
+			r.Route("/data-ingest", NewDataIngestService(db, s.redisClient).RegisterRoutes)
+			// The S3 static upload door (data_ingest_static.go): presign →
+			// complete → register; refuses a key that is not in the bucket.
+			r.Route("/data-ingest/static", NewDataIngestStaticService(db, s.partnerIngestS3).RegisterRoutes)
+
 			// Operator CSV ingestion for partner datasets
 			// (partner_csv_ingest.go): preview + commit reuse the EXACT batch
 			// persistence path the partner API door uses. Session/admin auth

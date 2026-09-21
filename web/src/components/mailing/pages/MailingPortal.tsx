@@ -67,6 +67,7 @@ const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m 
 const ContentDesk = lazy(() => import('../components/ContentDesk').then(m => ({ default: m.ContentDesk })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
+const DataIngestPortal = lazy(() => import('../dataingest/DataIngestPortal').then(m => ({ default: m.DataIngestPortal })));
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
 const SmartLinkManager = lazy(() => import('../components/SmartLinkManager').then(m => ({ default: m.SmartLinkManager })));
 const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
@@ -89,7 +90,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain';
 
 interface Tab {
   id: TabId;
@@ -130,6 +131,7 @@ const tabs: Tab[] = [
   { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
   { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, description: 'The AI insights and strategy behind your campaigns.' },
   { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Manage inbound data-partner connections — access keys, submitted lists, automated follow-ups and creatives.' },
+  { id: 'data-ingest', label: 'Data Ingest', icon: faDatabase, description: 'Every record landing or moving: at rest (S3 + database) vs dynamic feeds, day over day, composition, mailed vs not, and the static upload door.' },
   { id: 'outbox', label: 'Delivery Queue', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
   { id: 'operations', label: 'Operations', icon: faGears, description: 'Platform ownership console — job and worker health, segment-family freshness vs SLA, nightly send-day invariants and engager cohort growth.' },
 ];
@@ -289,6 +291,8 @@ export const MailingPortal: React.FC = () => {
         return <ConsciousnessDashboard />;
       case 'data-partners':
         return <Suspense fallback={<ChunkLoader />}><PartnerIngestPortal /></Suspense>;
+      case 'data-ingest':
+        return <Suspense fallback={<ChunkLoader />}><DataIngestPortal /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
       case 'cpm-planner':

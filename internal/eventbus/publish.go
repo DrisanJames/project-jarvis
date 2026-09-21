@@ -34,18 +34,25 @@ const (
 	// TopicSuppression carries ADD-ONLY suppression state changes. Unsuppress is
 	// intentionally NOT mirrored here — see PublishSuppressAdd.
 	TopicSuppression = "suppression.state"
+	// TopicDataIngest carries per-OPERATION data-ingest counter events
+	// (internal/dataingest). 12 partitions, key = dataset_id, DLQ
+	// "data.ingest.v1.dlq". Aggregate events (one per chunk written), NOT per
+	// row — see the package doc for why.
+	TopicDataIngest = "data.ingest.v1"
 )
 
 // Package-level registry, all nil by default. WireTaps installs them; until then
 // every Publish* is a no-op.
 var (
-	lakeTap     *Tap
-	ingestTap   *Tap
-	suppressTap *Tap
+	lakeTap       *Tap
+	ingestTap     *Tap
+	suppressTap   *Tap
+	dataIngestTap *Tap
 
-	lakeGate     *FlagGate
-	ingestGate   *FlagGate
-	suppressGate *FlagGate
+	lakeGate       *FlagGate
+	ingestGate     *FlagGate
+	suppressGate   *FlagGate
+	dataIngestGate *FlagGate
 )
 
 // WireTaps installs the producer taps and their per-flow flag gates. It is called
@@ -59,6 +66,17 @@ func WireTaps(
 ) {
 	lakeTap, ingestTap, suppressTap = lake, ingest, suppress
 	lakeGate, ingestGate, suppressGate = lakeFlag, ingestFlag, suppressFlag
+}
+
+// WireDataIngestTap installs the FOURTH flow (data.ingest.v1) separately.
+//
+// It is a separate function on purpose: WireTaps' three-flow signature is
+// called from the boot wiring and asserted by publish_test.go, and widening it
+// would force every caller and test to change for a flow that is optional and
+// independently gated. Either argument may be nil — that leaves the flow a
+// permanent no-op, the dark default.
+func WireDataIngestTap(tap *Tap, flag *FlagGate) {
+	dataIngestTap, dataIngestGate = tap, flag
 }
 
 // gateOpen reports whether a flow may produce: the gate must be non-nil and
@@ -102,6 +120,16 @@ func PublishSuppressAdd(key string, value []byte) {
 	publish(suppressTap, suppressGate, TopicSuppression, key, value)
 }
 
+// PublishDataIngest mirrors one data-ingest OPERATION event onto
+// TopicDataIngest. No-op when unwired or when the produce_data_ingest flag is
+// OFF — which is exactly the REQ rollback lever (KAFKA_FLAG_PRODUCE_DATA_INGEST=0
+// / redis kafka:flag:produce_data_ingest 0): no events, and the dashboard falls
+// back to data_ingest_rollup. key is the dataset_id (partition affinity per
+// feed), or the op id when the operation has no dataset.
+func PublishDataIngest(key string, value []byte) {
+	publish(dataIngestTap, dataIngestGate, TopicDataIngest, key, value)
+}
+
 // FlowStats is a cheap read-only snapshot of one producer flow's wiring + flag
 // state. All fields are derived from package-level pointers with no I/O, so it
 // is safe to call on the /health hot path.
@@ -123,9 +151,10 @@ type ProducerSnapshot struct {
 	Failed   uint64 `json:"failed"`
 
 	// Per-flow wiring + flag state.
-	Lake     FlowStats `json:"lake"`
-	Ingest   FlowStats `json:"ingest"`
-	Suppress FlowStats `json:"suppress"`
+	Lake       FlowStats `json:"lake"`
+	Ingest     FlowStats `json:"ingest"`
+	Suppress   FlowStats `json:"suppress"`
+	DataIngest FlowStats `json:"data_ingest"`
 }
 
 // flowStats reads one tap/gate pair without touching the broker.
@@ -160,6 +189,11 @@ func ProducerStats() ProducerSnapshot {
 	s.Failed += f
 
 	s.Suppress, p, d, f = flowStats(suppressTap, suppressGate)
+	s.Produced += p
+	s.Dropped += d
+	s.Failed += f
+
+	s.DataIngest, p, d, f = flowStats(dataIngestTap, dataIngestGate)
 	s.Produced += p
 	s.Dropped += d
 	s.Failed += f

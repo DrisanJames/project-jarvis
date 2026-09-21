@@ -112,6 +112,34 @@ func SendQueueHealth() ConsumerSnapshot {
 	return ConsumerSnapshot{TaskID: TaskID()}
 }
 
+// dataIngestHealthProvider is the registered snapshot source for the
+// data.ingest.v1 counters consumer (REQ 2026-09-20). It is a SEPARATE pointer
+// from sendQueueHealthProvider on purpose: the send queue's liveness is an
+// alerting input for the send path (OutboxSelfCheck) and must never be
+// overwritten by a dashboard consumer that shares the process.
+var dataIngestHealthProvider atomic.Pointer[func() ConsumerSnapshot]
+
+// SetDataIngestHealthProvider registers the live snapshot source for the
+// data-ingest counters consumer. nil clears it (back to the never-ran zero).
+func SetDataIngestHealthProvider(fn func() ConsumerSnapshot) {
+	if fn == nil {
+		dataIngestHealthProvider.Store(nil)
+		return
+	}
+	dataIngestHealthProvider.Store(&fn)
+}
+
+// DataIngestHealth is THE read point for data.ingest.v1 consumer liveness,
+// rendered on /health.event_bus.consumers.data_ingest. Never blocks, never
+// touches the network. A zero snapshot means the consumer was never wired in
+// this process (Kafka dark, or no Redis) — NOT that it is wedged.
+func DataIngestHealth() ConsumerSnapshot {
+	if p := dataIngestHealthProvider.Load(); p != nil {
+		return (*p)()
+	}
+	return ConsumerSnapshot{TaskID: TaskID()}
+}
+
 // ParkedLagThreshold / ParkedHandleAge are the alert thresholds for
 // SendQueueParked. They are exported so the monitor and this package cannot
 // drift apart on what "parked" means.

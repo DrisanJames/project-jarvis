@@ -42,13 +42,15 @@ type eventBusHandle struct {
 
 	prod eventbus.Producer
 
-	lakeTap     *eventbus.Tap
-	ingestTap   *eventbus.Tap
-	suppressTap *eventbus.Tap
+	lakeTap       *eventbus.Tap
+	ingestTap     *eventbus.Tap
+	suppressTap   *eventbus.Tap
+	dataIngestTap *eventbus.Tap
 
-	lakeGate     *eventbus.FlagGate
-	ingestGate   *eventbus.FlagGate
-	suppressGate *eventbus.FlagGate
+	lakeGate       *eventbus.FlagGate
+	ingestGate     *eventbus.FlagGate
+	suppressGate   *eventbus.FlagGate
+	dataIngestGate *eventbus.FlagGate
 
 	// sendRouteGate (REQ-090) is the RUNTIME kill switch for send routing:
 	// `SET kafka:flag:send_route 0` in Redis turns routing off fleet-wide within
@@ -59,13 +61,20 @@ type eventBusHandle struct {
 	ingestConsumer *consumers.IngestShadowConsumer
 	suppProjector  *consumers.SuppressionProjector
 	lakeSink       *consumers.LakeShadowSink
+	// dataIngestConsumer (REQ 2026-09-20) applies data.ingest.v1 operation
+	// events to the Redis counters behind the Data Ingest dashboard. Only
+	// constructed when rdb != nil — with no Redis there is nowhere to count,
+	// and a consumer that commits offsets over uncounted records would lose the
+	// day silently.
+	dataIngestConsumer *consumers.DataIngestCountersConsumer
 
 	// running flags reflect whether each consumer's Start actually launched a
 	// group-consumer goroutine (true only when the bus is enabled and, for the
 	// lake sink, the shadow Firehose stream is set).
-	ingestRunning bool
-	suppRunning   bool
-	lakeRunning   bool
+	ingestRunning     bool
+	suppRunning       bool
+	lakeRunning       bool
+	dataIngestRunning bool
 
 	suppMode string
 
@@ -129,11 +138,15 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 			{Name: eventbus.TopicIngest, Partitions: 12},
 			{Name: eventbus.TopicLake + ".dlq", Partitions: 3},
 			{Name: eventbus.TopicIngest + ".dlq", Partitions: 3},
+			// data.ingest.v1 (REQ 2026-09-20): 12 partitions keyed by
+			// dataset_id so one feed's counters apply in order.
+			{Name: eventbus.TopicDataIngest, Partitions: 12},
+			{Name: eventbus.TopicDataIngest + ".dlq", Partitions: 3},
 		}
 		if err := eventbus.EnsureTopics(ctx, cfg, specs); err != nil {
 			log.Printf("[eventbus] EnsureTopics: %v (producer may fail until topics exist)", err)
 		} else {
-			log.Println("[eventbus] topics ensured (evt.lake.v1, evt.ingest.v1, + .dlq)")
+			log.Println("[eventbus] topics ensured (evt.lake.v1, evt.ingest.v1, data.ingest.v1, + .dlq)")
 		}
 	}
 
@@ -142,12 +155,14 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 	h.lakeTap = eventbus.NewTap(prod)
 	h.ingestTap = eventbus.NewTap(prod)
 	h.suppressTap = eventbus.NewTap(prod)
+	h.dataIngestTap = eventbus.NewTap(prod)
 
 	// interval 0 => FlagGate uses DefaultFlagPollInterval (cfg.FlagPollInterval
 	// is honored by the consumers' own Config; the gates poll at the default).
 	h.lakeGate = eventbus.NewFlagGate("produce_lake", rdb, cfg.FlagPollInterval)
 	h.ingestGate = eventbus.NewFlagGate("produce_ingest", rdb, cfg.FlagPollInterval)
 	h.suppressGate = eventbus.NewFlagGate("produce_suppress", rdb, cfg.FlagPollInterval)
+	h.dataIngestGate = eventbus.NewFlagGate("produce_data_ingest", rdb, cfg.FlagPollInterval)
 
 	// Install the package-level taps/gates so the hot-path Publish* calls become
 	// live (each still gated by its own FlagGate, default OFF).
@@ -155,6 +170,9 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 		h.lakeTap, h.ingestTap, h.suppressTap,
 		h.lakeGate, h.ingestGate, h.suppressGate,
 	)
+	// The 4th flow is installed separately so WireTaps' three-flow signature
+	// (and publish_test.go's assertions on it) stay untouched.
+	eventbus.WireDataIngestTap(h.dataIngestTap, h.dataIngestGate)
 
 	// REQ-090: the send-path routing kill switch. Its ENV layer is the routing
 	// predicate itself (sendqueue.SendRouteEnvConfigured), so:
@@ -173,10 +191,11 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 	h.lakeGate.Start()
 	h.ingestGate.Start()
 	h.suppressGate.Start()
+	h.dataIngestGate.Start()
 	h.sendRouteGate.Start()
 
-	log.Printf("[eventbus] producer taps wired (lake/ingest/suppress) — each flag-gated, defaults OFF (lake=%v ingest=%v suppress=%v)",
-		h.lakeGate.Enabled(), h.ingestGate.Enabled(), h.suppressGate.Enabled())
+	log.Printf("[eventbus] producer taps wired (lake/ingest/suppress/data_ingest) — each flag-gated, defaults OFF (lake=%v ingest=%v suppress=%v data_ingest=%v)",
+		h.lakeGate.Enabled(), h.ingestGate.Enabled(), h.suppressGate.Enabled(), h.dataIngestGate.Enabled())
 
 	// ── Consumers (shadow / dark passengers) ──
 	// Each consumer's Start is a no-op when the bus is disabled; here the bus is
@@ -254,7 +273,37 @@ func wireEventBus(ctx context.Context, db *sql.DB, rdb *redis.Client) *eventBusH
 		}
 	}
 
-	// 4) SK-4 Kafka-PRIMARY send queue (DARK BY DEFAULT). Only wires when the
+	// 4) Data Ingest counters consumer (REQ 2026-09-20). Requires Redis: the
+	//    counters ARE the sink. With rdb nil we do not start it — committing
+	//    offsets over records nothing counted would lose the day with no error
+	//    anywhere, which is precisely the failure mode /health exists to show.
+	if rdb == nil {
+		log.Println("[eventbus] data-ingest counters consumer NOT started (no redis client) — dashboard reads data_ingest_rollup only")
+	} else {
+		c := consumers.NewDataIngestCountersConsumer(rdb, eventbus.Config{
+			Brokers:          cfg.Brokers,
+			ClientID:         cfg.ClientID,
+			SASLMechanism:    cfg.SASLMechanism,
+			TLS:              cfg.TLS,
+			Group:            "ignite-data-ingest-counters",
+			Topics:           []string{eventbus.TopicDataIngest},
+			FlagPollInterval: cfg.FlagPollInterval,
+		}).WithStatHook(func(applied, duplicates, failed uint64) {
+			setDataIngestCounters(applied, duplicates, failed)
+		})
+		if err := c.Start(ctx); err != nil {
+			log.Printf("[eventbus] data-ingest counters consumer start failed: %v", err)
+		} else {
+			h.dataIngestConsumer = c
+			h.dataIngestRunning = true
+			// LIVE liveness, not a boot boolean (see internal/eventbus/health.go).
+			eventbus.SetDataIngestHealthProvider(c.Snapshot)
+			log.Printf("[eventbus] data-ingest counters consumer started (group=ignite-data-ingest-counters, topic=%s, task_id=%s)",
+				eventbus.TopicDataIngest, eventbus.TaskID())
+		}
+	}
+
+	// 5) SK-4 Kafka-PRIMARY send queue (DARK BY DEFAULT). Only wires when the
 	//    operator has opted in via env (worker.KafkaSendQueueEnabled): a routing
 	//    allowlist (KAFKA_SEND_QUEUE_WAVES / KAFKA_SEND_QUEUE_CAMPAIGNS), or
 	//    KAFKA_SEND_QUEUE_ALL, or KAFKA_SEND_QUEUE_ENABLED. With all unset, this
@@ -385,6 +434,10 @@ func (h *eventBusHandle) Stop() {
 	if h.lakeSink != nil {
 		h.lakeSink.Stop()
 	}
+	if h.dataIngestConsumer != nil {
+		h.dataIngestConsumer.Stop()
+		eventbus.SetDataIngestHealthProvider(nil)
+	}
 	if h.lakeGate != nil {
 		h.lakeGate.Stop()
 	}
@@ -393,6 +446,9 @@ func (h *eventBusHandle) Stop() {
 	}
 	if h.suppressGate != nil {
 		h.suppressGate.Stop()
+	}
+	if h.dataIngestGate != nil {
+		h.dataIngestGate.Stop()
 	}
 	if h.sendRouteGate != nil {
 		// Uninstall before stopping so no gated path reads a frozen value.
@@ -409,6 +465,9 @@ func (h *eventBusHandle) Stop() {
 	}
 	if h.suppressTap != nil {
 		_ = h.suppressTap.Close()
+	}
+	if h.dataIngestTap != nil {
+		_ = h.dataIngestTap.Close()
 	}
 }
 
@@ -435,6 +494,24 @@ var (
 	sendQueueFailed     atomic.Uint64
 	sendQueueDLQRecords atomic.Uint64
 )
+
+// dataIngestApplied/Duplicates/Failed are the data-ingest counters consumer's
+// running totals for THIS task; the /health snapshot reads them atomically.
+// Package-level for the same reason the send-queue counters are: the stat-hook
+// closure outlives one wireEventBus call and there is one bus per process.
+var (
+	dataIngestApplied    atomic.Uint64
+	dataIngestDuplicates atomic.Uint64
+	dataIngestFailed     atomic.Uint64
+)
+
+// setDataIngestCounters stores the latest running counts (monotonic totals, so
+// a plain Store is correct).
+func setDataIngestCounters(applied, duplicates, failed uint64) {
+	dataIngestApplied.Store(applied)
+	dataIngestDuplicates.Store(duplicates)
+	dataIngestFailed.Store(failed)
+}
 
 // setSendQueueCounters stores the latest running counts (the hook passes
 // monotonic totals, so a plain Store is correct).
@@ -463,11 +540,15 @@ func setEventBusStatus(h *eventBusHandle) {
 				Lake:     api.EventBusFlowStatus{Wired: ps.Lake.Wired, FlagOn: ps.Lake.FlagOn},
 				Ingest:   api.EventBusFlowStatus{Wired: ps.Ingest.Wired, FlagOn: ps.Ingest.FlagOn},
 				Suppress: api.EventBusFlowStatus{Wired: ps.Suppress.Wired, FlagOn: ps.Suppress.FlagOn},
+				DataIngest: api.EventBusFlowStatus{
+					Wired: ps.DataIngest.Wired, FlagOn: ps.DataIngest.FlagOn,
+				},
 			},
 			Flags: api.EventBusFlags{
-				Lake:     ps.Lake.FlagOn,
-				Ingest:   ps.Ingest.FlagOn,
-				Suppress: ps.Suppress.FlagOn,
+				Lake:       ps.Lake.FlagOn,
+				Ingest:     ps.Ingest.FlagOn,
+				Suppress:   ps.Suppress.FlagOn,
+				DataIngest: ps.DataIngest.FlagOn,
 				// REQ-090: reads the live gate (Redis-backed), or true when no
 				// gate is installed — "open" is the honest answer there, since
 				// nothing is vetoing routing.
@@ -478,11 +559,36 @@ func setEventBusStatus(h *eventBusHandle) {
 				SuppressionRunning: h.suppRunning,
 				SuppressionMode:    h.suppMode,
 				LakeRunning:        h.lakeRunning,
+				DataIngest:         dataIngestStatus(h),
 			},
 			SendQueue: sendQueueStatus(h),
 		}
 		return st
 	})
+}
+
+// dataIngestStatus renders /health.event_bus.consumers.data_ingest from the
+// LIVE consumer snapshot plus this task's applied/duplicate counters. Boot
+// booleans are deliberately absent: running comes from the Run loop.
+func dataIngestStatus(h *eventBusHandle) api.EventBusDataIngestStatus {
+	snap := eventbus.DataIngestHealth()
+	st := api.EventBusDataIngestStatus{
+		Running:    snap.Running,
+		LagMax:     snap.LagMax,
+		LagKnown:   snap.LagKnown,
+		DLQRecords: snap.DLQRecords,
+		Applied:    dataIngestApplied.Load(),
+		Duplicates: dataIngestDuplicates.Load(),
+		Failed:     dataIngestFailed.Load(),
+		TaskID:     snap.TaskID,
+	}
+	if !snap.LastPollAt.IsZero() {
+		st.LastPollAt = snap.LastPollAt.UTC().Format(time.RFC3339)
+	}
+	if !snap.LastHandledAt.IsZero() {
+		st.LastHandledAt = snap.LastHandledAt.UTC().Format(time.RFC3339)
+	}
+	return st
 }
 
 // sendQueueStatus renders the SK-4 send-queue block from the LIVE consumer

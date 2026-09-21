@@ -31,6 +31,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -221,7 +222,12 @@ func csvValidEmail(raw string) (string, bool) {
 
 // csvUpload is one parsed multipart request: the CSV reader plus form values.
 type csvUpload struct {
-	csv      *csv.Reader
+	csv *csv.Reader
+	// body is the SAME BOM-stripped buffered reader csv wraps, exposed so
+	// HandleCommit can hand it to commitCSVReader (which builds its own
+	// identically-configured csv.Reader — see newPartnerCSVReader). Only one
+	// of csv / body is consumed per request.
+	body     io.Reader
 	closeFn  func()
 	dataset  string
 	mapping  string
@@ -233,6 +239,19 @@ type csvUpload struct {
 	sourceRef   string // where it came from: supplier, SFTP path, email thread
 	offerIntent string // the offer this drop was acquired for, e.g. wcl-heloc
 	notes       string
+}
+
+// newPartnerCSVReader is the ONE csv.Reader configuration both doors use:
+// ragged rows tolerated (a short row reads as empty cells, never a hard
+// error), lazy quotes, leading space trimmed. Factored so the multipart door
+// (openCSVUpload) and the S3-object door (commitCSVReader) parse byte-
+// identically.
+func newPartnerCSVReader(r io.Reader) *csv.Reader {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	cr.LazyQuotes = true
+	cr.TrimLeadingSpace = true
+	return cr
 }
 
 // openCSVUpload enforces the byte cap and extracts file + fields. The file
@@ -267,10 +286,7 @@ func openCSVUpload(w http.ResponseWriter, r *http.Request) (*csvUpload, bool) {
 	if peek, _ := br.Peek(3); len(peek) == 3 && peek[0] == 0xEF && peek[1] == 0xBB && peek[2] == 0xBF {
 		_, _ = br.Discard(3)
 	}
-	cr := csv.NewReader(br)
-	cr.FieldsPerRecord = -1
-	cr.LazyQuotes = true
-	cr.TrimLeadingSpace = true
+	cr := newPartnerCSVReader(br)
 	// Operator metadata: capped so a pasted document can't bloat every batch
 	// row's ingest_metadata.
 	meta := func(field string, max int) string {
@@ -282,6 +298,7 @@ func openCSVUpload(w http.ResponseWriter, r *http.Request) (*csvUpload, bool) {
 	}
 	return &csvUpload{
 		csv:         cr,
+		body:        br,
 		closeFn:     func() { file.Close() },
 		dataset:     datasetID,
 		mapping:     strings.TrimSpace(r.FormValue("mapping")),
@@ -504,28 +521,146 @@ func (s *PartnerCSVIngestService) HandleCommit(w http.ResponseWriter, r *http.Re
 		respondError(w, http.StatusBadRequest, "mapping must be a JSON object of {target: column_index}")
 		return
 	}
-	emailCol, hasEmail := mapping["email"]
-	if !hasEmail || emailCol < 0 {
-		respondError(w, http.StatusBadRequest, "mapping must map the 'email' target to a column")
+
+	actor := actorFromRequest(r)
+	// Batch metadata is identical for every chunk of one upload: build it once.
+	// Operator fields are omitted when blank rather than stamped empty, so a
+	// reader can tell "not provided" from "provided as empty".
+	ingestMeta := map[string]interface{}{
+		"source":      "csv_upload",
+		"uploaded_by": actor,
+		"filename":    up.filename,
+	}
+	for k, v := range map[string]string{
+		"label":        up.label,
+		"source_ref":   up.sourceRef,
+		"offer_intent": up.offerIntent,
+		"notes":        up.notes,
+	} {
+		if v != "" {
+			ingestMeta[k] = v
+		}
+	}
+
+	res, err := s.commitCSVReader(r.Context(), up.body, csvCommitTarget{
+		DatasetID:   up.dataset,
+		Ident:       ident,
+		ContentType: "text/csv",
+		ReceivedAt:  time.Now().UTC(),
+	}, mapping, ingestMeta)
+	if err != nil {
+		writeCSVCommitError(w, err)
 		return
 	}
-	mappedCols := map[int]bool{}
-	for target, col := range mapping {
-		if col < 0 {
-			respondError(w, http.StatusBadRequest, "column indexes must be >= 0")
+
+	writeAuditLog(r.Context(), s.db, actor, "csv_upload_commit", "partner_dataset", up.dataset, nil, map[string]interface{}{
+		"filename": up.filename, "records": res.Records,
+		"skipped_invalid": res.SkippedInvalid, "batches": len(res.BatchIDs),
+	})
+
+	respondJSON(w, http.StatusAccepted, map[string]interface{}{
+		"organization_id": orgID,
+		"dataset_id":      up.dataset,
+		"dataset_name":    ident.DatasetName,
+		"batch_ids":       res.BatchIDs,
+		"batches":         len(res.BatchIDs),
+		"records":         res.Records,
+		"skipped_invalid": res.SkippedInvalid,
+		"index_deferred":  res.IndexDeferred,
+		"message":         "batches accepted; the slicer + EO validator process them asynchronously (same path as the partner API)",
+	})
+}
+
+// ── the shared commit core ──────────────────────────────────────────────────
+//
+// commitCSVReader is the body of HandleCommit with the multipart plumbing
+// lifted out: it streams ANY CSV reader (a multipart upload, or an S3
+// GetObject body — data_ingest_static.go's register door) through the
+// operator-confirmed mapping into canonical ingestRecords and persists them
+// in ≤partnerCSVMaxRecordsPerBatch chunks through persistPartnerBatch. It
+// writes nothing to an http.ResponseWriter; failures come back as
+// *csvCommitError carrying the exact status + payload HandleCommit used to
+// write inline, so the multipart door's responses are unchanged.
+
+// csvCommitTarget is the destination of one commit: the resolved dataset plus
+// the per-upload constants stamped on every chunk.
+type csvCommitTarget struct {
+	DatasetID   string
+	Ident       csvDatasetIdent
+	ContentType string
+	ReceivedAt  time.Time
+}
+
+// csvCommitResult is what a completed commit produced.
+type csvCommitResult struct {
+	Records        int64
+	SkippedInvalid int64
+	BatchIDs       []string
+	IndexDeferred  int
+}
+
+// csvCommitError carries an HTTP status out of the commit core. Payload, when
+// set, is rendered verbatim (the mid-commit S3 failure body); otherwise
+// Message is rendered as the standard {"error": …}.
+type csvCommitError struct {
+	Status  int
+	Message string
+	Payload map[string]interface{}
+}
+
+func (e *csvCommitError) Error() string { return e.Message }
+
+func writeCSVCommitError(w http.ResponseWriter, err error) {
+	var ce *csvCommitError
+	if errors.As(err, &ce) {
+		if ce.Payload != nil {
+			respondJSON(w, ce.Status, ce.Payload)
 			return
 		}
+		respondError(w, ce.Status, ce.Message)
+		return
+	}
+	respondError(w, http.StatusInternalServerError, err.Error())
+}
+
+// validateCSVMapping enforces the mapping contract: an email column is
+// mandatory, indexes are non-negative, and every target is either a canonical
+// ingestRecord field or a "metadata.<key>" sink.
+func validateCSVMapping(mapping map[string]int) (mappedCols map[int]bool, err error) {
+	emailCol, hasEmail := mapping["email"]
+	if !hasEmail || emailCol < 0 {
+		return nil, &csvCommitError{Status: http.StatusBadRequest, Message: "mapping must map the 'email' target to a column"}
+	}
+	mappedCols = map[int]bool{}
+	for target, col := range mapping {
+		if col < 0 {
+			return nil, &csvCommitError{Status: http.StatusBadRequest, Message: "column indexes must be >= 0"}
+		}
 		if target != "email" && csvFieldSetters[target] == nil && !strings.HasPrefix(target, "metadata.") {
-			respondError(w, http.StatusBadRequest, "unknown mapping target: "+target)
-			return
+			return nil, &csvCommitError{Status: http.StatusBadRequest, Message: "unknown mapping target: " + target}
 		}
 		mappedCols[col] = true
 	}
+	return mappedCols, nil
+}
 
-	first, err := up.csv.Read()
+func (s *PartnerCSVIngestService) commitCSVReader(
+	ctx context.Context,
+	body io.Reader,
+	target csvCommitTarget,
+	mapping map[string]int,
+	ingestMeta map[string]interface{},
+) (csvCommitResult, error) {
+	var out csvCommitResult
+	mappedCols, mapErr := validateCSVMapping(mapping)
+	if mapErr != nil {
+		return out, mapErr
+	}
+	cr := newPartnerCSVReader(body)
+
+	first, err := cr.Read()
 	if err != nil {
-		respondError(w, http.StatusBadRequest, "file is empty or not parseable CSV")
-		return
+		return out, &csvCommitError{Status: http.StatusBadRequest, Message: "file is empty or not parseable CSV"}
 	}
 	hasHeader := csvLooksLikeHeader(first)
 	// metadata keys for UNMAPPED columns: normalized header, or col_<n>.
@@ -583,8 +718,6 @@ func (s *PartnerCSVIngestService) HandleCommit(w http.ResponseWriter, r *http.Re
 		return normalizeRecord(rec) // same acceptance test as the API door
 	}
 
-	actor := actorFromRequest(r)
-	receivedAt := time.Now().UTC()
 	var (
 		records        int64
 		skippedInvalid int64
@@ -592,115 +725,87 @@ func (s *PartnerCSVIngestService) HandleCommit(w http.ResponseWriter, r *http.Re
 		indexDeferred  int
 		chunk          = make([]ingestRecord, 0, partnerCSVMaxRecordsPerBatch)
 	)
-	// Batch metadata is identical for every chunk of one upload: build it once.
-	// Operator fields are omitted when blank rather than stamped empty, so a
-	// reader can tell "not provided" from "provided as empty".
-	ingestMeta := map[string]interface{}{
-		"source":      "csv_upload",
-		"uploaded_by": actor,
-		"filename":    up.filename,
-	}
-	for k, v := range map[string]string{
-		"label":        up.label,
-		"source_ref":   up.sourceRef,
-		"offer_intent": up.offerIntent,
-		"notes":        up.notes,
-	} {
-		if v != "" {
-			ingestMeta[k] = v
-		}
-	}
-	flush := func() bool {
+	flush := func() error {
 		if len(chunk) == 0 {
-			return true
+			return nil
 		}
 		batchID := uuid.New().String()
-		_, _, deferred, err := persistPartnerBatch(r.Context(), s.db, s.s3, partnerBatchPersistInput{
+		_, _, deferred, err := persistPartnerBatch(ctx, s.db, s.s3, partnerBatchPersistInput{
 			BatchID:     batchID,
-			PartnerID:   ident.PartnerID,
-			PartnerSlug: ident.PartnerSlug,
-			DatasetID:   up.dataset,
-			DatasetSlug: ident.DatasetSlug,
-			Vertical:    ident.Vertical,
-			ReceivedAt:  receivedAt,
-			ContentType: "text/csv",
+			PartnerID:   target.Ident.PartnerID,
+			PartnerSlug: target.Ident.PartnerSlug,
+			DatasetID:   target.DatasetID,
+			DatasetSlug: target.Ident.DatasetSlug,
+			Vertical:    target.Ident.Vertical,
+			ReceivedAt:  target.ReceivedAt,
+			ContentType: target.ContentType,
 			Records:     chunk,
-			IngestMeta: ingestMeta,
+			IngestMeta:  ingestMeta,
 		})
 		if err != nil {
 			// Batches already flushed stay flushed (each is independently
 			// slicer-visible); report how far we got rather than pretending
 			// nothing happened.
-			respondJSON(w, http.StatusBadGateway, map[string]interface{}{
-				"error":           "S3 upload failed mid-commit — earlier batches persisted, remainder NOT uploaded; fix and re-upload the remainder only",
-				"batch_ids":       batchIDs,
-				"records":         records - int64(len(chunk)),
-				"skipped_invalid": skippedInvalid,
-			})
-			return false
+			return &csvCommitError{
+				Status:  http.StatusBadGateway,
+				Message: "S3 upload failed mid-commit",
+				Payload: map[string]interface{}{
+					"error":           "S3 upload failed mid-commit — earlier batches persisted, remainder NOT uploaded; fix and re-upload the remainder only",
+					"batch_ids":       batchIDs,
+					"records":         records - int64(len(chunk)),
+					"skipped_invalid": skippedInvalid,
+				},
+			}
 		}
 		if deferred {
 			indexDeferred++
 		}
 		batchIDs = append(batchIDs, batchID)
 		chunk = chunk[:0]
-		return true
+		return nil
 	}
 
-	process := func(row []string) bool {
+	process := func(row []string) error {
 		rec, ok := buildRecord(row)
 		if !ok {
 			skippedInvalid++
-			return true
+			return nil
 		}
 		chunk = append(chunk, rec)
 		records++
 		if len(chunk) >= partnerCSVMaxRecordsPerBatch {
 			return flush()
 		}
-		return true
+		return nil
 	}
 
 	if !hasHeader {
-		if !process(first) {
-			return
+		if err := process(first); err != nil {
+			return out, err
 		}
 	}
 	for {
-		row, err := up.csv.Read()
+		row, err := cr.Read()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			respondError(w, http.StatusBadRequest, "CSV parse error mid-file: "+err.Error())
-			return
+			return out, &csvCommitError{Status: http.StatusBadRequest, Message: "CSV parse error mid-file: " + err.Error()}
 		}
-		if !process(row) {
-			return
+		if err := process(row); err != nil {
+			return out, err
 		}
 	}
-	if !flush() {
-		return
+	if err := flush(); err != nil {
+		return out, err
 	}
 	if records == 0 {
-		respondError(w, http.StatusBadRequest, "no valid records — every row's email column was empty or invalid")
-		return
+		return out, &csvCommitError{Status: http.StatusBadRequest, Message: "no valid records — every row's email column was empty or invalid"}
 	}
 
-	writeAuditLog(r.Context(), s.db, actor, "csv_upload_commit", "partner_dataset", up.dataset, nil, map[string]interface{}{
-		"filename": up.filename, "records": records,
-		"skipped_invalid": skippedInvalid, "batches": len(batchIDs),
-	})
-
-	respondJSON(w, http.StatusAccepted, map[string]interface{}{
-		"organization_id": orgID,
-		"dataset_id":      up.dataset,
-		"dataset_name":    ident.DatasetName,
-		"batch_ids":       batchIDs,
-		"batches":         len(batchIDs),
-		"records":         records,
-		"skipped_invalid": skippedInvalid,
-		"index_deferred":  indexDeferred,
-		"message":         "batches accepted; the slicer + EO validator process them asynchronously (same path as the partner API)",
-	})
+	out.Records = records
+	out.SkippedInvalid = skippedInvalid
+	out.BatchIDs = batchIDs
+	out.IndexDeferred = indexDeferred
+	return out, nil
 }

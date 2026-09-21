@@ -12780,6 +12780,94 @@ END $$`},
 	// tables only, nothing on the send path (content_desk_migrations.go).
 	migrations = append(migrations, contentDeskMigrations...)
 
+	// ── Data Ingest dashboard (REQ 2026-09-20, U1) ──────────────────────────
+	// Three ADD COLUMN IF NOT EXISTS on a SMALL table (partner_inbound_batches,
+	// not partitioned, thousands of rows) + two brand-new empty tables. Every
+	// statement is catalog-idempotent and O(1): nothing here rewrites a row, so
+	// all five fit the 5s slice with room to spare. There is deliberately NO
+	// backfill UPDATE — stamping supply_class on existing batches is the
+	// Python job's work (agents/jobs/data_ingest_backfill.py), chunked and
+	// ledgered, because a 5s migration slice is the wrong place for it and a
+	// timeout there is silently absent forever.
+	migrations = append(migrations, []struct {
+		name string
+		sql  string
+	}{
+		{"di_batches_supply_class", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS supply_class TEXT`},
+		{"di_batches_object_sha256", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS object_sha256 TEXT`},
+		{"di_batches_source_path", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS source_path TEXT`},
+		// The CHECK goes in via a DO block because ADD CONSTRAINT has no IF NOT
+		// EXISTS: a bare ADD would fail on every boot after the first and burn a
+		// permanent error line in the migration report. NOT VALID so the ALTER
+		// takes no full-table scan — existing NULL/unstamped rows stay legal
+		// until the backfill job stamps them, and NULL passes a CHECK anyway.
+		{"di_batches_supply_class_check", `DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'partner_inbound_batches_supply_class_chk'
+				  AND conrelid = 'partner_inbound_batches'::regclass
+			) THEN
+				ALTER TABLE partner_inbound_batches
+					ADD CONSTRAINT partner_inbound_batches_supply_class_chk
+					CHECK (supply_class IS NULL OR supply_class IN ('at_rest','dynamic','internal_transfer'))
+					NOT VALID;
+			END IF;
+		END $$`},
+		// data_ingest_rollup is the SETTLED truth the dashboard's 30-day series
+		// reads: one row per (day, class, dataset, transition, isp, source).
+		// source = counters | reconcile | backfill, and the readers prefer them
+		// in that order (reconcile > counters > backfill) — three sources can
+		// coexist for one day, which is why source is in the primary key.
+		// dataset_id NULL is the residual bucket (events with no dataset), so a
+		// plain SUM(n) over a day is exact and the per-feed breakdown is the
+		// same rows filtered to dataset_id IS NOT NULL.
+		{"di_create_data_ingest_rollup", `CREATE TABLE IF NOT EXISTS data_ingest_rollup (
+			day          DATE NOT NULL,
+			supply_class TEXT NOT NULL,
+			dataset_id   UUID,
+			lane         TEXT,
+			transition   TEXT NOT NULL,
+			isp          TEXT NOT NULL,
+			n            BIGINT NOT NULL,
+			source       TEXT NOT NULL DEFAULT 'counters',
+			computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`},
+		// Uniqueness is an EXPRESSION UNIQUE INDEX, not a PRIMARY KEY:
+		// Postgres rejects an expression inside a PK (a PK's columns must be
+		// plain columns), and dataset_id is nullable — NULLs are distinct in a
+		// unique index, so the COALESCE is what makes the residual row (no
+		// dataset) collapse to ONE row per (day, class, transition, isp,
+		// source) instead of one per re-run. POST /rollup's ON CONFLICT
+		// repeats this expression verbatim so inference matches this index.
+		{"di_uq_data_ingest_rollup", `CREATE UNIQUE INDEX IF NOT EXISTS uq_data_ingest_rollup
+			ON data_ingest_rollup (day, supply_class, (COALESCE(dataset_id, '00000000-0000-0000-0000-000000000000'::uuid)), transition, isp, source)`},
+		{"di_idx_data_ingest_rollup_day", `CREATE INDEX IF NOT EXISTS idx_data_ingest_rollup_day ON data_ingest_rollup (day, supply_class)`},
+		{"di_idx_data_ingest_rollup_dataset", `CREATE INDEX IF NOT EXISTS idx_data_ingest_rollup_dataset ON data_ingest_rollup (dataset_id, day)`},
+		// data_ingest_static_objects is the upload door's ledger: one row per
+		// object from presign to loaded. s3_key is UNIQUE so a re-register of
+		// the same object cannot mint a second batch. status:
+		// uploading|object|registered|loaded|failed.
+		{"di_create_data_ingest_static_objects", `CREATE TABLE IF NOT EXISTS data_ingest_static_objects (
+			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			s3_bucket       TEXT NOT NULL,
+			s3_key          TEXT NOT NULL UNIQUE,
+			sha256          TEXT,
+			bytes           BIGINT,
+			content_type    TEXT,
+			source          TEXT NOT NULL,
+			dataset_id      UUID,
+			declared        JSONB NOT NULL DEFAULT '{}'::jsonb,
+			uploaded_by     TEXT,
+			uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			registered_at   TIMESTAMPTZ,
+			batch_id        UUID,
+			status          TEXT NOT NULL DEFAULT 'uploading'
+		)`},
+		{"di_idx_static_objects_org_status", `CREATE INDEX IF NOT EXISTS idx_di_static_objects_org_status ON data_ingest_static_objects (organization_id, status, uploaded_at DESC)`},
+	}...)
+
 	// Use a dedicated connection with a short statement timeout so heavy
 	// backfills fail fast (~5s) instead of holding up startup for 30s each.
 	conn, connErr := db.Conn(context.Background())

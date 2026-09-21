@@ -22,6 +22,9 @@ type EventBusProducerStatus struct {
 	Lake     EventBusFlowStatus `json:"lake"`
 	Ingest   EventBusFlowStatus `json:"ingest"`
 	Suppress EventBusFlowStatus `json:"suppress"`
+	// DataIngest is the 4th producer flow (data.ingest.v1), independently
+	// gated by KAFKA_FLAG_PRODUCE_DATA_INGEST / redis kafka:flag:produce_data_ingest.
+	DataIngest EventBusFlowStatus `json:"data_ingest"`
 }
 
 // EventBusConsumerStatus reports whether each shadow consumer is running (and
@@ -31,6 +34,33 @@ type EventBusConsumerStatus struct {
 	SuppressionRunning bool   `json:"suppression_running"`
 	SuppressionMode    string `json:"suppression_mode,omitempty"`
 	LakeRunning        bool   `json:"lake_running"`
+	// DataIngest (REQ 2026-09-20) is the data.ingest.v1 counters consumer. It
+	// is a BLOCK, not a boolean, for the reason spelled out in
+	// internal/eventbus/health.go: a goroutine-was-launched flag reported
+	// healthy through a three-hour wedge on 2026-09-01.
+	DataIngest EventBusDataIngestStatus `json:"data_ingest"`
+}
+
+// EventBusDataIngestStatus is /health.event_bus.consumers.data_ingest: the
+// dashboard counters consumer's liveness plus what it has done on THIS task.
+// Read running with last_handled_at and lag_max together — running alone
+// cannot express "alive but counting nothing".
+type EventBusDataIngestStatus struct {
+	Running bool `json:"running"`
+	// LastPollAt / LastHandledAt are RFC3339 UTC, empty when it never happened.
+	LastPollAt    string `json:"last_poll_at,omitempty"`
+	LastHandledAt string `json:"last_handled_at,omitempty"`
+	// LagMax is fetch-derived (no kadm) and only meaningful alongside a fresh
+	// last_poll_at.
+	LagMax     int64  `json:"lag_max"`
+	LagKnown   bool   `json:"lag_known"`
+	DLQRecords uint64 `json:"dlq_records"`
+	// Applied / Duplicates are PER TASK. duplicates rising with applied flat is
+	// the normal replay signature, not an error.
+	Applied    uint64 `json:"applied"`
+	Duplicates uint64 `json:"duplicates"`
+	Failed     uint64 `json:"failed"`
+	TaskID     string `json:"task_id,omitempty"`
 }
 
 // EventBusSendQueueStatus (SK-4) reports the Kafka-primary send-queue routing:
@@ -129,6 +159,9 @@ type EventBusFlags struct {
 	Lake     bool `json:"lake"`
 	Ingest   bool `json:"ingest"`
 	Suppress bool `json:"suppress"`
+	// DataIngest (REQ 2026-09-20) is the dashboard's kill switch: false = no
+	// data.ingest.v1 events produced and the dashboard reads rollup only.
+	DataIngest bool `json:"data_ingest"`
 	// SendRoute (REQ-090) is the resolved "send_route" FlagGate: Redis
 	// kafka:flag:send_route when the key is present, else the send-routing env
 	// predicate. FALSE while routing envs are on means an operator has pulled the
