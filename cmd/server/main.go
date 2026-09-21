@@ -3065,8 +3065,38 @@ func ensureConcurrentIndexes(db *sql.DB) {
 		case err == nil && valid:
 			continue // already built
 		case err == nil && !valid:
+			// An index is ALSO invalid while a sibling task's CONCURRENTLY
+			// build is still running (2026-09-20 21:15 MT: task :1173 booted
+			// while :1172's build of idx_pib_dataset_received sat in "waiting
+			// for old snapshots"; the plain DROP INDEX below queued an ACCESS
+			// EXCLUSIVE behind it for the full 30s statement timeout, twice —
+			// once per task — which is the 2026-08-20 barricade shape). Skip
+			// when a build for this name is in flight; it will be valid or
+			// dropped by the time the next boot looks.
+			var building int
+			if perr := db.QueryRow(`
+				SELECT COUNT(*)::int FROM pg_stat_activity
+				WHERE state = 'active' AND pid <> pg_backend_pid()
+				  AND query ILIKE 'CREATE INDEX CONCURRENTLY%' || $1 || '%'`, spec.name).Scan(&building); perr == nil && building > 0 {
+				log.Printf("[ConcurrentIndex] %s is being built by another session — leaving it", spec.name)
+				continue
+			}
 			log.Printf("[ConcurrentIndex] %s exists but is INVALID (interrupted build) — dropping for rebuild", spec.name)
-			if _, dropErr := db.Exec(`DROP INDEX IF EXISTS ` + spec.name); dropErr != nil {
+			// DROP INDEX CONCURRENTLY never queues an ACCESS EXCLUSIVE ahead
+			// of the table's readers, and lock_timeout fails it fast instead
+			// of barricading; it cannot run inside a transaction, so it gets
+			// its own connection like the build itself.
+			dropConn, cerr := db.Conn(context.Background())
+			if cerr != nil {
+				log.Printf("[ConcurrentIndex] drop of invalid %s: connection failed: %v — skipping", spec.name, cerr)
+				continue
+			}
+			if _, serr := dropConn.ExecContext(context.Background(), `SET lock_timeout = '5s'; SET statement_timeout = 0`); serr != nil {
+				log.Printf("[ConcurrentIndex] drop of invalid %s: session setup failed: %v", spec.name, serr)
+			}
+			_, dropErr := dropConn.ExecContext(context.Background(), `DROP INDEX CONCURRENTLY IF EXISTS `+spec.name)
+			dropConn.Close()
+			if dropErr != nil {
 				log.Printf("[ConcurrentIndex] drop of invalid %s failed: %v — skipping", spec.name, dropErr)
 				continue
 			}
