@@ -1,29 +1,66 @@
 #!/usr/bin/env python3
-"""PMTA accounting pipe -> local spool only (v5, non-blocking).
+"""PMTA accounting pipe -> local spool only (v6, non-blocking, big batches).
 
-Canonical copy for OVH deploy — verify SHA256 matches sending-throttle rule after install.
+Canonical copy for OVH deploy — verify SHA256 after install.
 
-v5 removes the inline POST entirely. Webhook delivery is handled by pmta-acct-drainer.
+v6 vs v5 (2026-09-21, brain #3863 — accounting 13–25 h late because the spool
+held 5-record files and the drainer posted them one at a time):
+  * BATCH_SIZE 5 -> 250 records per spool file (env PMTA_ACCT_BATCH_SIZE).
+  * Time-bound flush: a partial batch is written after FLUSH_SECS (default 5 s,
+    env PMTA_ACCT_FLUSH_SECS) so a quiet box never holds records.
+  * stdin is read by a dedicated thread into a bounded queue, so PMTA's pipe
+    write is never stalled by a spool fsync. If the disk stalls, the queue fills
+    and the reader blocks — the same backpressure v5 applied, nothing worse.
+  * SIGTERM/SIGHUP/SIGINT flush the partial batch before exit 0.
 
-If you need inline POSTs for debugging, set PMTA_ACCT_FORWARD_INLINE=1.
+Everything else is the v5 contract, unchanged: SPOOL_DIR, LOG_FILE, atomic
+tmp+fsync+rename spool files named <epoch_ms>-<pid>-<hex8>.json holding a JSON
+list of dicts, FIELD_MAP, header detection, the 'domain' queue-name split,
+per-bounce log line, exit 0, and no inline POST unless PMTA_ACCT_FORWARD_INLINE=1.
+Webhook delivery is handled by pmta-acct-drainer (v2).
 """
 import csv
+import datetime
 import json
 import os
-import sys
-import time
-import uuid
+import queue
+import signal
 import socket
-import datetime
-import urllib.request
+import sys
+import threading
+import time
 import urllib.error
+import urllib.request
+import uuid
 
 WEBHOOK_URL = 'https://projectjarvis.io/engine/webhook'
-LOG_FILE = '/var/log/pmta/acct-forward.log'
-SPOOL_DIR = '/var/spool/pmta-forward'
+LOG_FILE = os.environ.get('PMTA_ACCT_LOG_FILE', '/var/log/pmta/acct-forward.log')
+SPOOL_DIR = os.environ.get('PMTA_ACCT_SPOOL_DIR', '/var/spool/pmta-forward')
 INLINE_POST = os.environ.get('PMTA_ACCT_FORWARD_INLINE') == '1'
 POST_TIMEOUT_SECS = 20
-BATCH_SIZE = 5
+
+
+def _env_int(name, default, lo, hi):
+    try:
+        v = int(os.environ.get(name, ''))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+def _env_float(name, default, lo, hi):
+    try:
+        v = float(os.environ.get(name, ''))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+BATCH_SIZE = _env_int('PMTA_ACCT_BATCH_SIZE', 250, 1, 5000)
+FLUSH_SECS = _env_float('PMTA_ACCT_FLUSH_SECS', 5.0, 0.1, 300.0)
+# Rows buffered between the stdin reader thread and the spool writer. When full
+# the reader blocks (PMTA sees pipe backpressure), so memory is bounded.
+READ_QUEUE_ROWS = _env_int('PMTA_ACCT_READ_QUEUE_ROWS', 50000, 1000, 1000000)
 
 FIELD_MAP = {
     'type': 'type',
@@ -45,6 +82,16 @@ FIELD_MAP = {
     'dsnAction': 'dsn_action',
 }
 
+DEFAULT_HEADER = [
+    'type', 'timeLogged', 'timeQueued', 'orig', 'rcpt', 'orcpt',
+    'dsnAction', 'dsnStatus', 'dsnDiag', 'dsnMta', 'bounceCat',
+    'srcType', 'srcMta', 'dlvType', 'dlvSourceIp',
+    'dlvDestinationIp', 'dlvEsmtpAvailable', 'dlvSize', 'vmta',
+    'jobId', 'envId', 'queue', 'vmtaPool'
+]
+
+_EOF = object()
+
 
 def log(msg):
     try:
@@ -54,18 +101,20 @@ def log(msg):
         pass
 
 
-def ensure_spool():
+def ensure_spool(spool_dir=None):
     try:
-        os.makedirs(SPOOL_DIR, exist_ok=True)
+        os.makedirs(spool_dir or SPOOL_DIR, exist_ok=True)
     except Exception as e:
         log(f'SPOOL MKDIR FAILED: {e}')
 
 
-def spool_write(batch):
+def spool_write(batch, spool_dir=None):
+    """Atomic write: tmp + fsync + rename. Returns the final path or None."""
     if not batch:
         return None
+    spool_dir = spool_dir or SPOOL_DIR
     name = f'{int(time.time()*1000)}-{os.getpid()}-{uuid.uuid4().hex[:8]}.json'
-    final = os.path.join(SPOOL_DIR, name)
+    final = os.path.join(spool_dir, name)
     tmp = final + '.tmp'
     try:
         with open(tmp, 'w') as f:
@@ -84,6 +133,7 @@ def spool_write(batch):
 
 
 def try_post_inline(batch, spool_path):
+    """Debug-only inline POST (PMTA_ACCT_FORWARD_INLINE=1). Unchanged from v5."""
     if not batch:
         return
     try:
@@ -117,25 +167,89 @@ def try_post_inline(batch, spool_path):
         log(f'SPOOLED-ON-ERROR: {type(e).__name__}: {e} records kept at {spool_path}')
 
 
-def main():
-    ensure_spool()
-    log(f'--- pipe invoked (inline_post={INLINE_POST}) ---')
+def map_row(row, header):
+    """CSV row -> webhook record dict, exactly as v5 did."""
+    record = {}
+    for i, val in enumerate(row):
+        if i < len(header):
+            mapped = FIELD_MAP.get(header[i])
+            if mapped:
+                record[mapped] = val
+    domain = record.get('domain', '')
+    if '/' in domain:
+        record['domain'] = domain.split('/')[0]
+    return record
+
+
+def _reader_thread(stream, q):
+    """Blocks on stdin, never on disk. Pushes CSV rows then the EOF sentinel."""
+    try:
+        for row in csv.reader(stream):
+            q.put(row)
+    except Exception as e:
+        log(f'READER ERROR: {type(e).__name__}: {e}')
+    finally:
+        q.put(_EOF)
+
+
+def run(stream, spool_dir=None, batch_size=None, flush_secs=None,
+        inline_post=None, clock=time.monotonic, stop_event=None):
+    """Batch rows from `stream` into spool files.
+
+    Flushes when the batch reaches `batch_size` OR when the oldest buffered
+    row is `flush_secs` old, whichever first; always flushes on EOF/stop.
+    Returns (files_written, total_rows, bounce_rows).
+    """
+    spool_dir = spool_dir or SPOOL_DIR
+    batch_size = batch_size or BATCH_SIZE
+    flush_secs = FLUSH_SECS if flush_secs is None else flush_secs
+    inline_post = INLINE_POST if inline_post is None else inline_post
+    stop_event = stop_event or threading.Event()
+
+    ensure_spool(spool_dir)
+    log(f'--- pipe invoked v6 (batch={batch_size} flush_secs={flush_secs} inline_post={inline_post}) ---')
+
+    q = queue.Queue(maxsize=READ_QUEUE_ROWS)
+    t = threading.Thread(target=_reader_thread, args=(stream, q), daemon=True)
+    t.start()
+
     header = None
-    reader = csv.reader(sys.stdin)
     batch = []
+    batch_started = None  # clock() when the first row of this batch arrived
+    files_written = 0
     total_rows = 0
     bounce_rows = 0
 
     def flush():
-        nonlocal batch
+        nonlocal batch, batch_started, files_written
         if not batch:
             return
-        spool_path = spool_write(batch)
-        if INLINE_POST:
+        spool_path = spool_write(batch, spool_dir)
+        if spool_path:
+            files_written += 1
+        if inline_post:
             try_post_inline(batch, spool_path)
         batch = []
+        batch_started = None
 
-    for row in reader:
+    eof = False
+    while not eof:
+        if stop_event.is_set():
+            break
+        # Bounded wait even with an empty batch so a stop signal is noticed.
+        timeout = flush_secs
+        if batch:
+            timeout = max(0.0, flush_secs - (clock() - batch_started))
+        try:
+            row = q.get(timeout=timeout)
+        except queue.Empty:
+            flush()
+            continue
+
+        if row is _EOF:
+            eof = True
+            break
+
         if not row or row[0].startswith('#'):
             continue
 
@@ -144,40 +258,46 @@ def main():
                 header = row
                 log(f'Header detected: {len(header)} columns')
                 continue
-            header = [
-                'type', 'timeLogged', 'timeQueued', 'orig', 'rcpt', 'orcpt',
-                'dsnAction', 'dsnStatus', 'dsnDiag', 'dsnMta', 'bounceCat',
-                'srcType', 'srcMta', 'dlvType', 'dlvSourceIp',
-                'dlvDestinationIp', 'dlvEsmtpAvailable', 'dlvSize', 'vmta',
-                'jobId', 'envId', 'queue', 'vmtaPool'
-            ]
+            header = DEFAULT_HEADER
             log(f'No header row, using default {len(header)} columns')
 
         total_rows += 1
-        record = {}
-        for i, val in enumerate(row):
-            if i < len(header):
-                key = header[i]
-                mapped = FIELD_MAP.get(key)
-                if mapped:
-                    record[mapped] = val
+        record = map_row(row, header)
 
-        domain = record.get('domain', '')
-        if '/' in domain:
-            record['domain'] = domain.split('/')[0]
-
-        rec_type = record.get('type', '')
-        if rec_type == 'b':
+        if record.get('type', '') == 'b':
             bounce_rows += 1
             log(f'BOUNCE: {record.get("recipient", "")} cat={record.get("bounce_cat", "")} status={record.get("dsn_status", "")}')
 
+        if not batch:
+            batch_started = clock()
         batch.append(record)
-        if len(batch) >= BATCH_SIZE:
+        if len(batch) >= batch_size:
             flush()
 
     flush()
-    log(f'--- done: {total_rows} rows ({bounce_rows} bounces) ---')
+    log(f'--- done: {total_rows} rows ({bounce_rows} bounces) in {files_written} files ---')
+    return files_written, total_rows, bounce_rows
+
+
+def main():
+    stop = threading.Event()
+
+    def _on_signal(signum, _frame):
+        log(f'signal {signum}: flushing and exiting')
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except Exception:
+            pass
+
+    try:
+        run(sys.stdin, stop_event=stop)
+    except Exception as e:
+        log(f'FATAL {type(e).__name__}: {e}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

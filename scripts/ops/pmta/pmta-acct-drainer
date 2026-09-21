@@ -1,32 +1,83 @@
 #!/usr/bin/env python3
-"""PMTA accounting spool drainer.
+"""PMTA accounting spool drainer v2 (2026-09-21, brain #3863).
 
-Reads JSON batches from /var/spool/pmta-forward (written by pmta-acct-forward v5)
-and POSTs them to the engine webhook. Timer-driven (see pmta-acct-drainer.timer).
+Reads JSON batch files from /var/spool/pmta-forward (written by
+pmta-acct-forward v5/v6: each file is a JSON list of record dicts, named
+<epoch_ms>-<pid>-<hex8>.json) and POSTs them to the engine webhook.
+Timer-driven (pmta-acct-drainer.timer: OnUnitActiveSec=30, unchanged).
+
+v1 on the boxes (verified from Server A 2026-09-21): sorted(glob(*.json)) of
+the whole spool every run, MAX_FILES_PER_RUN=100, one POST per 5-record
+sub-batch, 45 s timeout, 120 s budget, no lock, logs to acct-forward.log.
+That is 100 files x 5 records = 500 records per 30 s run per box, i.e. the
+~60k/h/box (~118k/h total) forwarding ceiling measured in brain #3863.
+
+v2 vs v1:
+  * Per run: up to DRAIN_MAX_FILES files (default 2,000), OLDEST FIRST
+    (filename epoch order, no stat calls), found with os.scandir + a bounded
+    heap so a 435k-file directory costs O(N) memory, not a full sorted list.
+  * Files are MERGED into POST bodies of up to DRAIN_MERGE_RECORDS records
+    (default 500). A file is never split across bodies; a single file larger
+    than the cap is posted alone. /engine/webhook accepts up to 10 MiB per
+    body (ingest.go:292) — 500 records is ~200 KB.
+  * DRAIN_WORKERS concurrent posters (default 8), DRAIN_POST_TIMEOUT 20 s.
+  * A file is unlinked ONLY when the body containing its records got HTTP 200.
+    Any other status, a timeout, or a connection error keeps every file of
+    that body for the next run. 503 ("accounting queue saturated") pauses all
+    workers DRAIN_503_BACKOFF s (default 5) and the run continues.
+  * Overlap guard: flock on DRAIN_LOCK_FILE; a second concurrent run logs and
+    exits 0 immediately.
+  * Bounded memory: bodies are built lazily and at most 2×workers are in
+    flight; nothing holds 2,000 parsed files at once.
+  * One summary line per run in /var/log/pmta/acct-drainer.log.
+  * Unparseable files are renamed *.corrupt (as v1). Nothing is dropped for
+    age any more (v1 deleted files older than 7 d) — age is reported instead.
 
 Deploy: sudo install -m755 pmta-acct-drainer /usr/local/bin/
 """
-import glob
+import datetime
+import fcntl
+import heapq
 import json
 import os
-import sys
-import time
+import queue
 import socket
-import datetime
-import urllib.request
+import sys
+import threading
+import time
 import urllib.error
+import urllib.request
 
-WEBHOOK_URL = 'https://projectjarvis.io/engine/webhook'
-LOG_FILE = '/var/log/pmta/acct-forward.log'
-SPOOL_DIR = '/var/spool/pmta-forward'
-POST_TIMEOUT_SECS = 45
-SUB_BATCH_SIZE = 5
-MAX_FILES_PER_RUN = 400
-MAX_AGE_SECONDS = 7 * 24 * 3600
-# Wall-clock budget per drainer run — raise with engine throughput tuning.
-MAX_RUN_SECONDS = 480
-# Prioritize recent files first (half of max files) to reduce dashboard lag during backlog.
-FRESH_SLICE_CAP = 150
+
+def _env_int(name, default, lo, hi):
+    try:
+        v = int(os.environ.get(name, ''))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+def _env_float(name, default, lo, hi):
+    try:
+        v = float(os.environ.get(name, ''))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+
+WEBHOOK_URL = os.environ.get('DRAIN_WEBHOOK_URL', 'https://projectjarvis.io/engine/webhook')
+SPOOL_DIR = os.environ.get('DRAIN_SPOOL_DIR', '/var/spool/pmta-forward')
+LOG_FILE = os.environ.get('DRAIN_LOG_FILE', '/var/log/pmta/acct-drainer.log')
+LOCK_FILE = os.environ.get('DRAIN_LOCK_FILE', '/run/lock/pmta-acct-drainer.lock')
+
+MAX_FILES_PER_RUN = _env_int('DRAIN_MAX_FILES', 2000, 1, 200000)
+MERGE_RECORDS = _env_int('DRAIN_MERGE_RECORDS', 500, 1, 20000)
+WORKERS = _env_int('DRAIN_WORKERS', 8, 1, 64)
+POST_TIMEOUT_SECS = _env_float('DRAIN_POST_TIMEOUT', 20.0, 1.0, 300.0)
+BACKOFF_503_SECS = _env_float('DRAIN_503_BACKOFF', 5.0, 0.0, 120.0)
+# Hard wall-clock budget so a run can never wedge the timer; the timer refires
+# 30 s after this process exits regardless of how much it drained.
+MAX_RUN_SECONDS = _env_float('DRAIN_MAX_RUN_SECONDS', 240.0, 5.0, 3600.0)
 
 
 def log(msg):
@@ -37,146 +88,324 @@ def log(msg):
         pass
 
 
-def ordered_spool_files(spool_dir):
-    """Two-pass ordering: newest mtime first (fresh stats), then oldest backfill."""
-    files = glob.glob(os.path.join(spool_dir, '*.json'))
-    if not files:
-        return []
-    fresh_cap = min(MAX_FILES_PER_RUN // 2, FRESH_SLICE_CAP)
-    by_mtime_desc = sorted(files, key=os.path.getmtime, reverse=True)
-    fresh = by_mtime_desc[:fresh_cap]
-    fresh_set = set(fresh)
-    backfill = sorted([f for f in files if f not in fresh_set], key=os.path.getmtime)
-    return fresh + backfill
+def take_lock(lock_file=None):
+    """Non-blocking exclusive flock. Returns the fd (keep it open) or None."""
+    lock_file = lock_file or LOCK_FILE
+    try:
+        os.makedirs(os.path.dirname(lock_file), exist_ok=True)
+        fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
+    except Exception as e:
+        log(f'LOCK OPEN FAILED {lock_file}: {e} (continuing unlocked)')
+        return -1
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, f'{os.getpid()}\n'.encode())
+    except Exception:
+        pass
+    return fd
 
 
-def post_batch(batch):
-    body = json.dumps(batch, separators=(',', ':')).encode('utf-8')
+def _spool_key(name):
+    """Sort key = leading epoch_ms from '<epoch_ms>-<pid>-<hex8>.json'.
+    Files not matching that shape sort after all epoch-named files."""
+    head = name.split('-', 1)[0]
+    try:
+        return (0, int(head), name)
+    except ValueError:
+        return (1, 0, name)
+
+
+def select_oldest(spool_dir, limit):
+    """Scan the spool once with os.scandir and keep only the `limit` oldest
+    *.json names (bounded heap). Returns (names_oldest_first, total_seen,
+    oldest_epoch_ms_or_None). Never materialises the whole listing."""
+    counter = {'total': 0, 'oldest': None}
+
+    def names_iter():
+        with os.scandir(spool_dir) as it:
+            for entry in it:
+                name = entry.name
+                if not name.endswith('.json'):
+                    continue
+                counter['total'] += 1
+                key = _spool_key(name)
+                if key[0] == 0 and (counter['oldest'] is None or key[1] < counter['oldest']):
+                    counter['oldest'] = key[1]
+                yield name
+
+    try:
+        # heapq.nsmallest keeps a heap of at most `limit` items while streaming.
+        names = heapq.nsmallest(limit, names_iter(), key=_spool_key)
+    except FileNotFoundError:
+        return [], 0, None
+    return names, counter['total'], counter['oldest']
+
+
+def read_file(path):
+    """Returns the list of records or None (file renamed .corrupt / vanished)."""
+    try:
+        with open(path, 'r') as f:
+            batch = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        log(f'BAD SPOOL FILE {path}: {e}')
+        try:
+            os.rename(path, path + '.corrupt')
+        except Exception:
+            pass
+        return None
+    if not isinstance(batch, list):
+        log(f'BAD SPOOL FILE {path}: not a list')
+        try:
+            os.rename(path, path + '.corrupt')
+        except Exception:
+            pass
+        return None
+    if not batch:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+        return None
+    return batch
+
+
+def build_bodies(paths, merge_records):
+    """Lazily yield (files, records) bodies. Files are read one at a time in
+    oldest-first order and merged until the next file would exceed the cap.
+    A file is never split; a file alone exceeding the cap is its own body."""
+    files, records = [], []
+    for path in paths:
+        recs = read_file(path)
+        if recs is None:
+            continue
+        if records and len(records) + len(recs) > merge_records:
+            yield files, records
+            files, records = [], []
+        files.append(path)
+        records.extend(recs)
+        if len(records) >= merge_records:
+            yield files, records
+            files, records = [], []
+    if files:
+        yield files, records
+
+
+def post_body(records, url=None, timeout=None):
+    """Returns (status_code, text). Raises socket.timeout / URLError on
+    transport failure. HTTP errors are returned as their status code."""
+    body = json.dumps(records, separators=(',', ':')).encode('utf-8')
     req = urllib.request.Request(
-        WEBHOOK_URL,
+        url or WEBHOOK_URL,
         data=body,
         headers={'Content-Type': 'application/json'},
         method='POST'
     )
-    resp = urllib.request.urlopen(req, timeout=POST_TIMEOUT_SECS)
-    return resp.status, resp.read().decode('utf-8', errors='replace')[:200]
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout or POST_TIMEOUT_SECS)
+        return resp.status, resp.read().decode('utf-8', errors='replace')[:200]
+    except urllib.error.HTTPError as e:
+        try:
+            text = e.read().decode('utf-8', errors='replace')[:200]
+        except Exception:
+            text = ''
+        return e.code, text
+
+
+class Stats:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.files_drained = 0
+        self.records_drained = 0
+        self.posts = 0
+        self.posts_ok = 0
+        self.failures = 0
+        self.s503 = 0
+        self.timeouts = 0
+        self.records_kept = 0
+        self.files_kept = 0
+
+
+class Drainer:
+    def __init__(self, url=None, workers=None, timeout=None, backoff_503=None,
+                 deadline=None, sleep=time.sleep, clock=time.monotonic):
+        self.url = url or WEBHOOK_URL
+        self.workers = workers or WORKERS
+        self.timeout = timeout or POST_TIMEOUT_SECS
+        self.backoff_503 = BACKOFF_503_SECS if backoff_503 is None else backoff_503
+        self.deadline = deadline
+        self.sleep = sleep
+        self.clock = clock
+        self.stats = Stats()
+        self._backoff_until = 0.0
+        self._backoff_lock = threading.Lock()
+        self._stop = threading.Event()
+
+    def _wait_backoff(self):
+        while True:
+            with self._backoff_lock:
+                remaining = self._backoff_until - self.clock()
+            if remaining <= 0:
+                return
+            self.sleep(min(remaining, 0.5))
+
+    def _trip_backoff(self):
+        with self._backoff_lock:
+            self._backoff_until = max(self._backoff_until, self.clock() + self.backoff_503)
+
+    def _handle(self, files, records):
+        st = self.stats
+        self._wait_backoff()
+        if self.deadline is not None and self.clock() > self.deadline:
+            with st.lock:
+                st.files_kept += len(files)
+                st.records_kept += len(records)
+            return
+        outcome = 'error'
+        try:
+            status, text = post_body(records, self.url, self.timeout)
+            if status == 200:
+                outcome = 'ok'
+            elif status == 503:
+                outcome = '503'
+                log(f'HTTP 503 ({len(records)} recs, {len(files)} files) backing off {self.backoff_503}s: {text}')
+                self._trip_backoff()
+            else:
+                log(f'HTTP {status} ({len(records)} recs, {len(files)} files) kept: {text}')
+        except socket.timeout:
+            outcome = 'timeout'
+            log(f'TIMEOUT after {self.timeout}s ({len(records)} recs, {len(files)} files) kept')
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, 'reason', None), socket.timeout) or 'timed out' in str(e).lower():
+                outcome = 'timeout'
+                log(f'TIMEOUT after {self.timeout}s ({len(records)} recs, {len(files)} files) kept')
+            else:
+                log(f'URLERROR {e} ({len(records)} recs, {len(files)} files) kept')
+        except Exception as e:
+            log(f'ERROR {type(e).__name__}: {e} ({len(records)} recs, {len(files)} files) kept')
+
+        unlinked = 0
+        if outcome == 'ok':
+            for p in files:
+                try:
+                    os.unlink(p)
+                    unlinked += 1
+                except FileNotFoundError:
+                    unlinked += 1
+                except Exception as e:
+                    log(f'UNLINK FAILED {p}: {e}')
+
+        with st.lock:
+            st.posts += 1
+            if outcome == 'ok':
+                st.posts_ok += 1
+                st.files_drained += unlinked
+                st.records_drained += len(records)
+            else:
+                st.failures += 1
+                st.files_kept += len(files)
+                st.records_kept += len(records)
+                if outcome == '503':
+                    st.s503 += 1
+                elif outcome == 'timeout':
+                    st.timeouts += 1
+
+    def _worker(self, q):
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            try:
+                self._handle(*item)
+            except Exception as e:
+                log(f'WORKER ERROR {type(e).__name__}: {e}')
+            finally:
+                q.task_done()
+
+    def drain(self, bodies):
+        """Feed lazily-built bodies to the worker pool. Bounded in-flight."""
+        q = queue.Queue(maxsize=max(1, 2 * self.workers))
+        threads = [threading.Thread(target=self._worker, args=(q,), daemon=True)
+                   for _ in range(self.workers)]
+        for t in threads:
+            t.start()
+        try:
+            for files, records in bodies:
+                if self.deadline is not None and self.clock() > self.deadline:
+                    with self.stats.lock:
+                        self.stats.files_kept += len(files)
+                        self.stats.records_kept += len(records)
+                    continue
+                q.put((files, records))
+        finally:
+            for _ in threads:
+                q.put(None)
+            for t in threads:
+                t.join()
+        return self.stats
+
+
+def run_once(spool_dir=None, url=None, max_files=None, merge_records=None,
+             workers=None, timeout=None, backoff_503=None, max_run_seconds=None,
+             lock_file=None):
+    """One drainer run. Returns the summary dict (also logged)."""
+    spool_dir = spool_dir or SPOOL_DIR
+    max_files = max_files or MAX_FILES_PER_RUN
+    merge_records = merge_records or MERGE_RECORDS
+    max_run_seconds = max_run_seconds or MAX_RUN_SECONDS
+    t0 = time.monotonic()
+
+    lock_fd = take_lock(lock_file)
+    if lock_fd is None:
+        log('overlap: another drainer run holds the lock; exiting 0')
+        return {'overlap': True}
+    try:
+        if not os.path.isdir(spool_dir):
+            return {'files': 0, 'remaining': 0}
+
+        names, total, oldest_ms = select_oldest(spool_dir, max_files)
+        if not names:
+            return {'files': 0, 'remaining': 0}
+        paths = [os.path.join(spool_dir, n) for n in names]
+
+        d = Drainer(url=url, workers=workers, timeout=timeout, backoff_503=backoff_503,
+                    deadline=t0 + max_run_seconds)
+        st = d.drain(build_bodies(paths, merge_records))
+
+        seconds = time.monotonic() - t0
+        remaining = max(0, total - st.files_drained)
+        oldest_age = None
+        if oldest_ms is not None:
+            oldest_age = int(time.time() - oldest_ms / 1000.0)
+        summary = {
+            'files': st.files_drained, 'records': st.records_drained,
+            'posts': st.posts, 'ok': st.posts_ok, 'failures': st.failures,
+            's503': st.s503, 'timeouts': st.timeouts,
+            'files_kept': st.files_kept, 'records_kept': st.records_kept,
+            'remaining': remaining, 'oldest_age_s': oldest_age,
+            'seconds': round(seconds, 2),
+        }
+        log('run complete: ' + ' '.join(f'{k}={v}' for k, v in summary.items()))
+        return summary
+    finally:
+        if lock_fd is not None and lock_fd >= 0:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
 
 
 def main():
-    if not os.path.isdir(SPOOL_DIR):
-        return 0
-
-    files_ordered = ordered_spool_files(SPOOL_DIR)
-    if not files_ordered:
-        return 0
-
-    shipped = 0
-    failed = 0
-    dropped_old = 0
-    now = time.time()
-    deadline = now + MAX_RUN_SECONDS
-
-    for path in files_ordered[:MAX_FILES_PER_RUN]:
-        if time.time() > deadline:
-            log(f'run budget exhausted at {shipped} shipped / {failed} failed; stopping')
-            break
-        try:
-            st = os.stat(path)
-        except FileNotFoundError:
-            continue
-
-        if now - st.st_mtime > MAX_AGE_SECONDS:
-            try:
-                os.unlink(path)
-                dropped_old += 1
-            except Exception:
-                pass
-            continue
-
-        try:
-            with open(path, 'r') as f:
-                batch = json.load(f)
-        except Exception as e:
-            log(f'BAD SPOOL FILE {path}: {e}')
-            try:
-                os.rename(path, path + '.corrupt')
-            except Exception:
-                pass
-            continue
-
-        if not isinstance(batch, list) or not batch:
-            try:
-                os.unlink(path)
-            except Exception:
-                pass
-            continue
-
-        sub_batches = [batch[i:i + SUB_BATCH_SIZE] for i in range(0, len(batch), SUB_BATCH_SIZE)]
-        remaining = []
-        file_failed = False
-        for sub_idx, sub in enumerate(sub_batches):
-            if time.time() > deadline:
-                for leftover in sub_batches[sub_idx:]:
-                    remaining.append(leftover)
-                file_failed = True
-                break
-            try:
-                status, body = post_batch(sub)
-                if status != 200:
-                    if 500 <= status <= 599:
-                        remaining.append(sub)
-                        file_failed = True
-                    else:
-                        log(f'PERMANENT-SUB-FAIL {status}: {body}')
-            except socket.timeout:
-                remaining.append(sub)
-                file_failed = True
-                # Preserve not-yet-attempted sub-batches for rewrite.
-                for later in sub_batches[sub_idx + 1:]:
-                    remaining.append(later)
-                break
-            except urllib.error.HTTPError as e:
-                if 500 <= e.code <= 599:
-                    remaining.append(sub)
-                    file_failed = True
-                else:
-                    try:
-                        body = e.read().decode('utf-8', errors='replace')[:200]
-                    except Exception:
-                        body = ''
-                    log(f'HTTP {e.code}: {body}')
-            except Exception as e:
-                remaining.append(sub)
-                file_failed = True
-                log(f'ERROR {type(e).__name__}: {e}')
-
-        if not file_failed and not remaining:
-            try:
-                os.unlink(path)
-                shipped += 1
-            except Exception:
-                pass
-        else:
-            failed += 1
-            flat = [r for sub in remaining for r in sub]
-            if flat:
-                try:
-                    with open(path, 'w') as f:
-                        json.dump(flat, f, separators=(',', ':'))
-                except Exception as e:
-                    log(f'REWRITE FAILED {path}: {e}')
-            else:
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
-            if failed >= 5:
-                break
-
-    if shipped or failed or dropped_old:
-        remaining_ct = len(glob.glob(os.path.join(SPOOL_DIR, '*.json')))
-        log(f'run complete: shipped={shipped} failed={failed} dropped_old={dropped_old} remaining={remaining_ct}')
-
+    try:
+        run_once()
+    except Exception as e:
+        log(f'FATAL {type(e).__name__}: {e}')
     return 0
 
 
