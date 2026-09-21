@@ -743,8 +743,11 @@ func elapsedDenverHours(day string, now time.Time) float64 {
 // pass, inside the refresher's transaction (90s budget), never per request:
 //
 //	static_objects       — objects we actually hold: data_ingest_static_objects
-//	                       past the upload stage, plus batches whose s3_bucket
-//	                       IS the real repository bucket.
+//	                       past the upload stage, plus AT-REST batches whose
+//	                       s3_bucket IS the real repository bucket (a partner
+//	                       API post also lands in that bucket but is dynamic
+//	                       supply, not a static object — 2026-09-20 review:
+//	                       counting every bucket batch rendered 11,165,307).
 //	loads_without_object  — the RED tile: batches that exist only as DB rows
 //	                       (bucket is not the repository AND no object_sha256).
 //	                       brain #3589: the Mac is not a repository.
@@ -778,7 +781,7 @@ func queryObjectAccounting(ctx context.Context, tx *sql.Tx) (map[string]objectCo
 
 	brows, err := tx.QueryContext(ctx, `
 		SELECT p.organization_id::text,
-		       COUNT(*) FILTER (WHERE b.s3_bucket = $1),
+		       COUNT(*) FILTER (WHERE b.s3_bucket = $1 AND b.supply_class = 'at_rest'),
 		       COUNT(*) FILTER (WHERE b.s3_bucket IS DISTINCT FROM $1
 		                          AND (b.object_sha256 IS NULL OR b.object_sha256 = ''))
 		FROM partner_inbound_batches b
@@ -1274,7 +1277,10 @@ func (s *DataIngestService) HandleFeed(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			out.Note = "dataset not found in this organization's feeds"
+			// Org isolation: the composition/series/loads below are keyed by
+			// dataset_id alone, so a dataset outside this org must stop here.
+			respondError(w, http.StatusNotFound, "dataset not found in this organization")
+			return
 		}
 		out.markAll(fieldMeasured, "name", "status", "supply_class", "source_channel", "last_loaded")
 	} else {

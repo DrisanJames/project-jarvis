@@ -4,38 +4,43 @@
 // rows parked in the database) vs what ARRIVES on its own clock (API feeds,
 // site events, pulls); internal transfers are shown but are NOT ingest.
 //
-// Envelope field names this panel reads (the Go handler must flag these):
-//   /day    at_rest.{landed,raw,staged,inflight,mailed,removed,static_objects,
-//           loads_without_object,parked_in_db} · dynamic.{arrived,yesterday,
-//           arrival_rate,feeds_live} · internal_transfer.n · series · composition
-//   /hours  hours
-//   /feeds  feeds.{today,yesterday,raw,staged,inflight,mailed,records,consumed,remaining}
+// Shapes are the Go structs (api.ts): /day carries at_rest / dynamic /
+// internal_transfer as TOP-LEVEL keys and marks FLAT flag names —
+//   at_rest   → landed raw staged inflight mailed removed static_objects
+//               loads_without_object parked_in_db
+//   dynamic   → arrived yesterday arrival_rate feeds_live
+//   transfer  → n
+//   plus series · composition;  /hours → hours;
+//   /feeds    → today yesterday raw staged inflight mailed records consumed remaining
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faDatabase, faSatelliteDish, faUpload, faChartColumn, faClock } from '@fortawesome/free-solid-svg-icons';
 import {
-  ResponsiveContainer, BarChart, ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid,
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid,
 } from 'recharts';
 import { usePolling } from '../shared/usePolling';
 import { Panel, SectionHeader, SectionError, EmptyState, Pill, ProgressBar } from '../shared/ui';
 import { colors, panelStyle, tableStyle, thStyle, tdStyle, numTd, numTh, btnStyle } from '../shared/theme';
 import { denverToday } from '../shared/filters';
 import { Measured } from './Measured';
+import { NoteBanner, FreshnessLine } from './Envelope';
 import {
-  dataIngestApi, measured,
+  dataIngestApi, measured, presentString,
   type Count, type DayResponse, type FeedRow, type FeedsResponse, type HoursResponse, type IngestDelta,
 } from './api';
 
 const POLL_MS = 30_000;
 
-const AT_REST = colors.warning;
-const DYNAMIC = colors.success;
-const TRANSFER = '#a78bfa';
+export const AT_REST = colors.warning;
+export const DYNAMIC = colors.success;
+export const TRANSFER = '#a78bfa';
 
 interface Props {
   date: string;
   deltas: IngestDelta[];
+  /** called after every successful /day poll: the snapshot now contains those deltas */
+  clearDeltas: () => void;
   /** the roster is owned by the portal so the upload door shares one read */
   feeds: FeedsResponse | null;
   feedsError: string | null;
@@ -45,7 +50,8 @@ interface Props {
 }
 
 // Fold the live stream into the polled snapshot: only for the day being shown,
-// and only as an ADDITION to what the poll already counted.
+// and only as an ADDITION to what the poll already counted. The portal clears
+// the buffer on every successful poll, so a delta is added exactly once.
 function liveAdd(deltas: IngestDelta[], date: string, cls: IngestDelta['supply_class'], transitions: string[]): number {
   let n = 0;
   for (const d of deltas) {
@@ -54,8 +60,8 @@ function liveAdd(deltas: IngestDelta[], date: string, cls: IngestDelta['supply_c
   return n;
 }
 
-const withLive = (base: Count, add: number): Count =>
-  typeof base === 'number' && Number.isFinite(base) ? base + add : base;
+const withLive = (base: Count | undefined, add: number): Count =>
+  typeof base === 'number' && Number.isFinite(base) ? base + add : null;
 
 const Tile: React.FC<{
   label: string; hint: string; children: React.ReactNode; accent?: string; borderAccent?: boolean;
@@ -83,7 +89,9 @@ const chartTooltip = {
   labelStyle: { color: colors.heading },
 };
 
-export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError, refreshFeeds, onOpenFeed, onGoUpload }) => {
+export const OverviewPanel: React.FC<Props> = ({
+  date, deltas, clearDeltas, feeds, feedsError, refreshFeeds, onOpenFeed, onGoUpload,
+}) => {
   const [feedFilter, setFeedFilter] = useState('');
   const isToday = date === denverToday();
 
@@ -92,6 +100,12 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
 
   const d = day.data;
   const f = d?.fields;
+
+  // Every successful poll replaces the snapshot; the deltas it already
+  // contains must not be added a second time.
+  useEffect(() => {
+    if (d) clearDeltas();
+  }, [d, clearDeltas]);
 
   // Live-folded numbers (stream deltas for the displayed day only).
   const arrivedLive = isToday ? liveAdd(deltas, date, 'dynamic', ['landed', 'site_event', 'hydrated']) : 0;
@@ -105,17 +119,22 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
     Transfer: s.transfer,
   })), [d]);
 
-  const hourRows = useMemo(() => (hours.data?.hours ?? []).map((h) => ({
-    hour: String(h.hour).padStart(2, '0'),
-    Arrived: h.n,
-    'Median 7d': h.median_7d ?? null,
-  })), [hours.data]);
+  const hourRows = useMemo(() => {
+    const byHour = new Map<number, number>();
+    for (const h of hours.data?.hours ?? []) byHour.set(h.hour, h.n);
+    return Array.from({ length: 24 }, (_, hh) => ({
+      hour: String(hh).padStart(2, '0'),
+      Arrived: byHour.has(hh) ? byHour.get(hh) ?? null : null,
+    }));
+  }, [hours.data]);
   const hoursMeasured = measured(hours.data?.fields, 'hours') !== 'not_measured'
-    && hourRows.some((h) => typeof h.Arrived === 'number');
+    && (hours.data?.hours ?? []).length > 0;
 
   const allFeeds = feeds?.feeds ?? [];
   const ff = feeds?.fields;
-  const atRestFeeds = allFeeds.filter((x) => x.supply_class === 'at_rest' || x.supply_class === 'internal_transfer');
+  const atRestFeeds = allFeeds.filter((x) => x.supply_class === 'at_rest');
+  const transferFeeds = allFeeds.filter((x) => x.supply_class === 'internal_transfer');
+  const unclassedFeeds = allFeeds.filter((x) => x.supply_class === '');
   const liveFeeds = allFeeds.filter((x) => x.supply_class === 'dynamic')
     .filter((x) => !feedFilter || `${x.name} ${x.lane}`.toLowerCase().includes(feedFilter.toLowerCase()));
 
@@ -141,27 +160,29 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
             <Tile label="Static files in S3" hint="objects in s3://jarvis-partner-ingest — a file that is not in the bucket is not inventory">
-              <Measured fields={f} name="at_rest.static_objects" value={d?.classes.at_rest.static_objects} />
+              <Measured fields={f} name="static_objects" value={d?.at_rest.static_objects} />
             </Tile>
             <Tile label="Loaded without an object" hint="desktop · downloads · operator-upload · gdrive — no S3 object behind them; not reproducible" accent={colors.danger} borderAccent>
-              <Measured fields={f} name="at_rest.loads_without_object" value={d?.classes.at_rest.loads_without_object} color={colors.dangerText} />
+              <Measured fields={f} name="loads_without_object" value={d?.at_rest.loads_without_object} color={colors.dangerText} />
             </Tile>
             <Tile label="In the database, parked" hint="held rows awaiting a release">
-              <Measured fields={f} name="at_rest.parked_in_db" value={d?.classes.at_rest.parked_in_db} />
+              <Measured fields={f} name="parked_in_db" value={d?.at_rest.parked_in_db} />
             </Tile>
             <Tile label="Staged for mailing" hint="ready · EO-verdicted" accent={colors.indigo300} borderAccent>
-              <Measured fields={f} name="at_rest.staged" value={d?.classes.at_rest.staged} color={colors.indigo200} />
+              <Measured fields={f} name="staged" value={d?.at_rest.staged} color={colors.indigo200} />
             </Tile>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
             <span>
               Loaded on {date}{' '}
-              <Measured fields={f} name="at_rest.landed" value={withLive(d?.classes.at_rest.landed ?? null, landedAtRestLive)} color={AT_REST} />
+              <Measured fields={f} name="landed" value={withLive(d?.at_rest.landed, landedAtRestLive)} color={AT_REST} />
             </span>
-            <span>In flight (claimed) <Measured fields={f} name="at_rest.inflight" value={d?.classes.at_rest.inflight} color={colors.warningText} /></span>
-            <span>Mailed lifetime <Measured fields={f} name="at_rest.mailed" value={d?.classes.at_rest.mailed} /></span>
-            <span>Removed by cleaning <Measured fields={f} name="at_rest.removed" value={d?.classes.at_rest.removed} color={colors.dangerText} /></span>
+            <span>Raw (held + pending EO) <Measured fields={f} name="raw" value={d?.at_rest.raw} /></span>
+            <span>In flight (claimed) <Measured fields={f} name="inflight" value={d?.at_rest.inflight} color={colors.warningText} /></span>
+            <span>Mailed lifetime <Measured fields={f} name="mailed" value={d?.at_rest.mailed} /></span>
+            <span>Removed by cleaning <Measured fields={f} name="removed" value={d?.at_rest.removed} color={colors.dangerText} /></span>
           </div>
+          <FreshnessLine asOf={d?.as_of} source={d?.source} />
         </Panel>
 
         <Panel accent={DYNAMIC}>
@@ -172,26 +193,26 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
             <Tile label={isToday ? 'Arrived today' : `Arrived ${date}`} hint="records landed from API feeds, site events and pulls">
-              <Measured fields={f} name="dynamic.arrived" value={withLive(d?.classes.dynamic.arrived ?? null, arrivedLive)} color={DYNAMIC} />
+              <Measured fields={f} name="arrived" value={withLive(d?.dynamic.arrived, arrivedLive)} color={DYNAMIC} />
             </Tile>
             <Tile label="Yesterday" hint="the same count for the previous Denver day">
-              <Measured fields={f} name="dynamic.yesterday" value={d?.classes.dynamic.yesterday} />
+              <Measured fields={f} name="yesterday" value={d?.dynamic.yesterday} />
             </Tile>
-            <Tile label="Arrival rate" hint="records / hour across live feeds, from the counters">
-              <Measured fields={f} name="dynamic.arrival_rate" value={d?.classes.dynamic.arrival_rate} unit="/hr" />
+            <Tile label="Arrival rate" hint="arrived ÷ elapsed Denver hours of this day (derived)">
+              <Measured fields={f} name="arrival_rate" value={d?.dynamic.arrival_rate} unit="/hr" />
             </Tile>
-            <Tile label="Feeds live" hint="datasets with an open ingest path">
-              <Measured fields={f} name="dynamic.feeds_live" value={d?.classes.dynamic.feeds_live} />
+            <Tile label="Feeds live" hint="datasets that emitted a counter event this day">
+              <Measured fields={f} name="feeds_live" value={d?.dynamic.feeds_live} />
             </Tile>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
             <span>
               Internal transfers on {date} (NOT ingest){' '}
-              <Measured fields={f} name="internal_transfer.n" value={withLive(d?.classes.internal_transfer.n ?? null, transferLive)} color={TRANSFER} />
-              {d?.classes.internal_transfer.note ? ` · ${d.classes.internal_transfer.note}` : ' · nightly lane inject, reservoir → lane'}
+              <Measured fields={f} name="n" value={withLive(d?.internal_transfer.n, transferLive)} color={TRANSFER} />
+              {' · nightly lane inject, reservoir → lane'}
             </span>
-            <span>Last API batch <span style={{ color: colors.text }}>{d?.classes.dynamic.last_api_batch ?? 'not yet measured'}</span></span>
           </div>
+          <FreshnessLine asOf={d?.as_of} source={d?.source} />
         </Panel>
       </div>
 
@@ -239,17 +260,17 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           )}
           {!hours.error && hoursMeasured && (
             <ResponsiveContainer width="100%" height={230}>
-              <ComposedChart data={hourRows} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
+              <BarChart data={hourRows} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
                 <XAxis dataKey="hour" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" interval={3} />
                 <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
                 <Tooltip {...chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="Arrived" fill={DYNAMIC} radius={[2, 2, 0, 0]} />
-                <Line type="monotone" dataKey="Median 7d" stroke={colors.indigo400} strokeWidth={2} dot={false} />
-              </ComposedChart>
+              </BarChart>
             </ResponsiveContainer>
           )}
+          <FreshnessLine asOf={hours.data?.as_of} source={hours.data?.source} />
         </Panel>
       </div>
 
@@ -266,55 +287,32 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           }
         />
         {feedsError && !feeds && <SectionError label="Feeds" error={feedsError} onRetry={refreshFeeds} />}
+        <NoteBanner note={feeds?.note} label="Feeds" />
         {feeds && atRestFeeds.length === 0 && (
-          <EmptyState title="No at-rest loads" hint="Nothing is registered as loaded inventory for this organization yet." />
+          <EmptyState
+            title="No at-rest loads"
+            hint={unclassedFeeds.length > 0
+              ? `${unclassedFeeds.length} feed${unclassedFeeds.length === 1 ? '' : 's'} carry no supply class yet (batch stamp backfill pending) — they are listed below, unclassed.`
+              : 'Nothing is registered as loaded inventory for this organization yet.'}
+          />
         )}
-        {atRestFeeds.length > 0 && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ ...tableStyle, minWidth: 900 }}>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Source</th>
-                  <th style={thStyle}>Where</th>
-                  <th style={thStyle}>Loaded / last</th>
-                  <th style={numTh}>Records</th>
-                  <th style={numTh}>Consumed</th>
-                  <th style={numTh}>Remaining</th>
-                  <th style={numTh}>Staged</th>
-                  <th style={thStyle}>Controls</th>
-                </tr>
-              </thead>
-              <tbody>
-                {atRestFeeds.map((r) => (
-                  <tr key={r.dataset_id}>
-                    <td style={tdStyle}>
-                      <div>{r.name}</div>
-                      <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={r.dataset_id}>
-                        {r.lane || r.source_channel} · {r.dataset_id.slice(0, 8)}
-                      </div>
-                    </td>
-                    <td style={tdStyle}>
-                      <Pill color={r.supply_class === 'internal_transfer' ? TRANSFER : AT_REST}>{r.location ?? r.supply_class}</Pill>
-                    </td>
-                    <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{r.last_loaded ?? 'never'}</td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.records" value={r.records ?? null} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.consumed" value={r.consumed ?? null} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.remaining" value={r.remaining ?? null} color={AT_REST} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.staged" value={r.staged} color={colors.indigo200} /></td>
-                    <td style={tdStyle}>
-                      <button type="button" style={{ ...btnStyle, padding: '3px 10px', fontSize: 11 }} onClick={() => onOpenFeed(r.dataset_id)}>
-                        Open
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {atRestFeeds.length > 0 && <InventoryTable rows={atRestFeeds} fields={ff} accent={AT_REST} onOpenFeed={onOpenFeed} />}
+        {transferFeeds.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <SectionHeader title="Internal transfer · not ingest" right={<Pill color={TRANSFER}>internal_transfer</Pill>} />
+            <InventoryTable rows={transferFeeds} fields={ff} accent={TRANSFER} onOpenFeed={onOpenFeed} />
+          </div>
+        )}
+        {unclassedFeeds.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <SectionHeader title="Unclassed · supply_class not stamped" right={<Pill color={colors.idle}>{unclassedFeeds.length}</Pill>} />
+            <InventoryTable rows={unclassedFeeds} fields={ff} accent={colors.idle} onOpenFeed={onOpenFeed} />
           </div>
         )}
         <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8 }}>
           A static file is inventory only once it is an object in the bucket: upload → object → loader → batch row → rows.
         </div>
+        <FreshnessLine asOf={feeds?.as_of} source={feeds?.source} cacheAgeSeconds={feeds?.cache_age_seconds} queryMs={feeds?.query_ms} />
       </Panel>
 
       {/* ── live feeds ─────────────────────────────────────────────────── */}
@@ -365,12 +363,12 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
                       <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }}>{r.lane || r.source_channel}</div>
                     </td>
                     <td style={tdStyle}><FeedStatusPill row={r} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.today" value={r.today} color={DYNAMIC} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.yesterday" value={r.yesterday} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.raw" value={r.raw} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.staged" value={r.staged} color={colors.indigo200} /></td>
-                    <td style={numTd}><Measured fields={ff} name="feeds.mailed" value={r.mailed} /></td>
-                    <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{r.last_event ?? '—'}</td>
+                    <td style={numTd}><Measured fields={ff} name="today" value={r.today} color={DYNAMIC} /></td>
+                    <td style={numTd}><Measured fields={ff} name="yesterday" value={r.yesterday} /></td>
+                    <td style={numTd}><Measured fields={ff} name="raw" value={r.raw} /></td>
+                    <td style={numTd}><Measured fields={ff} name="staged" value={r.staged} color={colors.indigo200} /></td>
+                    <td style={numTd}><Measured fields={ff} name="mailed" value={r.mailed} /></td>
+                    <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{presentString(r.last_event) ?? '—'}</td>
                     <td style={tdStyle}>
                       <button type="button" style={{ ...btnStyle, padding: '3px 10px', fontSize: 11 }} onClick={() => onOpenFeed(r.dataset_id)}>
                         Open
@@ -386,13 +384,14 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           Status is the composite of the four real switches: ingest open · send row present · express dispatch · supply contract.
           Open a feed to change any of them.
         </div>
+        <FreshnessLine asOf={feeds?.as_of} source={feeds?.source} cacheAgeSeconds={feeds?.cache_age_seconds} queryMs={feeds?.query_ms} />
       </Panel>
 
       {/* ── composition ────────────────────────────────────────────────── */}
       <Panel>
-        <SectionHeader title="Composition of staged data" icon={faChartColumn} />
+        <SectionHeader title={`Composition of arrivals on ${date}`} icon={faChartColumn} />
         {measured(f, 'composition') === 'not_measured' || composition.length === 0 ? (
-          <EmptyState title="not yet measured" hint="Ready rows by canonical ISP class — fed by the counters' per-ISP hashes." />
+          <EmptyState title="not yet measured" hint="Arrivals by canonical ISP class — fed by the counters' per-ISP hashes for this day." />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '6px 28px' }}>
             {composition.map((c) => (
@@ -407,22 +406,73 @@ export const OverviewPanel: React.FC<Props> = ({ date, deltas, feeds, feedsError
           </div>
         )}
         <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 8 }}>
-          Distinct addresses in status <code>ready</code>. Totals here are the estate, not one feed — open a feed for its own split.
+          Records that landed, arrived, were registered or transferred on this day, by ISP class, all supply classes together.
+          Open a feed for its own raw-vs-staged split.
         </div>
       </Panel>
 
       <div style={{ fontSize: 11, color: colors.textFaint }}>
         Sources: s3://jarvis-partner-ingest (objects) · partner_inbound_batches · partner_clean_queue ·
         partner_datasets.source_channel · mailing_subscribers · the data.ingest.v1 counters.
-        {d?.source ? ` · this view: ${d.source}` : ''}
       </div>
     </div>
   );
 };
 
-// The four switches, collapsed to one word. Unknown switches never read as "off".
-export const FeedStatusPill: React.FC<{ row: FeedRow }> = ({ row }) => {
-  const s = row.status ?? { ingest_open: null, send_row: null, express: null, contract: null };
+const InventoryTable: React.FC<{
+  rows: FeedRow[];
+  fields: FeedsResponse['fields'] | undefined;
+  accent: string;
+  onOpenFeed: (datasetId: string) => void;
+}> = ({ rows, fields: ff, accent, onOpenFeed }) => (
+  <div style={{ overflowX: 'auto' }}>
+    <table style={{ ...tableStyle, minWidth: 900 }}>
+      <thead>
+        <tr>
+          <th style={thStyle}>Source</th>
+          <th style={thStyle}>Class</th>
+          <th style={thStyle}>Loaded / last</th>
+          <th style={numTh}>Records</th>
+          <th style={numTh}>Consumed</th>
+          <th style={numTh}>Remaining</th>
+          <th style={numTh}>Staged</th>
+          <th style={thStyle}>Controls</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.dataset_id}>
+            <td style={tdStyle}>
+              <div>{r.name}</div>
+              <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={r.dataset_id}>
+                {r.partner ? `${r.partner} · ` : ''}{r.lane || r.source_channel || 'no lane'} · {r.dataset_id.slice(0, 8)}
+              </div>
+            </td>
+            <td style={tdStyle}>
+              <Pill color={accent}>{r.supply_class || 'unclassed'}</Pill>
+            </td>
+            <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{presentString(r.last_loaded) ?? 'never'}</td>
+            <td style={numTd}><Measured fields={ff} name="records" value={r.records} /></td>
+            <td style={numTd}><Measured fields={ff} name="consumed" value={r.consumed} /></td>
+            <td style={numTd}><Measured fields={ff} name="remaining" value={r.remaining} color={accent} /></td>
+            <td style={numTd}><Measured fields={ff} name="staged" value={r.staged} color={colors.indigo200} /></td>
+            <td style={tdStyle}>
+              <button type="button" style={{ ...btnStyle, padding: '3px 10px', fontSize: 11 }} onClick={() => onOpenFeed(r.dataset_id)}>
+                Open
+              </button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+);
+
+// The four switches, collapsed to one word. A row with no status object at all
+// (older body) reads "unknown", never "off".
+export const FeedStatusPill: React.FC<{ row: Pick<FeedRow, 'status'> }> = ({ row }) => {
+  const s = row.status;
+  if (!s) return <Pill color={colors.idle}>unknown</Pill>;
   if (s.ingest_open === false) return <Pill color={colors.danger}>paused</Pill>;
   if (s.express === true) return <Pill color={colors.indigo300}>express</Pill>;
   if (s.ingest_open === true && s.send_row === true) return <Pill color={colors.success}>active</Pill>;

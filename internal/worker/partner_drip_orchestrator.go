@@ -4644,12 +4644,12 @@ func (po *PartnerDripOrchestrator) emitMailedChunk(ctx context.Context, vertical
 		return
 	}
 	if stamped == int64(len(recs)) {
-		po.emitDripEvents(ctx, dataingest.SourceStampRecovery, dataingest.TransitionMailed, vertical, recs)
+		po.emitDripEvents(ctx, dataingest.SourceOrchestrator, dataingest.TransitionMailed, vertical, recs)
 		return
 	}
 	dataingest.Emit(ctx, dataingest.Event{
 		Class:      dataingest.DatasetSupplyClass(ctx, po.db, recs[0].datasetID),
-		Source:     dataingest.SourceStampRecovery,
+		Source:     dataingest.SourceOrchestrator,
 		DatasetID:  recs[0].datasetID,
 		Lane:       vertical,
 		Transition: dataingest.TransitionMailed,

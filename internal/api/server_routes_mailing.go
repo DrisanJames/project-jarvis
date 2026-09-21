@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"io"
 	"log"
 	"net/http"
@@ -611,6 +612,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// send load) runs in the background from here on; no request
 			// path ever executes it (operator: "doesn't load the database").
 			diSvc.StartQueueStateRefresher(context.Background())
+			// Cross-task SSE fan-out: deltas applied by the other task reach
+			// this task's /stream subscribers via Redis pub/sub.
+			dataingest.StartDeltaRelay(context.Background(), s.redisClient, dataingest.DefaultHub())
 			r.Route("/data-ingest", diSvc.RegisterRoutes)
 			// The S3 static upload door (data_ingest_static.go): presign →
 			// complete → register; refuses a key that is not in the bucket.

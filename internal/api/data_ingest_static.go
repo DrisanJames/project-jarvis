@@ -250,6 +250,47 @@ func scanStaticObject(sc interface{ Scan(...interface{}) error }) (staticObjectR
 
 // loadStaticObject fetches one object BY ORG — a different org's object is a
 // 404, never a read.
+// adoptStaticObject creates the data_ingest_static_objects row for a key that
+// is in the bucket but was never presigned here. Refuses (ErrNoRows) when the
+// object is absent, so "register" can never point a batch at nothing; the
+// source is the key's second segment (static/<source>/<date>/<file>).
+func (s *DataIngestStaticService) adoptStaticObject(ctx context.Context, orgID, key string) (staticObjectRow, error) {
+	if s.api == nil {
+		return staticObjectRow{}, sql.ErrNoRows
+	}
+	head, herr := s.api.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(s.s3.Bucket()), Key: aws.String(key)})
+	if herr != nil {
+		return staticObjectRow{}, sql.ErrNoRows
+	}
+	source := "operator"
+	if parts := strings.Split(strings.Trim(key, "/"), "/"); len(parts) >= 3 && parts[0] == "static" {
+		source = parts[1]
+	}
+	var size int64
+	if head.ContentLength != nil {
+		size = *head.ContentLength
+	}
+	sha := ""
+	if head.Metadata != nil {
+		sha = head.Metadata["sha256"]
+	}
+	contentType := "application/octet-stream"
+	if head.ContentType != nil && *head.ContentType != "" {
+		contentType = *head.ContentType
+	}
+	objectID := uuid.NewString()
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO data_ingest_static_objects
+		    (id, organization_id, s3_bucket, s3_key, bytes, sha256, content_type, source, declared, uploaded_by, status)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), $7, $8, $9::jsonb, 'adopt', 'object')
+		ON CONFLICT (s3_key) DO NOTHING
+	`, objectID, orgID, s.s3.Bucket(), key, size, sha, contentType, source,
+		mustJSONString(map[string]interface{}{"adopted": true, "filename": path.Base(key)})); err != nil {
+		return staticObjectRow{}, err
+	}
+	return s.loadStaticObject(ctx, orgID, "", key)
+}
+
 func (s *DataIngestStaticService) loadStaticObject(ctx context.Context, orgID, id, key string) (staticObjectRow, error) {
 	var (
 		q    string
@@ -608,6 +649,12 @@ func (s *DataIngestStaticService) HandleRegister(w http.ResponseWriter, r *http.
 	}
 
 	obj, err := s.loadStaticObject(r.Context(), orgID.String(), req.ObjectID, strings.TrimSpace(req.Key))
+	if errors.Is(err, sql.ErrNoRows) && req.ObjectID == "" && strings.TrimSpace(req.Key) != "" {
+		// Adopt: the object was put in the bucket outside the presign door
+		// (aws s3 cp, agents/jobs/static_register.py). It becomes inventory
+		// the same way — only if HeadObject proves it is really there.
+		obj, err = s.adoptStaticObject(r.Context(), orgID.String(), strings.TrimSpace(req.Key))
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		respondError(w, http.StatusNotFound, "static object not found")
 		return
@@ -616,8 +663,8 @@ func (s *DataIngestStaticService) HandleRegister(w http.ResponseWriter, r *http.
 		respondError(w, http.StatusInternalServerError, "static object lookup failed")
 		return
 	}
-	if obj.Status == "loaded" {
-		respondError(w, http.StatusConflict, "static object is already loaded (batch "+obj.BatchID+")")
+	if obj.Status == "loaded" || obj.Status == "registered" {
+		respondError(w, http.StatusConflict, "static object is already "+obj.Status+" (batch "+obj.BatchID+") — a load runs once per object")
 		return
 	}
 
@@ -688,14 +735,19 @@ func (s *DataIngestStaticService) HandleRegister(w http.ResponseWriter, r *http.
 		}
 	}
 
-	res, cerr := NewPartnerCSVIngestService(s.db, s.s3).commitCSVReader(r.Context(), body.Body, csvCommitTarget{
+	// The load runs on a detached context: a client that disconnects mid-load
+	// must not leave the object stuck at "registered" with a half-written
+	// batch and the status update itself cancelled (2026-09-20 review).
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancelLoad()
+	res, cerr := NewPartnerCSVIngestService(s.db, s.s3).commitCSVReader(loadCtx, body.Body, csvCommitTarget{
 		DatasetID:   req.DatasetID,
 		Ident:       ident,
 		ContentType: obj.ContentType,
 		ReceivedAt:  time.Now().UTC(),
 	}, mapping, ingestMeta)
 	if cerr != nil {
-		s.markStatus(r.Context(), obj.ID, "failed", map[string]interface{}{
+		s.markStatus(loadCtx, obj.ID, "failed", map[string]interface{}{
 			"error":     cerr.Error(),
 			"batch_ids": res.BatchIDs,
 		})

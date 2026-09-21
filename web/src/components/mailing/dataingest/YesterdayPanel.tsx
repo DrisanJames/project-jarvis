@@ -4,8 +4,11 @@
 // repository, and whether we have mailed it since. Defaults to D-1 of the
 // selected day; prev/next walk the days. Reads GET /loads?date=.
 //
-// The per-load mailed/staged/raw split is exactly the question the old screens
-// could not answer, so any figure the API has not measured says so in words.
+// Shapes are the Go loadsResponse (api.ts): totals {landed, mailed, not_mailed,
+// removed, duplicates} with the same FLAT flag names; per-load cells ride the
+// `loads` flag, composition rides `composition`, sources rides `sources`.
+// When the server sets `note` (the day range timed out) the list is NOT an
+// empty day: the note prints verbatim and the "stamping gap" hint never shows.
 
 import React, { useEffect, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -15,7 +18,8 @@ import { Panel, SectionHeader, SectionError, EmptyState, ProgressBar, Pill } fro
 import { colors, tableStyle, thStyle, tdStyle, numTd, numTh, btnStyle } from '../shared/theme';
 import { denverToday } from '../shared/filters';
 import { Measured } from './Measured';
-import { dataIngestApi, type LoadsResponse } from './api';
+import { NoteBanner, FreshnessLine } from './Envelope';
+import { dataIngestApi, measured, presentString, type LoadsResponse } from './api';
 
 const POLL_MS = 30_000;
 
@@ -42,6 +46,8 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
   const comp = d?.composition ?? [];
   const compMax = comp.reduce((m, c) => Math.max(m, typeof c.n === 'number' ? c.n : 0), 0);
   const atToday = day >= denverToday();
+  const loadsMeasured = measured(f, 'loads') !== 'not_measured';
+  const degraded = presentString(d?.note);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -63,19 +69,23 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
       </div>
 
       {loads.error && !d && <SectionError label="That day's loads" error={loads.error} onRetry={loads.refresh} />}
+      {loads.error && d && (
+        <div style={{ fontSize: 12, color: colors.warningText }}>Showing the last good read — refresh failed: {loads.error}</div>
+      )}
+      <NoteBanner note={degraded} label="Loads" />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
         {([
-          ['landed', 'Landed', 'partner queue rows + subscriber rows created that day', colors.text],
-          ['mailed_since', 'Mailed since', 'mailed_at ≥ landed, or a tracking send for the subscriber', colors.successText],
-          ['not_yet_mailed', 'Not yet mailed', 'staged (ready) plus raw (held / pending EO)', colors.warningText],
+          ['landed', 'Landed', 'records persisted from the batches received that day', colors.text],
+          ['mailed', 'Mailed since', 'of those records, rows with a mailed_at', colors.successText],
+          ['not_mailed', 'Not yet mailed', 'landed − mailed − removed: staged (ready) plus raw (held / pending EO)', colors.warningText],
           ['removed', 'Removed by cleaning', 'EO undeliverable / trap / suppressed, from that day’s rows', colors.dangerText],
-          ['duplicates', 'Duplicates of known', 'already in base or queue at landing (distinct address)', colors.textMuted],
+          ['duplicates', 'Duplicates of known', 'declared by the loads minus persisted (the dedup drop)', colors.textMuted],
         ] as const).map(([key, label, hint, color]) => (
           <div key={key} style={{ background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '12px 14px' }}>
             <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.6 }}>{label}</div>
             <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.3 }}>
-              <Measured fields={f} name={`totals.${key}`} value={d?.totals[key] ?? null} color={color} />
+              <Measured fields={f} name={key} value={d?.totals[key] ?? null} color={color} />
             </div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>{hint}</div>
           </div>
@@ -89,7 +99,9 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
             icon={faBoxOpen}
             right={<span style={{ fontSize: 11, color: colors.textMuted }}>each file / batch / insert run that day</span>}
           />
-          {(d?.loads ?? []).length === 0 ? (
+          {!loadsMeasured ? (
+            <EmptyState title="not yet measured" hint={degraded ?? 'The per-batch lookup for this day did not complete.'} />
+          ) : (d?.loads ?? []).length === 0 ? (
             <EmptyState title="No loads recorded for this day" hint="A landing path with no batch id cannot appear here — that is the stamping gap, not an empty day." />
           ) : (
             <div style={{ overflowX: 'auto' }}>
@@ -108,16 +120,16 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
                   {(d?.loads ?? []).map((l) => (
                     <tr key={l.batch_id}>
                       <td style={tdStyle}>
-                        <div>{l.dataset || l.source_path}</div>
-                        <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={l.s3_key ?? undefined}>
-                          {l.source_path} · {l.object && l.s3_bucket ? l.s3_bucket : 'no object'} · {l.supply_class}
+                        <div>{l.dataset || l.source_path || l.batch_id.slice(0, 8)}</div>
+                        <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={`${l.batch_id}${l.s3_key ? ` · ${l.s3_key}` : ''}`}>
+                          {presentString(l.received_at) ?? 'received —'} · {l.source_path || 'no source_path'} · {l.object && l.s3_bucket ? `s3://${l.s3_bucket}` : 'no object'} · {l.supply_class || 'unclassed'}
                         </div>
                       </td>
-                      <td style={numTd}><Measured fields={f} name="loads.records" value={l.records} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.mailed" value={l.mailed} color={colors.successText} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.staged" value={l.staged} color={colors.indigo200} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.raw" value={l.raw} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.removed" value={l.removed} color={colors.dangerText} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.records} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.mailed} color={colors.successText} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.staged} color={colors.indigo200} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.raw} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.removed} color={colors.dangerText} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -128,16 +140,18 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
 
         <Panel>
           <SectionHeader title="Composition of that day" right={<span style={{ fontSize: 11, color: colors.textMuted }}>landed rows by canonical ISP class</span>} />
-          {comp.length === 0 ? (
-            <EmptyState title="not yet measured" hint="The day's own composition comes from the counters' per-ISP hashes." />
+          {measured(f, 'composition') === 'not_measured' ? (
+            <EmptyState title="not yet measured" hint="The day's own composition comes from the batches' rows in partner_clean_queue." />
+          ) : comp.length === 0 ? (
+            <EmptyState title="No rows landed" hint="No batch received that day has rows in partner_clean_queue." />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {comp.map((c) => (
                 <div key={c.isp} style={{ display: 'grid', gridTemplateColumns: '92px 1fr 92px 92px', alignItems: 'center', gap: 10, fontSize: 12 }}>
                   <div>{c.isp}</div>
                   <ProgressBar pct={compMax > 0 && typeof c.n === 'number' ? c.n / compMax : 0} height={9} />
-                  <div style={{ textAlign: 'right' }}><Measured fields={f} name="composition.n" value={c.n} /></div>
-                  <div style={{ textAlign: 'right' }}><Measured fields={f} name="composition.mailed" value={c.mailed} color={colors.successText} /></div>
+                  <div style={{ textAlign: 'right' }}><Measured fields={f} name="composition" value={c.n} /></div>
+                  <div style={{ textAlign: 'right' }}><Measured fields={f} name="composition" value={c.mailed ?? null} color={colors.successText} /></div>
                 </div>
               ))}
               <div style={{ fontSize: 10, color: colors.textFaint, textAlign: 'right' }}>landed · mailed</div>
@@ -146,8 +160,10 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
 
           <div style={{ marginTop: 14 }}>
             <SectionHeader title="Sources that day" />
-            {(d?.sources ?? []).length === 0 ? (
+            {measured(f, 'sources') === 'not_measured' ? (
               <EmptyState title="not yet measured" hint="One row per landing path (API → slicer, nightly inject, hydration, site events, pulls)." />
+            ) : (d?.sources ?? []).length === 0 ? (
+              <EmptyState title="No sources" hint="No batch was received that day." />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {(d?.sources ?? []).map((s) => (
@@ -158,8 +174,8 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
                       background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 8, fontSize: 12,
                     }}
                   >
-                    <span>{s.name}{s.detail ? <span style={{ color: colors.textFaint }}> · {s.detail}</span> : null}</span>
-                    <Measured fields={f} name="sources.n" value={s.n} />
+                    <span>{s.name === 'unknown' ? <span style={{ color: colors.textFaint }}>source_path not stamped</span> : s.name}</span>
+                    <Measured fields={f} name="sources" value={s.n} />
                   </div>
                 ))}
               </div>
@@ -170,7 +186,8 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
 
       <div style={{ fontSize: 11, color: colors.textFaint }}>
         <Pill color={colors.idle}>{day}</Pill>{' '}
-        {d?.as_of ? `as of ${d.as_of} · ${d.source}` : 'America/Denver operating day'}
+        America/Denver operating day
+        <FreshnessLine asOf={d?.as_of} source={d?.source} />
       </div>
     </div>
   );

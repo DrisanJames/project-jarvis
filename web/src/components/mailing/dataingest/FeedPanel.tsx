@@ -5,6 +5,14 @@
 // (/api/mailing/data-partners/datasets/{id}/emergency-stop | /resume | /express),
 // then the funnel, 30 days of landings, raw-vs-staged composition and the loads.
 //
+// Shapes are the Go feedDetailResponse (api.ts): funnel flags are the FLAT
+// names landed raw cleaned staged mailed engaged; composition is
+// {raw:[], staged:[]} (flags composition_raw / composition_staged); series
+// points are per-class {day, at_rest, dynamic, transfer}; loads are feedLoad
+// rows (flag loads). The header (name / partner / lane / class / channel /
+// status) comes from the detail body when the server sends it and otherwise
+// from the /feeds list row for this dataset_id, which the portal already holds.
+//
 // A failed control is STICKY and never looks like success (the REQ-004 rule the
 // Data Partners screen learned the hard way): the 30s poll clears the read
 // error, never the action error.
@@ -12,18 +20,25 @@
 import React, { useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowLeft, faExclamationTriangle, faBolt, faPause, faPlay, faRoute, faLayerGroup } from '@fortawesome/free-solid-svg-icons';
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { usePolling } from '../shared/usePolling';
 import { Panel, SectionHeader, SectionError, EmptyState, Pill, ProgressBar } from '../shared/ui';
 import { colors, tableStyle, thStyle, tdStyle, numTd, numTh, btnStyle } from '../shared/theme';
 import { Measured } from './Measured';
-import { dataIngestApi, datasetAction, measured, type FeedDetailResponse } from './api';
+import { FreshnessLine } from './Envelope';
+import { AT_REST, DYNAMIC, TRANSFER, FeedStatusPill } from './OverviewPanel';
+import {
+  dataIngestApi, datasetAction, measured, presentString,
+  type FeedDetailResponse, type FeedRow, type FeedStatus,
+} from './api';
 
 const POLL_MS = 30_000;
 
 interface Props {
   datasetId: string;
   date: string;
+  /** the /feeds row for this dataset (header fallback + status fallback) */
+  listRow: FeedRow | null;
   onBack: () => void;
 }
 
@@ -46,7 +61,10 @@ const SwitchRow: React.FC<{ label: string; state: boolean | null; onLabel: strin
   </div>
 );
 
-export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
+const classColor = (cls: string | undefined): string =>
+  cls === 'at_rest' ? AT_REST : cls === 'dynamic' ? DYNAMIC : cls === 'internal_transfer' ? TRANSFER : colors.idle;
+
+export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack }) => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -57,6 +75,15 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
   );
   const d = feed.data;
   const f = d?.fields;
+
+  // Header: detail body first (once the server sends it), then the list row.
+  const name = presentString(d?.name) ?? listRow?.name ?? null;
+  const partner = presentString(d?.partner) ?? presentString(listRow?.partner) ?? null;
+  const lane = presentString(d?.lane) ?? presentString(listRow?.lane) ?? null;
+  const supplyClass = presentString(d?.supply_class) ?? presentString(listRow?.supply_class) ?? null;
+  const sourceChannel = presentString(d?.source_channel) ?? presentString(listRow?.source_channel) ?? null;
+  const status: FeedStatus | null = d?.status ?? listRow?.status ?? null;
+  const lastLoaded = presentString(d?.last_loaded) ?? presentString(listRow?.last_loaded) ?? null;
 
   const run = async (
     action: 'emergency-stop' | 'resume' | 'express',
@@ -98,9 +125,25 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
       'EXPRESS TOGGLE',
     );
 
-  const series = (d?.series ?? []).map((s) => ({ day: s.day.slice(5), Landed: s.n }));
-  const comp = d?.composition ?? [];
-  const compMax = comp.reduce((m, c) => Math.max(m, typeof c.raw === 'number' ? c.raw : 0, typeof c.staged === 'number' ? c.staged : 0), 0);
+  const series = (d?.series ?? []).map((s) => ({
+    day: s.day.slice(5),
+    'At rest': s.at_rest,
+    Dynamic: s.dynamic,
+    Transfer: s.transfer,
+  }));
+
+  // Merge the two per-ISP arrays into one row per ISP; a class absent for an
+  // ISP is absent (null), not zero.
+  const compRows = (() => {
+    const byIsp = new Map<string, { raw: number | null; staged: number | null }>();
+    for (const c of d?.composition.raw ?? []) byIsp.set(c.isp, { raw: c.n, staged: byIsp.get(c.isp)?.staged ?? null });
+    for (const c of d?.composition.staged ?? []) byIsp.set(c.isp, { raw: byIsp.get(c.isp)?.raw ?? null, staged: c.n });
+    return Array.from(byIsp.entries())
+      .map(([isp, v]) => ({ isp, ...v }))
+      .sort((a, b) => ((b.raw ?? 0) + (b.staged ?? 0)) - ((a.raw ?? 0) + (a.staged ?? 0)) || a.isp.localeCompare(b.isp));
+  })();
+  const compMax = compRows.reduce((m, c) => Math.max(m, c.raw ?? 0, c.staged ?? 0), 0);
+  const compMeasured = measured(f, 'composition_raw') !== 'not_measured' || measured(f, 'composition_staged') !== 'not_measured';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -109,11 +152,13 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
           <FontAwesomeIcon icon={faArrowLeft} style={{ marginRight: 6 }} /> Data Ingest
         </button>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: colors.heading }}>
-            {d ? `${d.partner_name ? `${d.partner_name} → ` : ''}${d.name}` : 'Feed'}
+          <div style={{ fontSize: 18, fontWeight: 700, color: colors.heading, display: 'flex', alignItems: 'center', gap: 10 }}>
+            {name ? `${partner ? `${partner} → ` : ''}${name}` : 'Feed'}
+            {status && <FeedStatusPill row={{ status }} />}
+            <Pill color={classColor(supplyClass ?? undefined)}>{supplyClass ?? 'unclassed'}</Pill>
           </div>
           <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: 'monospace' }}>
-            dataset {datasetId} {d ? `· lane ${d.lane || '—'} · ${d.supply_class} · ${d.source_channel || 'source channel unknown'}` : ''}
+            dataset {datasetId} · lane {lane ?? '—'} · {sourceChannel ?? 'source channel unknown'} · last loaded {lastLoaded ?? 'never'}
           </div>
         </div>
       </div>
@@ -132,6 +177,9 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
       )}
 
       {feed.error && !d && <SectionError label="Feed detail" error={feed.error} onRetry={feed.refresh} />}
+      {feed.error && d && (
+        <div style={{ fontSize: 12, color: colors.warningText }}>Showing the last good read — refresh failed: {feed.error}</div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14 }}>
         <Panel>
@@ -140,12 +188,11 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
             The four real switches, shown as one status. Every change writes the audit log.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <SwitchRow label="Ingestion (paused_emergency)" state={d ? d.status.ingest_open : null} onLabel="open" offLabel="paused" />
-            <SwitchRow label="Send (partner_drip_state row)" state={d ? d.status.send_row : null} onLabel="present" offLabel="absent" />
-            <SwitchRow label="Express dispatch" state={d ? d.status.express : null} onLabel="on" offLabel="off" />
-            <SwitchRow label="Supply contract (mediator)" state={d ? d.status.contract : null} onLabel="active" offLabel="none" />
+            <SwitchRow label="Ingestion (paused_emergency)" state={status ? status.ingest_open : null} onLabel="open" offLabel="paused" />
+            <SwitchRow label="Send (partner_drip_state row)" state={status ? status.send_row : null} onLabel="present" offLabel="absent" />
+            <SwitchRow label="Express dispatch" state={status ? status.express : null} onLabel="on" offLabel="off" />
+            <SwitchRow label="Supply contract (mediator)" state={status ? status.contract : null} onLabel="active" offLabel="none" />
           </div>
-          {d?.status_note && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>{d.status_note}</div>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             <button
               type="button"
@@ -158,9 +205,9 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
             <button type="button" disabled={busy} onClick={resume} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
               <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume ingestion
             </button>
-            <button type="button" disabled={busy} onClick={() => toggleExpress(!(d?.status.express === true))} style={btnStyle}>
+            <button type="button" disabled={busy} onClick={() => toggleExpress(!(status?.express === true))} style={btnStyle}>
               <FontAwesomeIcon icon={faBolt} style={{ marginRight: 6 }} />
-              {d?.status.express === true ? 'Turn express off' : 'Turn express on'}
+              {status?.express === true ? 'Turn express off' : 'Turn express on'}
             </button>
           </div>
           <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 8 }}>
@@ -177,7 +224,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
             {([
-              ['landed', 'Landed', d?.funnel.landed, colors.text],
+              ['landed', `Landed ${date}`, d?.funnel.landed, colors.text],
               ['raw', 'Raw', d?.funnel.raw, colors.text],
               ['cleaned', 'Cleaned', d?.funnel.cleaned, colors.text],
               ['staged', 'Staged', d?.funnel.staged, colors.indigo200],
@@ -187,7 +234,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
               <div key={key} style={{ background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '10px 12px' }}>
                 <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.6 }}>{label}</div>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>
-                  <Measured fields={f} name={`funnel.${key}`} value={value ?? null} color={color} />
+                  <Measured fields={f} name={key} value={value ?? null} color={color} />
                 </div>
               </div>
             ))}
@@ -202,19 +249,23 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
                   <XAxis dataKey="day" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" interval="preserveStartEnd" />
                   <YAxis tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" />
                   <Tooltip contentStyle={{ background: '#0f1c33', border: '1px solid rgba(120,150,200,0.3)', borderRadius: 6, fontSize: 12 }} labelStyle={{ color: colors.heading }} />
-                  <Bar dataKey="Landed" fill={colors.indigo500} radius={[3, 3, 0, 0]} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Bar dataKey="At rest" stackId="a" fill={AT_REST} />
+                  <Bar dataKey="Dynamic" stackId="a" fill={DYNAMIC} />
+                  <Bar dataKey="Transfer" stackId="a" fill={TRANSFER} radius={[3, 3, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
           </div>
+          <FreshnessLine asOf={d?.as_of} source={d?.source} />
         </Panel>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14 }}>
         <Panel>
           <SectionHeader title="Composition · raw vs staged" />
-          {comp.length === 0 ? (
-            <EmptyState title="not yet measured" hint="Per-feed × ISP class split is fed by the counters' per-ISP hashes." />
+          {!compMeasured || compRows.length === 0 ? (
+            <EmptyState title={compMeasured ? 'No rows in raw or staged' : 'not yet measured'} hint="Per-feed × ISP class split of partner_clean_queue (raw = held + pending_eo · staged = ready)." />
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ ...tableStyle, minWidth: 380 }}>
@@ -227,14 +278,14 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {comp.map((c) => (
+                  {compRows.map((c) => (
                     <tr key={c.isp}>
                       <td style={tdStyle}>{c.isp}</td>
                       <td style={{ ...tdStyle, width: '45%' }}>
-                        <ProgressBar pct={compMax > 0 && typeof c.raw === 'number' ? c.raw / compMax : 0} height={8} />
+                        <ProgressBar pct={compMax > 0 ? ((c.raw ?? 0) + (c.staged ?? 0)) / (compMax * 2) : 0} height={8} />
                       </td>
-                      <td style={numTd}><Measured fields={f} name="composition.raw" value={c.raw} /></td>
-                      <td style={numTd}><Measured fields={f} name="composition.staged" value={c.staged} color={colors.indigo200} /></td>
+                      <td style={numTd}><Measured fields={f} name="composition_raw" value={c.raw} /></td>
+                      <td style={numTd}><Measured fields={f} name="composition_staged" value={c.staged} color={colors.indigo200} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -245,10 +296,12 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
 
         <Panel>
           <SectionHeader
-            title="Loads"
+            title={`Loads received ${date}`}
             right={<span style={{ fontSize: 11, color: colors.textMuted }}>each file, batch or insert run · where those rows are now</span>}
           />
-          {(d?.loads ?? []).length === 0 ? (
+          {measured(f, 'loads') === 'not_measured' ? (
+            <EmptyState title="not yet measured" hint="The per-batch lookup for this day did not complete." />
+          ) : (d?.loads ?? []).length === 0 ? (
             <EmptyState title="No loads recorded" hint="A load appears here once a batch row exists for it — a direct insert with no batch id is invisible by design." />
           ) : (
             <div style={{ overflowX: 'auto' }}>
@@ -266,17 +319,17 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, onBack }) => {
                 <tbody>
                   {(d?.loads ?? []).map((l) => (
                     <tr key={l.batch_id}>
-                      <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{l.received_at ?? '—'}</td>
+                      <td style={{ ...tdStyle, color: colors.textMuted, fontSize: 11 }}>{presentString(l.received_at) ?? '—'}</td>
                       <td style={tdStyle}>
-                        <div>{l.source_path}</div>
-                        <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={l.s3_key ?? undefined}>
-                          {l.object && l.s3_bucket ? `${l.s3_bucket}/${(l.s3_key ?? '').slice(0, 42)}` : 'no object'}
+                        <div>{l.name || l.batch_id.slice(0, 8)}</div>
+                        <div style={{ fontSize: 10, color: colors.textFaint, fontFamily: 'monospace' }} title={l.batch_id}>
+                          {l.ref}
                         </div>
                       </td>
-                      <td style={numTd}><Measured fields={f} name="loads.records" value={l.records} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.raw" value={l.raw} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.staged" value={l.staged} color={colors.indigo200} /></td>
-                      <td style={numTd}><Measured fields={f} name="loads.mailed" value={l.mailed} color={colors.successText} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.records} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.raw} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.staged} color={colors.indigo200} /></td>
+                      <td style={numTd}><Measured fields={f} name="loads" value={l.mailed} color={colors.successText} /></td>
                     </tr>
                   ))}
                 </tbody>

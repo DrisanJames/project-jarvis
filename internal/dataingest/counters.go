@@ -29,8 +29,11 @@ package dataingest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -205,21 +208,76 @@ func (c *Counters) Apply(ctx context.Context, ev Event) (bool, error) {
 	touch(ixTransitions(day))
 
 	if _, err := pipe.Exec(ctx); err != nil {
+		// Release the guard so the framework's retry can count this operation:
+		// with the guard left set, the retry would read "duplicate" and commit
+		// the offset over increments that never happened (2026-09-20 review).
+		if derr := c.rdb.Del(context.Background(), keyOp(ev.OpID)).Err(); derr != nil {
+			return false, fmt.Errorf("dataingest: counter pipeline: %w (guard %s NOT released: %v — operation lost)", err, ev.OpID, derr)
+		}
 		return false, fmt.Errorf("dataingest: counter pipeline: %w", err)
 	}
 
+	delta := Delta{
+		Day:         day,
+		SupplyClass: ev.Class,
+		Transition:  ev.Transition,
+		DatasetID:   ev.DatasetID,
+		Lane:        ev.Lane,
+		ByISP:       buckets,
+		N:           ev.N,
+		Origin:      originID,
+	}
 	if c.hub != nil {
-		c.hub.Publish(Delta{
-			Day:         day,
-			SupplyClass: ev.Class,
-			Transition:  ev.Transition,
-			DatasetID:   ev.DatasetID,
-			Lane:        ev.Lane,
-			ByISP:       buckets,
-			N:           ev.N,
-		})
+		c.hub.Publish(delta)
+	}
+	// The hub is per process and the consumer group splits partitions across
+	// the service's tasks, so a browser attached to one task would see only
+	// that task's share (2026-09-20 review). Every applied delta also goes
+	// over Redis pub/sub; StartDeltaRelay on each task republishes the OTHER
+	// tasks' deltas into its local hub (Origin filters out its own).
+	if b, err := json.Marshal(delta); err == nil {
+		if perr := c.rdb.Publish(ctx, DeltaChannel, b).Err(); perr != nil {
+			log.Printf("[data-ingest] delta publish failed (local subscribers still served): %v", perr)
+		}
 	}
 	return true, nil
+}
+
+// DeltaChannel is the Redis pub/sub channel that carries every applied delta
+// to every task of the service.
+const DeltaChannel = "di:deltas"
+
+// originID identifies this process on the channel so a task never re-applies
+// its own deltas to its own hub.
+var originID = uuid.NewString()
+
+// StartDeltaRelay subscribes to DeltaChannel and publishes every delta from
+// ANOTHER process into hub. Returns immediately; stops when ctx is done.
+// go-redis re-subscribes on connection loss on its own.
+func StartDeltaRelay(ctx context.Context, rdb *redis.Client, hub *Hub) {
+	if rdb == nil || hub == nil {
+		return
+	}
+	go func() {
+		ps := rdb.Subscribe(ctx, DeltaChannel)
+		defer ps.Close()
+		ch := ps.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				var d Delta
+				if err := json.Unmarshal([]byte(msg.Payload), &d); err != nil || d.Origin == originID {
+					continue
+				}
+				hub.Publish(d)
+			}
+		}
+	}()
 }
 
 // ── reader ──────────────────────────────────────────────────────────────────
@@ -544,6 +602,8 @@ type Delta struct {
 	Lane        string           `json:"lane,omitempty"`
 	ByISP       map[string]int64 `json:"by_isp,omitempty"`
 	N           int64            `json:"n"`
+	// Origin is the producing process (see StartDeltaRelay); not for clients.
+	Origin string `json:"origin,omitempty"`
 }
 
 // Hub is the in-process delta fan-out between the Kafka consumer and the SSE
