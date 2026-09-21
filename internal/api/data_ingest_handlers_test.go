@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -546,5 +547,142 @@ func TestDataIngestHours_ShapeAndNotMeasured(t *testing.T) {
 	}
 	if rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/hours?class=borrowed", "", sessionHdr()); rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid class: want 400, got %d", rec.Code)
+	}
+}
+
+// With the refresher owning the scan (prod), a request must NEVER run the
+// partner_clean_queue GROUP BY: before the first background scan completes the
+// reservoir tiles are not_measured, and sqlmock sees no query at all.
+func TestDataIngestState_RefresherOnNeverScansInline(t *testing.T) {
+	h, mock, svc := newDIRouter(t)
+	svc.refresherOn = true // the flag StartQueueStateRefresher sets; no goroutine in tests
+	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(int64(0)))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnRows(sqlmock.NewRows([]string{"with_object", "without"}).AddRow(int64(0), int64(0)))
+
+	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/state", "", sessionHdr())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Fields map[string]string `json:"fields"`
+		Tiles  map[string]*int64 `json:"tiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"parked_in_db", "staged", "inflight", "mailed", "removed"} {
+		if got.Fields[f] != fieldNotMeasured {
+			t.Errorf("field %s = %q, want not_measured while warming", f, got.Fields[f])
+		}
+		if got.Tiles[f] != nil {
+			t.Errorf("tile %s = %d, want null while warming", f, *got.Tiles[f])
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected DB traffic with refresher on: %v", err)
+	}
+
+	// Once a snapshot exists it is served as-is, again with no scan.
+	svc.mu.Lock()
+	svc.cached = &queueStateSnapshot{GeneratedAt: time.Now(), ByStatus: map[string]int64{"held": 5, "ready": 7}, ByDataset: map[string]map[string]int64{}}
+	svc.cachedAt = time.Now()
+	svc.mu.Unlock()
+	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(int64(0)))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnRows(sqlmock.NewRows([]string{"with_object", "without"}).AddRow(int64(0), int64(0)))
+	rec = diDo(h, http.MethodGet, "/api/mailing/data-ingest/state", "", sessionHdr())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Tiles["parked_in_db"] == nil || *got.Tiles["parked_in_db"] != 5 || got.Tiles["staged"] == nil || *got.Tiles["staged"] != 7 {
+		t.Fatalf("snapshot not served: %s", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected DB traffic with snapshot cached: %v", err)
+	}
+}
+
+// When the last-batch LATERAL times out, /feeds serves the wiring from the
+// small tables and marks the three batch-derived columns not_measured — a 500
+// would blank the whole feed list for one slow lookup.
+func TestDataIngestFeeds_FallsBackWithoutLastBatch(t *testing.T) {
+	h, mock, _ := newDIRouter(t)
+	ds1 := uuid.NewString()
+	p1 := uuid.NewString()
+	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency",
+		"express", "pid", "pname", "pstatus", "has_drip_state", "has_contract",
+		"supply_class", "source_path", "received_at"}
+	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY received_at DESC")).WithArgs(diOrg).
+		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
+	mock.ExpectQuery(regexp.QuoteMeta("''::text, ''::text, NULL::timestamptz")).WithArgs(diOrg).
+		WillReturnRows(sqlmock.NewRows(cols).
+			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, true,
+				p1, "Partner A", "active", true, true, "", "", nil))
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
+		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "status", "n"}).AddRow(ds1, "ready", int64(120)))
+	mock.ExpectRollback()
+
+	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/feeds", "", sessionHdr())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Fields map[string]string `json:"fields"`
+		Note   string            `json:"note"`
+		Feeds  []struct {
+			DatasetID  string `json:"dataset_id"`
+			LastLoaded string `json:"last_loaded"`
+			Staged     *int64 `json:"staged"`
+		} `json:"feeds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Feeds) != 1 || got.Feeds[0].DatasetID != ds1 {
+		t.Fatalf("feeds = %s", rec.Body.String())
+	}
+	if got.Fields["last_loaded"] != fieldNotMeasured || got.Fields["supply_class"] != fieldNotMeasured {
+		t.Errorf("batch-derived fields should be not_measured: %v", got.Fields)
+	}
+	if got.Note == "" || got.Feeds[0].LastLoaded != "" {
+		t.Errorf("expected a note and no last_loaded, got note=%q last=%q", got.Note, got.Feeds[0].LastLoaded)
+	}
+	if got.Feeds[0].Staged == nil || *got.Feeds[0].Staged != 120 {
+		t.Errorf("reservoir counts must still be served from the snapshot: %s", rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A timed-out day range on partner_inbound_batches degrades /loads to an
+// honest empty answer (every derived total not_measured, note set), not a 500.
+func TestDataIngestLoads_DegradesOnQueryError(t *testing.T) {
+	h, mock, _ := newDIRouter(t)
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
+	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/loads?date=2026-09-20", "", sessionHdr())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Fields map[string]string `json:"fields"`
+		Note   string            `json:"note"`
+		Loads  []any             `json:"loads"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Loads) != 0 || got.Note == "" || got.Fields["loads"] != fieldNotMeasured || got.Fields["landed"] != fieldNotMeasured {
+		t.Fatalf("bad degrade: %s", rec.Body.String())
 	}
 }

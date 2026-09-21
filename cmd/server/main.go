@@ -2772,6 +2772,15 @@ var concurrentIndexSpecs = []struct {
 	// the grouping key. Concurrent slice, not the 5s migration slice: the build
 	// scans the whole 10 GB heap.
 	{"idx_pcq_ingested_dataset", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_ingested_dataset ON partner_clean_queue (ingested_at, dataset_id)`},
+	// Data Ingest dashboard (REQ 2026-09-20): /feeds asks "last batch per
+	// dataset" and /loads asks "batches received on day D". partner_inbound_
+	// batches is 10.6M rows / 7.75 GB (one row per partner API post) and its
+	// only dataset index is (dataset_id, status, received_at), so both shapes
+	// walked every batch of a dataset — 529k index entries + sort per feed row,
+	// a 30s statement timeout on /loads (EXPLAIN 2026-09-20). (dataset_id,
+	// received_at DESC) makes the first a LIMIT-1 index probe and the second
+	// a bounded range per dataset. Concurrent slice: the build scans the heap.
+	{"idx_pib_dataset_received", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pib_dataset_received ON partner_inbound_batches (dataset_id, received_at DESC)`},
 	// Cold-bucket slicing + the cold sweep's own scan (operator 2026-08-24
 	// engagement gate). The sweep and every retargeting/activation query filter
 	// partner_clean_queue on terminal_reason='cold_no_engagement' and then slice

@@ -606,7 +606,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// and may be nil — the service then renders every live field
 			// not_measured rather than a confident zero). Sibling routes under
 			// /data-ingest/static (the S3 upload door) mount separately.
-			r.Route("/data-ingest", NewDataIngestService(db, s.redisClient).RegisterRoutes)
+			diSvc := NewDataIngestService(db, s.redisClient)
+			// The reservoir scan (partner_clean_queue GROUP BY, 30–70s under
+			// send load) runs in the background from here on; no request
+			// path ever executes it (operator: "doesn't load the database").
+			diSvc.StartQueueStateRefresher(context.Background())
+			r.Route("/data-ingest", diSvc.RegisterRoutes)
 			// The S3 static upload door (data_ingest_static.go): presign →
 			// complete → register; refuses a key that is not in the bucket.
 			r.Route("/data-ingest/static", NewDataIngestStaticService(db, s.partnerIngestS3).RegisterRoutes)

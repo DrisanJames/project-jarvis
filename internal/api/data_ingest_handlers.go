@@ -33,8 +33,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -68,6 +70,12 @@ const (
 const (
 	dataIngestCacheTTL     = 60 * time.Second
 	dataIngestQueryTimeout = 90 * time.Second
+	// dataIngestRefreshEvery is the cadence of the BACKGROUND reservoir scan
+	// once StartQueueStateRefresher has been called (prod). Measured cold on
+	// 2026-09-20: 30–70s per scan under send load, so a request must never
+	// wait on it — the refresher owns the scan and handlers read the last
+	// snapshot (its age is on the response as cache_age_seconds).
+	dataIngestRefreshEvery = 10 * time.Minute
 	// dataIngestStreamCoalesce bounds how often the SSE stream flushes; deltas
 	// arriving inside the window are merged into one frame.
 	dataIngestStreamCoalesce = 2 * time.Second
@@ -92,7 +100,18 @@ type DataIngestService struct {
 	cached   *queueStateSnapshot
 	cachedAt time.Time
 	inFlight *queueStateFlight
+	// refresherOn flips when StartQueueStateRefresher runs (prod boot). From
+	// then on NO request path scans partner_clean_queue: a handler reads the
+	// last snapshot, or reports not_measured while the first scan is warming.
+	// Off (tests, or a service mounted without the refresher) keeps the
+	// inline single-flight scan so the contract is still served.
+	refresherOn bool
 }
+
+// errQueueStateWarming is returned by queueState when the refresher owns the
+// scan and it has not completed once yet; callers mark the reservoir fields
+// not_measured rather than blocking a request behind a 15M-row scan.
+var errQueueStateWarming = errors.New("queue state warming: first background scan not complete")
 
 // NewDataIngestService builds the service. rdb MAY be nil — every live-counter
 // field then renders not_measured and the dashboard falls back to the rollup
@@ -281,6 +300,20 @@ func (s *DataIngestService) queueState(ctx context.Context, force bool) (*queueS
 		return nil, sql.ErrConnDone
 	}
 	s.mu.Lock()
+	if s.refresherOn {
+		// Prod: the refresher owns the scan. Serve the last snapshot whatever
+		// its age (the response carries cache_age_seconds); ?refresh=1 kicks
+		// an EXTRA scan in the background and still returns immediately.
+		c := s.cached
+		s.mu.Unlock()
+		if force {
+			go s.refreshQueueState()
+		}
+		if c == nil {
+			return nil, errQueueStateWarming
+		}
+		return c, nil
+	}
 	if !force && s.cached != nil && time.Since(s.cachedAt) < dataIngestCacheTTL {
 		c := s.cached
 		s.mu.Unlock()
@@ -315,6 +348,71 @@ func (s *DataIngestService) queueState(ctx context.Context, force bool) (*queueS
 	flight.snap, flight.err = snap, err
 	close(flight.done)
 	return snap, err
+}
+
+// StartQueueStateRefresher moves the reservoir scan off the request path for
+// the life of the process: one scan now, then one every dataIngestRefreshEvery,
+// single-flighted with any ?refresh=1 kick. Called once from the route
+// registration in prod (server_routes_mailing.go); never from tests, whose
+// sqlmock expectations pin the inline path. ctx cancellation stops the ticker.
+func (s *DataIngestService) StartQueueStateRefresher(ctx context.Context) {
+	s.mu.Lock()
+	if s.refresherOn {
+		s.mu.Unlock()
+		return
+	}
+	s.refresherOn = true
+	s.mu.Unlock()
+	go func() {
+		s.refreshQueueState()
+		t := time.NewTicker(dataIngestRefreshEvery)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.refreshQueueState()
+			}
+		}
+	}()
+}
+
+// refreshQueueState runs ONE scan under the same single-flight as the inline
+// path (a ticker firing while a ?refresh=1 kick is still scanning joins it
+// instead of starting a second full scan). Errors are logged, never fatal:
+// the previous snapshot stays served and its age tells the reader.
+func (s *DataIngestService) refreshQueueState() {
+	if s.db == nil {
+		return
+	}
+	s.mu.Lock()
+	if f := s.inFlight; f != nil {
+		s.mu.Unlock()
+		<-f.done
+		return
+	}
+	flight := &queueStateFlight{done: make(chan struct{})}
+	s.inFlight = flight
+	s.mu.Unlock()
+
+	qctx, cancel := context.WithTimeout(context.Background(), dataIngestQueryTimeout)
+	defer cancel()
+	snap, err := s.queryQueueState(qctx)
+
+	s.mu.Lock()
+	if err == nil {
+		s.cached, s.cachedAt = snap, time.Now()
+	}
+	s.inFlight = nil
+	s.mu.Unlock()
+	if err != nil {
+		log.Printf("[data-ingest] reservoir scan failed (previous snapshot stays served): %v", err)
+	} else {
+		log.Printf("[data-ingest] reservoir snapshot refreshed: %d rows in %dms", snap.Total, snap.QueryMillis)
+	}
+	flight.snap, flight.err = snap, err
+	close(flight.done)
 }
 
 func (s *DataIngestService) queryQueueState(ctx context.Context) (*queueStateSnapshot, error) {
@@ -818,6 +916,7 @@ type feedsResponse struct {
 	Feeds       []feedRow `json:"feeds"`
 	CacheAgeSec int       `json:"cache_age_seconds"`
 	QueryMillis int64     `json:"query_ms"`
+	Note        string    `json:"note,omitempty"`
 }
 
 // HandleFeeds: one row per (partner, dataset) — wiring status from the tables,
@@ -834,14 +933,30 @@ func (s *DataIngestService) HandleFeeds(w http.ResponseWriter, r *http.Request) 
 	}
 	out := feedsResponse{diMeta: s.meta(r, sourceMixed), Date: day, Feeds: []feedRow{}}
 
-	feeds, err := s.queryFeeds(r.Context(), dataIngestOrgID(r))
+	feeds, err := s.queryFeeds(r.Context(), dataIngestOrgID(r), true)
+	feedsDegraded := false
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "feeds_query_failed: "+err.Error())
-		return
+		// The wiring columns come from four small tables; only the LATERAL
+		// last-batch lookup on partner_inbound_batches (10.6M rows) can time
+		// out — measured 2026-09-20 before idx_pib_dataset_received existed.
+		// Serve the wiring without it rather than 500 the whole feed list.
+		log.Printf("[data-ingest] feeds with last-batch lookup failed (%v) — serving wiring only", err)
+		feeds, err = s.queryFeeds(r.Context(), dataIngestOrgID(r), false)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "feeds_query_failed: "+err.Error())
+			return
+		}
+		feedsDegraded = true
 	}
 	out.Feeds = feeds
 	out.mark("feeds", fieldMeasured)
 	out.markAll(fieldNotMeasured, "consumed", "remaining")
+	if feedsDegraded {
+		out.Note = "last_loaded/supply_class/source_channel not measured: the per-dataset last-batch lookup timed out (index idx_pib_dataset_received pending — built by the concurrent index builder after boot)"
+		out.markAll(fieldNotMeasured, "last_loaded", "supply_class", "source_channel")
+	} else {
+		out.markAll(fieldMeasured, "last_loaded", "supply_class", "source_channel")
+	}
 
 	if snap, err := s.queueState(r.Context(), r.URL.Query().Get("refresh") == "1"); err == nil {
 		for i := range out.Feeds {
@@ -909,7 +1024,7 @@ func (s *DataIngestService) datasetArrivals(ctx context.Context, day string, ids
 	return out
 }
 
-func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string) ([]feedRow, error) {
+func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLastBatch bool) ([]feedRow, error) {
 	if s.db == nil {
 		return nil, sql.ErrConnDone
 	}
@@ -940,10 +1055,33 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string) ([]fee
 		) b ON TRUE
 		WHERE p.organization_id = $1
 		ORDER BY p.name, d.name`
+	// qWiringOnly is q without the last-batch LATERAL: the same columns, the
+	// three batch-derived ones NULL, so the scan below is shared.
+	const qWiringOnly = `
+		SELECT d.id::text, d.name, d.slug, d.vertical, d.status,
+		       d.paused_emergency, COALESCE(d.express_dispatch, FALSE),
+		       p.id::text, p.name, p.status,
+		       (ds.vertical IS NOT NULL) AS has_drip_state,
+		       (dc.lane IS NOT NULL) AS has_contract,
+		       ''::text, ''::text, NULL::timestamptz
+		FROM partner_datasets d
+		JOIN data_partners p ON p.id = d.partner_id
+		LEFT JOIN partner_drip_state ds ON ds.vertical = d.vertical
+		LEFT JOIN LATERAL (
+			SELECT lane FROM drip_dispatch_contracts
+			WHERE lane = d.vertical AND status = 'active'
+			LIMIT 1
+		) dc ON TRUE
+		WHERE p.organization_id = $1
+		ORDER BY p.name, d.name`
 
 	qctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := s.db.QueryContext(qctx, q, orgID)
+	sqlText := q
+	if !withLastBatch {
+		sqlText = qWiringOnly
+	}
+	rows, err := s.db.QueryContext(qctx, sqlText, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -1226,6 +1364,7 @@ type loadsResponse struct {
 	Loads       []loadRow    `json:"loads"`
 	Composition []ispCount   `json:"composition"`
 	Sources     []loadSource `json:"sources"`
+	Note        string       `json:"note,omitempty"`
 }
 
 // HandleLoads lists the batches RECEIVED on one Denver day with their per-batch
@@ -1248,7 +1387,14 @@ func (s *DataIngestService) HandleLoads(w http.ResponseWriter, r *http.Request) 
 
 	loads, err := s.queryLoads(r.Context(), dataIngestOrgID(r), day, "")
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "loads_query_failed: "+err.Error())
+		// The day range on partner_inbound_batches.received_at has no usable
+		// index until idx_pib_dataset_received lands (concurrent builder);
+		// measured 2026-09-20 as a 30s statement timeout. An empty list marked
+		// not_measured is honest; a 500 hides the rest of the page.
+		log.Printf("[data-ingest] loads query failed for %s: %v", day, err)
+		out.Note = "loads_query_failed: " + err.Error()
+		out.markAll(fieldNotMeasured, "loads", "landed", "mailed", "not_mailed", "removed", "duplicates", "sources", "composition")
+		respondJSON(w, http.StatusOK, out)
 		return
 	}
 	out.Loads = loads
