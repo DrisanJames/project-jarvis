@@ -180,14 +180,14 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 
 	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency",
 		"express", "pid", "pname", "pstatus", "has_drip_state", "has_contract",
-		"supply_class", "source_path", "received_at"}
+		"supply_class", "source_path", "received_at", "s3_bucket"}
 	recv := time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_datasets d")).WithArgs(diOrg).
 		WillReturnRows(sqlmock.NewRows(cols).
 			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, true,
-				p1, "Partner A", "active", true, true, "dynamic", "partner_api", recv).
+				p1, "Partner A", "active", true, true, "dynamic", "partner_api", recv, "jarvis-partner-ingest").
 			AddRow(ds2, "Feed Two", "feed-two", "remodel", "active", true, false,
-				p1, "Partner A", "active", false, false, "at_rest", "csv_upload", nil))
+				p1, "Partner A", "active", false, false, "at_rest", "csv_upload", nil, ""))
 
 	// The ONE heavy query, behind the 60s cache.
 	mock.ExpectBegin()
@@ -611,13 +611,13 @@ func TestDataIngestFeeds_FallsBackWithoutLastBatch(t *testing.T) {
 	p1 := uuid.NewString()
 	cols := []string{"id", "name", "slug", "vertical", "status", "paused_emergency",
 		"express", "pid", "pname", "pstatus", "has_drip_state", "has_contract",
-		"supply_class", "source_path", "received_at"}
+		"supply_class", "source_path", "received_at", "s3_bucket"}
 	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY received_at DESC")).WithArgs(diOrg).
 		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
 	mock.ExpectQuery(regexp.QuoteMeta("''::text, ''::text, NULL::timestamptz")).WithArgs(diOrg).
 		WillReturnRows(sqlmock.NewRows(cols).
 			AddRow(ds1, "Feed One", "feed-one", "refi_heloc", "active", false, true,
-				p1, "Partner A", "active", true, true, "", "", nil))
+				p1, "Partner A", "active", true, true, "", "", nil, ""))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -682,5 +682,21 @@ func TestDataIngestLoads_DegradesOnQueryError(t *testing.T) {
 	}
 	if len(got.Loads) != 0 || got.Note == "" || got.Fields["loads"] != fieldNotMeasured || got.Fields["landed"] != fieldNotMeasured {
 		t.Fatalf("bad degrade: %s", rec.Body.String())
+	}
+}
+
+// A partner-API batch that predates the supply_class column reads as
+// dynamic/partner_api (the only class a repository-bucket post can be); a
+// blank non-repository batch stays blank rather than guessed.
+func TestDataIngestLegacySupplyClass(t *testing.T) {
+	sc, sp := legacySupplyClass("", "", "jarvis-partner-ingest")
+	if sc != "dynamic" || sp != "partner_api" {
+		t.Fatalf("repository bucket → %q/%q, want dynamic/partner_api", sc, sp)
+	}
+	if sc, sp := legacySupplyClass("at_rest", "desktop", "jarvis-partner-ingest"); sc != "at_rest" || sp != "desktop" {
+		t.Fatalf("stamped row must not be overridden: %q/%q", sc, sp)
+	}
+	if sc, sp := legacySupplyClass("", "", "desktop"); sc != "" || sp != "" {
+		t.Fatalf("unknown legacy load must stay blank: %q/%q", sc, sp)
 	}
 }

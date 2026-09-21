@@ -225,6 +225,26 @@ func dataIngestRealBucket() string {
 	return defaultPartnerIngestS3Bucket
 }
 
+// legacySupplyClass derives the class of a batch that predates the
+// supply_class column. 11,165,296 of the 11,165,349 unstamped batches on
+// 2026-09-20 were partner API posts landed in the repository bucket — one
+// class by construction — so they are read as dynamic/partner_api here rather
+// than rewritten by an 11M-row UPDATE on a hot 7.75 GB table. Every other
+// legacy load (42 rows) was stamped by agents/jobs/data_ingest_backfill.py
+// --stamp-batches --non-api-only; anything still blank stays blank (honest).
+func legacySupplyClass(supplyClass, sourcePath, bucket string) (string, string) {
+	if supplyClass != "" {
+		return supplyClass, sourcePath
+	}
+	if bucket != "" && bucket == dataIngestRealBucket() {
+		if sourcePath == "" {
+			sourcePath = "partner_api"
+		}
+		return "dynamic", sourcePath
+	}
+	return supplyClass, sourcePath
+}
+
 // denverDay resolves ?date= (YYYY-MM-DD) or defaults to today in Denver.
 // Rejects a malformed date rather than silently answering for today.
 func denverDay(r *http.Request) (string, error) {
@@ -1082,7 +1102,8 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 		       p.id::text, p.name, p.status,
 		       (ds.vertical IS NOT NULL) AS has_drip_state,
 		       (dc.lane IS NOT NULL) AS has_contract,
-		       COALESCE(b.supply_class, ''), COALESCE(b.source_path, ''), b.received_at
+		       COALESCE(b.supply_class, ''), COALESCE(b.source_path, ''), b.received_at,
+		       COALESCE(b.s3_bucket, '')
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
 		LEFT JOIN partner_drip_state ds ON ds.vertical = d.vertical
@@ -1092,7 +1113,7 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 			LIMIT 1
 		) dc ON TRUE
 		LEFT JOIN LATERAL (
-			SELECT supply_class, source_path, received_at
+			SELECT supply_class, source_path, received_at, s3_bucket
 			FROM partner_inbound_batches
 			WHERE dataset_id = d.id
 			ORDER BY received_at DESC
@@ -1108,7 +1129,7 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 		       p.id::text, p.name, p.status,
 		       (ds.vertical IS NOT NULL) AS has_drip_state,
 		       (dc.lane IS NOT NULL) AS has_contract,
-		       ''::text, ''::text, NULL::timestamptz
+		       ''::text, ''::text, NULL::timestamptz, ''::text
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
 		LEFT JOIN partner_drip_state ds ON ds.vertical = d.vertical
@@ -1138,15 +1159,17 @@ func (s *DataIngestService) queryFeeds(ctx context.Context, orgID string, withLa
 		var slug, datasetStatus, partnerStatus string
 		var pausedEmergency bool
 		var lastLoaded sql.NullTime
+		var lastBucket string
 		if err := rows.Scan(
 			&f.DatasetID, &f.Name, &slug, &f.Lane, &datasetStatus,
 			&pausedEmergency, &f.Status.Express,
 			&f.PartnerID, &f.Partner, &partnerStatus,
 			&f.Status.SendRow, &f.Status.Contract,
-			&f.SupplyClass, &f.SourceChannel, &lastLoaded,
+			&f.SupplyClass, &f.SourceChannel, &lastLoaded, &lastBucket,
 		); err != nil {
 			return nil, err
 		}
+		f.SupplyClass, f.SourceChannel = legacySupplyClass(f.SupplyClass, f.SourceChannel, lastBucket)
 		if lastLoaded.Valid {
 			f.LastLoaded = lastLoaded.Time.UTC().Format(time.RFC3339)
 		}
@@ -1188,12 +1211,23 @@ type feedComposition struct {
 
 type feedDetailResponse struct {
 	diMeta
-	Date        string           `json:"date"`
-	DatasetID   string           `json:"dataset_id"`
-	Funnel      feedFunnel       `json:"funnel"`
-	Series      []daySeriesPoint `json:"series"`
-	Composition feedComposition  `json:"composition"`
-	Loads       []feedLoad       `json:"loads"`
+	Date      string `json:"date"`
+	DatasetID string `json:"dataset_id"`
+	// Header: the same wiring row /feeds lists for this dataset, so the feed
+	// page needs no second call (status = the four switches, never a summary).
+	Name          string           `json:"name"`
+	Partner       string           `json:"partner"`
+	PartnerID     string           `json:"partner_id"`
+	Lane          string           `json:"lane"`
+	SupplyClass   string           `json:"supply_class"`
+	SourceChannel string           `json:"source_channel"`
+	Status        feedStatus       `json:"status"`
+	LastLoaded    string           `json:"last_loaded"`
+	Note          string           `json:"note,omitempty"`
+	Funnel        feedFunnel       `json:"funnel"`
+	Series        []daySeriesPoint `json:"series"`
+	Composition   feedComposition  `json:"composition"`
+	Loads         []feedLoad       `json:"loads"`
 }
 
 // HandleFeed is the per-feed page: funnel + composition from the tables
@@ -1228,6 +1262,26 @@ func (s *DataIngestService) HandleFeed(w http.ResponseWriter, r *http.Request) {
 
 	// Funnel + composition: ONE dataset-scoped grouped query on
 	// idx_pcq_isp_family (dataset_id, isp_family, status).
+	// ── header (wiring row) ──
+	if feeds, ferr := s.queryFeeds(r.Context(), dataIngestOrgID(r), true); ferr == nil {
+		found := false
+		for _, f := range feeds {
+			if f.DatasetID == datasetID {
+				out.Name, out.Partner, out.PartnerID, out.Lane = f.Name, f.Partner, f.PartnerID, f.Lane
+				out.SupplyClass, out.SourceChannel, out.Status, out.LastLoaded = f.SupplyClass, f.SourceChannel, f.Status, f.LastLoaded
+				found = true
+				break
+			}
+		}
+		if !found {
+			out.Note = "dataset not found in this organization's feeds"
+		}
+		out.markAll(fieldMeasured, "name", "status", "supply_class", "source_channel", "last_loaded")
+	} else {
+		out.Note = "feed header not measured: " + ferr.Error()
+		out.markAll(fieldNotMeasured, "name", "status", "supply_class", "source_channel", "last_loaded")
+	}
+
 	byStatus, byStatusISP, err := s.queryFeedComposition(r.Context(), datasetID)
 	if err != nil {
 		out.markAll(fieldNotMeasured, "raw", "cleaned", "staged", "mailed", "engaged",
@@ -1580,6 +1634,7 @@ func (s *DataIngestService) queryLoads(ctx context.Context, orgID, day, datasetI
 			return nil, err
 		}
 		l.ReceivedAt = received.UTC().Format(time.RFC3339)
+		l.SupplyClass, l.SourcePath = legacySupplyClass(l.SupplyClass, l.SourcePath, l.S3Bucket)
 		// A batch whose bucket IS the repository has a real object even when
 		// object_sha256 predates the column.
 		if !l.Object && l.S3Bucket != "" && l.S3Bucket == dataIngestRealBucket() {
