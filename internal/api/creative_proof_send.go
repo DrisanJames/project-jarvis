@@ -75,6 +75,18 @@ const (
 // normalizeProofTransport maps a request's transport field to a canonical
 // value. "" defaults to PMTA (backward compatible); anything else must be an
 // exact known transport.
+// brandRootFromProofSender mirrors the send worker's brand-root derivation: the
+// sending address's domain, reduced to the owned brand root, so hello@pk.<apex>
+// and hello@em.<apex> both root at <apex> and a brand unsubscribe suppresses the
+// BRAND rather than one sending domain.
+func brandRootFromProofSender(fromEmail string) string {
+	at := strings.LastIndex(fromEmail, "@")
+	if at < 0 || at+1 >= len(fromEmail) {
+		return ""
+	}
+	return brand.Root(strings.ToLower(strings.TrimSpace(fromEmail[at+1:])))
+}
+
 func normalizeProofTransport(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "", proofTransportPMTA:
@@ -274,9 +286,19 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 	ts := mailing.NewTemplateService()
 	emailID := uuid.New().String()
 
-	var unsubURL string
+	var unsubURL, brandUnsubURL string
 	if trackBase != "" && h.trackingSecret != "" {
 		unsubURL = worker.GenerateUnsubscribeURL(orgID, proofCampaignID, proofSubscriberID, trackBase, h.trackingSecret)
+		// The BRAND unsubscribe is a separate token AND a separate merge tag. The
+		// send worker resolves both (send_worker.go:2088-2095); the proof resolved
+		// only the global one, so a creative whose visible footer link is
+		// {{system.brand_unsubscribe_url}} — which every kumo newsletter's is —
+		// rendered href="". The proof then showed a dead unsubscribe for mail that
+		// is correct in production: the one artifact meant to represent the real
+		// send misrepresented it.
+		brandUnsubURL = worker.GenerateBrandUnsubscribeURL(
+			orgID, proofCampaignID, proofSubscriberID,
+			brandRootFromProofSender(fromEmail), trackBase, h.trackingSecret)
 	}
 
 	rc := buildProofRenderContext(to, trackBase, emailID, unsubURL, fromEmail)
@@ -333,6 +355,8 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 		)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{ system.unsubscribe_url }}", unsubURL)
 		renderedHTML = strings.ReplaceAll(renderedHTML, "{{system.unsubscribe_url}}", unsubURL)
+		renderedHTML = strings.ReplaceAll(renderedHTML, "{{ system.brand_unsubscribe_url }}", brandUnsubURL)
+		renderedHTML = strings.ReplaceAll(renderedHTML, "{{system.brand_unsubscribe_url}}", brandUnsubURL)
 	}
 	if !strings.Contains(renderedHTML, "<html") {
 		renderedHTML = "<html><body>" + renderedHTML + "</body></html>"
