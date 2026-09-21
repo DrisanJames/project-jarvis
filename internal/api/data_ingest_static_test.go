@@ -180,6 +180,8 @@ func TestStaticRegister_CreatesAtRestBatchFromObject(t *testing.T) {
 				`"static_object_id":"` + staticTestObjectA + `"`,
 				`"landing_status":"held"`,
 			}},
+			// …and the two CLASSIFICATION columns, stamped at the write.
+			"at_rest", "static_upload",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

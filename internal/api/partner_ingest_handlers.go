@@ -35,6 +35,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 )
 
 // PartnerIngestHandler bundles the dependencies needed by the inbound API.
@@ -332,6 +334,11 @@ func (h *PartnerIngestHandler) HandlePostRecords(w http.ResponseWriter, r *http.
 		ContentType: contentType,
 		Records:     parsed,
 		IngestMeta: map[string]interface{}{
+			// "source" is what persistPartnerBatch classifies the batch row on
+			// (supply_class + source_path). The CSV and static doors have always
+			// stamped it; the partner API door did not, so every API batch read
+			// as an unknown path on the ingest dashboard.
+			"source":         dataingest.SourcePartnerAPI,
 			"api_key_prefix": authCtx.KeyPrefix,
 			"remote_ip":      readClientIP(r),
 			"user_agent":     r.UserAgent(),
@@ -429,21 +436,52 @@ func persistPartnerBatch(ctx context.Context, db *sql.DB, s3c *PartnerIngestS3Cl
 		ingestMeta[k] = v
 	}
 
+	// Dashboard classification, stamped AT THE WRITE (REQ 2026-09-20 U1/U2).
+	// The door tells us where the batch came from via ingest_metadata; the
+	// supply class follows from that path unless the door already declared one.
+	// The static-upload door declares BOTH (it also re-stamps post-commit with
+	// object_sha256) — reading its declaration here rather than re-deriving is
+	// what keeps the two stamps from disagreeing.
+	sourcePath := metaString(ingestMeta, "source_path")
+	if sourcePath == "" {
+		sourcePath = metaString(ingestMeta, "source")
+	}
+	supplyClass := metaString(ingestMeta, "supply_class")
+	if supplyClass == "" {
+		supplyClass = dataingest.SupplyClassFor(sourcePath)
+	}
+
 	_, dbErr := db.ExecContext(ctx, `
 		INSERT INTO partner_inbound_batches
 		    (id, dataset_id, partner_id, s3_bucket, s3_key, record_count, status,
-		     emergency_stopped, next_record_offset, received_at, ingest_metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, 'received', false, 0, $7, $8::jsonb)
+		     emergency_stopped, next_record_offset, received_at, ingest_metadata,
+		     supply_class, source_path)
+		VALUES ($1, $2, $3, $4, $5, $6, 'received', false, 0, $7, $8::jsonb,
+		        NULLIF($9,''), NULLIF($10,''))
 	`,
 		in.BatchID, in.DatasetID, in.PartnerID,
 		s3c.Bucket(), s3Key, len(in.Records),
 		in.ReceivedAt,
 		mustJSONString(ingestMeta),
+		supplyClass, sourcePath,
 	)
 	if dbErr != nil {
 		return s3Key, bytesWritten, true, nil
 	}
 	return s3Key, bytesWritten, false, nil
+}
+
+// metaString reads a string value out of an ingest_metadata map, returning ""
+// for a missing key or a non-string value. Used to classify a batch row from
+// the door's own declaration rather than re-deriving it per call site.
+func metaString(meta map[string]interface{}, key string) string {
+	if meta == nil {
+		return ""
+	}
+	if v, ok := meta[key].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }
 
 // ============ raw-sample capture ============
@@ -648,7 +686,7 @@ func (h *PartnerIngestHandler) HandleGetSchema(w http.ResponseWriter, r *http.Re
 			},
 		},
 		"example_ndjson_line": `{"email":"first.last@example.com","first_name":"First","zip":"83854","opt_in_date":"2026-05-01T14:22:00Z"}`,
-		"required_fields": []string{"email"},
+		"required_fields":     []string{"email"},
 		"optional_fields": []string{
 			"first_name", "last_name", "city", "zip (alias: postal_code)", "state", "address_1",
 			"ip_address (aliases: signup_ip, opt_in_ip)", "opt_in_date", "signup_url (alias: opt_in_url)",

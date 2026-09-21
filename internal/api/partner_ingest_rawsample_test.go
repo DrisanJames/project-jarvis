@@ -196,3 +196,29 @@ func TestExtractFirstRawRecord_Shapes(t *testing.T) {
 		require.Nil(t, extractFirstRawRecord([]byte("   \n  "), "application/x-ndjson"))
 	})
 }
+
+// TestPartnerAPIDoor_StampsSupplyClassOnBatchRow: the partner API door is the
+// DYNAMIC supply path (brain #3589 — a live feed, not an object we hold), and
+// the batch row must say so at the WRITE. Before this it stamped no `source` at
+// all, so persistPartnerBatch had nothing to classify on and every API batch
+// read as an unknown path on the ingest dashboard — while the CSV and static
+// doors were correctly labelled, which is worse than all three being blank.
+func TestPartnerAPIDoor_StampsSupplyClassOnBatchRow(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	mock.ExpectExec(rawSampleInsertRe).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO partner_inbound_batches`).
+		WithArgs(
+			sqlmock.AnyArg(), "d-id", "p-id",
+			"test-bucket", sqlmock.AnyArg(), 1,
+			sqlmock.AnyArg(),
+			csvMetaMatch{want: []string{`"source":"partner_api"`}},
+			"dynamic", "partner_api",
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	h := NewPartnerIngestHandler(db, newRawSampleFakeS3(t))
+	rec := httptest.NewRecorder()
+	h.HandlePostRecords(rec, newRawSampleAuthedRequest(`{"records":[{"email":"a@b.com"}]}`, "application/json"))
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	require.NoError(t, mock.ExpectationsWereMet())
+}

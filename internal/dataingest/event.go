@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -272,6 +273,33 @@ func SupplyClassFor(sourcePath string) string {
 // platform. An empty/garbage address lands in isp.Other, exactly as elsewhere.
 func ClassifyISP(email string) string { return isppkg.Group(email) }
 
+// testSink, when non-nil, receives every event that passes Validate. It exists
+// because the writers' contract is "emits ONE event per operation with these
+// fields" — and with a dark bus (every unit test) there is otherwise NOTHING to
+// assert on: Emit is a no-op by design. Production never sets it; SetTestSink
+// is called from _test.go files only.
+var (
+	testSinkMu sync.RWMutex
+	testSink   func(Event)
+)
+
+// SetTestSink installs (or clears, with nil) the test observer. It returns the
+// previous sink so a test can restore it with a defer.
+func SetTestSink(fn func(Event)) func(Event) {
+	testSinkMu.Lock()
+	prev := testSink
+	testSink = fn
+	testSinkMu.Unlock()
+	return prev
+}
+
+func currentTestSink() func(Event) {
+	testSinkMu.RLock()
+	fn := testSink
+	testSinkMu.RUnlock()
+	return fn
+}
+
 // Emit publishes ONE operation event. Contract: non-blocking, error-free,
 // panic-free, and a no-op when the bus is dark or the flag is OFF.
 //
@@ -287,6 +315,9 @@ func Emit(ctx context.Context, ev Event) {
 	ev.Normalize()
 	if err := ev.Validate(); err != nil {
 		return
+	}
+	if sink := currentTestSink(); sink != nil {
+		sink(ev)
 	}
 	b, err := json.Marshal(&ev)
 	if err != nil {

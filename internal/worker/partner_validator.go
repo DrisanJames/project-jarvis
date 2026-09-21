@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/emailoversight"
 )
 
@@ -283,6 +284,63 @@ func (pv *PartnerValidator) validateAndApply(ctx context.Context, batch []pendin
 		len(batch), ready, suppressed, retry, errored)
 
 	pv.mirrorToSupplyLedger(ctx, batch, results)
+	pv.emitVerdictEvents(ctx, batch, results)
+}
+
+// emitVerdictEvents reports this batch's verdicts to the Data Ingest dashboard:
+// ONE aggregate event per (dataset, transition), never one per row. The batch is
+// 500 rows and the per-row UPDATEs above already cost 500 statements — adding
+// 500 events would triple the write path's fan-out for a counter that only ever
+// displays sums (contract §DESIGN: per-OPERATION aggregates).
+//
+// A RETRY IS NOT A VERDICT — the same rule the Supply Ledger mirror applies:
+// only the attempt that exhausts MaxRetries lands 'dead_letter' and counts as
+// verdict_dead. A row going back to 'pending_eo' has not been decided.
+func (pv *PartnerValidator) emitVerdictEvents(ctx context.Context, batch []pendingRecord, results []eoOutcome) {
+	type key struct{ datasetID, transition string }
+	byKey := map[key][]pendingRecord{}
+	lane := map[string]string{}
+	partner := map[string]string{}
+	for i, outcome := range results {
+		if i >= len(batch) {
+			break
+		}
+		rec := batch[i]
+		var transition string
+		switch outcome.kind {
+		case outcomeReady:
+			transition = dataingest.TransitionVerdictReady
+		case outcomeSuppress:
+			transition = dataingest.TransitionVerdictSuppressed
+		default:
+			if rec.attempts+1 < pv.cfg.MaxRetries {
+				continue // back to pending_eo — undecided
+			}
+			transition = dataingest.TransitionVerdictDead
+		}
+		k := key{datasetID: rec.datasetID, transition: transition}
+		byKey[k] = append(byKey[k], rec)
+		lane[rec.datasetID] = rec.vertical
+		partner[rec.datasetID] = rec.partnerID
+	}
+	for k, recs := range byKey {
+		emails := make([]string, 0, len(recs))
+		for _, r := range recs {
+			emails = append(emails, r.email)
+		}
+		dataingest.Emit(ctx, dataingest.Event{
+			// The queue row carries no class of its own; the dataset decides
+			// (60s-cached lookup — see dataingest/lookup.go).
+			Class:      dataingest.DatasetSupplyClass(ctx, pv.db, k.datasetID),
+			Source:     dataingest.SourceValidator,
+			PartnerID:  partner[k.datasetID],
+			DatasetID:  k.datasetID,
+			Lane:       lane[k.datasetID],
+			Transition: k.transition,
+			ByISP:      dataingest.CountByISP(emails),
+			N:          int64(len(emails)),
+		})
+	}
 }
 
 // -----------------------------------------------------------------------------

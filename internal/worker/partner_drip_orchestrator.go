@@ -43,6 +43,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/worker/dripsupply"
 )
@@ -2343,6 +2344,56 @@ const datasetNotEmergencyPausedSQL = `
 			        AND d.paused_emergency
 			  )`
 
+// emitDripEvents reports ONE aggregate data.ingest.v1 event per DATASET for a
+// set of records the orchestrator just transitioned (claimed / mailed /
+// hydrated). Grouping by dataset is not cosmetic: the event carries a single
+// dataset_id and the dashboard's per-feed counters key on it, and a claim wave
+// legitimately spans several datasets of one vertical.
+//
+// Per-OPERATION, never per-row (contract §DESIGN): the orchestrator has ~25
+// row-level write sites and waves of up to 5,000 records — a per-row tap is the
+// ~1M-events/day shape that was rejected.
+//
+// Non-blocking, best-effort, and never part of control flow: Emit drops the
+// event when the flag is off or the bus is dark, and the nightly reconcile from
+// the tables is the settled truth.
+func (po *PartnerDripOrchestrator) emitDripEvents(ctx context.Context, source, transition, vertical string, recs []claimedRecord) {
+	if len(recs) == 0 {
+		return
+	}
+	type agg struct {
+		partnerID string
+		batchID   string
+		emails    []string
+	}
+	byDataset := map[string]*agg{}
+	for _, r := range recs {
+		a := byDataset[r.datasetID]
+		if a == nil {
+			a = &agg{partnerID: r.partnerID, batchID: r.batchID}
+			byDataset[r.datasetID] = a
+		}
+		// batch_id is only meaningful when the whole group shares one.
+		if a.batchID != r.batchID {
+			a.batchID = ""
+		}
+		a.emails = append(a.emails, r.email)
+	}
+	for datasetID, a := range byDataset {
+		dataingest.Emit(ctx, dataingest.Event{
+			Class:      dataingest.DatasetSupplyClass(ctx, po.db, datasetID),
+			Source:     source,
+			PartnerID:  a.partnerID,
+			DatasetID:  datasetID,
+			BatchID:    a.batchID,
+			Lane:       vertical,
+			Transition: transition,
+			ByISP:      dataingest.CountByISP(a.emails),
+			N:          int64(len(a.emails)),
+		})
+	}
+}
+
 func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical string, waveSize int) ([]claimedRecord, error) {
 	rows, err := po.db.QueryContext(ctx, `
 		WITH picked AS (
@@ -2381,6 +2432,9 @@ func (po *PartnerDripOrchestrator) claimRecords(ctx context.Context, vertical st
 		}
 		out = append(out, r)
 	}
+	// The UPDATE has returned on an autocommit connection — the rows ARE
+	// claimed. Emit after, never before (contract: never inside an open tx).
+	po.emitDripEvents(ctx, dataingest.SourceOrchestrator, dataingest.TransitionClaimed, vertical, out)
 	return out, nil
 }
 
@@ -3192,6 +3246,9 @@ func (po *PartnerDripOrchestrator) claimRecordsByISPCaps(ctx context.Context, ve
 	if err != nil {
 		return nil, err
 	}
+	// withDBTimeout has COMMITTED by here; emitting inside the closure would
+	// count rows a rollback could still take back.
+	po.emitDripEvents(ctx, dataingest.SourceOrchestrator, dataingest.TransitionClaimed, vertical, out)
 	return out, nil
 }
 
@@ -3661,6 +3718,29 @@ func (po *PartnerDripOrchestrator) promoteToSubscribers(ctx context.Context, v v
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+
+	// HYDRATION is an INTERNAL TRANSFER (brain #3589): these addresses were
+	// already ours in partner_clean_queue; copying them into mailing_subscribers
+	// is not an ingest and must never be counted as one. Emitted AFTER the
+	// commit — before it, a rollback would leave the dashboard claiming rows
+	// that do not exist. n = rows the INSERT ... RETURNING actually gave an id.
+	hydrated := make([]string, 0, len(recs))
+	for i, r := range recs {
+		if i < len(out) && out[i] != "" {
+			hydrated = append(hydrated, r.email)
+		}
+	}
+	if len(hydrated) > 0 {
+		dataingest.Emit(ctx, dataingest.Event{
+			Class:      dataingest.ClassInternalTransfer,
+			Source:     dataingest.SourceHydration,
+			DatasetID:  v.datasetID,
+			Lane:       v.vertical,
+			Transition: dataingest.TransitionHydrated,
+			ByISP:      dataingest.CountByISP(hydrated),
+			N:          int64(len(hydrated)),
+		})
 	}
 
 	// Write subscriber_id back to partner_clean_queue so the engagement
@@ -4518,6 +4598,11 @@ func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claime
 		chunk := ids[start:end]
 		n, err := po.stampMailedChunk(ctx, chunk, campaignID, brand, nextTouchAt)
 		stamped += n
+		// ONE mailed event per chunk, after its own transaction committed.
+		// It lives here rather than inside stampMailedChunk because that
+		// function receives IDS ONLY, and by_isp must be computed from the
+		// EMAIL (dataingest.ClassifyISP), never from isp_family text.
+		po.emitMailedChunk(ctx, vertical, recs[start:end], n)
 		if err != nil {
 			lost += int64(len(chunk))
 			if firstErr == nil {
@@ -4544,6 +4629,32 @@ func (po *PartnerDripOrchestrator) markMailed(ctx context.Context, recs []claime
 	log.Printf("[PartnerDripOrchestrator] ALERT stamp_lost campaign=%s brand=%s rows_lost=%d rows_stamped=%d — ladder NOT advanced; recover with PARTNER_DRIP_STAMP_RECOVERY=apply (see partner_drip_stamp_failures): %v",
 		campaignID, brand, lost, stamped, firstErr)
 	return fmt.Errorf("mark_mailed: %d/%d rows unstamped: %w", lost, len(ids), firstErr)
+}
+
+// emitMailedChunk reports one ladder-stamp chunk to the Data Ingest dashboard.
+//
+// `stamped` is the chunk's REAL rows-affected, which can be lower than the
+// chunk length: markMailedStampSQL carries an idempotency guard
+// (last_touch_campaign_id IS DISTINCT FROM $2), so a re-applied chunk stamps
+// zero. When the two agree we ship the full per-ISP split; when they disagree
+// we cannot say WHICH rows moved, so the event carries the count only and the
+// counters bucket it under "unknown" rather than inventing a composition.
+func (po *PartnerDripOrchestrator) emitMailedChunk(ctx context.Context, vertical string, recs []claimedRecord, stamped int64) {
+	if stamped <= 0 || len(recs) == 0 {
+		return
+	}
+	if stamped == int64(len(recs)) {
+		po.emitDripEvents(ctx, dataingest.SourceStampRecovery, dataingest.TransitionMailed, vertical, recs)
+		return
+	}
+	dataingest.Emit(ctx, dataingest.Event{
+		Class:      dataingest.DatasetSupplyClass(ctx, po.db, recs[0].datasetID),
+		Source:     dataingest.SourceStampRecovery,
+		DatasetID:  recs[0].datasetID,
+		Lane:       vertical,
+		Transition: dataingest.TransitionMailed,
+		N:          stamped,
+	})
 }
 
 // tickFollowups runs the follow-up touch loop across all verticals
@@ -5580,6 +5691,8 @@ func (po *PartnerDripOrchestrator) claimFollowupRecordsByISPCaps(ctx context.Con
 	}); err != nil {
 		return nil, err
 	}
+	// After the transaction committed — see claimRecordsByISPCaps.
+	po.emitDripEvents(ctx, dataingest.SourceOrchestrator, dataingest.TransitionClaimed, vertical, out)
 	return out, nil
 }
 

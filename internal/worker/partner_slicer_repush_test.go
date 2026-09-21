@@ -1,8 +1,13 @@
 package worker
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 )
 
 // dedupeByMD5 exists solely to make the re-push ON CONFLICT DO UPDATE in
@@ -185,5 +190,128 @@ func TestPcqRepushUpsertClause_ReviveSemantics(t *testing.T) {
 	// And the only assignment target of the WHEN leg is 'ready'.
 	if !strings.Contains(whenLeg, "THEN 'ready'") {
 		t.Fatal("revive outcome must be exactly 'ready'")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Landing status (REQ 2026-09-20 U2)
+// -----------------------------------------------------------------------------
+//
+// The static-upload door lets an operator DECLARE how a drop must land —
+// held | pending_eo | ready. Until this change that declaration was written to
+// ingest_metadata and then ignored: every row landed on the column default and
+// a drop declared `held` walked straight into EO and out onto the ladder. These
+// two tests pin both halves of the fix, because the failure mode of the second
+// one (always writing `status`) is just as bad: it would silently re-author the
+// default for every partner API batch in the estate.
+
+func newSlicerMockDB(t *testing.T) (*PartnerSlicer, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	ps := NewPartnerSlicer(db, nil, "test-bucket", nil, PartnerSlicerConfig{})
+	return ps, mock, func() { _ = db.Close() }
+}
+
+func slicerTestBatch(landing string) *partnerBatch {
+	return &partnerBatch{
+		id:            "11111111-1111-1111-1111-111111111111",
+		datasetID:     "22222222-2222-2222-2222-222222222222",
+		partnerID:     "33333333-3333-3333-3333-333333333333",
+		vertical:      "lane_a",
+		landingStatus: landing,
+	}
+}
+
+// TestBulkInsertSurvivors_HonorsDeclaredLandingStatus: a declared `held` batch
+// writes an explicit status column, with 'held' bound as the 10th parameter.
+func TestBulkInsertSurvivors_HonorsDeclaredLandingStatus(t *testing.T) {
+	ps, mock, done := newSlicerMockDB(t)
+	defer done()
+	b := slicerTestBatch("held")
+
+	mock.ExpectExec(`INSERT INTO partner_clean_queue\s+\(id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata, status\)`).
+		WithArgs(sqlmock.AnyArg(), b.id, b.datasetID, b.partnerID, b.vertical,
+			"a@example.com", "md5a", "other", sqlmock.AnyArg(), "held").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	written, err := ps.bulkInsertSurvivors(context.Background(), b,
+		[]partnerRawRecord{{Email: "a@example.com", MD5: "md5a", ISPFamily: "other"}})
+	if err != nil {
+		t.Fatalf("bulkInsertSurvivors: %v", err)
+	}
+	if len(written) != 1 {
+		t.Fatalf("written = %d rows, want 1 (the caller's ingest event counts these)", len(written))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("declared landing_status not written: %v", err)
+	}
+}
+
+// TestBulkInsertSurvivors_OmitsStatusWithoutDeclaration: no declaration (the
+// partner API door) => the status column is ABSENT and the table default
+// (pending_eo) applies. A typo'd declaration takes the same path rather than
+// inventing a status the router cannot read.
+func TestBulkInsertSurvivors_OmitsStatusWithoutDeclaration(t *testing.T) {
+	for _, declared := range []string{"", "   ", "HeLd-ish", "mailed"} {
+		t.Run("declared="+declared, func(t *testing.T) {
+			ps, mock, done := newSlicerMockDB(t)
+			defer done()
+			b := slicerTestBatch(declared)
+
+			mock.ExpectExec(`INSERT INTO partner_clean_queue\s+\(id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata\)`).
+				WithArgs(sqlmock.AnyArg(), b.id, b.datasetID, b.partnerID, b.vertical,
+					"a@example.com", "md5a", "other", sqlmock.AnyArg()).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+
+			if _, err := ps.bulkInsertSurvivors(context.Background(), b,
+				[]partnerRawRecord{{Email: "a@example.com", MD5: "md5a", ISPFamily: "other"}}); err != nil {
+				t.Fatalf("bulkInsertSurvivors: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("status column written without a declaration: %v", err)
+			}
+		})
+	}
+}
+
+// TestLandingStatusFor_ClosedVocabulary pins the accepted set. A status outside
+// it must fall through to "" (= omit the column), never be written.
+func TestLandingStatusFor_ClosedVocabulary(t *testing.T) {
+	cases := map[string]string{
+		"held": "held", "HELD": "held", " ready ": "ready", "pending_eo": "pending_eo",
+		"": "", "mailed": "", "suppressed_eo": "", "claimed": "",
+	}
+	for in, want := range cases {
+		if got := landingStatusFor(&partnerBatch{landingStatus: in}); got != want {
+			t.Errorf("landingStatusFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := landingStatusFor(nil); got != "" {
+		t.Errorf("landingStatusFor(nil) = %q, want \"\"", got)
+	}
+}
+
+// TestPartnerBatch_IngestSupplyClass: the batch row's own stamp wins; a batch
+// written before the stamp existed falls back to its source path, and a batch
+// with neither is treated as the partner API door (dynamic) — never "" , which
+// Emit would drop.
+func TestPartnerBatch_IngestSupplyClass(t *testing.T) {
+	cases := []struct {
+		name, class, source, want string
+	}{
+		{"stamped wins", dataingest.ClassAtRest, dataingest.SourcePartnerAPI, dataingest.ClassAtRest},
+		{"from source path", "", dataingest.SourceStaticUpload, dataingest.ClassAtRest},
+		{"api feed", "", dataingest.SourcePartnerAPI, dataingest.ClassDynamic},
+		{"unstamped legacy row", "", "", dataingest.ClassDynamic},
+		{"garbage class ignored", "nonsense", "", dataingest.ClassDynamic},
+	}
+	for _, tc := range cases {
+		b := &partnerBatch{supplyClass: tc.class, sourcePath: tc.source}
+		if got := b.ingestSupplyClass(); got != tc.want {
+			t.Errorf("%s: ingestSupplyClass() = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

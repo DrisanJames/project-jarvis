@@ -11,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 )
 
 // -----------------------------------------------------------------------------
@@ -231,6 +233,20 @@ func (t *Transitions) Claim(ctx context.Context, tx Queryer, ids []uuid.UUID, al
 	if err != nil {
 		return 0, nil
 	}
+	// Data Ingest counter (REQ 2026-09-20). Two honest limitations, both
+	// recorded rather than papered over:
+	//   - this claim takes an ID LIST, so there are no emails and no dataset —
+	//     by_isp is omitted (the counters bucket N under "unknown") and the
+	//     supply class falls to the at_rest default;
+	//   - the caller owns the transaction, so a rollback after this point would
+	//     leave the counter high until the nightly reconcile (the settled
+	//     truth) corrects it. Emit never participates in control flow.
+	dataingest.Emit(ctx, dataingest.Event{
+		Class:      dataingest.ClassAtRest,
+		Source:     dataingest.SourceOrchestrator,
+		Transition: dataingest.TransitionClaimed,
+		N:          n,
+	})
 	return int(n), nil
 }
 
@@ -347,7 +363,45 @@ func (t *Transitions) ClaimByISPCaps(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("dripsupply: claim by isp caps (%s): iterate: %w", vertical, err)
 	}
+	emitClaimed(ctx, tx, vertical, out)
 	return out, nil
+}
+
+// emitClaimed reports a capped claim to the Data Ingest dashboard: ONE
+// aggregate event per dataset, by_isp computed from the EMAILS through the
+// platform classifier (never from isp_family text, which carries PMTA-shaped
+// values in places). Same caveat as Claim: the caller owns the transaction, so
+// this counts a claim the caller could still roll back; the nightly reconcile
+// from the tables is the settled truth.
+func emitClaimed(ctx context.Context, q dataingest.RowQuerier, vertical string, recs []ClaimedRecord) {
+	if len(recs) == 0 {
+		return
+	}
+	type agg struct {
+		partnerID string
+		emails    []string
+	}
+	byDataset := map[string]*agg{}
+	for _, r := range recs {
+		a := byDataset[r.DatasetID]
+		if a == nil {
+			a = &agg{partnerID: r.PartnerID}
+			byDataset[r.DatasetID] = a
+		}
+		a.emails = append(a.emails, r.Email)
+	}
+	for datasetID, a := range byDataset {
+		dataingest.Emit(ctx, dataingest.Event{
+			Class:      dataingest.DatasetSupplyClass(ctx, q, datasetID),
+			Source:     dataingest.SourceOrchestrator,
+			PartnerID:  a.partnerID,
+			DatasetID:  datasetID,
+			Lane:       vertical,
+			Transition: dataingest.TransitionClaimed,
+			ByISP:      dataingest.CountByISP(a.emails),
+			N:          int64(len(a.emails)),
+		})
+	}
 }
 
 // -----------------------------------------------------------------------------

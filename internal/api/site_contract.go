@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
 	"github.com/ignite/sparkpost-monitor/internal/preferences"
@@ -379,14 +380,18 @@ func (s *pgSiteContractStore) SaveResult(ctx context.Context, k siteKey, eventID
 func (s *pgSiteContractStore) AddSubscriber(ctx context.Context, k siteKey, email, first, last string) (bool, error) {
 	emailHash := preferences.EmailHash(email)
 	var inserted bool
+	// source / source_detail were ABSENT here: a site signup landed with NULL
+	// provenance, so neither the ingest dashboard nor a source_quality read
+	// could tell a site subscriber from an import. They are stamped on the
+	// INSERT only — an existing row keeps whatever door first claimed it.
 	if err := s.db.QueryRowContext(ctx, `
-		INSERT INTO mailing_subscribers (id, organization_id, list_id, email, email_hash, first_name, last_name, status, engagement_score, created_at, updated_at)
-		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'confirmed', 50.0, NOW(), NOW())
+		INSERT INTO mailing_subscribers (id, organization_id, list_id, email, email_hash, first_name, last_name, status, source, source_detail, engagement_score, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'confirmed', 'site_event', $7, 50.0, NOW(), NOW())
 		ON CONFLICT (list_id, email) DO UPDATE SET
 			first_name = COALESCE(NULLIF(EXCLUDED.first_name, ''), mailing_subscribers.first_name),
 			last_name  = COALESCE(NULLIF(EXCLUDED.last_name, ''), mailing_subscribers.last_name),
 			status = 'confirmed', updated_at = NOW()
-		RETURNING (xmax = 0)`, k.OrgID, k.ListID, email, emailHash, first, last).Scan(&inserted); err != nil {
+		RETURNING (xmax = 0)`, k.OrgID, k.ListID, email, emailHash, first, last, k.Site).Scan(&inserted); err != nil {
 		return false, err
 	}
 	if inserted {
@@ -401,6 +406,19 @@ func (s *pgSiteContractStore) AddSubscriber(ctx context.Context, k siteKey, emai
 		ON CONFLICT (email_hash) DO UPDATE SET email = EXCLUDED.email`, emailHash, email, domain); err != nil {
 		log.Printf("[site-contract] inbox profile upsert failed: %v", err)
 	}
+	// A site event is DYNAMIC supply (brain #3589) and arrives one at a time,
+	// so this is the one writer whose "operation" is genuinely a single row.
+	// Emitted after the statements returned (autocommit), and it counts the
+	// EVENT the site sent — an upsert onto an existing address is still a live
+	// subscribe signal from that property.
+	dataingest.Emit(ctx, dataingest.Event{
+		Class:      dataingest.ClassDynamic,
+		Source:     dataingest.SourceSiteEvent,
+		Lane:       k.Site,
+		Transition: dataingest.TransitionSiteEvent,
+		ByISP:      map[string]int64{dataingest.ClassifyISP(email): 1},
+		N:          1,
+	})
 	return inserted, nil
 }
 

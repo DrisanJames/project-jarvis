@@ -275,6 +275,8 @@ func TestCSVCommit_StampsOperatorMetadata(t *testing.T) {
 				},
 				notWant: []string{`"notes"`},
 			},
+			// supply_class / source_path: the CSV door is an AT-REST load.
+			"at_rest", "csv_upload",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

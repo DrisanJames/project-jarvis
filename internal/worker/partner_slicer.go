@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
@@ -184,6 +185,51 @@ type partnerBatch struct {
 	s3Key       string
 	recordCount int
 	nextOffset  int
+	// landingStatus is the door's DECLARED partner_clean_queue status for this
+	// batch's rows (ingest_metadata.landing_status: held | pending_eo | ready).
+	// Empty = the table default (pending_eo). This is what makes the static
+	// upload door's "held" declaration real: before it, an operator drop
+	// declared held still landed pending_eo and walked straight into EO.
+	landingStatus string
+	// supplyClass / sourcePath are the dashboard classification stamped on the
+	// batch row at the door (REQ 2026-09-20). Empty on pre-REQ rows, which is
+	// why every read of them falls back to the source path's implied class.
+	supplyClass string
+	sourcePath  string
+}
+
+// pcqLandingStatuses is the CLOSED set of declared landing statuses the slicer
+// will write. Anything else (including a typo in a declaration) falls through
+// to the column default rather than inventing a status the router cannot read.
+var pcqLandingStatuses = map[string]bool{
+	"held": true, "ready": true, "pending_eo": true,
+}
+
+// landingStatusFor returns the status column value to write for this batch, or
+// "" when the INSERT must omit the column entirely and let the default apply.
+func landingStatusFor(b *partnerBatch) string {
+	if b == nil {
+		return ""
+	}
+	s := strings.ToLower(strings.TrimSpace(b.landingStatus))
+	if pcqLandingStatuses[s] {
+		return s
+	}
+	return ""
+}
+
+// ingestSupplyClass is the supply class to stamp on this batch's data-ingest
+// events: the batch row's own stamp when the door wrote one, else the class
+// implied by its source path, else dynamic (the partner API door, which is
+// where every unstamped batch came from).
+func (b *partnerBatch) ingestSupplyClass() string {
+	if c := strings.TrimSpace(b.supplyClass); dataingest.ValidSupplyClass(c) {
+		return c
+	}
+	if c := dataingest.SupplyClassFor(b.sourcePath); c != "" {
+		return c
+	}
+	return dataingest.SupplyClassFor(dataingest.SourcePartnerAPI)
 }
 
 // claimNextBatch takes the next eligible batch — express datasets first, then
@@ -212,7 +258,9 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 	// without allowing concurrent processing of the same batch.
 	row := tx.QueryRowContext(ctx, `
 		SELECT b.id, b.dataset_id, b.partner_id, d.vertical,
-		       b.s3_bucket, b.s3_key, b.record_count, b.next_record_offset
+		       b.s3_bucket, b.s3_key, b.record_count, b.next_record_offset,
+		       COALESCE(b.ingest_metadata->>'landing_status',''),
+		       COALESCE(b.supply_class,''), COALESCE(b.source_path,'')
 		FROM partner_inbound_batches b
 		JOIN partner_datasets d ON d.id = b.dataset_id
 		WHERE b.emergency_stopped = false
@@ -229,7 +277,8 @@ func (ps *PartnerSlicer) claimNextBatch(ctx context.Context) (*partnerBatch, err
 	`, batchLeaseTTL)
 	var b partnerBatch
 	if err := row.Scan(&b.id, &b.datasetID, &b.partnerID, &b.vertical,
-		&b.s3Bucket, &b.s3Key, &b.recordCount, &b.nextOffset); err != nil {
+		&b.s3Bucket, &b.s3Key, &b.recordCount, &b.nextOffset,
+		&b.landingStatus, &b.supplyClass, &b.sourcePath); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -306,14 +355,21 @@ func (ps *PartnerSlicer) processBatch(ctx context.Context, b *partnerBatch) erro
 		totalGlobalDropped += dropped
 
 		if len(survivors) > 0 {
-			if err := ps.bulkInsertSurvivors(ctx, b, survivors); err != nil {
+			written, err := ps.bulkInsertSurvivors(ctx, b, survivors)
+			if err != nil {
 				return fmt.Errorf("bulk insert: %w", err)
 			}
+			// ONE aggregate event per slice, after the INSERT returned (the
+			// statement is autocommit — there is no transaction to outlive).
+			// Dark-safe: a no-op with the flag off or the bus unwired.
+			ps.emitSliceEvent(ctx, b, dataingest.TransitionLanded, written)
 		}
 		// Always record dropped records so operators can audit the gap
 		// between recordCount and ready_total.
 		if dropped > 0 {
-			ps.bulkInsertSuppressed(ctx, b, records, survivors)
+			// These rows land 'suppressed_global' — a verdict, not a landing.
+			ps.emitSliceEvent(ctx, b, dataingest.TransitionVerdictSuppressed,
+				ps.bulkInsertSuppressed(ctx, b, records, survivors))
 		}
 
 		totalSliced += sliceCount
@@ -468,24 +524,46 @@ func (ps *PartnerSlicer) classifyAndFilter(records []partnerRawRecord) ([]partne
 // return it to 'ready' so the router stages it again as new data. Rows that are
 // suppressed, dead-lettered, in-flight ('claimed') or still awaiting EO are
 // left exactly as they are — a re-push never revives an unmailable record.
-func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatch, recs []partnerRawRecord) error {
+//
+// LANDING STATUS (REQ 2026-09-20): when the batch's door declared one of
+// held | ready | pending_eo, the INSERT carries an explicit `status`; with no
+// declaration the column is OMITTED so the table default applies and the
+// statement is byte-identical to its pre-REQ form. pcqRepushUpsertClause is
+// untouched either way — a declaration governs the LANDING, never a re-push.
+//
+// Returns the records the statement actually carried (post-dedupe), so the
+// caller's data-ingest event counts what was written rather than what was read.
+func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatch, recs []partnerRawRecord) ([]partnerRawRecord, error) {
 	if len(recs) == 0 {
-		return nil
+		return nil, nil
 	}
 	// ON CONFLICT DO UPDATE cannot touch the same row twice in one statement,
 	// and a single slice can legitimately carry the same email more than once.
 	// Collapse duplicates here (first wins) or the whole slice errors out.
 	recs = dedupeByMD5(recs)
 
-	const cols = 9
+	landing := landingStatusFor(b)
+	cols := 9
+	colList := "(id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata)"
+	rowFmt := "($%d::uuid, $%d::uuid, $%d::uuid, $%d::uuid, $%d, $%d, $%d, $%d, $%d::jsonb)"
+	if landing != "" {
+		cols = 10
+		colList = "(id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata, status)"
+		rowFmt = "($%d::uuid, $%d::uuid, $%d::uuid, $%d::uuid, $%d, $%d, $%d, $%d, $%d::jsonb, $%d)"
+	}
 	args := make([]interface{}, 0, len(recs)*cols)
 	placeholders := make([]string, 0, len(recs))
 	for i, rec := range recs {
 		offset := i * cols
-		placeholders = append(placeholders, fmt.Sprintf(
-			"($%d::uuid, $%d::uuid, $%d::uuid, $%d::uuid, $%d, $%d, $%d, $%d, $%d::jsonb)",
-			offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7, offset+8, offset+9,
-		))
+		if landing != "" {
+			placeholders = append(placeholders, fmt.Sprintf(rowFmt,
+				offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7, offset+8, offset+9, offset+10,
+			))
+		} else {
+			placeholders = append(placeholders, fmt.Sprintf(rowFmt,
+				offset+1, offset+2, offset+3, offset+4, offset+5, offset+6, offset+7, offset+8, offset+9,
+			))
+		}
 		extra := extraMetadataJSON(rec)
 		args = append(args,
 			uuid.New().String(),
@@ -494,14 +572,19 @@ func (ps *PartnerSlicer) bulkInsertSurvivors(ctx context.Context, b *partnerBatc
 			rec.Email, rec.MD5, rec.ISPFamily,
 			string(extra),
 		)
+		if landing != "" {
+			args = append(args, landing)
+		}
 	}
 
 	q := fmt.Sprintf(`
 		INSERT INTO partner_clean_queue
-		    (id, batch_id, dataset_id, partner_id, vertical, email, email_md5, isp_family, extra_metadata)
-		VALUES %s`+pcqRepushUpsertClause, strings.Join(placeholders, ","))
-	_, err := ps.db.ExecContext(ctx, q, args...)
-	return err
+		    %s
+		VALUES %s`+pcqRepushUpsertClause, colList, strings.Join(placeholders, ","))
+	if _, err := ps.db.ExecContext(ctx, q, args...); err != nil {
+		return nil, err
+	}
+	return recs, nil
 }
 
 // pcqRepushUpsertClause is the re-push signal capture (operator 2026-07-26):
@@ -542,7 +625,9 @@ func dedupeByMD5(recs []partnerRawRecord) []partnerRawRecord {
 
 // bulkInsertSuppressed records the dropped (globally-suppressed) entries so
 // the audit / dashboard can show them. Status='suppressed_global'.
-func (ps *PartnerSlicer) bulkInsertSuppressed(ctx context.Context, b *partnerBatch, all []partnerRawRecord, survivors []partnerRawRecord) {
+// Returns the dropped records it wrote (nil when there were none), so the
+// caller can emit the matching verdict_suppressed data-ingest event.
+func (ps *PartnerSlicer) bulkInsertSuppressed(ctx context.Context, b *partnerBatch, all []partnerRawRecord, survivors []partnerRawRecord) []partnerRawRecord {
 	survivorSet := make(map[string]bool, len(survivors))
 	for _, s := range survivors {
 		survivorSet[s.MD5] = true
@@ -554,7 +639,7 @@ func (ps *PartnerSlicer) bulkInsertSuppressed(ctx context.Context, b *partnerBat
 		}
 	}
 	if len(dropped) == 0 {
-		return
+		return nil
 	}
 	const cols = 9
 	args := make([]interface{}, 0, len(dropped)*cols)
@@ -580,7 +665,35 @@ func (ps *PartnerSlicer) bulkInsertSuppressed(ctx context.Context, b *partnerBat
 	`, strings.Join(placeholders, ","))
 	if _, err := ps.db.ExecContext(ctx, q, args...); err != nil {
 		log.Printf("[PartnerSlicer] insert suppressed: %v", err)
+		return nil
 	}
+	return dropped
+}
+
+// emitSliceEvent reports ONE slice's write to the Data Ingest dashboard.
+// by_isp is computed from the EMAILS (dataingest.ClassifyISP), never from the
+// stored isp_family text: isp_family is populated from PMTA-shaped values in
+// places and the dashboard's composition must agree with the send path's
+// classifier, not with whatever a door wrote.
+func (ps *PartnerSlicer) emitSliceEvent(ctx context.Context, b *partnerBatch, transition string, recs []partnerRawRecord) {
+	if b == nil || len(recs) == 0 {
+		return
+	}
+	emails := make([]string, 0, len(recs))
+	for _, r := range recs {
+		emails = append(emails, r.Email)
+	}
+	dataingest.Emit(ctx, dataingest.Event{
+		Class:      b.ingestSupplyClass(),
+		Source:     dataingest.SourceSlicer,
+		PartnerID:  b.partnerID,
+		DatasetID:  b.datasetID,
+		BatchID:    b.id,
+		Lane:       b.vertical,
+		Transition: transition,
+		ByISP:      dataingest.CountByISP(emails),
+		N:          int64(len(emails)),
+	})
 }
 
 func (ps *PartnerSlicer) isDatasetPaused(ctx context.Context, datasetID string) (bool, error) {

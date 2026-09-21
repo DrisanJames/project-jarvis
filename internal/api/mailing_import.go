@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/csv"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 )
 
@@ -245,6 +247,10 @@ func (s *AdvancedMailingService) processCSVImport(jobID, listID, orgID uuid.UUID
 	reader := csv.NewReader(file)
 	
 	var totalRows, imported, skipped, errorCount int
+	// Data Ingest composition (REQ 2026-09-20): accumulated as a per-ISP MAP,
+	// not a slice of addresses — a subscriber CSV can be millions of rows and
+	// the event only ever carries the counts.
+	landedByISP := map[string]int64{}
 	
 	// Standard field mappings
 	standardFields := map[string]bool{
@@ -402,6 +408,7 @@ func (s *AdvancedMailingService) processCSVImport(jobID, listID, orgID uuid.UUID
 			errorCount++
 		} else {
 			imported++
+			landedByISP[dataingest.ClassifyISP(email)]++
 		}
 		
 		// Handle tags separately if present
@@ -435,6 +442,27 @@ func (s *AdvancedMailingService) processCSVImport(jobID, listID, orgID uuid.UUID
 			imported_count = $3, skipped_count = $4, error_count = $5, completed_at = NOW()
 		WHERE id = $1
 	`, jobID, totalRows, imported, skipped, errorCount)
+
+	// ONE event for the whole import: a subscriber CSV is an AT-REST LOAD
+	// (brain #3589 — a file we hold), not a hydration and not a feed. Emitted
+	// after the job row is closed, with n = rows actually inserted.
+	emitSubscriberImportLanded(context.Background(), int64(imported), landedByISP)
+}
+
+// emitSubscriberImportLanded is the shared tail of both CSV import paths.
+// Dark-safe: Emit is a no-op with the flag off or the bus unwired, and it never
+// affects the import's outcome.
+func emitSubscriberImportLanded(ctx context.Context, n int64, byISP map[string]int64) {
+	if n <= 0 {
+		return
+	}
+	dataingest.Emit(ctx, dataingest.Event{
+		Class:      dataingest.ClassAtRest,
+		Source:     dataingest.SourceSubscriberImport,
+		Transition: dataingest.TransitionLanded,
+		ByISP:      byISP,
+		N:          n,
+	})
 }
 
 // Email validation regex
@@ -453,6 +481,9 @@ func (s *AdvancedMailingService) processCSVImportEnhanced(jobID, listID, orgID u
 	reader := csv.NewReader(file)
 	
 	var totalRows, newCount, updatedCount, skippedCount, errorCount, duplicateCount int
+	// Only INSERTS are a landing; an update of an address we already hold is
+	// not new supply.
+	landedByISP := map[string]int64{}
 
 	// Standard field vocabulary — derived from GetStandardFields() per ruling R2.
 	standardFields := importStandardFields()
@@ -647,6 +678,7 @@ func (s *AdvancedMailingService) processCSVImportEnhanced(jobID, listID, orgID u
 				errorCount++
 			} else {
 				newCount++
+				landedByISP[dataingest.ClassifyISP(email)]++
 			}
 		}
 		
@@ -691,6 +723,8 @@ func (s *AdvancedMailingService) processCSVImportEnhanced(jobID, listID, orgID u
 	
 	log.Printf("Import complete: %d total, %d new, %d updated, %d skipped, %d errors, %d duplicates",
 		totalRows, newCount, updatedCount, skippedCount, errorCount, duplicateCount)
+
+	emitSubscriberImportLanded(context.Background(), int64(newCount), landedByISP)
 }
 
 func (s *AdvancedMailingService) HandleGetImportJobs(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/ignite/sparkpost-monitor/internal/dataingest"
 	"github.com/ignite/sparkpost-monitor/internal/preferences"
 )
 
@@ -204,5 +207,62 @@ func TestGenerateSiteKey_FormatAndHash(t *testing.T) {
 	raw, prefix, hash, err := generateSiteKey()
 	if err != nil || !strings.HasPrefix(raw, "sk_") || len(raw) != 35 || prefix != raw[:8] || hash != HashPartnerKey(raw) {
 		t.Fatalf("raw=%q prefix=%q err=%v", raw, prefix, err)
+	}
+}
+
+// TestPGSiteContractStore_AddSubscriberStampsProvenance pins the real Postgres
+// store (the fake above cannot see SQL). source / source_detail were ABSENT
+// from this INSERT: a site signup landed with NULL provenance, indistinguishable
+// from a CSV import in every downstream read. The site event it emits is the
+// dashboard's DYNAMIC-supply counter for that property.
+func TestPGSiteContractStore_AddSubscriberStampsProvenance(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	k := siteKey{
+		ID:     "key-1",
+		OrgID:  "00000000-0000-0000-0000-000000000001",
+		Site:   "discountblog.com",
+		ListID: "44444444-4444-4444-4444-444444444444",
+	}
+	mock.ExpectQuery(`INSERT INTO mailing_subscribers \(id, organization_id, list_id, email, email_hash, first_name, last_name, status, source, source_detail`).
+		WithArgs(k.OrgID, k.ListID, "reader@icloud.com", sqlmock.AnyArg(), "A", "B", k.Site).
+		WillReturnRows(sqlmock.NewRows([]string{"inserted"}).AddRow(true))
+	mock.ExpectExec(`UPDATE mailing_lists SET subscriber_count`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO mailing_inbox_profiles`).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	var got []dataingest.Event
+	restore := dataingest.SetTestSink(func(ev dataingest.Event) { got = append(got, ev) })
+	defer dataingest.SetTestSink(restore)
+
+	store := &pgSiteContractStore{db: db}
+	inserted, err := store.AddSubscriber(context.Background(), k, "reader@icloud.com", "A", "B")
+	if err != nil {
+		t.Fatalf("AddSubscriber: %v", err)
+	}
+	if !inserted {
+		t.Error("inserted = false, want true (xmax = 0)")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("source/source_detail not stamped on the INSERT: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("emitted %d ingest events, want exactly 1: %+v", len(got), got)
+	}
+	ev := got[0]
+	if ev.Transition != dataingest.TransitionSiteEvent || ev.Source != dataingest.SourceSiteEvent {
+		t.Errorf("event = %s/%s, want site_event/site_event", ev.Transition, ev.Source)
+	}
+	if ev.Class != dataingest.ClassDynamic {
+		t.Errorf("supply_class = %q, want dynamic (a site event is live supply, brain #3589)", ev.Class)
+	}
+	if ev.N != 1 || ev.ByISP["apple"] != 1 {
+		t.Errorf("n=%d by_isp=%v, want n=1 apple:1 (classified from the EMAIL)", ev.N, ev.ByISP)
+	}
+	if ev.Lane != k.Site {
+		t.Errorf("lane = %q, want the property %q", ev.Lane, k.Site)
 	}
 }
