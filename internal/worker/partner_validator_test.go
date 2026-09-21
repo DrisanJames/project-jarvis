@@ -155,9 +155,9 @@ func TestValidator_EmitsOneEventPerOutcomePerBatch(t *testing.T) {
 	mock.ExpectExec(`UPDATE partner_clean_queue\s+SET status = 'pending_eo'`).WillReturnResult(sqlmock.NewResult(0, 1))
 	// ONE dataset lookup for the whole batch — the 60s cache is what keeps this
 	// off the database on a real tick.
-	mock.ExpectQuery(`SELECT source_channel FROM partner_datasets`).
+	mock.ExpectQuery(`SELECT d.source_channel`).
 		WithArgs(dataset).
-		WillReturnRows(sqlmock.NewRows([]string{"source_channel"}).AddRow("api_feed"))
+		WillReturnRows(sqlmock.NewRows([]string{"source_channel", "last_batch_class"}).AddRow("api_feed", nil))
 
 	var got []dataingest.Event
 	var mu sync.Mutex

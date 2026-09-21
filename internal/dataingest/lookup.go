@@ -80,10 +80,21 @@ func DatasetSupplyClass(ctx context.Context, q RowQuerier, datasetID string) (cl
 		return ent.class
 	}
 
-	var channel sql.NullString
+	var channel, lastBatchClass sql.NullString
 	// Best-effort and short: this runs on a worker tick, never on a request.
-	row := q.QueryRowContext(ctx, `SELECT source_channel FROM partner_datasets WHERE id = $1::uuid`, datasetID)
-	if err := row.Scan(&channel); err != nil {
+	// The dataset's LATEST stamped batch is the truth (the slicer stamps
+	// supply_class at landing; idx_pib_dataset_received makes this a LIMIT-1
+	// probe); the dataset's source_channel is only the fallback. Reconcile
+	// 2026-09-20 caught the validator labelling the family lane's 6,303
+	// verdicts at_rest while every batch of that dataset is
+	// internal_transfer — a dataset-level rule cannot see that.
+	row := q.QueryRowContext(ctx, `
+		SELECT d.source_channel,
+		       (SELECT b.supply_class FROM partner_inbound_batches b
+		         WHERE b.dataset_id = d.id AND b.supply_class IS NOT NULL
+		         ORDER BY b.received_at DESC LIMIT 1)
+		FROM partner_datasets d WHERE d.id = $1::uuid`, datasetID)
+	if err := row.Scan(&channel, &lastBatchClass); err != nil {
 		// No row / bad uuid / DB error: answer at_rest and do NOT cache, so the
 		// next call re-reads rather than pinning a wrong class for 60 s.
 		return ClassAtRest
@@ -91,6 +102,10 @@ func DatasetSupplyClass(ctx context.Context, q RowQuerier, datasetID string) (cl
 	class = ClassAtRest
 	if strings.EqualFold(strings.TrimSpace(channel.String), "api_feed") {
 		class = ClassDynamic
+	}
+	switch strings.TrimSpace(lastBatchClass.String) {
+	case ClassAtRest, ClassDynamic, ClassInternalTransfer:
+		class = strings.TrimSpace(lastBatchClass.String)
 	}
 	datasetClassMu.Lock()
 	datasetClassCache[datasetID] = datasetClassEntry{class: class, at: now}
