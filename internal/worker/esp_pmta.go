@@ -27,6 +27,7 @@ type vmtaEntry struct {
 	ID               string
 	Hostname         string
 	IP               string // e.g. "15.204.22.177" or "144.225.178.7"
+	PoolName         string // mailing_ip_pools.name the address sits in (e.g. "htjk-general-pool")
 	Status           string // "active" or "warmup"
 	WarmupDailyLimit int    // ACCOUNTING/DISPLAY ONLY — never gates selection (see next)
 	TodaySent        int64  // from mailing_ip_warmup_log.actual_sent — accounting only
@@ -144,6 +145,7 @@ func (p *vmtaPool) refresh(ctx context.Context, profileID string) {
 		if err := rows.Scan(&e.ID, &e.Hostname, &e.Status, &e.WarmupDailyLimit, &e.TodaySent, &poolName, &e.IP); err != nil {
 			continue
 		}
+		e.PoolName = poolName
 		allIPs = append(allIPs, e)
 		suffix := extractPoolSuffix(poolName)
 		if suffix != "" {
@@ -439,6 +441,10 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 	ipID := ""
 	if msg.AssignedVMTA != "" {
 		vmtaName = msg.AssignedVMTA
+		if s.ipPool != nil && msg.ProfileID != "" {
+			s.ipPool.refresh(ctx, msg.ProfileID)
+			vmtaName = s.ipPool.routeFor(vmtaName) // reused (nx) address → pool name
+		}
 		log.Printf("[PMTA-SMTP] Using pre-assigned VMTA=%s for %s (ISP=%s)",
 			vmtaName, msg.Email, msg.RecipientISP)
 	} else {
@@ -455,6 +461,7 @@ func (s *PMTASender) Send(ctx context.Context, msg *EmailMessage) (*SendResult, 
 		if vmtaName == "" {
 			return nil, fmt.Errorf("selected IP %s has empty hostname — refusing to send via default-pool (server IP)", ip.ID)
 		}
+		vmtaName = s.ipPool.routeFor(vmtaName)
 		ipID = ip.ID
 		profShort := msg.ProfileID
 		if len(profShort) > 8 {
@@ -656,6 +663,31 @@ func sameIPSet(a, b []vmtaEntry) bool {
 
 // vmtaShortName extracts the short VMTA prefix from a full hostname.
 // e.g. "mta1.mail.projectjarvis.io" → "mta1", "mta2" → "mta2", "" → "".
+// routeFor returns the name to inject with for a vmta short name selected
+// under this pool: the name itself, or — when the address is REUSED under this
+// pool's prefix (nx wave, 2026-09-18: the IP keeps its legacy EHLO/PTR name,
+// so the short name is the PARENT brand's vmta) — the pool the address sits
+// in, so PMTA selects the vmta declared for this prefix (mta-<prefix>-gnN,
+// direct egress). Injecting the parent's vmta name routed every nx message
+// through the parent's <domain comcast.net> queue-to → SES relay, where the
+// nx From is unverified (1,419 "Email address is not verified" hard bounces
+// on 2026-09-21; lake: 0 events on nx vmta names). Operator 2026-09-21:
+// "They need to go through pmta." Legacy addresses (name carries the pool's
+// own prefix) are returned unchanged.
+func (p *vmtaPool) routeFor(shortName string) string {
+	if p == nil || p.poolPrefix == "" || shortName == "" || strings.HasPrefix(shortName, "mta-"+p.poolPrefix+"-") {
+		return shortName
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, e := range p.ips {
+		if e.PoolName != "" && vmtaShortName(e.Hostname) == shortName {
+			return e.PoolName
+		}
+	}
+	return shortName
+}
+
 func vmtaShortName(hostname string) string {
 	if dotIdx := strings.Index(hostname, "."); dotIdx > 0 {
 		return hostname[:dotIdx]

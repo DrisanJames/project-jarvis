@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPMTAAPISender_WithVMTA(t *testing.T) {
@@ -238,5 +239,78 @@ func TestPMTAAPISender_SuccessCountOKAndLegacyBodies(t *testing.T) {
 			t.Errorf("body %s: want success, got %v", body, err)
 		}
 		server.Close()
+	}
+}
+
+// An nx-wave address keeps its legacy EHLO name (mta-ht-gm1…) while sitting
+// in the nx pool htjk-general-pool. Injecting with the hostname short name
+// routed nx mail through the parent brand's vmta (and its comcast→SES
+// queue-to, brain #3753); the sender must route by the POOL name so PMTA
+// selects the nx vmta. A legacy address whose name carries its own prefix is
+// untouched.
+func TestPMTAAPISender_ReusedAddressRoutesByPoolName(t *testing.T) {
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &captured)
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	mk := func(prefix, hostname, pool string) *PMTAAPISender {
+		s := NewPMTAAPISender(server.URL, nil, prefix)
+		e := vmtaEntry{ID: "ip-1", Hostname: hostname, IP: "144.225.178.128", Status: "active", PoolName: pool}
+		s.ipPool.ips = []vmtaEntry{e}
+		s.ipPool.ispGroups = map[string][]vmtaEntry{"general": {e}}
+		s.ipPool.loadedAt = time.Now()
+		s.ipPool.ttl = time.Hour
+		return s
+	}
+	msg := func() *EmailMessage {
+		return &EmailMessage{Email: "user@comcast.net", RecipientISP: "comcast", ProfileID: "prof-1",
+			FromName: "T", FromEmail: "news@jk.historythinking.com", Subject: "s", HTMLContent: "<p>x</p>", Headers: map[string]string{}}
+	}
+
+	// nx: hostname belongs to prefix "ht", profile prefix is "htjk" → pool name
+	if _, err := mk("htjk", "mta-ht-gm1.mail.em.historythinking.com", "htjk-general-pool").Send(context.Background(), msg()); err != nil {
+		t.Fatalf("nx send: %v", err)
+	}
+	if got := captured["vmta"]; got != "htjk-general-pool" {
+		t.Fatalf("nx address must route by pool name, got vmta=%v", got)
+	}
+	// legacy: hostname carries the profile's own prefix → vmta short name as before
+	if _, err := mk("ht", "mta-ht-gm1.mail.em.historythinking.com", "ht-gmail-pool").Send(context.Background(), msg()); err != nil {
+		t.Fatalf("legacy send: %v", err)
+	}
+	if got := captured["vmta"]; got != "mta-ht-gm1" {
+		t.Fatalf("legacy address must keep its vmta name, got vmta=%v", got)
+	}
+}
+
+// The batch allocator pre-assigns the hostname short name; a reused (nx)
+// address must still inject by its pool name.
+func TestPMTAAPISender_PreassignedReusedAddressRoutesByPoolName(t *testing.T) {
+	var captured map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &captured)
+		w.WriteHeader(200)
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+	s := NewPMTAAPISender(server.URL, nil, "htjk")
+	e := vmtaEntry{ID: "ip-1", Hostname: "mta-ht-gm1.mail.em.historythinking.com", IP: "144.225.178.128", Status: "active", PoolName: "htjk-general-pool"}
+	s.ipPool.ips = []vmtaEntry{e}
+	s.ipPool.ispGroups = map[string][]vmtaEntry{"general": {e}}
+	s.ipPool.loadedAt = time.Now()
+	s.ipPool.ttl = time.Hour
+	msg := &EmailMessage{Email: "user@comcast.net", RecipientISP: "comcast", ProfileID: "prof-1", AssignedVMTA: "mta-ht-gm1",
+		FromName: "T", FromEmail: "news@jk.historythinking.com", Subject: "s", HTMLContent: "<p>x</p>", Headers: map[string]string{}}
+	if _, err := s.Send(context.Background(), msg); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if got := captured["vmta"]; got != "htjk-general-pool" {
+		t.Fatalf("pre-assigned reused address must route by pool name, got %v", got)
 	}
 }

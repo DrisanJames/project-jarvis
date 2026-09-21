@@ -148,9 +148,16 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 
 	var selectedIPID string
 	if msg.AssignedVMTA != "" {
-		payload["vmta"] = msg.AssignedVMTA
-		log.Printf("[PMTA-API] Using pre-assigned VMTA=%s for %s (ISP=%s)",
-			msg.AssignedVMTA, msg.Email, msg.RecipientISP)
+		// Pre-assigned by the batch allocator from the IP's hostname; a reused
+		// (nx) address must still inject by its pool name — see vmtaPool.routeFor.
+		routed := msg.AssignedVMTA
+		if s.ipPool != nil && msg.ProfileID != "" {
+			s.ipPool.refresh(ctx, msg.ProfileID)
+			routed = s.ipPool.routeFor(msg.AssignedVMTA)
+		}
+		payload["vmta"] = routed
+		log.Printf("[PMTA-API] Using pre-assigned VMTA=%s (routed %s) for %s (ISP=%s)",
+			msg.AssignedVMTA, routed, msg.Email, msg.RecipientISP)
 	} else if vmta, ok := msg.Headers["X-Virtual-MTA"]; ok && vmta != "" {
 		payload["vmta"] = vmta
 		log.Printf("[PMTA-API] Routing %s via explicit VMTA header: %s", msg.Email, vmta)
@@ -162,6 +169,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 			if vmta == "" {
 				return nil, fmt.Errorf("selected IP %s has empty hostname — refusing to send via default-pool (server IP)", ip.ID)
 			}
+			vmta = s.ipPool.routeFor(vmta) // reused (nx) address → its pool name; see vmtaPool.routeFor
 			payload["vmta"] = vmta
 			selectedIPID = ip.ID
 			profShort := msg.ProfileID
@@ -269,6 +277,9 @@ func (s *PMTAAPISender) recordBridgeFailure(errMsg string) {
 }
 
 func (s *PMTAAPISender) updateIPCounters(ipID string) {
+	if s.db == nil {
+		return // unit tests and dry senders have no DB; nothing to count
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
