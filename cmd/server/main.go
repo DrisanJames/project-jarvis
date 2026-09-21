@@ -2680,6 +2680,18 @@ var criticalSendPathDDL = []struct {
 				CHECK (status <> 'claimed' OR capacity_allocation_id IS NOT NULL OR claimed_at < '` + pcqAllocationFence + `') NOT VALID;
 		END IF;
 	END $$`},
+	// Data Ingest dashboard (REQ-2026-09-20): the partner slicer's batch-claim
+	// SELECT reads b.supply_class / b.source_path unconditionally
+	// (partner_slicer.go), and persistPartnerBatch INSERTs supply_class on
+	// every partner API post, so the worker fleet must not start ahead of these
+	// columns. Catalog-only ADD COLUMN (no default, no rewrite); the probe
+	// skips them on every boot after the first. partner_inbound_batches is
+	// written continuously by the partner API and the slicer, which is exactly
+	// why the ALTER needs this slice's 8s lock_timeout + retries rather than
+	// runStartupMigrations' unbounded lock wait.
+	{"di_batches_supply_class", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS supply_class TEXT`},
+	{"di_batches_object_sha256", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS object_sha256 TEXT`},
+	{"di_batches_source_path", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS source_path TEXT`},
 }
 
 // pcqAllocationFence is the timestamptz literal (UTC) from which every
@@ -12793,9 +12805,16 @@ END $$`},
 		name string
 		sql  string
 	}{
-		{"di_batches_supply_class", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS supply_class TEXT`},
-		{"di_batches_object_sha256", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS object_sha256 TEXT`},
-		{"di_batches_source_path", `ALTER TABLE partner_inbound_batches ADD COLUMN IF NOT EXISTS source_path TEXT`},
+		// The three supply-class columns on partner_inbound_batches live in
+		// criticalSendPathDDL (di_batches_* there): the partner slicer's claim
+		// SELECT reads them UNCONDITIONALLY (partner_slicer.go), so the worker
+		// must never come up ahead of them, and that slice bounds the lock wait
+		// (8s lock_timeout, 3 retries) — this slice has no lock_timeout of its
+		// own, which is the 2026-08-20 barricade. The CHECK below is wrapped in
+		// SET/RESET lock_timeout for the same reason (the aug20 idiom above):
+		// ADD CONSTRAINT takes SHARE ROW EXCLUSIVE on a table the slicer and
+		// the partner API write continuously.
+		{"di_batches_lock_timeout", api.CampaignRequestLockTimeoutDDL},
 		// The CHECK goes in via a DO block because ADD CONSTRAINT has no IF NOT
 		// EXISTS: a bare ADD would fail on every boot after the first and burn a
 		// permanent error line in the migration report. NOT VALID so the ALTER
@@ -12814,6 +12833,7 @@ END $$`},
 					NOT VALID;
 			END IF;
 		END $$`},
+		{"di_batches_lock_timeout_reset", api.CampaignRequestLockTimeoutResetDDL},
 		// data_ingest_rollup is the SETTLED truth the dashboard's 30-day series
 		// reads: one row per (day, class, dataset, transition, isp, source).
 		// source = counters | reconcile | backfill, and the readers prefer them
