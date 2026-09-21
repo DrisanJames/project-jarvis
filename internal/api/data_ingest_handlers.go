@@ -68,8 +68,13 @@ const (
 )
 
 const (
-	dataIngestCacheTTL     = 60 * time.Second
-	dataIngestQueryTimeout = 90 * time.Second
+	dataIngestCacheTTL = 60 * time.Second
+	// dataIngestQueryTimeout bounds ONE background pass (the reservoir scan or
+	// the object accounting), each in its own transaction. 2026-09-20 22:26 MT
+	// under the nightly segment materialization the reservoir scan alone took
+	// the old shared 90s and the object pass was cancelled with nothing left;
+	// the passes are background work, so the budget is generous and separate.
+	dataIngestQueryTimeout = 180 * time.Second
 	// dataIngestRefreshEvery is the cadence of the BACKGROUND reservoir scan
 	// once StartQueueStateRefresher has been called (prod). Measured cold on
 	// 2026-09-20: 30–70s per scan under send load, so a request must never
@@ -456,7 +461,7 @@ func (s *DataIngestService) queryQueueState(ctx context.Context) (*queueStateSna
 		return nil, err
 	}
 	defer tx.Rollback() //nolint:errcheck // read-only scan
-	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '90s'`); err != nil {
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '180s'`); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `
@@ -490,7 +495,10 @@ func (s *DataIngestService) queryQueueState(ctx context.Context) (*queueStateSna
 		return nil, err
 	}
 	rows.Close()
-	if objs, err := queryObjectAccounting(ctx, tx); err != nil {
+	tx.Rollback() //nolint:errcheck // read-only; the object pass gets its own tx + budget
+	octx, ocancel := context.WithTimeout(context.Background(), dataIngestQueryTimeout)
+	defer ocancel()
+	if objs, err := s.queryObjectAccounting(octx); err != nil {
 		log.Printf("[data-ingest] object accounting failed (tiles not_measured this cycle): %v", err)
 	} else {
 		snap.Objects, snap.ObjectsMeasured = objs, true
@@ -751,9 +759,17 @@ func elapsedDenverHours(day string, now time.Time) float64 {
 //	loads_without_object  — the RED tile: batches that exist only as DB rows
 //	                       (bucket is not the repository AND no object_sha256).
 //	                       brain #3589: the Mac is not a repository.
-func queryObjectAccounting(ctx context.Context, tx *sql.Tx) (map[string]objectCounts, error) {
+func (s *DataIngestService) queryObjectAccounting(ctx context.Context) (map[string]objectCounts, error) {
 	bucket := dataIngestRealBucket()
 	out := map[string]objectCounts{}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only
+	if _, err := tx.ExecContext(ctx, `SET LOCAL statement_timeout = '180s'`); err != nil {
+		return nil, err
+	}
 
 	srows, err := tx.QueryContext(ctx, `
 		SELECT organization_id::text, COUNT(*)

@@ -97,6 +97,10 @@ func expectDayQueries(mock sqlmock.Sqlmock) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
 		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "status", "n"}))
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
 		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
@@ -199,6 +203,10 @@ func TestDataIngestFeeds_StatusComposite(t *testing.T) {
 			AddRow(ds1, "pending_eo", int64(30)).
 			AddRow(ds1, "mailed", int64(900)).
 			AddRow(ds2, "held", int64(7)))
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
 		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
@@ -623,6 +631,10 @@ func TestDataIngestFeeds_FallsBackWithoutLastBatch(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
 		WillReturnRows(sqlmock.NewRows([]string{"dataset_id", "status", "n"}).AddRow(ds1, "ready", int64(120)))
+	mock.ExpectRollback()
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM data_ingest_static_objects")).
 		WillReturnRows(sqlmock.NewRows([]string{"org", "n"}))
 	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
