@@ -111,6 +111,36 @@ type DataIngestService struct {
 	// Off (tests, or a service mounted without the refresher) keeps the
 	// inline single-flight scan so the contract is still served.
 	refresherOn bool
+
+	// pageCache holds the last computed /loads and /feeds/{id} bodies per
+	// (org, day[, dataset]). Their per-batch counts touch every row of a
+	// batch (113k heap reads = 16.7s under the nightly segment
+	// materialization, 2026-09-20 22:50 MT); a page is served from here for
+	// dataIngestRefreshEvery and, when the fresh query fails, the last good
+	// body is served STALE with a note rather than a blank day.
+	pageMu    sync.Mutex
+	pageCache map[string]pageCacheEntry
+}
+
+type pageCacheEntry struct {
+	at   time.Time
+	body interface{}
+}
+
+func (s *DataIngestService) pageGet(key string) (pageCacheEntry, bool) {
+	s.pageMu.Lock()
+	defer s.pageMu.Unlock()
+	e, ok := s.pageCache[key]
+	return e, ok
+}
+
+func (s *DataIngestService) pagePut(key string, body interface{}) {
+	s.pageMu.Lock()
+	defer s.pageMu.Unlock()
+	if s.pageCache == nil {
+		s.pageCache = map[string]pageCacheEntry{}
+	}
+	s.pageCache[key] = pageCacheEntry{at: time.Now(), body: body}
 }
 
 // errQueueStateWarming is returned by queueState when the refresher owns the
@@ -1243,6 +1273,7 @@ type feedDetailResponse struct {
 	Status        feedStatus       `json:"status"`
 	LastLoaded    string           `json:"last_loaded"`
 	Note          string           `json:"note,omitempty"`
+	CacheAgeSec   int              `json:"cache_age_seconds"`
 	Funnel        feedFunnel       `json:"funnel"`
 	Series        []daySeriesPoint `json:"series"`
 	Composition   feedComposition  `json:"composition"`
@@ -1265,6 +1296,13 @@ func (s *DataIngestService) HandleFeed(w http.ResponseWriter, r *http.Request) {
 	day, err := denverDay(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cacheKey := "feed|" + dataIngestOrgID(r) + "|" + day + "|" + datasetID
+	if e, ok := s.pageGet(cacheKey); ok && r.URL.Query().Get("refresh") != "1" && time.Since(e.at) < dataIngestRefreshEvery {
+		cached := e.body.(feedDetailResponse)
+		cached.CacheAgeSec = int(time.Since(e.at).Seconds())
+		respondJSON(w, http.StatusOK, cached)
 		return
 	}
 	out := feedDetailResponse{
@@ -1370,6 +1408,7 @@ func (s *DataIngestService) HandleFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		out.mark("loads", fieldMeasured)
 	}
+	s.pagePut(cacheKey, out)
 	respondJSON(w, http.StatusOK, out)
 }
 
@@ -1486,6 +1525,7 @@ type loadsResponse struct {
 	Composition []ispCount   `json:"composition"`
 	Sources     []loadSource `json:"sources"`
 	Note        string       `json:"note,omitempty"`
+	CacheAgeSec int          `json:"cache_age_seconds"`
 }
 
 // HandleLoads lists the batches RECEIVED on one Denver day with their per-batch
@@ -1505,9 +1545,24 @@ func (s *DataIngestService) HandleLoads(w http.ResponseWriter, r *http.Request) 
 		Composition: []ispCount{},
 		Sources:     []loadSource{},
 	}
+	cacheKey := "loads|" + dataIngestOrgID(r) + "|" + day
+	force := r.URL.Query().Get("refresh") == "1"
+	if e, ok := s.pageGet(cacheKey); ok && !force && time.Since(e.at) < dataIngestRefreshEvery {
+		cached := e.body.(loadsResponse)
+		cached.CacheAgeSec = int(time.Since(e.at).Seconds())
+		respondJSON(w, http.StatusOK, cached)
+		return
+	}
 
 	loads, err := s.queryLoads(r.Context(), dataIngestOrgID(r), day, "")
 	if err != nil {
+		if e, ok := s.pageGet(cacheKey); ok {
+			stale := e.body.(loadsResponse)
+			stale.CacheAgeSec = int(time.Since(e.at).Seconds())
+			stale.Note = fmt.Sprintf("STALE snapshot from %s — refresh failed: %v", e.at.UTC().Format(time.RFC3339), err)
+			respondJSON(w, http.StatusOK, stale)
+			return
+		}
 		// The day range on partner_inbound_batches.received_at has no usable
 		// index until idx_pib_dataset_received lands (concurrent builder);
 		// measured 2026-09-20 as a 30s statement timeout. An empty list marked
@@ -1567,6 +1622,7 @@ func (s *DataIngestService) HandleLoads(w http.ResponseWriter, r *http.Request) 
 		out.Composition = comp
 		out.mark("composition", fieldMeasured)
 	}
+	s.pagePut(cacheKey, out)
 	respondJSON(w, http.StatusOK, out)
 }
 

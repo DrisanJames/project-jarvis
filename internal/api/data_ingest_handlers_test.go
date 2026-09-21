@@ -712,3 +712,45 @@ func TestDataIngestLegacySupplyClass(t *testing.T) {
 		t.Fatalf("unknown legacy load must stay blank: %q/%q", sc, sp)
 	}
 }
+
+// /loads is served from the page cache within the refresh window (no DB
+// traffic), and when a forced refresh fails the LAST GOOD body is served with
+// a STALE note — never a blank day over a timeout.
+func TestDataIngestLoads_PageCacheAndStale(t *testing.T) {
+	h, mock, _ := newDIRouter(t)
+	mock.MatchExpectationsInOrder(false)
+	b1, ds := uuid.NewString(), uuid.NewString()
+	recv := time.Date(2026, 9, 19, 9, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "dataset_id", "name", "supply_class", "source_path",
+			"s3_bucket", "s3_key", "has_object", "record_count", "received_at"}).
+			AddRow(b1, ds, "Feed One", "at_rest", "desktop", "", "", false, int64(10), recv))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_clean_queue")).
+		WillReturnRows(sqlmock.NewRows([]string{"batch_id", "status", "n"}).AddRow(b1, "ready", int64(10)))
+	mock.ExpectQuery(regexp.QuoteMeta("COUNT(*) FILTER (WHERE status IN ('mailed','engaged'))")).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "n", "mailed"}).AddRow("gmail", int64(10), int64(0)))
+	rec := diDo(h, http.MethodGet, "/api/mailing/data-ingest/loads?date=2026-09-19", "", sessionHdr())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Feed One") {
+		t.Fatalf("first call: %d %s", rec.Code, rec.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	rec = diDo(h, http.MethodGet, "/api/mailing/data-ingest/loads?date=2026-09-19", "", sessionHdr())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Feed One") {
+		t.Fatalf("cached call: %d %s", rec.Code, rec.Body.String())
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("FROM partner_inbound_batches b")).
+		WillReturnError(errors.New("pq: canceling statement due to statement timeout"))
+	rec = diDo(h, http.MethodGet, "/api/mailing/data-ingest/loads?date=2026-09-19&refresh=1", "", sessionHdr())
+	var got struct {
+		Note  string `json:"note"`
+		Loads []any  `json:"loads"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Loads) != 1 || !strings.HasPrefix(got.Note, "STALE snapshot") {
+		t.Fatalf("stale path: %s", rec.Body.String())
+	}
+}
