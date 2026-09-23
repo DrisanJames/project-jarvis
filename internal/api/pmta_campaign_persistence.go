@@ -243,6 +243,11 @@ func createPMTAWaveCampaign(
 		planID := uuid.New()
 		selectedCount := audience.CountsByISP[plan.ISP]
 		reserveCount := audience.ReserveCountsByISP[plan.ISP]
+		// The SendGovernor clamp is the quota that was actually applied: the
+		// row must read capped, not "0 = unlimited" beside a clamped count.
+		if q, ok := audience.QuotaByISP[plan.ISP]; ok {
+			plan.Quota = q
+		}
 		planSnapshot, _ := json.Marshal(map[string]any{
 			"isp":                plan.ISP,
 			"quota":              plan.Quota,

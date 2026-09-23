@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/engine"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/worker"
 )
 
 const (
@@ -159,9 +160,13 @@ type pmtaAudiencePlan struct {
 	// Persistence layer stamps mailing_campaign_isp_plans.audience_reserve_count
 	// from this map. When DISABLE_RESERVE_POOL=true, every entry is 0.
 	ReserveCountsByISP map[string]int
-	TotalSeen          int
-	AfterSuppression   int
-	SelectedTotal      int
+	// QuotaByISP is the quota the planner actually applied per ISP after the
+	// SendGovernor clamp (absent = the normalized plan's quota). Persistence
+	// writes it to isp_plans.quota / config_snapshot so the row reads capped.
+	QuotaByISP       map[string]int
+	TotalSeen        int
+	AfterSuppression int
+	SelectedTotal    int
 	// ReserveTotal is the sum of ReserveCountsByISP — convenience for
 	// log lines and audit dashboards. Always equals 0 under the kill switch.
 	ReserveTotal int
@@ -348,6 +353,9 @@ func normalizePMTACampaignInput(input engine.PMTACampaignInput) (pmtaNormalizedC
 	// therefore never reaches normalized.Plans, which is what
 	// mailing_campaign_isp_plans / _plan_recipients / _waves are built from.
 	// Fails CLOSED: an unreadable ban table refuses the deploy.
+	if !worker.IsKnownLane(input.Lane) {
+		return pmtaNormalizedCampaign{}, fmt.Errorf("unknown lane %q (engaged|cold|family|fresh|kumo, or empty)", input.Lane)
+	}
 	if err := applyISPBansForOrg("", &input); err != nil {
 		return pmtaNormalizedCampaign{}, err
 	}
@@ -1802,6 +1810,7 @@ func planPMTAAudience(
 	}
 
 	selectedByISP := make(map[string][]pmtaSelectedRecipient, len(normalized.Plans))
+	quotaByISP := make(map[string]int, len(normalized.Plans))
 	countsByISP := make(map[string]int, len(normalized.Plans))
 	reserveCountsByISP := make(map[string]int, len(normalized.Plans))
 	selectedTotal := 0
@@ -1862,6 +1871,7 @@ func planPMTAAudience(
 			if plan.Quota == 0 || plan.Quota > capN {
 				log.Printf("[PlanAudience] %s: SendGovernor clamp isp=%s quota %d -> %d", input.Name, isp, plan.Quota, capN)
 				plan.Quota = capN
+				quotaByISP[isp] = capN
 			}
 			if capN <= 0 {
 				recipients = recipients[:0]
@@ -1930,6 +1940,7 @@ func planPMTAAudience(
 		RecipientsByISP:    selectedByISP,
 		CountsByISP:        countsByISP,
 		ReserveCountsByISP: reserveCountsByISP,
+		QuotaByISP:         quotaByISP,
 		TotalSeen:          len(seenEmails),
 		AfterSuppression:   len(qualified),
 		SelectedTotal:      selectedTotal,

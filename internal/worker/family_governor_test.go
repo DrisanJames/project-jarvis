@@ -47,21 +47,25 @@ func fgExpectContract(mock sqlmock.Sqlmock, lane, isp string, domainTotal, perIS
 	if found {
 		rows.AddRow(domainTotal, perISP, ddiEmpty)
 	}
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(lane, isp).WillReturnRows(rows)
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(lane, isp, sqlmock.AnyArg()).WillReturnRows(rows)
 }
 
-// fgExpectSpend is one spend COUNT: isp = "" is the domain-total term.
-func fgExpectSpend(mock sqlmock.Sqlmock, domain, lane, isp string, spent int) {
+// fgExpectSpend is THE one spend pass per decision: (per-ISP, domain total).
+func fgExpectSpend2(mock sqlmock.Sqlmock, domain, lane, isp string, spentISP, spentDomain int) {
 	mock.ExpectQuery(`FROM mailing_campaign_queue q`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), domain, lane, isp).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(spent))
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "total"}).AddRow(spentISP, spentDomain))
+}
+
+func fgExpectSpend(mock sqlmock.Sqlmock, domain, lane, isp string, spent int) {
+	fgExpectSpend2(mock, domain, lane, isp, spent, spent)
 }
 
 // fgExpectPlanned is the deploy-time committed count (Headroom only).
 func fgExpectPlanned(mock sqlmock.Sqlmock, domain, lane, isp string, planned int) {
 	mock.ExpectQuery(`SUM\(p.audience_selected_count\)`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), domain, lane, isp).
-		WillReturnRows(sqlmock.NewRows([]string{"planned"}).AddRow(planned))
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), domain, lane, isp, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "total"}).AddRow(planned, planned))
 }
 
 func fgExpectLedger(mock sqlmock.Sqlmock, waveID, domain, isp, mode string, requested, ceiling, spent, allowed int, reason, lane string) {
@@ -249,8 +253,7 @@ func TestFamilyGovernorDecide_DomainTotalBinds(t *testing.T) {
 	db, mock := fgNewMock(t)
 	waveID := uuid.New().String()
 	fgExpectContract(mock, fgTestColdLane, "microsoft", 1000, 800, false, true)
-	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 100) // isp balance 700
-	fgExpectSpend(mock, fgTestDomain, LaneCold, "", 950)          // domain balance 50 ← binds
+	fgExpectSpend2(mock, fgTestDomain, LaneCold, "microsoft", 100, 950) // isp balance 700; domain balance 50 ← binds
 	fgExpectLedger(mock, waveID, fgTestDomain, "microsoft", FamilyGovernorOn, 300, 1000, 950, 50, "trim", LaneCold)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	d, err := g.DecideLane(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay, waveID, 300)
@@ -262,32 +265,105 @@ func TestFamilyGovernorDecide_DomainTotalBinds(t *testing.T) {
 	}
 }
 
-// An ISP absent from a NON-empty desired_daily_intros is 0 (not committed):
-// deny, no spend query. An EMPTY map defers to the domain total.
-func TestFamilyGovernorDecide_AbsentISPIsZero(t *testing.T) {
+// An ISP ABSENT from a NON-empty desired_daily_intros is a contract GAP: the
+// per-ISP term is skipped (never a silent zero), the domain total still
+// binds, and the decision carries |no_isp_ceiling so the shadow report sees
+// it. With no domain total either → no_isp_ceiling, ungoverned, ledgered.
+func TestFamilyGovernorDecide_AbsentISPIsAGapNotZero(t *testing.T) {
 	db, mock := fgNewMock(t)
-	waveID := uuid.New().String()
-	fgExpectContract(mock, fgTestLane, "comcast", nil, nil, false, true)
-	fgExpectLedger(mock, waveID, fgTestDomain, "comcast", FamilyGovernorOn, 200, 0, 0, 0, "deny", LaneFamily)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "comcast", fgTestDay, waveID, 200)
-	if err != nil || !d.Governed || d.Allowed != 0 || d.Reason != "deny" {
-		t.Fatalf("absent ISP must deny: %+v err=%v", d, err)
+	// gap + domain total 5000 spent 4990 → the total binds at 10, flagged
+	wave := uuid.New().String()
+	fgExpectContract(mock, fgTestLane, "comcast", 5000, nil, false, true)
+	fgExpectSpend2(mock, fgTestDomain, LaneFamily, "comcast", 0, 4990)
+	fgExpectLedger(mock, wave, fgTestDomain, "comcast", FamilyGovernorOn, 200, 5000, 4990, 10, "trim|no_isp_ceiling", LaneFamily)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "comcast", fgTestDay, wave, 200)
+	if err != nil || !d.Governed || d.Allowed != 10 || d.Reason != "trim|no_isp_ceiling" {
+		t.Fatalf("gap with domain total: %+v err=%v", d, err)
 	}
-	// Empty map + domain total 5000, spent 4990 → domain-total term binds at 10.
+	// gap, no domain total → ungoverned, requested untouched, ledgered as no_isp_ceiling
 	wave2 := uuid.New().String()
+	fgExpectContract(mock, fgTestLane, "verizon", nil, nil, false, true)
+	fgExpectSpend2(mock, fgTestDomain, LaneFamily, "verizon", 0, 0)
+	fgExpectLedger(mock, wave2, fgTestDomain, "verizon", FamilyGovernorOn, 200, 0, 0, 200, "no_isp_ceiling", LaneFamily)
+	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "verizon", fgTestDay, wave2, 200)
+	if err != nil || d.Governed || d.Allowed != 200 || d.Reason != "no_isp_ceiling" {
+		t.Fatalf("gap without total must not deny: %+v err=%v", d, err)
+	}
+	// Empty map + domain total 5000, spent 4990 → domain-total term binds at 10, no flag.
+	wave3 := uuid.New().String()
 	fgExpectContract(mock, fgTestLane, "att", 5000, nil, true, true)
-	fgExpectSpend(mock, fgTestDomain, LaneFamily, "", 4990)
-	fgExpectLedger(mock, wave2, fgTestDomain, "att", FamilyGovernorOn, 200, 5000, 4990, 10, "trim", LaneFamily)
-	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "att", fgTestDay, wave2, 200)
+	fgExpectSpend2(mock, fgTestDomain, LaneFamily, "att", 0, 4990)
+	fgExpectLedger(mock, wave3, fgTestDomain, "att", FamilyGovernorOn, 200, 5000, 4990, 10, "trim", LaneFamily)
+	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "att", fgTestDay, wave3, 200)
 	if err != nil || d.Allowed != 10 || d.Reason != "trim" {
 		t.Fatalf("empty map → domain total: %+v err=%v", d, err)
 	}
 	// Contract row with neither term → no_contract (nothing to enforce).
 	fgExpectContract(mock, fgTestLane, "cox", nil, nil, true, true)
+	fgExpectSpend2(mock, fgTestDomain, LaneFamily, "cox", 0, 0)
 	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "cox", fgTestDay, uuid.New().String(), 7)
 	if err != nil || d.Governed || d.Allowed != 7 || d.Reason != "no_contract" {
 		t.Fatalf("no terms → no_contract: %+v err=%v", d, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// countingQ counts every statement the governor issues — the negative controls
+// assert on the COUNT, not on sqlmock silence (an unexpected query fails open
+// and would let a "zero statements" test pass; QA 2026-09-23).
+type countingQ struct {
+	FamilyGovernorQueryer
+	n int
+}
+
+func (c *countingQ) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	c.n++
+	return c.FamilyGovernorQueryer.QueryRowContext(ctx, query, args...)
+}
+func (c *countingQ) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	c.n++
+	return c.FamilyGovernorQueryer.ExecContext(ctx, query, args...)
+}
+
+func TestFamilyGovernor_StatementCounts(t *testing.T) {
+	db, mock := fgNewMock(t)
+	// OFF: zero statements on Decide, DecideLane and Headroom.
+	off := newFamilyGovernorWithMode(db, FamilyGovernorOff)
+	cq := &countingQ{FamilyGovernorQueryer: db}
+	off.Decide(context.Background(), cq, uuid.New().String(), fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 5)
+	off.DecideLane(context.Background(), cq, LaneFamily, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 5)
+	off.Headroom(context.Background(), cq, LaneCold, fgTestDomain, "microsoft", "x", fgTestDay)
+	if cq.n != 0 {
+		t.Fatalf("OFF issued %d statements", cq.n)
+	}
+	// ON, engaged campaign: exactly ONE statement (the lane lookup).
+	on := newFamilyGovernorWithMode(db, FamilyGovernorOn)
+	eng := uuid.New().String()
+	fgExpectLane(mock, eng, LaneEngaged)
+	cq = &countingQ{FamilyGovernorQueryer: db}
+	if d, _ := on.Decide(context.Background(), cq, eng, fgTestDomain, "microsoft", fgTestDay, uuid.New().String(), 5); d.Governed || cq.n != 1 {
+		t.Fatalf("engaged: governed=%v statements=%d", d.Governed, cq.n)
+	}
+	// ON, no contract: lane + contract = 2, nothing else.
+	cold := uuid.New().String()
+	fgExpectLane(mock, cold, LaneCold)
+	fgExpectContract(mock, fgTestColdLane, "microsoft", nil, nil, false, false)
+	cq = &countingQ{FamilyGovernorQueryer: db}
+	if d, _ := on.Decide(context.Background(), cq, cold, fgTestDomain, "microsoft", fgTestDay, uuid.New().String(), 5); d.Governed || cq.n != 2 {
+		t.Fatalf("no contract: governed=%v statements=%d", d.Governed, cq.n)
+	}
+	// ON, governed per-ISP only: lane + contract + spend + ledger = 4.
+	cold2 := uuid.New().String()
+	fgExpectLane(mock, cold2, LaneCold)
+	fgExpectContract(mock, fgTestColdLane, "apple", nil, 50, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "apple", 0)
+	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
+	cq = &countingQ{FamilyGovernorQueryer: db}
+	if d, _ := on.Decide(context.Background(), cq, cold2, fgTestDomain, "apple", fgTestDay, uuid.New().String(), 5); !d.Governed || cq.n != 4 {
+		t.Fatalf("governed: governed=%v statements=%d", d.Governed, cq.n)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -334,24 +410,28 @@ func TestFamilyGovernorDecide_LaneResolution(t *testing.T) {
 	}
 }
 
-// Headroom is the deploy-time question: allowed for an unbounded request, no ledger row.
+// Headroom is the deploy-time question: allowed for an unbounded request, no
+// ledger row. It COMPUTES in shadow too (the api hook decides whether to
+// apply it — TestPlanPMTAAudience_GovernorShadowNeverClamps); the contract
+// read is as-of the cell's send day and the planned term excludes the cell's
+// own name twin (args pinned by fgExpectPlanned).
 func TestFamilyGovernorHeadroom(t *testing.T) {
 	db, mock := fgNewMock(t)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
 	fgExpectContract(mock, fgTestColdLane, "microsoft", nil, 2100, false, true)
 	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 600)
 	fgExpectPlanned(mock, fgTestDomain, LaneCold, "microsoft", 900) // an earlier deploy today, not yet enqueued
-	n, governed, err := g.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay)
+	n, governed, err := g.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", "09252026 - DB - NL-MS-NEWSLETTER-D12-COLD", fgTestDay)
 	if err != nil || !governed || n != 1200 {
 		t.Fatalf("headroom = %d governed=%v err=%v (want 2100 - max(600 queued, 900 planned))", n, governed, err)
 	}
 	// Not a governed lane → governed=false, no queries.
-	if _, governed, _ := g.Headroom(context.Background(), db, LaneEngaged, fgTestDomain, "microsoft", fgTestDay); governed {
+	if _, governed, _ := g.Headroom(context.Background(), db, LaneEngaged, fgTestDomain, "microsoft", "x", fgTestDay); governed {
 		t.Fatal("engaged must not be governed")
 	}
 	// Off → governed=false, no queries.
 	off := newFamilyGovernorWithMode(db, FamilyGovernorOff)
-	if _, governed, _ := off.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay); governed {
+	if _, governed, _ := off.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", "x", fgTestDay); governed {
 		t.Fatal("off must not govern")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -387,7 +467,7 @@ func TestFamilyGovernorDecide_NoContract(t *testing.T) {
 
 func TestFamilyGovernorDecide_ContractErrorFailsOpen(t *testing.T) {
 	db, mock := fgNewMock(t)
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo").
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo", sqlmock.AnyArg()).
 		WillReturnError(errors.New("canceling statement due to statement timeout"))
 	// error decisions are ledgered (fail-open visible in the ledger)
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))

@@ -249,7 +249,7 @@ func TestFamilyGovernorHook_OnErrorFailsOpen(t *testing.T) {
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "yahoo", fgTestDomain)
 	fgExpectLane(mock, campaignID.String(), LaneFamily)
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo").
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo", sqlmock.AnyArg()).
 		WillReturnError(errors.New("canceling statement due to statement timeout"))
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)

@@ -2671,6 +2671,9 @@ var criticalSendPathDDL = []struct {
 	// moves the constant to the cutover day; the guard below detects a
 	// definition that no longer carries the current fence and re-adds it
 	// (drop + add NOT VALID are both catalog-only).
+	// SendGovernor ledger lane (2026-09-23): synchronous so the first minute
+	// after a deploy is not ledger-dark (the 5s slice runs in the background).
+	{"sep23_family_governor_decisions_lane_critical", `ALTER TABLE IF EXISTS family_governor_decisions ADD COLUMN IF NOT EXISTS lane TEXT NOT NULL DEFAULT ''`},
 	{"req118_pcq_claim_requires_allocation", `DO $$ BEGIN
 		IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pcq_claim_requires_allocation')
 		   AND pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'pcq_claim_requires_allocation')) NOT LIKE '%` + pcqAllocationFence + `%' THEN
@@ -2768,6 +2771,10 @@ var concurrentIndexSpecs = []struct {
 	name string
 	sql  string
 }{
+	// SendGovernor spend/planned subqueries start from isp_plans by
+	// sending_domain and join campaigns by id; without this the planner scans
+	// every campaign in the day window (prod 2026-09-23: 1.4 s per wave).
+	{"idx_campaign_isp_plans_domain", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaign_isp_plans_domain ON mailing_campaign_isp_plans (sending_domain, campaign_id)`},
 	// Event-ingestion lookups (engine/ingest.go) filter
 	// mailing_message_log on LOWER(email) and order by sent_at DESC.
 	// Without this expression index each lookup is a ~13M-row seq scan

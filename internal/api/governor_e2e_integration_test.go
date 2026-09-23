@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,7 +101,7 @@ func e2eContract(t *testing.T, db *sql.DB, version, microsoft int) {
 	t.Helper()
 	e2eExec(t, db, `UPDATE drip_dispatch_contracts SET status='superseded', superseded_at=NOW() WHERE lane=$1 AND status='active'`, e2eLane)
 	e2eExec(t, db, `INSERT INTO drip_dispatch_contracts (lane, version, status, effective_at, created_by, desired_daily_intros, daily_ceiling, allowed_domains, isp_exclusions, ladder_touches, max_intro_share)
-		VALUES ($1, $2, 'active', NOW() - INTERVAL '1 hour', 'e2e', $3::jsonb, $4, '{DB}', '{}', 1, 1.0)`,
+		VALUES ($1, $2, 'active', NOW() - INTERVAL '2 days', 'e2e', $3::jsonb, $4, '{DB}', '{}', 1, 1.0)`,
 		e2eLane, version, fmt.Sprintf(`{"microsoft": %d}`, microsoft), microsoft)
 }
 
@@ -179,16 +180,43 @@ func TestGovernorE2E_DeployFinalizeWavesEnqueue(t *testing.T) {
 	t.Cleanup(func() { SetSendGovernor(nil) })
 	svc := e2eService(t, db)
 
+	// Fail the test on any governor fail-open or planner error line: a masked
+	// clamp must never read as a pass (QA 2026-09-23).
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
 	segA := e2eSegment(t, db, "COLD e2e A", 500)
 	segB := e2eSegment(t, db, "COLD e2e B", 500)
 	e2eContract(t, db, 1, 150)
+	// ONE start for every cell: the plan-time day is the cell's send day, so A
+	// and B must share it whatever the wall clock (23:20–00:00 MT used to
+	// split them across two Denver days).
 	start := time.Now().Add(30 * time.Minute)
 	end := start.Add(4 * time.Hour)
 	nameA := "09252026 - DB - NL-MS-NEWSLETTER-D12-COLD"
 	nameB := "09252026 - DB - NL-MS-NEWSLETTER-D12-COLD-TOPUP"
 
-	// D — dry-run previews the CLAMPED audience and writes nothing.
+	// S — SHADOW never clamps: the same dry-run under a shadow governor
+	// previews the full 500 and only logs the would-be number.
+	t.Setenv(worker.SendGovernorModeEnv, "shadow")
+	SetSendGovernor(worker.NewFamilyGovernor(db))
 	code, out := e2ePost(t, svc, "/dry-run", e2ePayload(nameA, segA, start, end))
+	if code != 200 {
+		t.Fatalf("shadow dry-run %d %v", code, out)
+	}
+	if tr, _ := out["total_recipients"].(float64); int(tr) != 500 {
+		t.Fatalf("SHADOW dry-run total_recipients = %v, want 500 (shadow must not clamp)", out["total_recipients"])
+	}
+	if !strings.Contains(logBuf.String(), "PLAN SHADOW") || !strings.Contains(logBuf.String(), "would-clamp-to=150") {
+		t.Fatalf("shadow must log the would-be clamp; log=%s", logBuf.String())
+	}
+	t.Setenv(worker.SendGovernorModeEnv, "on")
+	SetSendGovernor(gov)
+
+	// D — dry-run previews the CLAMPED audience and writes nothing.
+	code, out = e2ePost(t, svc, "/dry-run", e2ePayload(nameA, segA, start, end))
 	if code != 200 {
 		t.Fatalf("dry-run %d %v", code, out)
 	}
@@ -224,11 +252,14 @@ func TestGovernorE2E_DeployFinalizeWavesEnqueue(t *testing.T) {
 	if planned := e2eCount(t, db, `SELECT COALESCE(SUM(planned_recipients),0) FROM mailing_campaign_waves WHERE campaign_id=$1::uuid`, idA); planned != 150 {
 		t.Fatalf("A waves planned = %d", planned)
 	}
+	if q := e2eCount(t, db, `SELECT COALESCE(MAX(quota),-1) FROM mailing_campaign_isp_plans WHERE campaign_id=$1::uuid`, idA); q != 150 {
+		t.Fatalf("A persisted isp_plans.quota = %d, want the clamp 150 (not 0 = unlimited)", q)
+	}
 
 	// B — a second cell in the SAME lane × domain × day: headroom is 0 because
 	// A already committed the contract → nothing selected → the finalizer
 	// marks it failed (no qualified recipients). Nothing over-committed.
-	code, out = e2ePost(t, svc, "/deploy", e2ePayload(nameB, segB, start.Add(10*time.Minute), end))
+	code, out = e2ePost(t, svc, "/deploy", e2ePayload(nameB, segB, start, end))
 	if code != 202 {
 		t.Fatalf("deploy B: %d %v", code, out)
 	}
@@ -243,6 +274,9 @@ func TestGovernorE2E_DeployFinalizeWavesEnqueue(t *testing.T) {
 	e2eContract(t, db, 2, 120)
 	gov2 := worker.NewFamilyGovernor(db)
 	e2eExec(t, db, `UPDATE mailing_campaign_waves SET scheduled_at = NOW() - INTERVAL '1 minute', window_start_at = NOW() - INTERVAL '1 minute' WHERE campaign_id=$1::uuid`, idA)
+	// The wave hook keys spend on the wave's day (now); pull the cell onto it
+	// as the scheduler would only fire it on its own day.
+	e2eExec(t, db, `UPDATE mailing_campaigns SET scheduled_at = NOW() - INTERVAL '1 minute' WHERE id=$1::uuid`, idA)
 	rows, err := db.Query(`SELECT id::text FROM mailing_campaign_waves WHERE campaign_id=$1::uuid ORDER BY wave_number`, idA)
 	if err != nil {
 		t.Fatal(err)
@@ -273,5 +307,39 @@ func TestGovernorE2E_DeployFinalizeWavesEnqueue(t *testing.T) {
 	if within := e2eCount(t, db, `SELECT count(*) FROM family_governor_decisions WHERE lane='cold' AND mode='on'`); within == 0 {
 		t.Fatal("decisions must carry mode=on and lane=cold")
 	}
+	if strings.Contains(logBuf.String(), "FAIL-OPEN") {
+		t.Fatalf("a governor fail-open occurred during the chain:\n%s", logBuf.String())
+	}
+	if n := e2eCount(t, db, `SELECT count(*) FROM family_governor_decisions WHERE reason LIKE 'error:%'`); n != 0 {
+		t.Fatalf("%d error decisions ledgered", n)
+	}
 	t.Logf("A built at 150 of 500 (contract v1), B refused at 0, waves enqueued %d of 150 planned under contract v2=120, %d trim/deny decisions", enq, dec)
+}
+
+// LaneOf (Go) and LaneOfSQL (Postgres) must agree, tag or no tag, including
+// whitespace around a tag and the family/cold ordering. Real prod name shapes
+// plus adversarial ones.
+func TestGovernorE2E_LaneOfGoMatchesSQL(t *testing.T) {
+	db := e2eDB(t)
+	e2eReset(t, db)
+	cases := []struct{ name, tag string }{
+		{"09232026 - DB - NL-YF-NEWSLETTER-D14-COLD", ""}, {"09232026 - DB - NL-YF-NEWSLETTER-D14-ENG", ""}, {"09232026 - DB - NL-YF-NEWSLETTER", ""},
+		{"09232026 - DB - NL-YF-NEWSLETTER-D14-TOPUP", ""}, {"09232026 - DB - NL-MS-NEWSLETTER-D10-COLD", ""}, {"09232026 - DB - NL-AP-NEWSLETTER-D10-COLD", ""},
+		{"09232026 - DB - NL-OT-NEWSLETTER-D10-COLD-PM", ""}, {"09232026 - DB - NL-COLD-REMAIL-Liberty", ""}, {"09232026 - NX-DB - NL-COLD-NEWSLETTER", ""},
+		{"09232026 - DB - ENG-NEWSLETTER", ""}, {"09232026 - DB - OFR-CLK-SamsCPL", ""}, {"09232026 - DB - NL-GM-NEWSLETTER", ""}, {"09232026 - DB - SES-OPENERS", ""},
+		{"09232026 - DB - AUTO-REMAIL", ""}, {"09232026 - DB - REMAIL-Liberty", ""}, {"09232026 - DB - HELD12", ""}, {"09232026 - DB - APPLE-RETRY", ""},
+		{"09232026 - TRB - KUMO-WARM d21", ""}, {"09232026 - DB - NL-FRESH-NEWSLETTER", ""}, {"09232026 - DB - ENG-NEWSLETTER ~fresh", ""},
+		{"09232026 - DB - ENG-NEWSLETTER", "cold"}, {"09232026 - DB - ENG-NEWSLETTER", " Cold "}, {"09232026 - DB - ENG-NEWSLETTER", "\tcold\n"},
+		{"09232026 - DB - NL-MS-NEWSLETTER-D10-COLD", "engaged"}, {"anything", "family"}, {"anything", "KUMO"},
+	}
+	for _, c := range cases {
+		cfg, _ := json.Marshal(map[string]any{"campaign_input": map[string]any{"lane": c.tag}})
+		var got string
+		if err := db.QueryRow(`SELECT `+worker.LaneOfSQL+` FROM (SELECT $1::text AS name, $2::jsonb AS pmta_config) c`, c.name, string(cfg)).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if want := worker.LaneOf(c.name, c.tag); got != want {
+			t.Errorf("LaneOf(%q,%q): Go=%q SQL=%q", c.name, c.tag, want, got)
+		}
+	}
 }

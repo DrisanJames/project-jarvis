@@ -101,13 +101,20 @@ func TestNormalizeTimeSpans_ClosedWindowRefusedInEveryMode(t *testing.T) {
 // driven over sqlmock exactly like TestPlanPMTAAudience_ReservePool_OverSelect.
 type stubGovernor struct {
 	enabled  bool
+	mode     string
 	headroom map[string]int // isp → headroom; absent = ungoverned
 	calls    []string
 }
 
 func (s *stubGovernor) Enabled() bool { return s.enabled }
-func (s *stubGovernor) Headroom(_ context.Context, _ worker.FamilyGovernorQueryer, lane, domain, isp string, _ time.Time) (int, bool, error) {
-	s.calls = append(s.calls, lane+"|"+domain+"|"+isp)
+func (s *stubGovernor) Mode() string {
+	if s.mode == "" {
+		return worker.FamilyGovernorOn
+	}
+	return s.mode
+}
+func (s *stubGovernor) Headroom(_ context.Context, _ worker.FamilyGovernorQueryer, lane, domain, isp, name string, day time.Time) (int, bool, error) {
+	s.calls = append(s.calls, lane+"|"+domain+"|"+isp+"|"+name+"|"+day.In(time.UTC).Format("2006-01-02"))
 	n, ok := s.headroom[isp]
 	return n, ok, nil
 }
@@ -140,7 +147,8 @@ func TestPlanPMTAAudience_GovernorClampsAudienceBoundCell(t *testing.T) {
 		InclusionLists: []string{listID},
 		ISPPlans:       []engine.PMTAISPScheduleInput{{ISP: "microsoft", Quota: 0}},
 	}
-	normalized := pmtaNormalizedCampaign{Plans: []pmtaNormalizedPlan{{ISP: "microsoft", Quota: 0}}}
+	sendDay := time.Date(2026, 9, 25, 8, 1, 0, 0, time.UTC) // 02:01 MT — the cell's day, deployed the evening before
+	normalized := pmtaNormalizedCampaign{Plans: []pmtaNormalizedPlan{{ISP: "microsoft", Quota: 0}}, EarliestStart: sendDay}
 
 	// Contract headroom 100 on a 500-member audience-bound cell → 100 selected
 	// (+ the reserve pool the quota now permits, 1.5x → 50 reserves).
@@ -152,8 +160,11 @@ func TestPlanPMTAAudience_GovernorClampsAudienceBoundCell(t *testing.T) {
 	if r.ReserveCountsByISP["microsoft"] != 50 {
 		t.Fatalf("reserve = %d, want 50", r.ReserveCountsByISP["microsoft"])
 	}
-	if len(g.calls) != 1 || g.calls[0] != "cold|m.discountblog.com|microsoft" {
-		t.Fatalf("governor asked with %v", g.calls)
+	if len(g.calls) != 1 || g.calls[0] != "cold|m.discountblog.com|microsoft|09252026 - DB - NL-MS-NEWSLETTER-D12-COLD|2026-09-25" {
+		t.Fatalf("governor asked with %v (want the cell's name and its SEND day, not the deploy instant)", g.calls)
+	}
+	if r.QuotaByISP["microsoft"] != 100 {
+		t.Fatalf("clamped quota must be reported for persistence: %v", r.QuotaByISP)
 	}
 
 	// Headroom 0 → nothing selected (not "unlimited").
@@ -182,5 +193,42 @@ func TestPlanPMTAAudience_GovernorClampsAudienceBoundCell(t *testing.T) {
 	}
 	if r := planWithStubGovernor(t, nil, input, normalized, 500); r.CountsByISP["microsoft"] != 500 {
 		t.Fatalf("nil governor must not clamp: %v", r.CountsByISP)
+	}
+}
+
+// SHADOW must never change what a cell is built at: the hook logs the
+// would-be clamp and returns ungoverned (QA 2026-09-23: the first cut clamped
+// under shadow, the mode prod runs today).
+func TestPlanPMTAAudience_GovernorShadowNeverClamps(t *testing.T) {
+	listID := "aaaaaaaa-0000-0000-0000-000000000002"
+	input := engine.PMTACampaignInput{
+		Name: "09252026 - DB - NL-MS-NEWSLETTER-D12-COLD", Lane: "cold", SendingDomain: "m.discountblog.com",
+		InclusionLists: []string{listID},
+		ISPPlans:       []engine.PMTAISPScheduleInput{{ISP: "microsoft", Quota: 0}},
+	}
+	normalized := pmtaNormalizedCampaign{Plans: []pmtaNormalizedPlan{{ISP: "microsoft", Quota: 0}}}
+	shadow := &stubGovernor{enabled: true, mode: worker.FamilyGovernorShadow, headroom: map[string]int{"microsoft": 100}}
+	r := planWithStubGovernor(t, shadow, input, normalized, 500)
+	if r.CountsByISP["microsoft"] != 500 || len(r.QuotaByISP) != 0 {
+		t.Fatalf("shadow clamped: counts=%v quota=%v", r.CountsByISP, r.QuotaByISP)
+	}
+	if len(shadow.calls) != 1 {
+		t.Fatalf("shadow must still compute (for the log): calls=%v", shadow.calls)
+	}
+}
+
+// An unknown lane tag is refused at the door — a typo must not create an
+// ungoverned lane.
+func TestNormalize_UnknownLaneRefused(t *testing.T) {
+	start := time.Now().Add(time.Hour)
+	end := start.Add(4 * time.Hour)
+	in := engine.PMTACampaignInput{Name: "x", Lane: "yahoo_family", SendingDomain: "m.discountblog.com", TargetISPs: []engine.ISP{"microsoft"},
+		ISPPlans: []engine.PMTAISPScheduleInput{{ISP: "microsoft", TimeSpans: []engine.PMTATimeSpanInput{{Type: "absolute", StartAt: &start, EndAt: &end}}}}}
+	if _, err := normalizePMTACampaignInput(in); err == nil || !strings.Contains(err.Error(), "unknown lane") {
+		t.Fatalf("want unknown-lane refusal, got %v", err)
+	}
+	in.Lane = " Cold "
+	if _, err := normalizePMTACampaignInput(in); err != nil {
+		t.Fatalf("known lane must pass: %v", err)
 	}
 }

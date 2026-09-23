@@ -18,7 +18,8 @@ import (
 // governor off, or an error — which fails OPEN, as the wave hook does).
 type SendGovernorHeadroom interface {
 	Enabled() bool
-	Headroom(ctx context.Context, q worker.FamilyGovernorQueryer, lane, sendingDomain, ispName string, now time.Time) (int, bool, error)
+	Mode() string
+	Headroom(ctx context.Context, q worker.FamilyGovernorQueryer, lane, sendingDomain, ispName, campaignName string, day time.Time) (int, bool, error)
 }
 
 var (
@@ -53,13 +54,21 @@ func governorHeadroomFor(ctx context.Context, db dbQuerier, input engine.PMTACam
 	}
 	lane := worker.LaneOf(input.Name, input.Lane)
 	domain := strings.ToLower(strings.TrimSpace(input.SendingDomain))
-	n, governed, err := g.Headroom(ctx, q, lane, domain, ispName, day)
+	n, governed, err := g.Headroom(ctx, q, lane, domain, ispName, input.Name, day)
 	if err != nil {
 		log.Printf("[SendGovernor] PLAN FAIL-OPEN lane=%s domain=%s isp=%s campaign=%q: %v", lane, domain, ispName, input.Name, err)
 		return 0, false
 	}
-	if governed {
-		log.Printf("[SendGovernor] PLAN lane=%s domain=%s isp=%s campaign=%q headroom=%d", lane, domain, ispName, input.Name, n)
+	if !governed {
+		return 0, false
 	}
-	return n, governed
+	// The clamp is ENFORCEMENT: only mode=on may change what a cell is built
+	// at. Shadow logs the number it would have applied and touches nothing
+	// (QA 2026-09-23: the first cut clamped under shadow).
+	if g.Mode() != worker.FamilyGovernorOn {
+		log.Printf("[SendGovernor] PLAN SHADOW lane=%s domain=%s isp=%s campaign=%q would-clamp-to=%d", lane, domain, ispName, input.Name, n)
+		return 0, false
+	}
+	log.Printf("[SendGovernor] PLAN ENFORCE lane=%s domain=%s isp=%s campaign=%q headroom=%d", lane, domain, ispName, input.Name, n)
+	return n, true
 }

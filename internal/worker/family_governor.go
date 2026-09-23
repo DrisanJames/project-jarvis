@@ -125,6 +125,17 @@ func LaneOf(name, lane string) string {
 	return LaneEngaged
 }
 
+// KnownLanes is the closed set a deploy payload may tag; anything else is
+// refused at the door (normalizePMTACampaignInput) so a typo cannot create an
+// ungoverned lane.
+var KnownLanes = map[string]bool{LaneEngaged: true, LaneCold: true, LaneFamily: true, LaneFresh: true, LaneKumo: true}
+
+// IsKnownLane reports whether a payload lane tag (empty allowed) is in KnownLanes.
+func IsKnownLane(lane string) bool {
+	l := strings.ToLower(strings.TrimSpace(lane))
+	return l == "" || KnownLanes[l]
+}
+
 var (
 	laneReNLYF  = regexp.MustCompile(`NL-YF`)
 	laneReKumo  = regexp.MustCompile(`KUMO-WARM`)
@@ -133,7 +144,7 @@ var (
 )
 
 // LaneOfSQL mirrors LaneOf for the campaign row `c`.
-const LaneOfSQL = `COALESCE(NULLIF(lower(trim(c.pmta_config->'campaign_input'->>'lane')), ''),
+const LaneOfSQL = `COALESCE(NULLIF(lower(btrim(c.pmta_config->'campaign_input'->>'lane', E' \t\r\n')), ''),
     CASE WHEN c.name ~ 'NL-YF' THEN 'family'
          WHEN c.name ~ 'KUMO-WARM' THEN 'kumo'
          WHEN c.name ~ 'FRESH' THEN 'fresh'
@@ -143,6 +154,10 @@ const LaneOfSQL = `COALESCE(NULLIF(lower(trim(c.pmta_config->'campaign_input'->>
 // governorCacheTTL is how long a lane's ceiling (or its absence) and a
 // campaign's lane are remembered before being re-read.
 const familyGovernorCacheTTL = 60 * time.Second
+
+// familyGovernorLaneCacheMax bounds the campaign→lane cache (expired entries
+// are swept when it is reached; prod sees ~500 wave-bearing campaigns/day).
+const familyGovernorLaneCacheMax = 4096
 
 // familyGovernorQueryTimeout bounds the governor's own DB round-trips so a
 // slow spend COUNT cannot eat the wave processor's budget (spend measured
@@ -336,31 +351,39 @@ SELECT ` + LaneOfSQL + `
 FROM mailing_campaigns c
 WHERE c.id = $1::uuid`
 
-// familyGovernorContractSQL reads the lane's single active contract: the
-// domain total, the per-ISP intro and whether the per-ISP map is empty.
+// familyGovernorContractSQL reads the lane's contract IN FORCE AT $3: the
+// domain total, the per-ISP intro and whether the per-ISP map is empty. A
+// `scheduled` version whose effective_at has been reached counts — the
+// stepper files tomorrow's version at 23:10 MT as scheduled and the
+// activator flips it at midnight, but the builders deploy tomorrow's cells at
+// 22:31–23:45 MT and must plan against TOMORROW's ceiling (Headroom passes
+// the cell's send-day start; the wave hook passes now).
 const familyGovernorContractSQL = `
 SELECT daily_ceiling,
        (desired_daily_intros->>$2)::int,
        (desired_daily_intros IS NULL OR desired_daily_intros = '{}'::jsonb)
 FROM drip_dispatch_contracts
-WHERE lane = $1::text AND status = 'active'
-ORDER BY version DESC
+WHERE lane = $1::text AND status IN ('active','scheduled')
+  AND effective_at <= $3
+  AND superseded_at IS NULL
+ORDER BY effective_at DESC, version DESC
 LIMIT 1`
 
 // familyGovernorSpendSQL counts today's queue rows for the domain's NON-drip
-// campaigns IN THE LANE. $5 = ” counts every ISP (the domain-total term);
-// otherwise only recipient_isp = $5. Keyed on isp_plans.sending_domain (the
-// value the decision is keyed on). The campaign window opens one day early so
-// a wave that crosses Denver midnight still counts its rows on the day they
-// were enqueued (created_at). Plan verified on prod 2026-09-06 (54ms); the
-// lane predicate runs on the already-filtered campaign set.
+// campaigns IN THE LANE, in ONE pass: the per-ISP count (recipient_isp = $5,
+// index idx_campaign_queue_recipient_isp) and the domain total. Keyed on
+// isp_plans.sending_domain (the value the decision is keyed on). The campaign
+// window opens one day early so a wave that crosses Denver midnight still
+// counts its rows on the day they were enqueued (created_at). Measured on
+// prod 2026-09-23 (EXPLAIN ANALYZE, m.discountblog.com): 1.4 s warm — the
+// campaign-window scan dominates; idx_campaign_isp_plans_domain (concurrent
+// builder) is filed to flip the join order.
 //
-// $1 dayStart, $2 dayEnd (timestamptz), $3 sending_domain, $4 lane, $5 isp|”.
+// $1 dayStart, $2 dayEnd (timestamptz), $3 sending_domain, $4 lane, $5 isp.
 const familyGovernorSpendSQL = `
-SELECT COUNT(*)
+SELECT COUNT(*) FILTER (WHERE q.recipient_isp = $5::text), COUNT(*)
 FROM mailing_campaign_queue q
 WHERE q.created_at >= $1 AND q.created_at < $2
-  AND ($5::text = '' OR lower(COALESCE(q.recipient_isp,'')) = $5::text)
   AND q.campaign_id IN (
     SELECT p.campaign_id
     FROM mailing_campaign_isp_plans p
@@ -373,16 +396,20 @@ WHERE q.created_at >= $1 AND q.created_at < $2
 
 // familyGovernorPlannedSQL is the DEPLOY-time spend: what the day's earlier
 // deploys in the lane already COMMITTED (audience_selected_count) for the
-// domain × ISP, whether or not their waves have fired yet. Headroom takes
-// max(queued, planned) so two cells deployed the same night are sized
-// against each other; the wave hook keeps counting queued rows.
-// $1 dayStart, $2 dayEnd, $3 sending_domain, $4 lane, $5 isp|”.
+// domain — per ISP and in total, one pass — whether or not their waves have
+// fired yet. Headroom takes max(queued, planned) so two cells deployed the
+// same night are sized against each other; the wave hook keeps counting
+// queued rows. The cell being planned and its PreDispatch `~fresh` twin
+// (same name sans suffix) are EXCLUDED, or a re-bind would count the campaign
+// it replaces against itself and build the sibling short (QA 2026-09-23).
+// $1 dayStart, $2 dayEnd, $3 sending_domain, $4 lane, $5 isp, $6 campaign name.
 const familyGovernorPlannedSQL = `
-SELECT COALESCE(SUM(p.audience_selected_count), 0)
+SELECT COALESCE(SUM(p.audience_selected_count) FILTER (WHERE p.isp = $5::text), 0),
+       COALESCE(SUM(p.audience_selected_count), 0)
 FROM mailing_campaign_isp_plans p
 JOIN mailing_campaigns c ON c.id = p.campaign_id
 WHERE p.sending_domain = $3
-  AND ($5::text = '' OR lower(COALESCE(p.isp,'')) = $5::text)
+  AND regexp_replace(c.name, ' ~fresh$', '') <> regexp_replace($6::text, ' ~fresh$', '')
   AND c.partner_drip_tag IS NULL AND c.journey_id IS NULL
   AND c.status NOT IN ('cancelled','deleted','failed','draft')
   AND c.scheduled_at >= $1 AND c.scheduled_at < $2
@@ -411,6 +438,13 @@ func (g *FamilyGovernor) LaneFor(ctx context.Context, q FamilyGovernorQueryer, c
 	}
 	lane = strings.ToLower(strings.TrimSpace(lane))
 	g.mu.Lock()
+	if len(g.laneCache) >= familyGovernorLaneCacheMax {
+		for k, e := range g.laneCache { // sweep expired entries; ~500 campaigns/day, never unbounded
+			if !now.Before(e.expires) {
+				delete(g.laneCache, k)
+			}
+		}
+	}
 	g.laneCache[campaignID] = governorLane{lane: lane, expires: now.Add(familyGovernorCacheTTL)}
 	g.mu.Unlock()
 	return lane, nil
@@ -419,8 +453,8 @@ func (g *FamilyGovernor) LaneFor(ctx context.Context, q FamilyGovernorQueryer, c
 // ceilingFor returns the lane × ISP contract terms, from the 60s cache when
 // fresh. A missing contract is cached as not-found so the contracts table is
 // not re-read on every wave of an ungoverned domain.
-func (g *FamilyGovernor) ceilingFor(ctx context.Context, q FamilyGovernorQueryer, lane, ispName string) (governorCeiling, error) {
-	key := lane + "|" + ispName
+func (g *FamilyGovernor) ceilingFor(ctx context.Context, q FamilyGovernorQueryer, lane, ispName string, asOf time.Time) (governorCeiling, error) {
+	key := lane + "|" + ispName + "|" + familyGovernorDayStart(asOf).Format("2006-01-02")
 	now := g.now()
 	g.mu.Lock()
 	if e, ok := g.cache[key]; ok && now.Before(e.expires) {
@@ -430,7 +464,7 @@ func (g *FamilyGovernor) ceilingFor(ctx context.Context, q FamilyGovernorQueryer
 	g.mu.Unlock()
 
 	var e governorCeiling
-	err := q.QueryRowContext(ctx, familyGovernorContractSQL, lane, ispName).Scan(&e.domainTotal, &e.perISP, &e.ddiEmpty)
+	err := q.QueryRowContext(ctx, familyGovernorContractSQL, lane, ispName, asOf).Scan(&e.domainTotal, &e.perISP, &e.ddiEmpty)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// no active contract → ungoverned
@@ -466,8 +500,8 @@ func (g *FamilyGovernor) Decide(ctx context.Context, q FamilyGovernorQueryer, ca
 
 // DecideLane answers one wave for a known lane and writes the ledger row.
 func (g *FamilyGovernor) DecideLane(ctx context.Context, q FamilyGovernorQueryer, lane, sendingDomain, ispName string, day time.Time, waveID string, requested int) (FamilyGovernorDecision, error) {
-	d, err := g.evaluate(ctx, q, lane, sendingDomain, ispName, day, requested, false)
-	if d.Governed || strings.HasPrefix(d.Reason, "error:") {
+	d, err := g.evaluate(ctx, q, lane, sendingDomain, ispName, day, requested, false, "")
+	if d.Governed || strings.HasPrefix(d.Reason, "error:") || strings.Contains(d.Reason, "no_isp_ceiling") {
 		qctx, cancel := context.WithTimeout(ctx, familyGovernorQueryTimeout)
 		defer cancel()
 		g.record(qctx, q, familyGovernorDayStart(day), lane, strings.ToLower(strings.TrimSpace(sendingDomain)), strings.ToLower(strings.TrimSpace(ispName)), waveID, requested, d)
@@ -481,8 +515,8 @@ func (g *FamilyGovernor) DecideLane(ctx context.Context, q FamilyGovernorQueryer
 // means "no contract / lane not governed / governor off" and the caller must
 // not clamp. Errors fail open (governed=false) with the error for logging.
 // No ledger row.
-func (g *FamilyGovernor) Headroom(ctx context.Context, q FamilyGovernorQueryer, lane, sendingDomain, ispName string, day time.Time) (int, bool, error) {
-	d, err := g.evaluate(ctx, q, lane, sendingDomain, ispName, day, math.MaxInt32, true)
+func (g *FamilyGovernor) Headroom(ctx context.Context, q FamilyGovernorQueryer, lane, sendingDomain, ispName, campaignName string, day time.Time) (int, bool, error) {
+	d, err := g.evaluate(ctx, q, lane, sendingDomain, ispName, day, math.MaxInt32, true, campaignName)
 	if err != nil || !d.Governed {
 		return 0, false, err
 	}
@@ -490,7 +524,7 @@ func (g *FamilyGovernor) Headroom(ctx context.Context, q FamilyGovernorQueryer, 
 }
 
 // evaluate is the arithmetic shared by Decide and Headroom.
-func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, lane, sendingDomain, ispName string, day time.Time, requested int, planTime bool) (FamilyGovernorDecision, error) {
+func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, lane, sendingDomain, ispName string, day time.Time, requested int, planTime bool, campaignName string) (FamilyGovernorDecision, error) {
 	lane = strings.ToLower(strings.TrimSpace(lane))
 	d := FamilyGovernorDecision{Mode: g.Mode(), Lane: lane, Allowed: requested, Reason: "ungoverned"}
 	if !g.Enabled() {
@@ -511,7 +545,11 @@ func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, 
 	defer cancel()
 
 	key := laneKey(lane, sendingDomain)
-	c, err := g.ceilingFor(qctx, q, key, ispName)
+	asOf := day
+	if planTime {
+		asOf = familyGovernorDayStart(day) // the version in force on the cell's send day
+	}
+	c, err := g.ceilingFor(qctx, q, key, ispName, asOf)
 	if err != nil {
 		d.Reason = "error:contract"
 		return d, fmt.Errorf("send governor contract %s: %w", key, err)
@@ -524,22 +562,27 @@ func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, 
 
 	dayStart := familyGovernorDayStart(day)
 	dayEnd := familyGovernorDayEnd(dayStart)
-	spend := func(isp string) (int, error) {
-		var queued int
-		if err := q.QueryRowContext(qctx, familyGovernorSpendSQL, dayStart, dayEnd, sendingDomain, lane, isp).Scan(&queued); err != nil {
-			return 0, err
+	// ONE spend pass per decision: (per-ISP, domain total) for queued rows,
+	// plus the same pair for planned rows at deploy time.
+	var spentISP, spentDomain int
+	if err := q.QueryRowContext(qctx, familyGovernorSpendSQL, dayStart, dayEnd, sendingDomain, lane, ispName).Scan(&spentISP, &spentDomain); err != nil {
+		d.Governed = true
+		d.Reason = "error:spend"
+		return d, fmt.Errorf("send governor spend %s %s %s: %w", lane, sendingDomain, ispName, err)
+	}
+	if planTime {
+		var plannedISP, plannedDomain int
+		if err := q.QueryRowContext(qctx, familyGovernorPlannedSQL, dayStart, dayEnd, sendingDomain, lane, ispName, campaignName).Scan(&plannedISP, &plannedDomain); err != nil {
+			d.Governed = true
+			d.Reason = "error:spend"
+			return d, fmt.Errorf("send governor planned %s %s %s: %w", lane, sendingDomain, ispName, err)
 		}
-		if !planTime {
-			return queued, nil
+		if plannedISP > spentISP {
+			spentISP = plannedISP
 		}
-		var planned int
-		if err := q.QueryRowContext(qctx, familyGovernorPlannedSQL, dayStart, dayEnd, sendingDomain, lane, isp).Scan(&planned); err != nil {
-			return 0, err
+		if plannedDomain > spentDomain {
+			spentDomain = plannedDomain
 		}
-		if planned > queued {
-			return planned, nil
-		}
-		return queued, nil
 	}
 	balance := math.MaxInt32
 	bind := func(ceiling, spent int) {
@@ -549,32 +592,29 @@ func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, 
 		}
 	}
 
-	// Per-ISP term: the listed intro, or 0 when the map is non-empty and this
-	// ISP is absent (an unlisted ISP is not committed). An empty map defers to
-	// the domain total alone.
+	// Per-ISP term: the listed intro. An ISP ABSENT from a non-empty map is a
+	// contract GAP, not a zero: the per-ISP term is skipped, the domain total
+	// still binds, and the decision is flagged `no_isp_ceiling` so the shadow
+	// report surfaces it (QA 2026-09-23: every family contract lacked comcast;
+	// zero would have denied comcast estate-wide the first night).
+	noISP := false
 	switch {
 	case c.perISP.Valid:
-		spentISP, err := spend(ispName)
-		if err != nil {
-			d.Reason = "error:spend"
-			return d, fmt.Errorf("send governor spend %s %s %s: %w", lane, sendingDomain, ispName, err)
-		}
 		bind(int(c.perISP.Int64), spentISP)
 	case !c.ddiEmpty:
-		bind(0, 0)
+		noISP = true
 	}
 	if c.domainTotal.Valid {
-		spentDomain, err := spend("")
-		if err != nil {
-			d.Reason = "error:spend"
-			return d, fmt.Errorf("send governor domain spend %s %s: %w", lane, sendingDomain, err)
-		}
 		bind(int(c.domainTotal.Int64), spentDomain)
 	}
 	if balance == math.MaxInt32 {
-		// contract row without any ceiling term → nothing to enforce
+		// contract row without any binding term → nothing to enforce; a
+		// per-ISP gap with no domain total is reported as such (ledgered).
 		d.Governed = false
 		d.Reason = "no_contract"
+		if noISP {
+			d.Reason = "no_isp_ceiling"
+		}
 		return d, nil
 	}
 
@@ -591,6 +631,9 @@ func (g *FamilyGovernor) evaluate(ctx context.Context, q FamilyGovernorQueryer, 
 	}
 	if d.Allowed < 0 {
 		d.Allowed = 0
+	}
+	if noISP {
+		d.Reason += "|no_isp_ceiling"
 	}
 	return d, nil
 }
