@@ -134,9 +134,10 @@ func TestFamilyGovernorHook_ShadowNeverTrims(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "yahoo", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, 10)
-	fgExpectSpend(mock, fgTestDomain, 9)
-	fgExpectLedger(mock, waveID.String(), fgTestDomain, "yahoo", FamilyGovernorShadow, 2, 10, 9, 1, "trim")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "yahoo", nil, 10, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "yahoo", 9)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "yahoo", FamilyGovernorShadow, 2, 10, 9, 1, "trim", LaneFamily)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2) // LIMIT 2 — untouched
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
 	fgRun(t, mock, gov, waveID, 2)
@@ -149,9 +150,10 @@ func TestFamilyGovernorHook_ShadowDenyStillSends(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "aol", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, 10)
-	fgExpectSpend(mock, fgTestDomain, 10)
-	fgExpectLedger(mock, waveID.String(), fgTestDomain, "aol", FamilyGovernorShadow, 2, 10, 10, 0, "deny")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "aol", nil, 10, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "aol", 10)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "aol", FamilyGovernorShadow, 2, 10, 10, 0, "deny", LaneFamily)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
 	fgRun(t, mock, gov, waveID, 2)
@@ -165,9 +167,10 @@ func TestFamilyGovernorHook_OnTrimsToAllowed(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "yahoo", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, 10)
-	fgExpectSpend(mock, fgTestDomain, 9)
-	fgExpectLedger(mock, waveID.String(), fgTestDomain, "yahoo", FamilyGovernorOn, 2, 10, 9, 1, "trim")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "yahoo", nil, 10, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "yahoo", 9)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "yahoo", FamilyGovernorOn, 2, 10, 9, 1, "trim", LaneFamily)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 1) // LIMIT 1
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	fgRun(t, mock, gov, waveID, 1)
@@ -181,11 +184,12 @@ func TestFamilyGovernorHook_OnDenyCompletesWave(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 500, "sbcglobal", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, 10000)
-	fgExpectSpend(mock, fgTestDomain, 12000)
-	fgExpectLedger(mock, waveID.String(), fgTestDomain, "sbcglobal", FamilyGovernorOn, 500, 10000, 12000, 0, "deny")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "sbcglobal", nil, 10000, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "sbcglobal", 12000)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "sbcglobal", FamilyGovernorOn, 500, 10000, 12000, 0, "deny", LaneFamily)
 	mock.ExpectExec(`(?s)UPDATE mailing_campaign_waves\s+SET status = 'completed'.*last_error = COALESCE\(last_error, ''\) \|\| \$2`).
-		WithArgs(waveID.String(), " [family_governor: deny ceiling=10000 spent=12000]").
+		WithArgs(waveID.String(), " [send_governor: deny lane=family ceiling=10000 spent=12000]").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
@@ -199,21 +203,24 @@ func TestFamilyGovernorHook_OnWithinUntouched(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "cox", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, 10)
-	fgExpectSpend(mock, fgTestDomain, 3)
-	fgExpectLedger(mock, waveID.String(), fgTestDomain, "cox", FamilyGovernorOn, 2, 10, 3, 2, "within")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "cox", nil, 10, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "cox", 3)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "cox", FamilyGovernorOn, 2, 10, 3, 2, "within", LaneFamily)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	fgRun(t, mock, gov, waveID, 2)
 }
 
-// ON, non-family plan (gmail): zero governor statements, full enqueue.
-func TestFamilyGovernorHook_OnNonFamilyUntouched(t *testing.T) {
+// ON, engaged campaign (board cell): the lane lookup is the ONLY governor
+// statement — no contract, no spend, no ledger — and the enqueue is full.
+func TestFamilyGovernorHook_OnEngagedLaneUntouched(t *testing.T) {
 	fgDispatcherEnv(t)
 	db, mock := fgNewMock(t)
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "gmail", fgTestDomain)
+	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "microsoft", fgTestDomain)
+	fgExpectLane(mock, campaignID.String(), LaneEngaged)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	fgRun(t, mock, gov, waveID, 2)
@@ -226,7 +233,8 @@ func TestFamilyGovernorHook_OnNoContractUntouched(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "att", fgTestDomain)
-	fgExpectContract(mock, fgTestLane, nil)
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, fgTestLane, "att", nil, nil, false, false)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	fgRun(t, mock, gov, waveID, 2)
@@ -240,8 +248,10 @@ func TestFamilyGovernorHook_OnErrorFailsOpen(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "yahoo", fgTestDomain)
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane).
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo").
 		WillReturnError(errors.New("canceling statement due to statement timeout"))
+	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
 	fgRun(t, mock, gov, waveID, 2)
@@ -269,9 +279,10 @@ func TestFamilyGovernorHook_EmptyPlanDomainFallsBackToProfile(t *testing.T) {
 		WithArgs(campaignID).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE mailing_campaign_isp_plans\s+SET status = 'running'`).
 		WithArgs(planID).WillReturnResult(sqlmock.NewResult(0, 1))
-	fgExpectContract(mock, "broadcast-family.m.profile.com", 100)
-	fgExpectSpend(mock, "m.profile.com", 0)
-	fgExpectLedger(mock, waveID.String(), "m.profile.com", "yahoo", FamilyGovernorShadow, 2, 100, 0, 2, "within")
+	fgExpectLane(mock, campaignID.String(), LaneFamily)
+	fgExpectContract(mock, "broadcast-family.m.profile.com", "yahoo", nil, 100, false, true)
+	fgExpectSpend(mock, "m.profile.com", LaneFamily, "yahoo", 0)
+	fgExpectLedger(mock, waveID.String(), "m.profile.com", "yahoo", FamilyGovernorShadow, 2, 100, 0, 2, "within", LaneFamily)
 	expectContentAndClaim(mock, waveID, campaignID, planID, 2)
 	gov := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
 	fgRun(t, mock, gov, waveID, 2)
@@ -294,4 +305,21 @@ func TestFamilyGovernorSetters(t *testing.T) {
 	if c.familyGovernor != gov {
 		t.Fatal("SetFamilyGovernor did not land on the consumer")
 	}
+}
+
+// ON, a COLD cell (tagged lane=cold) on microsoft: governed on the
+// broadcast-cold.<domain> key, trimmed to the per-ISP intro headroom.
+func TestFamilyGovernorHook_OnColdLaneTrims(t *testing.T) {
+	fgDispatcherEnv(t)
+	db, mock := fgNewMock(t)
+	mock.MatchExpectationsInOrder(false)
+	waveID, campaignID, planID, orgID := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	expectGovernedWavePrelude(mock, waveID, campaignID, planID, orgID, 2, "microsoft", fgTestDomain)
+	fgExpectLane(mock, campaignID.String(), LaneCold)
+	fgExpectContract(mock, fgTestColdLane, "microsoft", nil, 2100, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 2099)
+	fgExpectLedger(mock, waveID.String(), fgTestDomain, "microsoft", FamilyGovernorOn, 2, 2100, 2099, 1, "trim", LaneCold)
+	expectContentAndClaim(mock, waveID, campaignID, planID, 1)
+	gov := newFamilyGovernorWithMode(db, FamilyGovernorOn)
+	fgRun(t, mock, gov, waveID, 1)
 }

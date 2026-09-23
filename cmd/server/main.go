@@ -665,10 +665,11 @@ func main() {
 			// shadow → log + ledger only, on → trims waves. HOLD-CRITICAL.
 			familyGovernor := worker.NewFamilyGovernor(mailingDB)
 			pmtaWaveScheduler.SetFamilyGovernor(familyGovernor)
+			api.SetSendGovernor(familyGovernor) // deploy-time clamp (planPMTAAudience)
 			if pmtaWaveConsumer != nil {
 				pmtaWaveConsumer.SetFamilyGovernor(familyGovernor)
 			}
-			log.Printf("FamilyGovernor mode=%s (env %s)", familyGovernor.Mode(), worker.FamilyGovernorModeEnv)
+			log.Printf("SendGovernor mode=%s lanes=%v (env %s, fallback %s; lanes %s)", familyGovernor.Mode(), familyGovernor.Lanes(), worker.SendGovernorModeEnv, worker.FamilyGovernorModeEnv, worker.SendGovernorLanesEnv)
 			if err := pmtaWaveScheduler.Start(); err != nil {
 				log.Printf("Warning: Failed to start PMTA wave scheduler: %v", err)
 			} else if pmtaWaveQueueURL != "" {
@@ -4382,6 +4383,7 @@ func runStartupMigrations(db *sql.DB) {
 		// AND on. Same shape/budget argument as the entry above — bare CREATE
 		// TABLE, PK only, empty at creation, ONE statement.
 		{"sep06_family_governor_decisions", worker.FamilyGovernorDecisionsDDL},
+		{"sep23_family_governor_decisions_lane", worker.FamilyGovernorDecisionsLaneDDL},
 		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
 		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
 		// merges). FOUR DDL entries in their own SET/RESET lock_timeout

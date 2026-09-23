@@ -523,10 +523,10 @@ func normalizeISPPlan(
 		throttleStrategy = defaultThrottle
 	}
 
-		spans, err := normalizeTimeSpans(raw.TimeSpans, sendMode, timezone, legacyScheduledAt, now)
-		if err != nil {
-			return pmtaNormalizedPlan{}, err
-		}
+	spans, err := normalizeTimeSpans(raw.TimeSpans, sendMode, timezone, legacyScheduledAt, now)
+	if err != nil {
+		return pmtaNormalizedPlan{}, err
+	}
 
 	return pmtaNormalizedPlan{
 		ISP:               isp,
@@ -538,6 +538,10 @@ func normalizeISPPlan(
 		TimeSpans:         spans,
 	}, nil
 }
+
+// deployWindowMinLead is how much of an absolute send window must still be
+// ahead at deploy for the window to be accepted at all.
+const deployWindowMinLead = 15 * time.Minute
 
 func normalizeTimeSpans(
 	rawSpans []engine.PMTATimeSpanInput,
@@ -569,6 +573,16 @@ func normalizeTimeSpans(
 			endAt := startAt
 			if raw.EndAt != nil {
 				endAt = raw.EndAt.UTC()
+				// A window that has already closed (or closes within the
+				// lead) is refused HERE, for every send_mode: the past-due
+				// downgrade above turns a late `scheduled` deploy into an
+				// `immediate` one, which used to slip past the start_at check
+				// and reach the wave janitor, which then cancelled every wave
+				// (2026-09-23: 16 ENG cells, 152,836 recipients, 1,600 waves).
+				if endAt.Before(now.Add(deployWindowMinLead)) {
+					return nil, fmt.Errorf("send window closed: end_at %s is before now+%s (%s) — re-anchor the cell, the platform will not build waves it must cancel",
+						endAt.Format(time.RFC3339), deployWindowMinLead, now.Add(deployWindowMinLead).UTC().Format(time.RFC3339))
+				}
 			}
 			if sendMode == "scheduled" && startAt.Before(now) {
 				return nil, fmt.Errorf("scheduled time span start_at (%s) is in the past", startAt.Format(time.RFC3339))
@@ -1834,6 +1848,26 @@ func planPMTAAudience(
 		//   collapses to the prior hard-truncation behavior.
 		selectedCount := len(recipients)
 		reserveCount := 0
+		// SendGovernor clamp (2026-09-23): a governed lane's cell is BUILT at
+		// the contract headroom — an audience-bound (quota 0) cell takes the
+		// headroom as its quota, a capped cell is lowered to it — so the wave
+		// hook has nothing left to trim and no rows are abandoned at window
+		// close. Headroom 0 selects nothing (quota 0 would mean unlimited).
+		// Ungoverned / no contract / governor off → untouched.
+		sendDay := normalized.EarliestStart
+		if sendDay.IsZero() {
+			sendDay = time.Now()
+		}
+		if capN, governed := governorHeadroomFor(ctx, db, input, isp, sendDay); governed {
+			if plan.Quota == 0 || plan.Quota > capN {
+				log.Printf("[PlanAudience] %s: SendGovernor clamp isp=%s quota %d -> %d", input.Name, isp, plan.Quota, capN)
+				plan.Quota = capN
+			}
+			if capN <= 0 {
+				recipients = recipients[:0]
+				selectedCount = 0
+			}
+		}
 		if plan.Quota > 0 {
 			reserveLimit := plan.Quota
 			if reserveMult > 1.0 {
@@ -2135,9 +2169,9 @@ func coalesceString(v, fallback string) string {
 // own ISP plan (quotas, waves, cadence) during campaign deployment.
 //
 // Adding an ISP here means the campaign planner will:
-//   1. Create a dedicated mailing_campaign_isp_plans row for it.
-//   2. Build independent wave specs with separate cadence timing.
-//   3. Route its traffic through a dedicated IP pool (via isp.PoolSuffix).
+//  1. Create a dedicated mailing_campaign_isp_plans row for it.
+//  2. Build independent wave specs with separate cadence timing.
+//  3. Route its traffic through a dedicated IP pool (via isp.PoolSuffix).
 //
 // Non-canonical ISPs (verizon, protonmail, zoho, "other", etc.) are still
 // sent — they route through the "general" pool — but they don't get their

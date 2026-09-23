@@ -12,15 +12,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// Yahoo-family broadcast governor — Decide() contract (family_governor.go).
-// These pin EXPECTED BEHAVIOUR: the math, fail-open, the negative controls
-// (off / non-family / no contract issue ZERO queries), the 60s cache, and the
-// idempotent ledger write. The dispatcher hook is covered in
-// family_governor_dispatcher_test.go.
+// SendGovernor (family_governor.go) unit tests — Decide/DecideLane/Headroom
+// arithmetic against sqlmock. The dispatcher hook is family_governor_dispatcher_test.go.
 
 const (
-	fgTestDomain = "m.discountblog.com"
-	fgTestLane   = "broadcast-family.m.discountblog.com"
+	fgTestDomain   = "m.discountblog.com"
+	fgTestLane     = "broadcast-family.m.discountblog.com"
+	fgTestColdLane = "broadcast-cold.m.discountblog.com"
 )
 
 var fgTestDay = time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC) // 09:00 Denver
@@ -35,23 +33,40 @@ func fgNewMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	return db, mock
 }
 
-func fgExpectContract(mock sqlmock.Sqlmock, lane string, ceiling any) {
-	rows := sqlmock.NewRows([]string{"daily_ceiling"})
-	if ceiling != nil {
-		rows.AddRow(ceiling)
-	}
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(lane).WillReturnRows(rows)
+// fgExpectLane is the campaign → lane lookup Decide performs (cached 60s).
+func fgExpectLane(mock sqlmock.Sqlmock, campaignID, lane string) {
+	mock.ExpectQuery(`WHERE c.id = \$1::uuid`).WithArgs(campaignID).
+		WillReturnRows(sqlmock.NewRows([]string{"lane"}).AddRow(lane))
 }
 
-func fgExpectSpend(mock sqlmock.Sqlmock, domain string, spent int) {
+// fgExpectContract returns the lane × ISP contract row: (daily_ceiling,
+// desired_daily_intros->>isp, ddi_empty). nil for either number = NULL; a
+// missing row (found=false) returns zero rows.
+func fgExpectContract(mock sqlmock.Sqlmock, lane, isp string, domainTotal, perISP any, ddiEmpty bool, found bool) {
+	rows := sqlmock.NewRows([]string{"daily_ceiling", "per_isp", "ddi_empty"})
+	if found {
+		rows.AddRow(domainTotal, perISP, ddiEmpty)
+	}
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(lane, isp).WillReturnRows(rows)
+}
+
+// fgExpectSpend is one spend COUNT: isp = "" is the domain-total term.
+func fgExpectSpend(mock sqlmock.Sqlmock, domain, lane, isp string, spent int) {
 	mock.ExpectQuery(`FROM mailing_campaign_queue q`).
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), domain).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), domain, lane, isp).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(spent))
 }
 
-func fgExpectLedger(mock sqlmock.Sqlmock, waveID, domain, isp, mode string, requested, ceiling, spent, allowed int, reason string) {
+// fgExpectPlanned is the deploy-time committed count (Headroom only).
+func fgExpectPlanned(mock sqlmock.Sqlmock, domain, lane, isp string, planned int) {
+	mock.ExpectQuery(`SUM\(p.audience_selected_count\)`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), domain, lane, isp).
+		WillReturnRows(sqlmock.NewRows([]string{"planned"}).AddRow(planned))
+}
+
+func fgExpectLedger(mock sqlmock.Sqlmock, waveID, domain, isp, mode string, requested, ceiling, spent, allowed int, reason, lane string) {
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).
-		WithArgs(waveID, sqlmock.AnyArg(), domain, isp, mode, requested, ceiling, spent, allowed, reason).
+		WithArgs(waveID, sqlmock.AnyArg(), domain, isp, mode, requested, ceiling, spent, allowed, reason, lane).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 }
 
@@ -80,26 +95,47 @@ func TestParseFamilyGovernorMode(t *testing.T) {
 	}
 }
 
+func TestParseGovernorLanes(t *testing.T) {
+	if l := ParseGovernorLanes(""); !l["family"] || !l["cold"] || len(l) != 2 {
+		t.Fatalf("default lanes = %v", l)
+	}
+	if l := ParseGovernorLanes(" Cold , engaged,kumo"); !l["cold"] || !l["kumo"] || l["engaged"] || len(l) != 2 {
+		t.Fatalf("engaged must never be governed: %v", l)
+	}
+}
+
 func TestNewFamilyGovernor_ReadsEnvOnce(t *testing.T) {
+	t.Setenv(SendGovernorModeEnv, "")
 	t.Setenv(FamilyGovernorModeEnv, "shadow")
 	g := NewFamilyGovernor(nil)
 	if g.Mode() != FamilyGovernorShadow || !g.Enabled() {
-		t.Fatalf("want shadow/enabled, got %s/%v", g.Mode(), g.Enabled())
+		t.Fatalf("FAMILY_GOVERNOR_MODE fallback: want shadow/enabled, got %s/%v", g.Mode(), g.Enabled())
 	}
 	t.Setenv(FamilyGovernorModeEnv, "on")
 	if g.Mode() != FamilyGovernorShadow {
 		t.Fatal("mode must be read ONCE at construction, not per call")
 	}
-	t.Setenv(FamilyGovernorModeEnv, "bogus")
-	if g2 := NewFamilyGovernor(nil); g2.Enabled() {
+	// SEND_GOVERNOR_MODE wins over the fallback.
+	t.Setenv(SendGovernorModeEnv, "on")
+	t.Setenv(FamilyGovernorModeEnv, "shadow")
+	if g2 := NewFamilyGovernor(nil); g2.Mode() != FamilyGovernorOn {
+		t.Fatalf("SEND_GOVERNOR_MODE must win: %s", g2.Mode())
+	}
+	t.Setenv(SendGovernorModeEnv, "bogus")
+	if g3 := NewFamilyGovernor(nil); g3.Enabled() {
 		t.Fatal("unknown mode must run OFF")
 	}
+	t.Setenv(SendGovernorModeEnv, "")
 	t.Setenv(FamilyGovernorModeEnv, "")
-	if g3 := NewFamilyGovernor(nil); g3.Enabled() {
+	if g4 := NewFamilyGovernor(nil); g4.Enabled() {
 		t.Fatal("empty mode must run OFF")
 	}
+	t.Setenv(SendGovernorLanesEnv, "cold")
+	if g5 := NewFamilyGovernor(nil); !g5.Governs("cold") || g5.Governs("family") {
+		t.Fatalf("lanes env: %v", g5.Lanes())
+	}
 	var nilGov *FamilyGovernor
-	if nilGov.Enabled() || nilGov.Mode() != FamilyGovernorOff {
+	if nilGov.Enabled() || nilGov.Mode() != FamilyGovernorOff || nilGov.Governs("family") {
 		t.Fatal("nil governor must read as OFF")
 	}
 }
@@ -112,11 +148,62 @@ func TestIsFamilyGovernedISP(t *testing.T) {
 	}
 	for _, in := range []string{"gmail", "microsoft", "apple", "comcast", "charter", "verizon", "other", ""} {
 		if IsFamilyGovernedISP(in) {
-			t.Errorf("%q must NOT be family (gmail is never governed here)", in)
+			t.Errorf("%q must NOT be family", in)
 		}
 	}
 }
 
+// LaneOf: the tag wins; untagged names classify by the same rule as LaneOfSQL.
+func TestLaneOf(t *testing.T) {
+	cases := []struct{ name, tag, want string }{
+		{"09232026 - DB - NL-YF-NEWSLETTER-D14-COLD", "", LaneFamily}, // NL-YF before -COLD
+		{"09232026 - DB - NL-YF-NEWSLETTER-D14-ENG", "", LaneFamily},
+		{"09232026 - DB - NL-YF-NEWSLETTER", "", LaneFamily},
+		{"09232026 - DB - NL-MS-NEWSLETTER-D10-COLD", "", LaneCold},
+		{"09232026 - DB - NL-AP-NEWSLETTER-D10-COLD", "", LaneCold},
+		{"09232026 - DB - NL-COLD-REMAIL-Liberty", "", LaneCold},
+		{"09232026 - NX-DB - NL-NEWSLETTER-ms", "", LaneCold},
+		{"09232026 - DB - ENG-NEWSLETTER", "", LaneEngaged},
+		{"09232026 - DB - OFR-CLK-SamsCPL", "", LaneEngaged},
+		{"09232026 - TRB - KUMO-WARM d21", "", LaneKumo},
+		{"09232026 - DB - NL-FRESH-NEWSLETTER", "", LaneFresh},
+		{"09232026 - DB - ENG-NEWSLETTER", "Cold ", LaneCold},
+		{"anything", "family", LaneFamily},
+	}
+	for _, c := range cases {
+		if got := LaneOf(c.name, c.tag); got != c.want {
+			t.Errorf("LaneOf(%q,%q) = %q, want %q", c.name, c.tag, got, c.want)
+		}
+	}
+	for _, needle := range []string{"NL-YF", "KUMO-WARM", "FRESH", "-COLD|^[0-9]{8} - NX-", "'engaged'", "campaign_input'->>'lane'"} {
+		if !strings.Contains(LaneOfSQL, needle) {
+			t.Errorf("LaneOfSQL must carry %q", needle)
+		}
+	}
+	// The SQL CASE tests NL-YF before -COLD, as LaneOf does.
+	if strings.Index(LaneOfSQL, "NL-YF") > strings.Index(LaneOfSQL, "-COLD") {
+		t.Fatal("LaneOfSQL must test NL-YF before -COLD")
+	}
+}
+
+func TestLaneKey(t *testing.T) {
+	cases := map[[2]string]string{
+		{"family", "m.discountblog.com"}:   "broadcast-family.m.discountblog.com",
+		{"Family", " M.DiscountBlog.COM "}: "broadcast-family.m.discountblog.com",
+		{"cold", "m.discountblog.com"}:     "broadcast-cold.m.discountblog.com",
+		{"cold", ""}:                       "",
+	}
+	for in, want := range cases {
+		if got := laneKey(in[0], in[1]); got != want || strings.Contains(got, ":") {
+			t.Errorf("laneKey(%q,%q) = %q, want %q", in[0], in[1], got, want)
+		}
+	}
+	if familyLane("m.x.com") != "broadcast-family.m.x.com" {
+		t.Fatal("familyLane must keep the 09-07 derivation")
+	}
+}
+
+// Per-ISP term only (daily_ceiling NULL): one spend query, the ISP intro binds.
 func TestFamilyGovernorDecide_Math(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -137,16 +224,16 @@ func TestFamilyGovernorDecide_Math(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			db, mock := fgNewMock(t)
 			waveID := uuid.New().String()
-			fgExpectContract(mock, fgTestLane, c.ceiling)
-			fgExpectSpend(mock, fgTestDomain, c.spent)
-			fgExpectLedger(mock, waveID, fgTestDomain, "yahoo", FamilyGovernorShadow, c.requested, c.ceiling, c.spent, c.allowed, c.reason)
+			fgExpectContract(mock, fgTestLane, "yahoo", nil, c.ceiling, false, true)
+			fgExpectSpend(mock, fgTestDomain, LaneFamily, "yahoo", c.spent)
+			fgExpectLedger(mock, waveID, fgTestDomain, "yahoo", FamilyGovernorShadow, c.requested, c.ceiling, c.spent, c.allowed, c.reason, LaneFamily)
 
 			g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
-			d, err := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, waveID, c.requested)
+			d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "yahoo", fgTestDay, waveID, c.requested)
 			if err != nil {
-				t.Fatalf("Decide: %v", err)
+				t.Fatalf("DecideLane: %v", err)
 			}
-			if !d.Governed || d.Allowed != c.allowed || d.Reason != c.reason || d.Ceiling != c.ceiling || d.Spent != c.spent {
+			if !d.Governed || d.Allowed != c.allowed || d.Reason != c.reason || d.Ceiling != c.ceiling || d.Spent != c.spent || d.Lane != LaneFamily {
 				t.Fatalf("got %+v, want allowed=%d reason=%s", d, c.allowed, c.reason)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -156,12 +243,127 @@ func TestFamilyGovernorDecide_Math(t *testing.T) {
 	}
 }
 
-// Negative control: OFF issues ZERO queries (sqlmock fails on any unexpected
-// statement) and returns requested untouched.
+// Both terms: the tighter of (per-ISP, domain total) binds and is what the
+// ledger records.
+func TestFamilyGovernorDecide_DomainTotalBinds(t *testing.T) {
+	db, mock := fgNewMock(t)
+	waveID := uuid.New().String()
+	fgExpectContract(mock, fgTestColdLane, "microsoft", 1000, 800, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 100) // isp balance 700
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "", 950)          // domain balance 50 ← binds
+	fgExpectLedger(mock, waveID, fgTestDomain, "microsoft", FamilyGovernorOn, 300, 1000, 950, 50, "trim", LaneCold)
+	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
+	d, err := g.DecideLane(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay, waveID, 300)
+	if err != nil || d.Allowed != 50 || d.Reason != "trim" || d.Ceiling != 1000 || d.Spent != 950 {
+		t.Fatalf("%+v err=%v", d, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An ISP absent from a NON-empty desired_daily_intros is 0 (not committed):
+// deny, no spend query. An EMPTY map defers to the domain total.
+func TestFamilyGovernorDecide_AbsentISPIsZero(t *testing.T) {
+	db, mock := fgNewMock(t)
+	waveID := uuid.New().String()
+	fgExpectContract(mock, fgTestLane, "comcast", nil, nil, false, true)
+	fgExpectLedger(mock, waveID, fgTestDomain, "comcast", FamilyGovernorOn, 200, 0, 0, 0, "deny", LaneFamily)
+	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "comcast", fgTestDay, waveID, 200)
+	if err != nil || !d.Governed || d.Allowed != 0 || d.Reason != "deny" {
+		t.Fatalf("absent ISP must deny: %+v err=%v", d, err)
+	}
+	// Empty map + domain total 5000, spent 4990 → domain-total term binds at 10.
+	wave2 := uuid.New().String()
+	fgExpectContract(mock, fgTestLane, "att", 5000, nil, true, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "", 4990)
+	fgExpectLedger(mock, wave2, fgTestDomain, "att", FamilyGovernorOn, 200, 5000, 4990, 10, "trim", LaneFamily)
+	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "att", fgTestDay, wave2, 200)
+	if err != nil || d.Allowed != 10 || d.Reason != "trim" {
+		t.Fatalf("empty map → domain total: %+v err=%v", d, err)
+	}
+	// Contract row with neither term → no_contract (nothing to enforce).
+	fgExpectContract(mock, fgTestLane, "cox", nil, nil, true, true)
+	d, err = g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "cox", fgTestDay, uuid.New().String(), 7)
+	if err != nil || d.Governed || d.Allowed != 7 || d.Reason != "no_contract" {
+		t.Fatalf("no terms → no_contract: %+v err=%v", d, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Decide resolves the lane from the campaign; an engaged campaign issues the
+// lane lookup and nothing else; a cold campaign is governed on the cold key.
+func TestFamilyGovernorDecide_LaneResolution(t *testing.T) {
+	db, mock := fgNewMock(t)
+	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
+	eng := uuid.New().String()
+	fgExpectLane(mock, eng, LaneEngaged)
+	d, err := g.Decide(context.Background(), db, eng, fgTestDomain, "microsoft", fgTestDay, uuid.New().String(), 900)
+	if err != nil || d.Governed || d.Allowed != 900 || d.Reason != "ungoverned:engaged" {
+		t.Fatalf("engaged must be untouched: %+v err=%v", d, err)
+	}
+	cold := uuid.New().String()
+	wave := uuid.New().String()
+	fgExpectLane(mock, cold, LaneCold)
+	fgExpectContract(mock, fgTestColdLane, "microsoft", nil, 2100, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 2000)
+	fgExpectLedger(mock, wave, fgTestDomain, "microsoft", FamilyGovernorOn, 900, 2100, 2000, 100, "trim", LaneCold)
+	d, err = g.Decide(context.Background(), db, cold, fgTestDomain, "microsoft", fgTestDay, wave, 900)
+	if err != nil || d.Allowed != 100 || d.Lane != LaneCold {
+		t.Fatalf("cold: %+v err=%v", d, err)
+	}
+	// The lane is cached: a second decision on the same campaign issues no lane query.
+	fgExpectContract(mock, fgTestColdLane, "apple", nil, 50, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "apple", 0)
+	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
+	if d, err := g.Decide(context.Background(), db, cold, fgTestDomain, "apple", fgTestDay, uuid.New().String(), 10); err != nil || d.Allowed != 10 {
+		t.Fatalf("cached lane: %+v err=%v", d, err)
+	}
+	// Lane lookup error: fail open, reason error:lane, no further queries.
+	bad := uuid.New().String()
+	mock.ExpectQuery(`WHERE c.id = \$1::uuid`).WithArgs(bad).WillReturnError(errors.New("boom"))
+	d, err = g.Decide(context.Background(), db, bad, fgTestDomain, "microsoft", fgTestDay, uuid.New().String(), 5)
+	if err == nil || d.Governed || d.Allowed != 5 || d.Reason != "error:lane" {
+		t.Fatalf("lane error must fail open: %+v err=%v", d, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Headroom is the deploy-time question: allowed for an unbounded request, no ledger row.
+func TestFamilyGovernorHeadroom(t *testing.T) {
+	db, mock := fgNewMock(t)
+	g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
+	fgExpectContract(mock, fgTestColdLane, "microsoft", nil, 2100, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneCold, "microsoft", 600)
+	fgExpectPlanned(mock, fgTestDomain, LaneCold, "microsoft", 900) // an earlier deploy today, not yet enqueued
+	n, governed, err := g.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay)
+	if err != nil || !governed || n != 1200 {
+		t.Fatalf("headroom = %d governed=%v err=%v (want 2100 - max(600 queued, 900 planned))", n, governed, err)
+	}
+	// Not a governed lane → governed=false, no queries.
+	if _, governed, _ := g.Headroom(context.Background(), db, LaneEngaged, fgTestDomain, "microsoft", fgTestDay); governed {
+		t.Fatal("engaged must not be governed")
+	}
+	// Off → governed=false, no queries.
+	off := newFamilyGovernorWithMode(db, FamilyGovernorOff)
+	if _, governed, _ := off.Headroom(context.Background(), db, LaneCold, fgTestDomain, "microsoft", fgTestDay); governed {
+		t.Fatal("off must not govern")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Negative control: OFF issues ZERO queries and returns requested untouched.
 func TestFamilyGovernorDecide_OffNoQueries(t *testing.T) {
 	db, mock := fgNewMock(t)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOff)
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 700)
+	d, err := g.Decide(context.Background(), db, uuid.New().String(), fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 700)
 	if err != nil || d.Governed || d.Allowed != 700 || d.Reason != "ungoverned" {
 		t.Fatalf("off must be inert: %+v err=%v", d, err)
 	}
@@ -170,49 +372,13 @@ func TestFamilyGovernorDecide_OffNoQueries(t *testing.T) {
 	}
 }
 
-func TestFamilyGovernorDecide_NonFamilyNoQueries(t *testing.T) {
-	db, mock := fgNewMock(t)
-	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	for _, ispName := range []string{"gmail", "microsoft", "apple", "comcast", ""} {
-		d, err := g.Decide(context.Background(), db, fgTestDomain, ispName, fgTestDay, uuid.New().String(), 700)
-		if err != nil || d.Governed || d.Allowed != 700 || d.Reason != "ungoverned" {
-			t.Fatalf("isp %q must be ungoverned: %+v err=%v", ispName, d, err)
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestFamilyGovernorDecide_NoContract(t *testing.T) {
 	db, mock := fgNewMock(t)
-	fgExpectContract(mock, fgTestLane, nil) // zero rows
+	fgExpectContract(mock, fgTestLane, "aol", nil, nil, false, false) // zero rows
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "aol", fgTestDay, uuid.New().String(), 700)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "aol", fgTestDay, uuid.New().String(), 700)
 	if err != nil || d.Governed || d.Allowed != 700 || d.Reason != "no_contract" {
 		t.Fatalf("no contract must be ungoverned: %+v err=%v", d, err)
-	}
-	// No spend query, no ledger row.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestFamilyGovernorDecide_NullCeilingIsNoContract(t *testing.T) {
-	db, mock := fgNewMock(t)
-	fgExpectContract(mock, fgTestLane, nil)
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane).
-		WillReturnRows(sqlmock.NewRows([]string{"daily_ceiling"}).AddRow(nil))
-	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	g.now = func() time.Time { return fgTestDay }
-	// First call: zero rows. Expire cache, second call: NULL daily_ceiling.
-	if d, _ := g.Decide(context.Background(), db, fgTestDomain, "att", fgTestDay, uuid.New().String(), 5); d.Governed {
-		t.Fatal("zero rows must be ungoverned")
-	}
-	g.now = func() time.Time { return fgTestDay.Add(2 * familyGovernorCacheTTL) }
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "att", fgTestDay, uuid.New().String(), 5)
-	if err != nil || d.Governed || d.Allowed != 5 || d.Reason != "no_contract" {
-		t.Fatalf("NULL ceiling must be ungoverned: %+v err=%v", d, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -221,10 +387,12 @@ func TestFamilyGovernorDecide_NullCeilingIsNoContract(t *testing.T) {
 
 func TestFamilyGovernorDecide_ContractErrorFailsOpen(t *testing.T) {
 	db, mock := fgNewMock(t)
-	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane).
+	mock.ExpectQuery(`FROM drip_dispatch_contracts`).WithArgs(fgTestLane, "yahoo").
 		WillReturnError(errors.New("canceling statement due to statement timeout"))
+	// error decisions are ledgered (fail-open visible in the ledger)
+	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 700)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 700)
 	if err == nil {
 		t.Fatal("error must be surfaced for logging")
 	}
@@ -232,8 +400,8 @@ func TestFamilyGovernorDecide_ContractErrorFailsOpen(t *testing.T) {
 		t.Fatalf("must fail OPEN with reason error:contract: %+v", d)
 	}
 	// An error is NOT cached: the next call re-reads the contract.
-	fgExpectContract(mock, fgTestLane, nil)
-	if d, _ := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 1); d.Reason != "no_contract" {
+	fgExpectContract(mock, fgTestLane, "yahoo", nil, nil, false, false)
+	if d, _ := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 1); d.Reason != "no_contract" {
 		t.Fatalf("error must not poison the cache: %+v", d)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -244,16 +412,15 @@ func TestFamilyGovernorDecide_ContractErrorFailsOpen(t *testing.T) {
 func TestFamilyGovernorDecide_SpendErrorFailsOpen(t *testing.T) {
 	db, mock := fgNewMock(t)
 	waveID := uuid.New().String()
-	fgExpectContract(mock, fgTestLane, 10000)
+	fgExpectContract(mock, fgTestLane, "sbcglobal", nil, 10000, false, true)
 	mock.ExpectQuery(`FROM mailing_campaign_queue q`).WillReturnError(errors.New("boom"))
-	// The ledger still records the fail-open decision (allowed == requested).
-	fgExpectLedger(mock, waveID, fgTestDomain, "sbcglobal", FamilyGovernorOn, 700, 10000, 0, 700, "error:spend")
+	fgExpectLedger(mock, waveID, fgTestDomain, "sbcglobal", FamilyGovernorOn, 700, 0, 0, 700, "error:spend", LaneFamily)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorOn)
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "sbcglobal", fgTestDay, waveID, 700)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "sbcglobal", fgTestDay, waveID, 700)
 	if err == nil {
 		t.Fatal("error must be surfaced for logging")
 	}
-	if !d.Governed || d.Allowed != 700 || d.Reason != "error:spend" || d.Ceiling != 10000 {
+	if !d.Governed || d.Allowed != 700 || d.Reason != "error:spend" {
 		t.Fatalf("must fail OPEN with reason error:spend: %+v", d)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -264,20 +431,19 @@ func TestFamilyGovernorDecide_SpendErrorFailsOpen(t *testing.T) {
 func TestFamilyGovernorDecide_LedgerFailureNeverBlocks(t *testing.T) {
 	db, mock := fgNewMock(t)
 	waveID := uuid.New().String()
-	fgExpectContract(mock, fgTestLane, 100)
-	fgExpectSpend(mock, fgTestDomain, 10)
+	fgExpectContract(mock, fgTestLane, "cox", nil, 100, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "cox", 10)
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnError(errors.New("relation does not exist"))
 	g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "cox", fgTestDay, waveID, 50)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "cox", fgTestDay, waveID, 50)
 	if err != nil || d.Allowed != 50 || d.Reason != "within" {
 		t.Fatalf("ledger failure must not change the decision: %+v err=%v", d, err)
 	}
-	// Re-fire on the same wave: ON CONFLICT DO NOTHING → 0 rows affected is fine.
-	fgExpectSpend(mock, fgTestDomain, 10)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "cox", 10)
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).
-		WithArgs(waveID, sqlmock.AnyArg(), fgTestDomain, "cox", FamilyGovernorShadow, 50, 100, 10, 50, "within").
+		WithArgs(waveID, sqlmock.AnyArg(), fgTestDomain, "cox", FamilyGovernorShadow, 50, 100, 10, 50, "within", LaneFamily).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	if d, err := g.Decide(context.Background(), db, fgTestDomain, "cox", fgTestDay, waveID, 50); err != nil || d.Allowed != 50 {
+	if d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "cox", fgTestDay, waveID, 50); err != nil || d.Allowed != 50 {
 		t.Fatalf("re-fire: %+v err=%v", d, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -285,31 +451,30 @@ func TestFamilyGovernorDecide_LedgerFailureNeverBlocks(t *testing.T) {
 	}
 }
 
-// The ceiling is cached 60s per lane; spend is re-read on EVERY decision.
+// The ceiling is cached 60s per lane × ISP; spend is re-read on EVERY decision.
 func TestFamilyGovernorDecide_CeilingCached60s(t *testing.T) {
 	db, mock := fgNewMock(t)
 	g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
 	now := fgTestDay
 	g.now = func() time.Time { return now }
 
-	fgExpectContract(mock, fgTestLane, 1000) // once
+	fgExpectContract(mock, fgTestLane, "yahoo", nil, 1000, false, true) // once
 	for i := 0; i < 3; i++ {
-		fgExpectSpend(mock, fgTestDomain, 100*i)
+		fgExpectSpend(mock, fgTestDomain, LaneFamily, "yahoo", 100*i)
 		mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	for i := 0; i < 3; i++ {
 		now = now.Add(20 * time.Second)
-		d, err := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 50)
+		d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 50)
 		if err != nil || d.Spent != 100*i || d.Ceiling != 1000 {
 			t.Fatalf("call %d: %+v err=%v", i, d, err)
 		}
 	}
-	// The contract was read at +20s; 61s after that → re-read (new ceiling visible).
 	now = fgTestDay.Add(81 * time.Second)
-	fgExpectContract(mock, fgTestLane, 2000)
-	fgExpectSpend(mock, fgTestDomain, 1500)
+	fgExpectContract(mock, fgTestLane, "yahoo", nil, 2000, false, true)
+	fgExpectSpend(mock, fgTestDomain, LaneFamily, "yahoo", 1500)
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
-	d, err := g.Decide(context.Background(), db, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 50)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, fgTestDomain, "yahoo", fgTestDay, uuid.New().String(), 50)
 	if err != nil || d.Ceiling != 2000 || d.Allowed != 50 {
 		t.Fatalf("stale cache: %+v err=%v", d, err)
 	}
@@ -321,15 +486,14 @@ func TestFamilyGovernorDecide_CeilingCached60s(t *testing.T) {
 // Lane key is the plan's sending_domain VERBATIM (lower-cased), one lane per domain.
 func TestFamilyGovernorDecide_LaneIsPlanSendingDomain(t *testing.T) {
 	db, mock := fgNewMock(t)
-	fgExpectContract(mock, "broadcast-family.m.historythinking.com", 10)
-	fgExpectSpend(mock, "m.historythinking.com", 0)
+	fgExpectContract(mock, "broadcast-family.m.historythinking.com", "aol", nil, 10, false, true)
+	fgExpectSpend(mock, "m.historythinking.com", LaneFamily, "aol", 0)
 	mock.ExpectExec(`INSERT INTO family_governor_decisions`).WillReturnResult(sqlmock.NewResult(0, 1))
 	g := newFamilyGovernorWithMode(db, FamilyGovernorShadow)
-	if _, err := g.Decide(context.Background(), db, " M.HistoryThinking.com ", "aol", fgTestDay, uuid.New().String(), 5); err != nil {
+	if _, err := g.DecideLane(context.Background(), db, LaneFamily, " M.HistoryThinking.com ", "aol", fgTestDay, uuid.New().String(), 5); err != nil {
 		t.Fatal(err)
 	}
-	// Empty domain: no queries, ungoverned.
-	d, err := g.Decide(context.Background(), db, "", "aol", fgTestDay, uuid.New().String(), 5)
+	d, err := g.DecideLane(context.Background(), db, LaneFamily, "", "aol", fgTestDay, uuid.New().String(), 5)
 	if err != nil || d.Governed || d.Allowed != 5 || d.Reason != "no_domain" {
 		t.Fatalf("empty domain: %+v err=%v", d, err)
 	}
@@ -339,7 +503,6 @@ func TestFamilyGovernorDecide_LaneIsPlanSendingDomain(t *testing.T) {
 }
 
 func TestFamilyGovernorDayBounds(t *testing.T) {
-	// 2026-09-06 05:30Z = 2026-09-05 23:30 MDT → day 09-05 [06:00Z, 06:00Z+1d)
 	start := familyGovernorDayStart(time.Date(2026, 9, 6, 5, 30, 0, 0, time.UTC))
 	if !start.Equal(time.Date(2026, 9, 5, 6, 0, 0, 0, time.UTC)) {
 		t.Fatalf("dayStart = %s", start)
@@ -348,30 +511,11 @@ func TestFamilyGovernorDayBounds(t *testing.T) {
 	if !end.Equal(time.Date(2026, 9, 6, 6, 0, 0, 0, time.UTC)) {
 		t.Fatalf("dayEnd = %s", end)
 	}
-	// DST fall-back day (2026-11-01) is 25h long: end is the next local midnight.
 	s2 := familyGovernorDayStart(time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC))
 	if got := familyGovernorDayEnd(s2).Sub(s2); got != 25*time.Hour {
 		t.Fatalf("DST day length = %s, want 25h", got)
 	}
 	if start.Format("2006-01-02") != "2026-09-05" {
 		t.Fatalf("ledger day = %s", start.Format("2006-01-02"))
-	}
-}
-
-func TestFamilyLane(t *testing.T) {
-	cases := map[string]string{
-		"m.discountblog.com":      "broadcast-family.m.discountblog.com",
-		" M.DiscountBlog.COM ":    "broadcast-family.m.discountblog.com",
-		"em.homeloansbyjaime.com": "broadcast-family.em.homeloansbyjaime.com",
-		"":                        "",
-		"   ":                     "",
-	}
-	for in, want := range cases {
-		if got := familyLane(in); got != want {
-			t.Errorf("familyLane(%q) = %q, want %q", in, got, want)
-		}
-		if strings.Contains(familyLane(in), ":") {
-			t.Errorf("lane must never contain a colon: %q", familyLane(in))
-		}
 	}
 }

@@ -248,22 +248,22 @@ func enqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 	// exhausted one. Errors fail OPEN (Allowed == remaining) in both modes.
 	// Decide runs on `db`, not `tx`: a governor error inside this transaction
 	// would abort it and fail the wave instead of failing open.
-	if gov.Enabled() && IsFamilyGovernedISP(planISP) {
+	if gov.Enabled() {
 		govDomain := strings.TrimSpace(planSendingDomain)
 		if govDomain == "" {
 			govDomain = sendingDomain
 		}
-		decision, derr := gov.Decide(ctx, db, govDomain, planISP, time.Now(), waveID, remaining)
+		decision, derr := gov.Decide(ctx, db, campaignID.String(), govDomain, planISP, time.Now(), waveID, remaining)
 		if derr != nil {
-			log.Printf("[FamilyGovernor] %s domain=%s isp=%s wave=%s FAIL-OPEN: %v", strings.ToUpper(gov.Mode()), govDomain, planISP, waveID, derr)
+			log.Printf("[SendGovernor] %s domain=%s isp=%s wave=%s FAIL-OPEN: %v", strings.ToUpper(gov.Mode()), govDomain, planISP, waveID, derr)
 		}
 		if decision.Governed {
 			verb := "SHADOW"
 			if gov.Mode() == FamilyGovernorOn {
 				verb = "ENFORCE"
 			}
-			log.Printf("[FamilyGovernor] %s domain=%s isp=%s wave=%s requested=%d ceiling=%d spent=%d allowed=%d reason=%s",
-				verb, govDomain, planISP, waveID, remaining, decision.Ceiling, decision.Spent, decision.Allowed, decision.Reason)
+			log.Printf("[SendGovernor] %s lane=%s domain=%s isp=%s wave=%s requested=%d ceiling=%d spent=%d allowed=%d reason=%s",
+				verb, decision.Lane, govDomain, planISP, waveID, remaining, decision.Ceiling, decision.Spent, decision.Allowed, decision.Reason)
 			if gov.Mode() == FamilyGovernorOn && decision.Allowed < remaining {
 				remaining = decision.Allowed
 				if remaining <= 0 {
@@ -272,7 +272,7 @@ func enqueuePMTAWave(ctx context.Context, db *sql.DB, waveID string, capChecker 
 						SET status = 'completed', completed_at = NOW(), updated_at = NOW(),
 						    last_error = COALESCE(last_error, '') || $2
 						WHERE id = $1
-					`, waveID, fmt.Sprintf(" [family_governor: deny ceiling=%d spent=%d]", decision.Ceiling, decision.Spent)); err != nil {
+					`, waveID, fmt.Sprintf(" [send_governor: deny lane=%s ceiling=%d spent=%d]", decision.Lane, decision.Ceiling, decision.Spent)); err != nil {
 						return 0, err
 					}
 					return 0, tx.Commit()
@@ -1307,4 +1307,11 @@ func sanitizeVariantURLsAtDispatch(variants []campaignVariant, brandKey string) 
 		}
 	}
 	return variants
+}
+
+// EnqueuePMTAWaveGoverned is EnqueuePMTAWave with an explicit SendGovernor —
+// the entry point integration tests (and an operator replay) use to drive one
+// wave through the governed path without the scheduler loop.
+func EnqueuePMTAWaveGoverned(ctx context.Context, db *sql.DB, waveID string, gov *FamilyGovernor) (int, error) {
+	return enqueuePMTAWave(ctx, db, waveID, nil, gov)
 }

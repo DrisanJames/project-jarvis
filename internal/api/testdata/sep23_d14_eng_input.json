@@ -1,0 +1,181 @@
+{
+ "name": "09232026 - DB - NL-YF-NEWSLETTER-D14-ENG",
+ "timezone": "America/Denver",
+ "variants": [
+  {
+   "subject": "Jamie here: How to Negotiate an ER Bill Before You Pay It in Full",
+   "from_name": "Jamie @ Discount Blog",
+   "from_email": "hello@em.discountblog.com",
+   "html_content": "<html><body>fixture</body></html>",
+   "preview_text": "Then Why I Budget for Holiday Shipping Costs in September, and The Attic Insulation Fix That Cost More but Paid Off.",
+   "variant_name": "",
+   "plain_content": "",
+   "split_percent": 0
+  }
+ ],
+ "isp_plans": [
+  {
+   "isp": "yahoo",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  },
+  {
+   "isp": "aol",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  },
+  {
+   "isp": "att",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  },
+  {
+   "isp": "sbcglobal",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  },
+  {
+   "isp": "cox",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  },
+  {
+   "isp": "comcast",
+   "cadence": {
+    "mode": "interval",
+    "every_minutes": 15
+   },
+   "timezone": "America/Denver",
+   "time_spans": [
+    {
+     "type": "absolute",
+     "end_at": "2026-09-23T11:07:00Z",
+     "source": "duration-calc",
+     "start_at": "2026-09-23T07:01:00Z",
+     "timezone": "America/Denver"
+    }
+   ],
+   "throttle_strategy": "gentle"
+  }
+ ],
+ "send_days": null,
+ "send_hour": 0,
+ "send_mode": "scheduled",
+ "isp_quotas": [
+  {
+   "isp": "yahoo",
+   "volume": 0
+  },
+  {
+   "isp": "aol",
+   "volume": 0
+  },
+  {
+   "isp": "att",
+   "volume": 0
+  },
+  {
+   "isp": "sbcglobal",
+   "volume": 0
+  },
+  {
+   "isp": "cox",
+   "volume": 0
+  },
+  {
+   "isp": "comcast",
+   "volume": 0
+  }
+ ],
+ "campaign_id": "c23440bf-2f9a-432f-abf9-1b77b0146a12",
+ "target_isps": [
+  "yahoo",
+  "aol",
+  "att",
+  "sbcglobal",
+  "cox",
+  "comcast"
+ ],
+ "scheduled_at": "2026-09-23T07:01:00Z",
+ "send_priority": [],
+ "content_locked": true,
+ "sending_domain": "m.discountblog.com",
+ "exclusion_lists": [
+  "global-suppression-list"
+ ],
+ "inclusion_lists": null,
+ "min_remail_hours": 0,
+ "throttle_strategy": "gentle",
+ "exclusion_segments": [],
+ "inclusion_segments": [
+  "5f2522f5-4dad-48d3-b899-7359a4a3fcef",
+  "dea7582b-5d8e-4e23-9ec6-504792801826"
+ ],
+ "randomize_audience": false,
+ "use_master_selection": false
+}

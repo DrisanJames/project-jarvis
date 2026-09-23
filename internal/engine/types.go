@@ -695,6 +695,10 @@ type WaveGating struct {
 type PMTACampaignInput struct {
 	CampaignID string `json:"campaign_id,omitempty"`
 	OfferID    string `json:"offer_id,omitempty"`
+	// Lane classifies the send for the SendGovernor (internal/worker/family_governor.go):
+	// engaged | cold | family | fresh | kumo. Empty = derived from Name (LaneOf).
+	// Persisted with the rest of the input in pmta_config->'campaign_input'.
+	Lane       string `json:"lane,omitempty"`
 	Name       string `json:"name"`
 	TargetISPs []ISP  `json:"target_isps"`
 	// SendingProfileID, when non-empty, pins the deploy to a specific sending profile
