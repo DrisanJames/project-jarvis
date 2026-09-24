@@ -22,7 +22,7 @@ func TestRecordEverflowConversion_NewRowReportsInserted(t *testing.T) {
 
 	got := recordEverflowConversion(context.Background(), db, "org",
 		"42ba09106dc24cf3a18f88ed377b987a", "162", uuid.New(), uuid.New(),
-		"sub1", "sub2", "sub3", 50.0)
+		"sub1", "sub2", "sub3", "", "", 50.0)
 	if !got {
 		t.Fatal("first delivery returned false — the conversion alert would never fire")
 	}
@@ -49,7 +49,7 @@ func TestRecordEverflowConversion_RetrySuppressed(t *testing.T) {
 
 	got := recordEverflowConversion(context.Background(), db, "org",
 		"42ba09106dc24cf3a18f88ed377b987a", "162", uuid.New(), uuid.New(),
-		"sub1", "sub2", "sub3", 50.0)
+		"sub1", "sub2", "sub3", "", "", 50.0)
 	if got {
 		t.Fatal("duplicate postback reported as new — this is exactly the 5-alerts-for-1-conversion bug")
 	}
@@ -73,7 +73,7 @@ func TestRecordEverflowConversion_ErrorDoesNotAlert(t *testing.T) {
 		WillReturnError(context.DeadlineExceeded)
 
 	if recordEverflowConversion(context.Background(), db, "org",
-		"txn-err", "162", uuid.Nil, uuid.Nil, "", "", "", 50.0) {
+		"txn-err", "162", uuid.Nil, uuid.Nil, "", "", "", "", "", 50.0) {
 		t.Fatal("insert error reported as a new conversion — would alert on an unrecorded event")
 	}
 }

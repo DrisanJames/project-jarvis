@@ -65,7 +65,12 @@ const FamilyGovernorModeEnv = "FAMILY_GOVERNOR_MODE"
 
 // SendGovernorLanesEnv lists the governed lanes, comma-separated.
 const SendGovernorLanesEnv = "SEND_GOVERNOR_LANES"
-const sendGovernorDefaultLanes = "family,cold"
+
+// WCL joins the default set (operator 2026-09-23 "Again assure the contracts"):
+// the partner-exclusive lane may only ever mail WCL's offer, so a WCL cell that
+// deploys ungoverned is the failure the lane exists to prevent. A lane in this
+// set with no contract is DENIED, not waved through.
+const sendGovernorDefaultLanes = "family,cold,wcl"
 
 const (
 	FamilyGovernorOff    = "off"
@@ -80,6 +85,10 @@ const (
 	LaneEngaged = "engaged"
 	LaneKumo    = "kumo"
 	LaneFresh   = "fresh"
+	// LaneWCL (2026-09-23 ruling, brain #4405) is the partner-EXCLUSIVE lane:
+	// WCL data may only ever be mailed the WCL offer, so it carries its own
+	// contracts (broadcast-wcl.<domain>) and its own slot (03:01 MT).
+	LaneWCL = "wcl"
 )
 
 // governorLanePrefix + lane + "." + the plan's sending_domain is the contract
@@ -115,6 +124,8 @@ func LaneOf(name, lane string) string {
 	switch {
 	case laneReNLYF.MatchString(name):
 		return LaneFamily
+	case laneReWCL.MatchString(name):
+		return LaneWCL
 	case laneReKumo.MatchString(name):
 		return LaneKumo
 	case laneReFresh.MatchString(name):
@@ -128,7 +139,7 @@ func LaneOf(name, lane string) string {
 // KnownLanes is the closed set a deploy payload may tag; anything else is
 // refused at the door (normalizePMTACampaignInput) so a typo cannot create an
 // ungoverned lane.
-var KnownLanes = map[string]bool{LaneEngaged: true, LaneCold: true, LaneFamily: true, LaneFresh: true, LaneKumo: true}
+var KnownLanes = map[string]bool{LaneEngaged: true, LaneCold: true, LaneFamily: true, LaneFresh: true, LaneKumo: true, LaneWCL: true}
 
 // IsKnownLane reports whether a payload lane tag (empty allowed) is in KnownLanes.
 func IsKnownLane(lane string) bool {
@@ -141,11 +152,17 @@ var (
 	laneReKumo  = regexp.MustCompile(`KUMO-WARM`)
 	laneReFresh = regexp.MustCompile(`FRESH`)
 	laneReCold  = regexp.MustCompile(`-COLD|^[0-9]{8} - NX-`)
+	// ANCHORED on the dated board prefix, NOT the bare word: prod carries 8
+	// weeks of `aug10 - WCL HELOC - ABANDON-RECOVERY - 0743` and
+	// `aug11 - WCL HELOC - FRESH-BCAST-KYBER - …` cells that must stay
+	// engaged/fresh (verified 2026-09-23: 25 such names in 45 days).
+	laneReWCL = regexp.MustCompile(`^[0-9]{8} - [A-Z0-9]+ - WCL-`)
 )
 
 // LaneOfSQL mirrors LaneOf for the campaign row `c`.
 const LaneOfSQL = `COALESCE(NULLIF(lower(btrim(c.pmta_config->'campaign_input'->>'lane', E' \t\r\n')), ''),
     CASE WHEN c.name ~ 'NL-YF' THEN 'family'
+         WHEN c.name ~ '^[0-9]{8} - [A-Z0-9]+ - WCL-' THEN 'wcl'
          WHEN c.name ~ 'KUMO-WARM' THEN 'kumo'
          WHEN c.name ~ 'FRESH' THEN 'fresh'
          WHEN c.name ~ '-COLD|^[0-9]{8} - NX-' THEN 'cold'

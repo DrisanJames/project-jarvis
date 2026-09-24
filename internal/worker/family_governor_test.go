@@ -100,7 +100,10 @@ func TestParseFamilyGovernorMode(t *testing.T) {
 }
 
 func TestParseGovernorLanes(t *testing.T) {
-	if l := ParseGovernorLanes(""); !l["family"] || !l["cold"] || len(l) != 2 {
+	// The default set must carry every lane whose data is promise-bound:
+	// family, cold and wcl (the partner-exclusive lane — an ungoverned WCL
+	// cell is exactly what it exists to prevent).
+	if l := ParseGovernorLanes(""); !l["family"] || !l["cold"] || !l["wcl"] || len(l) != 3 {
 		t.Fatalf("default lanes = %v", l)
 	}
 	if l := ParseGovernorLanes(" Cold , engaged,kumo"); !l["cold"] || !l["kumo"] || l["engaged"] || len(l) != 2 {
@@ -173,13 +176,28 @@ func TestLaneOf(t *testing.T) {
 		{"09232026 - DB - NL-FRESH-NEWSLETTER", "", LaneFresh},
 		{"09232026 - DB - ENG-NEWSLETTER", "Cold ", LaneCold},
 		{"anything", "family", LaneFamily},
+		// WCL lane (brain #4405): the fallback is ANCHORED on the dated board
+		// prefix. Prod carries 8 weeks of `aug10 - WCL HELOC - ABANDON-RECOVERY`
+		// and `aug11 - WCL HELOC - FRESH-BCAST-KYBER - …` that must NOT become wcl.
+		{"09252026 - DB - WCL-OFFER-D1", "", LaneWCL},
+		{"09252026 - MH - WCL-OFFER-D3-PM", "", LaneWCL},
+		{"aug10 - WCL HELOC - ABANDON-RECOVERY - 0743", "", LaneEngaged},
+		{"aug11 - WCL HELOC - FRESH-BCAST-KYBER - west-capital-heloc", "", LaneFresh},
+		{"09252026 - DB - REMAIL-WCL", "", LaneEngaged},
+		{"09252026 - DB - ENG-NEWSLETTER", "wcl", LaneWCL},
 	}
 	for _, c := range cases {
 		if got := LaneOf(c.name, c.tag); got != c.want {
 			t.Errorf("LaneOf(%q,%q) = %q, want %q", c.name, c.tag, got, c.want)
 		}
 	}
-	for _, needle := range []string{"NL-YF", "KUMO-WARM", "FRESH", "-COLD|^[0-9]{8} - NX-", "'engaged'", "campaign_input'->>'lane'"} {
+	if !IsKnownLane("wcl") || !IsKnownLane(" WCL ") {
+		t.Fatal("wcl must be a known lane")
+	}
+	if IsKnownLane("wcl_remail") {
+		t.Fatal("only exact lane names are known")
+	}
+	for _, needle := range []string{"NL-YF", "KUMO-WARM", "FRESH", "-COLD|^[0-9]{8} - NX-", "'engaged'", "campaign_input'->>'lane'", "WCL-"} {
 		if !strings.Contains(LaneOfSQL, needle) {
 			t.Errorf("LaneOfSQL must carry %q", needle)
 		}
@@ -187,6 +205,9 @@ func TestLaneOf(t *testing.T) {
 	// The SQL CASE tests NL-YF before -COLD, as LaneOf does.
 	if strings.Index(LaneOfSQL, "NL-YF") > strings.Index(LaneOfSQL, "-COLD") {
 		t.Fatal("LaneOfSQL must test NL-YF before -COLD")
+	}
+	if strings.Index(LaneOfSQL, "WCL-") > strings.Index(LaneOfSQL, "-COLD") {
+		t.Fatal("LaneOfSQL must test WCL- before -COLD")
 	}
 }
 

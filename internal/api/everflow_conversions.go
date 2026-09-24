@@ -49,14 +49,14 @@ import (
 
 // insertEverflowConversionSQL persists one postback-shaped conversion row.
 // The ON CONFLICT arbiter is the partial unique index
-// uniq_everflow_conversions_txn (transaction_id WHERE transaction_id <> ''
-// AND conversion_id = ''), so a re-fired postback is a no-op while an export
+// uniq_everflow_conversions_txn (transaction_id WHERE transaction_id <> ”
+// AND conversion_id = ”), so a re-fired postback is a no-op while an export
 // row for the same transaction (which carries a conversion_id) is unaffected.
 const insertEverflowConversionSQL = `
 	INSERT INTO mailing_everflow_conversions
 		(id, organization_id, transaction_id, everflow_offer_id, subscriber_id, campaign_id,
-		 sub1, sub2, sub3, payout, source, converted_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'postback', NOW())
+		 sub1, sub2, sub3, sub4, sub5, payout, source, converted_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'postback', NOW())
 	ON CONFLICT (transaction_id) WHERE transaction_id <> '' AND conversion_id = '' DO NOTHING`
 
 // recordEverflowConversion writes the durable per-conversion row for a live
@@ -78,7 +78,7 @@ const insertEverflowConversionSQL = `
 // missed alert is recoverable from the durable row, a phantom one is not.
 func recordEverflowConversion(ctx context.Context, db *sql.DB, orgID string,
 	txnID, efOfferID string, subscriberID, campaignID uuid.UUID,
-	sub1, sub2, sub3 string, payout float64) bool {
+	sub1, sub2, sub3, sub4, sub5 string, payout float64) bool {
 	var subArg, campArg interface{}
 	if subscriberID != uuid.Nil {
 		subArg = subscriberID
@@ -88,7 +88,7 @@ func recordEverflowConversion(ctx context.Context, db *sql.DB, orgID string,
 	}
 	res, err := db.ExecContext(ctx, insertEverflowConversionSQL,
 		uuid.New(), orgID, strings.TrimSpace(txnID), strings.TrimSpace(efOfferID),
-		subArg, campArg, sub1, sub2, sub3, payout)
+		subArg, campArg, sub1, sub2, sub3, sub4, sub5, payout)
 	if err != nil {
 		log.Printf("[EverflowConversions] ERROR inserting durable conversion row (txn=%s offer=%s): %v",
 			txnID, efOfferID, err)
@@ -109,7 +109,7 @@ func recordEverflowConversion(ctx context.Context, db *sql.DB, orgID string,
 	return true
 }
 
-// enrichEverflowConversionSQL upgrades a postback row (conversion_id='') with
+// enrichEverflowConversionSQL upgrades a postback row (conversion_id=”) with
 // the export's authoritative fields. Once conversion_id is set the row leaves
 // the txn-dedupe index's domain, so a second export event on the same
 // transaction inserts its own row keyed by its own conversion_id.
@@ -129,9 +129,9 @@ const enrichEverflowConversionSQL = `
 const upsertEverflowConversionSQL = `
 	INSERT INTO mailing_everflow_conversions
 		(id, organization_id, conversion_id, transaction_id, everflow_offer_id,
-		 subscriber_id, campaign_id, sub1, sub2, sub3, payout, status, event_name,
+		 subscriber_id, campaign_id, sub1, sub2, sub3, sub4, sub5, payout, status, event_name,
 		 source, converted_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'export', $14)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'export', $16)
 	ON CONFLICT (conversion_id) WHERE conversion_id <> ''
 	DO UPDATE SET payout = EXCLUDED.payout, status = EXCLUDED.status,
 	              event_name = EXCLUDED.event_name, updated_at = NOW()`
@@ -223,7 +223,7 @@ func RunEverflowConversionsSync(ctx context.Context, db *sql.DB, from, to time.T
 
 		if _, iErr := db.ExecContext(ctx, upsertEverflowConversionSQL,
 			uuid.New(), orgID, convID, txnID, efOfferID,
-			subArg, campArg, rec.Sub1, rec.Sub2, rec.Sub3,
+			subArg, campArg, rec.Sub1, rec.Sub2, rec.Sub3, rec.Sub4, rec.Sub5,
 			rec.Payout, rec.Status, rec.EventName, convertedAt); iErr != nil {
 			log.Printf("[EverflowConversionsSync] ERROR upserting conversion=%s: %v", convID, iErr)
 			stats.Failed++

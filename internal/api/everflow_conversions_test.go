@@ -32,7 +32,7 @@ func TestPostback_BlankSub1_StillPersistsDurableRow(t *testing.T) {
 	// ""/0.00/"" whenever sub1 was blank).
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_everflow_conversions`)).
 		WithArgs(sqlmock.AnyArg(), "00000000-0000-0000-0000-000000000001",
-			"txn-blank-sub1", ceOfferEF, nil, nil, "", "", "", 42.50).
+			"txn-blank-sub1", ceOfferEF, nil, nil, "", "", "", "", "", 42.50).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := httptest.NewRequest(http.MethodGet,
@@ -89,7 +89,7 @@ func TestClickPostback_ConversionEvent_PersistsDurableRow(t *testing.T) {
 
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_everflow_conversions`)).
 		WithArgs(sqlmock.AnyArg(), "00000000-0000-0000-0000-000000000001",
-			"txn-click-cv", ceOfferEF, nil, nil, "", "", "", 9.99).
+			"txn-click-cv", ceOfferEF, nil, nil, "", "", "", "", "", 9.99).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	req := httptest.NewRequest(http.MethodGet,

@@ -43,6 +43,10 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	sub1 := r.URL.Query().Get("sub1")
 	sub2 := r.URL.Query().Get("sub2")
 	sub3 := r.URL.Query().Get("sub3")
+	// sub4 = the DATA-SOURCE id (which ingested file the recipient came from,
+	// brain #4405); sub5 reserved. Stored raw, never parsed.
+	sub4 := r.URL.Query().Get("sub4")
+	sub5 := r.URL.Query().Get("sub5")
 	efOfferID := r.URL.Query().Get("offer_id")
 	payoutStr := r.URL.Query().Get("payout")
 	txnID := r.URL.Query().Get("transaction_id")
@@ -52,6 +56,8 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 			Sub1          string  `json:"sub1"`
 			Sub2          string  `json:"sub2"`
 			Sub3          string  `json:"sub3"`
+			Sub4          string  `json:"sub4"`
+			Sub5          string  `json:"sub5"`
 			OfferID       string  `json:"offer_id"`
 			Payout        float64 `json:"payout"`
 			TransactionID string  `json:"transaction_id"`
@@ -67,6 +73,12 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 		}
 		if body.Sub3 != "" {
 			sub3 = body.Sub3
+		}
+		if body.Sub4 != "" {
+			sub4 = body.Sub4
+		}
+		if body.Sub5 != "" {
+			sub5 = body.Sub5
 		}
 		if body.OfferID != "" {
 			efOfferID = body.OfferID
@@ -84,8 +96,8 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	campaignID, _ := uuid.Parse(sub3)
 	payout, _ := strconv.ParseFloat(payoutStr, 64)
 
-	log.Printf("[EverflowPostback] sub1=%s sub2=%s sub3=%s offer_id=%s payout=%.2f txn=%s",
-		sub1, sub2, sub3, efOfferID, payout, txnID)
+	log.Printf("[EverflowPostback] sub1=%s sub2=%s sub3=%s sub4=%s offer_id=%s payout=%.2f txn=%s",
+		sub1, sub2, sub3, sub4, efOfferID, payout, txnID)
 
 	ctx := r.Context()
 	orgID := "00000000-0000-0000-0000-000000000001"
@@ -94,7 +106,7 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	// blank-sub1 conversions persist with their payout instead of vanishing
 	// (the Tahiti class). Best-effort; never blocks the 200 to Everflow.
 	isNewConversion := recordEverflowConversion(ctx, h.db, orgID, txnID, efOfferID,
-		subscriberID, campaignID, sub1, sub2, sub3, payout)
+		subscriberID, campaignID, sub1, sub2, sub3, sub4, sub5, payout)
 
 	// Associate the converter by their subscriber UUID (sub1). Without it we
 	// cannot match a converter to a suppression row or to an active click-drip

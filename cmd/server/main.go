@@ -4391,6 +4391,13 @@ func runStartupMigrations(db *sql.DB) {
 		// TABLE, PK only, empty at creation, ONE statement.
 		{"sep06_family_governor_decisions", worker.FamilyGovernorDecisionsDDL},
 		{"sep23_family_governor_decisions_lane", worker.FamilyGovernorDecisionsLaneDDL},
+		// Everflow sub4/sub5 (2026-09-23, brain #4405): the WCL lane carries a
+		// DATA-SOURCE id in sub4 so a conversion maps back to the exact ingested
+		// file. sub3 is the campaign id (money_link_validator required tag) and
+		// must not be repurposed. Everflow returns sub4/sub5 on the export and
+		// postback; we simply never persisted them.
+		{"sep23_everflow_conversions_sub4", `ALTER TABLE mailing_everflow_conversions ADD COLUMN IF NOT EXISTS sub4 TEXT NOT NULL DEFAULT ''`},
+		{"sep23_everflow_conversions_sub5", `ALTER TABLE mailing_everflow_conversions ADD COLUMN IF NOT EXISTS sub5 TEXT NOT NULL DEFAULT ''`},
 		// Segment-grid DELTA write path (phase 2, 2026-08-21 — full member
 		// swaps exhausted RDS EBSIOBalance; builds become snapshot-diff
 		// merges). FOUR DDL entries in their own SET/RESET lock_timeout

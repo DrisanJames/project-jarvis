@@ -138,6 +138,7 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 			firstNonEmpty(q.Get("sub1"), in.SubscriberIDStr),
 			firstNonEmpty(q.Get("sub2"), in.Sub2Brand),
 			firstNonEmpty(q.Get("sub3"), in.CampaignIDStr),
+			q.Get("sub4"), q.Get("sub5"), // data-source id (brain #4405); reserved
 			parsePostbackPayout(r))
 	}
 
