@@ -1135,20 +1135,29 @@ func (m *Mediator) Grant(ctx context.Context, req GrantReq) (*Allocation, error)
 		return m.failClosed(ctx, mode, canary, req, SkipNoContract), nil
 	}
 
+	// A missing contract only pages when this cell would actually be ENFORCED —
+	// the same test failClosed applies. A shadow/parked lane with no contract is
+	// the designed state, not an incident (ops-triage AP-5057C887).
+	alertMissing := cellEnforced(mode, canary, req)
+
 	dc, derr := set.Domain(req.Domain)
 	if derr != nil {
-		m.alertOnce(ctx, "contract:"+req.Domain, notify.TierAlert,
-			fmt.Sprintf("no active domain contract · %s", req.Domain),
-			"Lane: "+req.Lane+"\nEffect: the wave is skipped while the mode enforces this cell",
-			"Run: POST /api/mailing/supply/contracts/domain/"+req.Domain)
+		if alertMissing {
+			m.alertOnce(ctx, "contract:"+req.Domain, notify.TierAlert,
+				fmt.Sprintf("no active domain contract · %s", req.Domain),
+				"Lane: "+req.Lane+"\nEffect: the wave is skipped while the mode enforces this cell",
+				"Run: POST /api/mailing/supply/contracts/domain/"+req.Domain)
+		}
 		return m.failClosed(ctx, mode, canary, req, SkipNoContract), nil
 	}
 	pc, perr := set.Dispatch(req.Lane)
 	if perr != nil {
-		m.alertOnce(ctx, "contract:"+req.Lane, notify.TierAlert,
-			fmt.Sprintf("no active dispatch contract · %s", req.Lane),
-			"Domain: "+req.Domain+"\nEffect: the wave is skipped while the mode enforces this cell",
-			"Run: POST /api/mailing/supply/contracts/dispatch/"+req.Lane)
+		if alertMissing {
+			m.alertOnce(ctx, "contract:"+req.Lane, notify.TierAlert,
+				fmt.Sprintf("no active dispatch contract · %s", req.Lane),
+				"Domain: "+req.Domain+"\nEffect: the wave is skipped while the mode enforces this cell",
+				"Run: POST /api/mailing/supply/contracts/dispatch/"+req.Lane)
+		}
 		return m.failClosed(ctx, mode, canary, req, SkipNoContract), nil
 	}
 
@@ -1302,6 +1311,23 @@ func laneDesiredFor(c *DispatchContract, isp string) int {
 		}
 	}
 	return 0
+}
+
+// cellEnforced reports whether any ISP of the request is enforced under the
+// mode/canary — the exact test failClosed uses to decide Skip. Used to gate the
+// missing-contract alerts so a shadow or parked lane does not page.
+func cellEnforced(mode Mode, canary []CanaryCell, req GrantReq) bool {
+	if mode == ModeOn {
+		return true
+	}
+	if mode == ModeCanary {
+		for _, isp := range req.ISPs {
+			if canaryMatch(canary, req.Domain, normISP(isp), req.Lane) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // failClosed builds the Allocation for a wave whose contracts could not be
