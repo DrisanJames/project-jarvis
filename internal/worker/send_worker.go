@@ -3105,58 +3105,77 @@ func (p *SendWorkerPool) trackSign(data string) string {
 	return TrackSign(data, p.trackingSecret)
 }
 
+// Open-pixel position markers (2026-09-29). The top and bottom pixels carry
+// ?p=t / ?p=b so the tracking handlers can record WHICH pixel fired first.
+// The marker sits in the query string, outside the signed {data} segment
+// (TrackSign covers the base64 token only) and outside chi's path match, so
+// every route, signature check and dedupe is unchanged by it.
+const (
+	OpenPixelPosTop    = "t"
+	OpenPixelPosBottom = "b"
+)
+
+// buildOpenPixelHTML is the ONE open-pixel construction shared by
+// InjectTrackingPixelAndLinks and InjectOpenPixel (and, through
+// InjectOpenPixel, the API's Campaign Center and transactional sends).
+// The <img> itself carries no style; hiding is on the wrapper <div>
+// (display:none plus the zero-size/opacity:0/overflow:hidden/mso-hide belt),
+// because Gmail's image proxy skips an <img> that is itself display:none but
+// fetches one inside a display:none wrapper. pos "" emits the bare URL.
+func buildOpenPixelHTML(baseURL, encoded, sig, pos string) string {
+	src := fmt.Sprintf("%s/track/open/%s/%s", baseURL, encoded, sig)
+	if pos != "" {
+		src += "?p=" + pos
+	}
+	return `<div style="display:none;font-size:1px;color:transparent;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;" aria-hidden="true"><img src="` +
+		src + `" width="1" height="1" border="0" alt="" /></div>`
+}
+
+// injectOpenPixelTopBottom places the ?p=t pixel right after the <body ...>
+// open tag and the ?p=b pixel right before the LAST </body> (or appended at
+// the end when there is no </body>). HTML with no <body> therefore gets the
+// bottom pixel only.
+func injectOpenPixelTopBottom(html, baseURL, encoded, sig string) string {
+	htmlLower := strings.ToLower(html)
+	if bodyIdx := strings.Index(htmlLower, "<body"); bodyIdx >= 0 {
+		// Find the '>' that closes the <body ...> tag.
+		if closeIdx := strings.Index(html[bodyIdx:], ">"); closeIdx >= 0 {
+			insertAt := bodyIdx + closeIdx + 1
+			html = html[:insertAt] + buildOpenPixelHTML(baseURL, encoded, sig, OpenPixelPosTop) + html[insertAt:]
+			htmlLower = strings.ToLower(html)
+		}
+	}
+	bottom := buildOpenPixelHTML(baseURL, encoded, sig, OpenPixelPosBottom)
+	if idx := strings.LastIndex(htmlLower, "</body>"); idx >= 0 {
+		html = html[:idx] + bottom + html[idx:]
+	} else {
+		html += bottom
+	}
+	return html
+}
+
 // InjectTrackingPixelAndLinks adds an open-tracking pixel and rewrites href
 // links to click-tracking URLs. orgID and secret are passed explicitly so this
 // function can be called outside of a SendWorkerPool context (e.g. proof sends).
 //
 // Pixel placement strategy (post 2026-04-28):
-//   - One pixel near the TOP of <body> wrapped in a hidden DIV. Gmail's image
-//     proxy walks INTO display:none wrappers but skips display:none directly
-//     on an <img>. Top placement also survives Gmail's 102KB clipping rule
-//     that drops anything past the clip point.
-//   - One pixel before </body> with the same wrapper for redundancy.
+//   - One pixel near the TOP of <body> (src ...?p=t). Top placement fires as
+//     soon as the client renders the message and survives Gmail's 102KB
+//     clipping rule that drops anything past the clip point.
+//   - One pixel before </body> (src ...?p=b) for redundancy.
 //
-// Both pixel SRCs are byte-identical so the consumer dedupes them via
-// ON CONFLICT DO NOTHING (the partition PK includes the event id which is
-// derived from emailID; the second fetch is a no-op at the DB level).
+// Both pixels share path + signature and differ only in the ?p= marker, so the
+// open handlers' mailing_open_dedupe (campaign_id, subscriber_id) gate counts
+// exactly one open per recipient and records which position fired first.
 //
-// Hiding uses position:absolute + opacity:0 (visually invisible) on the
-// wrapper rather than display:none on the <img>, matching the SparkPost /
-// HistoryFacts pattern that we have empirical evidence Gmail proxies
-// reliably fetch.
+// Hiding: display:none (plus font-size/line-height/max-height/max-width 0,
+// opacity:0, overflow:hidden, mso-hide:all) on a WRAPPER <div>; the <img>
+// has no inline style — see buildOpenPixelHTML.
 func InjectTrackingPixelAndLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
 	sig := TrackSign(encoded, secret)
-
-	// Wrap the <img> in a hidden DIV so Gmail's image proxy walks the DOM
-	// into the wrapper and fetches the IMG. display:none directly on the
-	// IMG element causes the proxy to skip the element entirely.
-	pixelHTML := fmt.Sprintf(
-		`<div style="display:none;font-size:1px;color:transparent;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;" aria-hidden="true"><img src="%s/track/open/%s/%s" width="1" height="1" border="0" alt="" /></div>`,
-		baseURL, encoded, sig,
-	)
-
-	htmlLower := strings.ToLower(html)
-
-	// Top placement — right after <body...> open tag. Survives Gmail
-	// clipping when the email body is large.
-	if bodyIdx := strings.Index(htmlLower, "<body"); bodyIdx >= 0 {
-		// Find the matching '>' that closes the <body ...> tag.
-		if closeIdx := strings.Index(html[bodyIdx:], ">"); closeIdx >= 0 {
-			insertAt := bodyIdx + closeIdx + 1
-			html = html[:insertAt] + pixelHTML + html[insertAt:]
-			htmlLower = strings.ToLower(html)
-		}
-	}
-
-	// Bottom placement — right before </body>. Redundant fallback.
-	if idx := strings.LastIndex(htmlLower, "</body>"); idx >= 0 {
-		html = html[:idx] + pixelHTML + html[idx:]
-	} else {
-		html += pixelHTML
-	}
-
+	html = injectOpenPixelTopBottom(html, baseURL, encoded, sig)
 	return RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, secret)
 }
 
@@ -3253,30 +3272,13 @@ func (p *SendWorkerPool) injectTrackingPixelAndLinks(html, campaignID, subscribe
 // (measured 2026-07-02 — ~1.3k/day PG-visible SES opens on ~230k/day SES
 // sends vs ~41% pixel-tracked on PMTA lanes), which starved the engaged-tier
 // segments of ALL SES-routed engagement (partner-drip, gmail, yahoo-family).
-// Deliberately self-contained rather than refactoring the proven hot-path
-// function. Kill switch: DISABLE_SES_OPEN_PIXEL=true.
+// Shares buildOpenPixelHTML / injectOpenPixelTopBottom with
+// InjectTrackingPixelAndLinks (2026-09-29) so the two cannot drift.
+// Kill switch: DISABLE_SES_OPEN_PIXEL=true.
 func InjectOpenPixel(html, campaignID, subscriberID, emailID, baseURL, orgID, secret string) string {
 	data := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
 	encoded := base64.URLEncoding.EncodeToString([]byte(data))
-	sig := TrackSign(encoded, secret)
-	pixelHTML := fmt.Sprintf(
-		`<div style="display:none;font-size:1px;color:transparent;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;" aria-hidden="true"><img src="%s/track/open/%s/%s" width="1" height="1" border="0" alt="" /></div>`,
-		baseURL, encoded, sig,
-	)
-	htmlLower := strings.ToLower(html)
-	if bodyIdx := strings.Index(htmlLower, "<body"); bodyIdx >= 0 {
-		if closeIdx := strings.Index(html[bodyIdx:], ">"); closeIdx >= 0 {
-			insertAt := bodyIdx + closeIdx + 1
-			html = html[:insertAt] + pixelHTML + html[insertAt:]
-			htmlLower = strings.ToLower(html)
-		}
-	}
-	if idx := strings.LastIndex(htmlLower, "</body>"); idx >= 0 {
-		html = html[:idx] + pixelHTML + html[idx:]
-	} else {
-		html += pixelHTML
-	}
-	return html
+	return injectOpenPixelTopBottom(html, baseURL, encoded, TrackSign(encoded, secret))
 }
 
 // applySESTracking is the tracking-injection step for the SES relay path

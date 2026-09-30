@@ -3,12 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -615,18 +612,14 @@ func (svc *MailingService) HandleSendTransactional(w http.ResponseWriter, r *htt
 	}
 
 	// ── Tracking pixel + link rewriting ──
+	// Same top (?p=t) + bottom (?p=b) wrapped pixel as the send worker
+	// (worker.InjectOpenPixel, 2026-09-29). Signature is now the "enc" form
+	// (HMAC over the base64 token) that api.verifySig and the tracking
+	// service both accept; the previous "raw" form (HMAC over the pipe
+	// string) failed api.verifySig, so opens landing on the API's own
+	// /track/open route were served a pixel and never counted.
 	if trackBase != "" && svc.signingKey != "" {
-		pixelData := fmt.Sprintf("%s|%s|%s|%s", orgID, txnID, subID, txnID)
-		h := hmac.New(sha256.New, []byte(svc.signingKey))
-		h.Write([]byte(pixelData))
-		pixelSig := hex.EncodeToString(h.Sum(nil))[:16]
-		pixelEncoded := base64.URLEncoding.EncodeToString([]byte(pixelData))
-		pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;" />`, trackBase, pixelEncoded, pixelSig)
-		if idx := strings.LastIndex(strings.ToLower(htmlContent), "</body>"); idx >= 0 {
-			htmlContent = htmlContent[:idx] + pixel + htmlContent[idx:]
-		} else {
-			htmlContent += pixel
-		}
+		htmlContent = worker.InjectOpenPixel(htmlContent, txnID, subID, txnID, trackBase, orgID.String(), svc.signingKey)
 	}
 
 	// ── CAN-SPAM: inject bottom unsub if not present ──
@@ -1473,16 +1466,13 @@ func (svc *MailingService) injectTracking(html string, orgID, campaignID, subscr
 // This allows per-campaign tracking domains so links match the sending domain.
 func (svc *MailingService) injectTrackingWithURL(html string, orgID, campaignID, subscriberID, emailID uuid.UUID, baseURL string) string {
 	trackingData := fmt.Sprintf("%s|%s|%s|%s", orgID, campaignID, subscriberID, emailID)
-	encoded := base64.URLEncoding.EncodeToString([]byte(trackingData))
-	sig := signData(encoded, svc.signingKey)[:16]
 
-	pixel := fmt.Sprintf(`<img src="%s/track/open/%s/%s" width="1" height="1" alt="" style="display:none;width:1px;height:1px" />`,
-		baseURL, encoded, sig)
-	if strings.Contains(html, "</body>") {
-		html = strings.Replace(html, "</body>", pixel+"</body>", 1)
-	} else {
-		html += pixel
-	}
+	// Open pixel: the send worker's top (?p=t) + bottom (?p=b) wrapped pixel
+	// (2026-09-29; previously a single bottom <img style="display:none">).
+	// worker.TrackSign(encoded, key) == signData(encoded, key)[:16], so the
+	// URL verifies under svc.verifySig exactly as before
+	// (TestInjectTrackingWithURL_PixelSigVerifies).
+	html = worker.InjectOpenPixel(html, campaignID.String(), subscriberID.String(), emailID.String(), baseURL, orgID.String(), svc.signingKey)
 
 	// Clickable tags only (<a>/<area>/VML) — a <link rel=stylesheet> href
 	// wrapped into /track/click records a click on render (2026-09-11).

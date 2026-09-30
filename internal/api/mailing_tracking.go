@@ -67,6 +67,11 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		tracking.CheckAndCountSig("open", encoded, sig, tracking.LoadSigKeysFromEnv())
 	}
 
+	// Pixel position marker (?p=t top | ?p=b bottom, tracking/pixelpos.go).
+	// Query string only — outside the signed {data} segment — measurement only.
+	pixelPos := tracking.PixelPosFromRequest(r)
+	tracking.CountOpenPos(pixelPos)
+
 	if sig != "" && !svc.verifySig(encoded, sig) {
 		log.Printf("TRACK OPEN: invalid signature for data=%s", encoded[:min(32, len(encoded))])
 		svc.serveTrackingPixel(w)
@@ -147,7 +152,7 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 	svc.db.QueryRowContext(ctx, `SELECT email FROM mailing_subscribers WHERE id = $1`, subscriberID).Scan(&email)
 
 	isp := extractISP(email)
-	log.Printf("TRACK OPEN: campaign=%s subscriber=%s email=%s isp=%s", campaignID, subscriberID, email, isp)
+	log.Printf("TRACK OPEN: campaign=%s subscriber=%s email=%s isp=%s pos=%s", campaignID, subscriberID, email, isp, pixelPos)
 
 	// Fire in-memory tracker FIRST so dashboards update even if DB write fails
 	if svc.onTrackingEvent != nil {
@@ -166,16 +171,26 @@ func (svc *MailingService) HandleTrackOpen(w http.ResponseWriter, r *http.Reques
 		isMachineOpen = true
 	}
 
+	// pixel_pos: the dedupe gate admitted THIS fetch as the first open for
+	// (campaign, subscriber), so its marker is the position that fired first
+	// → metadata {"pixel_pos":"t"|"b"}. Unmarked opens run the exact
+	// pre-existing statement/args (metadata NULL).
+	openArgs := []any{emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), isMachineOpen}
+	openMetaCol, openMetaVal := "", ""
+	if m := tracking.OpenMetadataJSON(pixelPos); m.Valid {
+		openMetaCol, openMetaVal = ", metadata", ", $9::jsonb"
+		openArgs = append(openArgs, m)
+	}
 	if _, err := svc.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, is_machine_open, recipient_domain)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, is_machine_open, recipient_domain`+openMetaCol+`)
 		SELECT $1, $2, $3, $4, 'opened', NOW(), $5::inet, $6, $7,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)), $8,
-			LOWER(SPLIT_PART(s.email, '@', 2))
+			LOWER(SPLIT_PART(s.email, '@', 2))`+openMetaVal+`
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
-	`, emailID, orgID, campaignID, subscriberID, extractIPFromRemoteAddr(r.RemoteAddr), r.UserAgent(), detectDeviceType(r.UserAgent()), isMachineOpen); err != nil {
+	`, openArgs...); err != nil {
 		log.Printf("TRACK OPEN DB ERROR: %v", err)
 	}
 

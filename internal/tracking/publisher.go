@@ -54,8 +54,12 @@ type TrackingEvent struct {
 	// neither the CloudFront request id nor the cookie, so an event from a
 	// request that never touched the edge stays byte-identical on the wire
 	// (same omitempty contract as Actor and GatewayAction above).
-	WAFTokenPresent *bool     `json:"waf_token_present,omitempty"`
-	Timestamp       time.Time `json:"timestamp"`
+	WAFTokenPresent *bool `json:"waf_token_present,omitempty"`
+	// PixelPos is the open pixel's position marker ("t" top, "b" bottom, ""
+	// unmarked — pixelpos.go). Opens only. omitempty, same contract as Actor /
+	// GatewayAction: an unmarked open is byte-identical on the wire.
+	PixelPos  string    `json:"pixel_pos,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type Publisher struct {

@@ -120,11 +120,15 @@ func (h *Handler) HandleOpen(w http.ResponseWriter, r *http.Request) {
 		EmailID:      parts[3],
 		IPAddress:    realIP(r),
 		UserAgent:    r.UserAgent(),
-		Timestamp:    time.Now().UTC(),
+		// ?p=t|b marks the top/bottom pixel (pixelpos.go); outside the signed
+		// {data} segment, measurement only.
+		PixelPos:  PixelPosFromRequest(r),
+		Timestamp: time.Now().UTC(),
 	}
+	CountOpenPos(evt.PixelPos)
 	h.pub.Publish(r.Context(), evt)
 
-	log.Printf("OPEN campaign=%s subscriber=%s", evt.CampaignID, evt.SubscriberID)
+	log.Printf("OPEN campaign=%s subscriber=%s pos=%s", evt.CampaignID, evt.SubscriberID, evt.PixelPos)
 	h.servePixel(w)
 }
 

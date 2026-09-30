@@ -20,6 +20,7 @@ package worker
 // not regress back into the broken state.
 
 import (
+	"encoding/base64"
 	"regexp"
 	"strings"
 	"testing"
@@ -172,5 +173,97 @@ func TestInjectTrackingPixel_DoesNotRewriteAlreadyTrackedLinks(t *testing.T) {
 	}
 	if !strings.Contains(out, `mailto:foo@bar`) {
 		t.Errorf("mailto link must be preserved\n%s", out)
+	}
+}
+
+// ── Position markers (2026-09-29) ────────────────────────────────────────
+// Top pixel carries ?p=t, bottom ?p=b; path + signature identical so every
+// route, sig check and the (campaign, subscriber) dedupe are unchanged.
+
+var pixelSrcRe = regexp.MustCompile(`<img src="([^"]*/track/open/[^"]+)"`)
+
+func expectedPixelToken() (encoded, sig string) {
+	encoded = base64.URLEncoding.EncodeToString([]byte(testOrgID + "|" + testCampaignID + "|" + testSubscriberID + "|" + testEmailID))
+	return encoded, TrackSign(encoded, testSecret)
+}
+
+func TestInjectTrackingPixel_PositionMarkers_TopAndBottom(t *testing.T) {
+	html := `<html><BODY class="x" style="margin:0"><h1>hi</h1><a href="https://example.com/x">x</a></body></html>`
+	out := InjectTrackingPixelAndLinks(html, testCampaignID, testSubscriberID, testEmailID, testBaseURL, testOrgID, testSecret)
+	enc, sig := expectedPixelToken()
+	base := testBaseURL + "/track/open/" + enc + "/" + sig
+
+	srcs := pixelSrcRe.FindAllStringSubmatch(out, -1)
+	if len(srcs) != 2 || strings.Count(out, "/track/open/") != 2 {
+		t.Fatalf("want exactly 2 open pixels, got %d\n%s", len(srcs), out)
+	}
+	if srcs[0][1] != base+"?p=t" {
+		t.Errorf("top pixel src = %q, want %q", srcs[0][1], base+"?p=t")
+	}
+	if srcs[1][1] != base+"?p=b" {
+		t.Errorf("bottom pixel src = %q, want %q", srcs[1][1], base+"?p=b")
+	}
+
+	// Top pixel sits IMMEDIATELY after the <body ...> tag.
+	bodyOpen := strings.Index(strings.ToLower(out), "<body")
+	afterBody := bodyOpen + strings.Index(out[bodyOpen:], ">") + 1
+	if !strings.HasPrefix(out[afterBody:], buildOpenPixelHTML(testBaseURL, enc, sig, "t")) {
+		t.Errorf("top pixel not immediately after <body>:\n%s", out[afterBody:])
+	}
+	// Bottom pixel sits IMMEDIATELY before </body>.
+	bodyClose := strings.LastIndex(strings.ToLower(out), "</body>")
+	if !strings.HasSuffix(out[:bodyClose], buildOpenPixelHTML(testBaseURL, enc, sig, "b")) {
+		t.Errorf("bottom pixel not immediately before </body>:\n%s", out[:bodyClose])
+	}
+
+	// Click rewriting touched the content link and NEITHER pixel.
+	if !strings.Contains(out, "/track/click/") {
+		t.Errorf("content link was not click-wrapped\n%s", out)
+	}
+	for _, m := range srcs {
+		if strings.Contains(m[1], "/track/click/") {
+			t.Errorf("pixel was click-wrapped: %s", m[1])
+		}
+	}
+}
+
+func TestInjectTrackingPixel_PositionMarkers_NoBodyGetsBottomOnly(t *testing.T) {
+	out := InjectTrackingPixelAndLinks(`<h1>plain</h1>`, testCampaignID, testSubscriberID, testEmailID, testBaseURL, testOrgID, testSecret)
+	enc, sig := expectedPixelToken()
+	if !strings.HasSuffix(out, buildOpenPixelHTML(testBaseURL, enc, sig, "b")) {
+		t.Errorf("body-less HTML must get the ?p=b pixel appended\n%s", out)
+	}
+	if strings.Contains(out, "?p=t") {
+		t.Errorf("body-less HTML must not carry a top pixel\n%s", out)
+	}
+}
+
+// The ?p= marker is outside the signed {data} segment: stripping it leaves
+// the exact pre-change URL shape, and the signature still matches the token.
+func TestInjectTrackingPixel_PositionMarkers_SignatureNeutral(t *testing.T) {
+	out := InjectOpenPixel(`<html><body>x</body></html>`, testCampaignID, testSubscriberID, testEmailID, testBaseURL, testOrgID, testSecret)
+	srcs := pixelSrcRe.FindAllStringSubmatch(out, -1)
+	if len(srcs) != 2 {
+		t.Fatalf("want 2 pixels, got %d", len(srcs))
+	}
+	top := strings.TrimSuffix(srcs[0][1], "?p=t")
+	bot := strings.TrimSuffix(srcs[1][1], "?p=b")
+	if top != bot {
+		t.Fatalf("top/bottom must share path+sig: %q vs %q", top, bot)
+	}
+	parts := strings.Split(strings.TrimPrefix(top, testBaseURL+"/track/open/"), "/")
+	if len(parts) != 2 || TrackSign(parts[0], testSecret) != parts[1] {
+		t.Fatalf("signature does not verify over the token: %v", parts)
+	}
+}
+
+// InjectOpenPixel and InjectTrackingPixelAndLinks emit byte-identical pixels
+// (they share buildOpenPixelHTML) — on link-free HTML the outputs are equal.
+func TestInjectOpenPixel_MatchesInjectTrackingPixelAndLinks(t *testing.T) {
+	html := `<html><body><p>no links</p></body></html>`
+	a := InjectOpenPixel(html, testCampaignID, testSubscriberID, testEmailID, testBaseURL, testOrgID, testSecret)
+	b := InjectTrackingPixelAndLinks(html, testCampaignID, testSubscriberID, testEmailID, testBaseURL, testOrgID, testSecret)
+	if a != b {
+		t.Fatalf("pixel construction drifted:\n%s\n%s", a, b)
 	}
 }

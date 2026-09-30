@@ -25,10 +25,11 @@ package tracking
 //	enc  hex(HMAC-SHA256(key, base64url(raw)))[:16]
 //	     worker.TrackSign(encoded, …) — RewriteClickLinks, InjectTrackingPixelAndLinks,
 //	     InjectOpenPixel, generateUnsubURL (send worker, SES relay, click-drip,
-//	     proof sends) and api.injectTrackingWithURL (campaign-builder sync send).
+//	     proof sends), api.injectTrackingWithURL (campaign-builder sync send) and,
+//	     since 2026-09-29, the API transactional open pixel (via InjectOpenPixel).
 //	raw  hex(HMAC-SHA256(key, raw))[:16]
 //	     mailing.TrackingService.sign (no live caller) and the API transactional
-//	     open pixel (internal/api/mailing_sending.go). Accepted on /track/open
+//	     open pixel BEFORE 2026-09-29 (still in inboxes). Accepted on /track/open
 //	     ONLY — no live generator signs a click or unsubscribe this way.
 //
 // "raw" is the pipe-joined org|campaign|subscriber|email[|url] string BEFORE

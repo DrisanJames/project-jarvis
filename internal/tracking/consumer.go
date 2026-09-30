@@ -322,17 +322,30 @@ func (c *Consumer) processOpen(ctx context.Context, evt TrackingEvent) error {
 	// into `other`. We deliberately do NOT also write a denormalized
 	// `email` column: the schema does not have one, and subscriber_id
 	// is already the canonical FK to recover the email when needed.
+	//
+	// pixel_pos (2026-09-29, pixelpos.go): this is the FIRST counted open for
+	// (campaign, subscriber) — the dedupe gate above admitted it — so its
+	// ?p= marker is the position that fired first. It lands in metadata as
+	// {"pixel_pos":"t"|"b"}. An unmarked open runs the exact pre-existing
+	// statement and argument list (metadata stays NULL), so nothing about an
+	// unmarked row or the counting path changes.
+	insertArgs := []any{emailID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), isMachineOpen}
+	metaCol, metaVal := "", ""
+	if m := OpenMetadataJSON(evt.PixelPos); m.Valid {
+		metaCol, metaVal = ", metadata", ", $10::jsonb"
+		insertArgs = append(insertArgs, m)
+	}
 	res, err := c.db.ExecContext(ctx, `
-		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, recipient_domain, is_machine_open)
+		INSERT INTO mailing_tracking_events (id, organization_id, campaign_id, subscriber_id, event_type, event_at, ip_address, user_agent, device_type, sending_domain, recipient_domain, is_machine_open`+metaCol+`)
 		SELECT $1, $2, $3, $4, 'opened', $5, $6, $7, $8,
 			LOWER(SPLIT_PART(c.from_email, '@', 2)),
 			LOWER(SPLIT_PART(s.email, '@', 2)),
-			$9
+			$9`+metaVal+`
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_subscribers s ON s.id = $4::uuid
 		WHERE c.id = $3
 		ON CONFLICT DO NOTHING
-	`, emailID, orgID, campaignID, subscriberID, evt.Timestamp, evt.IPAddress, evt.UserAgent, detectDevice(evt.UserAgent), isMachineOpen)
+	`, insertArgs...)
 	if err != nil {
 		return err
 	}
