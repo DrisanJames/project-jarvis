@@ -304,9 +304,26 @@ func predispatchSegmentsToBuild(segs map[string]predispatchSegment, now time.Tim
 		if sg.BuiltAt.Valid && now.Sub(sg.BuiltAt.Time) < predispatchSegmentFresh {
 			continue
 		}
+		// A segment with no conditions and no list is a hand-filled static
+		// segment (seed lists: WARMY-SEED-YAHOO, KUMO-SEED-OPERATOR). There is
+		// nothing to rebuild it FROM — buildSegmentQuery compiles it to WHERE
+		// FALSE — so "refreshing" it only deletes its members. 2026-09-20 and
+		// 2026-09-30: both seed segments were emptied this way an hour before
+		// their cells fired and the seeds silently left every send.
+		if predispatchIsHandFilled(sg) {
+			continue
+		}
 		out = append(out, sg)
 	}
 	return out
+}
+
+// predispatchIsHandFilled reports a static segment that carries neither
+// conditions nor a list: its members were written directly (a seed list) and a
+// materialize pass cannot reproduce them.
+func predispatchIsHandFilled(sg predispatchSegment) bool {
+	c := strings.TrimSpace(sg.Conditions)
+	return sg.ListID == "" && (c == "" || c == "null" || c == "[]")
 }
 
 // predispatchCellReady decides whether a cell can be rebound now: every

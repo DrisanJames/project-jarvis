@@ -17,8 +17,8 @@ func TestPredispatchSegmentsToBuild(t *testing.T) {
 	now := time.Date(2026, 8, 28, 6, 0, 0, 0, time.UTC)
 	segs := map[string]predispatchSegment{
 		"fresh":    {ID: "fresh", Status: "active", BuiltAt: nt(now.Add(-30 * time.Minute)), BuildState: "ok"},
-		"stale":    {ID: "stale", Status: "active", BuiltAt: nt(now.Add(-3 * time.Hour)), BuildState: "ok"},
-		"never":    {ID: "never", Status: "active"},
+		"stale":    {ID: "stale", Status: "active", Conditions: `{"v2":{}}`, BuiltAt: nt(now.Add(-3 * time.Hour)), BuildState: "ok"},
+		"never":    {ID: "never", Status: "active", Conditions: `{"v2":{}}`},
 		"running":  {ID: "running", Status: "active", BuiltAt: nt(now.Add(-3 * time.Hour)), BuildState: "running"},
 		"archived": {ID: "archived", Status: "archived", BuiltAt: nt(now.Add(-3 * time.Hour)), BuildState: "ok"},
 	}
@@ -171,5 +171,28 @@ func TestPredispatchRebindInheritsISPBan(t *testing.T) {
 	}
 	if len(normalized.Plans) == 0 {
 		t.Fatal("rebind lost every plan — the ban must only remove gmail")
+	}
+}
+
+// A hand-filled static segment (no conditions, no list) is never picked for a
+// rebuild: materializing it compiles to WHERE FALSE and empties it.
+func TestPredispatchSkipsHandFilledSegments(t *testing.T) {
+	now := time.Now()
+	old := sql.NullTime{Time: now.Add(-3 * time.Hour), Valid: true}
+	segs := map[string]predispatchSegment{
+		"seed":  {ID: "seed", Status: "active", Conditions: "[]", ListID: "", BuiltAt: old, BuildState: "ok"},
+		"never": {ID: "never", Status: "active", Conditions: "", ListID: ""},
+		"list":  {ID: "list", Status: "active", Conditions: "[]", ListID: "l1", BuiltAt: old, BuildState: "ok"},
+		"grid":  {ID: "grid", Status: "active", Conditions: `{"v2":{}}`, ListID: "", BuiltAt: old, BuildState: "ok"},
+	}
+	got := map[string]bool{}
+	for _, sg := range predispatchSegmentsToBuild(segs, now) {
+		got[sg.ID] = true
+	}
+	if got["seed"] || got["never"] {
+		t.Fatalf("hand-filled static segments must not be rebuilt: %v", got)
+	}
+	if !got["list"] || !got["grid"] {
+		t.Fatalf("list-backed and conditioned segments must still be rebuilt: %v", got)
 	}
 }
