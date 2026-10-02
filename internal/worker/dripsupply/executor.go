@@ -1677,7 +1677,12 @@ func (m *Mediator) trackStreak(ctx context.Context, lane, pass, outcome, reason 
 	// broadcast-family.*, empty choice lanes), and the operator asked for it gone
 	// 2026-09-10. A lane that is dark WITH claimable supply under enforcement is
 	// dark_alert's job, which probes for supply before it speaks.
-	if n < 2 || outcome != OutcomeFailed {
+	// The mint pass is excluded: mint shortfall is reported ONCE per day by
+	// reportMintVerdict's short_mint summary alert ("drip mint is short of
+	// contract"), and broadcast-* lanes are filled by fresh_gate / WCL release,
+	// not the mediator, so per-lane mint pages fired 44-50x/day by design
+	// (ops-triage AP-26018E60, 2026-10-02).
+	if n < 2 || outcome != OutcomeFailed || pass == PassMint {
 		return
 	}
 	tier := notify.TierAlert
