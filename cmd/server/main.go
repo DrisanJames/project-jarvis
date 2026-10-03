@@ -12727,6 +12727,19 @@ END $$`},
 		// window) so the guard stays index-fast as samples accumulate.
 		{"pi_idx_raw_samples_dataset_time", `CREATE INDEX IF NOT EXISTS idx_pi_raw_samples_dataset_time
 			ON partner_ingest_raw_samples (dataset_id, captured_at DESC)`},
+		// 2026-10-02 mk lanes (operator): trb/pmd/aad/hfc restart on mk.<apex> from
+		// 3 addresses each of the clean 15.204.22/38 sets (their own 144.225.178 /
+		// 16.217.96 blocks deliver 13-25% to yahoo). The pools MUST exist before
+		// aug26_yahoo_set_ip_reassert below re-inserts the deleted 15.204.22/38 rows,
+		// or those 12 rows are skipped (pool_id_val NULL) and vanish. pool_type is
+		// CHECK-constrained (dedicated|shared|warmup). agents/jobs/mk_lanes.py.
+		{"mk_lanes_ip_pools_20261002", `
+INSERT INTO mailing_ip_pools (id, organization_id, name, description, pool_type, status, created_at, updated_at)
+SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001'::uuid, v.name, 'mk lane ' || v.dom, 'dedicated', 'active', NOW(), NOW()
+FROM (VALUES ('trbmk-yahoo-pool', 'mk.theretirementblog.com'), ('aadmk-yahoo-pool', 'mk.aadwd.com'),
+             ('pmdmk-yahoo-pool', 'mk.paymydebit.com'), ('hfcmk-yahoo-pool', 'mk.hfcl.net')) AS v(name, dom)
+WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p WHERE p.name = v.name
+                  AND p.organization_id = '00000000-0000-0000-0000-000000000001'::uuid)`},
 		// 2026-08-26 PMTA yahoo-set migration (operator): 8 estate domains moved
 		// off KumoMTA onto PMTA A/B. 2026-08-31 (operator): ONE domain per 15-IP
 		// set — survivors trb/hlj/usf/pmd own all 15; bcc/htm/fth/yfb SIT. MUST run
@@ -12735,7 +12748,10 @@ END $$`},
 		// to ht/mh cold pools EVERY boot — this block re-asserts the yahoo-set
 		// truth after them. Deliberate pauses survive (only cold/retired/
 		// pending flip back to warmup); warmup_daily_limit is never clobbered
-		// on existing rows so ladder cap raises stick.
+		// on existing rows so ladder cap raises stick. 2026-10-02: the 15.204.22/38
+		// rows are deleted every boot, so their INSERT carries the operator's static
+		// state (active, 10,000/IP, NO warmup_started_at): 'warmup' + a start date
+		// put them back on the WarmupScheduler at 150/IP on every deploy.
 		{"aug26_yahoo_set_ip_reassert", `DO $$
 DECLARE
     org_id UUID := '00000000-0000-0000-0000-000000000001';
@@ -12769,19 +12785,19 @@ BEGIN
             ('15.204.22.182', 'mta-hlj-yh7.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
             ('15.204.22.183', 'mta-hlj-yh8.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
             ('15.204.22.184', 'mta-hlj-yh9.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.185', 'mta-hlj-yh10.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.186', 'mta-hlj-yh11.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.187', 'mta-hlj-yh12.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.188', 'mta-hlj-yh13.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.189', 'mta-hlj-yh14.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
-            ('15.204.22.190', 'mta-hlj-yh15.mail.em.homeloansbyjaime.com', 'hlj-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.185', 'mta-hlj-yh10.mail.em.homeloansbyjaime.com', 'aadmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.186', 'mta-hlj-yh11.mail.em.homeloansbyjaime.com', 'aadmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.187', 'mta-hlj-yh12.mail.em.homeloansbyjaime.com', 'aadmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.188', 'mta-hlj-yh13.mail.em.homeloansbyjaime.com', 'trbmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.189', 'mta-hlj-yh14.mail.em.homeloansbyjaime.com', 'trbmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
+            ('15.204.22.190', 'mta-hlj-yh15.mail.em.homeloansbyjaime.com', 'trbmk-yahoo-pool', '15.204.101.125', '15.204.22.176/28'),
             ('15.204.38.168', 'mta-usf-yh1.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.169', 'mta-usf-yh2.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.170', 'mta-usf-yh3.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.171', 'mta-usf-yh4.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.172', 'mta-usf-yh5.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.173', 'mta-usf-yh6.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
-            ('15.204.38.174', 'mta-usf-yh7.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.169', 'mta-usf-yh2.mail.em.us-finance.com', 'hfcmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.170', 'mta-usf-yh3.mail.em.us-finance.com', 'hfcmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.171', 'mta-usf-yh4.mail.em.us-finance.com', 'hfcmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.172', 'mta-usf-yh5.mail.em.us-finance.com', 'pmdmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.173', 'mta-usf-yh6.mail.em.us-finance.com', 'pmdmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
+            ('15.204.38.174', 'mta-usf-yh7.mail.em.us-finance.com', 'pmdmk-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
             ('15.204.38.160', 'mta-usf-yh8.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
             ('15.204.38.161', 'mta-usf-yh9.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
             ('15.204.38.162', 'mta-usf-yh10.mail.em.us-finance.com', 'usf-yahoo-pool', '15.204.107.107', '15.204.38.160/28'),
@@ -12813,8 +12829,8 @@ BEGIN
             INSERT INTO mailing_ip_addresses (id, organization_id, ip_address, hostname, status, pool_id, pmta_server_id,
                 warmup_stage, warmup_day, warmup_daily_limit, warmup_started_at, hosting_provider, acquisition_type,
                 cidr_block, rdns_verified, reputation_score, created_at, updated_at)
-            VALUES (gen_random_uuid(), org_id, rec.ip_addr::inet, rec.hostname, 'warmup', pool_id_val, server_id_val,
-                'early', 1, 150, NOW(), 'ovh', 'provider', rec.cidr, false, 0.00, NOW(), NOW())
+            VALUES (gen_random_uuid(), org_id, rec.ip_addr::inet, rec.hostname, 'active', pool_id_val, server_id_val,
+                'warming', 1, 10000, NULL, 'ovh', 'provider', rec.cidr, false, 0.00, NOW(), NOW())
             ON CONFLICT (ip_address) DO UPDATE SET
                 hostname = EXCLUDED.hostname,
                 pool_id = EXCLUDED.pool_id,
