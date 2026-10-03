@@ -302,6 +302,16 @@ func (h *ProofSendHandler) sendProofMessage(ctx context.Context, orgID, sendingD
 	}
 
 	rc := buildProofRenderContext(to, trackBase, emailID, unsubURL, fromEmail)
+	// The Liquid render below resolves {{system.brand_unsubscribe_url}} from rc — a
+	// missing key renders "" BEFORE the post-render ReplaceAll can see the tag, so
+	// the brand URL must be in the context, as the send worker puts it (send_worker
+	// system["brand_unsubscribe_url"]). Without this every kumo-digest proof showed
+	// href="" (seen on the mk.<apex> proofs, 2026-10-03).
+	if brandUnsubURL != "" {
+		if sys, ok := rc["system"].(map[string]interface{}); ok {
+			sys["brand_unsubscribe_url"] = brandUnsubURL
+		}
+	}
 	if preheader != "" {
 		rc["preheader"] = preheader
 	}
