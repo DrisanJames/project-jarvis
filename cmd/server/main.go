@@ -3063,6 +3063,22 @@ var concurrentIndexSpecs = []struct {
 	// measured 2026-09-03 (WP12): parallel seq scan 1.3 s / 13.8M rows per sweep
 	// without it. Partial on the shape, ordered by claimed_at for the cutoff.
 	{"idx_pcq_reap_orphans", `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_reap_orphans ON partner_clean_queue (claimed_at) WHERE status = 'claimed' AND last_touch_campaign_id IS NULL AND mailed_campaign_id IS NULL`},
+	{
+		// family_sidecar.py borrow() — the yahoo-family any-brand fallback tier.
+		// Reads per MAILBOX DOMAIN: vertical='yahoo_family' AND
+		// lower(split_part(email,'@',2)) = 'yahoo.com' AND subscriber_id IS NOT NULL
+		// AND engaged_at IS NULL ... ORDER BY COALESCE(touch_count,0), mailed_at
+		// NULLS FIRST LIMIT n. Without this it is a parallel seq scan of the
+		// 16.4M-row / 8.4 GB queue heap per call (976 calls at a mean 44 s / 5.5 GB
+		// over 09-13..10-07, brain #9310) and the nightly sidecar timed out. The
+		// expression + sort keys make it an ordered index scan that stops at the
+		// LIMIT; the predicate keeps it to the family rows only. Concurrent slice:
+		// even a partial build reads the whole queue heap (2026-08-20 barricade).
+		"idx_pcq_family_borrow",
+		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_pcq_family_borrow
+		 ON partner_clean_queue (vertical, (lower(split_part(email,'@',2))), (COALESCE(touch_count,0)), mailed_at NULLS FIRST)
+		 WHERE subscriber_id IS NOT NULL AND engaged_at IS NULL AND vertical = 'yahoo_family'`,
+	},
 }
 
 const concurrentIndexIOWaitMax = 8
