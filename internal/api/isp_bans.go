@@ -222,6 +222,13 @@ func ispBanBrandCode(sendingDomain string) (string, bool) {
 
 func ispBanNorm(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
+// gmailOnlySender reports whether a sending domain is a brand's gmail-only SES subdomain
+// (agents/jobs/gm_sender_domains.py: gm.<apex>, or gml.<apex> where gm. is an nx lane).
+func gmailOnlySender(sendingDomain string) bool {
+	d := strings.ToLower(strings.TrimSpace(sendingDomain))
+	return strings.HasPrefix(d, "gm.") || strings.HasPrefix(d, "gml.")
+}
+
 // applyISPBansForOrg strips every banned ISP for the input's brand out of the
 // deploy input, in place. orgID == "" uses the cross-org union (see forOrg).
 //
@@ -243,6 +250,21 @@ func applyISPBansForOrg(orgID string, input *engine.PMTACampaignInput) error {
 	banned := tbl.forOrg(orgID)[code]
 	if len(banned) == 0 {
 		return nil
+	}
+	if gmailOnlySender(input.SendingDomain) && banned["gmail"] {
+		// The brand's gmail-only SES subdomain (gm.<apex>, gml. where gm. was taken) is a NEW
+		// domain to Google (operator 2026-10-12: "these are no longer banned using ONLY the gm.
+		// domains"). The 2026-08-30 ban stands for every other sending domain of the brand.
+		trimmed := make(map[string]bool, len(banned))
+		for isp, v := range banned {
+			if isp != "gmail" {
+				trimmed[isp] = v
+			}
+		}
+		banned = trimmed
+		if len(banned) == 0 {
+			return nil
+		}
 	}
 
 	hadPlans := len(input.ISPPlans) > 0

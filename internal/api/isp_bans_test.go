@@ -202,3 +202,33 @@ func TestISPBanBrandCodeResolution(t *testing.T) {
 		}
 	}
 }
+
+func TestISPBanGmailOnlySenderExempt(t *testing.T) {
+	// operator 2026-10-12: the 8-brand gmail ban does not apply to the brand's gm.<apex> sender.
+	restore := installISPBanRows(t, [][3]string{{ispBanTestOrg, "wf", "gmail"}, {ispBanTestOrg, "wf", "yahoo"}}, nil)
+	defer restore()
+
+	got, err := normalizePMTACampaignInput(banTestInput("gm.warrantyforyou.com"))
+	if err != nil {
+		t.Fatalf("normalize gm. sender: %v", err)
+	}
+	isps := planISPs(got)
+	if !isps["gmail"] {
+		t.Errorf("gmail plan dropped on the gmail-only gm. sender: %v", isps)
+	}
+	if isps["yahoo"] {
+		t.Errorf("a non-gmail ban was lifted on the gm. sender: %v", isps)
+	}
+
+	// The same brand on any other domain is still banned from gmail.
+	got, err = normalizePMTACampaignInput(banTestInput("m.warrantyforyou.com"))
+	if err != nil {
+		t.Fatalf("normalize m. sender: %v", err)
+	}
+	if planISPs(got)["gmail"] {
+		t.Errorf("gmail ban lifted on m.warrantyforyou.com: %v", planISPs(got))
+	}
+	if !gmailOnlySender("gml.firsttimebuyerhomeloan.com") || gmailOnlySender("gmx.example.com") {
+		t.Errorf("gmailOnlySender prefix match wrong")
+	}
+}
