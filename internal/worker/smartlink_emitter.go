@@ -43,6 +43,9 @@ type SmartLinkEmitter struct {
 
 	mu      sync.RWMutex
 	entries map[string]string
+	// index resolves a rendered href to an entry, disambiguating rows that share a
+	// Normalize base by their fixed query params (moneylink.Index, 2026-10-12).
+	index *moneylink.Index
 
 	cancel context.CancelFunc
 }
@@ -112,8 +115,10 @@ func (e *SmartLinkEmitter) reloadOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ix := moneylink.NewIndex(next)
 	e.mu.Lock()
 	e.entries = next
+	e.index = ix
 	e.mu.Unlock()
 	log.Printf("smartlink emitter: loaded %d active offer-link hashes", len(next))
 	return nil
@@ -145,7 +150,9 @@ func (e *SmartLinkEmitter) queryDB(ctx context.Context) (map[string]string, erro
 			return nil, err
 		}
 		hash = strings.TrimSpace(hash)
-		key := normalizeOfferURL(tmpl.String)
+		// MatchKey, not Normalize: two rows on one host/path that differ only in a
+		// fixed param (Insurify Auto c=18903 vs Home c=20906) must stay two keys.
+		key := moneylink.MatchKey(tmpl.String)
 		if hash == "" || key == "" {
 			continue // unusable row — skip, don't fail the reload
 		}
@@ -176,14 +183,12 @@ func (e *SmartLinkEmitter) Lookup(rawOfferURL string) (string, bool) {
 	if e == nil || !e.enabled {
 		return "", false
 	}
-	key := normalizeOfferURL(rawOfferURL)
-	if key == "" {
+	if normalizeOfferURL(rawOfferURL) == "" {
 		return "", false
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	h, ok := e.entries[key]
-	return h, ok
+	return e.index.Lookup(rawOfferURL)
 }
 
 // Enabled reports whether the emitter is live (flag on AND a DB handle was

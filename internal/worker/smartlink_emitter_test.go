@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
 	"testing"
 	"time"
 )
@@ -155,5 +156,24 @@ func TestSmartLinkEmitter_ReloadErrorKeepsPriorSnapshot(t *testing.T) {
 	}
 	if h, ok := e.Lookup(template); !ok || h != "hash-abc" {
 		t.Fatalf("prior snapshot lost after failed reload: (%q,%v)", h, ok)
+	}
+}
+
+// 2026-10-12: Insurify Auto and Home share protectedoptions.com/?a=1512 and differ only in c=.
+// The emitter keyed both on Normalize (query dropped) and minted every Auto click onto the Home hash.
+func TestSmartLinkEmitter_SameHostOffersKeepTheirOwnHash(t *testing.T) {
+	auto := "https://protectedoptions.com/?a=1512&c=18903&s1={{subscriber.id}}&s2={{brand.domain}}"
+	home := "https://protectedoptions.com/?a=1512&c=20906&s1={{subscriber.id}}&s2={{brand.domain}}"
+	e := newTestEmitter(t, func(context.Context) (map[string]string, error) {
+		return map[string]string{moneylink.MatchKey(auto): "4gk86zxjpm", moneylink.MatchKey(home): "t3d1ahjr8w"}, nil
+	})
+	if h, ok := e.Lookup("https://protectedoptions.com/?a=1512&c=18903&s1=sub&s2=discountblog.com"); !ok || h != "4gk86zxjpm" {
+		t.Fatalf("Auto href -> (%q,%v), want Auto hash", h, ok)
+	}
+	if h, ok := e.Lookup("https://protectedoptions.com/?a=1512&amp;c=20906&amp;s1=sub&amp;s2=x.com"); !ok || h != "t3d1ahjr8w" {
+		t.Fatalf("Home href -> (%q,%v), want Home hash", h, ok)
+	}
+	if h, ok := e.Lookup("https://protectedoptions.com/?a=1512&c=19029&s1=sub"); ok {
+		t.Fatalf("an unseeded creative id must miss (wrap the literal href), got %q", h)
 	}
 }

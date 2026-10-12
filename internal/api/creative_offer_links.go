@@ -127,7 +127,7 @@ func (h *ProofSendHandler) loadMappedOfferLinks(ctx context.Context) (map[string
 			return nil, err
 		}
 		hash = strings.TrimSpace(hash)
-		key := moneylink.Normalize(tmpl.String)
+		key := moneylink.MatchKey(tmpl.String) // same key the send worker mints with (2026-10-12)
 		if hash == "" || key == "" {
 			continue // unusable row — skip, don't fail the whole report
 		}
@@ -147,6 +147,11 @@ func (h *ProofSendHandler) loadMappedOfferLinks(ctx context.Context) (map[string
 func detectOfferLinks(html string, mapped map[string]mappedSmartLink) []offerLinkEntry {
 	entries := []offerLinkEntry{}
 	seen := map[string]bool{}
+	keys := make(map[string]string, len(mapped))
+	for k := range mapped {
+		keys[k] = k
+	}
+	ix := moneylink.NewIndex(keys) // resolve exactly as the send worker's emitter does
 	re := moneylink.HrefRe()
 	for _, m := range re.FindAllStringSubmatch(html, -1) {
 		if len(m) < 3 {
@@ -161,14 +166,22 @@ func detectOfferLinks(html string, mapped map[string]mappedSmartLink) []offerLin
 			continue
 		}
 		norm := moneylink.Normalize(fullURL)
-		if norm == "" || seen[norm] {
+		// Dedup on the smart link the href resolves to (two offers on one host/path stay two
+		// rows, 2026-10-12); an unmapped href dedups on its normalized destination as before.
+		k, mappedOK := ix.Lookup(fullURL)
+		dedup := norm
+		if mappedOK {
+			dedup = "key:" + k
+		}
+		if norm == "" || seen[dedup] {
 			continue
 		}
-		seen[norm] = true
+		seen[dedup] = true
 
 		host := moneyHostOf(fullURL)
 		e := offerLinkEntry{URL: fullURL, Host: host, Normalized: norm}
-		if sl, ok := mapped[norm]; ok {
+		if mappedOK {
+			sl := mapped[k]
 			e.Mapped = true
 			e.Hash = sl.Hash
 			e.Slug = sl.Slug

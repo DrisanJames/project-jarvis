@@ -15,6 +15,7 @@ package moneylink
 import (
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -178,4 +179,154 @@ func Normalize(raw string) string {
 	host := strings.ToLower(u.Host)
 	path := strings.TrimRight(u.Path, "/")
 	return scheme + "://" + host + path
+}
+
+// ---------------------------------------------------------------------------
+// Disambiguating by fixed query params (2026-10-12)
+// ---------------------------------------------------------------------------
+//
+// Normalize drops the whole query string, so two smart links on the same host
+// and path that differ only in a FIXED query param collide on one key. That is
+// exactly the Insurify pair: Auto  https://protectedoptions.com/?a=1512&c=18903&s1={{subscriber.id}}…
+// and Home https://protectedoptions.com/?a=1512&c=20906&s1={{subscriber.id}}…
+// both normalized to https://protectedoptions.com. The Home row (created
+// 2026-10-06 18:30Z) won last-writer-wins, and from then every Insurify Auto
+// click was minted onto the Home hash — the network credited Auto clicks as
+// Home leads ($17, not $25).
+//
+// MatchKey keeps a template's FIXED params (value present and free of a
+// {{placeholder}}) in the key; per-recipient params never enter it. Index looks
+// a rendered href up by its Normalize base: one candidate → that candidate,
+// exactly as before (backward compatible, whatever the href's params); several
+// → the candidate whose fixed params ALL appear in the href with the same value,
+// most specific first; no unique winner → miss, so the caller falls back to the
+// /track/click wrap of the literal href (the right destination, just not /o/).
+
+// FixedParams returns the template's fixed query params: every param whose
+// value is non-empty and carries no "{{" placeholder. "&amp;" is read as "&".
+func FixedParams(raw string) map[string]string {
+	out := map[string]string{}
+	for k, vs := range hrefQuery(raw) {
+		for _, v := range vs {
+			if v != "" && !strings.Contains(v, "{{") {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
+// MatchKey is Normalize(raw) plus the sorted fixed params ("base?k=v&k=v").
+// A template with no fixed params keys exactly as Normalize does.
+func MatchKey(raw string) string {
+	base := Normalize(raw)
+	if base == "" {
+		return ""
+	}
+	fp := FixedParams(raw)
+	if len(fp) == 0 {
+		return base
+	}
+	keys := make([]string, 0, len(fp))
+	for k := range fp {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + fp[k]
+	}
+	return base + "?" + strings.Join(parts, "&")
+}
+
+// hrefQuery parses the query of a template or rendered href, tolerating
+// "&amp;" entities, a fragment, and malformed pairs (kept best-effort).
+func hrefQuery(raw string) url.Values {
+	s := strings.TrimSpace(raw)
+	if i := strings.IndexByte(s, '#'); i >= 0 {
+		s = s[:i]
+	}
+	i := strings.IndexByte(s, '?')
+	if i < 0 {
+		return url.Values{}
+	}
+	q, _ := url.ParseQuery(strings.ReplaceAll(s[i+1:], "&amp;", "&"))
+	return q
+}
+
+type indexEntry struct {
+	key   string
+	fixed map[string]string
+}
+
+// Index maps MatchKeys to values and resolves rendered hrefs to one of them.
+// Build it fully, then read it; it is not safe for concurrent writes.
+type Index struct {
+	vals   map[string]string
+	byBase map[string][]indexEntry
+}
+
+// NewIndex builds an Index from MatchKey -> value. Keys produced by plain
+// Normalize (no "?") are valid MatchKeys with no fixed params.
+func NewIndex(byKey map[string]string) *Index {
+	ix := &Index{vals: byKey, byBase: map[string][]indexEntry{}}
+	for k := range byKey {
+		base, fixed := k, map[string]string{}
+		if i := strings.IndexByte(k, '?'); i >= 0 {
+			base = k[:i]
+			for _, p := range strings.Split(k[i+1:], "&") {
+				if j := strings.IndexByte(p, '='); j > 0 {
+					fixed[p[:j]] = p[j+1:]
+				}
+			}
+		}
+		ix.byBase[base] = append(ix.byBase[base], indexEntry{key: k, fixed: fixed})
+	}
+	return ix
+}
+
+// Len is the number of keys.
+func (ix *Index) Len() int {
+	if ix == nil {
+		return 0
+	}
+	return len(ix.vals)
+}
+
+// Lookup resolves a rendered href. See the block comment above for the rules.
+func (ix *Index) Lookup(href string) (string, bool) {
+	if ix == nil {
+		return "", false
+	}
+	cands := ix.byBase[Normalize(href)]
+	switch len(cands) {
+	case 0:
+		return "", false
+	case 1:
+		return ix.vals[cands[0].key], true
+	}
+	q := hrefQuery(href)
+	best, bestN, tie := "", -1, false
+	for _, c := range cands {
+		ok := true
+		for k, v := range c.fixed {
+			if q.Get(k) != v {
+				ok = false
+				break
+			}
+		}
+		if !ok {
+			continue
+		}
+		switch n := len(c.fixed); {
+		case n > bestN:
+			best, bestN, tie = c.key, n, false
+		case n == bestN:
+			tie = true
+		}
+	}
+	if bestN < 0 || tie {
+		return "", false
+	}
+	return ix.vals[best], true
 }
