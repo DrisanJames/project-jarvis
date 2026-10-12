@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	htmlstd "html"
 	"log"
 	"net/url"
 	"os"
@@ -3204,7 +3205,12 @@ func RewriteClickLinks(html, campaignID, subscriberID, emailID, baseURL, orgID, 
 		if len(parts) < 2 {
 			return match
 		}
-		origURL := parts[1]
+		// The href is an HTML attribute value: a browser decodes entities before
+		// following it, so the wrapped destination must too. Without this,
+		// `?a=1&amp;sub1=X` reached the network as a param named "amp;sub1" and
+		// every tag after the first was lost (AARP proofs 2026-10-12; ldv2,
+		// Insurhomev1, smartassetv1 shipped the same way).
+		origURL := htmlstd.UnescapeString(parts[1])
 		// A tracking-layer offer link (baseURL + "/o/<sub>/<hash>/<campaign>")
 		// is ALREADY a tracking URL, so wrapping it into /track/click would
 		// double-wrap the redirect. Match ONLY our own tracking host + /o/
