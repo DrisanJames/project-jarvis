@@ -323,16 +323,21 @@ func TestPreferencesPost_CSRFFailures(t *testing.T) {
 
 func TestPreferencesPost_PauseWritesStoreAndHub(t *testing.T) {
 	h, mock, _, ph := newPrefsHarness(t)
-	tok := pToken(preferences.ScopeBrand, pNow)
+	// Real clock for this test: the hub keeps only rows that affect sending NOW (hub.go affectsSend
+	// (time.Now())), so a pause written 30 days after the fixed pNow (2026-09-11) expired on 10-11 and
+	// this test failed — blocking every deploy's pre-deploy gate — from then on.
+	now := time.Now().UTC()
+	h.now = func() time.Time { return now }
+	tok := pToken(preferences.ScopeBrand, now)
 	expectEmailLookup(mock, pEmail)
 	expectPrefsGet(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mailing_subscriber_preferences`)).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	rec := httptest.NewRecorder()
-	h.HandlePost(rec, postForm("/preferences", url.Values{"t": {tok}, "n": {preferences.Nonce(tok, pSecret, pNow)}, "action": {"pause_30"}}))
+	h.HandlePost(rec, postForm("/preferences", url.Values{"t": {tok}, "n": {preferences.Nonce(tok, pSecret, now)}, "action": {"pause_30"}}))
 	require.Equal(t, http.StatusSeeOther, rec.Code, rec.Body.String())
 	require.NoError(t, mock.ExpectationsWereMet())
-	ok, reason := ph.ShouldSend(pEmail, "quizfiesta.com", "", time.Now())
+	ok, reason := ph.ShouldSend(pEmail, "quizfiesta.com", "", now.Add(time.Hour))
 	require.False(t, ok, "pause applies to all brands and refreshes this task's hub on write")
 	require.Equal(t, "paused", reason)
 }
