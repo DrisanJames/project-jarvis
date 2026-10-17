@@ -1778,6 +1778,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				// Current-month pacing (operator 2026-07-01): MTD vs target with a
 				// trailing-3-day rate + month-end projection. On-demand only (QA C4).
 				cp.Get("/pacing", cpmPlanner.HandleCurrentMonthPacing)
+				// Mailed-to-goal tracker (operator 2026-10-17): sent MTD per deal
+				// from campaign counters — no tracking-events scan (cpm_mailed.go).
+				cp.Get("/mailed", cpmPlanner.HandleMailedTracker)
 				// Non-CPM performance funnel (volume → clickers → conversions).
 				// Lake-backed via the offer-alignment snapshot; see
 				// cpm_non_cpm_performance.go for why it never calls Athena itself.

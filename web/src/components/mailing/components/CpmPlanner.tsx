@@ -9,6 +9,7 @@ import {
   Tooltip as RechartsTooltip, ReferenceLine, ComposedChart, Line, Legend,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
+import { CpmMailedTracker } from './CpmMailedTracker';
 
 // CpmPlanner — living pricing/pacing screen for email CPM deals.
 //
@@ -3078,6 +3079,10 @@ export const CpmPlanner: React.FC = () => {
           {error}
         </div>
       )}
+
+      {/* CPM mailed vs goal — the month's volume commitments, from campaign
+          counters (operator 2026-10-17). Topmost: it is the question asked most. */}
+      <CpmMailedTracker />
 
       {/* 0 · Platform capacity — topmost dashboard (operator 2026-07-01) */}
       <div style={{ marginBottom: 6 }}>
