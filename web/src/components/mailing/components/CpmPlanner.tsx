@@ -9,7 +9,6 @@ import {
   Tooltip as RechartsTooltip, ReferenceLine, ComposedChart, Line, Legend,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
-import { CpmMailedTracker } from './CpmMailedTracker';
 
 // CpmPlanner — living pricing/pacing screen for email CPM deals.
 //
@@ -289,6 +288,7 @@ interface TargetEdit {
   ecpm: string;
   ecpa: string;
   notes: string;
+  paid?: string; // current-month pacing only: paid-to-date (monthly target paid_revenue)
 }
 
 // ─── Current-month pacing types (mirror HandleCurrentMonthPacing) ────────────
@@ -322,6 +322,20 @@ interface PacingDeal {
   over: boolean;
   over_volume: number;
   over_budget_usd: number;
+  // Mailed-to-goal + eCPM model (operator 2026-10-17). Volume = campaign SENT
+  // counters; pacing/required/projected/over all run on mtd_sent.
+  mtd_sent: number;
+  booked: number;
+  sent_today: number;
+  monthly_paid: number | null;
+  ef_conversions: number;
+  ecpa: number;
+  revenue: number;
+  revenue_basis: 'paid' | 'model' | 'none';
+  projected_conversions: number;
+  projected_revenue: number;
+  budget_ecpm_at_projected: number;
+  revenue_gap: number;
 }
 interface PacingResp {
   month: string; // YYYY-MM
@@ -330,8 +344,13 @@ interface PacingResp {
   deals: PacingDeal[];
   portfolio: {
     target_volume: number;
+    target_budget: number;
     mtd_delivered: number;
+    mtd_sent: number;
+    booked: number;
     mtd_conversions: number;
+    revenue: number;
+    projected_revenue: number;
     projected: number;
     required_daily: number;
   };
@@ -844,19 +863,19 @@ export const CpmPlanner: React.FC = () => {
             target_volume: planned, target_source: planned > 0 ? 'deal' : 'none',
           };
         }
-        const m = clientPacingMath(np.target_volume, np.mtd_delivered, np.rate_3d, prev.day_of_month, prev.days_in_month, np.ecpm);
+        const m = clientPacingMath(np.target_volume, np.mtd_sent, np.rate_3d, prev.day_of_month, prev.days_in_month, np.ecpm);
         return {
           ...np, required_daily: m.required, projected: m.projected, projected_pct: m.pct, on_pace: m.onPace,
           over: m.over, over_volume: m.overVolume, over_budget_usd: m.overUSD,
         };
-      }).filter(p => p.deal_id !== dealId || p.target_volume > 0 || p.mtd_delivered > 0 || p.mtd_conversions > 0);
+      }).filter(p => p.deal_id !== dealId || p.target_volume > 0 || p.mtd_sent > 0 || p.mtd_conversions > 0);
       const portfolio = nextDeals.reduce((acc, p) => ({
+        ...acc,
         target_volume: acc.target_volume + p.target_volume,
-        mtd_delivered: acc.mtd_delivered + p.mtd_delivered,
-        mtd_conversions: acc.mtd_conversions + p.mtd_conversions,
+        target_budget: acc.target_budget + p.target_budget,
         projected: acc.projected + p.projected,
         required_daily: acc.required_daily + p.required_daily,
-      }), { target_volume: 0, mtd_delivered: 0, mtd_conversions: 0, projected: 0, required_daily: 0 });
+      }), { ...prev.portfolio, target_volume: 0, target_budget: 0, projected: 0, required_daily: 0 });
       return { ...prev, deals: nextDeals, portfolio };
     });
   };
@@ -912,6 +931,7 @@ export const CpmPlanner: React.FC = () => {
       const b = num(e.budget); if (b !== undefined) body.budget = b;
       const m = num(e.ecpm); if (m !== undefined) body.ecpm = m;
       const a = num(e.ecpa); if (a !== undefined) body.ecpa = a;
+      const pd = e.paid !== undefined ? num(e.paid) : undefined; if (pd !== undefined) body.paid_revenue = pd;
       // Volume is NOT operator-entered — it is derived from budget ÷ eCPM × 1000
       // (the planned-volume formula). Send the computed value whenever both inputs
       // exist so the saved monthly target's volume always matches the math.
@@ -1493,10 +1513,13 @@ export const CpmPlanner: React.FC = () => {
   const renderPacing = () => {
     const monthName = pacing ? monthLabel(pacing.month) : '';
     const daysLeft = pacing ? pacing.days_in_month - pacing.day_of_month + 1 : 0;
+    const daysAfterToday = Math.max(0, daysLeft - 1);
     const numInput: React.CSSProperties = {
       width: 84, padding: '5px 7px', background: 'rgba(10,20,45,0.7)',
       border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
     };
+    const fmtEcpm = (n: number) => (n > 0 ? fmtMoney(n) : '—');
+    const fmtUsd0 = (n: number) => (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('en-US');
 
     const pacingRow = (p: PacingDeal) => {
       const month = pacing!.month;
@@ -1507,41 +1530,61 @@ export const CpmPlanner: React.FC = () => {
         ecpm: p.monthly_ecpm != null ? String(p.monthly_ecpm) : '',
         ecpa: p.monthly_ecpa != null ? String(p.monthly_ecpa) : '',
         notes: p.monthly_notes || '',
+        paid: p.monthly_paid != null ? String(p.monthly_paid) : '',
       };
       const set = (k: keyof TargetEdit, v: string) =>
         setTargetEdits(prev => ({ ...prev, [key]: { ...(prev[key] || buf), [k]: v } }));
       const dirty = !!targetEdits[key];
       const busy = targetSaving === p.deal_id;
-      const pct = p.target_volume > 0 ? Math.min((p.mtd_delivered / p.target_volume) * 100, 100) : 0;
-      // Live-derived month target while typing; falls back to the server's number.
+
+      // WHAT-IF while typing (unsaved): every derived column below follows the
+      // typed budget / eCPM / eCPA / paid, falling back to the server's numbers.
+      // eCPM $2 instead of $1 halves the month target, and Remaining, Req/Day,
+      // % and Budget ÷ Projected follow instantly. Save pins the month.
       const bv = parseFloat(buf.budget); const mv = parseFloat(buf.ecpm);
-      const liveTarget = bv > 0 && mv > 0 ? Math.ceil((bv / mv) * 1000) : 0;
-      const dealMeta = deals.find(x => x.id === p.deal_id);
-      const ecpaGoal = p.monthly_ecpa != null && p.monthly_ecpa > 0 ? p.monthly_ecpa : (dealMeta?.ecpa_goal || 0);
-      // Conv-needed live-derives as the operator types (budget or eCPA):
-      // ⌈effective budget ÷ effective eCPA⌉, falling back to the saved value.
-      const av = parseFloat(buf.ecpa);
+      const av = parseFloat(buf.ecpa); const pv = parseFloat(buf.paid ?? '');
       const effBudget = bv > 0 ? bv : p.target_budget;
-      const effEcpa = av > 0 ? av : ecpaGoal;
-      const liveConvNeeded = effBudget > 0 && effEcpa > 0 ? Math.ceil(effBudget / effEcpa) : p.conversions_needed;
-      const convColor = liveConvNeeded > 0 && p.mtd_conversions >= liveConvNeeded
+      const effEcpm = mv > 0 ? mv : p.ecpm;
+      const effEcpa = av > 0 ? av : p.ecpa;
+      const target = effBudget > 0 && effEcpm > 0 && (bv > 0 || mv > 0)
+        ? Math.ceil((effBudget / effEcpm) * 1000) : p.target_volume;
+      const sent = p.mtd_sent;
+      const remaining = Math.max(target - sent, 0);
+      const reqDaily = daysLeft > 0 ? remaining / daysLeft : 0;
+      const projected = sent + Math.round(p.rate_3d * daysAfterToday);
+      const projPct = target > 0 ? projected / target : 0;
+      const over = target > 0 && sent >= target;
+      const pctSent = target > 0 ? sent / target : 0;
+      const convNeeded = effBudget > 0 && effEcpa > 0 ? Math.ceil(effBudget / effEcpa) : 0;
+      let revenue = p.revenue; let basis = p.revenue_basis;
+      if (buf.paid !== undefined && buf.paid.trim() !== '' && pv > 0) { revenue = pv; basis = 'paid'; }
+      else if (basis !== 'paid' && p.mtd_conversions > 0 && effEcpa > 0) { revenue = p.mtd_conversions * effEcpa; basis = 'model'; }
+      const earned = sent > 0 ? (revenue / sent) * 1000 : 0;
+      const projRevenue = sent > 0 ? revenue * (projected / sent) : 0;
+      const projConv = sent > 0 ? Math.round(p.mtd_conversions * (projected / sent)) : 0;
+      const budgetEcpm = projected > 0 && effBudget > 0 ? (effBudget / projected) * 1000 : 0;
+      const convColor = convNeeded > 0 && p.mtd_conversions >= convNeeded
         ? C.green : p.mtd_conversions > 0 ? C.amber : C.muted;
+      const band = paceBandColor(projPct, over);
       return (
         <tr key={p.deal_id}>
           <td style={tdStyle}>
             <div style={{ color: C.heading }}>{p.name}</div>
             {p.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{p.offer_name}</div>}
           </td>
-          <td style={tdStyle}><input type="number" style={numInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder="$" /></td>
-          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder="eCPM" /></td>
-          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder="eCPA" /></td>
+          <td style={tdStyle}><input type="number" style={numInput} value={buf.budget} onChange={e => set('budget', e.target.value)} placeholder={p.target_budget > 0 ? String(p.target_budget) : '$'} /></td>
+          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpm} onChange={e => set('ecpm', e.target.value)} placeholder={p.ecpm > 0 ? String(p.ecpm) : 'eCPM'} /></td>
+          <td style={tdStyle}><input type="number" step="0.01" style={numInput} value={buf.ecpa} onChange={e => set('ecpa', e.target.value)} placeholder={p.ecpa > 0 ? String(p.ecpa) : 'eCPA'} /></td>
           <td style={tdStyle}>
-            <span style={{ color: C.heading }} title="budget ÷ eCPM × 1,000">
-              {liveTarget > 0 ? fmtInt(liveTarget) : p.target_volume > 0 ? fmtInt(p.target_volume) : '—'}
-            </span>
-            {liveTarget === 0 && p.target_source === 'deal' && (
+            <input type="number" step="0.01" style={numInput} value={buf.paid ?? ''} onChange={e => set('paid', e.target.value)}
+              placeholder="$ paid" title="Paid to date this month by the advertiser. When set it is the month's revenue (replaces conversions × eCPA)." />
+          </td>
+          <td style={tdStyle}>
+            <span style={{ color: C.heading }} title="budget ÷ eCPM × 1,000">{target > 0 ? fmtInt(target) : '—'}</span>
+            {!dirty && p.target_source === 'deal' && (
               <span style={{ fontSize: 10, color: C.amber }} title="No monthly budget saved — pacing against the deal's lifetime plan. Enter a budget + eCPM and Save to pin this month."> deal plan</span>
             )}
+            {dirty && <span style={{ fontSize: 10, color: C.amber }}> unsaved</span>}
           </td>
           <td style={tdStyle}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -1553,7 +1596,14 @@ export const CpmPlanner: React.FC = () => {
                 }}>
                 {busy ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
               </button>
-              {p.has_monthly_target && (
+              {dirty && !busy && (
+                <button onClick={() => setTargetEdits(prev => { const n = { ...prev }; delete n[key]; return n; })}
+                  title="Discard what-if edits"
+                  style={{ padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12, cursor: 'pointer', background: 'transparent', color: C.muted }}>
+                  <FontAwesomeIcon icon={faTimes} />
+                </button>
+              )}
+              {p.has_monthly_target && !dirty && (
                 <button onClick={() => deleteTarget(p.deal_id, month)} disabled={busy}
                   title="Delete this month's target"
                   style={{ padding: '5px 9px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12, cursor: 'pointer', background: 'transparent', color: C.red }}>
@@ -1564,56 +1614,63 @@ export const CpmPlanner: React.FC = () => {
           </td>
           <td style={tdStyle}>
             <div style={{ minWidth: 130 }}>
-              {p.target_volume > 0 && (
+              {target > 0 && (
                 <div style={{ height: 7, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
-                  <div style={{ width: `${pct}%`, height: '100%', borderRadius: 4, background: paceBandColor(p.projected_pct, p.over) }} />
+                  <div style={{ width: `${Math.min(pctSent * 100, 100)}%`, height: '100%', borderRadius: 4, background: band }} />
                 </div>
               )}
-              <span style={{ color: C.heading }}>{fmtInt(p.mtd_delivered)}</span>
-              {p.target_volume > 0 && (
-                <span style={{ fontSize: 11, color: p.over ? C.indigo : C.muted }}>
-                  {' '}({((p.mtd_delivered / p.target_volume) * 100).toFixed(0)}%)
-                </span>
-              )}
+              <span style={{ color: C.heading, fontWeight: 600 }}>{fmtInt(sent)}</span>
+              {target > 0 && <span style={{ fontSize: 11, color: over ? C.indigo : C.muted }}> ({(pctSent * 100).toFixed(1)}%)</span>}
+              <div style={{ fontSize: 10, color: C.muted }} title="Campaign delivered_count">{fmtInt(p.mtd_delivered)} delivered</div>
             </div>
           </td>
-          <td style={tdStyle}>{p.required_daily > 0 ? fmtInt(p.required_daily) : '—'}</td>
-          <td style={tdStyle}>{fmtInt(p.rate_3d)}/day</td>
+          <td style={{ ...tdStyle, color: remaining > 0 ? C.amber : C.green }}>{target > 0 ? fmtInt(remaining) : '—'}</td>
+          <td style={tdStyle} title="Recipients on scheduled/in-flight campaigns not yet sent">{p.booked > 0 ? fmtInt(p.booked) : '—'}</td>
+          <td style={tdStyle}>{reqDaily > 0 ? fmtInt(reqDaily) : '—'}</td>
+          <td style={{ ...tdStyle, color: remaining > 0 && p.rate_3d < reqDaily ? C.red : C.heading }}>
+            {fmtInt(p.rate_3d)}/day
+            <div style={{ fontSize: 10, color: C.muted }}>today {fmtInt(p.sent_today)}</div>
+          </td>
           <td style={tdStyle}>
-            <span style={{ color: p.target_volume > 0 ? paceBandColor(p.projected_pct, p.over) : C.muted, fontWeight: 600 }}>
-              {fmtInt(p.projected)}
-            </span>
-            {p.target_volume > 0 && (
+            <span style={{ color: target > 0 ? band : C.muted, fontWeight: 600 }}>{fmtInt(projected)}</span>
+            {target > 0 && (
               <span
-                title={p.over
-                  ? `Month target met on MTD actuals — ${fmtInt(p.over_volume)} delivered past target ≈ ${fmtMoney(p.over_budget_usd)} beyond the committed budget (unbilled) at ${fmtMoney(p.ecpm)} eCPM.`
+                title={over
+                  ? `Month target met on MTD sent — ${fmtInt(sent - target)} past target ≈ ${fmtMoney(((sent - target) / 1000) * effEcpm)} beyond the committed budget at ${fmtMoney(effEcpm)} eCPM.`
                   : 'Projected ÷ month target · ≥90% = ON PACE · 75–90% amber · <75% red · target met = OVER (indigo)'}
                 style={{
                   marginLeft: 8, padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
-                  color: paceBandColor(p.projected_pct, p.over), border: `1px solid ${paceBandColor(p.projected_pct, p.over)}`,
+                  color: band, border: `1px solid ${band}`,
                 }}>
-                {p.over
-                  ? (p.over_volume > 0 ? `OVER +${fmtMoney(p.over_budget_usd)}` : 'MET')
-                  : p.on_pace ? 'ON PACE' : `${Math.round(p.projected_pct * 100)}%`}
+                {over
+                  ? (sent > target ? `OVER +${fmtMoney(((sent - target) / 1000) * effEcpm)}` : 'MET')
+                  : projPct >= ON_PACE_PCT ? 'ON PACE' : `${Math.round(projPct * 100)}%`}
               </span>
             )}
           </td>
-          <td style={tdStyle}>
+          <td style={tdStyle} title={`${fmtInt(p.ef_conversions)} Everflow postbacks on this deal's campaigns · projected ${fmtInt(projConv)} at month-end`}>
             <span style={{ color: convColor, fontWeight: 600 }}>{fmtInt(p.mtd_conversions)}</span>
-            <span style={{ color: C.muted }}> / {liveConvNeeded > 0 ? fmtInt(liveConvNeeded) : '—'}</span>
+            <span style={{ color: C.muted }}> / {convNeeded > 0 ? fmtInt(convNeeded) : '—'}</span>
+            {projConv > 0 && <div style={{ fontSize: 10, color: C.muted }}>→ {fmtInt(projConv)}</div>}
           </td>
           <td style={tdStyle}>
-            {p.mtd_delivered > 0 && p.actual_ecpm > 0 ? (
-              <>
-                <span style={{ color: p.actual_ecpm >= p.ecpm ? C.green : C.red, fontWeight: 600 }}>{fmtMoney(p.actual_ecpm)}</span>
-                <span style={{ color: C.muted, fontSize: 11 }}> vs {fmtMoney(p.ecpm)}</span>
-              </>
-            ) : <span style={{ color: C.muted }}>—</span>}
+            {revenue > 0 ? fmtUsd0(revenue) : <span style={{ color: C.muted }}>—</span>}
+            {basis !== 'none' && (
+              <div style={{ fontSize: 10, color: basis === 'paid' ? C.green : C.muted }}>
+                {basis === 'paid' ? 'paid' : `conv × ${fmtUsd0(effEcpa)}`}
+              </div>
+            )}
           </td>
-          <td style={tdStyle}>
-            {p.actual_ecpa > 0 ? (
-              <span style={{ color: ecpaGoal > 0 && p.actual_ecpa <= ecpaGoal ? C.green : C.amber }}>{fmtMoney(p.actual_ecpa)}</span>
-            ) : <span style={{ color: C.muted }}>—</span>}
+          <td style={tdStyle} title="Revenue ÷ sent × 1,000. At the current cadence this is also the month-end earned eCPM (yield per send held constant).">
+            <span style={{ color: earned >= effEcpm && effEcpm > 0 ? C.green : earned > 0 ? C.amber : C.muted, fontWeight: 700 }}>{fmtEcpm(earned)}</span>
+            {effEcpm > 0 && <span style={{ color: C.muted, fontSize: 11 }}> vs {fmtMoney(effEcpm)}</span>}
+          </td>
+          <td style={tdStyle} title={effBudget > 0 ? `Gap to budget ${fmtUsd0(effBudget - projRevenue)}` : ''}>
+            {projRevenue > 0 ? fmtUsd0(projRevenue) : <span style={{ color: C.muted }}>—</span>}
+            {effBudget > 0 && <div style={{ fontSize: 10, color: projRevenue >= effBudget ? C.green : C.amber }}>of {fmtUsd0(effBudget)}</div>}
+          </td>
+          <td style={{ ...tdStyle, fontWeight: 700 }} title={`${fmtUsd0(effBudget)} ÷ ${fmtInt(projected)} projected × 1,000 — the eCPM if the full budget is paid on the volume mailed at the current cadence`}>
+            {fmtEcpm(budgetEcpm)}
           </td>
           <td style={tdStyle}>
             <span style={{
@@ -1627,17 +1684,18 @@ export const CpmPlanner: React.FC = () => {
       );
     };
 
+    const pf = pacing?.portfolio;
     return (
       <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18, marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 6 }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-              1 · Current-Month Pacing{pacing ? ` — ${monthName}` : ''}
+              1 · Current-Month Pacing &amp; eCPM Model{pacing ? ` — ${monthName}` : ''}
             </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
               {pacing
-                ? `Day ${pacing.day_of_month} of ${pacing.days_in_month} · edit this month's budget/eCPM/eCPA per deal; Required/Day spreads the remaining target over the ${daysLeft} days left (incl. today); Projected = MTD + 3-day rate to month-end.`
-                : 'MTD delivered vs target, at the last-3-day send rate.'}
+                ? `Day ${pacing.day_of_month} of ${pacing.days_in_month} · sent = campaign counters · type a budget / eCPM / eCPA / paid to model it (every column follows), Save to pin the month · Req/Day spreads the remainder over ${daysLeft} days (incl. today) · Projected = sent + 3-day rate to month-end · revenue = paid if entered, else conversions × eCPA.`
+                : 'MTD sent vs target, at the last-3-day send rate.'}
             </div>
           </div>
           <button onClick={loadPacing} disabled={pacingLoading}
@@ -1649,7 +1707,7 @@ export const CpmPlanner: React.FC = () => {
         {pacingError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{pacingError}</div>}
         {monthsError && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{monthsError}</div>}
 
-        {!pacing ? (
+        {!pacing || !pf ? (
           <div style={{ padding: 24, textAlign: 'center', color: C.muted }}>
             {pacingLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'No pacing data.'}
           </div>
@@ -1660,17 +1718,17 @@ export const CpmPlanner: React.FC = () => {
         ) : (
           <>
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
-              <Stat label="Month target" value={pacing.portfolio.target_volume > 0 ? fmtInt(pacing.portfolio.target_volume) : '—'} />
-              <Stat label="MTD delivered" value={fmtInt(pacing.portfolio.mtd_delivered)} />
-              <Stat label={`Required / day (${daysLeft}d left)`} value={fmtInt(pacing.portfolio.required_daily)} />
-              <Stat
-                label="Projected month-end"
-                value={fmtInt(pacing.portfolio.projected)}
-                color={pacing.portfolio.target_volume > 0
-                  ? paceBandColor(pacing.portfolio.projected / pacing.portfolio.target_volume)
-                  : C.muted}
-              />
-              <Stat label="MTD conversions" value={fmtInt(pacing.portfolio.mtd_conversions)} />
+              <Stat label="Month target" value={pf.target_volume > 0 ? fmtInt(pf.target_volume) : '—'} />
+              <Stat label="MTD sent" value={fmtInt(pf.mtd_sent)}
+                color={pf.target_volume > 0 ? paceBandColor(pf.projected / pf.target_volume) : C.heading} />
+              <Stat label="Remaining" value={fmtInt(Math.max(pf.target_volume - pf.mtd_sent, 0))} />
+              <Stat label="Booked (not yet sent)" value={fmtInt(pf.booked)} />
+              <Stat label={`Required / day (${daysLeft}d left)`} value={fmtInt(pf.required_daily)} />
+              <Stat label="Projected month-end" value={fmtInt(pf.projected)}
+                color={pf.target_volume > 0 ? paceBandColor(pf.projected / pf.target_volume) : C.muted} />
+              <Stat label="Revenue MTD" value={`${fmtUsd0(pf.revenue)}${pf.mtd_sent > 0 ? ` · ${fmtEcpm((pf.revenue / pf.mtd_sent) * 1000)}` : ''}`} />
+              <Stat label="Forecast revenue" value={`${fmtUsd0(pf.projected_revenue)} of ${fmtUsd0(pf.target_budget)}`} />
+              <Stat label="Budget ÷ projected" value={fmtEcpm(pf.projected > 0 ? (pf.target_budget / pf.projected) * 1000 : 0)} />
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1679,15 +1737,20 @@ export const CpmPlanner: React.FC = () => {
                   <th style={thStyle}>Budget</th>
                   <th style={thStyle}>eCPM Goal</th>
                   <th style={thStyle}>eCPA Goal</th>
+                  <th style={thStyle}>Paid MTD</th>
                   <th style={thStyle}>Month Target</th>
                   <th style={thStyle}></th>
-                  <th style={thStyle}>MTD Delivered</th>
-                  <th style={thStyle} title={`Remaining target ÷ ${daysLeft} days left (incl. today)`}>Req / Day ({daysLeft}d left)</th>
+                  <th style={thStyle}>MTD Sent</th>
+                  <th style={thStyle}>Remaining</th>
+                  <th style={thStyle}>Booked</th>
+                  <th style={thStyle} title={`Remaining target ÷ ${daysLeft} days left (incl. today)`}>Req / Day ({daysLeft}d)</th>
                   <th style={thStyle}>3-Day Rate</th>
                   <th style={thStyle}>Projected</th>
-                  <th style={thStyle}>Conv</th>
-                  <th style={thStyle}>Actual eCPM</th>
-                  <th style={thStyle}>eCPA Actual</th>
+                  <th style={thStyle}>Conv / Needed</th>
+                  <th style={thStyle}>Revenue MTD</th>
+                  <th style={thStyle}>Earned eCPM</th>
+                  <th style={thStyle}>Forecast Revenue</th>
+                  <th style={thStyle}>Budget ÷ Projected</th>
                   <th style={thStyle}>Status</th>
                 </tr></thead>
                 <tbody>{pacing.deals.map(pacingRow)}</tbody>
@@ -3079,10 +3142,6 @@ export const CpmPlanner: React.FC = () => {
           {error}
         </div>
       )}
-
-      {/* CPM mailed vs goal — the month's volume commitments, from campaign
-          counters (operator 2026-10-17). Topmost: it is the question asked most. */}
-      <CpmMailedTracker />
 
       {/* 0 · Platform capacity — topmost dashboard (operator 2026-07-01) */}
       <div style={{ marginBottom: 6 }}>

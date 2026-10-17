@@ -326,6 +326,11 @@ func (h *CpmPlannerHandlers) ensureTables() {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cpm_deal_monthly_targets_org_month
 			ON mailing_cpm_deal_monthly_targets(organization_id, month)`,
+		// Paid-to-date for the month (operator 2026-10-17: "Liberty paid another
+		// 8K for month-to-date performance"). When set it is the month's revenue
+		// in the eCPM model, replacing conversions × eCPA. Nullable, no default
+		// ⇒ metadata-only ALTER.
+		`ALTER TABLE mailing_cpm_deal_monthly_targets ADD COLUMN IF NOT EXISTS paid_revenue NUMERIC(12,2)`,
 		// Supports the stamped-offer_key attribution branch (dealCampaignSetSubquery
 		// branch 4 / dealCampaignMapCTE) — 146k campaigns carry offer_key after the
 		// 2026-07-07 backfill. Partial: NULL rows (no offer identity) excluded.
@@ -2100,6 +2105,7 @@ type cpmMonthlyTargetInput struct {
 	Volume *int64   `json:"volume"`
 	Ecpm   *float64 `json:"ecpm"`
 	Ecpa   *float64 `json:"ecpa"`
+	Paid   *float64 `json:"paid_revenue"`
 	Notes  *string  `json:"notes"`
 }
 
@@ -2258,22 +2264,23 @@ func (h *CpmPlannerHandlers) loadAllDealMonthlyActuals(orgID, windowStart string
 		}
 	}
 
-	// Delivered — read from the per-day rollup, NOT a live month scan.
+	// Delivered — the campaigns' own delivered_count, by the Denver month each
+	// campaign started, over the unified deal→campaign map.
 	//
-	// This used to scan a whole month of mailing_tracking_events joined to the
-	// deal map on every /pacing and /months request. Past the 30s
-	// statement_timeout the scan is cancelled and the `scan` helper below just
-	// logs and returns, leaving this map EMPTY — so the handler reported
-	// mtd_delivered = 0 as though it were fact. Observed repeatedly on prod
-	// 2026-08-01 ("[CpmPlanner] monthly delivered: pq: canceling statement due
-	// to statement timeout") and reported by the operator as "Mailed MTD is not
-	// updating". A silent zero on a budget-pacing screen is worse than an
-	// error: it reads as "we mailed nothing" and invites over-sending to catch
-	// up. The rollup makes this a cheap indexed SUM that cannot time out.
-	scan("delivered", `
-		SELECT deal_id::text, to_char(day, 'YYYY-MM') AS ym, SUM(delivered)
-		FROM mailing_cpm_deal_day_rollup
-		WHERE organization_id = $1 AND day >= $2::date
+	// History: a live month scan of mailing_tracking_events timed out (silent
+	// zero, 2026-08-01), so it moved to mailing_cpm_deal_day_rollup — which
+	// counts PG 'delivered' webhook confirmations once per closed day and so
+	// under-counted by a different amount every month (brain #13018). Campaign
+	// counters are what the send worker wrote; one indexed pass, no events scan.
+	scan("delivered", dealCampaignMapCTE+`
+		SELECT dm.deal_id::text,
+		       to_char(COALESCE(c.started_at, c.scheduled_at) AT TIME ZONE 'America/Denver', 'YYYY-MM') AS ym,
+		       COALESCE(SUM(c.delivered_count), 0)
+		FROM dm
+		JOIN mailing_campaigns c ON c.id = dm.campaign_id
+		WHERE c.organization_id = $1
+		  AND c.status NOT IN ('draft','cancelled','deleted','failed')
+		  AND COALESCE(c.started_at, c.scheduled_at) >= ($2::date::timestamp AT TIME ZONE 'America/Denver')
 		GROUP BY 1, 2`,
 		func(a *cpmDealMonthActuals, ym string, n int64) { a.delivered[ym] = n },
 		orgID, windowStart)
@@ -2509,7 +2516,14 @@ func (h *CpmPlannerHandlers) HandleUpsertMonthlyTarget(w http.ResponseWriter, r 
 	if in.Notes != nil {
 		notes = strings.TrimSpace(*in.Notes)
 	}
-	var budget, volume, ecpm, ecpa interface{}
+	var budget, volume, ecpm, ecpa, paid interface{}
+	if in.Paid != nil {
+		if *in.Paid < 0 {
+			respondError(w, http.StatusBadRequest, "paid_revenue must be >= 0")
+			return
+		}
+		paid = *in.Paid
+	}
 	if in.Budget != nil {
 		budget = *in.Budget
 	}
@@ -2524,16 +2538,17 @@ func (h *CpmPlannerHandlers) HandleUpsertMonthlyTarget(w http.ResponseWriter, r 
 	}
 	if _, err := h.db.Exec(`
 		INSERT INTO mailing_cpm_deal_monthly_targets
-			(organization_id, deal_id, month, target_budget, target_volume, target_ecpm, target_ecpa, notes)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, ''))
+			(organization_id, deal_id, month, target_budget, target_volume, target_ecpm, target_ecpa, notes, paid_revenue)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, ''), $9)
 		ON CONFLICT (deal_id, month) DO UPDATE SET
 			target_budget = COALESCE(EXCLUDED.target_budget, mailing_cpm_deal_monthly_targets.target_budget),
 			target_volume = COALESCE(EXCLUDED.target_volume, mailing_cpm_deal_monthly_targets.target_volume),
 			target_ecpm   = COALESCE(EXCLUDED.target_ecpm,   mailing_cpm_deal_monthly_targets.target_ecpm),
 			target_ecpa   = COALESCE(EXCLUDED.target_ecpa,   mailing_cpm_deal_monthly_targets.target_ecpa),
 			notes         = COALESCE($8, mailing_cpm_deal_monthly_targets.notes),
+			paid_revenue  = COALESCE(EXCLUDED.paid_revenue,  mailing_cpm_deal_monthly_targets.paid_revenue),
 			updated_at    = NOW()`,
-		orgID, dealID, month, budget, volume, ecpm, ecpa, notes); err != nil {
+		orgID, dealID, month, budget, volume, ecpm, ecpa, notes, paid); err != nil {
 		respondError(w, http.StatusInternalServerError, fmt.Sprintf("upsert target: %v", err))
 		return
 	}
@@ -2783,6 +2798,23 @@ type cpmPacingDeal struct {
 	Over          bool    `json:"over"`            // mtd_delivered ≥ target_volume (target > 0)
 	OverVolume    int64   `json:"over_volume"`     // delivered past the month target
 	OverBudgetUSD float64 `json:"over_budget_usd"` // over_volume ÷ 1000 × effective eCPM
+
+	// Mailed-to-goal + eCPM model (operator 2026-10-17). Volume is the send
+	// worker's campaign counters (cpmMailedSQL), not tracking events: pacing,
+	// required/day, projection and OVER all run on SENT. MtdDelivered is the
+	// campaigns' delivered_count, shown alongside.
+	MtdSent       int64    `json:"mtd_sent"`
+	Booked        int64    `json:"booked"` // recipients on in-flight/scheduled campaigns not yet sent
+	SentToday     int64    `json:"sent_today"`
+	MonthlyPaid   *float64 `json:"monthly_paid"` // operator-entered paid-to-date for the month (null = unset)
+	EfConversions int64    `json:"ef_conversions"`
+	Ecpa          float64  `json:"ecpa"` // effective eCPA (monthly target, else deal goal, else offer payout)
+	Revenue       float64  `json:"revenue"`
+	RevenueBasis  string   `json:"revenue_basis"` // paid | model | none
+	ProjConv      int64    `json:"projected_conversions"`
+	ProjRevenue   float64  `json:"projected_revenue"`
+	BudgetEcpmAtProj float64 `json:"budget_ecpm_at_projected"` // month budget ÷ projected sent × 1000
+	RevenueGap    float64  `json:"revenue_gap"`              // month budget − projected revenue
 }
 
 // cpmOnPaceThreshold: a month-end projection at or above this share of the
@@ -2836,11 +2868,17 @@ func cpmPacingOver(target, mtd int64, ecpm float64) (over bool, overVolume int64
 
 // HandleCurrentMonthPacing GET /cpm-planner/pacing
 // Per-deal pacing for the CURRENT Denver month: the month's target (monthly
-// target row if set, else derived from the deal's own budget/eCPM plan), MTD
-// actuals, the trailing-3-day delivered rate, and the month-end projection
-// (operator 2026-07-01: pacing reads the current month; capacity/sending reads
-// the last 3 days). Month-scoped events scan — serve on demand (mount /
-// explicit refresh / after a target save), never on a poll timer (QA C4).
+// target row if set, else derived from the deal's own plan), MTD SENT from
+// campaign counters, the trailing-3-day sent rate, the month-end projection,
+// and the eCPM model (operator 2026-10-17): revenue (paid-to-date if entered,
+// else conversions × eCPA), earned eCPM, projected revenue at the current
+// cadence, and month budget ÷ projected volume.
+//
+// Volume + conversions come from ONE pass over the deal→campaign map
+// (cpmMailedSQL). The old source — mailing_cpm_deal_day_rollup, built from PG
+// 'delivered' webhook confirmations and computed once per closed day — under-
+// counted by a different amount every month (Empire Today 10-17: 259k vs 766k
+// sent; brain #13018). Served on demand only (mount / refresh / target save).
 func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *http.Request) {
 	orgID := getOrgID(r)
 
@@ -2851,9 +2889,11 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 		return
 	}
 	curMonth := time.Date(curDate.Year(), curDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+	nextMonth := curMonth.AddDate(0, 1, 0)
 	dayOfMonth := curDate.Day()
-	daysInMonth := curMonth.AddDate(0, 1, -1).Day()
+	daysInMonth := nextMonth.AddDate(0, 0, -1).Day()
 	curYM := curMonth.Format("2006-01")
+	monthArgs := []interface{}{orgID, curMonth.Format("2006-01-02"), nextMonth.Format("2006-01-02")}
 
 	deals, payouts, err := h.loadDealsLite(orgID)
 	if err != nil {
@@ -2863,13 +2903,13 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 
 	// Current month's targets.
 	type tgt struct {
-		budget, ecpm, ecpa sql.NullFloat64
-		volume             sql.NullInt64
-		notes              string
+		budget, ecpm, ecpa, paid sql.NullFloat64
+		volume                   sql.NullInt64
+		notes                    string
 	}
 	targets := map[string]tgt{}
 	if rows, err := h.db.Query(`
-		SELECT deal_id::text, target_budget, target_volume, target_ecpm, target_ecpa, COALESCE(notes, '')
+		SELECT deal_id::text, target_budget, target_volume, target_ecpm, target_ecpa, paid_revenue, COALESCE(notes, '')
 		FROM mailing_cpm_deal_monthly_targets
 		WHERE organization_id = $1 AND month = $2`, orgID, curMonth); err == nil {
 		func() {
@@ -2877,7 +2917,7 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 			for rows.Next() {
 				var id string
 				var t tgt
-				if err := rows.Scan(&id, &t.budget, &t.volume, &t.ecpm, &t.ecpa, &t.notes); err == nil {
+				if err := rows.Scan(&id, &t.budget, &t.volume, &t.ecpm, &t.ecpa, &t.paid, &t.notes); err == nil {
 					targets[id] = t
 				}
 			}
@@ -2886,88 +2926,96 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 		log.Printf("[CpmPlanner] pacing targets: %v", err)
 	}
 
-	// MTD actuals — the shared monthly loader scoped to just this month.
-	actuals := h.loadAllDealMonthlyActuals(orgID, curMonth.Format("2006-01-02"))
-
-	// MTD manual-conversion revenue components (per deal): rows carrying real
-	// revenue sum as-is; revenue-less rows are counted so they can be valued at
-	// the deal's basis (offer payout, else eCPA goal) — the same effective-
-	// revenue rule loadProgress applies (":403"). UTC month like the loader.
-	type manualRev struct {
-		posRevenue float64
-		noRevCount int64
+	// Volume per deal × Denver day + Everflow conversions — fail LOUD: a silent
+	// zero on this screen reads as "we mailed nothing" and invites over-sending.
+	type agg struct {
+		sent, delivered, booked int64
+		daily                   map[string]int64
 	}
-	manualRevs := map[string]manualRev{}
-	if rows, err := h.db.Query(`
-		SELECT deal_id::text,
-		       COALESCE(SUM(CASE WHEN revenue > 0 THEN revenue ELSE 0 END), 0),
-		       COALESCE(SUM(CASE WHEN revenue <= 0 THEN count ELSE 0 END), 0)
-		FROM mailing_cpm_manual_conversions
-		WHERE organization_id = $1
-		  AND (converted_at AT TIME ZONE 'UTC')::date >= $2::date
-		GROUP BY 1`, orgID, curMonth.Format("2006-01-02")); err == nil {
+	actuals := map[string]*agg{}
+	efConv := map[string]int64{}
+	rows, err := h.db.Query(cpmMailedSQL(), monthArgs...)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("mailed volume: %v", err))
+		return
+	}
+	for rows.Next() {
+		var kind, id, day string
+		var sent, dlv, camps, booked int64
+		if err := rows.Scan(&kind, &id, &day, &sent, &dlv, &camps, &booked); err != nil {
+			rows.Close()
+			respondError(w, http.StatusInternalServerError, fmt.Sprintf("mailed scan: %v", err))
+			return
+		}
+		if kind == "c" {
+			efConv[id] = sent
+			continue
+		}
+		a := actuals[id]
+		if a == nil {
+			a = &agg{daily: map[string]int64{}}
+			actuals[id] = a
+		}
+		a.sent += sent
+		a.delivered += dlv
+		a.booked += booked
+		a.daily[day] += sent
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("mailed rows: %v", err))
+		return
+	}
+
+	// Manual conversions (count + revenue-bearing rows), UTC month like every
+	// other CPM month read.
+	type manual struct {
+		conv int64
+		paid float64
+	}
+	manuals := map[string]manual{}
+	if mrows, err := h.db.Query(cpmMailedManualSQL, monthArgs...); err == nil {
 		func() {
-			defer rows.Close()
-			for rows.Next() {
+			defer mrows.Close()
+			for mrows.Next() {
 				var id string
-				var mr manualRev
-				if err := rows.Scan(&id, &mr.posRevenue, &mr.noRevCount); err == nil {
-					manualRevs[id] = mr
+				var m manual
+				if err := mrows.Scan(&id, &m.conv, &m.paid); err == nil {
+					manuals[id] = m
 				}
 			}
 		}()
 	} else {
-		log.Printf("[CpmPlanner] pacing manual revenue: %v", err)
-	}
-
-	// Trailing 3-day delivered per deal (last 3 COMPLETE Denver days — today's
-	// partial day would understate the rate). Same pruning pattern as the
-	// monthly loader: bare event_at bound for partitions, Denver ::date edges.
-	// Same rollup, same reason: this scan was also being cancelled on prod
-	// ("[CpmPlanner] pacing 3d rate: pq: canceling statement due to statement
-	// timeout"), which zeroed the trailing rate and therefore the month-end
-	// projection — a deal that was pacing fine rendered as projecting nothing.
-	rate3d := map[string]float64{}
-	if rows, err := h.db.Query(`
-		SELECT deal_id::text, SUM(delivered)
-		FROM mailing_cpm_deal_day_rollup
-		WHERE organization_id = $1 AND day >= $2::date AND day < $3::date
-		GROUP BY 1`,
-		orgID, curDate.AddDate(0, 0, -3).Format("2006-01-02"), curDate.Format("2006-01-02")); err == nil {
-		func() {
-			defer rows.Close()
-			for rows.Next() {
-				var id string
-				var n int64
-				if err := rows.Scan(&id, &n); err == nil {
-					rate3d[id] = float64(n) / 3.0
-				}
-			}
-		}()
-	} else {
-		log.Printf("[CpmPlanner] pacing 3d rate: %v", err)
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("manual conversions: %v", err))
+		return
 	}
 
 	out := []cpmPacingDeal{}
 	var pf struct {
 		TargetVolume   int64   `json:"target_volume"`
+		TargetBudget   float64 `json:"target_budget"`
 		MtdDelivered   int64   `json:"mtd_delivered"`
+		MtdSent        int64   `json:"mtd_sent"`
+		Booked         int64   `json:"booked"`
 		MtdConversions int64   `json:"mtd_conversions"`
+		Revenue        float64 `json:"revenue"`
+		ProjRevenue    float64 `json:"projected_revenue"`
 		Projected      int64   `json:"projected"`
 		RequiredDaily  float64 `json:"required_daily"`
 	}
 	for i := range deals {
 		d := &deals[i]
-		var mtd, tracked, manual int64
-		if a := actuals[d.ID]; a != nil {
-			mtd, tracked, manual = a.delivered[curYM], a.tracked[curYM], a.manual[curYM]
+		a := actuals[d.ID]
+		if a == nil {
+			a = &agg{daily: map[string]int64{}}
 		}
+		mn := manuals[d.ID]
 
-		ecpm, ecpaGoal := d.EcpmGoal, d.EcpaGoal
+		ecpm, ecpa := d.EcpmGoal, d.EcpaGoal
 		targetVolume, targetBudget := int64(0), 0.0
 		source := "none"
 		var hasTgt bool
-		var mBudget, mEcpm, mEcpa *float64
+		var mBudget, mEcpm, mEcpa, mPaid *float64
 		var mNotes string
 		if t, ok := targets[d.ID]; ok {
 			hasTgt = true
@@ -2987,8 +3035,12 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 				v := t.ecpa.Float64
 				mEcpa = &v
 				if v > 0 {
-					ecpaGoal = v
+					ecpa = v
 				}
+			}
+			if t.paid.Valid {
+				v := t.paid.Float64
+				mPaid = &v
 			}
 			switch {
 			case t.volume.Valid && t.volume.Int64 > 0:
@@ -3004,67 +3056,63 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 				targetVolume, targetBudget, source = planned, d.Budget, "deal"
 			}
 		}
+		if ecpa <= 0 {
+			ecpa = payouts[d.ID] // last resort: the offer's own payout
+		}
 
-		conv := cpmMonthlyConversions(tracked, manual)
-		if targetVolume == 0 && mtd == 0 && conv == 0 {
+		conv := efConv[d.ID] + mn.conv
+		if targetVolume == 0 && a.sent == 0 && a.booked == 0 && conv == 0 && mPaid == nil {
 			continue // nothing to pace, nothing sent — skip the row
 		}
 
-		// Month-scoped strong metrics, same definitions as the deal card:
-		// revenue basis = offer payout, else eCPA goal (loadProgress ":386").
-		basis := payouts[d.ID]
-		if basis == 0 && ecpaGoal > 0 {
-			basis = ecpaGoal
-		}
-		mr := manualRevs[d.ID]
-		mtdRevenue := float64(tracked)*basis + mr.posRevenue + float64(mr.noRevCount)*basis
-		var actualEcpm float64
-		if mtd > 0 {
-			actualEcpm = mtdRevenue / float64(mtd) * 1000
-		}
-		var convNeeded int64
-		if targetBudget > 0 && ecpaGoal > 0 {
-			convNeeded = int64(math.Ceil(targetBudget / ecpaGoal))
-		}
+		rate3d := cpmMailedAvg3d(a.daily, curDate)
+		requiredDaily, projected, projectedPct, onPace := cpmPacingMath(targetVolume, a.sent, rate3d, dayOfMonth, daysInMonth)
+		over, overVolume, overUSD := cpmPacingOver(targetVolume, a.sent, ecpm)
 
-		requiredDaily, projected, projectedPct, onPace := cpmPacingMath(targetVolume, mtd, rate3d[d.ID], dayOfMonth, daysInMonth)
-		over, overVolume, overUSD := cpmPacingOver(targetVolume, mtd, ecpm)
+		// Revenue precedence: the month's operator-entered paid-to-date, else
+		// revenue-bearing manual rows, else conversions × eCPA.
+		paid := mn.paid
+		if mPaid != nil {
+			paid = *mPaid
+		}
+		model := cpmMailedModelFor(targetBudget, ecpa, a.sent, projected, efConv[d.ID], mn.conv, paid)
+
 		out = append(out, cpmPacingDeal{
 			DealID: d.ID, Name: d.Name, OfferName: d.OfferName, EverflowOfferID: d.EverflowOfferID,
 			Status: d.Status, TargetVolume: targetVolume, TargetBudget: targetBudget, TargetSource: source,
 			HasMonthlyTarget: hasTgt, MonthlyBudget: mBudget, MonthlyEcpm: mEcpm, MonthlyEcpa: mEcpa, MonthlyNotes: mNotes,
-			Ecpm: ecpm, MtdDelivered: mtd, MtdConversions: conv,
-			ConversionsNeeded: convNeeded, ActualEcpm: actualEcpm, ActualEcpa: cpmActualEcpa(targetBudget, conv),
-			Rate3d: rate3d[d.ID], RequiredDaily: requiredDaily,
+			MonthlyPaid: mPaid,
+			Ecpm: ecpm, MtdDelivered: a.delivered, MtdConversions: conv,
+			ConversionsNeeded: model.ConvNeeded, ActualEcpm: model.EarnedEcpm, ActualEcpa: cpmActualEcpa(targetBudget, conv),
+			Rate3d: rate3d, RequiredDaily: requiredDaily,
 			Projected: projected, ProjectedPct: projectedPct, OnPace: onPace,
 			Over: over, OverVolume: overVolume, OverBudgetUSD: overUSD,
+			MtdSent: a.sent, Booked: a.booked, SentToday: a.daily[curDate.Format("2006-01-02")],
+			EfConversions: efConv[d.ID], Ecpa: ecpa,
+			Revenue: model.Revenue, RevenueBasis: model.RevenueBasis,
+			ProjConv: model.ProjConversions, ProjRevenue: model.ProjRevenue,
+			BudgetEcpmAtProj: model.BudgetEcpmAtProj, RevenueGap: model.RevenueGap,
 		})
 		pf.TargetVolume += targetVolume
-		pf.MtdDelivered += mtd
+		pf.TargetBudget += targetBudget
+		pf.MtdDelivered += a.delivered
+		pf.MtdSent += a.sent
+		pf.Booked += a.booked
 		pf.MtdConversions += conv
+		pf.Revenue += model.Revenue
+		pf.ProjRevenue += model.ProjRevenue
 		pf.Projected += projected
 		pf.RequiredDaily += requiredDaily
 	}
-
-	// Rollup coverage for the month so far. MTD delivered is only as complete as
-	// the days that have been rolled up; without this the screen cannot tell
-	// "we mailed less" from "the rollup has not caught up", which is exactly the
-	// ambiguity that made the old silent-zero so hard to spot.
-	var daysRolled int
-	if err := h.db.QueryRow(`
-		SELECT COUNT(DISTINCT day) FROM mailing_cpm_deal_day_rollup
-		WHERE organization_id = $1 AND day >= $2::date`,
-		orgID, curMonth.Format("2006-01-02")).Scan(&daysRolled); err != nil {
-		log.Printf("[CpmPlanner] pacing rollup coverage: %v", err)
-	}
+	// Biggest commitment first.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TargetBudget > out[j].TargetBudget })
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"month":          curYM,
-		"day_of_month":   dayOfMonth,
-		"days_in_month":  daysInMonth,
-		"deals":          out,
-		"portfolio":      pf,
-		"days_rolled":    daysRolled,
-		"volume_partial": daysRolled < dayOfMonth,
+		"month":         curYM,
+		"day_of_month":  dayOfMonth,
+		"days_in_month": daysInMonth,
+		"deals":         out,
+		"portfolio":     pf,
+		"source":        "campaign counters (sent_count) + Everflow postbacks on the deal's campaigns",
 	})
 }
