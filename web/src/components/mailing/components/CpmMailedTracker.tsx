@@ -29,17 +29,25 @@ interface MailedDeal {
   sent: number; delivered: number; campaigns: number; booked: number; remaining: number;
   pct_sent: number; earned_usd: number; sent_today: number; avg_3d: number; days_left: number;
   required_daily: number; projected: number; projected_pct: number; on_pace: boolean; last_sent_on: string;
+  // eCPM model (cpmMailedModel in cpm_mailed.go)
+  ecpa: number; conversions_needed: number; ef_conversions: number; conversions: number;
+  revenue: number; revenue_basis: 'paid' | 'model' | 'none'; earned_ecpm: number; actual_ecpa: number;
+  projected_conversions: number; projected_revenue: number; budget_ecpm_at_projected: number; revenue_gap: number;
   days: MailedDay[];
 }
 interface MailedResp {
   month: string; is_current: boolean; today: string; day_of_month: number; days_in_month: number;
   source: string; deals: MailedDeal[];
-  portfolio: { target_volume: number; sent: number; delivered: number; remaining: number; booked: number; earned_usd: number; target_budget: number };
+  portfolio: {
+    target_volume: number; sent: number; delivered: number; remaining: number; booked: number; earned_usd: number;
+    target_budget: number; revenue: number; projected_revenue: number; projected: number;
+  };
 }
 
 const fmtInt = (n: number) => Math.round(n).toLocaleString('en-US');
 const fmtM = (n: number) => (Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : Math.abs(n) >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : fmtInt(n));
-const fmtUSD = (n: number) => '$' + Math.round(n).toLocaleString('en-US');
+const fmtUSD = (n: number) => (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('en-US');
+const fmtEcpm = (n: number) => (n > 0 ? `$${n.toFixed(2)}` : '—');
 const pctColor = (p: number) => (p >= 0.9 ? C.green : p >= 0.75 ? C.amber : C.red);
 
 const th: React.CSSProperties = {
@@ -63,6 +71,8 @@ export const CpmMailedTracker: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // What-if eCPM per deal (client-side only): goal volume = budget ÷ eCPM × 1000.
+  const [whatIf, setWhatIf] = useState<Record<string, string>>({});
 
   const load = useCallback(async (m: string) => {
     setLoading(true);
@@ -120,7 +130,11 @@ export const CpmMailedTracker: React.FC = () => {
           <Kpi label="Sent" value={fmtInt(pf.sent)} color={pctColor(pfPct)} sub={`${(pfPct * 100).toFixed(1)}%`} />
           <Kpi label="Remaining" value={fmtInt(pf.remaining)} color={pf.remaining > 0 ? C.amber : C.green} />
           <Kpi label="Booked (not yet sent)" value={fmtInt(pf.booked)} />
-          <Kpi label="Earned at eCPM" value={fmtUSD(pf.earned_usd)} sub={`of ${fmtUSD(pf.target_budget)}`} />
+          <Kpi label="Revenue MTD" value={fmtUSD(pf.revenue)} sub={pf.sent > 0 ? `${fmtEcpm(pf.revenue / pf.sent * 1000)} eCPM` : undefined} />
+          {data?.is_current && (
+            <Kpi label="Forecast revenue" value={fmtUSD(pf.projected_revenue)}
+              sub={`of ${fmtUSD(pf.target_budget)} · budget ÷ proj. vol ${fmtEcpm(pf.projected > 0 ? pf.target_budget / pf.projected * 1000 : 0)}`} />
+          )}
         </div>
       )}
 
@@ -226,6 +240,85 @@ export const CpmMailedTracker: React.FC = () => {
             </tbody>
           </table>
         </div>
+      )}
+
+      {data && data.deals.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading, margin: '18px 0 3px' }}>
+            eCPM Model {data.is_current ? '& Month-End Forecast (current cadence)' : ''}
+          </div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+            Revenue = paid amount entered as a manual conversion with revenue, else Everflow conversions on the deal's campaigns × eCPA.
+            Forecast holds yield per send constant and projects volume at the 3-day average. "Budget ÷ volume" is the eCPM if the full budget is paid on the volume mailed.
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ ...th, textAlign: 'left' }}>Deal</th>
+                  <th style={th}>eCPA</th>
+                  <th style={th}>Conv needed</th>
+                  <th style={th}>Conv MTD</th>
+                  <th style={th}>Revenue MTD</th>
+                  <th style={th}>Earned eCPM</th>
+                  {data.is_current && <th style={th}>Proj. volume</th>}
+                  {data.is_current && <th style={th}>Proj. conv</th>}
+                  {data.is_current && <th style={th}>Proj. revenue</th>}
+                  <th style={th}>Budget ÷ {data.is_current ? 'proj.' : ''} volume</th>
+                  <th style={th}>Gap to budget</th>
+                  <th style={th}>What-if eCPM</th>
+                  <th style={th}>Volume needed</th>
+                  {data.is_current && <th style={th}>Need / day</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {data.deals.map(d => {
+                  const wi = parseFloat(whatIf[d.deal_id] ?? String(d.ecpm || ''));
+                  const volNeeded = wi > 0 && d.target_budget > 0 ? Math.ceil((d.target_budget / wi) * 1000) : 0;
+                  const remainingAtWi = Math.max(volNeeded - d.sent, 0);
+                  const needDay = d.days_left > 0 ? remainingAtWi / d.days_left : 0;
+                  const vol = data.is_current ? d.projected : d.sent;
+                  return (
+                    <tr key={d.deal_id}>
+                      <td style={{ ...td, textAlign: 'left' }}>{d.name}</td>
+                      <td style={td}>{d.ecpa > 0 ? fmtUSD(d.ecpa) : '—'}</td>
+                      <td style={td}>{d.conversions_needed > 0 ? fmtInt(d.conversions_needed) : '—'}</td>
+                      <td style={td} title={`${d.ef_conversions} Everflow postbacks on the deal's campaigns`}>{fmtInt(d.conversions)}</td>
+                      <td style={td}>
+                        {d.revenue > 0 ? fmtUSD(d.revenue) : '—'}
+                        {d.revenue_basis !== 'none' && (
+                          <span style={{ marginLeft: 6, fontSize: 10, color: d.revenue_basis === 'paid' ? C.green : C.muted }}>
+                            {d.revenue_basis === 'paid' ? 'paid' : 'conv×eCPA'}
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ ...td, fontWeight: 700, color: d.earned_ecpm >= d.ecpm && d.ecpm > 0 ? C.green : d.earned_ecpm > 0 ? C.amber : C.muted }}>
+                        {fmtEcpm(d.earned_ecpm)}
+                      </td>
+                      {data.is_current && <td style={td}>{fmtInt(d.projected)}</td>}
+                      {data.is_current && <td style={td}>{fmtInt(d.projected_conversions)}</td>}
+                      {data.is_current && <td style={td}>{d.projected_revenue > 0 ? fmtUSD(d.projected_revenue) : '—'}</td>}
+                      <td style={{ ...td, fontWeight: 700 }} title={`${fmtUSD(d.target_budget)} ÷ ${fmtInt(vol)} × 1000`}>
+                        {fmtEcpm(d.budget_ecpm_at_projected)}
+                      </td>
+                      <td style={{ ...td, color: d.revenue_gap > 0 ? C.amber : C.green }}>{d.target_budget > 0 ? fmtUSD(d.revenue_gap) : '—'}</td>
+                      <td style={td} onClick={e => e.stopPropagation()}>
+                        $<input
+                          value={whatIf[d.deal_id] ?? String(d.ecpm || '')}
+                          onChange={e => setWhatIf(w => ({ ...w, [d.deal_id]: e.target.value }))}
+                          inputMode="decimal"
+                          style={{ width: 52, marginLeft: 2, padding: '3px 6px', background: 'rgba(10,20,45,0.7)', border: `1px solid ${C.border}`, borderRadius: 4, color: C.heading, fontSize: 12, textAlign: 'right' }}
+                        />
+                      </td>
+                      <td style={td}>{volNeeded > 0 ? fmtInt(volNeeded) : '—'}</td>
+                      {data.is_current && <td style={td}>{volNeeded > 0 ? (remainingAtWi > 0 ? fmtInt(needDay) : 'met') : '—'}</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
