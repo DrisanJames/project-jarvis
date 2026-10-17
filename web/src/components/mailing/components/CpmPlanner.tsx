@@ -364,6 +364,8 @@ interface PacingResp {
 interface NonCpmOffer {
   offer_key: string;
   group_name: string;
+  sent: number;
+  billable_clicks: number;
   delivered: number;
   clickers: number;
   clicks: number;
@@ -379,11 +381,51 @@ interface NonCpmOffer {
   deal_name: string;
   carry_over: boolean;
 }
+// Revenue earned vs budget per offer group-month (cpm_non_cpm_revenue.go).
+interface NonCpmRate { effective_from: string; rate: number }
+interface NonCpmPlan {
+  configured: boolean;
+  payout_model: '' | 'cpl' | 'cpa' | 'cpc';
+  budget: number;
+  paid_revenue: number;
+  notes: string;
+  rates: NonCpmRate[];
+  current_rate: number;
+  sent: number;
+  units: number;
+  unit_label: string;
+  modeled_revenue: number;
+  revenue: number;
+  revenue_basis: 'paid' | 'rate' | 'everflow' | 'unavailable' | 'none';
+  earned_ecpm: number;
+  budget_pct: number;
+  budget_gap: number;
+  avg3d_sent: number;
+  avg3d_units: number;
+  projected_sent: number;
+  projected_revenue: number;
+  projected_ecpm: number;
+  projected_budget_pct: number;
+  projected_gap: number;
+  required_revenue_per_day: number;
+  days?: { day: string; sent: number; units: number; rate: number; revenue: number }[];
+  warnings?: string[];
+}
 interface NonCpmGroup extends NonCpmOffer {
   offers: NonCpmOffer[];
+  plan: NonCpmPlan;
+}
+interface RevEditBuf {
+  group: string;
+  model: 'cpl' | 'cpa' | 'cpc';
+  budget: string;
+  paid: string;
+  notes: string;
+  rates: { effective_from: string; rate: string }[];
 }
 interface NonCpmTotals {
   offers: number;
+  sent: number;
   delivered: number;
   clickers: number;
   clicks: number;
@@ -402,9 +444,7 @@ interface NonCpmResp {
   groups: NonCpmGroup[];
   totals?: { cpm: NonCpmTotals; non_cpm: NonCpmTotals };
   refreshed_at?: string;
-  days_rolled?: number;
   days_expected?: number;
-  volume_partial?: boolean;
   degraded?: string[];
 }
 
@@ -617,6 +657,8 @@ export const CpmPlanner: React.FC = () => {
   const [nonCpmMonth, setNonCpmMonth] = useState<string>(''); // '' = current Denver month
   const [nonCpmShowAll, setNonCpmShowAll] = useState(false);
   const [nonCpmExpanded, setNonCpmExpanded] = useState<Record<string, boolean>>({});
+  const [revEdit, setRevEdit] = useState<RevEditBuf | null>(null);
+  const [revSaving, setRevSaving] = useState(false);
 
   // Overlap guard (incident 2026-08-08). /deals runs the whole-org deal->campaign
   // attribution CTE, which measured 7-9 MINUTES in production — longer than the
@@ -767,6 +809,36 @@ export const CpmPlanner: React.FC = () => {
       await loadNonCpm(nonCpmMonth);
     } catch (e) {
       setNonCpmError(e instanceof Error ? e.message : 'failed to save offer group');
+    }
+  }, [loadNonCpm, nonCpmMonth]);
+
+  // Revenue plan for one offer group-month: budget, payout model, paid-to-date
+  // override and the dated rate schedule (the schedule is not month-scoped).
+  const saveRevenueConfig = useCallback(async (buf: RevEditBuf, month: string) => {
+    setRevSaving(true);
+    try {
+      const res = await apiFetch(`${API}/revenue-config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group_name: buf.group,
+          month,
+          payout_model: buf.model,
+          budget: Number(buf.budget) || 0,
+          paid_revenue: Number(buf.paid) || 0,
+          notes: buf.notes,
+          rates: buf.rates
+            .filter(r => r.effective_from && Number(r.rate) > 0)
+            .map(r => ({ effective_from: r.effective_from, rate: Number(r.rate) })),
+        }),
+      });
+      if (!res.ok) throw new Error(`revenue-config: HTTP ${res.status} ${await res.text()}`);
+      setRevEdit(null);
+      await loadNonCpm(nonCpmMonth);
+    } catch (e) {
+      setNonCpmError(e instanceof Error ? e.message : 'failed to save revenue config');
+    } finally {
+      setRevSaving(false);
     }
   }, [loadNonCpm, nonCpmMonth]);
 
@@ -2886,7 +2958,7 @@ export const CpmPlanner: React.FC = () => {
     // variant can never be formatted differently from its parent.
     const cells = (o: NonCpmOffer, isChild: boolean) => (
       <>
-        <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(o.delivered)}</td>
+        <td style={{ ...tdStyle, textAlign: 'right' }} title={`${fmtInt(o.delivered)} delivered`}>{fmtInt(o.sent)}</td>
         <td style={{ ...tdStyle, textAlign: 'right', color: isChild ? C.muted : C.indigo }}>{fmtInt(o.clickers)}</td>
         <td style={{ ...tdStyle, textAlign: 'right' }}>{o.delivered > 0 ? pct(o.clicker_rate) : '—'}</td>
         <td style={{ ...tdStyle, textAlign: 'right', color: o.conversions > 0 ? C.green : C.muted }}>
@@ -2908,23 +2980,166 @@ export const CpmPlanner: React.FC = () => {
           {o.revenue > 0 ? money(o.revenue) : '—'}
         </td>
         <td style={{ ...tdStyle, textAlign: 'right', color: o.ecpm > 0 ? C.heading : C.muted }}
-          title={o.revenue > 0 ? `${money(o.revenue)} / ${fmtInt(o.delivered)} delivered × 1,000` : 'No supplied payout in this period'}>
+          title={o.revenue > 0 ? `${money(o.revenue)} / ${fmtInt(o.sent)} sent × 1,000` : 'No revenue in this period'}>
           {o.ecpm > 0 ? `$${o.ecpm.toFixed(3)}` : '—'}
         </td>
       </>
     );
+
+    // Plan cells — group rows only: budget, revenue vs budget, month-end
+    // forecast at the 3-day cadence, revenue/day still required.
+    const usd0 = (n: number) => (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('en-US');
+    const basisLabel: Record<NonCpmPlan['revenue_basis'], string> = {
+      paid: 'paid to date (operator)', rate: 'units × dated rate', everflow: 'supplied Everflow payout',
+      unavailable: 'NOT COMPUTED — click pass failed', none: 'no revenue basis',
+    };
+    const planCells = (g: NonCpmGroup) => {
+      const p = g.plan;
+      const editBtn = (
+        <button
+          onClick={e => {
+            e.stopPropagation();
+            setRevEdit({
+              group: g.group_name,
+              model: (p.payout_model || 'cpl') as RevEditBuf['model'],
+              budget: p.budget > 0 ? String(p.budget) : '',
+              paid: p.paid_revenue > 0 ? String(p.paid_revenue) : '',
+              notes: p.notes || '',
+              rates: (p.rates || []).map(r => ({ effective_from: r.effective_from, rate: String(r.rate) })),
+            });
+          }}
+          style={{
+            background: 'none', border: `1px solid ${C.border}`, borderRadius: 6,
+            color: C.muted, cursor: 'pointer', fontSize: 11, padding: '2px 8px', marginLeft: 6,
+          }}
+          title="Configure budget, payout model and dated rates for this month"
+        >
+          {p.configured ? 'edit' : 'set'}
+        </button>
+      );
+      const pctColor = (v: number) => (v >= 1 ? C.green : v >= 0.85 ? C.amber : C.red);
+      const rateNote = p.payout_model
+        ? `${p.payout_model.toUpperCase()}${p.current_rate > 0 ? ` $${p.current_rate.toFixed(2)}` : ''} · ${fmtInt(p.units)} ${p.unit_label}`
+        : '';
+      const warn = (p.warnings || []).join('; ');
+      return (
+        <>
+          <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}
+            title={[
+              `Revenue basis: ${basisLabel[p.revenue_basis]}`,
+              p.revenue_basis === 'paid' ? `Modeled: ${money(p.modeled_revenue)}` : '',
+              (p.rates || []).map(r => `$${r.rate.toFixed(2)} from ${r.effective_from}`).join(' · '),
+              p.payout_model === 'cpc' ? "Billable clicks = our tracked clicks, DISTINCT (subscriber, campaign) per day — an estimate of Everflow's count." : '',
+              warn,
+            ].filter(Boolean).join('\n')}>
+            <span style={{ color: p.budget > 0 ? C.heading : C.muted }}>{p.budget > 0 ? usd0(p.budget) : '—'}</span>
+            {editBtn}
+            {rateNote && <div style={{ fontSize: 10, color: warn ? C.amber : C.muted }}>{rateNote}</div>}
+          </td>
+          <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+            {p.budget > 0 ? (
+              <>
+                <span style={{ color: pctColor(p.budget_pct), fontWeight: 700 }}>{(p.budget_pct * 100).toFixed(1)}%</span>
+                <div style={{ fontSize: 10, color: C.muted }}>
+                  {p.budget_gap > 0 ? `${usd0(p.budget_gap)} to go` : `${usd0(-p.budget_gap)} over`}
+                </div>
+              </>
+            ) : '—'}
+          </td>
+          <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}
+            title={nonCpm?.is_current
+              ? `MTD + 3-complete-day mean × days left: ${fmtInt(p.avg3d_sent)} sent/day${p.payout_model === 'cpc' ? `, ${p.avg3d_units.toFixed(0)} clicks/day at $${p.current_rate.toFixed(2)}` : ''}`
+              : 'Closed month — forecast = actuals'}>
+            {p.revenue_basis === 'unavailable' ? <span style={{ color: C.red }}>n/a</span> : (
+              <>
+                <span style={{ color: C.heading }}>{money(p.projected_revenue)}</span>
+                <div style={{ fontSize: 10, color: C.muted }}>
+                  {fmtInt(p.projected_sent)} sent · {p.projected_ecpm > 0 ? `$${p.projected_ecpm.toFixed(3)}` : '—'} eCPM
+                  {p.budget > 0 && <> · <span style={{ color: pctColor(p.projected_budget_pct) }}>{(p.projected_budget_pct * 100).toFixed(0)}%</span></>}
+                </div>
+              </>
+            )}
+          </td>
+          <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap', color: p.required_revenue_per_day > 0 ? C.heading : C.muted }}>
+            {p.required_revenue_per_day > 0 ? `${usd0(p.required_revenue_per_day)}/day` : '—'}
+          </td>
+        </>
+      );
+    };
+
+    const revInput: React.CSSProperties = {
+      width: 96, padding: '5px 7px', background: 'rgba(10,20,45,0.7)',
+      border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
+    };
+    const revEditor = (g: NonCpmGroup) => {
+      if (!revEdit || revEdit.group !== g.group_name) return null;
+      const b = revEdit;
+      const set = (patch: Partial<RevEditBuf>) => setRevEdit({ ...b, ...patch });
+      const setRate = (i: number, patch: Partial<RevEditBuf['rates'][number]>) =>
+        set({ rates: b.rates.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
+      const month = nonCpm?.month || '';
+      return (
+        <tr style={{ background: 'rgba(99,102,241,0.08)' }}>
+          <td colSpan={13} style={{ ...tdStyle, padding: '12px 16px' }}>
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', fontSize: 12, color: C.muted }}>
+              <div style={{ color: C.heading, fontWeight: 700 }}>{g.group_name} · {month}</div>
+              <label>Model<br />
+                <select value={b.model} onChange={e => set({ model: e.target.value as RevEditBuf['model'] })} style={revInput}>
+                  <option value="cpl">CPL</option>
+                  <option value="cpa">CPA</option>
+                  <option value="cpc">CPC</option>
+                </select>
+              </label>
+              <label>Budget (revenue goal)<br />
+                <input type="number" style={revInput} value={b.budget} onChange={e => set({ budget: e.target.value })} placeholder="$" />
+              </label>
+              <label title="What the advertiser actually paid month-to-date. Replaces the modeled revenue when > 0.">Paid to date<br />
+                <input type="number" style={revInput} value={b.paid} onChange={e => set({ paid: e.target.value })} placeholder="$ (optional)" />
+              </label>
+              <label>Notes<br />
+                <input style={{ ...revInput, width: 180 }} value={b.notes} onChange={e => set({ notes: e.target.value })} />
+              </label>
+              <div>
+                <div>Payout rate schedule (all months)</div>
+                {b.rates.map((r, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center' }}>
+                    <input type="date" style={{ ...revInput, width: 140 }} value={r.effective_from} onChange={e => setRate(i, { effective_from: e.target.value })} />
+                    <input type="number" step="0.01" style={revInput} value={r.rate} onChange={e => setRate(i, { rate: e.target.value })} placeholder="$ / unit" />
+                    <button onClick={() => set({ rates: b.rates.filter((_, j) => j !== i) })}
+                      style={{ background: 'none', border: 'none', color: C.red, cursor: 'pointer' }}>✕</button>
+                  </div>
+                ))}
+                <button onClick={() => set({ rates: [...b.rates, { effective_from: nonCpm?.to || '', rate: '' }] })}
+                  style={{ marginTop: 4, background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, color: C.muted, cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}>
+                  + rate from date
+                </button>
+              </div>
+              <button disabled={revSaving} onClick={() => saveRevenueConfig(b, month)}
+                style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.indigo}`, background: 'rgba(99,102,241,0.25)', color: C.heading, cursor: revSaving ? 'default' : 'pointer', fontSize: 12, fontWeight: 700 }}>
+                {revSaving ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
+              </button>
+              <button onClick={() => setRevEdit(null)}
+                style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, cursor: 'pointer', fontSize: 12 }}>
+                Cancel
+              </button>
+            </div>
+          </td>
+        </tr>
+      );
+    };
 
     return (
       <div style={{ marginTop: 30 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 10 }}>
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
-              4 · Non-CPM Sending — Volume → Clickers → Conversions → Payout
+              4 · Non-CPM Sending — Sent → Clickers → Conversions → Revenue vs Budget
             </div>
             <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
               Everything we mail that no CPM deal is billing, for the selected calendar month —
-              same source and clock as the pacing rows above. <span style={{ color: C.heading }}>eCPM</span> is
-              derived from the supplied per-conversion payout, so it is what this volume actually earned.
+              same source and clock as the pacing rows above. <span style={{ color: C.heading }}>eCPM</span> = revenue
+              / sent × 1,000. Revenue = paid to date if entered, else units × the dated rate (CPC: billable clicks
+              priced at the rate in effect each day), else the supplied Everflow payout. Set budget / model / rates per row.
               {nonCpm?.from && <> {nonCpm.from} → {nonCpm.to}.</>}
             </div>
           </div>
@@ -2981,25 +3196,14 @@ export const CpmPlanner: React.FC = () => {
           </div>
         )}
 
-        {nonCpm?.volume_partial && (
-          <div style={{
-            marginBottom: 10, padding: '10px 14px', borderRadius: 8, fontSize: 12,
-            background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.4)', color: C.amber,
-          }}>
-            Volume is rolled up for {nonCpm.days_rolled} of {nonCpm.days_expected} days in this period —
-            the remaining days are still backfilling, so VOLUME (and eCPM) are understated here.
-            Clickers and conversions are live and complete.
-          </div>
-        )}
-
         {t && (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-            <Stat label="Non-CPM volume" value={fmtInt(t.non_cpm.delivered)} />
+            <Stat label="Non-CPM sent" value={fmtInt(t.non_cpm.sent)} />
             <Stat label="Non-CPM clickers" value={fmtInt(t.non_cpm.clickers)} color={C.indigo} />
             <Stat label="Non-CPM conversions" value={fmtInt(t.non_cpm.conversions)} color={C.green} />
             <Stat label="Non-CPM revenue" value={money(t.non_cpm.revenue)} color={C.green} />
             <Stat label="Non-CPM eCPM" value={`$${t.non_cpm.ecpm.toFixed(3)}`} />
-            <Stat label="CPM volume (billed)" value={fmtInt(t.cpm.delivered)} color={C.muted} />
+            <Stat label="CPM sent (billed)" value={fmtInt(t.cpm.sent)} color={C.muted} />
           </div>
         )}
 
@@ -3009,19 +3213,23 @@ export const CpmPlanner: React.FC = () => {
               <tr>
                 <th style={thStyle}>Offer</th>
                 <th style={thStyle}>Billing</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Delivered events, Postgres, rolled up per Denver day">Volume</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="mailing_campaigns.sent_count by the Denver day the campaign started (hover a cell for delivered)">Sent</th>
                 <th style={{ ...thStyle, textAlign: 'right' }} title="DISTINCT subscribers clicking a content/commercial link — asset fetches and unsubscribe links excluded">Clickers</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Clicker rate</th>
                 <th style={{ ...thStyle, textAlign: 'right' }} title="Everflow postback conversion ledger — the same count of record the CPM deal cards use">Conversions</th>
                 <th style={{ ...thStyle, textAlign: 'right' }} title="How many counted conversions carry a supplied payout. Below 100% means revenue/eCPM are floors.">Payout cov.</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="Sum of the supplied per-conversion payout">Revenue</th>
-                <th style={{ ...thStyle, textAlign: 'right' }} title="revenue / delivered × 1,000">eCPM</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Paid to date, else units × dated rate, else supplied Everflow payout">Revenue</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="revenue / sent × 1,000">eCPM</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Month revenue goal + payout model">Budget</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Revenue MTD / budget, and the dollar gap">vs Budget</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="Month-end at the 3-complete-day cadence: revenue · sent · eCPM · % of budget">Forecast</th>
+                <th style={{ ...thStyle, textAlign: 'right' }} title="(budget − revenue MTD) / days left incl. today">Req./day</th>
               </tr>
             </thead>
             <tbody>
               {shown.length === 0 && !nonCpmLoading && (
                 <tr>
-                  <td colSpan={9} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: 28 }}>
+                  <td colSpan={13} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: 28 }}>
                     Nothing in this period.
                   </td>
                 </tr>
@@ -3058,7 +3266,9 @@ export const CpmPlanner: React.FC = () => {
                           : <span style={{ color: C.muted, fontSize: 12 }}>No CPM deal</span>}
                       </td>
                       {cells(g, false)}
+                      {planCells(g)}
                     </tr>
+                    {revEditor(g)}
                     {open && g.offers.map(o => (
                       <tr key={`${g.group_name}:${o.offer_key}`} style={{ background: 'rgba(10,20,45,0.35)' }}>
                         <td style={{ ...tdStyle, paddingLeft: 30, color: C.muted, fontSize: 12 }}>
@@ -3084,6 +3294,7 @@ export const CpmPlanner: React.FC = () => {
                           </button>
                         </td>
                         {cells(o, true)}
+                        <td colSpan={4} style={tdStyle} />
                       </tr>
                     ))}
                   </React.Fragment>

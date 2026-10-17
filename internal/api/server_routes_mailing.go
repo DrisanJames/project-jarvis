@@ -1783,6 +1783,8 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 				// cpm_non_cpm_performance.go for why it never calls Athena itself.
 				cp.Get("/non-cpm", cpmPlanner.HandleNonCpmPerformance)
 				cp.Put("/offer-groups/{identity}", cpmPlanner.HandleUpsertOfferGroup)
+				// Revenue plan per offer group-month: budget, payout model, dated rates.
+				cp.Put("/revenue-config", cpmPlanner.HandleUpsertRevenueConfig)
 			})
 
 			// === EMAIL MARKETING AGENT — Standalone AI strategist ===

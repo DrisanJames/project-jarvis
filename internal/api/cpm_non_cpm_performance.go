@@ -75,6 +75,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/lib/pq"
 )
 
 // nonCpmIdentityExpr is THE offer identity for this surface. Requires the
@@ -127,7 +128,7 @@ const (
 // are registered) — runStartupMigrations runs in a background goroutine and
 // cannot be relied on to land before the handler serves.
 func nonCpmTableDDL() []string {
-	return []string{
+	return append([]string{
 		`CREATE TABLE IF NOT EXISTS mailing_offer_day_rollup (
 			organization_id UUID NOT NULL,
 			day             DATE NOT NULL,
@@ -171,7 +172,7 @@ func nonCpmTableDDL() []string {
 		// numbers, not settlement numbers). The row is flagged in the API so the
 		// screen can show that the conversion column has a different time basis.
 		`ALTER TABLE mailing_offer_groups ADD COLUMN IF NOT EXISTS carry_over BOOLEAN NOT NULL DEFAULT FALSE`,
-	}
+	}, nonCpmRevenueDDL()...)
 }
 
 // nonCpmSeedGroups maps the identities observed on prod 2026-08-01 onto their
@@ -209,6 +210,9 @@ var nonCpmSeedGroups = map[string]string{
 	"j345ssd": "Optima Tax Relief", "optima tax relief": "Optima Tax Relief",
 	"2hh43pb": "National Debt Relief", "national debt relief": "National Debt Relief",
 	"newsletter": "Newsletter (no offer)",
+
+	"ehealth cpc - switchers": "eHealth CPC", "ehealth cpc - advisor": "eHealth CPC",
+	"ehealth cpc - savings": "eHealth CPC",
 }
 
 // nonCpmCarryOverGroups are the advertisers whose conversion tally carries
@@ -240,6 +244,7 @@ func (h *CpmPlannerHandlers) seedNonCpmGroups() {
 			log.Printf("[CpmPlanner] seed carry-over %q: %v", g, err)
 		}
 	}
+	h.seedNonCpmRevenue()
 }
 
 // ─── Daily delivered rollup ─────────────────────────────────────────────────
@@ -436,6 +441,17 @@ func nonCpmRollupInsertSQL() string {
 		GROUP BY 3`
 }
 
+// nonCpmNavClickPredicate is the navigational (action) click definition —
+// asset fetches, compliance links, the everflow import marker and unresolved
+// t.em /track/ records are excluded; the t.em /o/ offer redirect is kept.
+const nonCpmNavClickPredicate = `
+		  AND COALESCE(te.link_url,'') <> ''
+		  AND te.link_url !~* '\.(css|js|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)([?#]|$)'
+		  AND te.link_url !~* '(fonts\.g|cdn\.|cloudfront|akamai|fastly|jsdelivr|unpkg|gstatic)'
+		  AND te.link_url !~* 'unsub|optout|opt-out|preference|/privacy'
+		  AND te.link_url !~* '^everflow-import:'
+		  AND te.link_url !~* '^https?://t\.em\.[^/]+/track/'`
+
 // nonCpmClicksSQL: $1 = org, $2 = from date, $3 = to date (Denver days).
 func nonCpmClicksSQL() string {
 	return `
@@ -449,14 +465,64 @@ func nonCpmClicksSQL() string {
 		  AND te.event_at >= ($2::date - INTERVAL '1 day')
 		  AND te.event_at <  ($3::date + INTERVAL '2 days')
 		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
-		  AND (te.event_at AT TIME ZONE 'America/Denver')::date <= $3::date
-		  AND COALESCE(te.link_url,'') <> ''
-		  AND te.link_url !~* '\.(css|js|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|ico|webp|map)([?#]|$)'
-		  AND te.link_url !~* '(fonts\.g|cdn\.|cloudfront|akamai|fastly|jsdelivr|unpkg|gstatic)'
-		  AND te.link_url !~* 'unsub|optout|opt-out|preference|/privacy'
-		  AND te.link_url !~* '^everflow-import:'
-		  AND te.link_url !~* '^https?://t\.em\.[^/]+/track/'
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date <= $3::date` + nonCpmNavClickPredicate + `
 		GROUP BY 1`
+}
+
+// nonCpmBillableCampaignsSQL: every campaign whose identity is in $2 (the
+// identities of CPC-modeled groups). $1 = org, $2 = text[]. Resolved FIRST so
+// the click pass below can hand the planner a literal id array: given the
+// identity filter as a join, it misestimates the campaign set (3,458 vs ~800)
+// and hash-joins the whole month's click index — measured >280s on prod
+// 2026-10-17, vs 49s for the id-array form.
+func nonCpmBillableCampaignsSQL() string {
+	return `
+		SELECT c.id::text
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_offers o ON o.id = c.offer_id
+		WHERE c.organization_id = $1 AND ` + nonCpmIdentityExpr + ` = ANY($2::text[])`
+}
+
+// nonCpmBillableClicksSQL: per (identity, Denver day) BILLABLE clicks — the CPC
+// revenue unit, priced at the rate in effect that day. billable = DISTINCT
+// (subscriber, campaign) within the day: one paid click per person per email
+// per day, the closest PG proxy for Everflow's count (PG has no Everflow
+// click table). $1 = org, $2 = from, $3 = to, $4 = campaign uuid[].
+func nonCpmBillableClicksSQL() string {
+	return `
+		SELECT ` + nonCpmIdentityExpr + ` AS identity,
+		       to_char((te.event_at AT TIME ZONE 'America/Denver')::date, 'YYYY-MM-DD') AS day,
+		       COUNT(DISTINCT (te.subscriber_id, te.campaign_id)) AS billable
+		FROM mailing_tracking_events te
+		JOIN mailing_campaigns c ON c.id = te.campaign_id
+		LEFT JOIN mailing_offers o ON o.id = c.offer_id
+		WHERE te.campaign_id = ANY($4::uuid[])
+		  AND te.organization_id = $1
+		  AND te.event_type = 'clicked'
+		  AND te.event_at >= ($2::date - INTERVAL '1 day')
+		  AND te.event_at <  ($3::date + INTERVAL '2 days')
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date >= $2::date
+		  AND (te.event_at AT TIME ZONE 'America/Denver')::date <= $3::date` + nonCpmNavClickPredicate + `
+		GROUP BY 1, 2`
+}
+
+// nonCpmVolumeSQL: SENT and DELIVERED per (identity, Denver day the campaign
+// started) from the campaign counters — the same source and day rule as CPM
+// pacing (cpmMailedSQL). Replaces mailing_offer_day_rollup here: the rollup
+// counts PG delivered webhooks once per closed day and never picks up late
+// confirmations (brain #13018). $1 = org, $2 = from, $3 = to (Denver dates).
+func nonCpmVolumeSQL() string {
+	return `
+		SELECT ` + nonCpmIdentityExpr + ` AS identity,
+		       to_char((COALESCE(c.started_at, c.scheduled_at) AT TIME ZONE 'America/Denver')::date, 'YYYY-MM-DD') AS day,
+		       COALESCE(SUM(c.sent_count), 0) AS sent, COALESCE(SUM(c.delivered_count), 0) AS delivered
+		FROM mailing_campaigns c
+		LEFT JOIN mailing_offers o ON o.id = c.offer_id
+		WHERE c.organization_id = $1
+		  AND c.status NOT IN ('draft','cancelled','deleted','failed')
+		  AND COALESCE(c.started_at, c.scheduled_at) >= ($2::date::timestamp AT TIME ZONE 'America/Denver')
+		  AND COALESCE(c.started_at, c.scheduled_at) <  (($3::date + 1)::timestamp AT TIME ZONE 'America/Denver')
+		GROUP BY 1, 2`
 }
 
 // nonCpmConversionCountSQL: the LEDGER COUNT. $1 = org, $2 = from, $3 = to.
@@ -521,9 +587,11 @@ type nonCpmOfferRow struct {
 	OfferKey  string `json:"offer_key"` // the resolved identity
 	GroupName string `json:"group_name"`
 
+	Sent        int64 `json:"sent"`
 	Delivered   int64 `json:"delivered"`
 	Clickers    int64 `json:"clickers"`
 	Clicks      int64 `json:"clicks"`
+	Billable    int64 `json:"billable_clicks"` // Σ per-day DISTINCT (subscriber, campaign)
 	Conversions int64 `json:"conversions"`
 	// PayoutCoverage: how many of Conversions carried a supplied payout. When
 	// this is below Conversions the revenue/eCPM are FLOORS, not the truth.
@@ -533,7 +601,7 @@ type nonCpmOfferRow struct {
 
 	ClickerRate float64 `json:"clicker_rate"` // clickers / delivered
 	ConvRate    float64 `json:"conv_rate"`    // conversions / clickers
-	Ecpm        float64 `json:"ecpm"`         // revenue / delivered * 1000
+	Ecpm        float64 `json:"ecpm"`         // revenue / sent * 1000 (delivered when sent unknown)
 
 	IsCPM    bool   `json:"is_cpm"`
 	DealID   string `json:"deal_id"`
@@ -547,11 +615,14 @@ type nonCpmOfferRow struct {
 type nonCpmGroupRow struct {
 	GroupName string           `json:"group_name"`
 	Offers    []nonCpmOfferRow `json:"offers"`
+	// Plan: revenue earned vs budget + month-end forecast (cpm_non_cpm_revenue.go).
+	Plan nonCpmPlan `json:"plan"`
 	nonCpmOfferRow
 }
 
 type nonCpmTotals struct {
 	Offers         int     `json:"offers"`
+	Sent           int64   `json:"sent"`
 	Delivered      int64   `json:"delivered"`
 	Clickers       int64   `json:"clickers"`
 	Clicks         int64   `json:"clicks"`
@@ -574,10 +645,19 @@ func nonCpmDiv(a, b float64) float64 {
 	return v
 }
 
+// nonCpmEcpmBase: eCPM is per SENT (the CPM side's basis); delivered only
+// when no sent counter exists.
+func nonCpmEcpmBase(sent, delivered int64) int64 {
+	if sent > 0 {
+		return sent
+	}
+	return delivered
+}
+
 func (r *nonCpmOfferRow) deriveRates() {
 	r.ClickerRate = nonCpmDiv(float64(r.Clickers), float64(r.Delivered))
 	r.ConvRate = nonCpmDiv(float64(r.Conversions), float64(r.Clickers))
-	r.Ecpm = nonCpmDiv(r.Revenue*1000, float64(r.Delivered))
+	r.Ecpm = nonCpmDiv(r.Revenue*1000, float64(nonCpmEcpmBase(r.Sent, r.Delivered)))
 	r.AvgPayout = nonCpmDiv(r.Revenue, float64(r.PayoutCoverage))
 }
 
@@ -608,46 +688,34 @@ func (h *CpmPlannerHandlers) nonCpmQuery(query string, args ...interface{}) (*sq
 
 // ─── Per-metric loaders (all keyed on nonCpmIdentityExpr) ───────────────────
 
-// nonCpmVolume sums the daily rollup across the month. Second return is the
-// number of days actually present, so the handler can say when a month is only
-// partially rolled up instead of reporting a short number as fact.
-func (h *CpmPlannerHandlers) nonCpmVolume(orgID string, from, to time.Time) (map[string]int64, int, time.Time, error) {
-	out := map[string]int64{}
-	var days int
-	var refreshed sql.NullTime
-	rows, err := h.db.Query(`
-		SELECT offer_identity, SUM(delivered), COUNT(DISTINCT day), MAX(refreshed_at)
-		FROM mailing_offer_day_rollup
-		WHERE organization_id = $1 AND day >= $2::date AND day <= $3::date
-		GROUP BY 1`, orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
+// nonCpmVolume reads sent/delivered per identity per Denver day from the
+// campaign counters. Returns month totals and the per-day sent series that the
+// 3-day forecast cadence needs.
+func (h *CpmPlannerHandlers) nonCpmVolume(orgID string, from, to time.Time) (sent, delivered map[string]int64, sentDays map[string]map[string]int64, err error) {
+	sent, delivered, sentDays = map[string]int64{}, map[string]int64{}, map[string]map[string]int64{}
+	rows, err := h.db.Query(nonCpmVolumeSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	if err != nil {
-		return nil, 0, time.Time{}, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
-		var n int64
-		var d int
-		var r sql.NullTime
-		if err := rows.Scan(&id, &n, &d, &r); err != nil {
-			return nil, 0, time.Time{}, err
+		var id, day string
+		var s, d int64
+		if err := rows.Scan(&id, &day, &s, &d); err != nil {
+			return nil, nil, nil, err
 		}
-		out[id] = n
-		if d > days {
-			days = d
+		sent[id] += s
+		delivered[id] += d
+		if sentDays[id] == nil {
+			sentDays[id] = map[string]int64{}
 		}
-		if r.Valid && (!refreshed.Valid || r.Time.After(refreshed.Time)) {
-			refreshed = r
-		}
+		sentDays[id][day] += s
 	}
-	return out, days, refreshed.Time, rows.Err()
+	return sent, delivered, sentDays, rows.Err()
 }
 
 // nonCpmClicks is LIVE and exact for the month — distinct clickers cannot be
-// summed from per-day distincts. The link_url predicate is the navigational
-// (action) click definition: asset fetches, compliance links, the everflow
-// import marker and unresolved t.em /track/ records are all excluded, while the
-// t.em /o/ smart-link OFFER REDIRECT is kept (it is the money click).
+// summed from per-day distincts. Predicate: nonCpmNavClickPredicate.
 func (h *CpmPlannerHandlers) nonCpmClicks(orgID string, from, to time.Time) (clicks, clickers map[string]int64, err error) {
 	clicks, clickers = map[string]int64{}, map[string]int64{}
 	rows, done, qerr := h.nonCpmQuery(nonCpmClicksSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
@@ -664,6 +732,53 @@ func (h *CpmPlannerHandlers) nonCpmClicks(orgID string, from, to time.Time) (cli
 		clicks[id], clickers[id] = ck, cr
 	}
 	return clicks, clickers, rows.Err()
+}
+
+// nonCpmBillableClicks returns identity -> Denver day -> billable clicks for
+// the given identities (the CPC-modeled groups only — the pass is priced per
+// campaign, so it never runs estate-wide).
+func (h *CpmPlannerHandlers) nonCpmBillableClicks(orgID string, from, to time.Time, identities []string) (map[string]map[string]int64, error) {
+	out := map[string]map[string]int64{}
+	if len(identities) == 0 {
+		return out, nil
+	}
+	crows, err := h.db.Query(nonCpmBillableCampaignsSQL(), orgID, pq.Array(identities))
+	if err != nil {
+		return nil, err
+	}
+	var camps []string
+	for crows.Next() {
+		var id string
+		if err := crows.Scan(&id); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		camps = append(camps, id)
+	}
+	crows.Close()
+	if err := crows.Err(); err != nil {
+		return nil, err
+	}
+	if len(camps) == 0 {
+		return out, nil
+	}
+	rows, done, err := h.nonCpmQuery(nonCpmBillableClicksSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"), pq.Array(camps))
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	for rows.Next() {
+		var id, day string
+		var n int64
+		if err := rows.Scan(&id, &day, &n); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[string]int64{}
+		}
+		out[id][day] = n
+	}
+	return out, rows.Err()
 }
 
 // nonCpmConversions returns the ledger conversion count per identity, plus the
@@ -855,11 +970,6 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		return
 	}
 
-	volume, daysRolled, refreshedAt, err := h.nonCpmVolume(orgID, from, to)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, fmt.Sprintf("volume rollup: %v", err))
-		return
-	}
 	// Cached response: a full build costs minutes on a busy DB. Serve the cached
 	// payload for the same (org, month) within the TTL.
 	cacheKey := orgID + "|" + ym
@@ -877,6 +987,11 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	// deal" are indistinguishable from real answers once rendered.
 	degraded := []string{}
 
+	sent, volume, sentDays, err := h.nonCpmVolume(orgID, from, to)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, fmt.Sprintf("volume: %v", err))
+		return
+	}
 	clicks, clickers, err := h.nonCpmClicks(orgID, from, to)
 	if err != nil {
 		log.Printf("[CpmPlanner] non-cpm clicks: %v", err)
@@ -899,6 +1014,33 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		log.Printf("[CpmPlanner] non-cpm groups: %v", err)
 		groups, carryOver = map[string]string{}, map[string]bool{}
 	}
+	// Revenue config: a failed read must NOT render as "no budget configured" —
+	// it is announced as degraded and the build is not cached.
+	revCfgs, revRates, err := h.nonCpmRevenueConfigs(orgID, from)
+	if err != nil {
+		log.Printf("[CpmPlanner] non-cpm revenue config: %v", err)
+		revCfgs, revRates = map[string]*nonCpmRevenueConfig{}, map[string][]nonCpmRate{}
+		degraded = append(degraded, "revenue-config")
+	}
+	// CPC billable clicks — only for identities whose group is CPC-modeled.
+	var cpcIdentities []string
+	for identity := range sent {
+		g := groups[identity]
+		if g == "" {
+			g = identity
+		}
+		if c := revCfgs[g]; c != nil && c.PayoutModel == "cpc" {
+			cpcIdentities = append(cpcIdentities, identity)
+		}
+	}
+	sort.Strings(cpcIdentities)
+	billOK := true
+	billDays, err := h.nonCpmBillableClicks(orgID, from, to, cpcIdentities)
+	if err != nil {
+		log.Printf("[CpmPlanner] non-cpm billable clicks: %v", err)
+		billDays, billOK = map[string]map[string]int64{}, false
+		degraded = append(degraded, "billable-clicks")
+	}
 
 	// Carry-over advertisers settle on a running tally, so their conversions and
 	// revenue are read cumulatively up to the end of the selected month instead
@@ -919,7 +1061,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	// Union every identity seen by ANY metric — an offer with conversions but
 	// no rolled-up volume yet must still appear, or money goes missing.
 	seen := map[string]bool{}
-	for _, m := range []map[string]int64{volume, clicks, clickers, convCounts, convPaid} {
+	for _, m := range []map[string]int64{sent, volume, clicks, clickers, convCounts, convPaid} {
 		for k := range m {
 			seen[k] = true
 		}
@@ -929,10 +1071,18 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	}
 
 	byGroup := map[string]*nonCpmGroupRow{}
+	groupSentDays := map[string]map[string]int64{}
+	groupBillDays := map[string]map[string]int64{}
 	var cpmT, nonCpmT nonCpmTotals
 	for identity := range seen {
+		var billable int64
+		for _, n := range billDays[identity] {
+			billable += n
+		}
 		row := nonCpmOfferRow{
 			OfferKey:    identity,
+			Sent:        sent[identity],
+			Billable:    billable,
 			Delivered:   volume[identity],
 			Clicks:      clicks[identity],
 			Clickers:    clickers[identity],
@@ -968,6 +1118,17 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 			byGroup[g] = gr
 		}
 		gr.Offers = append(gr.Offers, row)
+		if groupSentDays[g] == nil {
+			groupSentDays[g], groupBillDays[g] = map[string]int64{}, map[string]int64{}
+		}
+		for d, n := range sentDays[identity] {
+			groupSentDays[g][d] += n
+		}
+		for d, n := range billDays[identity] {
+			groupBillDays[g][d] += n
+		}
+		gr.Sent += row.Sent
+		gr.Billable += row.Billable
 		gr.Delivered += row.Delivered
 		gr.Clicks += row.Clicks
 		gr.Clickers += row.Clickers
@@ -987,6 +1148,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 			t = &cpmT
 		}
 		t.Offers++
+		t.Sent += row.Sent
 		t.Delivered += row.Delivered
 		t.Clicks += row.Clicks
 		t.Clickers += row.Clickers
@@ -998,6 +1160,19 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	out := make([]nonCpmGroupRow, 0, len(byGroup))
 	for _, gr := range byGroup {
 		gr.nonCpmOfferRow.OfferKey = gr.GroupName
+		gr.Plan = nonCpmPlanFor(revCfgs[gr.GroupName], revRates[gr.GroupName],
+			groupSentDays[gr.GroupName], groupBillDays[gr.GroupName],
+			gr.Conversions, gr.Revenue, billOK, to, isCurrent)
+		// A configured rate or a paid figure IS the group's revenue; the totals
+		// move with it so the header stats and the rows agree.
+		if b := gr.Plan.RevenueBasis; b == "paid" || b == "rate" {
+			t := &nonCpmT
+			if gr.IsCPM {
+				t = &cpmT
+			}
+			t.Revenue += gr.Plan.Revenue - gr.Revenue
+			gr.Revenue = gr.Plan.Revenue
+		}
 		gr.deriveRates()
 		sort.Slice(gr.Offers, func(i, j int) bool { return gr.Offers[i].Delivered > gr.Offers[j].Delivered })
 		out = append(out, *gr)
@@ -1007,7 +1182,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	for _, t := range []*nonCpmTotals{&cpmT, &nonCpmT} {
 		t.ClickerRate = nonCpmDiv(float64(t.Clickers), float64(t.Delivered))
 		t.ConvRate = nonCpmDiv(float64(t.Conversions), float64(t.Clickers))
-		t.Ecpm = nonCpmDiv(t.Revenue*1000, float64(t.Delivered))
+		t.Ecpm = nonCpmDiv(t.Revenue*1000, float64(nonCpmEcpmBase(t.Sent, t.Delivered)))
 	}
 
 	expectedDays := int(to.Sub(from).Hours()/24) + 1
@@ -1018,22 +1193,18 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		"is_current":    isCurrent,
 		"groups":        out,
 		"totals":        map[string]interface{}{"cpm": cpmT, "non_cpm": nonCpmT},
-		"days_rolled":   daysRolled,
 		"days_expected": expectedDays,
-		// volume_partial is the honest flag: the delivered rollup backfills one
-		// closed day per cycle, so an older month can legitimately be short.
-		// Clicks and conversions are always live/complete for the range.
-		"volume_partial": daysRolled < expectedDays,
 		"sources": map[string]string{
-			"delivered":   "postgres:mailing_tracking_events (rolled up per Denver day)",
+			"sent":        "postgres:mailing_campaigns.sent_count by Denver day the campaign started (same as CPM pacing)",
+			"delivered":   "postgres:mailing_campaigns.delivered_count",
+			"billable":    "postgres:mailing_tracking_events, navigational links, DISTINCT (subscriber, campaign) per Denver day — our estimate of Everflow's CPC clicks",
+			"plan":        "mailing_offer_revenue_config (budget/model/paid per month) + mailing_offer_payout_rates (dated rates)",
 			"clickers":    "postgres:mailing_tracking_events, navigational links only, DISTINCT subscriber_id (live)",
 			"conversions": "postgres:mailing_offer_suppressions reason='converted' (ledger count of record)",
 			"revenue":     "postgres:mailing_everflow_conversions.payout (supplied payout; mailing_offers.payout is 0.00 on 27 of 34 offers)",
-			"ecpm":        "revenue / delivered * 1000",
+			"ecpm":        "revenue / sent * 1000",
 		},
-	}
-	if !refreshedAt.IsZero() {
-		resp["refreshed_at"] = refreshedAt.Format(time.RFC3339)
+		"refreshed_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if len(degraded) > 0 {
 		resp["degraded"] = degraded
