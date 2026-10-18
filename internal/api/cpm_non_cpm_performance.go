@@ -565,6 +565,32 @@ func nonCpmConversionPayoutSQL() string {
 		GROUP BY 1`
 }
 
+// nonCpmPostbackDaysSQL: Everflow postbacks per (identity, Denver day) — the
+// CPC paid-click series. Identity resolves exactly as nonCpmConversionPayoutSQL
+// (the conversion's campaign, else its everflow id → offer name) so a postback
+// lands on the same row its conversions do. Units = postbacks with a POSITIVE
+// payout (a paid click); revenue = SUM of every payout, so an Everflow reversal
+// (EF 1141 posted -1.75 on 2026-10-01) nets out without counting as a click or
+// tripping the postback cutover. $1 = org, $2 = from, $3 = to.
+func nonCpmPostbackDaysSQL() string {
+	return `
+		SELECT lower(COALESCE(
+		           NULLIF(c.offer_key,''), NULLIF(o.name,''),
+		           NULLIF((SELECT MIN(eo.name) FROM mailing_offers eo
+		                    WHERE eo.everflow_offer_id = ec.everflow_offer_id
+		                      AND eo.organization_id = ec.organization_id), ''),
+		           '(unattributed)')),
+		       to_char((ec.converted_at AT TIME ZONE 'America/Denver')::date, 'YYYY-MM-DD'),
+		       COUNT(*) FILTER (WHERE ec.payout > 0), COALESCE(SUM(ec.payout), 0)
+		FROM mailing_everflow_conversions ec
+		LEFT JOIN mailing_campaigns c ON c.id = ec.campaign_id
+		LEFT JOIN mailing_offers o ON o.id = c.offer_id
+		WHERE ec.organization_id = $1
+		  AND (ec.converted_at AT TIME ZONE 'America/Denver')::date >= $2::date
+		  AND (ec.converted_at AT TIME ZONE 'America/Denver')::date <= $3::date
+		GROUP BY 1, 2`
+}
+
 // nonCpmDealMapSQL: identity -> CPM deal. $1 = org. Deliberately unwindowed.
 func nonCpmDealMapSQL() string {
 	return dealCampaignMapCTE + `,
@@ -777,6 +803,30 @@ func (h *CpmPlannerHandlers) nonCpmBillableClicks(orgID string, from, to time.Ti
 			out[id] = map[string]int64{}
 		}
 		out[id][day] = n
+	}
+	return out, rows.Err()
+}
+
+// nonCpmPostbackDays returns identity -> Denver day -> Everflow postbacks.
+// The ledger is tiny (hundreds of rows a month), so it is read unfiltered and
+// the caller keeps the CPC identities.
+func (h *CpmPlannerHandlers) nonCpmPostbackDays(orgID string, from, to time.Time) (map[string]map[string]nonCpmPostbackDay, error) {
+	out := map[string]map[string]nonCpmPostbackDay{}
+	rows, err := h.db.Query(nonCpmPostbackDaysSQL(), orgID, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, day string
+		var pb nonCpmPostbackDay
+		if err := rows.Scan(&id, &day, &pb.Count, &pb.Payout); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[string]nonCpmPostbackDay{}
+		}
+		out[id][day] = pb
 	}
 	return out, rows.Err()
 }
@@ -1041,6 +1091,14 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		billDays, billOK = map[string]map[string]int64{}, false
 		degraded = append(degraded, "billable-clicks")
 	}
+	// Everflow CPC postbacks — the paid-click count of record from the first
+	// postback day on. A failed read degrades to tracked clicks, announced.
+	pbDays, err := h.nonCpmPostbackDays(orgID, from, to)
+	if err != nil {
+		log.Printf("[CpmPlanner] non-cpm postbacks: %v", err)
+		pbDays = map[string]map[string]nonCpmPostbackDay{}
+		degraded = append(degraded, "postbacks")
+	}
 
 	// Carry-over advertisers settle on a running tally, so their conversions and
 	// revenue are read cumulatively up to the end of the selected month instead
@@ -1073,6 +1131,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	byGroup := map[string]*nonCpmGroupRow{}
 	groupSentDays := map[string]map[string]int64{}
 	groupBillDays := map[string]map[string]int64{}
+	groupPbDays := map[string]map[string]nonCpmPostbackDay{}
 	var cpmT, nonCpmT nonCpmTotals
 	for identity := range seen {
 		var billable int64
@@ -1127,6 +1186,17 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		for d, n := range billDays[identity] {
 			groupBillDays[g][d] += n
 		}
+		if c := revCfgs[g]; c != nil && c.PayoutModel == "cpc" {
+			if groupPbDays[g] == nil {
+				groupPbDays[g] = map[string]nonCpmPostbackDay{}
+			}
+			for d, pb := range pbDays[identity] {
+				cur := groupPbDays[g][d]
+				cur.Count += pb.Count
+				cur.Payout += pb.Payout
+				groupPbDays[g][d] = cur
+			}
+		}
 		gr.Sent += row.Sent
 		gr.Billable += row.Billable
 		gr.Delivered += row.Delivered
@@ -1161,11 +1231,11 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 	for _, gr := range byGroup {
 		gr.nonCpmOfferRow.OfferKey = gr.GroupName
 		gr.Plan = nonCpmPlanFor(revCfgs[gr.GroupName], revRates[gr.GroupName],
-			groupSentDays[gr.GroupName], groupBillDays[gr.GroupName],
+			groupSentDays[gr.GroupName], groupBillDays[gr.GroupName], groupPbDays[gr.GroupName],
 			gr.Conversions, gr.Revenue, billOK, to, isCurrent)
 		// A configured rate or a paid figure IS the group's revenue; the totals
 		// move with it so the header stats and the rows agree.
-		if b := gr.Plan.RevenueBasis; b == "paid" || b == "rate" {
+		if b := gr.Plan.RevenueBasis; b == "paid" || b == "rate" || b == "postback" {
 			t := &nonCpmT
 			if gr.IsCPM {
 				t = &cpmT

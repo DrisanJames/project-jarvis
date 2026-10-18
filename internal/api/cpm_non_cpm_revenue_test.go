@@ -50,7 +50,7 @@ func TestNonCpmPlanCPCDatedRateSplit(t *testing.T) {
 	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 1000}
 	p := nonCpmPlanFor(cfg, ehealthRates,
 		map[string]int64{"2026-10-16": 100_000, "2026-10-17": 50_000},
-		map[string]int64{"2026-10-16": 100, "2026-10-17": 50},
+		map[string]int64{"2026-10-16": 100, "2026-10-17": 50}, nil,
 		0, 0, true, oct17, false)
 	if p.Units != 150 || !near(p.Revenue, 280) || p.RevenueBasis != "rate" {
 		t.Fatalf("units/revenue/basis = %d/%v/%s, want 150/280 (100×1.80 + 50×2.00)/rate", p.Units, p.Revenue, p.RevenueBasis)
@@ -71,7 +71,7 @@ func TestNonCpmPlanCPCDatedRateSplit(t *testing.T) {
 // month-end forecast at the 3-day cadence, required revenue per day.
 func TestNonCpmPlanEHealthOctober(t *testing.T) {
 	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 40000}
-	p := nonCpmPlanFor(cfg, ehealthRates, ehealthSent, ehealthBillable, 0, 0, true, oct17, true)
+	p := nonCpmPlanFor(cfg, ehealthRates, ehealthSent, ehealthBillable, nil, 0, 0, true, oct17, true)
 	// 11,408 clicks through 10-16 × $1.80 + 277 on 10-17 × $2.00.
 	if p.Sent != 3_577_069 || p.Units != 11_685 || !near(p.Revenue, 11408*1.80+277*2.00) {
 		t.Fatalf("sent/units/revenue = %d/%d/%v", p.Sent, p.Units, p.Revenue)
@@ -99,7 +99,7 @@ func TestNonCpmPlanEHealthOctober(t *testing.T) {
 func TestNonCpmPlanPaidOverridesModel(t *testing.T) {
 	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 10000, PaidRevenue: 5000}
 	p := nonCpmPlanFor(cfg, ehealthRates, map[string]int64{"2026-10-16": 1_000_000},
-		map[string]int64{"2026-10-16": 1000}, 0, 0, true, oct17, false)
+		map[string]int64{"2026-10-16": 1000}, nil, 0, 0, true, oct17, false)
 	if p.RevenueBasis != "paid" || p.Revenue != 5000 || !near(p.ModeledRevenue, 1800) {
 		t.Fatalf("paid must REPLACE the model, keeping it visible: %+v", p)
 	}
@@ -108,7 +108,7 @@ func TestNonCpmPlanPaidOverridesModel(t *testing.T) {
 // FAIL LOUD: a failed click pass must not price zero clicks as fact.
 func TestNonCpmPlanCPCClicksUnavailable(t *testing.T) {
 	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 10000}
-	p := nonCpmPlanFor(cfg, ehealthRates, ehealthSent, nil, 0, 0, false, oct17, true)
+	p := nonCpmPlanFor(cfg, ehealthRates, ehealthSent, nil, nil, 0, 0, false, oct17, true)
 	if p.RevenueBasis != "unavailable" || p.Revenue != 0 || len(p.Warnings) == 0 {
 		t.Fatalf("want basis=unavailable with a warning, got %+v", p)
 	}
@@ -119,7 +119,7 @@ func TestNonCpmPlanCPCClicksUnavailable(t *testing.T) {
 
 func TestNonCpmPlanCPCWithoutRateWarns(t *testing.T) {
 	p := nonCpmPlanFor(&nonCpmRevenueConfig{PayoutModel: "cpc"}, nil,
-		map[string]int64{"2026-10-16": 10}, map[string]int64{"2026-10-16": 5}, 0, 0, true, oct17, false)
+		map[string]int64{"2026-10-16": 10}, map[string]int64{"2026-10-16": 5}, nil, 0, 0, true, oct17, false)
 	if p.RevenueBasis != "none" || len(p.Warnings) == 0 {
 		t.Fatalf("CPC with no rate must warn, got %+v", p)
 	}
@@ -129,12 +129,12 @@ func TestNonCpmPlanCPL(t *testing.T) {
 	sent := map[string]int64{"2026-10-14": 100_000, "2026-10-15": 100_000, "2026-10-16": 100_000}
 	// Configured rate: conversions × today's rate; forecast holds yield/send.
 	p := nonCpmPlanFor(&nonCpmRevenueConfig{PayoutModel: "cpl", Budget: 3000},
-		[]nonCpmRate{{EffectiveFrom: "2026-10-01", Rate: 25}}, sent, nil, 20, 999, true, oct17, true)
+		[]nonCpmRate{{EffectiveFrom: "2026-10-01", Rate: 25}}, sent, nil, nil, 20, 999, true, oct17, true)
 	if p.RevenueBasis != "rate" || p.Revenue != 500 || p.ProjSent != 300_000+100_000*14 || !near(p.ProjRevenue, 500.0*1_700_000/300_000) {
 		t.Fatalf("cpl = %+v", p)
 	}
 	// No config: the supplied Everflow payout.
-	p = nonCpmPlanFor(nil, nil, sent, nil, 20, 640, true, oct17, false)
+	p = nonCpmPlanFor(nil, nil, sent, nil, nil, 20, 640, true, oct17, false)
 	if p.Configured || p.RevenueBasis != "everflow" || p.Revenue != 640 {
 		t.Fatalf("unconfigured = %+v", p)
 	}
@@ -183,6 +183,8 @@ func TestHandleNonCpmPerformanceCPCPlan(t *testing.T) {
 			AddRow("ehealth cpc - switchers", "2026-10-16", 300).
 			AddRow("ehealth cpc - advisor", "2026-10-16", 100).
 			AddRow("ehealth cpc - switchers", "2026-10-17", 50))
+	mock.ExpectQuery(`COUNT\(\*\) FILTER \(WHERE ec\.payout > 0\)`).WithArgs(testOrg, "2026-10-01", "2026-10-17").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "day", "n", "payout"}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/mailing/cpm-planner/non-cpm", nil)
@@ -290,5 +292,123 @@ func TestHandleUpsertRevenueConfig(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Everflow postbacks take over from the first postback day: those days price
+// the SUPPLIED payout on Everflow's count, earlier days keep tracked × rate,
+// and both counts stay visible per day.
+func TestNonCpmPlanCPCPostbackCutover(t *testing.T) {
+	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 1000}
+	p := nonCpmPlanFor(cfg, ehealthRates,
+		map[string]int64{"2026-10-15": 100_000, "2026-10-16": 100_000, "2026-10-17": 50_000},
+		map[string]int64{"2026-10-15": 100, "2026-10-16": 100, "2026-10-17": 60},
+		map[string]nonCpmPostbackDay{"2026-10-16": {Count: 3, Payout: 5.4}, "2026-10-17": {Count: 40, Payout: 80}},
+		0, 0, true, oct17, false)
+	// 10-16 = the setup day (postbacks switched on mid-day) → stays tracked.
+	if p.RevenueBasis != "postback" || p.PostbackSince != "2026-10-16" || p.PostbackFrom != "2026-10-17" {
+		t.Fatalf("basis/since/from = %s/%s/%s, want postback/2026-10-16/2026-10-17", p.RevenueBasis, p.PostbackSince, p.PostbackFrom)
+	}
+	// 200 tracked × $1.80 before the cutover + Everflow's $80 on 10-17.
+	if p.Units != 240 || !near(p.Revenue, 200*1.80+80) {
+		t.Fatalf("units/revenue = %d/%v, want 240/440", p.Units, p.Revenue)
+	}
+	if p.TrackedUnits != 260 || p.PostbackUnits != 43 {
+		t.Fatalf("tracked/postback = %d/%d, want 260/43 (both kept for the gap)", p.TrackedUnits, p.PostbackUnits)
+	}
+	last := p.Days[len(p.Days)-1]
+	if last.Source != "postback" || last.Units != 40 || last.TrackedUnits != 60 || p.Days[1].Source != "tracked" || p.Days[1].PostbackUnits != 3 {
+		t.Fatalf("days = %+v", p.Days)
+	}
+}
+
+// A day of postbacks with no payout is priced at the dated rate; a failed
+// tracked pass no longer blanks the group once postbacks exist.
+func TestNonCpmPlanCPCPostbackZeroPayoutAndTrackedFailure(t *testing.T) {
+	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc"}
+	p := nonCpmPlanFor(cfg, ehealthRates, map[string]int64{"2026-10-17": 10_000}, nil,
+		map[string]nonCpmPostbackDay{"2026-10-16": {Count: 1, Payout: 1.8}, "2026-10-17": {Count: 5}}, 0, 0, false, oct17, false)
+	if p.RevenueBasis != "postback" || !near(p.Revenue, 10) || len(p.Warnings) == 0 { // 10-16 tracked (nil) + 5 × $2.00
+		t.Fatalf("want postback basis, 5 × $2.00, tracked-failure warning; got %+v", p)
+	}
+}
+
+// A reversal-only day (no paid click) never trips the cutover.
+func TestNonCpmPlanCPCReversalIsNotCutover(t *testing.T) {
+	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc"}
+	p := nonCpmPlanFor(cfg, ehealthRates, map[string]int64{"2026-10-01": 10_000},
+		map[string]int64{"2026-10-01": 50},
+		map[string]nonCpmPostbackDay{"2026-10-01": {Count: 0, Payout: -1.75}}, 0, 0, true, oct17, false)
+	if p.RevenueBasis != "rate" || p.PostbackSince != "" || !near(p.Revenue, 50*1.80) {
+		t.Fatalf("reversal must not cut over: %+v", p)
+	}
+}
+
+// The first postback day is the setup day: still priced on tracked clicks, so a
+// late-evening test click cannot reprice a whole day on one postback.
+func TestNonCpmPlanCPCSetupDayStaysTracked(t *testing.T) {
+	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc"}
+	p := nonCpmPlanFor(cfg, ehealthRates, map[string]int64{"2026-10-17": 100_000},
+		map[string]int64{"2026-10-17": 277},
+		map[string]nonCpmPostbackDay{"2026-10-17": {Count: 1, Payout: 2}}, 0, 0, true, oct17, true)
+	if p.RevenueBasis != "rate" || p.PostbackSince != "2026-10-17" || p.PostbackFrom != "2026-10-18" || p.Units != 277 || !near(p.Revenue, 554) {
+		t.Fatalf("setup day must stay tracked: %+v", p)
+	}
+}
+
+// The handler wires Everflow postbacks onto the CPC group: from the first
+// postback day the group prices Everflow's paid clicks at the supplied payout.
+func TestHandleNonCpmPerformanceCPCPostbacks(t *testing.T) {
+	h, mock, done := nonCpmHandlerMock(t)
+	defer done()
+	mock.ExpectQuery(`FROM mailing_offer_revenue_config`).WithArgs(testOrg, "2026-10-01").
+		WillReturnRows(sqlmock.NewRows([]string{"g", "b", "m", "p", "n"}).AddRow("eHealth CPC", 20000.0, "cpc", 0.0, ""))
+	mock.ExpectQuery(`FROM mailing_offer_payout_rates`).WithArgs(testOrg).
+		WillReturnRows(sqlmock.NewRows([]string{"g", "d", "r"}).
+			AddRow("eHealth CPC", "2026-10-01", 1.80).AddRow("eHealth CPC", "2026-10-17", 2.00))
+	mock.ExpectQuery(`= ANY\(\$2::text\[\]\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1").AddRow("c2"))
+	mock.ExpectExec(`SET statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`te\.campaign_id = ANY\(\$4::uuid\[\]\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"identity", "day", "billable"}).
+			AddRow("ehealth cpc - switchers", "2026-10-16", 300).
+			AddRow("ehealth cpc - advisor", "2026-10-16", 100).
+			AddRow("ehealth cpc - switchers", "2026-10-17", 50))
+	mock.ExpectQuery(`COUNT\(\*\) FILTER \(WHERE ec\.payout > 0\)`).WithArgs(testOrg, "2026-10-01", "2026-10-17").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "day", "n", "payout"}).
+			AddRow("ehealth cpc - switchers", "2026-10-16", 2, 3.6). // setup day — stays tracked
+			AddRow("ehealth cpc - switchers", "2026-10-17", 45, 90.0).
+			AddRow("some cpl offer", "2026-10-17", 3, 150.0)) // not CPC — ignored by the plan
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/mailing/cpm-planner/non-cpm", nil)
+	req.Header.Set("X-Organization-ID", testOrg)
+	h.HandleNonCpmPerformance(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Groups   []nonCpmGroupRow `json:"groups"`
+		Degraded []string         `json:"degraded"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var g *nonCpmGroupRow
+	for i := range resp.Groups {
+		if resp.Groups[i].GroupName == "eHealth CPC" {
+			g = &resp.Groups[i]
+		}
+	}
+	if g == nil || len(resp.Degraded) != 0 {
+		t.Fatalf("degraded=%v groups=%+v", resp.Degraded, resp.Groups)
+	}
+	// 400 tracked on 10-16 × $1.80 + Everflow's 45 paid clicks = $90 on 10-17.
+	p := g.Plan
+	if p.RevenueBasis != "postback" || p.PostbackFrom != "2026-10-17" || p.Units != 445 || !near(p.Revenue, 720+90) || !near(g.Revenue, 810) {
+		t.Fatalf("plan = basis %s since %s units %d revenue %v (row %v)", p.RevenueBasis, p.PostbackSince, p.Units, p.Revenue, g.Revenue)
+	}
+	if p.TrackedUnits != 450 || p.PostbackUnits != 47 {
+		t.Fatalf("tracked/postback = %d/%d, want 450/47", p.TrackedUnits, p.PostbackUnits)
 	}
 }

@@ -394,9 +394,13 @@ interface NonCpmPlan {
   sent: number;
   units: number;
   unit_label: string;
+  tracked_units: number;   // cpc: our tracked billable clicks
+  postback_units: number;  // cpc: Everflow paid clicks (postbacks)
+  postback_since: string;  // cpc: first day with a paid postback
+  postback_from: string;   // cpc: first day priced on postbacks
   modeled_revenue: number;
   revenue: number;
-  revenue_basis: 'paid' | 'rate' | 'everflow' | 'unavailable' | 'none';
+  revenue_basis: 'paid' | 'postback' | 'rate' | 'everflow' | 'unavailable' | 'none';
   earned_ecpm: number;
   budget_pct: number;
   budget_gap: number;
@@ -408,7 +412,7 @@ interface NonCpmPlan {
   projected_budget_pct: number;
   projected_gap: number;
   required_revenue_per_day: number;
-  days?: { day: string; sent: number; units: number; rate: number; revenue: number }[];
+  days?: { day: string; sent: number; units: number; source: string; tracked_units: number; postback_units: number; rate: number; revenue: number }[];
   warnings?: string[];
 }
 interface NonCpmGroup extends NonCpmOffer {
@@ -2990,7 +2994,8 @@ export const CpmPlanner: React.FC = () => {
     // forecast at the 3-day cadence, revenue/day still required.
     const usd0 = (n: number) => (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('en-US');
     const basisLabel: Record<NonCpmPlan['revenue_basis'], string> = {
-      paid: 'paid to date (operator)', rate: 'units × dated rate', everflow: 'supplied Everflow payout',
+      paid: 'paid to date (operator)', postback: 'Everflow postbacks × supplied payout (tracked clicks × rate before)',
+      rate: 'units × dated rate', everflow: 'supplied Everflow payout',
       unavailable: 'NOT COMPUTED — click pass failed', none: 'no revenue basis',
     };
     const planCells = (g: NonCpmGroup) => {
@@ -3029,12 +3034,21 @@ export const CpmPlanner: React.FC = () => {
               `Revenue basis: ${basisLabel[p.revenue_basis]}`,
               p.revenue_basis === 'paid' ? `Modeled: ${money(p.modeled_revenue)}` : '',
               (p.rates || []).map(r => `$${r.rate.toFixed(2)} from ${r.effective_from}`).join(' · '),
-              p.payout_model === 'cpc' ? "Billable clicks = our tracked clicks, DISTINCT (subscriber, campaign) per day — an estimate of Everflow's count." : '',
+              p.payout_model === 'cpc'
+                ? (p.postback_from
+                  ? `Everflow paid clicks from ${p.postback_from} (postbacks since ${p.postback_since}); tracked clicks × rate before. Month: ${fmtInt(p.postback_units)} Everflow vs ${fmtInt(p.tracked_units)} tracked.`
+                  : "Billable clicks = our tracked clicks, DISTINCT (subscriber, campaign) per day — an estimate of Everflow's count. No Everflow postbacks yet.")
+                : '',
               warn,
             ].filter(Boolean).join('\n')}>
             <span style={{ color: p.budget > 0 ? C.heading : C.muted }}>{p.budget > 0 ? usd0(p.budget) : '—'}</span>
             {editBtn}
             {rateNote && <div style={{ fontSize: 10, color: warn ? C.amber : C.muted }}>{rateNote}</div>}
+            {p.payout_model === 'cpc' && p.postback_since && (
+              <div style={{ fontSize: 10, color: C.muted }}>
+                EF {fmtInt(p.postback_units)} · tracked {fmtInt(p.tracked_units)}
+              </div>
+            )}
           </td>
           <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
             {p.budget > 0 ? (
@@ -3139,7 +3153,7 @@ export const CpmPlanner: React.FC = () => {
               Everything we mail that no CPM deal is billing, for the selected calendar month —
               same source and clock as the pacing rows above. <span style={{ color: C.heading }}>eCPM</span> = revenue
               / sent × 1,000. Revenue = paid to date if entered, else units × the dated rate (CPC: billable clicks
-              priced at the rate in effect each day), else the supplied Everflow payout. Set budget / model / rates per row.
+              priced at the rate in effect each day; Everflow postbacks replace them from the day after the first one), else the supplied Everflow payout. Set budget / model / rates per row.
               {nonCpm?.from && <> {nonCpm.from} → {nonCpm.to}.</>}
             </div>
           </div>

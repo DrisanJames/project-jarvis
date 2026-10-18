@@ -21,12 +21,21 @@ package api
 //                CPL/CPA: conversions × the rate in effect on the last day.
 //   "everflow" — the supplied per-conversion payout (no rate configured).
 //
-// CPC billable clicks are OUR tracked clicks, not Everflow's: PG holds no
-// Everflow click table (mailing_everflow_conversions is postbacks only). A
-// billable click = one DISTINCT (subscriber, campaign) per Denver day on a
-// navigational link — repeat clicks, asset fetches and compliance links are
-// excluded, the scanner verdict is NOT applied (doctrine: never gate on it).
-// It is an ESTIMATE of Everflow's count; paid_revenue overrides it.
+// CPC units, per Denver day, in precedence:
+//   postback — Everflow's own paid clicks: one mailing_everflow_conversions row
+//              per paid click (the operator pointed each CPC offer's postback
+//              at /api/mailing/everflow/postback, 2026-10-17), priced at the
+//              SUPPLIED payout (dated rate when the payout arrives 0). Used for
+//              every day AFTER the group's first postback day — postbacks are
+//              switched on mid-day, so that first day is partial and stays on
+//              tracked clicks.
+//   tracked  — OUR tracked clicks for the days before that: one DISTINCT
+//              (subscriber, campaign) per Denver day on a navigational link —
+//              repeat clicks, asset fetches and compliance links excluded, the
+//              scanner verdict NOT applied (doctrine: never gate on it). An
+//              ESTIMATE of Everflow's count.
+// Both counts are returned per day so the gap stays visible. paid_revenue
+// overrides either.
 
 import (
 	"encoding/json"
@@ -115,12 +124,21 @@ type nonCpmRevenueConfig struct {
 	Notes       string  `json:"notes"`
 }
 
+// nonCpmPostbackDay is one Denver day of Everflow postbacks for a group.
+type nonCpmPostbackDay struct {
+	Count  int64
+	Payout float64
+}
+
 type nonCpmPlanDay struct {
-	Day     string  `json:"day"`
-	Sent    int64   `json:"sent"`
-	Units   int64   `json:"units"` // billable clicks (cpc)
-	Rate    float64 `json:"rate"`
-	Revenue float64 `json:"revenue"`
+	Day           string  `json:"day"`
+	Sent          int64   `json:"sent"`
+	Units         int64   `json:"units"` // the priced unit count (postbacks or tracked clicks)
+	Source        string  `json:"source"` // postback | tracked
+	TrackedUnits  int64   `json:"tracked_units"`
+	PostbackUnits int64   `json:"postback_units"`
+	Rate          float64 `json:"rate"`
+	Revenue       float64 `json:"revenue"`
 }
 
 // nonCpmPlan is the revenue-vs-budget model for one offer group-month.
@@ -136,9 +154,13 @@ type nonCpmPlan struct {
 	Sent           int64   `json:"sent"`
 	Units          int64   `json:"units"` // billable clicks (cpc) or conversions (cpl/cpa)
 	UnitLabel      string  `json:"unit_label"`
+	TrackedUnits   int64   `json:"tracked_units"`   // cpc: our tracked billable clicks, whole month
+	PostbackUnits  int64   `json:"postback_units"`  // cpc: Everflow paid clicks, whole month
+	PostbackSince  string  `json:"postback_since"`  // cpc: first Denver day with a paid postback ("" = none yet)
+	PostbackFrom   string  `json:"postback_from"`   // cpc: first day PRICED on postbacks = the day after PostbackSince
 	ModeledRevenue float64 `json:"modeled_revenue"` // rate × units, before any paid override
 	Revenue        float64 `json:"revenue"`
-	RevenueBasis   string  `json:"revenue_basis"` // paid | rate | everflow | unavailable | none
+	RevenueBasis   string  `json:"revenue_basis"` // paid | postback | rate | everflow | unavailable | none
 	EarnedEcpm     float64 `json:"earned_ecpm"`   // revenue / sent × 1000
 
 	BudgetPct float64 `json:"budget_pct"` // revenue / budget
@@ -168,12 +190,14 @@ func nonCpmRateOn(rates []nonCpmRate, day string) (float64, bool) {
 	return rate, ok
 }
 
-// nonCpmPlanFor is the pure model. sentDays / unitDays are keyed YYYY-MM-DD;
-// unitsOK=false means the click pass failed — a CPC group then reports
-// "unavailable" rather than pricing zero clicks as fact. today is the last day
-// of the window (Denver today for the current month).
+// nonCpmPlanFor is the pure model. sentDays / unitDays / pbDays are keyed
+// YYYY-MM-DD; unitDays = our tracked billable clicks, pbDays = Everflow CPC
+// postbacks. unitsOK=false means the click pass failed — a CPC group with no
+// postbacks then reports "unavailable" rather than pricing zero clicks as
+// fact. today is the last day of the window (Denver today for the current month).
 func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitDays map[string]int64,
-	conversions int64, everflowRevenue float64, unitsOK bool, today time.Time, isCurrent bool) nonCpmPlan {
+	pbDays map[string]nonCpmPostbackDay, conversions int64, everflowRevenue float64, unitsOK bool,
+	today time.Time, isCurrent bool) nonCpmPlan {
 	p := nonCpmPlan{RevenueBasis: "none", UnitLabel: "conversions", Rates: rates}
 	if p.Rates == nil {
 		p.Rates = []nonCpmRate{}
@@ -190,8 +214,22 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 	}
 	cpc := p.PayoutModel == "cpc"
 
+	// Postback cutover: the first day Everflow posted a paid click for this group.
+	for d, pb := range pbDays {
+		if pb.Count > 0 && (p.PostbackSince == "" || d < p.PostbackSince) {
+			p.PostbackSince = d
+		}
+	}
+	if p.PostbackSince != "" {
+		if d, err := time.Parse("2006-01-02", p.PostbackSince); err == nil {
+			p.PostbackFrom = d.AddDate(0, 0, 1).Format("2006-01-02")
+		}
+	}
+	// effUnits is the priced series the forecast's 3-day cadence reads.
+	effUnits := map[string]int64{}
+
 	switch {
-	case cpc && !unitsOK:
+	case cpc && !unitsOK && (p.PostbackFrom == "" || p.PostbackFrom > todayS):
 		p.UnitLabel = "billable clicks"
 		p.RevenueBasis = "unavailable"
 		p.Warnings = append(p.Warnings, "click pass failed — CPC revenue NOT computed (not zero)")
@@ -204,6 +242,9 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 		for d := range unitDays {
 			days[d] = true
 		}
+		for d := range pbDays {
+			days[d] = true
+		}
 		keys := make([]string, 0, len(days))
 		for d := range days {
 			keys = append(keys, d)
@@ -211,22 +252,44 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 		sort.Strings(keys)
 		var unpriced int64
 		for _, d := range keys {
-			u := unitDays[d]
+			tracked, pb := unitDays[d], pbDays[d]
 			rate, ok := nonCpmRateOn(rates, d)
-			if !ok && u > 0 {
-				unpriced += u
+			day := nonCpmPlanDay{Day: d, Sent: sentDays[d], TrackedUnits: tracked, PostbackUnits: pb.Count, Rate: rate}
+			if p.PostbackFrom != "" && d >= p.PostbackFrom {
+				day.Source, day.Units = "postback", pb.Count
+				day.Revenue = pb.Payout
+				if pb.Payout == 0 { // postbacks carried no payout — price at the dated rate
+					day.Revenue = float64(pb.Count) * rate
+					if !ok && pb.Count > 0 {
+						unpriced += pb.Count
+					}
+				}
+			} else {
+				day.Source, day.Units = "tracked", tracked
+				day.Revenue = float64(tracked) * rate
+				if !ok && tracked > 0 {
+					unpriced += tracked
+				}
 			}
-			rev := float64(u) * rate
-			p.Units += u
-			p.ModeledRevenue += rev
-			p.Days = append(p.Days, nonCpmPlanDay{Day: d, Sent: sentDays[d], Units: u, Rate: rate, Revenue: rev})
+			effUnits[d] = day.Units
+			p.Units += day.Units
+			p.TrackedUnits += tracked
+			p.PostbackUnits += pb.Count
+			p.ModeledRevenue += day.Revenue
+			p.Days = append(p.Days, day)
 		}
 		if unpriced > 0 {
 			p.Warnings = append(p.Warnings, fmt.Sprintf("%d billable clicks fall before the first rate — priced at $0", unpriced))
 		}
-		if len(rates) == 0 {
+		if !unitsOK {
+			p.Warnings = append(p.Warnings, "tracked-click pass failed — days before postbacks priced at 0")
+		}
+		switch {
+		case p.PostbackFrom != "" && p.PostbackFrom <= todayS:
+			p.RevenueBasis = "postback"
+		case len(rates) == 0:
 			p.Warnings = append(p.Warnings, "CPC model with no payout rate configured")
-		} else {
+		default:
 			p.RevenueBasis = "rate"
 		}
 	default:
@@ -260,7 +323,7 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 		if cpc {
 			// Clicks priced at TODAY's rate going forward — a rate change moves
 			// the forecast immediately, which constant yield per send would hide.
-			p.Avg3dUnits = cpmMailedAvg3d(unitDays, today)
+			p.Avg3dUnits = cpmMailedAvg3d(effUnits, today)
 			p.ProjRevenue = p.Revenue + p.Avg3dUnits*after*p.CurrentRate
 		} else if p.Sent > 0 {
 			p.ProjRevenue = p.Revenue * float64(p.ProjSent) / float64(p.Sent)
