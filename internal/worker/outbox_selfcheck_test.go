@@ -663,3 +663,51 @@ func TestSelfCheckSendLivenessSnapshot(t *testing.T) {
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+// reOldestProgress matches the progress probe checkOldestQueuedStuck runs only
+// after an age breach (AP-04808EED).
+const reOldestProgress = `SELECT EXISTS[\s\S]*s\.sent_at > NOW\(\)`
+
+// TestSelfCheck_OldestQueuedStalledHeadPages — an aged head row whose campaign
+// has sent nothing in the progress window is a stuck head: it must page.
+func TestSelfCheck_OldestQueuedStalledHeadPages(t *testing.T) {
+	db, mock := newSelfCheckMockDB(t)
+	expectJanitorTx(mock, 0)
+	expectCheckTx(mock, reSubmitting, sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
+	expectCheckTx(mock, reDeadLetter, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(7556)))
+	expectCheckTx(mock, reOldestProgress, sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectTailChecks(mock)
+
+	alerter := &capturingAlerter{}
+	sc := NewOutboxSelfCheck(db)
+	sc.SetAlerter(alerter, []string{"+15555550100"})
+
+	sc.runOnce(context.Background())
+	got := alerter.drain()
+	require.Len(t, got, 1, "stalled head must page")
+	require.Contains(t, got[0].Body, "oldest queued row · *7556s* old")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSelfCheck_OldestQueuedDrainingHeadDoesNotPage — an aged head row whose
+// campaign is still sending (gentle throttle) is healthy: no page.
+func TestSelfCheck_OldestQueuedDrainingHeadDoesNotPage(t *testing.T) {
+	db, mock := newSelfCheckMockDB(t)
+	expectJanitorTx(mock, 0)
+	expectCheckTx(mock, reSubmitting, sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
+	expectCheckTx(mock, reDeadLetter, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(7556)))
+	expectCheckTx(mock, reOldestProgress, sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	expectTailChecks(mock)
+
+	alerter := &capturingAlerter{}
+	sc := NewOutboxSelfCheck(db)
+	sc.SetAlerter(alerter, []string{"+15555550100"})
+
+	sc.runOnce(context.Background())
+	require.Empty(t, alerter.drain(), "draining head must not page")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

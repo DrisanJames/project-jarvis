@@ -68,6 +68,9 @@ const (
 	deadLetterRatePerHourThreshold = 500 // permanent fails / hr / system
 	queuedBacklogThreshold         = 150000
 	oldestQueuedAgeThresholdSec    = 3600 // 1 hour
+	// oldestQueuedProgressWindow: an aged head row pages only if its campaign
+	// has no row with sent_at inside this window (a draining throttled wave).
+	oldestQueuedProgressWindow = "15 minutes"
 
 	// selfCheckJanitorBatch bounds how many zombie 'queued' rows the
 	// terminal-parent janitor cancels per tick. Keeps the sweep cheap and
@@ -778,6 +781,33 @@ func (c *OutboxSelfCheck) checkOldestQueuedStuck(ctx context.Context) {
 		return
 	}
 	if ageSec <= oldestQueuedAgeThresholdSec {
+		return
+	}
+	// A gentle-throttled wave keeps its head row queued for hours while the
+	// campaign drains steadily, so age alone pages on healthy sends (AP-04808EED,
+	// 659 pages / 14d). Page only when the campaign owning the oldest queued row
+	// has sent nothing in oldestQueuedProgressWindow. Runs only on an age breach;
+	// on a query error it falls through and pages (fail open).
+	var draining bool
+	err = c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM mailing_campaign_queue s
+			WHERE s.campaign_id = (
+				SELECT q.campaign_id FROM mailing_campaign_queue q
+				WHERE q.status = 'queued'
+				  AND q.scheduled_at IS NOT NULL`+liveQueuedClause+`
+				ORDER BY q.scheduled_at ASC
+				LIMIT 1
+			)
+			  AND s.sent_at > NOW() - $1::interval
+		)
+	`, oldestQueuedProgressWindow).Scan(&draining)
+	})
+	if err != nil {
+		log.Printf("[OutboxSelfCheck] oldest-queued progress query failed (paging anyway): %v", err)
+	} else if draining {
+		log.Printf("[OutboxSelfCheck] oldest queued row %ds old but its campaign sent within %s — draining, not paging", ageSec, oldestQueuedProgressWindow)
 		return
 	}
 	msg := fmt.Sprintf(
