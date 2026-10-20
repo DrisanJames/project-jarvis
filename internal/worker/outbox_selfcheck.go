@@ -752,6 +752,25 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) selfCheckCount
 	if count <= queuedBacklogThreshold {
 		return selfCheckCount{value: count}
 	}
+	// Depth alone pages on healthy drains: an evening board sits at 150k-200k
+	// rows while sending 140k-197k/h (AP-DC737776, 331 pages / 14d). Page only
+	// when the queue also sent nothing in oldestQueuedProgressWindow. Runs only
+	// on a depth breach; on a query error it falls through and pages (fail open).
+	var draining bool
+	derr := c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM mailing_campaign_queue b
+			WHERE b.sent_at > NOW() - $1::interval
+		)
+	`, oldestQueuedProgressWindow).Scan(&draining)
+	})
+	if derr != nil {
+		log.Printf("[OutboxSelfCheck] queued-backlog progress query failed (paging anyway): %v", derr)
+	} else if draining {
+		log.Printf("[OutboxSelfCheck] queued backlog %d rows but the queue sent within %s — draining, not paging", count, oldestQueuedProgressWindow)
+		return selfCheckCount{value: count}
+	}
 	msg := fmt.Sprintf(
 		"queued backlog · *%s* rows\nThreshold: %s",
 		comma(int(count)), comma(queuedBacklogThreshold),

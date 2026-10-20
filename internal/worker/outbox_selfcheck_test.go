@@ -664,6 +664,57 @@ func TestSelfCheckSendLivenessSnapshot(t *testing.T) {
 	})
 }
 
+// reBacklogProgress matches the progress probe checkQueuedBacklog runs only
+// after a depth breach (AP-DC737776).
+const reBacklogProgress = `SELECT EXISTS[\s\S]*b\.sent_at > NOW\(\)`
+
+func runBacklogBreach(t *testing.T, progress func(sqlmock.Sqlmock)) []capturedSMS {
+	t.Helper()
+	db, mock := newSelfCheckMockDB(t)
+	expectJanitorTx(mock, 0)
+	expectCheckTx(mock, reSubmitting, sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
+	expectCheckTx(mock, reDeadLetter, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(196681)))
+	progress(mock)
+	expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
+	expectTailChecks(mock)
+
+	alerter := &capturingAlerter{}
+	sc := NewOutboxSelfCheck(db)
+	sc.SetAlerter(alerter, []string{"+15555550100"})
+	sc.runOnce(context.Background())
+	require.NoError(t, mock.ExpectationsWereMet())
+	return alerter.drain()
+}
+
+// TestSelfCheck_QueuedBacklogDrainingDoesNotPage — depth breach while the
+// queue is still sending is a healthy drain: no page.
+func TestSelfCheck_QueuedBacklogDrainingDoesNotPage(t *testing.T) {
+	got := runBacklogBreach(t, func(m sqlmock.Sqlmock) {
+		expectCheckTx(m, reBacklogProgress, sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	})
+	require.Empty(t, got, "draining backlog must not page")
+}
+
+// TestSelfCheck_QueuedBacklogStalledPages — depth breach with no sends in the
+// window is a real backlog: it must page.
+func TestSelfCheck_QueuedBacklogStalledPages(t *testing.T) {
+	got := runBacklogBreach(t, func(m sqlmock.Sqlmock) {
+		expectCheckTx(m, reBacklogProgress, sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	})
+	require.Len(t, got, 1, "stalled backlog must page")
+	require.Contains(t, got[0].Body, "queued backlog · *196,681* rows")
+}
+
+// TestSelfCheck_QueuedBacklogProgressErrorPages — a failed progress probe
+// fails open: depth breach still pages.
+func TestSelfCheck_QueuedBacklogProgressErrorPages(t *testing.T) {
+	got := runBacklogBreach(t, func(m sqlmock.Sqlmock) {
+		expectCheckTxErr(m, reBacklogProgress)
+	})
+	require.Len(t, got, 1, "progress-probe error must page")
+}
+
 // reOldestProgress matches the progress probe checkOldestQueuedStuck runs only
 // after an age breach (AP-04808EED).
 const reOldestProgress = `SELECT EXISTS[\s\S]*s\.sent_at > NOW\(\)`
