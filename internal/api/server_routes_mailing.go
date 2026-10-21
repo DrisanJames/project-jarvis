@@ -113,6 +113,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// session routes register in the /mailing group below.
 		contentDeskSvc := NewContentDeskService(db)
 		contentDeskSvc.RegisterAdminRoutes(s.router)
+		// Inbox Score (2026-10-21): per-ISP spam-filter scores + seed placements
+		// (internal/api/inbox_score.go). Session routes join the /mailing group below.
+		inboxScoreSvc := NewInboxScoreService(db)
+		inboxScoreSvc.RegisterAdminRoutes(s.router)
 
 		// Admin: creative-registry sync (ReviewForge phase 2). The operator's
 		// laptop tooling (agents/scheduling/forge.py sync) POSTs pipeline-built
@@ -1236,6 +1240,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// (inclusive AND human) + disclosed denominators + maturity.
 			// GET /api/mailing/campaign-performance (internal/api/campaign_performance.go).
 			NewCampaignPerformanceService(db).RegisterRoutes(r)
+			inboxScoreSvc.RegisterRoutes(r)
 
 			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
 			// The Optizmo compliance loop as software: GET

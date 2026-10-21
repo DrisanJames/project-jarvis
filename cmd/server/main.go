@@ -11666,6 +11666,58 @@ END $$`},
 		)`},
 		{"add_queue_content_snapshot_id", `ALTER TABLE mailing_campaign_queue ADD COLUMN IF NOT EXISTS content_snapshot_id UUID`},
 
+		// Inbox Score (2026-10-21): per-ISP spam-filter profiles trained on this
+		// estate's own outcomes, their scores per campaign, and real seed-mailbox
+		// placements. Written by the off-box scanner/trainer/seed reader through
+		// /api/admin/inbox-score/*, read by the Inbox Score portal tab
+		// (internal/api/inbox_score.go). Small tables; idempotent.
+		{"create_inbox_score_profiles", `CREATE TABLE IF NOT EXISTS mailing_inbox_score_profiles (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			isp TEXT NOT NULL,
+			version INT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'candidate',
+			trained_at TIMESTAMPTZ,
+			n_ham INT NOT NULL DEFAULT 0,
+			n_spam INT NOT NULL DEFAULT 0,
+			auc NUMERIC(5,4),
+			calibration JSONB NOT NULL DEFAULT '{}'::jsonb,
+			notes TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, isp, version)
+		)`},
+		{"create_inbox_scores", `CREATE TABLE IF NOT EXISTS mailing_inbox_scores (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			campaign_id UUID NOT NULL,
+			content_hash TEXT NOT NULL DEFAULT '',
+			isp TEXT NOT NULL,
+			profile_version INT NOT NULL DEFAULT 0,
+			sa_score NUMERIC(8,3),
+			p_inbox NUMERIC(5,4),
+			rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+			reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+			source TEXT NOT NULL DEFAULT 'render',
+			scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, campaign_id, isp, source)
+		)`},
+		{"create_inbox_scores_campaign_idx", `CREATE INDEX IF NOT EXISTS idx_inbox_scores_org_campaign ON mailing_inbox_scores(organization_id, campaign_id)`},
+		{"create_seed_placements", `CREATE TABLE IF NOT EXISTS mailing_seed_placements (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			campaign_id UUID,
+			seed_email TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			folder TEXT NOT NULL,
+			message_id TEXT NOT NULL DEFAULT '',
+			x_message_id TEXT NOT NULL DEFAULT '',
+			auth_results JSONB NOT NULL DEFAULT '{}'::jsonb,
+			headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+			observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, seed_email, message_id)
+		)`},
+		{"create_seed_placements_campaign_idx", `CREATE INDEX IF NOT EXISTS idx_seed_placements_org_campaign ON mailing_seed_placements(organization_id, campaign_id)`},
+
 		// PMTACollector (internal/pmta/collector.go persistMetrics) has been
 		// INSERTing status/ip/domain snapshots into this table since the
 		// SparkPost-era schema was retired — every write failed with

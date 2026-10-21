@@ -62,6 +62,7 @@ const AudienceAnalytics = lazy(() => import('../components/AudienceAnalytics').t
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
 const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m => ({ default: m.CreativeStudio })));
+const InboxScore = lazy(() => import('../components/InboxScore'));
 // Content Desk (2026-09-11) — review queue, block-by-block article review with
 // claim evidence, ops dashboard, and briefs over /api/mailing/content-desk/*.
 const ContentDesk = lazy(() => import('../components/ContentDesk').then(m => ({ default: m.ContentDesk })));
@@ -90,7 +91,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain' | 'inbox-score';
 
 interface Tab {
   id: TabId;
@@ -126,6 +127,7 @@ const tabs: Tab[] = [
   { id: 'brain', label: 'Brain', icon: faBook, description: 'The platform\'s operational memory — claims with their evidence and verification status, the capabilities that answer recognised tasks, and the evals that pin known answers.' },
   { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
   { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
+  { id: 'inbox-score', label: 'Inbox Score', icon: faEnvelope, description: 'Will this email land in the inbox? One guess per mailbox provider from a spam filter trained on our own sends, next to what our real test inbox saw.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
   { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
   { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
@@ -263,6 +265,8 @@ export const MailingPortal: React.FC = () => {
       case 'analytics': // legacy id — AnalyticsCenter retired, alias to the lake explorer
       case 'event-lake':
         return <Suspense fallback={<ChunkLoader />}><EventLakeExplorer /></Suspense>;
+      case 'inbox-score':
+        return <Suspense fallback={<ChunkLoader />}><InboxScore /></Suspense>;
       case 'creative-studio':
         return <Suspense fallback={<ChunkLoader />}><CreativeStudio /></Suspense>;
       case 'content-desk':

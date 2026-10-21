@@ -1,0 +1,43 @@
+.inbox-score { padding: 20px 24px; color: #e5e7eb; }
+.inbox-score__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.inbox-score__head h2 { margin: 0 0 4px; font-size: 20px; }
+.inbox-score__sub { margin: 0; color: #9ca3af; max-width: 70ch; }
+.inbox-score__controls { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.inbox-score__controls label { display: flex; flex-direction: column; font-size: 12px; color: #9ca3af; gap: 4px; }
+.inbox-score__controls input { background: #111827; color: #e5e7eb; border: 1px solid #374151; border-radius: 6px; padding: 6px 8px; }
+.inbox-score__controls button { background: #4f46e5; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+.inbox-score__controls button:disabled { opacity: .6; cursor: default; }
+.inbox-score__error { background: #7f1d1d; color: #fecaca; padding: 10px 12px; border-radius: 6px; margin: 8px 0; }
+.inbox-score__howto { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 12px 16px; margin: 12px 0 16px; max-width: 90ch; }
+.inbox-score__howto h3 { margin: 0 0 6px; font-size: 14px; color: #c7d2fe; }
+.inbox-score__howto ul { margin: 0; padding-left: 18px; color: #d1d5db; font-size: 14px; }
+.inbox-score__howto li { margin: 4px 0; }
+.inbox-score__empty { color: #9ca3af; padding: 24px 0; }
+.inbox-score__tablewrap { overflow-x: auto; border: 1px solid #1f2937; border-radius: 8px; }
+.inbox-score__table { border-collapse: collapse; width: 100%; min-width: 960px; font-size: 13px; }
+.inbox-score__table th { text-align: left; padding: 10px 12px; background: #0f172a; color: #9ca3af; font-weight: 600; border-bottom: 1px solid #1f2937; white-space: nowrap; }
+.inbox-score__table td { padding: 10px 12px; border-bottom: 1px solid #1f2937; vertical-align: top; }
+.inbox-score__table tbody tr { cursor: pointer; }
+.inbox-score__table tbody tr:hover { background: #111827; }
+.inbox-score__table tbody tr.is-open { background: #111827; }
+.inbox-score__camp { min-width: 260px; }
+.inbox-score__name { font-weight: 600; color: #f3f4f6; }
+.inbox-score__meta { color: #9ca3af; font-size: 12px; margin-top: 2px; }
+.inbox-score__cell { min-width: 150px; }
+.inbox-score__chance { font-weight: 600; }
+.band-good .inbox-score__chance { color: #86efac; }
+.band-mixed .inbox-score__chance { color: #fde68a; }
+.band-poor .inbox-score__chance { color: #fca5a5; }
+.band-none .inbox-score__chance { color: #6b7280; font-weight: 400; }
+.inbox-score__trust { color: #9ca3af; font-size: 12px; min-height: 14px; }
+.inbox-score__seed { margin-top: 6px; font-size: 12px; display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1f2937; color: #d1d5db; }
+.inbox-score__seed.seed-inbox { background: #14532d; color: #bbf7d0; }
+.inbox-score__seed.seed-promotions { background: #713f12; color: #fde68a; }
+.inbox-score__seed.seed-spam { background: #7f1d1d; color: #fecaca; }
+.inbox-score__seed.seed-missing { background: #4c1d95; color: #ddd6fe; }
+.inbox-score__detail td { background: #0b1220; }
+.inbox-score__reasons { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.inbox-score__reason-block h4 { margin: 0 0 6px; font-size: 13px; color: #c7d2fe; }
+.inbox-score__reason-block ul { margin: 0; padding-left: 18px; }
+.inbox-score__reason-block li { margin: 3px 0; }
+.inbox-score .muted { color: #9ca3af; font-size: 12px; margin: 6px 0 0; }

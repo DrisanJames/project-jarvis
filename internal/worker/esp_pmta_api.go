@@ -93,57 +93,15 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	}
 	messageID := fmt.Sprintf("%s@%s", uuid.New().String(), msgDomain)
 
-	// Build RFC822 message
+	// Build RFC822 message (BuildRFC822, rfc822.go — shared with the
+	// render-only Inbox Score path so scored bytes == sent bytes).
 	boundary := fmt.Sprintf("=_%s", uuid.New().String()[:16])
-	var rfc822 bytes.Buffer
-
-	rfc822.WriteString(BuildFromHeader(msg.FromName, msg.FromEmail))
-	rfc822.WriteString(fmt.Sprintf("To: %s\r\n", msg.Email))
-	rfc822.WriteString(BuildSubjectHeader(msg.Subject))
-	rfc822.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
-	rfc822.WriteString("MIME-Version: 1.0\r\n")
-
-	if msg.ReplyTo != "" {
-		rfc822.WriteString(fmt.Sprintf("Reply-To: %s\r\n", msg.ReplyTo))
-	}
-
-	if msg.CampaignID != "" {
-		rfc822.WriteString(fmt.Sprintf("X-Campaign-ID: %s\r\n", msg.CampaignID))
-	}
-	if msg.SubscriberID != "" {
-		rfc822.WriteString(fmt.Sprintf("X-Subscriber-ID: %s\r\n", msg.SubscriberID))
-	}
-	if msg.ID != "" {
-		rfc822.WriteString(fmt.Sprintf("X-Message-ID: %s\r\n", msg.ID))
-	}
-
-	for k, v := range msg.Headers {
-		rfc822.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-	}
-
-	rfc822.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
-	rfc822.WriteString("\r\n")
-
-	if msg.TextContent != "" {
-		rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-		rfc822.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-		rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-		qpText := quotedprintableEncode(msg.TextContent)
-		rfc822.WriteString(qpText)
-		rfc822.WriteString("\r\n")
-	}
-	rfc822.WriteString(fmt.Sprintf("--%s\r\n", boundary))
-	rfc822.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
-	rfc822.WriteString("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
-	qpHTML := quotedprintableEncode(msg.HTMLContent)
-	rfc822.WriteString(qpHTML)
-	rfc822.WriteString("\r\n")
-	rfc822.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+	rfc822 := BuildRFC822(msg, messageID, boundary)
 
 	payload := map[string]interface{}{
 		"envelope_sender": msg.FromEmail,
 		"recipients":      []map[string]string{{"email": msg.Email}},
-		"content":         rfc822.String(),
+		"content":         rfc822,
 	}
 
 	var selectedIPID string
@@ -201,7 +159,7 @@ func (s *PMTAAPISender) Send(ctx context.Context, msg *EmailMessage) (*SendResul
 	routedVMTA, _ := payload["vmta"].(string)
 	if s.headerRouting {
 		if routedVMTA != "" {
-			payload["content"] = "X-Virtual-MTA: " + routedVMTA + "\r\n" + rfc822.String()
+			payload["content"] = "X-Virtual-MTA: " + routedVMTA + "\r\n" + rfc822
 		}
 		delete(payload, "vmta")
 	}
