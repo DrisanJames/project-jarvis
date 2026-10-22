@@ -5,21 +5,402 @@ import { apiFetch } from '../shared/apiFetch';
 import './InboxScore.css';
 
 /**
- * Inbox Score — offers only, grouped by offer, one column per mailbox provider.
+ * Inbox Score.
  *
- * Each cell shows ONE verdict, in this order of truth:
- *   1. Test inbox (the defender): our own mailbox on that provider's real lane
- *      received the live send; mailcow's rspamd scored it. Inbox / Junk + score of 15.
- *   2. Pre-send: the scan before sending (SpamAssassin scale). Same copy for every
- *      provider until a provider's own model is trusted.
- * Newsletters are hidden unless the toggle is flipped (operator 2026-10-22).
+ * CATALOG (default — operator 2026-10-22): one card per OFFER (associated by name);
+ * inside, every creative in Creative Studio and every subject line + preheader it
+ * carries, each scored per mailbox provider on its content alone. The sending
+ * domain is never part of the score. Rows come from the content gate
+ * (agents/inboxscore/gate.py) — the exact bytes our defender received.
+ *   GET /api/mailing/inbox-score/catalog  (internal/api/inbox_score_catalog.go)
  *
- * Data: GET /api/mailing/inbox-score/summary?from&to (internal/api/inbox_score.go).
+ * LIVE SENDS: the day's campaigns, one cell per provider — the real seed verdict
+ * on the live send when it has landed, the pre-send scan until then.
+ *   GET /api/mailing/inbox-score/summary?from&to  (internal/api/inbox_score.go)
  */
 
-type ProfileBrief = { version: number; status: string; auc: number | null; finding: string };
+// ───────────────────────────── shared
+
+const ISP_LABEL: Record<string, string> = {
+  gmail: 'Gmail',
+  yahoo_family: 'Yahoo / AOL / AT&T',
+  microsoft: 'Outlook / Hotmail',
+  apple: 'Apple iCloud',
+  cables: 'Cable (Charter, Comcast, Cox)',
+};
+const ISP_SHORT: Record<string, string> = { gmail: 'Gmail', yahoo_family: 'Yahoo', microsoft: 'Outlook', apple: 'Apple', cables: 'Cable' };
+
+const FOLDER_LABEL: Record<string, string> = {
+  inbox: 'Inbox',
+  promotions: 'Promotions',
+  spam: 'Junk',
+  missing: 'Not delivered',
+  other: 'Other folder',
+};
+
+type Band = 'ready' | 'review' | 'act' | 'junk' | 'none';
+const BAND_WORDS: Record<Band, string> = { ready: 'ready', review: 'review', act: 'fix before send', junk: 'junked', none: '' };
+
+/** The defender (mailcow rspamd, 0..15, junk at 8) in the operator's bands:
+ *  ready < 2.4 · review < 4.6 · fix before send < 8 · junked ≥ 8. */
+export function defenderBand(score: number | null | undefined): Band {
+  if (score === null || score === undefined) return 'none';
+  if (score < 2.4) return 'ready';
+  if (score < 4.6) return 'review';
+  if (score < 8) return 'act';
+  return 'junk';
+}
+
+/** The pre-send scan (SpamAssassin scale, 5 = fail): ready < 1.5 · review < 3 · fix < 5 · fail ≥ 5. */
+export function presendBand(score: number | null | undefined): Band {
+  if (score === null || score === undefined) return 'none';
+  if (score < 1.5) return 'ready';
+  if (score < 3) return 'review';
+  if (score < 5) return 'act';
+  return 'junk';
+}
+
+const BAND_RANK: Record<Band, number> = { none: -1, ready: 0, review: 1, act: 2, junk: 3 };
+function worseBand(a: Band, b: Band): Band {
+  return BAND_RANK[a] >= BAND_RANK[b] ? a : b;
+}
+
+function denverToday(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
 
 type Symbol = { symbol: string; score: number; detail?: string };
+type Rule = { rule: string; score: number };
+
+function symbolsList(s: unknown): Symbol[] {
+  if (!Array.isArray(s)) return [];
+  return s.filter((x): x is Symbol => !!x && typeof x === 'object' && typeof (x as Symbol).symbol === 'string');
+}
+function rulesList(s: unknown): Rule[] {
+  if (!Array.isArray(s)) return [];
+  return s.filter((x): x is Rule => !!x && typeof x === 'object' && typeof (x as Rule).rule === 'string');
+}
+function stringList(r: unknown): string[] {
+  if (Array.isArray(r)) return r.filter((x): x is string => typeof x === 'string');
+  return [];
+}
+
+// ───────────────────────────── catalog types
+
+type CatalogCell = {
+  isp: string;
+  source: string;
+  sa_score: number | null;
+  sa_rules: unknown;
+  defender_score: number | null;
+  defender_symbols: unknown;
+  folder: string;
+  auth: Record<string, string> | null;
+  reasons: unknown;
+  verdict: 'PASS' | 'FAIL' | string;
+  sending_domain_used: string;
+  scored_at: string;
+  stale: boolean;
+};
+
+type CatalogVariant = {
+  index: number;
+  subject: string;
+  preheader: string;
+  verdict: 'PASS' | 'FAIL' | 'PARTIAL' | 'UNSCORED';
+  scored_at?: string;
+  cells: Record<string, CatalogCell | undefined>;
+};
+
+type CatalogCreative = {
+  proof_id: string;
+  name: string;
+  offer_key: string;
+  approval_status: string;
+  from_names: string[];
+  updated_at: string;
+  variants: CatalogVariant[];
+};
+
+type CatalogOffer = {
+  offer: string;
+  creatives: CatalogCreative[];
+  variants: number;
+  scored: number;
+  passed: number;
+  failed: number;
+};
+
+type Catalog = { as_of: string; isps: string[]; offers: CatalogOffer[]; how_to_read: string[] };
+
+/** One provider cell for one subject line: the defender verdict leads, the pre-send scan follows. */
+export function catalogCellBand(cell: CatalogCell | undefined): Band {
+  if (!cell || cell.stale) return 'none';
+  let b: Band = 'none';
+  if (cell.folder === 'spam' || cell.folder === 'missing') b = 'junk';
+  b = worseBand(b, defenderBand(cell.defender_score));
+  b = worseBand(b, presendBand(cell.sa_score));
+  if (cell.verdict === 'FAIL' && b === 'ready') b = 'review';
+  return b;
+}
+
+export function variantBand(v: CatalogVariant, isps: string[]): Band {
+  return isps.reduce<Band>((acc, isp) => worseBand(acc, catalogCellBand(v.cells[isp])), 'none');
+}
+
+export function offerBand(o: CatalogOffer, isps: string[]): Band {
+  return o.creatives.reduce<Band>((acc, c) => c.variants.reduce<Band>((a2, v) => worseBand(a2, variantBand(v, isps)), acc), 'none');
+}
+
+const VERDICT_WORDS: Record<CatalogVariant['verdict'], string> = { PASS: 'PASS', FAIL: 'FAIL', PARTIAL: 'partly scored', UNSCORED: 'not scored' };
+
+const CatalogView: React.FC = () => {
+  const [data, setData] = useState<Catalog | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [openVariant, setOpenVariant] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+  const [onlyScored, setOnlyScored] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/mailing/inbox-score/catalog');
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      setData((await res.json()) as Catalog);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load the catalog');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const isps = useMemo(() => data?.isps ?? ['gmail', 'yahoo_family', 'microsoft', 'apple', 'cables'], [data]);
+  const offers = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    return (data?.offers ?? []).filter((o) => (!onlyScored || o.scored > 0) && (!q || o.offer.toLowerCase().includes(q) || o.creatives.some((c) => c.name.toLowerCase().includes(q))));
+  }, [data, filter, onlyScored]);
+  const current = offers.find((o) => o.offer === selected) ?? null;
+  const totals = useMemo(() => {
+    const all = data?.offers ?? [];
+    return {
+      offers: all.length,
+      creatives: all.reduce((n, o) => n + o.creatives.length, 0),
+      variants: all.reduce((n, o) => n + o.variants, 0),
+      scored: all.reduce((n, o) => n + o.scored, 0),
+      failed: all.reduce((n, o) => n + o.failed, 0),
+    };
+  }, [data]);
+
+  return (
+    <>
+      <section className="inbox-score__howto">
+        <ul>
+          {(data?.how_to_read ?? []).map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+        {data && (
+          <p className="muted">
+            {totals.offers} offers · {totals.creatives} creatives · {totals.variants} subject lines · {totals.scored} scored
+            {totals.failed ? ` · ${totals.failed} failing` : ''}
+          </p>
+        )}
+      </section>
+
+      <div className="isc-toolbar">
+        <input id="inbox-score-filter" type="search" placeholder="Find an offer or creative" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <label className="inbox-score__toggle">
+          <input id="inbox-score-only-scored" type="checkbox" checked={onlyScored} onChange={(e) => setOnlyScored(e.target.checked)} />
+          scored only
+        </label>
+        <button id="inbox-score-catalog-refresh" type="button" onClick={() => void load()} disabled={loading}>
+          <FontAwesomeIcon icon={loading ? faSpinner : faRotateRight} spin={loading} /> Refresh
+        </button>
+      </div>
+
+      {error && <div className="inbox-score__error">{error}</div>}
+      {!loading && data && offers.length === 0 && <div className="inbox-score__empty">No offers match.</div>}
+
+      <div className="isc-cards">
+        {offers.map((o) => {
+          const band = offerBand(o, isps);
+          const unscored = o.variants - o.scored;
+          return (
+            <button
+              key={o.offer}
+              type="button"
+              className={`isc-card band-${band}${selected === o.offer ? ' isc-card--selected' : ''}`}
+              onClick={() => {
+                setSelected(selected === o.offer ? null : o.offer);
+                setOpenVariant(null);
+              }}
+            >
+              <div className="isc-card__name">{o.offer}</div>
+              <div className="isc-card__meta">
+                {o.creatives.length} creative{o.creatives.length === 1 ? '' : 's'} · {o.variants} subject line{o.variants === 1 ? '' : 's'}
+              </div>
+              <div className="isc-card__chips">
+                {o.passed > 0 && <span className="isc-chip isc-chip--pass">{o.passed} pass</span>}
+                {o.failed > 0 && <span className="isc-chip isc-chip--fail">{o.failed} fail</span>}
+                {unscored > 0 && <span className="isc-chip isc-chip--none">{unscored} not scored</span>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {current && (
+        <section className="isc-detail">
+          <header className="isc-detail__head">
+            <h3>{current.offer}</h3>
+            <p className="muted">
+              Each row is one subject line + preheader on one creative. Scores are the content&apos;s alone — the domain a run went out from is shown only in the detail.
+            </p>
+          </header>
+          <div className="inbox-score__tablewrap">
+            <table className="inbox-score__table isc-table">
+              <thead>
+                <tr>
+                  <th>Creative / subject line</th>
+                  {isps.map((isp) => (
+                    <th key={isp}>{ISP_LABEL[isp] ?? isp}</th>
+                  ))}
+                  <th>Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                {current.creatives.map((c) => (
+                  <React.Fragment key={c.proof_id}>
+                    <tr className="isc-creative">
+                      <td colSpan={isps.length + 2}>
+                        <span className="isc-creative__name">{c.name}</span>
+                        <span className="isc-creative__meta">
+                          {c.approval_status}
+                          {c.from_names.length ? ` · from “${c.from_names[0]}”${c.from_names.length > 1 ? ` +${c.from_names.length - 1}` : ''}` : ''}
+                          {' · '}
+                          <code>{c.offer_key}</code>
+                        </span>
+                      </td>
+                    </tr>
+                    {c.variants.map((v) => {
+                      const key = `${c.proof_id}:${v.index}`;
+                      const vb = variantBand(v, isps);
+                      const isOpen = openVariant === key;
+                      return (
+                        <React.Fragment key={key}>
+                          <tr className={`inbox-score__row isc-variant verdict-${v.verdict.toLowerCase()}`} onClick={() => setOpenVariant(isOpen ? null : key)}>
+                            <td className="inbox-score__camp inbox-score__camp--inner">
+                              <div className="inbox-score__name">
+                                {isOpen ? '▾' : '▸'} {v.index < 0 ? <em>no subject on file (proof name used)</em> : v.subject || <em>empty subject</em>}
+                              </div>
+                              <div className="inbox-score__meta">{v.preheader ? `preheader: ${v.preheader}` : 'no preheader'}</div>
+                            </td>
+                            {isps.map((isp) => {
+                              const cell = v.cells[isp];
+                              const b = catalogCellBand(cell);
+                              let text = 'not scored';
+                              if (cell && cell.stale) text = 'stale — copy changed';
+                              else if (cell) {
+                                const folder = FOLDER_LABEL[cell.folder] ?? cell.folder;
+                                const d = cell.defender_score !== null && cell.defender_score !== undefined ? `${cell.defender_score.toFixed(1)} of 15` : '';
+                                const sa = cell.sa_score !== null && cell.sa_score !== undefined ? ` · pre-send ${cell.sa_score.toFixed(1)}` : '';
+                                text = `${folder}${d ? ` · ${d}` : ''}${sa}`;
+                              }
+                              return (
+                                <td key={isp} className={`inbox-score__cell band-${b}`}>
+                                  <div className="inbox-score__verdict">{text}</div>
+                                </td>
+                              );
+                            })}
+                            <td className={`isc-verdict verdict-${v.verdict.toLowerCase()} band-${vb}`}>{VERDICT_WORDS[v.verdict]}</td>
+                          </tr>
+                          {isOpen && (
+                            <tr className="inbox-score__detail">
+                              <td colSpan={isps.length + 2}>
+                                <div className="inbox-score__reasons">
+                                  {isps.map((isp) => {
+                                    const cell = v.cells[isp];
+                                    if (!cell) {
+                                      return (
+                                        <div key={isp} className="inbox-score__reason-block">
+                                          <h4>{ISP_SHORT[isp] ?? isp}</h4>
+                                          <p className="muted">Not scored yet.</p>
+                                        </div>
+                                      );
+                                    }
+                                    const syms = symbolsList(cell.defender_symbols).filter((s) => s.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
+                                    const rules = rulesList(cell.sa_rules).filter((r) => r.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
+                                    const why = stringList(cell.reasons);
+                                    const au = cell.auth ?? {};
+                                    return (
+                                      <div key={isp} className="inbox-score__reason-block">
+                                        <h4>
+                                          {ISP_SHORT[isp] ?? isp} — {cell.verdict}
+                                          {cell.stale ? ' (stale: the copy changed after this score)' : ''}
+                                        </h4>
+                                        <p>
+                                          Landed in <strong>{FOLDER_LABEL[cell.folder] ?? cell.folder}</strong>
+                                          {cell.defender_score !== null ? ` · defender ${cell.defender_score.toFixed(1)} of 15 (${BAND_WORDS[defenderBand(cell.defender_score)]})` : ''}
+                                          {cell.sa_score !== null ? ` · pre-send ${cell.sa_score.toFixed(1)} (${BAND_WORDS[presendBand(cell.sa_score)]})` : ''}
+                                          {` · spf ${au.spf ?? '-'} · dkim ${au.dkim ?? '-'} · dmarc ${au.dmarc ?? '-'}`}
+                                        </p>
+                                        {why.length > 0 && <ul>{why.map((r, i) => <li key={i}>{r}</li>)}</ul>}
+                                        {(syms.length > 0 || rules.length > 0) && (
+                                          <ul className="inbox-score__symbols">
+                                            {syms.map((s) => (
+                                              <li key={`d-${s.symbol}`}>
+                                                defender <code>{s.symbol}</code> +{s.score.toFixed(1)}{s.detail ? ` — ${s.detail}` : ''}
+                                              </li>
+                                            ))}
+                                            {rules.map((r) => (
+                                              <li key={`s-${r.rule}`}>
+                                                pre-send <code>{r.rule}</code> +{r.score.toFixed(1)}
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        )}
+                                        <p className="muted">
+                                          Sent {cell.scored_at.slice(0, 16).replace('T', ' ')} UTC from {cell.sending_domain_used || 'unknown domain'} (not part of the score).
+                                        </p>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <p className="muted isc-run">
+                                  Re-score: <code>python3 -m agents.inboxscore.gate --proof &quot;{c.name}&quot; {v.index >= 0 ? `--variant ${v.index}` : ''}</code>
+                                </p>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+    </>
+  );
+};
+
+// ───────────────────────────── live sends (the day's campaigns)
+
+type ProfileBrief = { version: number; status: string; auc: number | null; finding: string };
 
 type Cell = {
   isp: string;
@@ -60,50 +441,6 @@ type Summary = {
   how_to_read: string[];
 };
 
-const ISP_LABEL: Record<string, string> = {
-  gmail: 'Gmail',
-  yahoo_family: 'Yahoo / AOL / AT&T',
-  microsoft: 'Outlook / Hotmail',
-  apple: 'Apple iCloud',
-  cables: 'Cable (Charter, Comcast, Cox)',
-};
-
-const FOLDER_LABEL: Record<string, string> = {
-  inbox: 'Inbox',
-  promotions: 'Promotions',
-  spam: 'Junk',
-  missing: 'Not delivered',
-  other: 'Other folder',
-};
-
-type Band = 'ready' | 'review' | 'act' | 'junk' | 'none';
-const BAND_WORDS: Record<Band, string> = { ready: 'ready', review: 'review', act: 'fix before send', junk: 'junked', none: '' };
-
-function denverToday(): string {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')}`;
-}
-
-/** The defender (mailcow rspamd, 0..15, junk at 8) in the operator's bands:
- *  ready < 2.4 · review < 4.6 · fix before send < 8 · junked ≥ 8. */
-export function defenderBand(score: number | null | undefined): Band {
-  if (score === null || score === undefined) return 'none';
-  if (score < 2.4) return 'ready';
-  if (score < 4.6) return 'review';
-  if (score < 8) return 'act';
-  return 'junk';
-}
-
-/** The pre-send scan (SpamAssassin scale, 5 = fail): ready < 1.5 · review < 3 · fix < 5 · fail ≥ 5. */
-export function presendBand(score: number | null | undefined): Band {
-  if (score === null || score === undefined) return 'none';
-  if (score < 1.5) return 'ready';
-  if (score < 3) return 'review';
-  if (score < 5) return 'act';
-  return 'junk';
-}
-
 export function tenScale(p: number | null | undefined): string | null {
   if (p === null || p === undefined || Number.isNaN(p)) return null;
   return `${Math.round(p * 10)} in 10`;
@@ -120,16 +457,6 @@ export function trustLabel(auc: number | null | undefined): string {
   if (auc === null || auc === undefined) return 'untested';
   const n = Math.round(auc * 10);
   return `right ${n} in 10 times on past sends`;
-}
-
-function reasonsList(r: Cell['reasons']): string[] {
-  if (Array.isArray(r)) return r.filter((x): x is string => typeof x === 'string');
-  return [];
-}
-
-function symbolsList(s: Cell['seed_symbols']): Symbol[] {
-  if (!Array.isArray(s)) return [];
-  return s.filter((x): x is Symbol => !!x && typeof x === 'object' && typeof (x as Symbol).symbol === 'string');
 }
 
 /** What one cell says, in one line. The defender's real verdict wins over the pre-send scan. */
@@ -172,7 +499,7 @@ function offerRollup(rows: CampaignRow[], isp: string): { text: string; band: Ba
 
 /** Reasons shared by every provider are shown once; the rest per provider. */
 function splitReasons(cells: Cell[], isps: string[]): { shared: string[]; perIsp: Record<string, string[]> } {
-  const lists = isps.map((isp) => reasonsList(cells.find((c) => c.isp === isp)?.reasons));
+  const lists = isps.map((isp) => stringList(cells.find((c) => c.isp === isp)?.reasons));
   const shared = lists.length ? lists[0].filter((r) => lists.every((l) => l.includes(r))) : [];
   const perIsp: Record<string, string[]> = {};
   isps.forEach((isp, i) => {
@@ -181,7 +508,7 @@ function splitReasons(cells: Cell[], isps: string[]): { shared: string[]; perIsp
   return { shared, perIsp };
 }
 
-const InboxScore: React.FC = () => {
+const LiveSendsView: React.FC = () => {
   const today = denverToday();
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
@@ -232,30 +559,24 @@ const InboxScore: React.FC = () => {
   const seedReads = (data?.campaigns ?? []).reduce((n, c) => n + c.cells.filter((x) => x.seed_folder).length, 0);
 
   return (
-    <div className="inbox-score">
-      <header className="inbox-score__head">
-        <div>
-          <h2>Inbox Score</h2>
-          <p className="inbox-score__sub">Every offer we send, scored by each mailbox provider&apos;s lane: the real test-inbox verdict when the send has landed, the pre-send scan until then.</p>
-        </div>
-        <div className="inbox-score__controls">
-          <label>
-            From
-            <input id="inbox-score-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            To
-            <input id="inbox-score-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          </label>
-          <label className="inbox-score__toggle">
-            <input id="inbox-score-newsletters" type="checkbox" checked={showNewsletters} onChange={(e) => setShowNewsletters(e.target.checked)} />
-            show newsletters{hidden ? ` (${hidden} hidden)` : ''}
-          </label>
-          <button id="inbox-score-refresh" type="button" onClick={() => void load()} disabled={loading}>
-            <FontAwesomeIcon icon={loading ? faSpinner : faRotateRight} spin={loading} /> Refresh
-          </button>
-        </div>
-      </header>
+    <>
+      <div className="inbox-score__controls isc-toolbar">
+        <label>
+          From
+          <input id="inbox-score-from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </label>
+        <label>
+          To
+          <input id="inbox-score-to" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </label>
+        <label className="inbox-score__toggle">
+          <input id="inbox-score-newsletters" type="checkbox" checked={showNewsletters} onChange={(e) => setShowNewsletters(e.target.checked)} />
+          show newsletters{hidden ? ` (${hidden} hidden)` : ''}
+        </label>
+        <button id="inbox-score-refresh" type="button" onClick={() => void load()} disabled={loading}>
+          <FontAwesomeIcon icon={loading ? faSpinner : faRotateRight} spin={loading} /> Refresh
+        </button>
+      </div>
 
       {error && <div className="inbox-score__error">{error}</div>}
 
@@ -409,6 +730,35 @@ const InboxScore: React.FC = () => {
           </table>
         </div>
       )}
+    </>
+  );
+};
+
+// ───────────────────────────── screen
+
+const InboxScore: React.FC = () => {
+  const [view, setView] = useState<'catalog' | 'live'>('catalog');
+  return (
+    <div className="inbox-score">
+      <header className="inbox-score__head">
+        <div>
+          <h2>Inbox Score</h2>
+          <p className="inbox-score__sub">
+            {view === 'catalog'
+              ? 'Every offer, every creative, every subject line + preheader — scored per mailbox provider on the content alone.'
+              : "The day's live sends: the real test-inbox verdict when the send has landed, the pre-send scan until then."}
+          </p>
+        </div>
+        <div className="isc-views" role="tablist">
+          <button id="inbox-score-view-catalog" type="button" role="tab" aria-selected={view === 'catalog'} className={view === 'catalog' ? 'active' : ''} onClick={() => setView('catalog')}>
+            Catalog
+          </button>
+          <button id="inbox-score-view-live" type="button" role="tab" aria-selected={view === 'live'} className={view === 'live' ? 'active' : ''} onClick={() => setView('live')}>
+            Live sends
+          </button>
+        </div>
+      </header>
+      {view === 'catalog' ? <CatalogView /> : <LiveSendsView />}
     </div>
   );
 };

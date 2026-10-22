@@ -11734,6 +11734,30 @@ END $$`},
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (organization_id, email)
 		)`},
+		// Inbox Score catalog (operator 2026-10-22): one row per Creative Studio proof x subject/preheader
+		// variant x provider lane, written by the content gate from the bytes the defender received.
+		// Content only — the sending domain a run used is recorded, never keyed (inbox_score_catalog.go).
+		{"create_inbox_score_catalog", `CREATE TABLE IF NOT EXISTS mailing_inbox_score_catalog (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			proof_id UUID NOT NULL,
+			variant_index INT NOT NULL DEFAULT 0,
+			subject TEXT NOT NULL DEFAULT '',
+			preheader TEXT NOT NULL DEFAULT '',
+			isp TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'gate',
+			sa_score NUMERIC(8,3),
+			sa_rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+			defender_score NUMERIC(8,3),
+			defender_symbols JSONB NOT NULL DEFAULT '[]'::jsonb,
+			folder TEXT NOT NULL DEFAULT '',
+			auth JSONB NOT NULL DEFAULT '{}'::jsonb,
+			reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+			verdict TEXT NOT NULL DEFAULT '',
+			sending_domain_used TEXT NOT NULL DEFAULT '',
+			scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, proof_id, variant_index, isp, source)
+		)`},
 
 		// PMTACollector (internal/pmta/collector.go persistMetrics) has been
 		// INSERTing status/ip/domain snapshots into this table since the

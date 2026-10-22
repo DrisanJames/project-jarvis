@@ -70,3 +70,38 @@
 .inbox-score__reason-block--shared { grid-column: 1 / -1; }
 .inbox-score__symbols code { font-size: 11px; color: #c7d2fe; }
 .inbox-score__howto .muted { margin-top: 6px; }
+
+/* ── Catalog (offer cards) — 2026-10-22 */
+.isc-views { display: flex; gap: 6px; }
+.isc-views button { background: #111827; color: #9ca3af; border: 1px solid #374151; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+.isc-views button.active { background: #312e81; color: #e0e7ff; border-color: #4f46e5; }
+.isc-toolbar { display: flex; gap: 12px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+.isc-toolbar input[type="search"] { background: #111827; color: #e5e7eb; border: 1px solid #374151; border-radius: 6px; padding: 6px 10px; min-width: 260px; }
+.isc-toolbar button { background: #1f2937; color: #e5e7eb; border: 1px solid #374151; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.isc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin: 8px 0 18px; }
+.isc-card { text-align: left; background: #111827; border: 1px solid #1f2937; border-left: 4px solid #374151; border-radius: 8px; padding: 12px 14px; cursor: pointer; color: #e5e7eb; }
+.isc-card:hover { border-color: #4b5563; border-left-color: #4b5563; }
+.isc-card--selected { outline: 2px solid #6366f1; }
+.isc-card.band-ready { border-left-color: #10b981; }
+.isc-card.band-review { border-left-color: #f59e0b; }
+.isc-card.band-act { border-left-color: #f97316; }
+.isc-card.band-junk { border-left-color: #ef4444; }
+.isc-card__name { font-weight: 600; font-size: 14px; }
+.isc-card__meta { color: #9ca3af; font-size: 12px; margin-top: 4px; }
+.isc-card__chips { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.isc-chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #374151; color: #d1d5db; }
+.isc-chip--pass { border-color: #065f46; color: #6ee7b7; background: rgba(16,185,129,.1); }
+.isc-chip--fail { border-color: #7f1d1d; color: #fca5a5; background: rgba(239,68,68,.1); }
+.isc-chip--none { color: #9ca3af; }
+.isc-detail { margin-top: 8px; }
+.isc-detail__head h3 { margin: 0 0 4px; font-size: 16px; }
+.isc-creative td { background: #0f172a; border-top: 2px solid #1f2937; padding: 8px 10px; }
+.isc-creative__name { font-weight: 600; }
+.isc-creative__meta { color: #9ca3af; font-size: 12px; margin-left: 10px; }
+.isc-creative__meta code { font-size: 11px; color: #a5b4fc; }
+.isc-verdict { font-weight: 700; font-size: 12px; text-align: center; white-space: nowrap; }
+.isc-verdict.verdict-pass { color: #6ee7b7; }
+.isc-verdict.verdict-fail { color: #fca5a5; }
+.isc-verdict.verdict-partial { color: #fcd34d; }
+.isc-verdict.verdict-unscored { color: #6b7280; font-weight: 500; }
+.isc-run code { font-size: 11px; color: #a5b4fc; }

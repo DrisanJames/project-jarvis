@@ -72,6 +72,7 @@ func (s *InboxScoreService) RegisterRoutes(r chi.Router) {
 		cr.Get("/summary", s.HandleSummary)
 		cr.Get("/campaign/{id}", s.HandleCampaign)
 		cr.Get("/profiles", s.HandleProfiles)
+		cr.Get("/catalog", s.HandleCatalog)
 		cr.Post("/render", s.HandleRender)
 	})
 }
@@ -85,6 +86,8 @@ func (s *InboxScoreService) RegisterAdminRoutes(root chi.Router) {
 	root.Get(inboxScoreAdminPrefix+"/summary", inboxScoreAdminOnly(s.HandleSummary))
 	root.Get(inboxScoreAdminPrefix+"/seeds", inboxScoreAdminOnly(s.HandleGetSeeds))
 	root.Post(inboxScoreAdminPrefix+"/seeds", inboxScoreAdminOnly(s.HandlePostSeeds))
+	root.Post(inboxScoreAdminPrefix+"/catalog", inboxScoreAdminOnly(s.HandlePostCatalog))
+	root.Get(inboxScoreAdminPrefix+"/catalog", inboxScoreAdminOnly(s.HandleCatalog))
 }
 
 // inboxScoreAdminOnly: X-Admin-Key must equal ADMIN_API_KEY; an unset key
