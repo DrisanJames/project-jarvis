@@ -3,6 +3,7 @@ package worker
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBuildRFC822_Golden pins the wire format the PMTA/Kumo bridge injects so
@@ -12,6 +13,9 @@ import (
 // this replaced (Go map order was random; harmless on the wire, but it made a
 // message unreproducible).
 func TestBuildRFC822_Golden(t *testing.T) {
+	prev := rfc822Now
+	rfc822Now = func() time.Time { return time.Date(2026, 10, 22, 17, 30, 0, 0, time.UTC) }
+	defer func() { rfc822Now = prev }()
 	msg := &EmailMessage{
 		ID:           "11111111-1111-1111-1111-111111111111",
 		CampaignID:   "22222222-2222-2222-2222-222222222222",
@@ -36,6 +40,7 @@ func TestBuildRFC822_Golden(t *testing.T) {
 		"To: someone@gmail.com\r\n" +
 		BuildSubjectHeader(msg.Subject) +
 		"Message-ID: <mid-1@em.discountblog.com>\r\n" +
+		"Date: Thu, 22 Oct 2026 17:30:00 +0000\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Reply-To: reply@em.discountblog.com\r\n" +
 		"X-Campaign-ID: 22222222-2222-2222-2222-222222222222\r\n" +
@@ -75,5 +80,16 @@ func TestBuildRFC822_NoTextPart(t *testing.T) {
 	}
 	if strings.Count(got, "--=_b\r\n") != 1 || !strings.HasSuffix(got, "--=_b--\r\n") {
 		t.Fatalf("unexpected multipart framing:\n%s", got)
+	}
+}
+
+// TestBuildRFC822_DatePinnedByCaller: a Date supplied in msg.Headers wins and
+// the builder emits exactly one Date header.
+func TestBuildRFC822_DatePinnedByCaller(t *testing.T) {
+	msg := &EmailMessage{Email: "a@b.c", FromEmail: "x@y.z", Subject: "s", HTMLContent: "<p>h</p>",
+		Headers: map[string]string{"Date": "Mon, 01 Jan 2026 00:00:00 +0000"}}
+	got := BuildRFC822(msg, "m@y.z", "=_b")
+	if strings.Count(got, "\r\nDate: ") != 1 || !strings.Contains(got, "Date: Mon, 01 Jan 2026 00:00:00 +0000\r\n") {
+		t.Fatalf("expected exactly the caller's Date header once:\n%s", got)
 	}
 }

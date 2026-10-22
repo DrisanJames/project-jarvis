@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -284,5 +285,32 @@ func TestExportCanonicalMapJSON(t *testing.T) {
 	}
 	if data["pacbell.net"] != Sbcglobal {
 		t.Error("canonical map missing pacbell.net -> sbcglobal")
+	}
+}
+
+// TestSeedDomains: the Inbox Score seed mailboxes classify as the provider they
+// stand in for, and nothing else under projectjarvis.io does.
+func TestSeedDomains(t *testing.T) {
+	cases := map[string]string{
+		"inbox@seed-gmail.projectjarvis.io":     Gmail,
+		"inbox@seed-yahoo.projectjarvis.io":     Yahoo,
+		"inbox@seed-microsoft.projectjarvis.io": Microsoft,
+		"inbox@seed-apple.projectjarvis.io":     Apple,
+		"inbox@seed-cables.projectjarvis.io":    Comcast,
+		"nxproof@mail.projectjarvis.io":         Other,
+		"x@projectjarvis.io":                    Other,
+	}
+	for email, want := range cases {
+		if got := Group(email); got != want {
+			t.Errorf("Group(%q) = %q, want %q", email, got, want)
+		}
+	}
+	if _, ok := DomainSiblings["@seed-gmail.projectjarvis.io"]; ok {
+		t.Error("seed domains must not appear in DomainSiblings (segment expansion would pull seeds in)")
+	}
+	for _, s := range DomainSiblings["@gmail.com"] {
+		if IsSeedDomain(strings.TrimPrefix(s, "@")) {
+			t.Errorf("seed %s listed as a sibling of @gmail.com", s)
+		}
 	}
 }

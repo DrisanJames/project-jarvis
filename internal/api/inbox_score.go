@@ -83,6 +83,8 @@ func (s *InboxScoreService) RegisterAdminRoutes(root chi.Router) {
 	root.Post(inboxScoreAdminPrefix+"/profiles", inboxScoreAdminOnly(s.HandlePostProfile))
 	root.Post(inboxScoreAdminPrefix+"/seed-placements", inboxScoreAdminOnly(s.HandlePostSeedPlacements))
 	root.Get(inboxScoreAdminPrefix+"/summary", inboxScoreAdminOnly(s.HandleSummary))
+	root.Get(inboxScoreAdminPrefix+"/seeds", inboxScoreAdminOnly(s.HandleGetSeeds))
+	root.Post(inboxScoreAdminPrefix+"/seeds", inboxScoreAdminOnly(s.HandlePostSeeds))
 }
 
 // inboxScoreAdminOnly: X-Admin-Key must equal ADMIN_API_KEY; an unset key
@@ -410,6 +412,13 @@ type inboxScoreSeedPlacement struct {
 	AuthResults json.RawMessage `json:"auth_results"`
 	Headers     json.RawMessage `json:"headers"`
 	ObservedAt  *string         `json:"observed_at,omitempty"`
+	// The defender's verdict on the delivered bytes (mailcow rspamd X-Spamd-Result):
+	// score on its 0..15 scale, the action it took (no action / add header /
+	// greylist / reject) and the symbols that fired. Optional: the operator's
+	// own provider mailboxes carry none of this.
+	DefenderScore   *float64        `json:"defender_score,omitempty"`
+	DefenderAction  string          `json:"defender_action,omitempty"`
+	DefenderSymbols json.RawMessage `json:"defender_symbols,omitempty"`
 }
 
 type inboxScorePostSeeds struct {
@@ -457,6 +466,9 @@ func (s *InboxScoreService) HandlePostSeedPlacements(w http.ResponseWriter, r *h
 		if len(p.Headers) == 0 {
 			body.Placements[i].Headers = json.RawMessage("{}")
 		}
+		if len(p.DefenderSymbols) == 0 {
+			body.Placements[i].DefenderSymbols = json.RawMessage("[]")
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
@@ -474,14 +486,17 @@ func (s *InboxScoreService) HandlePostSeedPlacements(w http.ResponseWriter, r *h
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO mailing_seed_placements
-			  (organization_id, campaign_id, seed_email, isp, folder, message_id, x_message_id, auth_results, headers, observed_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,NOW())
+			  (organization_id, campaign_id, seed_email, isp, folder, message_id, x_message_id, auth_results, headers,
+			   defender_score, defender_action, defender_symbols, observed_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12::jsonb,NOW())
 			ON CONFLICT (organization_id, seed_email, message_id) DO UPDATE SET
 			  campaign_id = COALESCE(EXCLUDED.campaign_id, mailing_seed_placements.campaign_id),
 			  folder = EXCLUDED.folder, x_message_id = EXCLUDED.x_message_id,
-			  auth_results = EXCLUDED.auth_results, headers = EXCLUDED.headers, observed_at = NOW()`,
+			  auth_results = EXCLUDED.auth_results, headers = EXCLUDED.headers,
+			  defender_score = EXCLUDED.defender_score, defender_action = EXCLUDED.defender_action,
+			  defender_symbols = EXCLUDED.defender_symbols, observed_at = NOW()`,
 			org, camp, strings.ToLower(strings.TrimSpace(p.SeedEmail)), p.ISP, p.Folder, p.MessageID, p.XMessageID,
-			string(p.AuthResults), string(p.Headers),
+			string(p.AuthResults), string(p.Headers), p.DefenderScore, p.DefenderAction, string(p.DefenderSymbols),
 		); err != nil {
 			respondError(w, http.StatusInternalServerError, "write failed: "+err.Error())
 			return
@@ -508,6 +523,8 @@ type inboxScoreCell struct {
 	SeedFolder     string          `json:"seed_folder"` // "" = no seed observation yet
 	SeedEmail      string          `json:"seed_email,omitempty"`
 	SeedObservedAt *string         `json:"seed_observed_at,omitempty"`
+	SeedScore      *float64        `json:"seed_score,omitempty"`  // defender score (rspamd, 0..15) when the seed is on mailcow
+	SeedAction     string          `json:"seed_action,omitempty"` // defender action: no action | add header | greylist | reject
 }
 
 type inboxScoreCampaignSummary struct {
@@ -761,7 +778,7 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 		rows.Close()
 
 		srows, err := s.db.QueryContext(ctx, `
-			SELECT DISTINCT ON (campaign_id, isp) campaign_id, isp, folder, seed_email, observed_at
+			SELECT DISTINCT ON (campaign_id, isp) campaign_id, isp, folder, seed_email, observed_at, defender_score, defender_action
 			FROM mailing_seed_placements
 			WHERE organization_id = $1 AND campaign_id = ANY($2::uuid[])
 			ORDER BY campaign_id, isp, observed_at DESC`, org, pq.Array(ids))
@@ -771,7 +788,9 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 		for srows.Next() {
 			var camp, isp, folder, email string
 			var at sql.NullTime
-			if err := srows.Scan(&camp, &isp, &folder, &email, &at); err != nil {
+			var score sql.NullFloat64
+			var action sql.NullString
+			if err := srows.Scan(&camp, &isp, &folder, &email, &at, &score, &action); err != nil {
 				srows.Close()
 				return nil, err
 			}
@@ -781,6 +800,13 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 				if at.Valid {
 					t := at.Time.UTC().Format(time.RFC3339)
 					c.SeedObservedAt = &t
+				}
+				if score.Valid {
+					v := score.Float64
+					c.SeedScore = &v
+				}
+				if action.Valid {
+					c.SeedAction = action.String
 				}
 			}
 		}

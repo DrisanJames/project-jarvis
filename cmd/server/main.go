@@ -11718,6 +11718,22 @@ END $$`},
 			UNIQUE (organization_id, seed_email, message_id)
 		)`},
 		{"create_seed_placements_campaign_idx", `CREATE INDEX IF NOT EXISTS idx_seed_placements_org_campaign ON mailing_seed_placements(organization_id, campaign_id)`},
+		// 2026-10-22: the mailcow defender's verdict rides with each seed observation.
+		{"seed_placements_defender_score", `ALTER TABLE mailing_seed_placements ADD COLUMN IF NOT EXISTS defender_score NUMERIC(8,3)`},
+		{"seed_placements_defender_action", `ALTER TABLE mailing_seed_placements ADD COLUMN IF NOT EXISTS defender_action TEXT NOT NULL DEFAULT ''`},
+		{"seed_placements_defender_symbols", `ALTER TABLE mailing_seed_placements ADD COLUMN IF NOT EXISTS defender_symbols JSONB NOT NULL DEFAULT '[]'::jsonb`},
+		// Inbox Score seeds: one mailcow mailbox per provider, appended to every lane a campaign mails (inbox_score_seeds.go).
+		{"create_inbox_score_seeds", `CREATE TABLE IF NOT EXISTS mailing_inbox_score_seeds (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID NOT NULL,
+			email TEXT NOT NULL,
+			isp TEXT NOT NULL,
+			subscriber_id UUID NOT NULL,
+			active BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (organization_id, email)
+		)`},
 
 		// PMTACollector (internal/pmta/collector.go persistMetrics) has been
 		// INSERTing status/ip/domain snapshots into this table since the

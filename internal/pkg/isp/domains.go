@@ -13,6 +13,9 @@ var DomainSiblings map[string][]string
 func init() {
 	groups := map[string][]string{}
 	for domain, ispGroup := range domainToISP {
+		if IsSeedDomain(domain) {
+			continue // seeds route like the provider but are not its mailboxes
+		}
 		groups[ispGroup] = append(groups[ispGroup], "@"+domain)
 	}
 	for _, siblings := range groups {
@@ -21,6 +24,9 @@ func init() {
 
 	DomainSiblings = make(map[string][]string, len(domainToISP))
 	for domain, ispGroup := range domainToISP {
+		if IsSeedDomain(domain) {
+			continue
+		}
 		DomainSiblings["@"+domain] = groups[ispGroup]
 	}
 }

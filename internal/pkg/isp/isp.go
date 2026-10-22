@@ -50,6 +50,17 @@ const (
 // source IP — isolating them lets us protect healthy AOL delivery when Yahoo
 // proper is in backoff (TSS04), and vice versa.
 var domainToISP = map[string]string{
+	// Inbox Score seed mailboxes (2026-10-22). Five mailcow-hosted domains, one
+	// per provider profile, so a seed recipient rides the SAME lane (plan,
+	// transport, IP pool, headers) as that provider's real recipients and the
+	// defender on inbox.projectjarvis.io sees the bytes exactly as delivered.
+	// Lookup is by exact domain, so these never widen any provider's audience.
+	"seed-gmail.projectjarvis.io":     Gmail,
+	"seed-yahoo.projectjarvis.io":     Yahoo,
+	"seed-microsoft.projectjarvis.io": Microsoft,
+	"seed-apple.projectjarvis.io":     Apple,
+	"seed-cables.projectjarvis.io":    Comcast,
+
 	// Gmail / Google
 	"gmail.com":      Gmail,
 	"googlemail.com": Gmail,
@@ -108,11 +119,11 @@ var domainToISP = map[string]string{
 	"xfinity.com": Comcast,
 
 	// Charter / Spectrum — includes all Time Warner Cable legacy domains.
-	"charter.net":    Charter,
-	"spectrum.net":   Charter,
-	"rr.com":         Charter,
-	"roadrunner.com": Charter,
-	"twc.com":        Charter,
+	"charter.net":     Charter,
+	"spectrum.net":    Charter,
+	"rr.com":          Charter,
+	"roadrunner.com":  Charter,
+	"twc.com":         Charter,
 	"brighthouse.com": Charter,
 
 	// Cox
@@ -150,6 +161,14 @@ var ispToPoolSuffix = map[string]string{
 	Charter:   "charter",
 }
 
+// IsSeedDomain reports whether a domain is one of the Inbox Score seed mailbox
+// domains: classified as a provider for routing, but never a sibling of that
+// provider's real domains (segment expansion must not pull seeds in).
+func IsSeedDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	return strings.HasPrefix(d, "seed-") && strings.HasSuffix(d, ".projectjarvis.io")
+}
+
 // Group returns the ISP group name for an email address.
 // Returns "other" for unrecognized domains or malformed addresses.
 //
@@ -183,7 +202,8 @@ func GroupFromDomain(domain string) string {
 // PoolSuffix returns the PMTA pool name suffix for a given ISP group.
 //
 // Used by the send worker to resolve which DB pool to pull IPs from:
-//   vmtaPool.next(recipientISP) → ISPPoolSuffix(isp) → "{prefix}-{suffix}-pool"
+//
+//	vmtaPool.next(recipientISP) → ISPPoolSuffix(isp) → "{prefix}-{suffix}-pool"
 //
 // Example: PoolSuffix("aol") returns "aol" → pool name "db-aol-pool".
 // Unmapped ISPs return "general" → pool name "db-general-pool".

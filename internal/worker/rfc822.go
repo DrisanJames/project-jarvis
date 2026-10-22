@@ -4,7 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"strings"
+	"time"
 )
+
+// rfc822Now is the clock behind the Date header (overridden by tests). Live
+// deliveries on 2026-10-22 carried no Date at all (rspamd MISSING_DATE on 6 of 6
+// real proofs in the mailcow test inbox; SpamAssassin +1.4), so the builder now
+// stamps RFC 5322 Date unless the caller supplied one in msg.Headers.
+var rfc822Now = time.Now
 
 // BuildRFC822 assembles the wire message the PMTA / KumoMTA HTTP bridge
 // injects: the headers PMTAAPISender always writes, then msg.Headers in
@@ -24,6 +32,9 @@ func BuildRFC822(msg *EmailMessage, messageID, boundary string) string {
 	rfc822.WriteString(fmt.Sprintf("To: %s\r\n", msg.Email))
 	rfc822.WriteString(BuildSubjectHeader(msg.Subject))
 	rfc822.WriteString(fmt.Sprintf("Message-ID: <%s>\r\n", messageID))
+	if !hasHeader(msg.Headers, "Date") {
+		rfc822.WriteString("Date: " + rfc822Now().UTC().Format(time.RFC1123Z) + "\r\n")
+	}
 	rfc822.WriteString("MIME-Version: 1.0\r\n")
 
 	if msg.ReplyTo != "" {
@@ -66,4 +77,16 @@ func BuildRFC822(msg *EmailMessage, messageID, boundary string) string {
 	rfc822.WriteString("\r\n")
 	rfc822.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 	return rfc822.String()
+}
+
+// hasHeader reports whether a custom header with this name (case-insensitive)
+// was supplied, so the builder does not emit a second copy of a header the
+// caller pinned (the render path pins Date for byte-identical renders).
+func hasHeader(headers map[string]string, name string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
 }

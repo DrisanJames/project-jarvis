@@ -191,6 +191,15 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 	log.Printf("[AudienceWorker] campaign %s Phase 1 complete: audience=%d/%d in %v",
 		campaignID, audience.SelectedTotal, audience.TotalSeen, time.Since(planStart))
 
+	// Inbox Score seeds: one mailcow seed per lane the campaign really mails,
+	// appended after suppression and caps so the seed rides the real lane
+	// without changing the audience the operator approved (inbox_score_seeds.go).
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if seeded := appendInboxScoreSeeds(seedCtx, s.db, orgID, normalized, &audience); len(seeded) > 0 {
+		log.Printf("[AudienceWorker] campaign %s inbox-score seeds appended on %v", campaignID, seeded)
+	}
+	seedCancel()
+
 	// Bookkeeping: bump usage on every segment this campaign actually drew
 	// from (inclusion + exclusion + send-priority segments). Best-effort,
 	// fire-and-forget — must never block Phase 2. Replaces the dead trigger
@@ -282,4 +291,3 @@ func (s *PMTACampaignService) finalizeAudience(campaignID, orgID, configRaw stri
 		writeDeploymentAudit(ctx, s.db, orgID, campaignID, offerKey, html, domain, total)
 	}(orgID, campaignID, input.OfferID, auditHTML, input.SendingDomain, audience.SelectedTotal)
 }
-

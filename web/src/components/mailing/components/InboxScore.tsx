@@ -29,6 +29,8 @@ type Cell = {
   reasons: string[] | unknown;
   scored_at: string | null;
   seed_folder: string;
+  seed_score?: number | null;
+  seed_action?: string;
   seed_email?: string;
   seed_observed_at?: string;
 };
@@ -84,6 +86,17 @@ export function tenScale(p: number | null | undefined): string | null {
 }
 
 /** Band for the chance column — plain words, no colors without words. */
+/** The defender (mailcow rspamd, 0..15, junk at 8) in the bands the operator set:
+ *  ready < 2.4 · review < 4.6 · act < 8 · junk ≥ 8 (SpamAssassin's 1.5 / 3 / 5 scaled by 1.6). */
+export function defenderBand(score: number | null | undefined): 'ready' | 'review' | 'act' | 'junk' | 'none' {
+  if (score === null || score === undefined) return 'none';
+  if (score < 2.4) return 'ready';
+  if (score < 4.6) return 'review';
+  if (score < 8) return 'act';
+  return 'junk';
+}
+const DEFENDER_WORDS: Record<string, string> = { ready: 'ready', review: 'review', act: 'fix before send', junk: 'would be junked', none: '' };
+
 export function chanceBand(p: number | null | undefined): 'good' | 'mixed' | 'poor' | 'none' {
   if (p === null || p === undefined) return 'none';
   if (p >= 0.7) return 'good';
@@ -233,6 +246,11 @@ const InboxScore: React.FC = () => {
                           <div className={`inbox-score__seed seed-${cell?.seed_folder || 'none'}`}>
                             {folder ? `Test inbox: ${folder}` : 'Test inbox: not seen yet'}
                           </div>
+                          {cell?.seed_score !== null && cell?.seed_score !== undefined && (
+                            <div className={`inbox-score__defender defender-${defenderBand(cell.seed_score)}`} title={cell.seed_action ? `defender action: ${cell.seed_action}` : ''}>
+                              {`Defender score ${cell.seed_score.toFixed(1)} of 15 · ${DEFENDER_WORDS[defenderBand(cell.seed_score)]}`}
+                            </div>
+                          )}
                         </td>
                       );
                     })}

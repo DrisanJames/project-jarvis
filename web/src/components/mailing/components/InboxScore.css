@@ -46,3 +46,9 @@
 .inbox-score__findings h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }
 .inbox-score__findings ul { margin: 0; padding-left: 18px; }
 .inbox-score__findings li { margin: 4px 0; line-height: 1.45; font-size: 13px; }
+
+.inbox-score__defender { margin-top: 4px; font-size: 11px; display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1f2937; color: #d1d5db; }
+.inbox-score__defender.defender-ready { background: #14532d; color: #bbf7d0; }
+.inbox-score__defender.defender-review { background: #713f12; color: #fde68a; }
+.inbox-score__defender.defender-act { background: #7c2d12; color: #fed7aa; }
+.inbox-score__defender.defender-junk { background: #7f1d1d; color: #fecaca; }
