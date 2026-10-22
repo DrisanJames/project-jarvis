@@ -33,7 +33,7 @@ var offerTokenLabel = map[string]string{
 
 var (
 	reNewsletter   = regexp.MustCompile(`(?i)NEWSLETTER|(^|[\s-])NL-`)
-	reOfferPrefix  = regexp.MustCompile(`(?i)^(KUMO-WARM\s*-\s*)?(OFFER-(ENG|YH|YF|CLK|COLD)-|APPLE-WINBACK-)`)
+	reOfferPrefix  = regexp.MustCompile(`(?i)^(KUMO-WARM\s*-\s*)?(OFFER-((ENG|YH|YF|CLK|COLD)-)?|APPLE-WINBACK-)`)
 	reOfferSuffix  = regexp.MustCompile(`(?i)(-(D\d+|RAMP|YF|APPLE|CLK|COLD|ENG|TOPUP|\d{4}|Apple-\d{4}|Apple))+$`)
 	reReleaseNames = regexp.MustCompile(`(?i)^(AUTO-RELEASE|INTERNAL-AUTO)`)
 )

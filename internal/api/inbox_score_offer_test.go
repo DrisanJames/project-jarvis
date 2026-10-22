@@ -45,6 +45,8 @@ func TestInboxScoreOffer(t *testing.T) {
 		{"10222026 - YIH - AUTO-RELEASE-R1-W2", "", "Internal Auto"},
 		{"10222026 - RRU - SRC2-RELEASE-R2-W3", "", "SRC2 release"},
 		{"10222026 - BWP - SomethingNew-Apple-0401", "", "SomethingNew"},
+		{"10232026 - aad - KUMO-WARM - OFFER-HealthCare-D18", "", "HealthCare"},
+		{"10232026 - hfc - KUMO-WARM - OFFER-InsHome-D18", "", "Insurify Home"},
 	}
 	for _, c := range cases {
 		if got := inboxScoreOffer(c.name, c.key); got != c.want {
