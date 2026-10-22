@@ -74,7 +74,9 @@ func (a *SuppressionAgent) ProcessRecord(ctx context.Context, rec AccountingReco
 
 	switch rec.Type {
 	case "b": // bounce
-		if suppressionTriggerCategories[rec.BounceCat] {
+		// Apple policy codes (e.g. 554 5.7.1 [HM08]) are per-message content /
+		// reputation blocks — the MTA may still label them bad-mailbox.
+		if suppressionTriggerCategories[rec.BounceCat] && !isApplePolicySignal(rec.DSNDiag) {
 			shouldSuppress = true
 			reason = rec.BounceCat
 		}
@@ -89,7 +91,7 @@ func (a *SuppressionAgent) ProcessRecord(ctx context.Context, rec AccountingReco
 		// relay timeouts and dropped sessions say the PATH is busy, not that the
 		// mailbox is bad. Counting them suppressed 12.7k engaged yahoo openers in
 		// three days on kumo and 635k SES-throttled addresses in the engine store.
-		if isCapacityTransient(rec.DSNDiag) {
+		if isCapacityTransient(rec.DSNDiag) || isApplePolicySignal(rec.DSNDiag) {
 			return
 		}
 		if a.checkTransientThreshold(email) {
@@ -199,6 +201,32 @@ var capacityTransientMarkers = []string{
 // transport signal (see capacityTransientMarkers).
 func isCapacityTransient(diag string) bool {
 	for _, m := range capacityTransientMarkers {
+		if strings.Contains(diag, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// applePolicyMarkers are Apple iCloud bracket codes that describe the SENDER
+// (policy, per-IP reputation, content, capacity), never the mailbox. Two 421
+// [HCM1] deferrals in 24h suppressed 1,140 valid Apple addresses (2026-10-21,
+// released by ledger cl-20261022-032710-41d0). Codes as decoded in
+// api/handlers_offer_alignment.go alignmentDSNMeanings.
+var applePolicyMarkers = []string{
+	"[HCM1]", // Apple: policy/capacity deferral
+	"[HCM2]", // Apple: per-IP reputation block
+	"[HM08]", // Apple: local-policy (offer/content) block, per message
+	"[CS01]", // Apple: content-spam block
+	"[CS02]", // Apple: sustained-spam reputation block
+	"[PH01]", // Apple: phishing-suspicion block
+}
+
+// isApplePolicySignal reports whether a diagnostic carries an Apple
+// sender-side policy code (see applePolicyMarkers). Such bounces and
+// deferrals never suppress the recipient.
+func isApplePolicySignal(diag string) bool {
+	for _, m := range applePolicyMarkers {
 		if strings.Contains(diag, m) {
 			return true
 		}
