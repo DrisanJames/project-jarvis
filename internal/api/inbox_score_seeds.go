@@ -220,8 +220,8 @@ func (s *InboxScoreService) HandlePostSeeds(w http.ResponseWriter, r *http.Reque
 		if err == sql.ErrNoRows {
 			err = tx.QueryRowContext(ctx, `
 				INSERT INTO mailing_subscribers (id, organization_id, list_id, email, email_hash, status, source, created_at, updated_at)
-				VALUES ($1, $2::uuid, $3::uuid, $4, encode(sha256(lower(trim($4))::bytea), 'hex'), 'confirmed', 'inbox-score-seed', NOW(), NOW())
-				RETURNING id::text`, uuid.New(), org, listID, email).Scan(&subID)
+				VALUES ($1, $2::uuid, $3::uuid, $4::text, encode(sha256(convert_to($5::text, 'UTF8')), 'hex'), 'confirmed', 'inbox-score-seed', NOW(), NOW())
+				RETURNING id::text`, uuid.New(), org, listID, email, email).Scan(&subID)
 		}
 		if err != nil {
 			respondError(w, http.StatusInternalServerError, "subscriber failed for "+email+": "+err.Error())
