@@ -52,3 +52,21 @@
 .inbox-score__defender.defender-review { background: #713f12; color: #fde68a; }
 .inbox-score__defender.defender-act { background: #7c2d12; color: #fed7aa; }
 .inbox-score__defender.defender-junk { background: #7f1d1d; color: #fecaca; }
+
+/* 2026-10-22: offers only, grouped by offer; one verdict per cell */
+.inbox-score__offer { cursor: pointer; background: #111827; }
+.inbox-score__offer:hover { background: #1f2937; }
+.inbox-score__offer .inbox-score__name { font-weight: 600; font-size: 14px; }
+.inbox-score__row { cursor: pointer; }
+.inbox-score__camp--inner { padding-left: 28px; }
+.inbox-score__verdict { font-size: 12px; font-weight: 500; }
+.inbox-score__cell.band-ready { background: rgba(20, 83, 45, 0.35); }
+.inbox-score__cell.band-review { background: rgba(113, 63, 18, 0.35); }
+.inbox-score__cell.band-act { background: rgba(124, 45, 18, 0.4); }
+.inbox-score__cell.band-junk { background: rgba(127, 29, 29, 0.45); }
+.inbox-score__cell.source-presend .inbox-score__verdict { opacity: 0.8; font-style: italic; }
+.inbox-score__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #d1d5db; }
+.inbox-score__linkbtn { background: none; border: none; color: #a5b4fc; cursor: pointer; padding: 0; font-size: 12px; text-decoration: underline; }
+.inbox-score__reason-block--shared { grid-column: 1 / -1; }
+.inbox-score__symbols code { font-size: 11px; color: #c7d2fe; }
+.inbox-score__howto .muted { margin-top: 6px; }

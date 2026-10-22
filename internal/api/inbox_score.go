@@ -523,8 +523,9 @@ type inboxScoreCell struct {
 	SeedFolder     string          `json:"seed_folder"` // "" = no seed observation yet
 	SeedEmail      string          `json:"seed_email,omitempty"`
 	SeedObservedAt *string         `json:"seed_observed_at,omitempty"`
-	SeedScore      *float64        `json:"seed_score,omitempty"`  // defender score (rspamd, 0..15) when the seed is on mailcow
-	SeedAction     string          `json:"seed_action,omitempty"` // defender action: no action | add header | greylist | reject
+	SeedScore      *float64        `json:"seed_score,omitempty"`   // defender score (rspamd, 0..15) when the seed is on mailcow
+	SeedAction     string          `json:"seed_action,omitempty"`  // defender action: no action | add header | greylist | reject
+	SeedSymbols    json.RawMessage `json:"seed_symbols,omitempty"` // defender symbols [{symbol, score, detail}]
 }
 
 type inboxScoreCampaignSummary struct {
@@ -533,6 +534,9 @@ type inboxScoreCampaignSummary struct {
 	SendingDomain string           `json:"sending_domain"`
 	Status        string           `json:"status"`
 	ScheduledAt   *string          `json:"scheduled_at"`
+	Kind          string           `json:"kind"`    // offer | newsletter (inbox_score_offer.go)
+	Offer         string           `json:"offer"`   // the offer the creative sells, from offer_key or the campaign name
+	Subject       string           `json:"subject"` // the creative's subject line
 	Cells         []inboxScoreCell `json:"cells"`
 }
 
@@ -575,12 +579,10 @@ func (s *InboxScoreService) loadProfileBriefs(ctx context.Context, org string) (
 }
 
 var inboxScoreHowToRead = []string{
-	"This page answers one question: is the CONTENT the reason this provider would refuse the email?",
-	"The guess comes from a spam filter we trained on our own past sends. A past campaign counts as bad only if the provider's own server replied with a content rejection (Apple 'rejected due to local policy', Gmail 'likely unsolicited mail'). It counts as good if the provider took it with no content rejection. Complaints, opens and clicks are not used.",
-	"Chance content gets through: 8 in 10 means 8 out of 10 past campaigns that looked like this one were taken without a content rejection.",
-	"A guess is only as good as its test score. Each provider shows how often the guess was right on sends it had never seen; below 7 in 10 the guess is not trusted and the cell says so.",
-	"Some providers never rejected us for content in the training window. There the honest answer is 'no content rejections on record', not a number.",
-	"Test inbox is what really happened: we sent this exact email to a real mailbox at that provider and looked at which folder it landed in.",
+	"Offers only, grouped by offer. Each cell is one provider's verdict on the exact email that campaign sends.",
+	"Test inbox = the real verdict: our own mailbox at that provider's lane received the live send and our filter (the defender) scored it. Inbox or Junk, score out of 15: ready under 2.4, review under 4.6, fix before send under 8, junked at 8.",
+	"Pre-send = the scan before sending (score on SpamAssassin's scale: ready under 1.5, review under 3, fix under 5, fail at 5). It is the same copy for every provider, so it only differs by provider once a provider's own model is trusted.",
+	"Click a row for the reasons in plain words. Reasons shared by every provider are shown once.",
 }
 
 func inboxScoreDenverDay(s string, now time.Time) (time.Time, error) {
@@ -627,7 +629,8 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, COALESCE(c.name,''), COALESCE(sp.sending_domain,''), COALESCE(c.status,''), c.scheduled_at
+		SELECT c.id, COALESCE(c.name,''), COALESCE(sp.sending_domain,''), COALESCE(c.status,''), c.scheduled_at,
+		       COALESCE(c.offer_key,''), COALESCE(c.subject,'')
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
 		WHERE c.organization_id = $1 AND c.scheduled_at >= $2 AND c.scheduled_at < $3
@@ -646,10 +649,13 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 	for rows.Next() {
 		var cs inboxScoreCampaignSummary
 		var sched sql.NullTime
-		if err := rows.Scan(&cs.CampaignID, &cs.Name, &cs.SendingDomain, &cs.Status, &sched); err != nil {
+		var offerKey string
+		if err := rows.Scan(&cs.CampaignID, &cs.Name, &cs.SendingDomain, &cs.Status, &sched, &offerKey, &cs.Subject); err != nil {
 			respondError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
+		cs.Kind = inboxScoreKind(cs.Name)
+		cs.Offer = inboxScoreOffer(cs.Name, offerKey)
 		if sched.Valid {
 			loc, _ := time.LoadLocation("America/Denver")
 			t := sched.Time.In(loc).Format(time.RFC3339)
@@ -778,7 +784,7 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 		rows.Close()
 
 		srows, err := s.db.QueryContext(ctx, `
-			SELECT DISTINCT ON (campaign_id, isp) campaign_id, isp, folder, seed_email, observed_at, defender_score, defender_action
+			SELECT DISTINCT ON (campaign_id, isp) campaign_id, isp, folder, seed_email, observed_at, defender_score, defender_action, defender_symbols
 			FROM mailing_seed_placements
 			WHERE organization_id = $1 AND campaign_id = ANY($2::uuid[])
 			ORDER BY campaign_id, isp, observed_at DESC`, org, pq.Array(ids))
@@ -790,7 +796,8 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 			var at sql.NullTime
 			var score sql.NullFloat64
 			var action sql.NullString
-			if err := srows.Scan(&camp, &isp, &folder, &email, &at, &score, &action); err != nil {
+			var symbols []byte
+			if err := srows.Scan(&camp, &isp, &folder, &email, &at, &score, &action, &symbols); err != nil {
 				srows.Close()
 				return nil, err
 			}
@@ -807,6 +814,9 @@ func (s *InboxScoreService) loadCells(ctx context.Context, org string, ids []str
 				}
 				if action.Valid {
 					c.SeedAction = action.String
+				}
+				if len(symbols) > 0 {
+					c.SeedSymbols = json.RawMessage(symbols)
 				}
 			}
 		}

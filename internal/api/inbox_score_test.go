@@ -152,14 +152,14 @@ func TestInboxScore_Summary_RectangularGrid(t *testing.T) {
 	camp := "dce16d95-df2c-456d-a129-f3e80f938f0d"
 	sched := time.Date(2026, 10, 21, 10, 1, 0, 0, time.UTC)
 	mock.ExpectQuery(`FROM mailing_campaigns c`).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "sending_domain", "status", "scheduled_at"}).
-			AddRow(camp, "10212026 - DB - Liberty", "m.discountblog.com", "scheduled", sched))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "sending_domain", "status", "scheduled_at", "offer_key", "subject"}).
+			AddRow(camp, "10212026 - DB - Liberty", "m.discountblog.com", "scheduled", sched, "liberty-mutual", "Save on auto insurance"))
 	mock.ExpectQuery(`FROM mailing_inbox_scores sc`).
 		WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "isp", "sa_score", "p_inbox", "profile_version", "reasons", "scored_at", "auc"}).
 			AddRow(camp, "gmail", 2.5, 0.82, 3, `["Looks fine."]`, sched, 0.91))
 	mock.ExpectQuery(`FROM mailing_seed_placements`).
-		WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "isp", "folder", "seed_email", "observed_at", "defender_score", "defender_action"}).
-			AddRow(camp, "apple", "inbox", "x@icloud.com", sched, 2.3, "no action"))
+		WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "isp", "folder", "seed_email", "observed_at", "defender_score", "defender_action", "defender_symbols"}).
+			AddRow(camp, "apple", "inbox", "x@icloud.com", sched, 2.3, "no action", `[{"symbol":"MISSING_DATE","score":1.0,"detail":""}]`))
 	// Latest profile per ISP rides along so the portal can say WHY a provider has no guess.
 	mock.ExpectQuery(`SELECT DISTINCT ON \(isp\) isp, version, status, auc, finding`).
 		WillReturnRows(sqlmock.NewRows([]string{"isp", "version", "status", "auc", "finding"}).
