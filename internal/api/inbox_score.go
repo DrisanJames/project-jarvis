@@ -614,7 +614,7 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles sp ON sp.id = c.sending_profile_id
 		WHERE c.organization_id = $1 AND c.scheduled_at >= $2 AND c.scheduled_at < $3
-		  AND c.status NOT IN ('cancelled','deleted','draft')
+		  AND c.status NOT IN ('cancelled','deleted')
 		  AND (EXISTS (SELECT 1 FROM mailing_inbox_scores sc WHERE sc.organization_id=c.organization_id AND sc.campaign_id=c.id)
 		       OR EXISTS (SELECT 1 FROM mailing_seed_placements pl WHERE pl.organization_id=c.organization_id AND pl.campaign_id=c.id))
 		ORDER BY c.scheduled_at, c.name
