@@ -11686,6 +11686,7 @@ END $$`},
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (organization_id, isp, version)
 		)`},
+		{"inbox_score_profiles_finding", `ALTER TABLE mailing_inbox_score_profiles ADD COLUMN IF NOT EXISTS finding TEXT NOT NULL DEFAULT ''`},
 		{"create_inbox_scores", `CREATE TABLE IF NOT EXISTS mailing_inbox_scores (
 			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 			organization_id UUID NOT NULL,

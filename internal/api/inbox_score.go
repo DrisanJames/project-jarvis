@@ -289,6 +289,16 @@ type inboxScoreProfile struct {
 	AUC         *float64        `json:"auc"`
 	Calibration json.RawMessage `json:"calibration"`
 	Notes       string          `json:"notes"`
+	Finding     string          `json:"finding"` // one plain sentence from the trainer: what the ISP's own rejection codes said
+}
+
+// inboxScoreProfileBrief is the latest profile per ISP, attached to the summary
+// so the portal can say why a provider has no guess.
+type inboxScoreProfileBrief struct {
+	Version int      `json:"version"`
+	Status  string   `json:"status"`
+	AUC     *float64 `json:"auc"`
+	Finding string   `json:"finding"`
 }
 
 func (s *InboxScoreService) HandlePostProfile(w http.ResponseWriter, r *http.Request) {
@@ -333,12 +343,12 @@ func (s *InboxScoreService) HandlePostProfile(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO mailing_inbox_score_profiles (organization_id, isp, version, status, trained_at, n_ham, n_spam, auc, calibration, notes)
-		VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,$8::jsonb,$9)
+		INSERT INTO mailing_inbox_score_profiles (organization_id, isp, version, status, trained_at, n_ham, n_spam, auc, calibration, notes, finding)
+		VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,$8::jsonb,$9,$10)
 		ON CONFLICT (organization_id, isp, version) DO UPDATE SET
 		  status=EXCLUDED.status, trained_at=NOW(), n_ham=EXCLUDED.n_ham, n_spam=EXCLUDED.n_spam,
-		  auc=EXCLUDED.auc, calibration=EXCLUDED.calibration, notes=EXCLUDED.notes`,
-		org, p.ISP, p.Version, p.Status, p.NHam, p.NSpam, p.AUC, string(p.Calibration), p.Notes,
+		  auc=EXCLUDED.auc, calibration=EXCLUDED.calibration, notes=EXCLUDED.notes, finding=EXCLUDED.finding`,
+		org, p.ISP, p.Version, p.Status, p.NHam, p.NSpam, p.AUC, string(p.Calibration), p.Notes, p.Finding,
 	); err != nil {
 		respondError(w, http.StatusInternalServerError, "write failed: "+err.Error())
 		return
@@ -356,7 +366,7 @@ func (s *InboxScoreService) HandleProfiles(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	rows, err := s.db.QueryContext(r.Context(), `
-		SELECT isp, version, status, trained_at, n_ham, n_spam, auc, calibration::text, notes
+		SELECT isp, version, status, trained_at, n_ham, n_spam, auc, calibration::text, notes, finding
 		FROM mailing_inbox_score_profiles WHERE organization_id=$1
 		ORDER BY isp, version DESC`, org)
 	if err != nil {
@@ -370,7 +380,7 @@ func (s *InboxScoreService) HandleProfiles(w http.ResponseWriter, r *http.Reques
 		var trained sql.NullTime
 		var auc sql.NullFloat64
 		var calib string
-		if err := rows.Scan(&p.ISP, &p.Version, &p.Status, &trained, &p.NHam, &p.NSpam, &auc, &calib, &p.Notes); err != nil {
+		if err := rows.Scan(&p.ISP, &p.Version, &p.Status, &trained, &p.NHam, &p.NSpam, &auc, &calib, &p.Notes, &p.Finding); err != nil {
 			respondError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -510,20 +520,50 @@ type inboxScoreCampaignSummary struct {
 }
 
 type inboxScoreSummaryResponse struct {
-	AsOf      string                      `json:"as_of"`
-	From      string                      `json:"from"`
-	To        string                      `json:"to"`
-	Timezone  string                      `json:"timezone"`
-	ISPs      []string                    `json:"isps"`
-	Campaigns []inboxScoreCampaignSummary `json:"campaigns"`
-	HowToRead []string                    `json:"how_to_read"`
+	AsOf      string                            `json:"as_of"`
+	From      string                            `json:"from"`
+	To        string                            `json:"to"`
+	Timezone  string                            `json:"timezone"`
+	ISPs      []string                          `json:"isps"`
+	Campaigns []inboxScoreCampaignSummary       `json:"campaigns"`
+	Profiles  map[string]inboxScoreProfileBrief `json:"profiles"` // latest profile per ISP (why a provider has or lacks a guess)
+	HowToRead []string                          `json:"how_to_read"`
+}
+
+// loadProfileBriefs returns the newest profile row per ISP for the org.
+func (s *InboxScoreService) loadProfileBriefs(ctx context.Context, org string) (map[string]inboxScoreProfileBrief, error) {
+	out := map[string]inboxScoreProfileBrief{}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT ON (isp) isp, version, status, auc, finding
+		FROM mailing_inbox_score_profiles WHERE organization_id=$1
+		ORDER BY isp, version DESC`, org)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var isp string
+		var b inboxScoreProfileBrief
+		var auc sql.NullFloat64
+		if err := rows.Scan(&isp, &b.Version, &b.Status, &auc, &b.Finding); err != nil {
+			return nil, err
+		}
+		if auc.Valid {
+			v := auc.Float64
+			b.AUC = &v
+		}
+		out[isp] = b
+	}
+	return out, nil
 }
 
 var inboxScoreHowToRead = []string{
-	"Chance of inbox is a guess from a spam filter we trained on our own past sends to that mailbox provider. 8 in 10 means 8 out of 10 messages like this one landed well before.",
+	"This page answers one question: is the CONTENT the reason this provider would refuse the email?",
+	"The guess comes from a spam filter we trained on our own past sends. A past campaign counts as bad only if the provider's own server replied with a content rejection (Apple 'rejected due to local policy', Gmail 'likely unsolicited mail'). It counts as good if the provider took it with no content rejection. Complaints, opens and clicks are not used.",
+	"Chance content gets through: 8 in 10 means 8 out of 10 past campaigns that looked like this one were taken without a content rejection.",
+	"A guess is only as good as its test score. Each provider shows how often the guess was right on sends it had never seen; below 7 in 10 the guess is not trusted and the cell says so.",
+	"Some providers never rejected us for content in the training window. There the honest answer is 'no content rejections on record', not a number.",
 	"Test inbox is what really happened: we sent this exact email to a real mailbox at that provider and looked at which folder it landed in.",
-	"A guess is only as good as its test score. Each provider shows how often the guess was right on past sends; below 7 in 10 the guess is not yet trustworthy.",
-	"Delivered is not the same as inbox. A provider can accept a message and still put it in spam.",
 }
 
 func inboxScoreDenverDay(s string, now time.Time) (time.Time, error) {
@@ -602,6 +642,11 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 		ids = append(ids, cs.CampaignID)
 	}
 	cellsByCampaign, err := s.loadCells(ctx, org, ids)
+	briefs, berr := s.loadProfileBriefs(ctx, org)
+	if berr != nil {
+		respondError(w, http.StatusInternalServerError, "read failed: "+berr.Error())
+		return
+	}
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "read failed: "+err.Error())
 		return
@@ -611,7 +656,7 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 	}
 	respondJSON(w, http.StatusOK, inboxScoreSummaryResponse{
 		AsOf: now.UTC().Format(time.RFC3339), From: from.Format("2006-01-02"), To: to.Format("2006-01-02"),
-		Timezone: "America/Denver", ISPs: InboxScoreISPs, Campaigns: campaigns, HowToRead: inboxScoreHowToRead,
+		Timezone: "America/Denver", ISPs: InboxScoreISPs, Campaigns: campaigns, Profiles: briefs, HowToRead: inboxScoreHowToRead,
 	})
 }
 

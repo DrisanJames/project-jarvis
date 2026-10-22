@@ -160,6 +160,11 @@ func TestInboxScore_Summary_RectangularGrid(t *testing.T) {
 	mock.ExpectQuery(`FROM mailing_seed_placements`).
 		WillReturnRows(sqlmock.NewRows([]string{"campaign_id", "isp", "folder", "seed_email", "observed_at"}).
 			AddRow(camp, "apple", "inbox", "x@icloud.com", sched))
+	// Latest profile per ISP rides along so the portal can say WHY a provider has no guess.
+	mock.ExpectQuery(`SELECT DISTINCT ON \(isp\) isp, version, status, auc, finding`).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "version", "status", "auc", "finding"}).
+			AddRow("gmail", 3, "active", 0.91, "Between 2026-08-22 and 2026-10-20 this provider rejected 40 campaigns for content and took 174 with no content rejection. The filter learned from those.").
+			AddRow("microsoft", 2, "candidate", nil, "The server logs show no content rejections at this provider between 2026-08-22 and 2026-10-20 (3,926 campaigns with 2,000+ deliveries, none rejected for content). Content is not what stops mail here."))
 
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, inboxScoreReq("GET", "/api/mailing/inbox-score/summary?from=2026-10-21&to=2026-10-21", nil, ""))
@@ -190,6 +195,13 @@ func TestInboxScore_Summary_RectangularGrid(t *testing.T) {
 	}
 	if len(resp.HowToRead) < 3 {
 		t.Error("how_to_read block missing")
+	}
+	// The provider finding is a plain sentence from the trainer, not a number.
+	if b, ok := resp.Profiles["microsoft"]; !ok || b.Status != "candidate" || b.AUC != nil || !strings.Contains(b.Finding, "no content rejections") {
+		t.Errorf("microsoft profile brief wrong: %+v", resp.Profiles["microsoft"])
+	}
+	if b := resp.Profiles["gmail"]; b.Status != "active" || b.AUC == nil || *b.AUC != 0.91 {
+		t.Errorf("gmail profile brief wrong: %+v", b)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

@@ -41,3 +41,8 @@
 .inbox-score__reason-block ul { margin: 0; padding-left: 18px; }
 .inbox-score__reason-block li { margin: 3px 0; }
 .inbox-score .muted { color: #9ca3af; font-size: 12px; margin: 6px 0 0; }
+
+.inbox-score__findings { margin: 0 0 16px; padding: 12px 16px; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; background: rgba(255,255,255,0.03); }
+.inbox-score__findings h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }
+.inbox-score__findings ul { margin: 0; padding-left: 18px; }
+.inbox-score__findings li { margin: 4px 0; line-height: 1.45; font-size: 13px; }

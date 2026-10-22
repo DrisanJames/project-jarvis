@@ -18,6 +18,8 @@ import './InboxScore.css';
  * Data: GET /api/mailing/inbox-score/summary?from&to (internal/api/inbox_score.go).
  */
 
+type ProfileBrief = { version: number; status: string; auc: number | null; finding: string };
+
 type Cell = {
   isp: string;
   p_inbox: number | null;
@@ -47,6 +49,7 @@ type Summary = {
   timezone: string;
   isps: string[];
   campaigns: CampaignRow[];
+  profiles?: Record<string, ProfileBrief>;
   how_to_read: string[];
 };
 
@@ -100,6 +103,13 @@ function reasonsList(r: Cell['reasons']): string[] {
   return [];
 }
 
+function noGuessLabel(b?: ProfileBrief): string {
+  if (!b) return 'no guess yet';
+  if (b.finding.includes('no content rejections')) return 'no content rejections on record';
+  if (b.status !== 'active') return 'not enough history to guess';
+  return 'no guess yet';
+}
+
 const InboxScore: React.FC = () => {
   const today = denverToday();
   const [from, setFrom] = useState(today);
@@ -137,7 +147,7 @@ const InboxScore: React.FC = () => {
       <header className="inbox-score__head">
         <div>
           <h2>Inbox Score</h2>
-          <p className="inbox-score__sub">Will this email land in the inbox? One guess per mailbox provider, and what our real test inbox saw.</p>
+          <p className="inbox-score__sub">Is the content the reason a provider would refuse this email? One guess per mailbox provider, trained on the provider&apos;s own rejection codes, next to what our real test inbox saw.</p>
         </div>
         <div className="inbox-score__controls">
           <label>
@@ -164,6 +174,25 @@ const InboxScore: React.FC = () => {
           ))}
         </ul>
       </section>
+
+      {data && data.profiles && Object.keys(data.profiles).length > 0 && (
+        <section className="inbox-score__findings">
+          <h3>What the server logs say, per provider</h3>
+          <ul>
+            {isps.map((isp) => {
+              const b = data.profiles?.[isp];
+              if (!b) return null;
+              return (
+                <li key={isp}>
+                  <strong>{ISP_LABEL[isp] ?? isp}</strong>
+                  {b.status === 'active' ? ` — guess is ${trustLabel(b.auc)}. ` : ' — no guess shown. '}
+                  {b.finding}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       {!loading && data && data.campaigns.length === 0 && (
         <div className="inbox-score__empty">No scored campaigns between {data.from} and {data.to}. Scores appear after the nightly scan runs on tomorrow&apos;s campaigns.</div>
@@ -198,7 +227,7 @@ const InboxScore: React.FC = () => {
                       const folder = cell?.seed_folder ? FOLDER_LABEL[cell.seed_folder] ?? cell.seed_folder : '';
                       return (
                         <td key={isp} className={`inbox-score__cell band-${band}`}>
-                          <div className="inbox-score__chance">{chance ? `${chance} chance of inbox` : 'no guess yet'}</div>
+                          <div className="inbox-score__chance">{chance ? `${chance} chance content gets through` : noGuessLabel(data.profiles?.[isp])}</div>
                           <div className="inbox-score__trust">{cell && chance ? `guess is ${trustLabel(cell.profile_auc)}` : ''}</div>
                           <div className={`inbox-score__seed seed-${cell?.seed_folder || 'none'}`}>
                             {folder ? `Test inbox: ${folder}` : 'Test inbox: not seen yet'}
