@@ -101,6 +101,15 @@ func TestComposeMessage_SESPath_FullChain(t *testing.T) {
 	if !strings.Contains(msg.TextContent, "This email was intended for someone@gmail.com") {
 		t.Errorf("text part lacks the intended-for footer: %q", msg.TextContent)
 	}
+	// The text part is derived from the FINAL html: wrapped click links, never
+	// the raw money host (2026-10-22: raw hosts in text/plain were the only
+	// place a SURBL-listed advertiser domain reached the filters).
+	if strings.Contains(msg.TextContent, "www.codefortwo.com") {
+		t.Errorf("text part carries the raw money host: %q", msg.TextContent)
+	}
+	if !strings.Contains(msg.TextContent, "https://t.m.discountblog.com/track/click/") {
+		t.Errorf("text part lacks the click-wrapped link: %q", msg.TextContent)
+	}
 	if !strings.Contains(msg.HTMLContent, "This email was intended for") {
 		t.Error("HTML lacks the intended-for footer")
 	}

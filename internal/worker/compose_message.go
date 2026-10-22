@@ -147,10 +147,9 @@ func (p *SendWorkerPool) composeMessage(ctx context.Context, item QueueItem) (*E
 		log.Printf("[SendWorkerPool] UNRESOLVED_TOKEN campaign=%s field=subject rendered=%q", item.CampaignID, subject)
 	}
 
-	// Text/plain fallback: auto-generate from final HTML if text is empty
-	if strings.TrimSpace(textContent) == "" && strings.TrimSpace(htmlContent) != "" {
-		textContent = GenerateTextFromHTML(htmlContent)
-	}
+	// Text/plain fallback is generated AFTER the tracking branches below (see
+	// autoText), never from the pre-tracking HTML.
+	autoText := strings.TrimSpace(textContent) == "" && strings.TrimSpace(htmlContent) != ""
 
 	if previewText != "" {
 		htmlContent = InjectPreviewText(htmlContent, previewText)
@@ -215,6 +214,19 @@ func (p *SendWorkerPool) composeMessage(ctx context.Context, item QueueItem) (*E
 		htmlContent = applySESTracking(htmlContent,
 			item.CampaignID.String(), item.SubscriberID.String(), item.ID.String(),
 			trackBase, p.orgID, p.trackingSecret)
+	}
+
+	// Text/plain fallback from the FINAL html — after click-wrapping on either
+	// transport — so the text part carries the same t.<domain> links as the HTML.
+	// Measured 2026-10-22 (Inbox Score gate vs live render): generating it before
+	// tracking shipped every raw money / advertiser host (www.codefortwo.com,
+	// cloud.email-libertymutual.com, ...) unwrapped in text/plain while the HTML
+	// was clean — the SURBL hit (URIBL_CT_SURBL +1.6) on Liberty came only from
+	// that part, text-mode clicks bypassed tracking, and the proof path (which
+	// already generated text last) could not reproduce what live mail sent.
+	// Journey sends did this correctly already (journey_clickdrip_sender.go).
+	if autoText {
+		textContent = GenerateTextFromHTML(htmlContent)
 	}
 
 	// ── List-Unsubscribe + in-body token resolution — SHARED across BOTH
