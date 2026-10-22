@@ -106,6 +106,7 @@ function reasonsList(r: Cell['reasons']): string[] {
 function noGuessLabel(b?: ProfileBrief): string {
   if (!b) return 'no guess yet';
   if (b.finding.includes('no content rejections')) return 'no content rejections on record';
+  if (b.status !== 'active' && b.auc !== null && b.auc !== undefined) return `guess not trusted yet (right ${Math.round(b.auc * 10)} in 10 on past sends)`;
   if (b.status !== 'active') return 'not enough history to guess';
   return 'no guess yet';
 }
