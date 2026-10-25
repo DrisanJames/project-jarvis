@@ -133,7 +133,7 @@ type nonCpmPostbackDay struct {
 type nonCpmPlanDay struct {
 	Day           string  `json:"day"`
 	Sent          int64   `json:"sent"`
-	Units         int64   `json:"units"` // the priced unit count (postbacks or tracked clicks)
+	Units         int64   `json:"units"`  // the priced unit count (postbacks or tracked clicks)
 	Source        string  `json:"source"` // postback | tracked
 	TrackedUnits  int64   `json:"tracked_units"`
 	PostbackUnits int64   `json:"postback_units"`
@@ -158,6 +158,7 @@ type nonCpmPlan struct {
 	PostbackUnits  int64   `json:"postback_units"`  // cpc: Everflow paid clicks, whole month
 	PostbackSince  string  `json:"postback_since"`  // cpc: first Denver day with a paid postback ("" = none yet)
 	PostbackFrom   string  `json:"postback_from"`   // cpc: first day PRICED on postbacks = the day after PostbackSince
+	RealizedRate   float64 `json:"realized_rate"`   // cpc: Everflow payout ÷ paid clicks over the postback-priced days
 	ModeledRevenue float64 `json:"modeled_revenue"` // rate × units, before any paid override
 	Revenue        float64 `json:"revenue"`
 	RevenueBasis   string  `json:"revenue_basis"` // paid | postback | rate | everflow | unavailable | none
@@ -225,8 +226,12 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 			p.PostbackFrom = d.AddDate(0, 0, 1).Format("2006-01-02")
 		}
 	}
-	// effUnits is the priced series the forecast's 3-day cadence reads.
+	// effUnits / effRevenue are the priced series the forecast's 3-day cadence
+	// reads (tracked days = clicks × rate, postback days = Everflow's payout).
 	effUnits := map[string]int64{}
+	effRevenue := map[string]float64{}
+	var pbPricedCount int64
+	var pbPricedPayout float64
 
 	switch {
 	case cpc && !unitsOK && (p.PostbackFrom == "" || p.PostbackFrom > todayS):
@@ -258,6 +263,8 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 			if p.PostbackFrom != "" && d >= p.PostbackFrom {
 				day.Source, day.Units = "postback", pb.Count
 				day.Revenue = pb.Payout
+				pbPricedCount += pb.Count
+				pbPricedPayout += pb.Payout
 				if pb.Payout == 0 { // postbacks carried no payout — price at the dated rate
 					day.Revenue = float64(pb.Count) * rate
 					if !ok && pb.Count > 0 {
@@ -272,6 +279,7 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 				}
 			}
 			effUnits[d] = day.Units
+			effRevenue[d] = day.Revenue
 			p.Units += day.Units
 			p.TrackedUnits += tracked
 			p.PostbackUnits += pb.Count
@@ -283,6 +291,16 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 		}
 		if !unitsOK {
 			p.Warnings = append(p.Warnings, "tracked-click pass failed — days before postbacks priced at 0")
+		}
+		if pbPricedCount > 0 {
+			p.RealizedRate = pbPricedPayout / float64(pbPricedCount)
+			// The advertiser moved the payout without the schedule following
+			// (EF paid $2.50/click from 2026-10-19 while the configured rate
+			// still read $2.00). Revenue is right either way — it is Everflow's
+			// own payout — but the label and any rate-priced day would lie.
+			if p.CurrentRate > 0 && math.Abs(p.RealizedRate-p.CurrentRate)/p.CurrentRate > 0.05 {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("Everflow paying $%.2f/click vs configured $%.2f — update the rate schedule", p.RealizedRate, p.CurrentRate))
+			}
 		}
 		switch {
 		case p.PostbackFrom != "" && p.PostbackFrom <= todayS:
@@ -321,10 +339,17 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 		_, p.ProjSent, _, _ = cpmPacingMath(0, p.Sent, p.Avg3dSent, today.Day(), daysInMonth)
 		after := float64(daysInMonth - today.Day())
 		if cpc {
-			// Clicks priced at TODAY's rate going forward — a rate change moves
-			// the forecast immediately, which constant yield per send would hide.
 			p.Avg3dUnits = cpmMailedAvg3d(effUnits, today)
-			p.ProjRevenue = p.Revenue + p.Avg3dUnits*after*p.CurrentRate
+			if p.RevenueBasis == "postback" {
+				// Everflow's realized revenue per day — a payout change is in the
+				// postbacks themselves, so the forecast follows it without anyone
+				// editing the schedule.
+				p.ProjRevenue = p.Revenue + nonCpmAvg3dF(effRevenue, today)*after
+			} else {
+				// Clicks priced at TODAY's rate going forward — a rate change moves
+				// the forecast immediately, which constant yield per send would hide.
+				p.ProjRevenue = p.Revenue + p.Avg3dUnits*after*p.CurrentRate
+			}
 		} else if p.Sent > 0 {
 			p.ProjRevenue = p.Revenue * float64(p.ProjSent) / float64(p.Sent)
 		}
@@ -339,6 +364,15 @@ func nonCpmPlanFor(cfg *nonCpmRevenueConfig, rates []nonCpmRate, sentDays, unitD
 	}
 	p.ProjGap = p.Budget - p.ProjRevenue
 	return p
+}
+
+// nonCpmAvg3dF is cpmMailedAvg3d for a float series (revenue per day).
+func nonCpmAvg3dF(days map[string]float64, today time.Time) float64 {
+	var s float64
+	for i := 1; i <= 3; i++ {
+		s += days[today.AddDate(0, 0, -i).Format("2006-01-02")]
+	}
+	return s / 3.0
 }
 
 // ─── Loaders ────────────────────────────────────────────────────────────────

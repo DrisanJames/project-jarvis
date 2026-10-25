@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http/httptest"
 	"strings"
@@ -410,5 +411,39 @@ func TestHandleNonCpmPerformanceCPCPostbacks(t *testing.T) {
 	}
 	if p.TrackedUnits != 450 || p.PostbackUnits != 47 {
 		t.Fatalf("tracked/postback = %d/%d, want 450/47", p.TrackedUnits, p.PostbackUnits)
+	}
+}
+
+// Once postbacks price the month, the forecast runs on Everflow's realized
+// revenue per day and a payout the schedule does not know about is flagged
+// (EF paid $2.50/click from 2026-10-19; the configured rate still said $2.00).
+func TestNonCpmPlanCPCPostbackForecastUsesRealizedPayout(t *testing.T) {
+	cfg := &nonCpmRevenueConfig{PayoutModel: "cpc", Budget: 10000}
+	oct23 := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	sent := map[string]int64{}
+	for d := 19; d <= 23; d++ {
+		sent[fmt.Sprintf("2026-10-%02d", d)] = 1_000_000
+	}
+	pb := map[string]nonCpmPostbackDay{
+		"2026-10-19": {Count: 5, Payout: 12.5}, // setup day — stays tracked
+		"2026-10-20": {Count: 100, Payout: 250}, "2026-10-21": {Count: 100, Payout: 250},
+		"2026-10-22": {Count: 100, Payout: 250}, "2026-10-23": {Count: 10, Payout: 25},
+	}
+	p := nonCpmPlanFor(cfg, ehealthRates, sent, nil, pb, 0, 0, true, oct23, true)
+	if p.RevenueBasis != "postback" || !near(p.Revenue, 775) || !near(p.RealizedRate, 2.5) {
+		t.Fatalf("basis/revenue/realized = %s/%v/%v, want postback/775/2.50", p.RevenueBasis, p.Revenue, p.RealizedRate)
+	}
+	// 775 MTD + $250/day realized over 10-20..22 × 8 days after today.
+	if !near(p.ProjRevenue, 775+250*8) {
+		t.Fatalf("forecast = %v, want 2775 (realized payout, not the $2.00 schedule)", p.ProjRevenue)
+	}
+	found := false
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "$2.50/click vs configured $2.00") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a stale-rate warning, got %v", p.Warnings)
 	}
 }
