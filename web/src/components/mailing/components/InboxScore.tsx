@@ -103,7 +103,34 @@ type CatalogCell = {
   sending_domain_used: string;
   scored_at: string;
   stale: boolean;
+  links: { listed_hosts?: string[]; reasons?: string[]; rules?: string[] } | null;
+  link_check: 'ok' | 'degraded' | 'skipped' | 'unknown' | string;
+  prev_defender_score: number | null;
+  prev_sa_score: number | null;
+  prev_scored_at?: string;
 };
+
+/** One filter symbol/rule and its reach across the scored subject lines; scope says what to change. */
+type Driver = {
+  name: string;
+  kind: 'defender' | 'presend';
+  score: number;
+  variants: number;
+  of: number;
+  scope: 'body' | 'copy' | 'transport' | 'content';
+  detail?: string;
+};
+const SCOPE_WORDS: Record<Driver['scope'], string> = { body: 'BODY', copy: 'COPY', transport: 'TRANSPORT', content: 'CONTENT' };
+const SCOPE_HELP: Record<Driver['scope'], string> = {
+  body: 'fires on every scored subject line of the creative — it is the HTML',
+  copy: 'fires on some subject lines only — it is the subject or preheader',
+  transport: 'a sending-path symbol (SPF/DKIM/Received) — not content',
+  content: 'one scored line so far — body and copy cannot be told apart yet',
+};
+
+type LiveCell = { name: string; day: string; status: string; recipients: number; subject: string; creative?: string; subject_catalogued: boolean };
+type Live = { cells: number; matching: number; drifted: number; recipients: number; drift: LiveCell[]; uncatalogued_subjects: string[] };
+type Extreme = { creative: string; subject: string; index: number; defender: number; presend: number; headroom: number };
 
 type CatalogVariant = {
   index: number;
@@ -122,6 +149,10 @@ type CatalogCreative = {
   from_names: string[];
   updated_at: string;
   variants: CatalogVariant[];
+  drivers: Driver[];
+  scored_lines: number;
+  live_cells: number;
+  live_recipients: number;
 };
 
 type CatalogOffer = {
@@ -131,7 +162,35 @@ type CatalogOffer = {
   scored: number;
   passed: number;
   failed: number;
+  worst: Extreme | null;
+  best: Extreme | null;
+  drivers: Driver[];
+  link_checks: Record<string, number>;
+  live: Live;
 };
+
+function fmtN(n: number): string {
+  return n.toLocaleString('en-US');
+}
+function listedHosts(cell: CatalogCell | undefined): string[] {
+  return cell?.links?.listed_hosts ?? [];
+}
+function variantListed(v: CatalogVariant): string[] {
+  const out = new Set<string>();
+  Object.values(v.cells).forEach((c) => listedHosts(c).forEach((h) => out.add(h)));
+  return [...out];
+}
+function variantDegraded(v: CatalogVariant): string[] {
+  return Object.values(v.cells)
+    .filter((c): c is CatalogCell => !!c && !c.stale && (c.link_check === 'degraded' || c.link_check === 'skipped'))
+    .map((c) => c.isp);
+}
+/** Lanes that saw the same bytes score the same way; group them so the detail reads once, not five times. */
+function laneSignature(c: CatalogCell): string {
+  const syms = symbolsList(c.defender_symbols).filter((x) => x.score > 0).map((x) => `${x.symbol}:${x.score}`).sort().join(',');
+  const rules = rulesList(c.sa_rules).filter((x) => x.score > 0).map((x) => `${x.rule}:${x.score}`).sort().join(',');
+  return [c.verdict, c.folder, c.defender_score, c.sa_score, syms, rules, c.link_check, listedHosts(c).join(','), stringList(c.reasons).join('|')].join('#');
+}
 
 type Catalog = { as_of: string; isps: string[]; offers: CatalogOffer[]; how_to_read: string[] };
 
@@ -255,7 +314,20 @@ const CatalogView: React.FC = () => {
                 {o.passed > 0 && <span className="isc-chip isc-chip--pass">{o.passed} pass</span>}
                 {o.failed > 0 && <span className="isc-chip isc-chip--fail">{o.failed} fail</span>}
                 {unscored > 0 && <span className="isc-chip isc-chip--none">{unscored} not scored</span>}
+                {o.live.drifted > 0 && <span className="isc-chip isc-chip--fail">{o.live.drifted} board cells drifted</span>}
+                {(o.link_checks?.degraded ?? 0) + (o.link_checks?.skipped ?? 0) > 0 && <span className="isc-chip isc-chip--warn">link check degraded</span>}
               </div>
+              {o.worst && (
+                <div className="isc-card__worst">
+                  worst {o.worst.defender.toFixed(1)} of 15 · {o.worst.headroom >= 0 ? `${o.worst.headroom.toFixed(1)} below review` : `${(-o.worst.headroom).toFixed(1)} over review`}
+                  {o.drivers[0] ? ` · top: ${o.drivers[0].name} +${o.drivers[0].score.toFixed(1)}` : ''}
+                </div>
+              )}
+              {o.live.cells > 0 && (
+                <div className="isc-card__live">
+                  board: {o.live.cells} cells · {fmtN(o.live.recipients)} recipients · {o.live.matching} match the catalogue
+                </div>
+              )}
             </button>
           );
         })}
@@ -269,6 +341,112 @@ const CatalogView: React.FC = () => {
               Each row is one subject line + preheader on one creative. Scores are the content&apos;s alone — the domain a run went out from is shown only in the detail.
             </p>
           </header>
+          <div className="isc-insight">
+            <section className="isc-panel">
+              <h4>What moves the score</h4>
+              {current.drivers.length === 0 ? (
+                <p className="muted">Nothing scored yet.</p>
+              ) : (
+                <table className="isc-drivers">
+                  <tbody>
+                    {current.drivers.slice(0, 8).map((d) => (
+                      <tr key={`${d.kind}:${d.name}`}>
+                        <td>
+                          <code>{d.name}</code>
+                          <span className="muted"> {d.kind === 'presend' ? 'pre-send' : 'defender'}</span>
+                        </td>
+                        <td className="isc-num">+{d.score.toFixed(1)}</td>
+                        <td className="isc-num">
+                          {d.variants} of {d.of} lines
+                        </td>
+                        <td>
+                          <span className={`isc-tag isc-tag--${d.scope}`} title={SCOPE_HELP[d.scope]}>
+                            {SCOPE_WORDS[d.scope]}
+                          </span>
+                        </td>
+                        <td className="muted isc-detailcol">{d.detail || ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p className="muted isc-legend">BODY = fix the HTML · COPY = fix those subject lines · TRANSPORT = the route, not content.</p>
+            </section>
+            <section className="isc-panel">
+              <h4>Range</h4>
+              {current.worst && current.best ? (
+                <ul className="isc-range">
+                  <li>
+                    <strong>Worst</strong> {current.worst.defender.toFixed(1)} of 15 · pre-send {current.worst.presend.toFixed(1)} ·{' '}
+                    {current.worst.headroom >= 0 ? `${current.worst.headroom.toFixed(1)} below the review line` : `${(-current.worst.headroom).toFixed(1)} over the review line`}
+                    <div className="muted">
+                      {current.worst.creative} — “{current.worst.subject}”
+                    </div>
+                  </li>
+                  <li>
+                    <strong>Best</strong> {current.best.defender.toFixed(1)} of 15 · pre-send {current.best.presend.toFixed(1)}
+                    <div className="muted">
+                      {current.best.creative} — “{current.best.subject}”
+                    </div>
+                  </li>
+                  {Object.keys(current.link_checks ?? {}).length > 0 && (
+                    <li>
+                      <strong>Link check</strong>{' '}
+                      {Object.entries(current.link_checks)
+                        .map(([k, n]) => `${n} lanes ${k}`)
+                        .join(' · ')}
+                      {(current.link_checks.degraded ?? 0) + (current.link_checks.skipped ?? 0) > 0 && (
+                        <div className="muted">A degraded lane could not prove “no listed link host” — a block list refused or did not answer. Re-run the link pass: INBOXSCORE_DNS=127.0.0.1:7853 python3 -m agents.inboxscore.gate --relink .scratch/inboxscore/gate/&lt;artifact&gt;.json</div>
+                      )}
+                    </li>
+                  )}
+                </ul>
+              ) : (
+                <p className="muted">Nothing scored yet.</p>
+              )}
+            </section>
+            <section className={`isc-panel${current.live.drifted > 0 ? ' isc-panel--alert' : ''}`}>
+              <h4>Board parity (yesterday → +8 days)</h4>
+              {current.live.cells === 0 ? (
+                <p className="muted">No board cell mails this offer in the window.</p>
+              ) : (
+                <>
+                  <p>
+                    {current.live.cells} cells · {fmtN(current.live.recipients)} recipients · <strong>{current.live.matching}</strong> carry catalogued bytes
+                    {current.live.drifted > 0 ? (
+                      <>
+                        {' · '}
+                        <strong className="isc-bad">{current.live.drifted} drifted</strong> — bytes no catalogued creative has; the scores above do not describe them
+                      </>
+                    ) : (
+                      ' · every cell matches a catalogued creative'
+                    )}
+                  </p>
+                  {current.live.drift.length > 0 && (
+                    <table className="isc-drift">
+                      <tbody>
+                        {current.live.drift.slice(0, 40).map((cell) => (
+                          <tr key={cell.name}>
+                            <td>{cell.day}</td>
+                            <td>{cell.name}</td>
+                            <td className="isc-num">{fmtN(cell.recipients)}</td>
+                            <td className="muted">{cell.status}</td>
+                            <td className="muted">{cell.subject_catalogued ? '' : 'subject not in the catalogue'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  {current.live.uncatalogued_subjects.length > 0 && (
+                    <p className="muted">
+                      Mailing with subject lines the catalogue never scored: {current.live.uncatalogued_subjects.slice(0, 5).map((x) => `“${x}”`).join(', ')}
+                      {current.live.uncatalogued_subjects.length > 5 ? ` +${current.live.uncatalogued_subjects.length - 5}` : ''}
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          </div>
           <div className="inbox-score__tablewrap">
             <table className="inbox-score__table isc-table">
               <thead>
@@ -291,6 +469,18 @@ const CatalogView: React.FC = () => {
                           {c.from_names.length ? ` · from “${c.from_names[0]}”${c.from_names.length > 1 ? ` +${c.from_names.length - 1}` : ''}` : ''}
                           {' · '}
                           <code>{c.offer_key}</code>
+                          {` · ${c.scored_lines} of ${c.variants.length} lines scored`}
+                          {c.live_cells > 0 ? ` · on the board: ${c.live_cells} cells, ${fmtN(c.live_recipients)} recipients` : ' · not on the board'}
+                          {c.drivers.length > 0 && (
+                            <span className="isc-creative__drivers">
+                              {' · '}
+                              {c.drivers.slice(0, 3).map((d) => (
+                                <span key={`${d.kind}:${d.name}`} className={`isc-tag isc-tag--${d.scope}`} title={`${d.name} +${d.score.toFixed(1)} on ${d.variants} of ${d.of} lines — ${SCOPE_HELP[d.scope]}`}>
+                                  {d.name} +{d.score.toFixed(1)}
+                                </span>
+                              ))}
+                            </span>
+                          )}
                         </span>
                       </td>
                     </tr>
@@ -305,7 +495,13 @@ const CatalogView: React.FC = () => {
                               <div className="inbox-score__name">
                                 {isOpen ? '▾' : '▸'} {v.index < 0 ? <em>no subject on file (proof name used)</em> : v.subject || <em>empty subject</em>}
                               </div>
-                              <div className="inbox-score__meta">{v.preheader ? `preheader: ${v.preheader}` : 'no preheader'}</div>
+                              <div className="inbox-score__meta">
+                                {v.preheader ? `preheader: ${v.preheader}` : 'no preheader'}
+                                {variantListed(v).map((h) => (
+                                  <span key={h} className="isc-chip isc-chip--fail">listed link: {h}</span>
+                                ))}
+                                {variantDegraded(v).length > 0 && <span className="isc-chip isc-chip--warn">link check degraded on {variantDegraded(v).map((x) => ISP_SHORT[x] ?? x).join(', ')}</span>}
+                              </div>
                             </td>
                             {isps.map((isp) => {
                               const cell = v.cells[isp];
@@ -330,56 +526,97 @@ const CatalogView: React.FC = () => {
                             <tr className="inbox-score__detail">
                               <td colSpan={isps.length + 2}>
                                 <div className="inbox-score__reasons">
-                                  {isps.map((isp) => {
-                                    const cell = v.cells[isp];
-                                    if (!cell) {
+                                  {(() => {
+                                    const missing = isps.filter((isp) => !v.cells[isp]);
+                                    const groups = new Map<string, { lanes: string[]; cell: CatalogCell }>();
+                                    isps.forEach((isp) => {
+                                      const cell = v.cells[isp];
+                                      if (!cell) return;
+                                      const sig = laneSignature(cell);
+                                      const g = groups.get(sig);
+                                      if (g) g.lanes.push(isp);
+                                      else groups.set(sig, { lanes: [isp], cell });
+                                    });
+                                    const scopeOf = (name: string): Driver['scope'] | null => c.drivers.find((d) => d.name === name)?.scope ?? null;
+                                    const blocks = [...groups.values()].map(({ lanes, cell }) => {
+                                      const syms = symbolsList(cell.defender_symbols).filter((x) => x.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
+                                      const rules = rulesList(cell.sa_rules).filter((x) => x.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
+                                      const why = stringList(cell.reasons);
+                                      const au = cell.auth ?? {};
+                                      const linkReasons = cell.links?.reasons ?? [];
+                                      const listed = listedHosts(cell);
                                       return (
-                                        <div key={isp} className="inbox-score__reason-block">
-                                          <h4>{ISP_SHORT[isp] ?? isp}</h4>
-                                          <p className="muted">Not scored yet.</p>
+                                        <div key={lanes.join('+')} className={`inbox-score__reason-block${lanes.length > 1 ? ' inbox-score__reason-block--shared' : ''}`}>
+                                          <h4>
+                                            {lanes.map((x) => ISP_SHORT[x] ?? x).join(' · ')} — {cell.verdict}
+                                            {lanes.length > 1 ? ` (${lanes.length} providers saw the same bytes and scored them the same)` : ''}
+                                            {cell.stale ? ' (stale: the copy changed after this score)' : ''}
+                                          </h4>
+                                          <p>
+                                            Landed in <strong>{FOLDER_LABEL[cell.folder] ?? cell.folder}</strong>
+                                            {cell.defender_score !== null ? ` · defender ${cell.defender_score.toFixed(1)} of 15 (${BAND_WORDS[defenderBand(cell.defender_score)]})` : ''}
+                                            {cell.sa_score !== null ? ` · pre-send ${cell.sa_score.toFixed(1)} (${BAND_WORDS[presendBand(cell.sa_score)]})` : ''}
+                                            {` · spf ${au.spf ?? '-'} · dkim ${au.dkim ?? '-'} · dmarc ${au.dmarc ?? '-'}`}
+                                          </p>
+                                          {cell.prev_defender_score !== null && cell.prev_defender_score !== undefined && (
+                                            <p className="muted">
+                                              Previous score {cell.prev_defender_score.toFixed(1)} of 15
+                                              {cell.prev_sa_score !== null && cell.prev_sa_score !== undefined ? ` · pre-send ${cell.prev_sa_score.toFixed(1)}` : ''}
+                                              {cell.prev_scored_at ? ` on ${cell.prev_scored_at.slice(0, 10)}` : ''}
+                                              {cell.defender_score !== null
+                                                ? ` → ${cell.defender_score - cell.prev_defender_score <= 0 ? 'better' : 'worse'} by ${Math.abs(cell.defender_score - cell.prev_defender_score).toFixed(1)}`
+                                                : ''}
+                                            </p>
+                                          )}
+                                          {why.length > 0 && <ul>{why.map((r, i) => <li key={i}>{r}</li>)}</ul>}
+                                          {(syms.length > 0 || rules.length > 0) && (
+                                            <ul className="inbox-score__symbols">
+                                              {syms.map((sy) => {
+                                                const sc = scopeOf(sy.symbol);
+                                                return (
+                                                  <li key={`d-${sy.symbol}`}>
+                                                    defender <code>{sy.symbol}</code> +{sy.score.toFixed(1)}
+                                                    {sc ? <span className={`isc-tag isc-tag--${sc}`} title={SCOPE_HELP[sc]}>{SCOPE_WORDS[sc]}</span> : null}
+                                                    {sy.detail ? ` — ${sy.detail}` : ''}
+                                                  </li>
+                                                );
+                                              })}
+                                              {rules.map((r) => {
+                                                const sc = scopeOf(r.rule);
+                                                return (
+                                                  <li key={`s-${r.rule}`}>
+                                                    pre-send <code>{r.rule}</code> +{r.score.toFixed(1)}
+                                                    {sc ? <span className={`isc-tag isc-tag--${sc}`} title={SCOPE_HELP[sc]}>{SCOPE_WORDS[sc]}</span> : null}
+                                                  </li>
+                                                );
+                                              })}
+                                            </ul>
+                                          )}
+                                          <p className={cell.link_check === 'ok' ? 'muted' : 'isc-bad'}>
+                                            Link check {cell.link_check}
+                                            {listed.length > 0 ? ` · listed: ${listed.join(', ')}` : cell.link_check === 'ok' ? ' · no listed link host' : ' · “no listed link host” unproven'}
+                                          </p>
+                                          {linkReasons.length > 0 && <ul className="inbox-score__symbols">{linkReasons.slice(0, 4).map((r, i) => <li key={i}>{r}</li>)}</ul>}
+                                          <p className="muted">
+                                            Sent {cell.scored_at.slice(0, 16).replace('T', ' ')} UTC from {cell.sending_domain_used || 'unknown domain'} (not part of the score).
+                                          </p>
                                         </div>
                                       );
+                                    });
+                                    if (missing.length > 0) {
+                                      blocks.push(
+                                        <div key="missing" className="inbox-score__reason-block">
+                                          <h4>{missing.map((x) => ISP_SHORT[x] ?? x).join(' · ')}</h4>
+                                          <p className="muted">Not scored yet.</p>
+                                        </div>,
+                                      );
                                     }
-                                    const syms = symbolsList(cell.defender_symbols).filter((s) => s.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
-                                    const rules = rulesList(cell.sa_rules).filter((r) => r.score > 0).sort((a, b2) => b2.score - a.score).slice(0, 8);
-                                    const why = stringList(cell.reasons);
-                                    const au = cell.auth ?? {};
-                                    return (
-                                      <div key={isp} className="inbox-score__reason-block">
-                                        <h4>
-                                          {ISP_SHORT[isp] ?? isp} — {cell.verdict}
-                                          {cell.stale ? ' (stale: the copy changed after this score)' : ''}
-                                        </h4>
-                                        <p>
-                                          Landed in <strong>{FOLDER_LABEL[cell.folder] ?? cell.folder}</strong>
-                                          {cell.defender_score !== null ? ` · defender ${cell.defender_score.toFixed(1)} of 15 (${BAND_WORDS[defenderBand(cell.defender_score)]})` : ''}
-                                          {cell.sa_score !== null ? ` · pre-send ${cell.sa_score.toFixed(1)} (${BAND_WORDS[presendBand(cell.sa_score)]})` : ''}
-                                          {` · spf ${au.spf ?? '-'} · dkim ${au.dkim ?? '-'} · dmarc ${au.dmarc ?? '-'}`}
-                                        </p>
-                                        {why.length > 0 && <ul>{why.map((r, i) => <li key={i}>{r}</li>)}</ul>}
-                                        {(syms.length > 0 || rules.length > 0) && (
-                                          <ul className="inbox-score__symbols">
-                                            {syms.map((s) => (
-                                              <li key={`d-${s.symbol}`}>
-                                                defender <code>{s.symbol}</code> +{s.score.toFixed(1)}{s.detail ? ` — ${s.detail}` : ''}
-                                              </li>
-                                            ))}
-                                            {rules.map((r) => (
-                                              <li key={`s-${r.rule}`}>
-                                                pre-send <code>{r.rule}</code> +{r.score.toFixed(1)}
-                                              </li>
-                                            ))}
-                                          </ul>
-                                        )}
-                                        <p className="muted">
-                                          Sent {cell.scored_at.slice(0, 16).replace('T', ' ')} UTC from {cell.sending_domain_used || 'unknown domain'} (not part of the score).
-                                        </p>
-                                      </div>
-                                    );
-                                  })}
+                                    return blocks;
+                                  })()}
                                 </div>
                                 <p className="muted isc-run">
-                                  Re-score: <code>python3 -m agents.inboxscore.gate --proof &quot;{c.name}&quot; {v.index >= 0 ? `--variant ${v.index}` : ''}</code>
+                                  Re-score: <code>INBOXSCORE_DNS=127.0.0.1:7853 python3 -m agents.inboxscore.gate --proof &quot;{c.name}&quot; {v.index >= 0 ? `--variant ${v.index}` : ''}</code>
+                                  {v.index < 0 ? ' — this creative has no subject on file; the gate mailed it under the creative name, which is not what a board cell would carry.' : ''}
                                 </p>
                               </td>
                             </tr>

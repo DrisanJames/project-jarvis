@@ -11758,6 +11758,18 @@ END $$`},
 			scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE (organization_id, proof_id, variant_index, isp, source)
 		)`},
+		// Inbox Score catalog, QA pass 2026-10-25: the link pass result + its health, and
+		// the previous score kept on re-score (direction of a copy change).
+		{"inbox_score_catalog_links_prev", `ALTER TABLE mailing_inbox_score_catalog
+			ADD COLUMN IF NOT EXISTS links JSONB NOT NULL DEFAULT '{}'::jsonb,
+			ADD COLUMN IF NOT EXISTS link_check TEXT NOT NULL DEFAULT '',
+			ADD COLUMN IF NOT EXISTS prev_defender_score NUMERIC(8,3),
+			ADD COLUMN IF NOT EXISTS prev_sa_score NUMERIC(8,3),
+			ADD COLUMN IF NOT EXISTS prev_scored_at TIMESTAMPTZ`},
+		// Rows for proofs that do not exist never reach a card (the writer now refuses them;
+		// one test row landed 2026-10-25 before it did). Sweep orphans each boot — tiny table.
+		{"inbox_score_catalog_orphan_sweep", `DELETE FROM mailing_inbox_score_catalog c
+			WHERE NOT EXISTS (SELECT 1 FROM mailing_offer_proofs p WHERE p.id = c.proof_id)`},
 
 		// PMTACollector (internal/pmta/collector.go persistMetrics) has been
 		// INSERTing status/ip/domain snapshots into this table since the
