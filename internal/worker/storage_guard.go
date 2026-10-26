@@ -242,8 +242,10 @@ func (g *StorageGuard) checkQueueTerminalAged(ctx context.Context, snap *Storage
 		SELECT COUNT(*)::bigint
 		FROM mailing_campaign_queue
 		WHERE status IN ('accepted','cancelled','failed','dead_letter','dead_letter_strict')
-		  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days'
+		  AND COALESCE(updated_at, created_at) < NOW() - INTERVAL '14 days 2 hours'
 	`).Scan(&count)
+	// '14 days 2 hours': the hourly purge deletes past 14d, so rows that crossed
+	// 14d inside the current purge cycle are not a stalled purge (AP-F65A69A3).
 	if err != nil {
 		log.Printf("[StorageGuard] queue terminal aged query failed: %v", err)
 		return
