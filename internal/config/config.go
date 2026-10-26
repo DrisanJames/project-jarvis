@@ -498,7 +498,7 @@ func Load(path string) (*Config, error) {
 		cfg.Alerting.CampaignLateness.ThresholdMinutes = 5
 	}
 	if cfg.Alerting.CampaignLateness.ReAlertAfterHours == 0 {
-		cfg.Alerting.CampaignLateness.ReAlertAfterHours = 6
+		cfg.Alerting.CampaignLateness.ReAlertAfterHours = 24 // pager: once a day per campaign (operator 2026-10-26)
 	}
 
 	return &cfg, nil

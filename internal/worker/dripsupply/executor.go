@@ -313,7 +313,7 @@ const ShadowPlanTable = "drip_daily_plan_shadow"
 // Defaults for the tick janitors (§2.8).
 const (
 	DefaultExpireAfter = 45 * time.Minute
-	DefaultAlertEvery  = time.Hour
+	DefaultAlertEvery  = 24 * time.Hour // pager: one post per lane per day (operator 2026-10-26)
 )
 
 // MediatorConfig is everything main.go reads from the environment.

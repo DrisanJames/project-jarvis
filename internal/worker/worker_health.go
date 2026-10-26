@@ -185,7 +185,7 @@ func NewWorkerHealthMonitor(db *sql.DB, notifier notify.Notifier) *WorkerHealthM
 		notifier:        notifier,
 		interval:        5 * time.Minute,
 		stallMultiplier: 3,
-		reAlertAfter:    6 * time.Hour,
+		reAlertAfter:    24 * time.Hour, // pager: once a day per stalled worker (operator 2026-10-26)
 		muteAfter:       48 * time.Hour,
 	}
 }

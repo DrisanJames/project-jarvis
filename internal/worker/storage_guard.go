@@ -292,7 +292,12 @@ func (g *StorageGuard) maybeAlert(ctx context.Context, key storageGuardInvariant
 	}
 	g.mu.Lock()
 	last, seen := g.lastAlerts[key]
-	if seen && time.Since(last) < g.reAlert {
+	reAlert := g.reAlert
+	if key == sgInvQueueTerminalAged {
+		// A purge backlog, not an outage: once a day (operator 2026-10-26, 426 posts/week at 30 min).
+		reAlert = 24 * time.Hour
+	}
+	if seen && time.Since(last) < reAlert {
 		g.mu.Unlock()
 		return
 	}

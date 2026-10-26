@@ -57,7 +57,7 @@ func (m *CampaignHealthMonitor) SetLatenessAlerter(
 		threshold = 5 * time.Minute
 	}
 	if reAlert <= 0 {
-		reAlert = 6 * time.Hour
+		reAlert = 24 * time.Hour
 	}
 	m.latenessAlerter = alerter
 	m.latenessRecipients = append([]string(nil), recipients...)
