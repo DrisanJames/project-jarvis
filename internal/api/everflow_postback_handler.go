@@ -16,12 +16,13 @@ import (
 )
 
 type EverflowPostbackHandler struct {
-	db       *sql.DB
-	notifier notify.Notifier
+	db            *sql.DB
+	notifier      notify.Notifier
+	clickNotifier notify.Notifier
 }
 
 func NewEverflowPostbackHandler(db *sql.DB) *EverflowPostbackHandler {
-	return &EverflowPostbackHandler{db: db, notifier: notify.NoopNotifier{}}
+	return &EverflowPostbackHandler{db: db, notifier: notify.NoopNotifier{}, clickNotifier: notify.NoopNotifier{}}
 }
 
 // WithConversionNotifier attaches the Slack notifier used to announce conversions
@@ -30,6 +31,15 @@ func NewEverflowPostbackHandler(db *sql.DB) *EverflowPostbackHandler {
 func (h *EverflowPostbackHandler) WithConversionNotifier(n notify.Notifier) *EverflowPostbackHandler {
 	if n != nil {
 		h.notifier = n
+	}
+	return h
+}
+
+// WithClickRevenueNotifier attaches the notifier for CPC payouts (#click-revenue).
+// A nil notifier is ignored. Returns the handler for chaining at registration.
+func (h *EverflowPostbackHandler) WithClickRevenueNotifier(n notify.Notifier) *EverflowPostbackHandler {
+	if n != nil {
+		h.clickNotifier = n
 	}
 	return h
 }
@@ -129,7 +139,7 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 	// also made the offer label and subscriber email look inconsistent as the
 	// concurrent enrichment lookups raced each other.
 	if isNewConversion {
-		notifyConversionAsync(h.notifier, h.db, subscriberID, efOfferID, payout, txnID)
+		notifyConversionAsync(h.notifier, h.clickNotifier, h.db, subscriberID, efOfferID, payout, txnID)
 	}
 
 	// Resolve the internal offer UUID (campaign → mailing_offers). This stays
@@ -229,16 +239,23 @@ func (h *EverflowPostbackHandler) HandlePostback(w http.ResponseWriter, r *http.
 // It runs in its own goroutine with a fresh context so it never delays the HTTP
 // response to Everflow and is not cancelled when the request returns. A nil or
 // no-op notifier short-circuits to nothing.
-func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uuid.UUID, efOfferID string, payout float64, txnID string) {
-	if notifier == nil {
-		return
-	}
-	if _, isNoop := notifier.(notify.NoopNotifier); isNoop {
+func notifyConversionAsync(notifier, clickNotifier notify.Notifier, db *sql.DB, subscriberID uuid.UUID, efOfferID string, payout float64, txnID string) {
+	if isNoopNotifier(notifier) && isNoopNotifier(clickNotifier) {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		// CPC payouts are click revenue, not conversions: they go to
+		// #click-revenue and never to #conversions (operator 2026-10-26).
+		target, isClick := notifier, isCPCOffer(ctx, db, efOfferID)
+		if isClick {
+			target = clickNotifier
+		}
+		if isNoopNotifier(target) {
+			return
+		}
 
 		email := "(unknown subscriber)"
 		if subscriberID != uuid.Nil && db != nil {
@@ -266,10 +283,36 @@ func notifyConversionAsync(notifier notify.Notifier, db *sql.DB, subscriberID uu
 			Headline: fmt.Sprintf("%s · payout *$%.2f*", offer, payout),
 			Body:     body,
 		}
-		if err := notify.Deliver(notifier, msg); err != nil {
-			log.Printf("[conversion-notify] failed to post to #conversions: %v", err)
+		if isClick {
+			msg.Scope = notify.ScopeClick
+		}
+		if err := notify.Deliver(target, msg); err != nil {
+			log.Printf("[conversion-notify] failed to post %s alert: %v", msg.Scope, err)
 		}
 	}()
+}
+
+func isNoopNotifier(n notify.Notifier) bool {
+	if n == nil {
+		return true
+	}
+	_, isNoop := n.(notify.NoopNotifier)
+	return isNoop
+}
+
+// isCPCOffer reports whether any mailing_offers row for this Everflow offer id
+// bills on click (payout_type 'cpc', case-insensitive). Unknown or lookup
+// failure = false, so an unclassified payout still reaches #conversions.
+func isCPCOffer(ctx context.Context, db *sql.DB, efOfferID string) bool {
+	efOfferID = strings.TrimSpace(efOfferID)
+	if db == nil || efOfferID == "" {
+		return false
+	}
+	var cpc bool
+	_ = db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM mailing_offers WHERE everflow_offer_id=$1 AND lower(payout_type)='cpc')`,
+		efOfferID).Scan(&cpc)
+	return cpc
 }
 
 // conversionOfferLabel resolves a human-readable offer name for an Everflow

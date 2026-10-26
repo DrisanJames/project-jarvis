@@ -57,6 +57,7 @@ var tierPrefix = map[Tier]string{
 // in docs/SLACK_MESSAGE_STANDARD.md, not an ad-hoc word.
 const (
 	ScopeConversion = "Conversion"
+	ScopeClick      = "Click"
 	ScopeSend       = "Send"
 	ScopeBoard      = "Board"
 	ScopeDrip       = "Drip"
@@ -73,7 +74,7 @@ const (
 // ScopeVocabulary is the closed set, in doc order. Exported so tests (and the
 // repo-wide literal sweep) can assert against exactly this list.
 var ScopeVocabulary = []string{
-	ScopeConversion, ScopeSend, ScopeBoard, ScopeDrip, ScopeKumo, ScopeDeploy,
+	ScopeConversion, ScopeClick, ScopeSend, ScopeBoard, ScopeDrip, ScopeKumo, ScopeDeploy,
 	ScopeCron, ScopeDB, ScopeLake, ScopeIngest, ScopeSegment, ScopeReport,
 }
 

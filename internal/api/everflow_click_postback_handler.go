@@ -59,13 +59,14 @@ import (
 
 // EverflowClickPostbackHandler is the HTTP entry for /api/mailing/everflow/click-postback.
 type EverflowClickPostbackHandler struct {
-	db       *sql.DB
-	notifier notify.Notifier
+	db            *sql.DB
+	notifier      notify.Notifier
+	clickNotifier notify.Notifier
 }
 
 // NewEverflowClickPostbackHandler wires the handler with a *sql.DB.
 func NewEverflowClickPostbackHandler(db *sql.DB) *EverflowClickPostbackHandler {
-	return &EverflowClickPostbackHandler{db: db, notifier: notify.NoopNotifier{}}
+	return &EverflowClickPostbackHandler{db: db, notifier: notify.NoopNotifier{}, clickNotifier: notify.NoopNotifier{}}
 }
 
 // WithConversionNotifier attaches the Slack notifier used to announce conversions
@@ -74,6 +75,15 @@ func NewEverflowClickPostbackHandler(db *sql.DB) *EverflowClickPostbackHandler {
 func (h *EverflowClickPostbackHandler) WithConversionNotifier(n notify.Notifier) *EverflowClickPostbackHandler {
 	if n != nil {
 		h.notifier = n
+	}
+	return h
+}
+
+// WithClickRevenueNotifier attaches the notifier for CPC payouts (#click-revenue).
+// A nil notifier is ignored. Returns the handler for chaining.
+func (h *EverflowClickPostbackHandler) WithClickRevenueNotifier(n notify.Notifier) *EverflowClickPostbackHandler {
+	if n != nil {
+		h.clickNotifier = n
 	}
 	return h
 }
@@ -183,7 +193,7 @@ func (h *EverflowClickPostbackHandler) HandleClickPostback(w http.ResponseWriter
 		// delayed. Gated on isNewConversion so an Everflow retry does not post a
 		// second alert for a conversion already announced.
 		if isNewConversion {
-			notifyConversionAsync(h.notifier, h.db, in.subscriberID, in.EverflowOfferID, parsePostbackPayout(r), in.TransactionID)
+			notifyConversionAsync(h.notifier, h.clickNotifier, h.db, in.subscriberID, in.EverflowOfferID, parsePostbackPayout(r), in.TransactionID)
 		}
 
 		inDict, exited, exErr := exitClickDripEnrollmentsOnConversion(ctx, h.db, in.subscriberID, in.EverflowOfferID)

@@ -108,3 +108,24 @@ func ConversionsFromEnv() Notifier {
 	}
 	return NewSlackNotifier(token, channel)
 }
+
+// ClickRevenueFromEnv selects the transport for CPC payouts (revenue earned on
+// the click, e.g. eHealth CPC), which the operator keeps out of #conversions
+// (2026-10-26). Same precedence as ConversionsFromEnv:
+// SLACK_CLICK_REVENUE_WEBHOOK_URL > SLACK_BOT_TOKEN + SLACK_CLICK_REVENUE_CHANNEL
+// (default C0CCCCDRK0U = #click-revenue) > NoopNotifier. It never falls back to the
+// conversions channel — an unconfigured click channel drops the post.
+func ClickRevenueFromEnv() Notifier {
+	if webhook := os.Getenv("SLACK_CLICK_REVENUE_WEBHOOK_URL"); webhook != "" {
+		return NewSlackWebhookNotifier(webhook)
+	}
+	token := os.Getenv("SLACK_BOT_TOKEN")
+	if token == "" {
+		return NoopNotifier{}
+	}
+	channel := os.Getenv("SLACK_CLICK_REVENUE_CHANNEL")
+	if channel == "" {
+		channel = "C0CCCCDRK0U" // #click-revenue (private; bot is a member)
+	}
+	return NewSlackNotifier(token, channel)
+}

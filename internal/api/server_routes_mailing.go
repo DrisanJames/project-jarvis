@@ -361,9 +361,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// SLACK_CONVERSIONS_CHANNEL > noop). Shared by both Everflow conversion
 		// entry points below.
 		conversionNotifier := notify.ConversionsFromEnv()
+		// CPC payouts (mailing_offers.payout_type='cpc') → #click-revenue, never
+		// #conversions (operator 2026-10-26).
+		clickRevenueNotifier := notify.ClickRevenueFromEnv()
 
 		// Everflow conversion postback — public (called by Everflow servers)
-		efPostback := NewEverflowPostbackHandler(db).WithConversionNotifier(conversionNotifier)
+		efPostback := NewEverflowPostbackHandler(db).WithConversionNotifier(conversionNotifier).WithClickRevenueNotifier(clickRevenueNotifier)
 		s.router.Post("/api/mailing/everflow/postback", efPostback.HandlePostback)
 		s.router.Get("/api/mailing/everflow/postback", efPostback.HandlePostback)
 
@@ -372,7 +375,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		// JourneyEventEnroller worker (Phase 2) consumes the queue and creates
 		// journey enrollments. Mounted on s.router so Everflow can call it
 		// without auth headers, same as the conversion postback.
-		efClickPostback := NewEverflowClickPostbackHandler(db).WithConversionNotifier(conversionNotifier)
+		efClickPostback := NewEverflowClickPostbackHandler(db).WithConversionNotifier(conversionNotifier).WithClickRevenueNotifier(clickRevenueNotifier)
 		s.router.Post("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 		s.router.Get("/api/mailing/everflow/click-postback", efClickPostback.HandleClickPostback)
 
