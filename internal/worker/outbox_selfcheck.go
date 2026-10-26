@@ -240,7 +240,17 @@ type OutboxSelfCheck struct {
 
 	mu         sync.Mutex
 	lastAlerts map[selfCheckInvariantKey]time.Time
+
+	// backlogProgressErrs counts consecutive ticks on which the queued-backlog
+	// progress probe errored (AP-2D0D2BA2). Reset on any tick that measures.
+	backlogProgressErrs int
 }
+
+// backlogProgressErrPageAfter: a progress-probe error pages only once it has
+// repeated on this many consecutive ticks. One timeout under DB load is not a
+// stall (AP-2D0D2BA2: all 4 pages 10-20 came from a single-tick timeout while
+// the queue sent 114k-165k/h).
+const backlogProgressErrPageAfter = 3
 
 // NewOutboxSelfCheck constructs a self-check with default timings. The Twilio
 // alerter and recipient list are set after construction via SetAlerter so the
@@ -750,12 +760,14 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) selfCheckCount
 		return selfCheckCount{err: err}
 	}
 	if count <= queuedBacklogThreshold {
+		c.setBacklogProgressErrs(0)
 		return selfCheckCount{value: count}
 	}
 	// Depth alone pages on healthy drains: an evening board sits at 150k-200k
 	// rows while sending 140k-197k/h (AP-DC737776, 331 pages / 14d). Page only
 	// when the queue also sent nothing in oldestQueuedProgressWindow. Runs only
-	// on a depth breach; on a query error it falls through and pages (fail open).
+	// on a depth breach; a query error pages only after it repeats on
+	// backlogProgressErrPageAfter consecutive ticks (AP-2D0D2BA2).
 	var draining bool
 	derr := c.runWithTimeout(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `
@@ -766,8 +778,13 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) selfCheckCount
 	`, oldestQueuedProgressWindow).Scan(&draining)
 	})
 	if derr != nil {
-		log.Printf("[OutboxSelfCheck] queued-backlog progress query failed (paging anyway): %v", derr)
-	} else if draining {
+		n := c.incBacklogProgressErrs()
+		if n < backlogProgressErrPageAfter {
+			log.Printf("[OutboxSelfCheck] queued-backlog progress query failed (%d/%d consecutive, not paging): %v", n, backlogProgressErrPageAfter, derr)
+			return selfCheckCount{value: count}
+		}
+		log.Printf("[OutboxSelfCheck] queued-backlog progress query failed %d consecutive ticks (paging): %v", n, derr)
+	} else if c.setBacklogProgressErrs(0); draining {
 		log.Printf("[OutboxSelfCheck] queued backlog %d rows but the queue sent within %s — draining, not paging", count, oldestQueuedProgressWindow)
 		return selfCheckCount{value: count}
 	}
@@ -777,6 +794,19 @@ func (c *OutboxSelfCheck) checkQueuedBacklog(ctx context.Context) selfCheckCount
 	)
 	c.maybeAlert(ctx, invQueuedBacklog, msg)
 	return selfCheckCount{value: count}
+}
+
+func (c *OutboxSelfCheck) incBacklogProgressErrs() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.backlogProgressErrs++
+	return c.backlogProgressErrs
+}
+
+func (c *OutboxSelfCheck) setBacklogProgressErrs(n int) {
+	c.mu.Lock()
+	c.backlogProgressErrs = n
+	c.mu.Unlock()
 }
 
 // checkOldestQueuedStuck distinguishes "queue is deep because of a hot send"

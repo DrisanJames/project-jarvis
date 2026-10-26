@@ -706,13 +706,53 @@ func TestSelfCheck_QueuedBacklogStalledPages(t *testing.T) {
 	require.Contains(t, got[0].Body, "queued backlog · *196,681* rows")
 }
 
-// TestSelfCheck_QueuedBacklogProgressErrorPages — a failed progress probe
-// fails open: depth breach still pages.
-func TestSelfCheck_QueuedBacklogProgressErrorPages(t *testing.T) {
-	got := runBacklogBreach(t, func(m sqlmock.Sqlmock) {
+func runBacklogBreachWith(t *testing.T, priorErrs int, progress func(sqlmock.Sqlmock)) ([]capturedSMS, *OutboxSelfCheck) {
+	t.Helper()
+	db, mock := newSelfCheckMockDB(t)
+	expectJanitorTx(mock, 0)
+	expectCheckTx(mock, reSubmitting, sqlmock.NewRows([]string{"count", "oldest"}).AddRow(int64(0), int64(0)))
+	expectCheckTx(mock, reDeadLetter, sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+	expectCheckTx(mock, reBacklog, sqlmock.NewRows([]string{"c"}).AddRow(int64(196681)))
+	progress(mock)
+	expectCheckTx(mock, reOldest, sqlmock.NewRows([]string{"age"}).AddRow(int64(0)))
+	expectTailChecks(mock)
+
+	alerter := &capturingAlerter{}
+	sc := NewOutboxSelfCheck(db)
+	sc.SetAlerter(alerter, []string{"+15555550100"})
+	sc.backlogProgressErrs = priorErrs
+	sc.runOnce(context.Background())
+	require.NoError(t, mock.ExpectationsWereMet())
+	return alerter.drain(), sc
+}
+
+// TestSelfCheck_QueuedBacklogProgressErrorSingleTickDoesNotPage — one failed
+// progress probe (statement timeout under load) is not a stall (AP-2D0D2BA2).
+func TestSelfCheck_QueuedBacklogProgressErrorSingleTickDoesNotPage(t *testing.T) {
+	got, sc := runBacklogBreachWith(t, 0, func(m sqlmock.Sqlmock) {
 		expectCheckTxErr(m, reBacklogProgress)
 	})
-	require.Len(t, got, 1, "progress-probe error must page")
+	require.Empty(t, got, "a single progress-probe error must not page")
+	require.Equal(t, 1, sc.backlogProgressErrs)
+}
+
+// TestSelfCheck_QueuedBacklogProgressErrorRepeatedPages — the probe failing on
+// the 3rd consecutive tick pages (fail open, delayed).
+func TestSelfCheck_QueuedBacklogProgressErrorRepeatedPages(t *testing.T) {
+	got, _ := runBacklogBreachWith(t, backlogProgressErrPageAfter-1, func(m sqlmock.Sqlmock) {
+		expectCheckTxErr(m, reBacklogProgress)
+	})
+	require.Len(t, got, 1, "progress-probe error repeated on 3 ticks must page")
+}
+
+// TestSelfCheck_QueuedBacklogProgressSuccessResetsErrors — a probe that
+// answers resets the consecutive-error counter.
+func TestSelfCheck_QueuedBacklogProgressSuccessResetsErrors(t *testing.T) {
+	got, sc := runBacklogBreachWith(t, 2, func(m sqlmock.Sqlmock) {
+		expectCheckTx(m, reBacklogProgress, sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	})
+	require.Empty(t, got)
+	require.Equal(t, 0, sc.backlogProgressErrs)
 }
 
 // reOldestProgress matches the progress probe checkOldestQueuedStuck runs only
