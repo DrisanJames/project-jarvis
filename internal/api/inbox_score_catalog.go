@@ -246,8 +246,41 @@ type inboxScoreLive struct {
 	Drifted    int                  `json:"drifted"`
 	Recipients int                  `json:"recipients"`
 	Drift      []inboxScoreLiveCell `json:"drift"`
+	// Mutated: cells from builders that rewrite every cell's body (the nx lanes
+	// de-fingerprint per cell), so their bytes never equal a proof's and hash
+	// parity says nothing about them. Counted, never called drifted.
+	Mutated           int `json:"mutated"`
+	MutatedRecipients int `json:"mutated_recipients"`
 	// Live subjects not in the catalog (mailing, but never scored as that line).
 	UncataloguedSubjects []string `json:"uncatalogued_subjects"`
+}
+
+// reMutatingBuilder: "<date> - NX-<sub.domain> - …" — the nx lanes (board 2026-09-08
+// de-fingerprint) emit a distinct body per cell.
+var reMutatingBuilder = regexp.MustCompile(`^\d{8} - NX-`)
+
+// inboxScoreOfferByLabel resolves a campaign's offer label to a card: the exact
+// label, else the ONE card whose label contains it or is contained by it. Two
+// candidates (a bare "Insurify" against Insurify Home / Auto / Renters) = none —
+// a cell is never charged to several offers.
+func inboxScoreOfferByLabel(label string, byOffer map[string]*inboxScoreCatalogOffer) *inboxScoreCatalogOffer {
+	if o := byOffer[label]; o != nil {
+		return o
+	}
+	ll := strings.ToLower(label)
+	var found *inboxScoreCatalogOffer
+	n := 0
+	for l, cand := range byOffer {
+		cl := strings.ToLower(l)
+		if strings.Contains(ll, cl) || strings.Contains(cl, ll) {
+			found = cand
+			n++
+		}
+	}
+	if n == 1 {
+		return found
+	}
+	return nil
 }
 
 type inboxScoreCatalogVariant struct {
@@ -306,7 +339,7 @@ var inboxScoreCatalogHowToRead = []string{
 	"Defender = our near-real-life filter (score of 15: ready under 2.4, review under 4.6, fix under 8, junked at 8). Pre-send = SpamAssassin (ready under 1.5, review under 3, fix under 5, fail at 5). PASS needs inbox, both ready, DMARC pass and no listed link host, on every provider.",
 	"Not scored yet = run the gate: python3 -m agents.inboxscore.gate --proof \"<creative name>\" --all-variants. A stale score means the copy changed after it was scored — run it again.",
 	"What moves the score: a symbol marked BODY fires on every subject line of the creative (fix the HTML); COPY fires on some lines only (fix those subjects/preheaders); TRANSPORT is the sending path, not content.",
-	"Board parity: the cells scheduled yesterday through the next 8 days are matched to the catalogue by their exact HTML bytes. A DRIFTED cell mails this offer with bytes no catalogued creative has — the catalogue score does not describe it.",
+	"Board parity: the cells scheduled yesterday through the next 8 days are matched to the catalogue by their exact HTML bytes. A DRIFTED cell mails this offer with bytes no catalogued creative has — the catalogue score does not describe it. nx-lane cells rewrite every body (per-cell de-fingerprint) and are counted as MUTATED, not drifted: score their proof through the gate and read the nx lane's own delivery.",
 	"Link check degraded = a block list (Spamhaus DBL, SURBL, URIBL) refused or did not answer for that lane, so \"no listed link host\" is unproven there. Run the gate with INBOXSCORE_DNS pointing at a recursive resolver.",
 }
 
@@ -852,22 +885,18 @@ func (s *InboxScoreService) inboxScoreBoardParity(ctx context.Context, org strin
 			continue
 		}
 		// No byte match: find the offer this cell names.
-		label := inboxScoreOffer(name, key)
-		o := byOffer[label]
-		if o == nil {
-			for l, cand := range byOffer {
-				if strings.Contains(strings.ToLower(label), strings.ToLower(l)) || strings.Contains(strings.ToLower(l), strings.ToLower(label)) {
-					o = cand
-					break
-				}
-			}
-		}
+		o := inboxScoreOfferByLabel(inboxScoreOffer(name, key), byOffer)
 		if o == nil {
 			continue
 		}
 		o.Live.Cells++
-		o.Live.Drifted++
 		o.Live.Recipients += rec
+		if reMutatingBuilder.MatchString(name) {
+			o.Live.Mutated++
+			o.Live.MutatedRecipients += rec
+			continue
+		}
+		o.Live.Drifted++
 		o.Live.Drift = append(o.Live.Drift, inboxScoreLiveCell{Name: name, Day: day, Status: status, Recipients: rec, Subject: subject,
 			SubjectCatalogued: inboxScoreOfferSubjectCatalogued(o, subject)})
 	}

@@ -31,6 +31,7 @@ func TestInboxScoreOffer(t *testing.T) {
 		{"10222026 - X - Anything", "brand-new-key", "brand-new-key"},
 		{"10222026 - NX-rc.financialcalculate.com - OFFER-ENG-InsHome", "", "Insurify Home"},
 		{"10222026 - NX-ad.quizfiesta.com - OFFER-ENG-InsHome-APPLE", "", "Insurify Home"},
+		{"10252026 - NX-ad.quizfiesta.com - OFFER-ENG-Insurify-YF", "", "Insurify Auto"},
 		{"10222026 - NX-ox.hfcl.net - OFFER-ENG-AEPSav-YF", "", "AEP Savings"},
 		{"10222026 - NX-py.paymydebit.com - OFFER-ENG-AEPSw-YF", "", "AEP Switchers"},
 		{"10232026 - NX-mb.quizfiesta.com - OFFER-ENG-eHSw-YF", "", "eHealth Switchers"},

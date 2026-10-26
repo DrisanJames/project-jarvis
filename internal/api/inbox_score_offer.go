@@ -21,7 +21,7 @@ var offerKeyLabel = map[string]string{
 
 // offerTokenLabel maps the offer tokens that appear in campaign names.
 var offerTokenLabel = map[string]string{
-	"inshome": "Insurify Home", "insauto": "Insurify Auto",
+	"inshome": "Insurify Home", "insauto": "Insurify Auto", "insurify": "Insurify Auto",
 	"ehsw": "eHealth Switchers", "ehealth-switchers": "eHealth Switchers",
 	"ehsav": "eHealth Savings", "ehsavings": "eHealth Savings", "ehealth-savings": "eHealth Savings",
 	"ehadv": "eHealth Advisor", "ehealth-advisor": "eHealth Advisor",

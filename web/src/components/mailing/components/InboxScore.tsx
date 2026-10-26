@@ -129,7 +129,7 @@ const SCOPE_HELP: Record<Driver['scope'], string> = {
 };
 
 type LiveCell = { name: string; day: string; status: string; recipients: number; subject: string; creative?: string; subject_catalogued: boolean };
-type Live = { cells: number; matching: number; drifted: number; recipients: number; drift: LiveCell[]; uncatalogued_subjects: string[] };
+type Live = { cells: number; matching: number; drifted: number; recipients: number; drift: LiveCell[]; mutated: number; mutated_recipients: number; uncatalogued_subjects: string[] };
 type Extreme = { creative: string; subject: string; index: number; defender: number; presend: number; headroom: number };
 
 type CatalogVariant = {
@@ -420,6 +420,12 @@ const CatalogView: React.FC = () => {
                       </>
                     ) : (
                       ' · every cell matches a catalogued creative'
+                    )}
+                    {current.live.mutated > 0 && (
+                      <>
+                        {' · '}
+                        {current.live.mutated} nx-lane cells ({fmtN(current.live.mutated_recipients)} recipients) carry per-cell mutated bytes — not hash-compared
+                      </>
                     )}
                   </p>
                   {current.live.drift.length > 0 && (

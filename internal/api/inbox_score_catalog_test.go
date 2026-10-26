@@ -96,7 +96,8 @@ func TestInboxScoreCatalog_Tree(t *testing.T) {
 			AddRow("c1", "10262026 - BWP - Liberty", "liberty-mutual", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 1000, "$700 in savings", "hash-sp").
 			AddRow("c2", "10262026 - DB - Liberty", "liberty-mutual", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 2000, "A subject nobody catalogued", "hash-OLD").
 			AddRow("c3", "10262026 - DB - NL-GM-NEWSLETTER", "", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 50, "News", "hash-x").
-			AddRow("c4", "10262026 - DB - SomethingElse", "", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 50, "x", "hash-y"))
+			AddRow("c4", "10262026 - DB - SomethingElse", "", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 50, "x", "hash-y").
+			AddRow("c5", "10262026 - NX-aa.discountblog.com - OFFER-ENG-Liberty", "liberty-mutual", "scheduled", time.Date(2026, 10, 26, 10, 1, 0, 0, time.UTC), 300, "$700 in savings", "hash-nx-1"))
 	req := httptest.NewRequest(http.MethodGet, "/api/mailing/inbox-score/catalog", nil)
 	req.Header.Set("X-Organization-ID", SingleTenantFallbackOrgID)
 	rr := httptest.NewRecorder()
@@ -163,7 +164,10 @@ func TestInboxScoreCatalog_Tree(t *testing.T) {
 	if o.Worst == nil || o.Worst.Defender != 3.0 || o.Worst.Subject != "$700 in savings" || o.Best == nil || o.Best.Defender != -0.49 || o.Best.Index != -1 {
 		t.Errorf("extremes worst=%+v best=%+v", o.Worst, o.Best)
 	}
-	if o.Live.Cells != 2 || o.Live.Matching != 1 || o.Live.Drifted != 1 || o.Live.Recipients != 3000 || len(o.Live.Drift) != 1 ||
+	if o.Live.Mutated != 1 || o.Live.MutatedRecipients != 300 {
+		t.Errorf("nx cell must count as mutated, not drifted: %+v", o.Live)
+	}
+	if o.Live.Cells != 3 || o.Live.Matching != 1 || o.Live.Drifted != 1 || o.Live.Recipients != 3300 || len(o.Live.Drift) != 1 ||
 		o.Live.Drift[0].Name != "10262026 - DB - Liberty" || o.Live.Drift[0].Day != "2026-10-26" || o.Live.Drift[0].SubjectCatalogued {
 		t.Errorf("board parity = %+v", o.Live)
 	}
@@ -196,5 +200,26 @@ func TestInboxScorePostCatalog_UnknownProof(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err) // no BEGIN, no INSERT
+	}
+}
+
+func TestInboxScoreOfferByLabel_AmbiguousIsNone(t *testing.T) {
+	by := map[string]*inboxScoreCatalogOffer{
+		"Insurify Home":    {Offer: "Insurify Home"},
+		"Insurify Auto":    {Offer: "Insurify Auto"},
+		"Insurify Renters": {Offer: "Insurify Renters"},
+		"Liberty Mutual":   {Offer: "Liberty Mutual"},
+	}
+	if o := inboxScoreOfferByLabel("Insurify", by); o != nil {
+		t.Errorf("bare Insurify matched %q; two candidates must resolve to none", o.Offer)
+	}
+	if o := inboxScoreOfferByLabel("Insurify Auto", by); o == nil || o.Offer != "Insurify Auto" {
+		t.Errorf("exact label must resolve")
+	}
+	if o := inboxScoreOfferByLabel("Liberty", by); o == nil || o.Offer != "Liberty Mutual" {
+		t.Errorf("unique substring must resolve")
+	}
+	if !reMutatingBuilder.MatchString("10252026 - NX-aa.discountblog.com - OFFER-ENG-Insurify") || reMutatingBuilder.MatchString("10262026 - DB - Liberty-R") {
+		t.Errorf("mutating-builder regex")
 	}
 }
