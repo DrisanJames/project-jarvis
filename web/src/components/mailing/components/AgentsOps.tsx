@@ -15,6 +15,7 @@ import { faCalendarCheck, faDatabase, faRotate, faScroll, faTriangleExclamation 
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill } from '../shared/ui';
+import { SesLaneToday, type SesLaneReport } from './SesLaneToday';
 
 // ───────────────────────────── API shapes (agents/jobs/scheduling_agent.py · scheduling_supervisor.py · data_agent.py)
 
@@ -40,6 +41,7 @@ type AgentsOverview = {
   scheduling: { plan_for_date: SchedJournal | null; plan_tonight: SchedJournal | null; supervisor: SupervisorState | null };
   data: { journal: DataJournal | null; state: DataState | null };
   ledger: LedgerRow[]; errors?: Record<string, string>;
+  ses?: { lane: SesLaneReport | null };
 };
 
 const VERDICT_COLOR: Record<string, string> = { PASS: colors.success, OK: colors.success, STEP: colors.success, WARN: colors.warning, HOLD: colors.warning, PENDING: colors.idle, FAIL: colors.danger, ERROR: colors.danger, CUT: colors.danger };
@@ -388,6 +390,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
   return (
     <>
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{ENV_NOTE[env]}</div>
+      {env === 'ses' && <SesLaneToday report={data?.ses?.lane} date={date} />}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader title="Decisions · scheduling agent" icon={faCalendarCheck}
           right={(

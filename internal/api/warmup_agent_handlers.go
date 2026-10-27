@@ -95,6 +95,9 @@ func (s *WarmupAgentService) RegisterRoutes(r chi.Router) {
 //	data_agent/<D>.json           {passes:[…], latest} — every 30-min pass with its 12 checks and repairs
 //	data_agent/state.json         last_pass, last_verdicts, days[D] (attempts, paged, repairs), daily caches
 //	ledger/change_ledger.jsonl    filtered to ids cl-<YYYYMMDD>-* (every LIVE change any agent or session made that day)
+//	ses_lane/<D>.json             the SES offer board today (agents/reporting/ses_lane_today.py, every 30 min): one row per
+//	                              slot × offer split Yahoo family / non-family — delivered, delivery %, hard, complaints,
+//	                              opens, clicks, conversions, payout + basis; cells not yet delivering; NOT TRACKED offers
 type agentsOverview struct {
 	Date      string `json:"date"`
 	FetchedAt string `json:"fetched_at"`
@@ -107,6 +110,9 @@ type agentsOverview struct {
 		Journal json.RawMessage `json:"journal"`
 		State   json.RawMessage `json:"state"`
 	} `json:"data"`
+	SES struct {
+		Lane json.RawMessage `json:"lane"`
+	} `json:"ses"`
 	Ledger []json.RawMessage `json:"ledger"`
 	Errors map[string]string `json:"errors,omitempty"`
 }
@@ -160,6 +166,8 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 	go getJSON("scheduling.supervisor", "state/scheduling_supervisor.json", &out.Scheduling.Supervisor)
 	go getJSON("data.journal", "state/data_agent/"+date+".json", &out.Data.Journal)
 	go getJSON("data.state", "state/data_agent/state.json", &out.Data.State)
+	wg.Add(1) // ses_lane/<D>.json — the SES offer board today, slot × offer, Yahoo family / non-family (agents/reporting/ses_lane_today.py)
+	go getJSON("ses.lane", "state/ses_lane/"+date+".json", &out.SES.Lane)
 	go func() {
 		defer wg.Done()
 		rows, err := s.ledgerForDate(ctx, strings.ReplaceAll(date, "-", ""))
