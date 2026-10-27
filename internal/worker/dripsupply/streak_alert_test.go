@@ -1,6 +1,11 @@
 package dripsupply
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
 
 // Operator 2026-09-10: "I do not care for these notifications: WARN · Drip ·
 // converters_roofing produced nothing for 225 ticks · followup Reason:
@@ -53,5 +58,49 @@ func TestLoneFailureAfterQuietStretchIsSilent(t *testing.T) {
 	f.tick(lane, PassWelcome, OutcomeFailed, "claim_records", "")
 	if n := len(f.note.matching("produced nothing")); n != 1 {
 		t.Fatalf("a failing tick after a quiet stretch should page once, got %d", n)
+	}
+}
+
+// Emergency-paused lanes (ops-triage 2026-10-27): every pass fails at
+// resolve_creative because nothing is meant to mail. When every dataset of the
+// lane is paused_emergency the page stays silent; otherwise it still pages.
+func (f *darkFixture) expectPauseProbe(lane string, total, unpaused int) {
+	f.mock.ExpectQuery(regexp.QuoteMeta(`FROM partner_datasets WHERE vertical = $1`)).
+		WithArgs(lane).
+		WillReturnRows(sqlmock.NewRows([]string{"total", "unpaused"}).AddRow(total, unpaused))
+}
+
+func TestPausedLaneFailureDoesNotPage(t *testing.T) {
+	f, done := newDarkFixture(t, ModeOn)
+	defer done()
+	const lane = "yahoo_family"
+	for i := 0; i < 3; i++ {
+		f.expectOutcome()
+		if i > 0 {
+			f.expectPauseProbe(lane, 1, 0)
+		}
+		f.tick(lane, PassWelcome, OutcomeFailed, "resolve_creative", "qf")
+	}
+	if n := len(f.note.matching("produced nothing")); n != 0 {
+		t.Fatalf("a paused lane paged %d time(s)", n)
+	}
+	if err := f.mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("pause probe not consulted: %v", err)
+	}
+}
+
+func TestPartlyPausedLaneFailureStillPages(t *testing.T) {
+	f, done := newDarkFixture(t, ModeOn)
+	defer done()
+	const lane = "refi_heloc"
+	for i := 0; i < 2; i++ {
+		f.expectOutcome()
+		if i > 0 {
+			f.expectPauseProbe(lane, 5, 1)
+		}
+		f.tick(lane, PassWelcome, OutcomeFailed, "claim_records", "yih")
+	}
+	if n := len(f.note.matching("produced nothing")); n != 1 {
+		t.Fatalf("a lane with a live dataset must page once, got %d", n)
 	}
 }

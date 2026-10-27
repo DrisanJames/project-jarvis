@@ -1685,11 +1685,38 @@ func (m *Mediator) trackStreak(ctx context.Context, lane, pass, outcome, reason 
 	if n < 2 || outcome != OutcomeFailed || pass == PassMint {
 		return
 	}
+	// An emergency-paused lane is not supposed to produce anything: its passes
+	// still run and fail at resolve_creative / claim_records, and paged "<lane>
+	// produced nothing" every day for every paused lane (ops-triage 4cc5b9025b,
+	// a0ddfd281c, 5a52247cb0, 3c0d61be0b — 2026-10-27). paused_emergency is the
+	// pause switch; when every dataset of the lane carries it, stay silent.
+	// Alert-only: the tick outcome above is written unchanged.
+	if m.lanePausedBySupply(ctx, lane) {
+		return
+	}
 	tier := notify.TierAlert
 	m.alertOnce(ctx, "lane:"+lane, tier,
 		fmt.Sprintf("%s produced nothing for %d ticks · %s", lane, n, pass),
 		"Reason: "+reason+"\nPass: "+pass,
 		"Run: SELECT * FROM drip_tick_outcomes WHERE lane='"+lane+"' ORDER BY tick DESC LIMIT 10")
+}
+
+// lanePausedSQL counts the lane's datasets (the orchestrator's lane IS the
+// dataset vertical) and how many are NOT emergency-paused.
+const lanePausedSQL = `SELECT COUNT(*), COUNT(*) FILTER (WHERE NOT COALESCE(paused_emergency, false))
+ FROM partner_datasets WHERE vertical = $1`
+
+// lanePausedBySupply is true only when the lane has datasets and every one is
+// paused_emergency; any error or an unknown lane fails OPEN (the page goes out).
+func (m *Mediator) lanePausedBySupply(ctx context.Context, lane string) bool {
+	if m == nil || m.db == nil {
+		return false
+	}
+	var total, unpaused int
+	if err := m.db.QueryRowContext(ctx, lanePausedSQL, lane).Scan(&total, &unpaused); err != nil {
+		return false
+	}
+	return total > 0 && unpaused == 0
 }
 
 // -----------------------------------------------------------------------------
