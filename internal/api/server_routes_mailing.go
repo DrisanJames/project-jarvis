@@ -1245,6 +1245,12 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			NewCampaignPerformanceService(db).RegisterRoutes(r)
 			inboxScoreSvc.RegisterRoutes(r)
 
+			// === WARMUP AGENT (operator 2026-10-27: "a dashboard I can review
+			// within the software") === read-only window onto the AgentCore
+			// warmup agent's S3 state. GET /api/mailing/warmup-agent/overview
+			// (internal/api/warmup_agent_handlers.go).
+			NewWarmupAgentService().RegisterRoutes(r)
+
 			// === SEND-DAY AUDIENCE EXPORT + SUPPRESSION SCRUB (operator 2026-07-27) ===
 			// The Optizmo compliance loop as software: GET
 			// /api/mailing/send-day/{date}/audience-md5[/summary] streams the

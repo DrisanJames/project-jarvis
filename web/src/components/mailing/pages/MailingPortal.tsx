@@ -83,6 +83,7 @@ const SupplyView = lazy(() => import('../components/SupplyView').then(m => ({ de
 // Brain (2026-09-13) — the platform-hosted operational memory (claims +
 // evidence, capabilities, evals) over /api/mailing/brain/*.
 const Brain = lazy(() => import('../components/Brain').then(m => ({ default: m.Brain })));
+const Agents = lazy(() => import('../components/Agents'));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
@@ -91,7 +92,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain' | 'inbox-score';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain' | 'inbox-score' | 'agents';
 
 interface Tab {
   id: TabId;
@@ -125,6 +126,7 @@ const tabs: Tab[] = [
   { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.' },
   { id: 'content-desk', label: 'Content Desk', icon: faNewspaper, description: 'Article review queue, block-by-block review against source evidence, pipeline operations, and new briefs.' },
   { id: 'brain', label: 'Brain', icon: faBook, description: 'The platform\'s operational memory — claims with their evidence and verification status, the capabilities that answer recognised tasks, and the evals that pin known answers.' },
+  { id: 'agents', label: 'Agents', icon: faRobot, description: 'The autonomous agents — warmup (rates, caps, lessons), scheduling (nightly plan, offers, supervisor repairs) and data (checks, repairs, pages) — each from its own journal: what it decided, why, and what happened.' },
   { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
   { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
   { id: 'inbox-score', label: 'Inbox Score', icon: faEnvelope, description: 'Will this email land in the inbox? One guess per mailbox provider from a spam filter trained on our own sends, next to what our real test inbox saw.' },
@@ -315,6 +317,8 @@ export const MailingPortal: React.FC = () => {
         return <Suspense fallback={<ChunkLoader />}><SupplyView /></Suspense>;
       case 'brain':
         return <Suspense fallback={<ChunkLoader />}><Brain /></Suspense>;
+      case 'agents':
+        return <Suspense fallback={<ChunkLoader />}><Agents /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }
