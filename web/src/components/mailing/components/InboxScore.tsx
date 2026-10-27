@@ -681,7 +681,17 @@ type Summary = {
   isps: string[];
   campaigns: CampaignRow[];
   profiles?: Record<string, ProfileBrief>;
+  seeds?: SeedsBrief;
   how_to_read: string[];
+};
+
+type SeedsBrief = {
+  last_observed_at: string | null;
+  age_minutes: number | null;
+  placements_24h: number;
+  campaigns_24h: number;
+  stale: boolean;
+  note: string;
 };
 
 export function tenScale(p: number | null | undefined): string | null {
@@ -822,6 +832,17 @@ const LiveSendsView: React.FC = () => {
       </div>
 
       {error && <div className="inbox-score__error">{error}</div>}
+
+      {data?.seeds && (
+        <div
+          id="inbox-score-seeds-freshness"
+          className={`inbox-score__freshness${data.seeds.stale ? ' inbox-score__freshness--stale' : ''}`}
+          title={data.seeds.last_observed_at ? `last test-inbox read ${data.seeds.last_observed_at}` : 'no test-inbox read yet'}
+        >
+          <span className="inbox-score__freshness-badge">{data.seeds.stale ? 'READER STALE' : 'READER LIVE'}</span>
+          {data.seeds.note}
+        </div>
+      )}
 
       <section className="inbox-score__howto">
         <ul>

@@ -165,6 +165,9 @@ func TestInboxScore_Summary_RectangularGrid(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"isp", "version", "status", "auc", "finding"}).
 			AddRow("gmail", 3, "active", 0.91, "Between 2026-08-22 and 2026-10-20 this provider rejected 40 campaigns for content and took 174 with no content rejection. The filter learned from those.").
 			AddRow("microsoft", 2, "candidate", nil, "The server logs show no content rejections at this provider between 2026-08-22 and 2026-10-20 (3,926 campaigns with 2,000+ deliveries, none rejected for content). Content is not what stops mail here."))
+	// Reader freshness: the newest placement is days old relative to the request → the page must say STALE.
+	mock.ExpectQuery(`SELECT max\(observed_at\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"max", "placements", "campaigns"}).AddRow(sched, 0, 0))
 
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, inboxScoreReq("GET", "/api/mailing/inbox-score/summary?from=2026-10-21&to=2026-10-21", nil, ""))
@@ -177,6 +180,9 @@ func TestInboxScore_Summary_RectangularGrid(t *testing.T) {
 	}
 	if len(resp.Campaigns) != 1 || len(resp.Campaigns[0].Cells) != 5 {
 		t.Fatalf("want 1 campaign × 5 cells, got %+v", resp.Campaigns)
+	}
+	if !resp.Seeds.Stale || resp.Seeds.LastObservedAt == nil || !strings.Contains(resp.Seeds.Note, "STALE") {
+		t.Fatalf("seeds brief must flag a days-old last read as STALE, got %+v", resp.Seeds)
 	}
 	cells := resp.Campaigns[0].Cells
 	for i, isp := range InboxScoreISPs {
@@ -299,5 +305,25 @@ func TestInboxScore_Render_UnknownCampaignIs404(t *testing.T) {
 	mux.ServeHTTP(rr, inboxScoreReq("POST", inboxScoreAdminPrefix+"/render", map[string]string{"campaign_id": "nope", "email": "a@b.c"}, "k"))
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("bad uuid: code=%d", rr.Code)
+	}
+}
+
+
+func TestInboxScoreSeedsBrief_FreshStaleNever(t *testing.T) {
+	now := time.Date(2026, 10, 27, 17, 0, 0, 0, time.UTC)
+	fresh := seedsBriefFrom(sql.NullTime{Valid: true, Time: now.Add(-20 * time.Minute)}, 613, 240, now)
+	if fresh.Stale || *fresh.AgeMinutes != 20 || !strings.Contains(fresh.Note, "613 placements on 240 campaigns") {
+		t.Fatalf("fresh: %+v", fresh)
+	}
+	stale := seedsBriefFrom(sql.NullTime{Valid: true, Time: now.Add(-(inboxScoreSeedsStaleAfter + time.Minute))}, 0, 0, now)
+	if !stale.Stale || !strings.HasPrefix(stale.Note, "STALE") || !strings.Contains(stale.Note, "2h 01m") {
+		t.Fatalf("stale: %+v", stale)
+	}
+	never := seedsBriefFrom(sql.NullTime{}, 0, 0, now)
+	if !never.Stale || never.LastObservedAt != nil || !strings.Contains(never.Note, "never been read") {
+		t.Fatalf("never: %+v", never)
+	}
+	if got := inboxScoreAge(3 * 24 * 60 + 90); got != "3d 1h" {
+		t.Fatalf("age: %s", got)
 	}
 }

@@ -551,7 +551,69 @@ type inboxScoreSummaryResponse struct {
 	ISPs      []string                          `json:"isps"`
 	Campaigns []inboxScoreCampaignSummary       `json:"campaigns"`
 	Profiles  map[string]inboxScoreProfileBrief `json:"profiles"` // latest profile per ISP (why a provider has or lacks a guess)
+	Seeds     inboxScoreSeedsBrief              `json:"seeds"`    // is the test-inbox reader alive? (a reader that writes nothing looks like a quiet system)
 	HowToRead []string                          `json:"how_to_read"`
+}
+
+// inboxScoreSeedsStaleAfter: the seed reader runs every 15 min; two hours without a row is an outage,
+// not a quiet night (2026-10-23 → 10-26 the reader crashed every run and the page kept rendering 10-23 verdicts).
+const inboxScoreSeedsStaleAfter = 2 * time.Hour
+
+type inboxScoreSeedsBrief struct {
+	LastObservedAt *string `json:"last_observed_at"`
+	AgeMinutes     *int    `json:"age_minutes"`
+	Placements24h  int     `json:"placements_24h"`
+	Campaigns24h   int     `json:"campaigns_24h"`
+	Stale          bool    `json:"stale"`
+	Note           string  `json:"note"`
+}
+
+// seedsBriefFrom turns the newest placement time + 24h counts into the one line the portal shows.
+func seedsBriefFrom(last sql.NullTime, placements24h, campaigns24h int, now time.Time) inboxScoreSeedsBrief {
+	b := inboxScoreSeedsBrief{Placements24h: placements24h, Campaigns24h: campaigns24h}
+	if !last.Valid {
+		b.Stale = true
+		b.Note = "Test inboxes have never been read — every test-inbox cell below is missing, not clean."
+		return b
+	}
+	ts := last.Time.UTC().Format(time.RFC3339)
+	age := int(now.Sub(last.Time).Minutes())
+	if age < 0 {
+		age = 0
+	}
+	b.LastObservedAt, b.AgeMinutes = &ts, &age
+	if now.Sub(last.Time) > inboxScoreSeedsStaleAfter {
+		b.Stale = true
+		b.Note = fmt.Sprintf("STALE — test inboxes last read %s ago; the reader runs every 15 min. Test-inbox verdicts below stop at that time; check the jarvis-inbox-score-seeds schedule.", inboxScoreAge(age))
+		return b
+	}
+	b.Note = fmt.Sprintf("Test inboxes read %s ago · %d placements on %d campaigns in the last 24h.", inboxScoreAge(age), placements24h, campaigns24h)
+	return b
+}
+
+func inboxScoreAge(min int) string {
+	switch {
+	case min < 60:
+		return fmt.Sprintf("%d min", min)
+	case min < 48*60:
+		return fmt.Sprintf("%dh %02dm", min/60, min%60)
+	default:
+		return fmt.Sprintf("%dd %dh", min/(24*60), (min%(24*60))/60)
+	}
+}
+
+func (s *InboxScoreService) loadSeedsBrief(ctx context.Context, org string, now time.Time) (inboxScoreSeedsBrief, error) {
+	var last sql.NullTime
+	var placements, campaigns int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT max(observed_at),
+		       count(*) FILTER (WHERE observed_at > $2 - interval '24 hours'),
+		       count(DISTINCT campaign_id) FILTER (WHERE observed_at > $2 - interval '24 hours')
+		FROM mailing_seed_placements WHERE organization_id=$1`, org, now).Scan(&last, &placements, &campaigns)
+	if err != nil {
+		return inboxScoreSeedsBrief{}, err
+	}
+	return seedsBriefFrom(last, placements, campaigns, now), nil
 }
 
 // loadProfileBriefs returns the newest profile row per ISP for the org.
@@ -677,12 +739,17 @@ func (s *InboxScoreService) HandleSummary(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusInternalServerError, "read failed: "+err.Error())
 		return
 	}
+	seeds, serr := s.loadSeedsBrief(ctx, org, now)
+	if serr != nil {
+		respondError(w, http.StatusInternalServerError, "read failed: "+serr.Error())
+		return
+	}
 	for i := range campaigns {
 		campaigns[i].Cells = cellsByCampaign[campaigns[i].CampaignID]
 	}
 	respondJSON(w, http.StatusOK, inboxScoreSummaryResponse{
 		AsOf: now.UTC().Format(time.RFC3339), From: from.Format("2006-01-02"), To: to.Format("2006-01-02"),
-		Timezone: "America/Denver", ISPs: InboxScoreISPs, Campaigns: campaigns, Profiles: briefs, HowToRead: inboxScoreHowToRead,
+		Timezone: "America/Denver", ISPs: InboxScoreISPs, Campaigns: campaigns, Profiles: briefs, Seeds: seeds, HowToRead: inboxScoreHowToRead,
 	})
 }
 
