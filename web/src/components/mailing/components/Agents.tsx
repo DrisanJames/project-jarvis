@@ -1,27 +1,27 @@
-// Agents.tsx — one screen for the platform's autonomous agents (operator
-// 2026-10-27: "how this system is performing from an agentic standpoint …
-// consider the other sessions' agentic work as well").
+// Agents.tsx — the platform's autonomous agents, by sending environment
+// (operator 2026-10-27: "separate by environment as I have. Kumo, PMTA A and
+// PMTA B, SES, Gmail, Colo 1, Colo 2").
 //
-//   Warmup     the AgentCore LLM that warms a new box: rates, caps, lessons, report  (WarmupAgent.tsx)
-//   Scheduling the 21:00 MT plan (HOLD/UP, offers, CPM pace) + the 15-min supervisor (AgentsOps.tsx)
-//   Data       the 30-min data agent: 12 checks, repairs, pages, verdict flips     (AgentsOps.tsx)
+//   Kumo · PMTA A · PMTA B · SES · Gmail   what the scheduling agent decided for that environment (lane gates, programs
+//                                          built + verified, supervisor repairs, offers/CPM on the SES board) + its ledger
+//   Colo 1 · Colo 2                        the warmup agent on that box (speed, targets, lessons, daily report)
+//   Data                                   the data agent (cross-environment: supply, EO, ingest, growth, segments, suppression)
 //
-// The screen displays each agent's own record (S3 journals, state, ledger); it
-// computes nothing the agents did not already write. Date = Denver day.
+// Every view displays the agents' own records (S3 journals, state, change ledger); nothing is computed server-side.
 
 import React, { useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faRobot } from '@fortawesome/free-solid-svg-icons';
 import { colors, pageStyle, btnStyle } from '../shared/theme';
 import { SubNav } from '../shared/SubNav';
+import { EmptyState, Panel } from '../shared/ui';
 import WarmupAgent from './WarmupAgent';
-import { SchedulingAgentView, DataAgentView } from './AgentsOps';
+import { DataAgentView, EnvironmentView, type EnvKey } from './AgentsOps';
 
-type AgentKey = 'warmup' | 'scheduling' | 'data';
-const AGENTS: { key: AgentKey; label: string }[] = [
-  { key: 'warmup', label: 'Warmup · colo2' },
-  { key: 'scheduling', label: 'Scheduling' },
-  { key: 'data', label: 'Data' },
+type Key = EnvKey | 'data';
+const ENVS: { key: Key; label: string }[] = [
+  { key: 'kumo', label: 'Kumo' }, { key: 'pmta_a', label: 'PMTA A' }, { key: 'pmta_b', label: 'PMTA B' }, { key: 'ses', label: 'SES' },
+  { key: 'gmail', label: 'Gmail' }, { key: 'colo1', label: 'Colo 1' }, { key: 'colo2', label: 'Colo 2' }, { key: 'data', label: 'Data' },
 ];
 
 function denverToday(): string {
@@ -31,7 +31,7 @@ function denverToday(): string {
 }
 
 const Agents: React.FC = () => {
-  const [agent, setAgent] = useState<AgentKey>('warmup');
+  const [env, setEnv] = useState<Key>('colo2');
   const [date, setDate] = useState(denverToday());
   return (
     <div style={pageStyle}>
@@ -41,17 +41,18 @@ const Agents: React.FC = () => {
             <FontAwesomeIcon icon={faRobot} style={{ color: colors.indigo400 }} /> Agents
           </h1>
           <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>
-            What each autonomous agent decided, why, and what happened — from the agents' own journals. Denver day.
+            What the agents decided for each sending environment, why, and what happened — from their own journals. Denver day.
           </div>
         </div>
         <input type="date" value={date} max={denverToday()} onChange={(e) => setDate(e.target.value)}
           style={{ ...btnStyle, colorScheme: 'dark' }} aria-label="Denver date" />
       </div>
-      <SubNav items={AGENTS} active={agent} onChange={(k) => setAgent(k as AgentKey)} ariaLabel="Agents" />
+      <SubNav items={ENVS} active={env} onChange={(k) => setEnv(k as Key)} ariaLabel="Environments" />
       <div style={{ marginTop: 14 }}>
-        {agent === 'warmup' && <WarmupAgent date={date} />}
-        {agent === 'scheduling' && <SchedulingAgentView date={date} />}
-        {agent === 'data' && <DataAgentView date={date} />}
+        {env === 'colo2' && <WarmupAgent date={date} />}
+        {env === 'colo1' && <Panel><EmptyState title="Colo 1 · no agent assigned yet" hint="When a warmup instance is created for this box it appears here with the same views as Colo 2." /></Panel>}
+        {env === 'data' && <DataAgentView date={date} />}
+        {(env === 'kumo' || env === 'pmta_a' || env === 'pmta_b' || env === 'ses' || env === 'gmail') && <EnvironmentView env={env} date={date} />}
       </div>
     </div>
   );

@@ -108,14 +108,17 @@ function capByGroup(plan: Plan | null, date: string): Record<string, number> {
   return out;
 }
 
+type Span = { first: number; last: number };
 type Scorecard = {
   runs: number; ticks: number; daily: number; holds: number; moves: number;
-  rateUp: number; rateDown: number; capMoves: number; lessons: number; supply: number; pauses: number;
+  rateUp: number; rateDown: number; rateSpan: Record<string, Span>;          // per group: first rate seen today → latest
+  capMoves: number; capSpan: Record<string, Span>;                            // per group: first cap set today → latest (per domain)
+  lessons: { title: string; change?: string }[]; supply: Record<string, number>; pauses: number;
   llmUnavailable: number; runtimeErrors: number; topups: number; injected: number; steps: number; tokensIn: number; tokensOut: number;
   models: Record<string, number>; lastRun?: JournalRow;
 };
 function scorecard(journal: JournalRow[]): Scorecard {
-  const s: Scorecard = { runs: 0, ticks: 0, daily: 0, holds: 0, moves: 0, rateUp: 0, rateDown: 0, capMoves: 0, lessons: 0, supply: 0, pauses: 0, llmUnavailable: 0, runtimeErrors: 0, topups: 0, injected: 0, steps: 0, tokensIn: 0, tokensOut: 0, models: {} };
+  const s: Scorecard = { runs: 0, ticks: 0, daily: 0, holds: 0, moves: 0, rateUp: 0, rateDown: 0, rateSpan: {}, capMoves: 0, capSpan: {}, lessons: [], supply: {}, pauses: 0, llmUnavailable: 0, runtimeErrors: 0, topups: 0, injected: 0, steps: 0, tokensIn: 0, tokensOut: 0, models: {} };
   for (const r of journal) {
     if (r.kind.startsWith('run:')) {
       s.runs += 1; if (r.kind === 'run:tick') s.ticks += 1; if (r.kind === 'run:daily') s.daily += 1;
@@ -124,11 +127,16 @@ function scorecard(journal: JournalRow[]): Scorecard {
       s.steps += r.steps ?? 0; s.tokensIn += r.usage?.in ?? 0; s.tokensOut += r.usage?.out ?? 0;
       if (r.model) s.models[r.model] = (s.models[r.model] || 0) + 1;
       s.lastRun = r;
-    } else if (r.kind === 'set_rate') {
-      for (const c of r.changed ?? []) { if (c.from == null || c.to > c.from) s.rateUp += 1; else if (c.to < c.from) s.rateDown += 1; }
-    } else if (r.kind === 'set_daily_volume') s.capMoves += 1;
-    else if (r.kind === 'lesson') s.lessons += 1;
-    else if (r.kind === 'request_supply') s.supply += 1;
+    } else if (r.kind === 'set_rate' && r.group) {
+      for (const c of r.changed ?? []) {
+        if (c.from == null || c.to > c.from) s.rateUp += 1; else if (c.to < c.from) s.rateDown += 1;
+        const sp = (s.rateSpan[r.group] ||= { first: c.from ?? c.to, last: c.to }); sp.last = c.to;
+      }
+    } else if (r.kind === 'set_daily_volume' && r.group) {
+      s.capMoves += 1;
+      for (const c of r.changed ?? []) { const sp = (s.capSpan[r.group] ||= { first: c.from ?? c.to, last: c.to }); sp.last = c.to; }
+    } else if (r.kind === 'lesson') s.lessons.push({ title: r.title ?? '', change: r.change });
+    else if (r.kind === 'request_supply' && r.group) s.supply[r.group] = (s.supply[r.group] || 0) + (r.records ?? 0);
     else if (r.kind === 'PAUSE') s.pauses += 1;
     else if (r.kind === 'llm_unavailable') s.llmUnavailable += 1;
     else if (r.kind === 'runtime_error') s.runtimeErrors += 1;
@@ -136,6 +144,7 @@ function scorecard(journal: JournalRow[]): Scorecard {
   }
   return s;
 }
+const spanText = (sp: Record<string, Span>, unit: string) => Object.entries(sp).map(([g, v]) => `${GROUP_LABEL[g] ?? g} ${fmt(v.first)} → ${fmt(v.last)}${unit}`).join(' · ');
 
 type Lesson = { date: string; title: string; body: string };
 function parseLessons(md: string | null): Lesson[] {
@@ -210,7 +219,7 @@ const Markdown: React.FC<{ text: string }> = ({ text }) => {
 
 type View = 'overview' | 'decisions' | 'rates' | 'delivery' | 'lessons' | 'report';
 const VIEWS: { key: View; label: string }[] = [
-  { key: 'overview', label: 'Overview' }, { key: 'decisions', label: 'Decisions' }, { key: 'rates', label: 'Rates & caps' },
+  { key: 'overview', label: 'Overview' }, { key: 'decisions', label: 'Decisions' }, { key: 'rates', label: 'Speed & targets' },
   { key: 'delivery', label: 'Delivery' }, { key: 'lessons', label: 'Lessons' }, { key: 'report', label: 'Daily report' },
 ];
 
@@ -261,10 +270,10 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
       <div>
         <h2 style={{ margin: 0, color: colors.heading, fontSize: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <FontAwesomeIcon icon={faFire} style={{ color: colors.indigo400 }} /> Warmup Agent · {instance}
+          <FontAwesomeIcon icon={faFire} style={{ color: colors.indigo400 }} /> Warmup agent on this box
         </h2>
         <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>
-          An LLM owns every per-IP rate and daily cap on this box; the sender tops recipients up to its rates every 15 minutes. Everything below is the agent's own record.
+          An LLM sets the speed (messages per IP per hour) and the day's target for every sending domain × mailbox provider on this box; recipients are injected to that speed every 15 minutes. Everything below is the agent's own record.
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -286,24 +295,23 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
   const overview = (
     <>
       <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader title="Agentic scorecard · today" icon={faGaugeHigh} right={<span style={{ fontSize: 11, color: colors.textMuted }}>model {model}</span>} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 14 }}>
-          <Stat label="Runs" value={sc.runs} sub={`${sc.ticks} ticks · ${sc.daily} daily`} />
-          <Stat label="Held / moved" value={`${sc.holds} / ${sc.moves}`} sub="runs with no change / with a change" />
-          <Stat label="Rate moves" value={<span><FontAwesomeIcon icon={faArrowUp} style={{ color: colors.success, fontSize: 14 }} /> {sc.rateUp} <FontAwesomeIcon icon={faArrowDown} style={{ color: colors.warning, fontSize: 14, marginLeft: 8 }} /> {sc.rateDown}</span>} sub="per domain x ISP, by the agent" />
-          <Stat label="Cap moves" value={sc.capMoves} sub="set_daily_volume calls" />
-          <Stat label="Lessons" value={sc.lessons} sub="written to its field manual" />
-          <Stat label="Supply asks" value={sc.supply} sub="records requested" />
-          <Stat label="Top-ups" value={sc.topups} sub={`${fmt(sc.injected)} recipients injected`} />
-          <Stat label="Steps / run" value={sc.runs ? (sc.steps / sc.runs).toFixed(1) : '—'} sub={`${fmt(sc.tokensIn)} in · ${fmt(sc.tokensOut)} out tokens`} />
-          <Stat label="Model gaps" value={sc.llmUnavailable + sc.runtimeErrors} color={sc.llmUnavailable + sc.runtimeErrors ? colors.danger : colors.success} sub={`${sc.llmUnavailable} llm · ${sc.runtimeErrors} runtime`} />
-          <Stat label="Pauses" value={sc.pauses} color={sc.pauses ? colors.danger : undefined} sub="agent kill-switch uses" />
+        <SectionHeader title="Decisions · today" icon={faGaugeHigh} right={<span style={{ fontSize: 11, color: colors.textMuted }}>{model} · {fmt(sc.tokensIn)} tokens read · {fmt(sc.tokensOut)} written</span>} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
+          <Stat label="Check-ins" value={sc.runs} sub={`reviewed the box every 15 min: ${sc.ticks} check-ins + ${sc.daily} morning review`} title="Each check-in reads the last 20 minutes of ISP replies and decides whether to change anything." />
+          <Stat label="Changed / held" value={`${sc.moves} / ${sc.holds}`} sub="check-ins that changed a speed or target / that held everything" title="A hold is a decision too: the agent read the replies and chose not to move." />
+          <Stat label="Speed" value={<span><FontAwesomeIcon icon={faArrowUp} style={{ color: colors.success, fontSize: 14 }} /> {sc.rateUp} <FontAwesomeIcon icon={faArrowDown} style={{ color: colors.warning, fontSize: 14, marginLeft: 8 }} /> {sc.rateDown}</span>}
+            sub={spanText(sc.rateSpan, '/IP/h') || 'no speed changes'} title="Messages per IP per hour, set per sending domain × mailbox provider. Counts are per domain (one decision on all 8 domains = 8)." />
+          <Stat label="Targets raised" value={sc.capMoves} sub={spanText(sc.capSpan, ' per domain') || 'no target changes'} title="The day's send target per sending domain × mailbox provider. Injection stops at the target; the agent raises it when a provider stays clean." />
+          <Stat label="Lessons" value={sc.lessons.length} sub={sc.lessons.map((l) => l.title).join(' · ') || 'none today'} title={sc.lessons.map((l) => `${l.title}\n${l.change ?? ''}`).join('\n\n') || 'Lessons the agent wrote to its own field manual today.'} />
+          <Stat label="Records requested" value={fmt(Object.values(sc.supply).reduce((a, b) => a + b, 0))} sub={Object.entries(sc.supply).map(([g, n]) => `${GROUP_LABEL[g] ?? g} ${fmt(n)}`).join(' · ') || 'no supply requests'} title="New never-mailed records the agent asked the supply job to validate and load." />
+          <Stat label="Recipients injected" value={fmt(sc.injected)} sub={`in ${sc.topups} batches, one per check-in, sized to the next hour at the current speed`} />
+          <Stat label="Interruptions" value={sc.llmUnavailable + sc.runtimeErrors + sc.pauses} color={sc.llmUnavailable + sc.runtimeErrors + sc.pauses ? colors.danger : colors.success} sub={`${sc.llmUnavailable} model outages · ${sc.runtimeErrors} runtime errors · ${sc.pauses} pauses`} />
         </div>
       </Panel>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14, marginBottom: 14 }}>
         <Panel>
-          <SectionHeader title="What the ISPs said · today" />
+          <SectionHeader title="Performance · today" />
           {attempted === 0 ? <EmptyState title="No deliveries recorded" hint="The tick log has no rows for this date." /> : (
             <table style={tableStyle}>
               <thead><tr><th style={thStyle}>Group</th><th style={numTh}>Delivered</th><th style={numTh}>Deferred</th><th style={numTh}>Bounced</th><th style={numTh}>Deferred %</th><th style={thStyle}>Rate / IP / h</th></tr></thead>
@@ -327,8 +335,8 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
           )}
         </Panel>
         <Panel>
-          <SectionHeader title="Budget the agent set · today" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{fmt(totalInjected)} of {fmt(totalCap)} injected</span>} />
-          {totalCap === 0 ? <EmptyState title="No caps for this date" hint="The agent sets caps at its first run of the day; nothing injects without them." /> : (
+          <SectionHeader title="Targets · today" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{fmt(totalInjected)} of {fmt(totalCap)} injected</span>} />
+          {totalCap === 0 ? <EmptyState title="No targets for this date" hint="The agent sets targets at its first check-in of the day; nothing injects without them." /> : (
             <div style={{ display: 'grid', gap: 8 }}>
               {GROUPS.filter((g) => caps[g] != null).map((g) => (
                 <div key={g}>
@@ -351,7 +359,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
       </div>
 
       <Panel>
-        <SectionHeader title="Latest run" icon={faListCheck} right={sc.lastRun ? <span style={{ fontSize: 11, color: colors.textMuted }} title={sc.lastRun.at}>{sc.lastRun.kind.replace('run:', '')} · {denverTime(sc.lastRun.at)} MT · {sc.lastRun.steps ?? '—'} steps</span> : null} />
+        <SectionHeader title="Latest check-in · the agent's own note" icon={faListCheck} right={sc.lastRun ? <span style={{ fontSize: 11, color: colors.textMuted }} title={sc.lastRun.at}>{sc.lastRun.kind.replace('run:', '')} · {denverTime(sc.lastRun.at)} MT · {sc.lastRun.steps ?? '—'} steps</span> : null} />
         {sc.lastRun?.final ? <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.5, color: colors.text, maxHeight: 360, overflowY: 'auto' }}>{sc.lastRun.final}</div> : <EmptyState title="No runs yet" />}
       </Panel>
     </>
@@ -359,7 +367,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
 
   const decisions = (
     <Panel>
-      <SectionHeader title="Every run, newest first" icon={faListCheck} right={<span style={{ fontSize: 11, color: colors.textMuted }}>{runs.length} runs · click a row for the agent's full note</span>} />
+      <SectionHeader title="Every check-in, newest first" icon={faListCheck} right={<span style={{ fontSize: 11, color: colors.textMuted }}>{runs.length} check-ins · click a row for the agent's full note</span>} />
       {runs.length === 0 ? <EmptyState title="No runs for this date" /> : (
         <table style={tableStyle}>
           <thead><tr><th style={thStyle}>MT</th><th style={thStyle}>Run</th><th style={thStyle}>Decision</th><th style={thStyle}>Actions the agent took</th><th style={numTh}>Steps</th></tr></thead>
@@ -381,8 +389,8 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
                           {acts.map((a, j) => {
                             const inp = a.input ?? {};
-                            const label = a.tool === 'set_rate' ? `${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.per_ip_hour}/IP/h`
-                              : a.tool === 'set_daily_volume' ? `cap ${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.volume}`
+                            const label = a.tool === 'set_rate' ? `speed ${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.per_ip_hour}/IP/h`
+                              : a.tool === 'set_daily_volume' ? `target ${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.volume}`
                               : a.tool === 'request_supply' ? `supply ${inp.group} +${inp.records}`
                               : a.tool === 'record_lesson' ? `lesson: ${String(inp.title ?? '').slice(0, 60)}`
                               : a.tool === 'pause_instance' ? 'PAUSE' : a.tool;
@@ -409,7 +417,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
   const ratesView = (
     <>
       <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader title="Rates the agent holds now · messages per IP per hour" right={<span style={{ fontSize: 11, color: colors.textMuted }}>hover a cell for the agent's reason</span>} />
+        <SectionHeader title="Speed now · messages per IP per hour" right={<span style={{ fontSize: 11, color: colors.textMuted }}>hover a cell for the agent's reason</span>} />
         {prefixes.length === 0 ? <EmptyState title="No rates set" /> : (
           <div style={{ overflowX: 'auto' }}>
             <table style={tableStyle}>
@@ -437,8 +445,8 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
         )}
       </Panel>
       <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader title={`Caps for ${data.date} · per domain`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>a cap is the day's budget; the rate is the pace; a missing cap = not mailed</span>} />
-        {!data.plan?.[data.date] ? <EmptyState title="No caps for this date" /> : (
+        <SectionHeader title={`Targets for ${data.date} · per domain`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>the target is the day's send ceiling; the speed is the pace; no target = not mailed</span>} />
+        {!data.plan?.[data.date] ? <EmptyState title="No targets for this date" /> : (
           <div style={{ overflowX: 'auto' }}>
             <table style={tableStyle}>
               <thead><tr><th style={thStyle}>Domain</th>{GROUPS.map((g) => <th key={g} style={numTh}>{GROUP_LABEL[g]}</th>)}<th style={numTh}>Injected today</th></tr></thead>

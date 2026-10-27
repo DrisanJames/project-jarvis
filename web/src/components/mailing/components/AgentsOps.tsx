@@ -334,6 +334,148 @@ export const DataAgentView: React.FC<{ date: string }> = ({ date }) => {
   );
 };
 
+// ───────────────────────────── per-environment view (operator 2026-10-27: "separate by environment as I have")
+//
+// The scheduling agent decides per lane (pmta_nx gates are keyed "A:<isp>" / "B:<isp>"; kumo_nx), verifies readiness
+// per program, and the supervisor repairs per program. Each environment shows only its own lanes / programs.
+
+export type EnvKey = 'kumo' | 'pmta_a' | 'pmta_b' | 'ses' | 'gmail' | 'colo1' | 'colo2';
+export const ENV_PROGRAMS: Record<EnvKey, string[]> = {
+  kumo: ['kumo_estate', 'nx', 'nx_engaged', 'nx_offer', 'nx_eo_supply'],
+  pmta_a: ['nx', 'nx_engaged', 'nx_offer', 'mk_lanes', 'nx_eo_supply'],
+  pmta_b: ['nx', 'nx_engaged', 'nx_offer', 'mk_lanes', 'nx_eo_supply'],
+  ses: ['engaged', 'cold', 'cold_remail', 'cold_stepper', 'cold_supply_demand', 'family', 'family_stepper', 'family_supply', 'fresh', 'internal_auto', 'internal_auto_size', 'wcl', 'yahoo_ramp', 'nl_yf', 'acquisition'],
+  gmail: ['gmail_sidecar'],
+  colo1: [],
+  colo2: [],
+};
+const ENV_LANE: Partial<Record<EnvKey, { lane: string; gatePrefix?: string }>> = {
+  kumo: { lane: 'kumo_nx' }, pmta_a: { lane: 'pmta_nx', gatePrefix: 'A:' }, pmta_b: { lane: 'pmta_nx', gatePrefix: 'B:' },
+};
+const ENV_NOTE: Record<EnvKey, string> = {
+  kumo: 'KumoMTA Colo1 estate — nx lanes + em.* domains. The scheduling agent steps the kumo_nx lane; per-ISP gating stays in nx_ramp_gate.',
+  pmta_a: 'PMTA Server A (15.204.101.125) — nx dedicated-IP lanes on 144.225.178.0/25. Gates keyed A:<isp>.',
+  pmta_b: 'PMTA Server B (15.204.107.107) — nx dedicated-IP lanes on 144.225.178.128/25. Gates keyed B:<isp>.',
+  ses: 'SES relay — the engaged board, cold / family / fresh sidecars, WCL and Internal Auto releases, yahoo ramp.',
+  gmail: 'Gmail — gm.<apex> SES senders, the gmail sidecar (standing levels, ramp held).',
+  colo1: 'Colo 1 — no agent assigned yet.',
+  colo2: 'Colo 2 (15.204.105.55, 199.235.0.0/24) — the warmup agent owns every speed and target here.',
+};
+
+export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, date }) => {
+  const { data, loading, error, reload } = useAgentsOverview(date);
+  const J = data?.scheduling.plan_for_date ?? null;
+  const T = data?.scheduling.plan_tonight ?? null;
+  const [plan, setPlan] = useState<'for_date' | 'tonight'>('for_date');
+  const P = plan === 'tonight' ? T : J;
+  const programs = ENV_PROGRAMS[env];
+  const laneSpec = ENV_LANE[env];
+  const lanes = useMemo(() => (P?.volume ?? []).filter((l) => laneSpec && l.lane === laneSpec.lane).map((l) => ({
+    ...l, gates: Object.fromEntries(Object.entries(l.gates).filter(([k]) => !laneSpec?.gatePrefix || k.startsWith(laneSpec.gatePrefix))),
+  })), [P, laneSpec]);
+  const readiness = useMemo(() => (P?.readiness ?? []).filter((r) => programs.includes(r.program)), [P, programs]);
+  const sup = data?.scheduling.supervisor?.[date] ?? null;
+  const supPrograms = Object.entries(sup ?? {}).filter(([p, v]) => programs.includes(p) && ((v.attempts ?? 0) > 0 || v.paged || v.outcome));
+  const ledger = useMemo(() => (data?.ledger ?? []).filter((r) => programs.some((pg) => r.target.toLowerCase().includes(pg) || r.kind.toLowerCase().includes(pg))), [data, programs]);
+
+  if (error && !data) return <SectionError label="agents overview" error={error} onRetry={() => { void reload(); }} />;
+  if (loading && !data) return <div style={{ color: colors.textMuted }}>Loading the agents' record…</div>;
+
+  const rCounts = readiness.reduce<Record<string, number>>((a, r) => { a[r.verdict] = (a[r.verdict] || 0) + 1; return a; }, {});
+  const gateRows = lanes.flatMap((l) => Object.entries(l.gates).map(([k, g]) => ({ lane: l.lane, posture: l.posture, date: l.date, key: k, ...g })));
+  const gCounts = gateRows.reduce<Record<string, number>>((a, g) => { const v = g.verdict.split(' ')[0]; a[v] = (a[v] || 0) + 1; return a; }, {});
+
+  return (
+    <>
+      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{ENV_NOTE[env]}</div>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title="Decisions · scheduling agent" icon={faCalendarCheck}
+          right={(
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button style={{ ...btnStyle, opacity: plan === 'for_date' ? 1 : 0.6 }} onClick={() => setPlan('for_date')}>Plan that built {date}{J ? '' : ' (none)'}</button>
+              <button style={{ ...btnStyle, opacity: plan === 'tonight' ? 1 : 0.6 }} onClick={() => setPlan('tonight')}>Tonight's plan{T ? '' : ' (not yet)'}</button>
+            </div>
+          )} />
+        {!P ? <EmptyState title="No plan journal" hint="The scheduling agent writes its journal at the 21:00 MT plan." /> : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+            <Stat label="Plan" value={P.plan_date} sub={`ran ${P.started ? denverTime(P.started) : '—'} MT · builds ${P.tomorrow ?? '—'} · ${P.live ? 'LIVE' : 'DRY'}`} />
+            {laneSpec && <Stat label="Volume decision" value={lanes.length ? lanes.map((l) => l.posture.toUpperCase()).join(' · ') : '—'} sub={lanes.length ? `${laneSpec.lane} for ${lanes[0].date} · ${gCounts.STEP ?? 0} gates STEP · ${gCounts.HOLD ?? 0} HOLD · ${gCounts.CUT ?? 0} CUT (held, never applied)` : 'no decision for this lane'} color={gCounts.CUT ? colors.warning : undefined} title="UP only when every gate says STEP; any HOLD holds the lane; a CUT verdict is held and raised to you, never applied." />}
+            <Stat label="Programs ready" value={`${rCounts.PASS ?? 0}/${readiness.length}`} sub={`${rCounts.WARN ?? 0} warn · ${rCounts.FAIL ?? 0} fail · programs: ${programs.join(', ')}`} color={rCounts.FAIL ? colors.danger : rCounts.WARN ? colors.warning : colors.success} />
+            <Stat label="Repairs by supervisor" value={supPrograms.length} sub={supPrograms.map(([p, v]) => `${p} ${v.outcome ?? ''}`.trim()).join(' · ') || 'nothing needed repair'} color={supPrograms.some(([, v]) => v.outcome === 'FAIL') ? colors.danger : undefined} />
+            <Stat label="Needs you" value={(P.needs_you ?? []).length} color={(P.needs_you ?? []).length ? colors.warning : colors.success} sub={(P.needs_you ?? []).slice(0, 2).join(' · ') || 'nothing escalated'} title={(P.needs_you ?? []).join('\n')} />
+          </div>
+        )}
+      </Panel>
+
+      {gateRows.length > 0 && (
+        <Panel style={{ marginBottom: 14 }}>
+          <SectionHeader title="Gates the agent read · per mailbox provider" right={<span style={{ fontSize: 11, color: colors.textMuted }}>yesterday's delivery per lane × provider → STEP / HOLD / CUT</span>} />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Gate</th><th style={thStyle}>Verdict</th><th style={numTh}>Accepted %</th><th style={numTh}>Blocked %</th><th style={numTh}>Deferred %</th><th style={numTh}>Msgs</th></tr></thead>
+              <tbody>{gateRows.map((g) => <tr key={g.key}><td style={tdStyle}>{g.key}</td><td style={tdStyle}><Pill color={vcolor(g.verdict)} style={{ fontSize: 10 }}>{g.verdict}</Pill></td><td style={numTd}>{g.acc ?? '—'}</td><td style={numTd}>{g.blk ?? '—'}</td><td style={numTd}>{g.dfr ?? '—'}</td><td style={numTd}>{fmt(g.msgs)}</td></tr>)}</tbody>
+            </table>
+          </div>
+          {lanes.flatMap((l) => l.needs_you ?? []).map((n, i) => <div key={i} style={{ fontSize: 12, color: colors.warningText, marginTop: 6 }}>{n}</div>)}
+        </Panel>
+      )}
+
+      {readiness.length > 0 && (
+        <Panel style={{ marginBottom: 14 }}>
+          <SectionHeader title="Programs · built and verified" />
+          <div style={{ overflowX: 'auto' }}>
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Program</th><th style={thStyle}>Date</th><th style={thStyle}>Verdict</th><th style={numTh}>Cells</th><th style={numTh}>Planned</th><th style={numTh}>Sent</th><th style={thStyle}>Build</th><th style={thStyle}>Detail</th></tr></thead>
+              <tbody>{readiness.map((r, i) => (
+                <tr key={i}><td style={tdStyle}>{r.program}</td><td style={tdStyle}>{r.date}</td><td style={tdStyle}><Pill color={vcolor(r.verdict)} style={{ fontSize: 10 }}>{r.verdict}</Pill></td><td style={numTd}>{fmt(r.cells)}</td><td style={numTd}>{fmt(r.planned)}</td><td style={numTd}>{fmt(r.sent)}</td><td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{r.build_at ?? '—'}</td><td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted, maxWidth: 420 }}>{(r.problems ?? []).join(' · ') || r.detail || r.note || ''}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
+
+      {supPrograms.length > 0 && (
+        <Panel style={{ marginBottom: 14 }}>
+          <SectionHeader title={`Supervisor repairs · ${date}`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>every 15 min 20:00–07:00 MT · rebuilds a missing cell by name, pages at anchor−30</span>} />
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Program</th><th style={numTh}>Attempts</th><th style={thStyle}>Outcome</th><th style={thStyle}>Last</th><th style={thStyle}>Paged</th></tr></thead>
+            <tbody>{supPrograms.map(([p, v]) => <tr key={p}><td style={tdStyle}>{p}</td><td style={numTd}>{v.attempts ?? 0}</td><td style={tdStyle}>{v.outcome ? <Pill color={vcolor(v.outcome)} style={{ fontSize: 10 }}>{v.outcome}</Pill> : '—'}</td><td style={tdStyle}>{v.last_at ? `${denverTime(v.last_at)} MT · rc ${(v.last_rcs ?? []).join(',')}` : '—'}</td><td style={tdStyle}>{v.paged ? <Pill color={colors.warning} style={{ fontSize: 10 }}>paged</Pill> : '—'}</td></tr>)}</tbody>
+          </table>
+        </Panel>
+      )}
+
+      {env === 'ses' && P && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14, marginBottom: 14 }}>
+          <Panel>
+            <SectionHeader title="Offers · what the agent changed" />
+            {!P.rules?.changed || Object.keys(P.rules.changed).length === 0 ? <EmptyState title="No rule changes" hint="offer_rules.json already matched the mandate." /> : (
+              <table style={tableStyle}><tbody>{Object.entries(P.rules.changed).map(([k, v]) => <tr key={k}><td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>{k}</td><td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted }}>{typeof v === 'string' ? v : JSON.stringify(v).slice(0, 240)}</td></tr>)}</tbody></table>
+            )}
+            {P.board_summary && <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 8 }}>Board it filled: <span style={{ color: colors.text }}>{P.board_summary}</span></div>}
+            {(P.scorer ?? []).map((sc, i) => (
+              <div key={i} style={{ marginTop: 10, fontSize: 12 }}>
+                <div style={{ color: colors.textMuted, marginBottom: 2 }}>scorer · {sc.mode} · {(sc.dates ?? []).join(', ')} · rc {sc.rc}</div>
+                {(sc.lines ?? []).filter((l) => l.startsWith('==')).map((l, j) => <div key={j} style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, color: colors.text }}>{l}</div>)}
+              </div>
+            ))}
+          </Panel>
+          <Panel>
+            <SectionHeader title="CPM deals it paced" />
+            {!P.cpm?.length ? <EmptyState title="No CPM deals" /> : (
+              <table style={tableStyle}>
+                <thead><tr><th style={thStyle}>Deal</th><th style={numTh}>Sent</th><th style={numTh}>Owed</th><th style={numTh}>Need/day</th><th style={thStyle}>Finishes</th></tr></thead>
+                <tbody>{P.cpm.map((d) => <tr key={d.name}><td style={tdStyle}>{d.name}{d.token ? <span style={{ color: colors.textFaint }}> · {d.token}</span> : <span style={{ color: colors.warningText }}> · no token</span>}</td><td style={numTd}>{fmt(d.sent)}</td><td style={numTd}>{fmt(d.owed)}</td><td style={numTd}>{fmt(d.need_per_day)}</td><td style={tdStyle}><Pill color={d.finishes ? colors.success : colors.warning} style={{ fontSize: 10 }}>{d.finishes ? 'yes' : 'at risk'}</Pill></td></tr>)}</tbody>
+              </table>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      <LedgerTable rows={ledger} title={`Live changes touching this environment · ${date}`} />
+    </>
+  );
+};
+
 export const AgentsRefreshButton: React.FC<{ onClick: () => void; loading?: boolean }> = ({ onClick, loading }) => (
   <button style={btnStyle} onClick={onClick} disabled={loading}><FontAwesomeIcon icon={faRotate} spin={!!loading} /> Refresh</button>
 );
