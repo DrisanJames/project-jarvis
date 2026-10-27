@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ignite/sparkpost-monitor/internal/mailing"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/brand"
+	"github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/logger"
 	"github.com/ignite/sparkpost-monitor/internal/pkg/moneylink"
 	"github.com/lib/pq"
@@ -1796,7 +1797,7 @@ func (p *SendWorkerPool) processItem(item QueueItem) error {
 	// slot so the subscriber can be mailed later today. The happy-path
 	// Send call flips capSent=true to skip the release.
 	capSent := false
-	if p.capChecker != nil {
+	if p.capChecker != nil && !isInboxScoreSeedRecipient(item.Email) { // seeds never reserved a slot (applyCrossBrandCap)
 		defer func() {
 			if !capSent {
 				p.capChecker.Release(ctx, item.SubscriberID.String())
@@ -2638,6 +2639,17 @@ func classifySendError(errMsg string) string {
 }
 
 // markSkipped marks a queue item as skipped
+// isInboxScoreSeedRecipient reports whether an address is one of the Inbox Score seed
+// mailboxes (seed-<provider>.projectjarvis.io, internal/pkg/isp). Seeds are exempt from
+// per-person frequency caps: they must observe every campaign on their lane.
+func isInboxScoreSeedRecipient(email string) bool {
+	at := strings.LastIndexByte(email, '@')
+	if at < 0 || at == len(email)-1 {
+		return false
+	}
+	return isp.IsSeedDomain(strings.ToLower(strings.TrimSpace(email[at+1:])))
+}
+
 func (p *SendWorkerPool) markSkipped(ctx context.Context, itemID uuid.UUID, reason string) error {
 	_, err := p.db.ExecContext(ctx, `
 		UPDATE mailing_campaign_queue 
@@ -2659,6 +2671,15 @@ func (p *SendWorkerPool) applyCrossBrandCap(items []QueueItem) []QueueItem {
 	ctx := p.ctx
 	kept := items[:0]
 	for _, it := range items {
+		if isInboxScoreSeedRecipient(it.Email) {
+			// The Inbox Score seeds are instruments, not people: every campaign that
+			// mails a provider must reach that provider's seed or the test-inbox
+			// verdict is missing. Under the cap each seed saw ≤30 campaigns/day and
+			// the Microsoft seed spent its 30 on evening cells (2026-10-27: 1,008
+			// skipped, 0 verdicts for the day). Never reserve a slot for them.
+			kept = append(kept, it)
+			continue
+		}
 		allowed, _, err := p.capChecker.Reserve(ctx, p.orgID, it.SubscriberID.String())
 		if err != nil {
 			kept = append(kept, it)
