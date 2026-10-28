@@ -20,12 +20,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faFire, faGaugeHigh, faListCheck, faBookOpen, faFileLines, faRotate, faArrowUp, faArrowDown, faHand,
+  faFire, faGaugeHigh, faListCheck, faBookOpen, faRotate, faArrowUp, faArrowDown, faHand,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, pageStyle, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill, LivePill, ProgressBar } from '../shared/ui';
 import { SubNav } from '../shared/SubNav';
+import { DeliveryView, SpeedTargetsView, DailyReportView, domainName } from './WarmupReadable';
 
 // ───────────────────────────── API shapes (mirror of agents/warmup/state.py)
 
@@ -162,59 +163,6 @@ function parseLessons(md: string | null): Lesson[] {
   return out.reverse();
 }
 
-// Minimal markdown renderer for the agent's report (headings, tables, lists, bold, code).
-function inlineMd(t: string): React.ReactNode[] {
-  const parts: React.ReactNode[] = [];
-  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let last = 0; let m: RegExpExecArray | null; let k = 0;
-  while ((m = re.exec(t))) {
-    if (m.index > last) parts.push(t.slice(last, m.index));
-    const tok = m[0];
-    if (tok.startsWith('**')) parts.push(<strong key={k++}>{tok.slice(2, -2)}</strong>);
-    else parts.push(<code key={k++} style={{ fontSize: 12, color: colors.indigo200 }}>{tok.slice(1, -1)}</code>);
-    last = m.index + tok.length;
-  }
-  if (last < t.length) parts.push(t.slice(last));
-  return parts;
-}
-const Markdown: React.FC<{ text: string }> = ({ text }) => {
-  const lines = text.split('\n');
-  const nodes: React.ReactNode[] = [];
-  let i = 0; let k = 0;
-  while (i < lines.length) {
-    const l = lines[i];
-    if (l.startsWith('|') && i + 1 < lines.length && /^\|[\s\-:|]+\|$/.test(lines[i + 1])) {
-      const hdr = l.replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
-      i += 2; const rows: string[][] = [];
-      while (i < lines.length && lines[i].startsWith('|')) { rows.push(lines[i].replace(/^\||\|$/g, '').split('|').map((c) => c.trim())); i += 1; }
-      nodes.push(
-        <div key={k++} style={{ overflowX: 'auto', margin: '6px 0 12px' }}>
-          <table style={tableStyle}>
-            <thead><tr>{hdr.map((h, j) => <th key={j} style={thStyle}>{inlineMd(h)}</th>)}</tr></thead>
-            <tbody>{rows.map((r, ri) => <tr key={ri}>{r.map((c, j) => <td key={j} style={tdStyle}>{inlineMd(c)}</td>)}</tr>)}</tbody>
-          </table>
-        </div>,
-      );
-      continue;
-    }
-    if (l.startsWith('- ')) {
-      const items: string[] = [];
-      while (i < lines.length && lines[i].startsWith('- ')) { items.push(lines[i].slice(2)); i += 1; }
-      nodes.push(<ul key={k++} style={{ margin: '4px 0 10px', paddingLeft: 20 }}>{items.map((it, j) => <li key={j} style={{ margin: '2px 0' }}>{inlineMd(it)}</li>)}</ul>);
-      continue;
-    }
-    const h = /^(#{1,3})\s+(.*)$/.exec(l);
-    if (h) {
-      const level = h[1].length;
-      nodes.push(<div key={k++} style={{ fontSize: level === 1 ? 17 : level === 2 ? 14 : 13, fontWeight: 700, color: level === 2 ? colors.indigo300 : colors.heading, margin: level === 1 ? '0 0 8px' : '14px 0 6px', textTransform: level === 2 ? 'uppercase' : undefined, letterSpacing: level === 2 ? 0.5 : undefined }}>{inlineMd(h[2])}</div>);
-    } else if (l.trim()) {
-      nodes.push(<p key={k++} style={{ margin: '4px 0', lineHeight: 1.5 }}>{inlineMd(l)}</p>);
-    }
-    i += 1;
-  }
-  return <div style={{ fontSize: 13, color: colors.text }}>{nodes}</div>;
-};
-
 // ───────────────────────────── component
 
 type View = 'overview' | 'decisions' | 'rates' | 'delivery' | 'lessons' | 'report';
@@ -300,7 +248,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
           <Stat label="Check-ins" value={sc.runs} sub={`reviewed the box every 15 min: ${sc.ticks} check-ins + ${sc.daily} morning review`} title="Each check-in reads the last 20 minutes of ISP replies and decides whether to change anything." />
           <Stat label="Changed / held" value={`${sc.moves} / ${sc.holds}`} sub="check-ins that changed a speed or target / that held everything" title="A hold is a decision too: the agent read the replies and chose not to move." />
           <Stat label="Speed" value={<span><FontAwesomeIcon icon={faArrowUp} style={{ color: colors.success, fontSize: 14 }} /> {sc.rateUp} <FontAwesomeIcon icon={faArrowDown} style={{ color: colors.warning, fontSize: 14, marginLeft: 8 }} /> {sc.rateDown}</span>}
-            sub={spanText(sc.rateSpan, '/IP/h') || 'no speed changes'} title="Messages per IP per hour, set per sending domain × mailbox provider. Counts are per domain (one decision on all 8 domains = 8)." />
+            sub={spanText(sc.rateSpan, ' per IP per hour') || 'no speed changes'} title="Messages per IP per hour, set per sending domain × mailbox provider. Counts are per domain (one decision on all 8 domains = 8)." />
           <Stat label="Targets raised" value={sc.capMoves} sub={spanText(sc.capSpan, ' per domain') || 'no target changes'} title="The day's send target per sending domain × mailbox provider. Injection stops at the target; the agent raises it when a provider stays clean." />
           <Stat label="Lessons" value={sc.lessons.length} sub={sc.lessons.map((l) => l.title).join(' · ') || 'none today'} title={sc.lessons.map((l) => `${l.title}\n${l.change ?? ''}`).join('\n\n') || 'Lessons the agent wrote to its own field manual today.'} />
           <Stat label="Records requested" value={fmt(Object.values(sc.supply).reduce((a, b) => a + b, 0))} sub={Object.entries(sc.supply).map(([g, n]) => `${GROUP_LABEL[g] ?? g} ${fmt(n)}`).join(' · ') || 'no supply requests'} title="New never-mailed records the agent asked the supply job to validate and load." />
@@ -314,7 +262,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
           <SectionHeader title="Performance · today" />
           {attempted === 0 ? <EmptyState title="No deliveries recorded" hint="The tick log has no rows for this date." /> : (
             <table style={tableStyle}>
-              <thead><tr><th style={thStyle}>Group</th><th style={numTh}>Delivered</th><th style={numTh}>Deferred</th><th style={numTh}>Bounced</th><th style={numTh}>Deferred %</th><th style={thStyle}>Rate / IP / h</th></tr></thead>
+              <thead><tr><th style={thStyle}>Mailbox provider</th><th style={numTh}>Delivered</th><th style={numTh}>Deferred (retrying)</th><th style={numTh}>Bounced</th><th style={numTh}>Deferred %</th><th style={thStyle}>Speed (per IP per hour)</th></tr></thead>
               <tbody>
                 {GROUPS.filter((g) => tk.byGroup[g]).map((g) => {
                   const c = tk.byGroup[g]; const n = c.delivered + c.transfail + c.fail;
@@ -325,7 +273,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
                       <td style={tdStyle}>{GROUP_LABEL[g] ?? g}</td>
                       <td style={numTd}>{fmt(c.delivered)}</td><td style={numTd}>{fmt(c.transfail)}</td><td style={numTd}>{fmt(c.fail)}</td>
                       <td style={{ ...numTd, color: n && c.transfail / n > 0.1 ? colors.warningText : colors.text }}>{pct(c.transfail, n)}</td>
-                      <td style={tdStyle}>{lo == null ? '—' : lo === hi ? lo : `${lo}–${hi}`}</td>
+                      <td style={tdStyle}>{lo == null ? '—' : lo === hi ? `${lo} on every domain` : `${lo}–${hi} across domains`}</td>
                     </tr>
                   );
                 })}
@@ -350,7 +298,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
               {lastTopup && (
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
                   Last top-up {denverTime(lastTopup.at)} MT: +{fmt(lastTopup.added ?? 0)}.{' '}
-                  {Object.entries(lastTopup.domains ?? {}).slice(0, 1).map(([p, d]) => d.held && Object.keys(d.held).length ? `${p} held: ${Object.entries(d.held).map(([g, why]) => `${GROUP_LABEL[g] ?? g} (${why})`).join(', ')}` : '').join('')}
+                  {Object.entries(lastTopup.domains ?? {}).slice(0, 1).map(([p, d]) => d.held && Object.keys(d.held).length ? `${domainName(p)} held: ${Object.entries(d.held).map(([g, why]) => `${GROUP_LABEL[g] ?? g} (${why})`).join(', ')}` : '').join('')}
                 </div>
               )}
             </div>
@@ -389,9 +337,9 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
                           {acts.map((a, j) => {
                             const inp = a.input ?? {};
-                            const label = a.tool === 'set_rate' ? `speed ${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.per_ip_hour}/IP/h`
-                              : a.tool === 'set_daily_volume' ? `target ${inp.prefix} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.volume}`
-                              : a.tool === 'request_supply' ? `supply ${inp.group} +${inp.records}`
+                            const label = a.tool === 'set_rate' ? `speed ${domainName(String(inp.prefix))} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${inp.per_ip_hour} per IP per hour`
+                              : a.tool === 'set_daily_volume' ? `target ${domainName(String(inp.prefix))} ${GROUP_LABEL[String(inp.group)] ?? inp.group} → ${fmt(Number(inp.volume))} today`
+                              : a.tool === 'request_supply' ? `asked for ${fmt(Number(inp.records))} new ${GROUP_LABEL[String(inp.group)] ?? inp.group} records`
                               : a.tool === 'record_lesson' ? `lesson: ${String(inp.title ?? '').slice(0, 60)}`
                               : a.tool === 'pause_instance' ? 'PAUSE' : a.tool;
                             const color = a.tool === 'pause_instance' ? colors.danger : a.tool === 'set_rate' ? colors.success : a.tool === 'record_lesson' ? colors.warning : colors.indigo400;
@@ -416,60 +364,13 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
 
   const ratesView = (
     <>
-      <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader title="Speed now · messages per IP per hour" right={<span style={{ fontSize: 11, color: colors.textMuted }}>hover a cell for the agent's reason</span>} />
-        {prefixes.length === 0 ? <EmptyState title="No rates set" /> : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={tableStyle}>
-              <thead><tr><th style={thStyle}>Domain</th>{GROUPS.map((g) => <th key={g} style={numTh}>{GROUP_LABEL[g]}</th>)}</tr></thead>
-              <tbody>
-                {prefixes.map((p) => (
-                  <tr key={p}>
-                    <td style={{ ...tdStyle, fontWeight: 600 }}>{p}</td>
-                    {GROUPS.map((g) => {
-                      const r = data.rates?.[p]?.[g];
-                      if (!r) return <td key={g} style={{ ...numTd, color: colors.textFaint }}>—</td>;
-                      const up = r.previous != null && r.per_ip_hour > r.previous; const down = r.previous != null && r.per_ip_hour < r.previous;
-                      return (
-                        <td key={g} style={numTd} title={`${r.reason ?? ''}\nset ${r.set_at ?? ''}${r.previous != null ? ` (was ${r.previous})` : ''}`}>
-                          <span style={{ color: up ? colors.successText : down ? colors.warningText : colors.text }}>{r.per_ip_hour}</span>
-                          {r.previous != null && r.previous !== r.per_ip_hour && <span style={{ fontSize: 10, color: colors.textFaint, marginLeft: 4 }}>{r.previous}→</span>}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-      <Panel style={{ marginBottom: 14 }}>
-        <SectionHeader title={`Targets for ${data.date} · per domain`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>the target is the day's send ceiling; the speed is the pace; no target = not mailed</span>} />
-        {!data.plan?.[data.date] ? <EmptyState title="No targets for this date" /> : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={tableStyle}>
-              <thead><tr><th style={thStyle}>Domain</th>{GROUPS.map((g) => <th key={g} style={numTh}>{GROUP_LABEL[g]}</th>)}<th style={numTh}>Injected today</th></tr></thead>
-              <tbody>
-                {Object.keys(data.plan[data.date]).sort().map((p) => {
-                  const row = data.plan?.[data.date]?.[p] ?? {};
-                  const inj = Object.values(data.jit ?? {}).filter((s) => s.prefix === p).reduce((a, s) => a + Object.values(s.groups).reduce((x, y) => x + y, 0), 0);
-                  return (
-                    <tr key={p}><td style={{ ...tdStyle, fontWeight: 600 }}>{p}</td>
-                      {GROUPS.map((g) => <td key={g} style={{ ...numTd, color: row[g] ? colors.text : colors.textFaint }}>{row[g] != null ? fmt(row[g]) : '—'}</td>)}
-                      <td style={numTd}>{fmt(inj)}</td></tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      <SpeedTargetsView date={data.date} rates={data.rates} plan={data.plan?.[data.date]} jit={data.jit} />
+      <div style={{ height: 14 }} />
       <Panel>
         <SectionHeader title="Supply the agent asked for" />
         {!data.supply_requests || Object.keys(data.supply_requests).length === 0 ? <EmptyState title="No open requests" hint="The supply job clears requests as it fulfils them." /> : (
           <table style={tableStyle}>
-            <thead><tr><th style={thStyle}>Group</th><th style={numTh}>Records</th><th style={thStyle}>Agent's reason</th><th style={thStyle}>Asked</th></tr></thead>
+            <thead><tr><th style={thStyle}>Mailbox provider</th><th style={numTh}>New records asked for</th><th style={thStyle}>Agent's reason</th><th style={thStyle}>Asked</th></tr></thead>
             <tbody>{Object.entries(data.supply_requests).map(([g, r]) => <tr key={g}><td style={tdStyle}>{GROUP_LABEL[g] ?? g}</td><td style={numTd}>{fmt(r.records)}</td><td style={tdStyle}>{r.reason}</td><td style={tdStyle} title={r.at}>{denverTime(r.at)} MT</td></tr>)}</tbody>
           </table>
         )}
@@ -477,33 +378,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
     </>
   );
 
-  const hours = Object.keys(tk.byHour).sort();
-  const delivery = (
-    <Panel>
-      <SectionHeader title="Delivered / deferred / bounced by Denver hour" right={<span style={{ fontSize: 11, color: colors.textMuted }}>source: the box's own log (pmta_acct_raw), summed per tick</span>} />
-      {hours.length === 0 ? <EmptyState title="No tick deltas for this date" /> : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={tableStyle}>
-            <thead><tr><th style={thStyle}>Hour</th>{GROUPS.map((g) => <th key={g} style={numTh}>{GROUP_LABEL[g]}</th>)}<th style={numTh}>Box</th></tr></thead>
-            <tbody>
-              {hours.map((h) => {
-                const row = tk.byHour[h]; const tot = Object.values(row).reduce((a, c) => ({ delivered: a.delivered + c.delivered, transfail: a.transfail + c.transfail, fail: a.fail + c.fail }), { delivered: 0, transfail: 0, fail: 0 });
-                const cell = (c?: Totals) => c ? (
-                  <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {fmt(c.delivered)}
-                    {c.transfail ? <span style={{ color: colors.warningText }}> · {fmt(c.transfail)}d</span> : null}
-                    {c.fail ? <span style={{ color: colors.dangerText }}> · {fmt(c.fail)}b</span> : null}
-                  </span>
-                ) : <span style={{ color: colors.textFaint }}>—</span>;
-                return <tr key={h}><td style={tdStyle}>{h}:00</td>{GROUPS.map((g) => <td key={g} style={numTd}>{cell(row[g])}</td>)}<td style={{ ...numTd, fontWeight: 600 }}>{cell(tot)}</td></tr>;
-              })}
-            </tbody>
-          </table>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>delivered · deferred (d) · bounced (b). Deferred mail is retried by the box; it is the ISP's signal, not lost mail.</div>
-        </div>
-      )}
-    </Panel>
-  );
+  const delivery = <DeliveryView byGroup={tk.byGroup} byHour={tk.byHour} />;
 
   const lessonsView = (
     <Panel>
@@ -517,12 +392,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
     </Panel>
   );
 
-  const reportView = (
-    <Panel>
-      <SectionHeader title={`Daily report · written by the agent at the 04:00 MT run`} icon={faFileLines} />
-      {data.report ? <Markdown text={data.report} /> : <EmptyState title="No report for this date" hint="The agent writes it at its daily run; a date before the agent went live has none." />}
-    </Panel>
-  );
+  const reportView = <DailyReportView report={data.report} />;
 
   return (
     <div style={dateProp == null ? pageStyle : undefined}>
