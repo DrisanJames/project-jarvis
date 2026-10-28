@@ -74,3 +74,26 @@ func TestAgentsOverview_Live(t *testing.T) {
 	}
 	t.Logf("ok: %s plan_for_date=%d plan_tonight=%d data.journal=%d ledger=%d bytes=%d", out.Date, len(out.Scheduling.PlanForDate), len(out.Scheduling.PlanTonight), len(out.Data.Journal), len(out.Ledger), rr.Body.Len())
 }
+
+// TestWarmupAgentOverview_LightLive — light=1 drops the note text, field manual,
+// report and box snapshot; everything the 7-day strip derives from stays.
+func TestWarmupAgentOverview_LightLive(t *testing.T) {
+	if os.Getenv("WARMUP_LIVE_TEST") != "1" {
+		t.Skip("WARMUP_LIVE_TEST=1 to read the live bucket")
+	}
+	s := NewWarmupAgentService()
+	full, light := httptest.NewRecorder(), httptest.NewRecorder()
+	s.handleOverview(full, httptest.NewRequest(http.MethodGet, "/api/mailing/warmup-agent/overview?instance=colo2", nil))
+	s.handleOverview(light, httptest.NewRequest(http.MethodGet, "/api/mailing/warmup-agent/overview?instance=colo2&light=1", nil))
+	var out warmupOverview
+	if err := json.Unmarshal(light.Body.Bytes(), &out); err != nil || light.Code != http.StatusOK {
+		t.Fatalf("light: HTTP %d %v", light.Code, err)
+	}
+	if out.FieldManual != nil || out.Report != nil || len(out.Journal) == 0 || len(out.Ticks) == 0 || len(out.Jit) == 0 {
+		t.Fatalf("light bundle wrong shape: manual=%v report=%v journal=%d ticks=%d jit=%d", out.FieldManual != nil, out.Report != nil, len(out.Journal), len(out.Ticks), len(out.Jit))
+	}
+	if light.Body.Len() >= full.Body.Len()*6/10 {
+		t.Fatalf("light not light: %d vs full %d", light.Body.Len(), full.Body.Len())
+	}
+	t.Logf("full=%d light=%d bytes", full.Body.Len(), light.Body.Len())
+}

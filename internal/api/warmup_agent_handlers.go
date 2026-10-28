@@ -315,6 +315,9 @@ func (s *WarmupAgentService) handleOverview(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, "instance must be [a-z0-9]{2,16}; date must be YYYY-MM-DD", http.StatusBadRequest)
 		return
 	}
+	// light=1 (the Agents tab's 7-day strip): rates/plan/jit/journal/ticks only — journal rows without their `final`
+	// note text, no field manual, report or box snapshot. ~1/8 the bytes of the full bundle; same objects, nothing computed.
+	light := r.URL.Query().Get("light") == "1"
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
@@ -360,6 +363,19 @@ func (s *WarmupAgentService) handleOverview(w http.ResponseWriter, r *http.Reque
 			if line == "" || !json.Valid([]byte(line)) {
 				continue
 			}
+			if light && k == "journal" {
+				var m map[string]json.RawMessage
+				if json.Unmarshal([]byte(line), &m) == nil {
+					if string(m["kind"]) == `"note"` { // the note row duplicates the run's final text
+						continue
+					}
+					delete(m, "final")
+					delete(m, "domains") // per-slot top-up detail (per domain wanted/held/per_isp); `added` stays
+					if b, err := json.Marshal(m); err == nil {
+						line = string(b)
+					}
+				}
+			}
 			rows = append(rows, json.RawMessage(line))
 		}
 		mu.Lock()
@@ -381,17 +397,20 @@ func (s *WarmupAgentService) handleOverview(w http.ResponseWriter, r *http.Reque
 		mu.Unlock()
 	}
 
-	wg.Add(10)
+	wg.Add(7)
 	go getJSON("rates", "state/"+inst+"/rates.json", &out.Rates)
 	go getJSON("plan", "state/"+inst+"/plan.json", &out.Plan)
 	go getJSON("flags", "state/"+inst+"/flags.json", &out.Flags)
 	go getJSON("supply_requests", "state/"+inst+"/supply_requests.json", &out.SupplyRequests)
 	go getJSON("jit", "state/"+inst+"/jit/"+date+".json", &out.Jit)
-	go getJSON("box_last", "sensors/"+inst+"/box_last.json", &out.BoxLast)
 	go getLines("journal", "journal/"+inst+"/"+date+".jsonl", &out.Journal)
 	go getLines("ticks", "sensors/"+inst+"/ticks/"+date+".jsonl", &out.Ticks)
-	go getText("field_manual", "knowledge/field_manual.md", &out.FieldManual)
-	go getText("report", "reports/"+inst+"/"+date+".md", &out.Report)
+	if !light {
+		wg.Add(3)
+		go getJSON("box_last", "sensors/"+inst+"/box_last.json", &out.BoxLast)
+		go getText("field_manual", "knowledge/field_manual.md", &out.FieldManual)
+		go getText("report", "reports/"+inst+"/"+date+".md", &out.Report)
+	}
 	wg.Wait()
 
 	if len(out.Errors) == 0 {
