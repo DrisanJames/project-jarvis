@@ -85,9 +85,17 @@ type ispBanResolver struct {
 	cached   *ispBanTable
 	fetched  time.Time
 	cacheTTL time.Duration
+	// staleMax bounds how long a reload FAILURE may keep serving the last good
+	// snapshot. A ban table changes by operator hand a few times a month; a
+	// snapshot a few minutes old is the same bans as a minute ago, not a fail-
+	// open. Beyond staleMax (or with no snapshot at all) the deploy is refused,
+	// as before. 2026-10-27: three warmup deploys were refused by 5 s query
+	// timeouts under DB load (05:31, 14:34, 18:01 MT) with a 60 s-old snapshot
+	// in hand.
+	staleMax time.Duration
 }
 
-var ispBans = &ispBanResolver{cacheTTL: 60 * time.Second}
+var ispBans = &ispBanResolver{cacheTTL: 60 * time.Second, staleMax: 10 * time.Minute}
 
 // SetISPBanDB wires the mailing DB into the ban registry and loads it once,
 // loudly (the SetConsciousnessDB pattern, handlers_consciousness.go). Call it
@@ -148,7 +156,7 @@ func (r *ispBanResolver) resolve(ctx context.Context) (*ispBanTable, error) {
 		FROM mailing_isp_bans
 	`)
 	if err != nil {
-		return nil, fmt.Errorf("load: %w", err)
+		return r.staleOr(fmt.Errorf("load: %w", err))
 	}
 	defer rows.Close()
 
@@ -183,7 +191,7 @@ func (r *ispBanResolver) resolve(ctx context.Context) (*ispBanTable, error) {
 		tbl.union[code][isp] = true
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows: %w", err)
+		return r.staleOr(fmt.Errorf("rows: %w", err))
 	}
 
 	r.mu.Lock()
@@ -191,6 +199,19 @@ func (r *ispBanResolver) resolve(ctx context.Context) (*ispBanTable, error) {
 	r.fetched = time.Now()
 	r.mu.Unlock()
 	return tbl, nil
+}
+
+// staleOr serves the last good snapshot when a reload fails and the snapshot
+// is younger than staleMax; otherwise the reload error stands (refuse).
+func (r *ispBanResolver) staleOr(err error) (*ispBanTable, error) {
+	r.mu.RLock()
+	c, age := r.cached, time.Since(r.fetched)
+	r.mu.RUnlock()
+	if c != nil && r.staleMax > 0 && age < r.staleMax {
+		log.Printf("[ISPBan] reload failed (%v); serving the %s-old snapshot (staleMax %s)", err, age.Round(time.Second), r.staleMax)
+		return c, nil
+	}
+	return nil, err
 }
 
 // ispBanBrandCode resolves a campaign's sending domain to the canonical

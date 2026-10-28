@@ -232,3 +232,40 @@ func TestISPBanGmailOnlySenderExempt(t *testing.T) {
 		t.Errorf("gmailOnlySender prefix match wrong")
 	}
 }
+
+func TestISPBanReloadErrorServesFreshSnapshot(t *testing.T) {
+	// A reload failure with a recent snapshot in hand serves THAT snapshot
+	// (the same bans as a minute ago), so a 5 s DB blip no longer refuses a
+	// deploy. The ban still applies — gmail is dropped from the plan.
+	restore := installISPBanRows(t, nil, errors.New("context deadline exceeded"))
+	defer restore()
+	ispBans.mu.Lock()
+	ispBans.cached = &ispBanTable{
+		byOrg: map[string]map[string]map[string]bool{ispBanTestOrg: {"wf": {"gmail": true}}},
+		union: map[string]map[string]bool{"wf": {"gmail": true}},
+	}
+	ispBans.fetched = time.Now().Add(-2 * time.Minute) // past cacheTTL (reload runs), inside staleMax
+	ispBans.mu.Unlock()
+
+	got, err := normalizePMTACampaignInput(banTestInput("m.warrantyforyou.com"))
+	if err != nil {
+		t.Fatalf("expected the fresh snapshot to be served through the reload error, got: %v", err)
+	}
+	if planISPs(got)["gmail"] {
+		t.Errorf("the stale-served snapshot must still apply its bans: %v", planISPs(got))
+	}
+}
+
+func TestISPBanReloadErrorRefusesWhenSnapshotTooOld(t *testing.T) {
+	// Beyond staleMax the snapshot is not trusted: fail CLOSED as before.
+	restore := installISPBanRows(t, nil, errors.New("context deadline exceeded"))
+	defer restore()
+	ispBans.mu.Lock()
+	ispBans.cached = &ispBanTable{union: map[string]map[string]bool{"wf": {"gmail": true}}, byOrg: map[string]map[string]map[string]bool{}}
+	ispBans.fetched = time.Now().Add(-ispBans.staleMax - time.Minute)
+	ispBans.mu.Unlock()
+
+	if _, err := normalizePMTACampaignInput(banTestInput("m.warrantyforyou.com")); err == nil {
+		t.Fatal("expected the deploy to be refused when the only snapshot is older than staleMax")
+	}
+}
