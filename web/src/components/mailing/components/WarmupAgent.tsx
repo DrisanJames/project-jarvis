@@ -20,13 +20,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faFire, faGaugeHigh, faListCheck, faBookOpen, faRotate, faArrowUp, faArrowDown, faHand,
+  faFire, faGaugeHigh, faListCheck, faRotate, faArrowUp, faArrowDown, faHand,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, pageStyle, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
-import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill, LivePill, ProgressBar } from '../shared/ui';
+import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill, LivePill } from '../shared/ui';
 import { SubNav } from '../shared/SubNav';
-import { DeliveryView, SpeedTargetsView, DailyReportView, domainName } from './WarmupReadable';
+import { DeliveryView, SpeedTargetsView, DailyReportView, LessonsView, Explain, domainName, ForecastFindings, PerformanceLookback, CheckinNote, ShareBar, type DayTotals } from './WarmupReadable';
 
 // ───────────────────────────── API shapes (mirror of agents/warmup/state.py)
 
@@ -74,7 +74,6 @@ function denverHour(iso: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', hour: '2-digit', hour12: false }).format(d);
 }
 const fmt = (n: number) => n.toLocaleString('en-US');
-const pct = (num: number, den: number) => (den > 0 ? `${((100 * num) / den).toFixed(1)}%` : '—');
 
 // ───────────────────────────── derived views
 
@@ -147,22 +146,6 @@ function scorecard(journal: JournalRow[]): Scorecard {
 }
 const spanText = (sp: Record<string, Span>, unit: string) => Object.entries(sp).map(([g, v]) => `${GROUP_LABEL[g] ?? g} ${fmt(v.first)} → ${fmt(v.last)}${unit}`).join(' · ');
 
-type Lesson = { date: string; title: string; body: string };
-function parseLessons(md: string | null): Lesson[] {
-  if (!md) return [];
-  const out: Lesson[] = [];
-  const re = /^### (\d{4}-\d{2}-\d{2}) — (.+)$/gm;
-  const idx: { start: number; date: string; title: string }[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(md))) idx.push({ start: m.index, date: m[1], title: m[2] });
-  idx.forEach((h, i) => {
-    const end = i + 1 < idx.length ? idx[i + 1].start : md.length;
-    const body = md.slice(h.start, end).split('\n').slice(1).join('\n').trim();
-    out.push({ date: h.date, title: h.title, body });
-  });
-  return out.reverse();
-}
-
 // ───────────────────────────── component
 
 type View = 'overview' | 'decisions' | 'rates' | 'delivery' | 'lessons' | 'report';
@@ -192,6 +175,26 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
   }, [instance, date]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Look-back: the six Denver days before the selected one, loaded once per date (not on the 60 s poll). Days with no
+  // tick rows (before the agent went live) are dropped.
+  const [history, setHistory] = useState<DayTotals[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const days = Array.from({ length: 6 }, (_, i) => { const d = new Date(`${date}T12:00:00Z`); d.setUTCDate(d.getUTCDate() - (i + 1)); return d.toISOString().slice(0, 10); });
+    setHistoryLoading(true);
+    void Promise.all(days.map(async (d): Promise<DayTotals | null> => {
+      try {
+        const res = await apiFetch(`/api/mailing/warmup-agent/overview?instance=${encodeURIComponent(instance)}&date=${d}`);
+        if (!res.ok) return null;
+        const o = (await res.json()) as Overview;
+        const t = sumTicks(o.ticks ?? []);
+        return Object.keys(t.byGroup).length ? { date: d, byGroup: t.byGroup, target: capByGroup(o.plan, d), firstAt: (o.ticks ?? []).find((x) => x.delta?.by && Object.keys(x.delta.by).length)?.at } : null;
+      } catch { return null; }
+    })).then((rows) => { if (!cancelled) { setHistory(rows.filter((r): r is DayTotals => r != null)); setHistoryLoading(false); } });
+    return () => { cancelled = true; };
+  }, [instance, date]);
   useEffect(() => {
     if (date !== denverToday()) return;
     const id = window.setInterval(() => { void load(); }, 60_000);
@@ -202,8 +205,6 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
   const tk = useMemo(() => sumTicks(data?.ticks ?? []), [data]);
   const injected = useMemo(() => injectedByGroup(data?.jit ?? null), [data]);
   const caps = useMemo(() => capByGroup(data?.plan ?? null, data?.date ?? date), [data, date]);
-  const lessons = useMemo(() => parseLessons(data?.field_manual ?? null), [data]);
-  const prefixes = useMemo(() => Object.keys(data?.rates ?? {}).sort(), [data]);
   const runs = useMemo(() => (data?.journal ?? []).filter((r) => r.kind.startsWith('run:') || r.kind === 'llm_unavailable' || r.kind === 'runtime_error').slice().reverse(), [data]);
   const lastTopup = useMemo(() => (data?.journal ?? []).filter((r) => r.kind === 'topup').slice(-1)[0], [data]);
 
@@ -212,7 +213,6 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
   const paused = !!data?.flags?.paused;
   const totalInjected = Object.values(injected).reduce((a, b) => a + b, 0);
   const totalCap = Object.values(caps).reduce((a, b) => a + b, 0);
-  const attempted = tk.total.delivered + tk.total.transfail + tk.total.fail;
 
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
@@ -247,52 +247,33 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14 }}>
           <Stat label="Check-ins" value={sc.runs} sub={`reviewed the box every 15 min: ${sc.ticks} check-ins + ${sc.daily} morning review`} title="Each check-in reads the last 20 minutes of ISP replies and decides whether to change anything." />
           <Stat label="Changed / held" value={`${sc.moves} / ${sc.holds}`} sub="check-ins that changed a speed or target / that held everything" title="A hold is a decision too: the agent read the replies and chose not to move." />
-          <Stat label="Speed" value={<span><FontAwesomeIcon icon={faArrowUp} style={{ color: colors.success, fontSize: 14 }} /> {sc.rateUp} <FontAwesomeIcon icon={faArrowDown} style={{ color: colors.warning, fontSize: 14, marginLeft: 8 }} /> {sc.rateDown}</span>}
-            sub={spanText(sc.rateSpan, ' per IP per hour') || 'no speed changes'} title="Messages per IP per hour, set per sending domain × mailbox provider. Counts are per domain (one decision on all 8 domains = 8)." />
+          <Stat label="Speed changes" value={<span><FontAwesomeIcon icon={faArrowUp} style={{ color: colors.success, fontSize: 14 }} /> {sc.rateUp} <FontAwesomeIcon icon={faArrowDown} style={{ color: colors.warning, fontSize: 14, marginLeft: 8 }} /> {sc.rateDown}</span>}
+            sub={`${sc.rateUp} raises · ${sc.rateDown} eases. ${spanText(sc.rateSpan, ' per IP per hour') || 'No speed changes.'}`} title="Messages per IP per hour, set per sending domain × mailbox provider. Counts are per domain (one decision on all 8 domains = 8)." />
           <Stat label="Targets raised" value={sc.capMoves} sub={spanText(sc.capSpan, ' per domain') || 'no target changes'} title="The day's send target per sending domain × mailbox provider. Injection stops at the target; the agent raises it when a provider stays clean." />
-          <Stat label="Lessons" value={sc.lessons.length} sub={sc.lessons.map((l) => l.title).join(' · ') || 'none today'} title={sc.lessons.map((l) => `${l.title}\n${l.change ?? ''}`).join('\n\n') || 'Lessons the agent wrote to its own field manual today.'} />
+          <Stat label="Lessons" value={sc.lessons.length} sub={sc.lessons.length ? 'new today, the latest in Key findings below; all on the Lessons tab' : 'none today'} title={sc.lessons.map((l) => `${l.title}\n${l.change ?? ''}`).join('\n\n') || 'Lessons the agent wrote to its own field manual today.'} />
           <Stat label="Records requested" value={fmt(Object.values(sc.supply).reduce((a, b) => a + b, 0))} sub={Object.entries(sc.supply).map(([g, n]) => `${GROUP_LABEL[g] ?? g} ${fmt(n)}`).join(' · ') || 'no supply requests'} title="New never-mailed records the agent asked the supply job to validate and load." />
           <Stat label="Recipients injected" value={fmt(sc.injected)} sub={`in ${sc.topups} batches, one per check-in, sized to the next hour at the current speed`} />
           <Stat label="Interruptions" value={sc.llmUnavailable + sc.runtimeErrors + sc.pauses} color={sc.llmUnavailable + sc.runtimeErrors + sc.pauses ? colors.danger : colors.success} sub={`${sc.llmUnavailable} model outages · ${sc.runtimeErrors} runtime errors · ${sc.pauses} pauses`} />
         </div>
       </Panel>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 14, marginBottom: 14 }}>
-        <Panel>
-          <SectionHeader title="Performance · today" />
-          {attempted === 0 ? <EmptyState title="No deliveries recorded" hint="The tick log has no rows for this date." /> : (
-            <table style={tableStyle}>
-              <thead><tr><th style={thStyle}>Mailbox provider</th><th style={numTh}>Delivered</th><th style={numTh}>Deferred (retrying)</th><th style={numTh}>Bounced</th><th style={numTh}>Deferred %</th><th style={thStyle}>Speed (per IP per hour)</th></tr></thead>
-              <tbody>
-                {GROUPS.filter((g) => tk.byGroup[g]).map((g) => {
-                  const c = tk.byGroup[g]; const n = c.delivered + c.transfail + c.fail;
-                  const rates = prefixes.map((p) => data.rates?.[p]?.[g]?.per_ip_hour).filter((x): x is number => typeof x === 'number');
-                  const lo = rates.length ? Math.min(...rates) : null; const hi = rates.length ? Math.max(...rates) : null;
-                  return (
-                    <tr key={g}>
-                      <td style={tdStyle}>{GROUP_LABEL[g] ?? g}</td>
-                      <td style={numTd}>{fmt(c.delivered)}</td><td style={numTd}>{fmt(c.transfail)}</td><td style={numTd}>{fmt(c.fail)}</td>
-                      <td style={{ ...numTd, color: n && c.transfail / n > 0.1 ? colors.warningText : colors.text }}>{pct(c.transfail, n)}</td>
-                      <td style={tdStyle}>{lo == null ? '—' : lo === hi ? `${lo} on every domain` : `${lo}–${hi} across domains`}</td>
-                    </tr>
-                  );
-                })}
-                <tr><td style={{ ...tdStyle, fontWeight: 700 }}>Box</td><td style={{ ...numTd, fontWeight: 700 }}>{fmt(tk.total.delivered)}</td><td style={numTd}>{fmt(tk.total.transfail)}</td><td style={numTd}>{fmt(tk.total.fail)}</td><td style={numTd}>{pct(tk.total.transfail, attempted)}</td><td style={tdStyle} /></tr>
-              </tbody>
-            </table>
-          )}
-        </Panel>
+      <ForecastFindings date={data.date} isToday={date === denverToday()} ticks={data.ticks ?? []} today={tk.byGroup} target={caps}
+        prev={history[0]} report={data.report} lessonsToday={sc.lessons.map((l) => l.title)} />
+
+      <div style={{ marginBottom: 14 }}><PerformanceLookback date={data.date} today={tk.byGroup} target={caps} history={history} loading={historyLoading} /></div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(420px, 2fr)', gap: 14, marginBottom: 14, alignItems: 'start' }}>
         <Panel>
           <SectionHeader title="Targets · today" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{fmt(totalInjected)} of {fmt(totalCap)} injected</span>} />
           {totalCap === 0 ? <EmptyState title="No targets for this date" hint="The agent sets targets at its first check-in of the day; nothing injects without them." /> : (
             <div style={{ display: 'grid', gap: 8 }}>
               {GROUPS.filter((g) => caps[g] != null).map((g) => (
                 <div key={g}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
-                    <span>{GROUP_LABEL[g] ?? g}</span>
-                    <span style={{ color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>{fmt(injected[g] ?? 0)} / {fmt(caps[g])}{caps[g] === 0 ? ' · not mailed today' : ''}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4, color: colors.text }}>
+                    <span style={{ fontWeight: 600 }}>{GROUP_LABEL[g] ?? g}</span>
+                    <span style={{ color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>{fmt(injected[g] ?? 0)} of {fmt(caps[g])} handed to the box{caps[g] === 0 ? ' · not mailed today' : (injected[g] ?? 0) >= caps[g] ? ' · ✓ target reached' : ''}</span>
                   </div>
-                  <ProgressBar pct={caps[g] ? Math.min(1, (injected[g] ?? 0) / caps[g]) : 0} />
+                  <ShareBar pct={caps[g] ? (injected[g] ?? 0) / caps[g] : 0} color={colors.indigo400} />
                 </div>
               ))}
               {lastTopup && (
@@ -304,12 +285,11 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
             </div>
           )}
         </Panel>
-      </div>
-
       <Panel>
-        <SectionHeader title="Latest check-in · the agent's own note" icon={faListCheck} right={sc.lastRun ? <span style={{ fontSize: 11, color: colors.textMuted }} title={sc.lastRun.at}>{sc.lastRun.kind.replace('run:', '')} · {denverTime(sc.lastRun.at)} MT · {sc.lastRun.steps ?? '—'} steps</span> : null} />
-        {sc.lastRun?.final ? <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.5, color: colors.text, maxHeight: 360, overflowY: 'auto' }}>{sc.lastRun.final}</div> : <EmptyState title="No runs yet" />}
+        <SectionHeader title="Latest check-in" icon={faListCheck} right={sc.lastRun ? <span style={{ fontSize: 11, color: colors.textMuted }} title={sc.lastRun.at}>{sc.lastRun.kind === 'run:daily' ? 'morning review' : 'check-in'} · {denverTime(sc.lastRun.at)} MT · {sc.lastRun.steps ?? '—'} steps</span> : null} />
+        {sc.lastRun?.final ? <CheckinNote text={sc.lastRun.final} /> : <EmptyState title="No runs yet" />}
       </Panel>
+      </div>
     </>
   );
 
@@ -348,7 +328,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
                         </div>
                       ) : null}
                       <div style={{ fontSize: 12, color: colors.textMuted, whiteSpace: open[key] ? 'pre-wrap' : 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {open[key] ? (r.final ?? r.error ?? note ?? '') : summary.slice(0, 220)}
+                        {open[key] ? (r.final ? <div style={{ whiteSpace: 'normal', marginTop: 6 }}><CheckinNote text={r.final} /></div> : (r.error ?? note ?? '')) : summary.slice(0, 220)}
                       </div>
                     </td>
                     <td style={numTd}>{r.steps ?? '—'}</td>
@@ -364,14 +344,14 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
 
   const ratesView = (
     <>
-      <SpeedTargetsView date={data.date} rates={data.rates} plan={data.plan?.[data.date]} jit={data.jit} />
+      <SpeedTargetsView date={data.date} rates={data.rates} plan={data.plan?.[data.date]} jit={data.jit} ticks={data.ticks ?? []} journal={data.journal ?? []} />
       <div style={{ height: 14 }} />
       <Panel>
         <SectionHeader title="Supply the agent asked for" />
         {!data.supply_requests || Object.keys(data.supply_requests).length === 0 ? <EmptyState title="No open requests" hint="The supply job clears requests as it fulfils them." /> : (
           <table style={tableStyle}>
             <thead><tr><th style={thStyle}>Mailbox provider</th><th style={numTh}>New records asked for</th><th style={thStyle}>Agent's reason</th><th style={thStyle}>Asked</th></tr></thead>
-            <tbody>{Object.entries(data.supply_requests).map(([g, r]) => <tr key={g}><td style={tdStyle}>{GROUP_LABEL[g] ?? g}</td><td style={numTd}>{fmt(r.records)}</td><td style={tdStyle}>{r.reason}</td><td style={tdStyle} title={r.at}>{denverTime(r.at)} MT</td></tr>)}</tbody>
+            <tbody>{Object.entries(data.supply_requests).map(([g, r]) => <tr key={g}><td style={tdStyle}>{GROUP_LABEL[g] ?? g}</td><td style={numTd}>{fmt(r.records)}</td><td style={{ ...tdStyle, fontSize: 12 }}><Explain text={r.reason} /></td><td style={tdStyle} title={r.at}>{denverTime(r.at)} MT</td></tr>)}</tbody>
           </table>
         )}
       </Panel>
@@ -380,17 +360,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
 
   const delivery = <DeliveryView byGroup={tk.byGroup} byHour={tk.byHour} />;
 
-  const lessonsView = (
-    <Panel>
-      <SectionHeader title="The agent's field manual · lessons it wrote" icon={faBookOpen} right={<span style={{ fontSize: 11, color: colors.textMuted }}>{lessons.length} lessons · newest first</span>} />
-      {lessons.length === 0 ? <EmptyState title="No lessons yet" /> : lessons.map((l, i) => (
-        <div key={i} style={{ padding: '10px 0', borderBottom: `1px solid ${colors.divider}` }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.heading }}><span style={{ color: colors.textMuted, fontWeight: 400, marginRight: 8 }}>{l.date}</span>{l.title}</div>
-          <div style={{ fontSize: 12, color: colors.textMuted, whiteSpace: 'pre-wrap', marginTop: 4, lineHeight: 1.5 }}>{l.body}</div>
-        </div>
-      ))}
-    </Panel>
-  );
+  const lessonsView = <LessonsView fieldManual={data.field_manual} journal={(data.journal ?? []).filter((r) => r.kind === 'lesson')} date={data.date} />;
 
   const reportView = <DailyReportView report={data.report} />;
 

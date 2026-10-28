@@ -73,6 +73,7 @@ export function humanize(t: string): string {
     .replace(/\b(\d+)m\b(?![\w%])/g, 'in the last $1 min')
     .replace(/\b(\d[\d,]*)\/(\d[\d,]*) \((\d+(?:\.\d+)?)%\)/g, '$1 of $2 ($3%)')
     .replace(/\btransfails?\b/g, 'deferred')
+    .replace(/\bMS\b/g, 'Microsoft')
     .replace(/\/IP\/h\b/g, ' per IP per hour')
     .replace(/\s*->\s*/g, ' → ')
     .replace(/\s*\(tick\)/g, '')
@@ -120,7 +121,7 @@ export const CodeKey: React.FC<{ codes: string[] }> = ({ codes }) => codes.lengt
 
 const fmt = (n: number) => n.toLocaleString('en-US');
 // A share bar where more is better (the shared ProgressBar colours a full bar as a warning).
-const ShareBar: React.FC<{ pct: number; color?: string }> = ({ pct, color = colors.success }) => (
+export const ShareBar: React.FC<{ pct: number; color?: string }> = ({ pct, color = colors.success }) => (
   <div style={{ height: 6, borderRadius: 3, background: alpha(colors.indigo500, '22'), overflow: 'hidden' }}>
     <div style={{ width: `${Math.max(0, Math.min(1, pct)) * 100}%`, height: '100%', background: color }} />
   </div>
@@ -211,60 +212,121 @@ export const DeliveryView: React.FC<{ byGroup: Record<string, Totals>; byHour: R
 
 type Rate = { per_ip_hour: number; previous?: number | null; reason?: string; set_at?: string };
 type JitSlot = { prefix: string; groups: Record<string, number> };
+type Tick = { at: string; delta?: { by: Record<string, Record<string, Totals>> } | null };
+type VolumeChange = { at: string; kind: string; group?: string; changed?: { prefix: string; from?: number | null; to: number }[]; reason?: string };
+
+const agoText = (ms: number) => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.floor(m / 60)} h ${m % 60} min ago`; };
 
 export const SpeedTargetsView: React.FC<{
   date: string; rates: Record<string, Record<string, Rate>> | null; plan: Record<string, Record<string, number>> | undefined;
-  jit: Record<string, JitSlot> | null;
-}> = ({ date, rates, plan, jit }) => {
+  jit: Record<string, JitSlot> | null; ticks: Tick[]; journal: VolumeChange[];
+}> = ({ date, rates, plan, jit, ticks, journal }) => {
   const prefixes = useMemo(() => [...new Set([...Object.keys(rates ?? {}), ...Object.keys(plan ?? {})])].sort((a, b) => domainName(a).localeCompare(domainName(b))), [rates, plan]);
   const groups = ISP_ORDER.filter((g) => prefixes.some((p) => rates?.[p]?.[g] || plan?.[p]?.[g] != null));
   const [isp, setIsp] = useState<string>(groups[0] ?? 'microsoft');
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const sent = useMemo(() => {
+
+  // "Now" = the box's latest reading (so a past date is judged at its own last hour, not the wall clock).
+  const nowMs = useMemo(() => Math.max(0, ...ticks.map((t) => new Date(t.at).getTime()).filter((x) => !Number.isNaN(x))), [ticks]);
+  const hourAgo = nowMs - 60 * 60 * 1000;
+  const actual = useMemo(() => {
+    const day: Record<string, Record<string, Totals>> = {}; const hour: Record<string, Record<string, Totals>> = {};
+    for (const t of ticks) {
+      const inHour = new Date(t.at).getTime() > hourAgo;
+      for (const [p, gs] of Object.entries(t.delta?.by ?? {})) for (const [g, c] of Object.entries(gs)) {
+        for (const tgt of inHour ? [day, hour] : [day]) {
+          const x = ((tgt[p] ||= {})[g] ||= { delivered: 0, transfail: 0, fail: 0 });
+          x.delivered += c.delivered || 0; x.transfail += c.transfail || 0; x.fail += c.fail || 0;
+        }
+      }
+    }
+    return { day, hour };
+  }, [ticks, hourAgo]);
+  const queued = useMemo(() => {
     const out: Record<string, Record<string, number>> = {};
     for (const s of Object.values(jit ?? {})) for (const [g, n] of Object.entries(s.groups)) ((out[s.prefix] ||= {})[g] = (out[s.prefix]?.[g] ?? 0) + n);
     return out;
   }, [jit]);
+  const targetMoves = useMemo(() => {
+    const out: Record<string, { at: string; from?: number | null; to: number }> = {};
+    for (const r of journal) if (r.kind === 'set_daily_volume' && r.group && new Date(r.at).getTime() > hourAgo)
+      for (const c of r.changed ?? []) out[`${c.prefix}|${r.group}`] = { at: r.at, from: c.from, to: c.to };
+    return out;
+  }, [journal, hourAgo]);
+
   if (prefixes.length === 0) return <Panel><EmptyState title="The agent has not set any speeds or targets yet" /></Panel>;
+  const z: Totals = { delivered: 0, transfail: 0, fail: 0 };
+  const sum = (f: (p: string) => number) => prefixes.reduce((a, p) => a + f(p), 0);
+  const totTarget = sum((p) => plan?.[p]?.[isp] ?? 0);
+  const totDelivered = sum((p) => actual.day[p]?.[isp]?.delivered ?? 0);
+  const totHour = sum((p) => actual.hour[p]?.[isp]?.delivered ?? 0);
+  const totPace = sum((p) => (rates?.[p]?.[isp]?.per_ip_hour ?? 0) * (WARMUP_DOMAINS[p]?.ips ?? 0));
+  const changedNow = prefixes.filter((p) => { const r = rates?.[p]?.[isp]; return (r?.set_at && new Date(r.set_at).getTime() > hourAgo) || targetMoves[`${p}|${isp}`]; }).length;
   const reasons = prefixes.map((p) => rates?.[p]?.[isp]?.reason ?? '').join(' ');
+  const asOf = nowMs ? denverClock(new Date(nowMs).toISOString()) : '';
+
+  const tile = (label: string, value: React.ReactNode, sub: string, tone?: string) => (
+    <div style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '10px 14px', background: alpha(colors.indigo500, '0d') }}>
+      <div style={{ fontSize: 11, color: colors.textMuted, letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: tone ?? colors.heading, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontSize: 11, color: colors.textMuted }}>{sub}</div>
+    </div>
+  );
+
   return (
     <>
       <Panel>
-        <SectionHeader title={`Speed & targets · ${ispName(isp)} · ${date}`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>speed = the pace the agent allows · target = the most it will send today</span>} />
+        <SectionHeader title={`Speed & targets · ${ispName(isp)} · ${date}`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>{asOf ? `box read ${asOf} · "last hour" = the 60 min before it` : ''}</span>} />
         {chipRow(groups.map((g) => ({ key: g, label: ispName(g) })), isp, setIsp, 'Mailbox provider')}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 14 }}>
+          {tile('Delivered vs target today', totTarget ? pctOf(totDelivered, totTarget, 0) : '—', `${fmt(totDelivered)} delivered of ${fmt(totTarget)} target`)}
+          {tile('Delivered in the last hour', fmt(totHour), `allowed pace ${fmt(totPace)} / hour across ${prefixes.length} domains`)}
+          {tile('Changed in the last hour', `${changedNow} of ${prefixes.length}`, changedNow ? 'domains with a new speed or target' : 'no speed or target changes', changedNow ? colors.warningText : colors.successText)}
+        </div>
         <div style={{ overflowX: 'auto' }}>
           <table style={tableStyle}>
             <thead><tr>
-              <th style={thStyle}>Sending domain</th><th style={numTh}>Speed now</th><th style={thStyle}>Last change</th>
-              <th style={numTh} title="speed × the domain's IPs">Domain pace</th><th style={numTh}>Today's target</th><th style={{ ...thStyle, width: 190 }}>Sent toward target</th><th style={thStyle}>The agent's reason</th>
+              <th style={thStyle}>Sending domain</th>
+              <th style={numTh}>Target today</th><th style={numTh}>Delivered (actual)</th><th style={{ ...thStyle, width: 170 }}>Actual vs target</th>
+              <th style={numTh} title="handed to the box, waiting or retrying">Queued</th>
+              <th style={numTh}>Speed now</th><th style={numTh} title="delivered in the 60 min before the box read vs speed × IPs">Last hour: actual / allowed</th>
+              <th style={thStyle}>Change in the last hour</th>
             </tr></thead>
             <tbody>{prefixes.map((p) => {
-              const r = rates?.[p]?.[isp]; const target = plan?.[p]?.[isp]; const done = sent[p]?.[isp] ?? 0;
-              const ips = WARMUP_DOMAINS[p]?.ips;
-              const change = !r ? '—' : r.previous == null ? `first set ${denverClock(r.set_at)}`
-                : r.per_ip_hour > r.previous ? `raised from ${r.previous} · ${denverClock(r.set_at)}`
-                : r.per_ip_hour < r.previous ? `eased from ${r.previous} · ${denverClock(r.set_at)}`
-                : `unchanged since ${denverClock(r.set_at)}`;
-              const tone = !r || r.previous == null ? colors.textMuted : r.per_ip_hour > r.previous ? colors.successText : r.per_ip_hour < r.previous ? colors.warningText : colors.textMuted;
+              const r = rates?.[p]?.[isp]; const target = plan?.[p]?.[isp]; const ips = WARMUP_DOMAINS[p]?.ips ?? 0;
+              const dayT = actual.day[p]?.[isp] ?? z; const hourT = actual.hour[p]?.[isp] ?? z;
+              const q = Math.max(0, (queued[p]?.[isp] ?? 0) - dayT.delivered - dayT.fail);
+              const pace = r ? r.per_ip_hour * ips : 0;
+              const speedMoved = r?.set_at && new Date(r.set_at).getTime() > hourAgo && r.previous != null && r.previous !== r.per_ip_hour;
+              const tm = targetMoves[`${p}|${isp}`];
+              const moves: React.ReactNode[] = [];
+              if (speedMoved && r) moves.push(<span key="s" style={{ color: r.per_ip_hour > (r.previous ?? 0) ? colors.successText : colors.warningText }}>speed {r.per_ip_hour > (r.previous ?? 0) ? 'raised' : 'eased'} {r.previous} → {r.per_ip_hour} · {agoText(nowMs - new Date(r.set_at!).getTime())}</span>);
+              if (tm) moves.push(<span key="t" style={{ color: colors.indigo200 }}>target {tm.from == null ? 'set' : tm.to > tm.from ? 'raised' : 'lowered'} {tm.from != null ? `${fmt(tm.from)} → ` : ''}{fmt(tm.to)} · {agoText(nowMs - new Date(tm.at).getTime())}</span>);
               const key = `${p}|${isp}`;
               return (
-                <tr key={p}>
-                  <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }} title={`prefix ${p}${ips ? ` · ${ips} IPs` : ''}`}>{domainName(p)}</td>
-                  <td style={{ ...numTd, whiteSpace: 'nowrap' }}>{r ? <><strong>{r.per_ip_hour}</strong> <span style={{ fontSize: 11, color: colors.textMuted }}>per IP per hour</span></> : <span style={{ color: colors.textFaint }}>not set</span>}</td>
-                  <td style={{ ...tdStyle, fontSize: 12, color: tone, whiteSpace: 'nowrap' }}>{change}</td>
-                  <td style={{ ...numTd, whiteSpace: 'nowrap' }}>{r && ips ? <>{fmt(r.per_ip_hour * ips)} <span style={{ fontSize: 11, color: colors.textMuted }}>/ hour on {ips} IPs</span></> : '—'}</td>
-                  <td style={numTd}>{target == null ? <span style={{ color: colors.textFaint }}>none</span> : target === 0 ? <span style={{ color: colors.textFaint }}>not mailed today</span> : fmt(target)}</td>
-                  <td style={tdStyle}>{target ? <div><div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 3, fontVariantNumeric: 'tabular-nums' }}>{fmt(done)} of {fmt(target)} · {pctOf(done, target, 0)}</div><ShareBar pct={done / target} color={colors.indigo400} /></div> : '—'}</td>
-                  <td style={{ ...tdStyle, fontSize: 12, color: colors.text, maxWidth: 420, cursor: r?.reason ? 'pointer' : undefined }} onClick={() => setOpen((o) => ({ ...o, [key]: !o[key] }))}>
-                    {r?.reason ? <div style={open[key] ? { whiteSpace: 'pre-wrap' } : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}><Explain text={r.reason} /></div> : <span style={{ color: colors.textFaint }}>—</span>}
-                  </td>
-                </tr>
+                <React.Fragment key={p}>
+                  <tr>
+                    <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap', borderBottom: 'none' }} title={`prefix ${p} · ${ips} IPs`}>{domainName(p)}</td>
+                    <td style={{ ...numTd, borderBottom: 'none' }}>{target == null ? <span style={{ color: colors.textFaint }}>none</span> : target === 0 ? <span style={{ color: colors.textFaint }}>not mailed</span> : fmt(target)}</td>
+                    <td style={{ ...numTd, borderBottom: 'none' }}>{fmt(dayT.delivered)}</td>
+                    <td style={{ ...tdStyle, borderBottom: 'none' }}>{target ? <div><div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 3 }}>{pctOf(dayT.delivered, target, 0)} of target</div><ShareBar pct={dayT.delivered / target} color={colors.indigo400} /></div> : '—'}</td>
+                    <td style={{ ...numTd, color: q ? colors.text : colors.textFaint, borderBottom: 'none' }}>{fmt(q)}</td>
+                    <td style={{ ...numTd, whiteSpace: 'nowrap', borderBottom: 'none' }}>{r ? <><strong>{r.per_ip_hour}</strong> <span style={{ fontSize: 11, color: colors.textMuted }}>per IP per hour</span></> : <span style={{ color: colors.textFaint }}>not set</span>}</td>
+                    <td style={{ ...numTd, whiteSpace: 'nowrap', borderBottom: 'none' }}>{r ? <>{fmt(hourT.delivered)} <span style={{ color: colors.textMuted }}>/ {fmt(pace)}</span> <span style={{ fontSize: 11, color: colors.textMuted }}>({pctOf(hourT.delivered, pace, 0)})</span></> : '—'}</td>
+                    <td style={{ ...tdStyle, fontSize: 12, borderBottom: 'none' }}>{moves.length ? <div style={{ display: 'grid', gap: 2 }}>{moves}</div> : <span style={{ color: colors.textFaint }}>no change{r?.set_at ? ` · speed last set ${denverClock(r.set_at)}` : ''}</span>}</td>
+                  </tr>
+                  <tr>
+                    <td colSpan={8} style={{ ...tdStyle, paddingTop: 0, fontSize: 12, color: colors.textMuted, cursor: r?.reason ? 'pointer' : undefined }} onClick={() => setOpen((o) => ({ ...o, [key]: !o[key] }))}>
+                      {r?.reason ? <div style={open[key] ? { whiteSpace: 'pre-wrap' } : { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 1200 }}><span style={{ color: colors.textFaint }}>Why: </span><Explain text={r.reason} /></div> : null}
+                    </td>
+                  </tr>
+                </React.Fragment>
               );
             })}</tbody>
           </table>
         </div>
         <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 8, lineHeight: 1.5 }}>
-          <strong style={{ color: colors.text }}>Speed</strong> is the most messages each IP may send to {ispName(isp)} in an hour. <strong style={{ color: colors.text }}>Domain pace</strong> is that speed times the domain's IPs. <strong style={{ color: colors.text }}>Today's target</strong> is the day's ceiling; sending stops when it is reached. Click a reason to read it in full.
+          <strong style={{ color: colors.text }}>Target today</strong> is the most the agent will send to {ispName(isp)} from that domain today. <strong style={{ color: colors.text }}>Delivered (actual)</strong> is what {ispName(isp)} accepted, from the box's own log. <strong style={{ color: colors.text }}>Queued</strong> is handed to the box but not yet delivered or bounced. <strong style={{ color: colors.text }}>Last hour: actual / allowed</strong> compares the last hour's deliveries with the speed × the domain's IPs. Click a "Why" line to read the agent's reason in full.
         </div>
       </Panel>
       <CodeKey codes={codesIn(reasons)} />
@@ -419,5 +481,337 @@ export const DailyReportView: React.FC<{ report: string | null }> = ({ report })
       })}
       <CodeKey codes={codesIn(report)} />
     </>
+  );
+};
+
+// ───────────────────────────── Lessons
+
+type LessonRow = { at?: string; title?: string; evidence?: string; change?: string };
+type ParsedLesson = { date: string; title: string; saw: string; change: string; notes: string; topic: string; at?: string };
+
+const TOPICS: { key: string; label: string; re: RegExp }[] = [
+  { key: 'yahoo', label: 'Yahoo family', re: /yahoo|TSS\d/i },
+  { key: 'microsoft', label: 'Microsoft', re: /microsoft|\bMS\b|S844|S3150|S775/ },
+  { key: 'comcast', label: 'Comcast', re: /comcast|RL0000/i },
+  { key: 'apple', label: 'Apple', re: /apple|HCM\d|HM08/i },
+  { key: 'charter', label: 'Charter', re: /charter|AUP#/i },
+  { key: 'other', label: 'Other ISPs', re: /'other'|long tail/i },
+  { key: 'supply', label: 'Supply', re: /reservoir|supply|drawable/i },
+];
+// The topic is the ISP the TITLE names first ("Microsoft accepts … while Yahoo blocks it" is a Microsoft lesson).
+function topicOf(title: string, change: string): string {
+  for (const text of [title, change]) {
+    let best: { key: string; at: number } | null = null;
+    for (const t of TOPICS) { const m = t.re.exec(text); if (m && (!best || m.index < best.at)) best = { key: t.key, at: m.index }; }
+    if (best) return best.key;
+  }
+  return 'method';
+}
+const TOPIC_LABEL: Record<string, string> = { ...Object.fromEntries(TOPICS.map((t) => [t.key, t.label])), method: 'How the agent works' };
+
+function parseFieldManual(md: string | null, journal: LessonRow[]): { lessons: ParsedLesson[]; knowledge: { title: string; items: string[] }[] } {
+  if (!md) return { lessons: [], knowledge: [] };
+  const li = md.indexOf('\n## Lessons');
+  const head = li >= 0 ? md.slice(0, li) : md; const tail = li >= 0 ? md.slice(li) : '';
+  const knowledge: { title: string; items: string[] }[] = [];
+  for (const part of head.split(/\n## /).slice(1)) {
+    const [t, ...rest] = part.split('\n'); const items: string[] = [];
+    for (const l of rest) { if (/^- /.test(l)) items.push(l.slice(2)); else if (/^\s+\S/.test(l) && items.length) items[items.length - 1] += ` ${l.trim()}`; }
+    knowledge.push({ title: t.trim(), items });
+  }
+  const byTitle = new Map(journal.filter((r) => r.title).map((r) => [r.title!.trim(), r]));
+  const lessons: ParsedLesson[] = [];
+  for (const part of tail.split(/\n### /).slice(1)) {
+    const [h, ...rest] = part.split('\n');
+    const m = /^(\d{4}-\d{2}-\d{2}) — (.+)$/.exec(h.trim()); if (!m) continue;
+    const fields: Record<string, string> = {}; let cur = 'notes';
+    for (const l of rest) {
+      const f = /^- (Evidence|What changes):\s*(.*)$/.exec(l);
+      if (f) { cur = f[1] === 'Evidence' ? 'saw' : 'change'; fields[cur] = f[2]; continue; }
+      if (!l.trim()) continue;
+      const text = l.replace(/^\s*-\s*/, '').trim();
+      fields[cur] = fields[cur] ? `${fields[cur]} ${text}` : text;
+    }
+    const j = byTitle.get(m[2].trim());
+    lessons.push({ date: m[1], title: m[2].trim(), saw: fields.saw ?? j?.evidence ?? '', change: fields.change ?? j?.change ?? '', notes: fields.notes ?? '', topic: topicOf(m[2], fields.change ?? ''), at: j?.at });
+  }
+  return { lessons: lessons.reverse(), knowledge };
+}
+
+export const LessonsView: React.FC<{ fieldManual: string | null; journal: LessonRow[]; date: string }> = ({ fieldManual, journal, date }) => {
+  const { lessons, knowledge } = useMemo(() => parseFieldManual(fieldManual, journal), [fieldManual, journal]);
+  const [topic, setTopic] = useState('all');
+  const [openSaw, setOpenSaw] = useState<Record<number, boolean>>({});
+  const [openK, setOpenK] = useState<Record<string, boolean>>({});
+  if (lessons.length === 0 && knowledge.length === 0) return <Panel><EmptyState title="The agent has not written any lessons yet" /></Panel>;
+  const counts: Record<string, number> = {};
+  for (const l of lessons) counts[l.topic] = (counts[l.topic] ?? 0) + 1;
+  const topics = [...TOPICS.map((t) => t.key), 'method'].filter((k) => counts[k]);
+  const shown = lessons.filter((l) => topic === 'all' || l.topic === topic);
+  const newToday = lessons.filter((l) => l.date === date).length;
+  const allText = lessons.map((l) => `${l.title} ${l.saw} ${l.change}`).join(' ');
+  return (
+    <>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title="What the agent has learned" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{lessons.length} lessons · {newToday} written on {date} · newest first</span>} />
+        <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+          Each lesson is something the agent measured on this box and now acts on. The highlighted line is <strong style={{ color: colors.text }}>what it does differently</strong>; open <strong style={{ color: colors.text }}>what it saw</strong> for the evidence.
+        </div>
+        {chipRow([{ key: 'all', label: `All (${lessons.length})` }, ...topics.map((k) => ({ key: k, label: `${TOPIC_LABEL[k]} (${counts[k]})` }))], topic, setTopic, 'Lesson topic')}
+        <div style={{ display: 'grid', gap: 10 }}>
+          {shown.map((l) => {
+            const i = lessons.indexOf(l);
+            return (
+              <div key={i} style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '12px 14px', background: alpha(colors.indigo500, '0d') }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                  <Pill color={colors.indigo400} style={{ fontSize: 10 }}>{TOPIC_LABEL[l.topic]}</Pill>
+                  {l.date === date && <Pill color={colors.success} style={{ fontSize: 10 }}>new today</Pill>}
+                  <span style={{ fontSize: 11, color: colors.textMuted }}>{l.at ? denverClock(l.at) : l.date}</span>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: colors.heading, lineHeight: 1.4, marginBottom: 8 }}><Explain text={l.title} /></div>
+                {l.change && (
+                  <div style={{ borderLeft: `3px solid ${colors.success}`, background: alpha(colors.success, '0d'), padding: '8px 12px', borderRadius: 6, fontSize: 13, lineHeight: 1.5, color: colors.text }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: colors.successText, marginBottom: 3 }}>WHAT IT DOES DIFFERENTLY NOW</div>
+                    <Explain text={l.change} />
+                  </div>
+                )}
+                {l.notes && <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 8, lineHeight: 1.5 }}><Explain text={l.notes} /></div>}
+                {l.saw && (
+                  <div style={{ marginTop: 8 }}>
+                    <span onClick={() => setOpenSaw((o) => ({ ...o, [i]: !o[i] }))} style={{ fontSize: 12, color: colors.indigo300, cursor: 'pointer' }}>{openSaw[i] ? '▾ hide what it saw' : '▸ what it saw'}</span>
+                    {openSaw[i] && <div style={{ fontSize: 12, color: colors.text, marginTop: 6, lineHeight: 1.55, paddingLeft: 12, borderLeft: `2px solid ${colors.hairline}` }}><Explain text={l.saw} /></div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Panel>
+      {knowledge.length > 0 && (
+        <Panel>
+          <SectionHeader title="What the agent started with" right={<span style={{ fontSize: 11, color: colors.textMuted }}>seeded 2026-10-26 from platform history and ISP postmaster material · click to open</span>} />
+          <div style={{ display: 'grid', gap: 8 }}>
+            {knowledge.map((k) => (
+              <div key={k.title} style={{ border: `1px solid ${colors.divider}`, borderRadius: 6, padding: '8px 12px' }}>
+                <div onClick={() => setOpenK((o) => ({ ...o, [k.title]: !o[k.title] }))} style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: colors.heading }}>
+                  <span>{k.title}</span><span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 400 }}>{k.items.length} points {openK[k.title] ? '▾' : '▸'}</span>
+                </div>
+                {openK[k.title] && <ul style={{ margin: '8px 0 2px', paddingLeft: 20 }}>{k.items.map((it, n) => <li key={n} style={{ fontSize: 12, color: colors.text, lineHeight: 1.5, margin: '3px 0' }}><Explain text={it} /></li>)}</ul>}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+      <CodeKey codes={codesIn(allText)} />
+    </>
+  );
+};
+
+// ───────────────────────────── Overview: forecast + key findings, performance look-back
+
+export type DayTotals = { date: string; byGroup: Record<string, Totals>; target: Record<string, number>; firstAt?: string | undefined };
+
+function denverHM(ms: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(ms));
+  const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24; const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  return h + m / 60;
+}
+const attemptsOf = (c: Totals) => c.delivered + c.transfail + c.fail;
+const sumTotals = (rows: Totals[]): Totals => rows.reduce((a, c) => ({ delivered: a.delivered + c.delivered, transfail: a.transfail + c.transfail, fail: a.fail + c.fail }), { delivered: 0, transfail: 0, fail: 0 });
+
+/** The agent's own report sections, by title regex (headline bullets, the 1M/day estimate). */
+function reportBullets(report: string | null, title: RegExp): string[] {
+  if (!report) return [];
+  const s = parseReport(report).sections.find((x) => title.test(x.title));
+  return s ? s.blocks.flatMap((b) => (b.t === 'ul' ? b.items : b.t === 'p' ? [b.text] : [])) : [];
+}
+
+export const ForecastFindings: React.FC<{
+  date: string; isToday: boolean; ticks: Tick[]; today: Record<string, Totals>; target: Record<string, number>;
+  prev?: DayTotals; report: string | null; lessonsToday: string[];
+}> = ({ date, isToday, ticks, today, target, prev, report, lessonsToday }) => {
+  const nowMs = Math.max(0, ...ticks.map((t) => new Date(t.at).getTime()).filter((x) => !Number.isNaN(x)));
+  const hourAgo = nowMs - 3600_000;
+  const lastHour = sumTotals(ticks.filter((t) => new Date(t.at).getTime() > hourAgo).flatMap((t) => Object.values(t.delta?.by ?? {}).flatMap((gs) => Object.values(gs))));
+  const dayAll = sumTotals(Object.values(today));
+  const targetAll = Object.values(target).reduce((a, b) => a + b, 0);
+  const hoursLeft = isToday && nowMs ? Math.max(0, 24 - denverHM(nowMs)) : 0;
+  const projected = Math.min(targetAll || Infinity, dayAll.delivered + lastHour.delivered * hoursLeft);
+  const prevAll = prev ? sumTotals(Object.values(prev.byGroup)) : null;
+  const ratio = prevAll && prevAll.delivered ? projected / prevAll.delivered : null;
+  const prevStartH = prev?.firstAt ? denverHM(new Date(prev.firstAt).getTime()) : 0;
+  const prevPartial = prevStartH >= 6;  // the day before started mid-day: a partial day, not a like-for-like base
+  const vsText = ratio == null ? '—' : ratio >= 3 ? `${ratio.toFixed(0)}× more` : `${ratio >= 1 ? '+' : ''}${((ratio - 1) * 100).toFixed(0)}%`;
+
+  const findings: { tone: string; text: string }[] = [];
+  findings.push({ tone: colors.indigo400, text: `**${fmt(dayAll.delivered)} delivered${isToday ? ' so far' : ''}**, ${pctOf(dayAll.delivered, targetAll, 0)} of today's target of ${fmt(targetAll)}.` });
+  for (const g of ISP_ORDER) {
+    const c = today[g]; if (!c) continue; const n = attemptsOf(c); if (n < 20) continue;
+    if (c.fail / n >= 0.9) findings.push({ tone: colors.danger, text: `**${ispName(g)} ${g === 'other' ? 'are' : 'is'} blocking us:** ${fmt(c.fail)} of ${fmt(n)} attempts bounced, ${fmt(c.delivered)} delivered.` });
+    else if (c.transfail / n > 0.1) findings.push({ tone: colors.warning, text: `**${ispName(g)} ${g === 'other' ? 'are' : 'is'} slowing us:** ${pctOf(c.transfail, n, 0)} of attempts deferred (${fmt(c.transfail)}). The box retries them.` });
+    else if (c.fail / n > 0.05) findings.push({ tone: colors.warning, text: `**${ispName(g)} bounces are high:** ${pctOf(c.fail, n, 1)} of attempts (${fmt(c.fail)}).` });
+  }
+  const top = ISP_ORDER.filter((g) => today[g]).sort((a, b) => today[b].delivered - today[a].delivered)[0];
+  if (top && dayAll.delivered) findings.push({ tone: colors.success, text: `**${ispName(top)} carries the volume:** ${pctOf(today[top].delivered, dayAll.delivered, 0)} of everything delivered today.` });
+  for (const t of lessonsToday.slice(-3).reverse()) findings.push({ tone: colors.indigo300, text: `Learned today: ${t}` });
+  if (lessonsToday.length > 3) findings.push({ tone: colors.idle, text: `+${lessonsToday.length - 3} more lessons today on the Lessons tab.` });
+
+  const headline = reportBullets(report, /headline/i);
+  const million = reportBullets(report, /1M|estimate|forecast/i);
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 14, marginBottom: 14 }}>
+      <Panel>
+        <SectionHeader title="Forecast" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{isToday && nowMs ? `from the box read at ${denverClock(new Date(nowMs).toISOString())}` : `${date} is closed`}</span>} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginBottom: 10 }}>
+          {[
+            { l: isToday ? 'Expected by midnight' : 'Delivered that day', v: fmt(Math.round(projected)), s: isToday ? `if the last hour's pace (${fmt(lastHour.delivered)}/hour) holds for ${hoursLeft.toFixed(1)} more hours; capped at the target` : 'final' },
+            { l: 'Versus the day before', v: vsText, s: prev && prevAll ? `${prev.date}: ${fmt(prevAll.delivered)} delivered${prevPartial ? ` (partial day: first send ${String(Math.floor(prevStartH)).padStart(2, '0')}:00 MT)` : ''}` : 'no earlier day on record' },
+            { l: 'Target reached', v: targetAll ? pctOf(projected, targetAll, 0) : '—', s: targetAll ? `of ${fmt(targetAll)} at that pace` : 'no target set' },
+          ].map((x) => (
+            <div key={x.l} style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '10px 14px', background: alpha(colors.indigo500, '0d') }}>
+              <div style={{ fontSize: 11, color: colors.textMuted }}>{x.l}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: colors.heading, fontVariantNumeric: 'tabular-nums' }}>{x.v}</div>
+              <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.4 }}>{x.s}</div>
+            </div>
+          ))}
+        </div>
+        {million.length > 0 && (
+          <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: colors.indigo300, letterSpacing: 0.4, marginBottom: 4 }}>THE AGENT'S OWN FORECAST (04:00 MT REPORT)</div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>{million.map((m, i) => <li key={i} style={{ margin: '2px 0', whiteSpace: 'pre-line' }}><Explain text={m} /></li>)}</ul>
+          </div>
+        )}
+      </Panel>
+      <Panel>
+        <SectionHeader title="Key findings" right={<span style={{ fontSize: 11, color: colors.textMuted }}>measured from today's delivery log · plus the agent's morning headline</span>} />
+        <div style={{ display: 'grid', gap: 6 }}>
+          {findings.map((f, i) => <div key={i} style={{ borderLeft: `3px solid ${f.tone}`, padding: '4px 10px', fontSize: 13, lineHeight: 1.45, color: colors.text }}><Explain text={f.text} /></div>)}
+        </div>
+        {headline.length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: colors.indigo300, letterSpacing: 0.4, marginBottom: 4 }}>THE AGENT'S MORNING HEADLINE</div>
+            <ul style={{ margin: 0, paddingLeft: 18 }}>{headline.map((h, i) => <li key={i} style={{ margin: '2px 0' }}><Explain text={h} /></li>)}</ul>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+};
+
+export const PerformanceLookback: React.FC<{ date: string; today: Record<string, Totals>; target: Record<string, number>; history: DayTotals[]; loading: boolean }> = ({ date, today, target, history, loading }) => {
+  const days: DayTotals[] = [{ date, byGroup: today, target }, ...history];
+  const groups = ISP_ORDER.filter((g) => days.some((d) => d.byGroup[g]));
+  const cell = (c: Totals | undefined, t: number | undefined) => {
+    if (!c) return <td style={{ ...numTd, color: colors.textFaint }}>—</td>;
+    const n = attemptsOf(c);
+    return (
+      <td style={numTd}>
+        <div style={{ fontWeight: 600 }}>{fmt(c.delivered)}</div>
+        <div style={{ fontSize: 11, color: colors.textMuted }}>{pctOf(c.delivered, n, 0)} delivered{t ? ` · ${pctOf(c.delivered, t, 0)} of target` : ''}</div>
+      </td>
+    );
+  };
+  return (
+    <Panel>
+      <SectionHeader title="Performance · today and earlier days" right={<span style={{ fontSize: 11, color: colors.textMuted }}>{loading ? 'loading earlier days…' : `${days.length} day${days.length === 1 ? '' : 's'} on record (the agent began 2026-10-26)`}</span>} />
+      {groups.length === 0 ? <EmptyState title="No deliveries recorded" /> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Mailbox provider</th>{days.map((d, i) => <th key={d.date} style={numTh}>{i === 0 ? `${d.date} (selected)` : d.date}</th>)}</tr></thead>
+            <tbody>
+              {groups.map((g) => <tr key={g}><td style={{ ...tdStyle, fontWeight: 600 }}>{ispName(g)}</td>{days.map((d) => <React.Fragment key={d.date}>{cell(d.byGroup[g], d.target[g])}</React.Fragment>)}</tr>)}
+              <tr><td style={{ ...tdStyle, fontWeight: 700 }}>All providers</td>{days.map((d) => <React.Fragment key={d.date}>{cell(sumTotals(Object.values(d.byGroup)), Object.values(d.target).reduce((a, b) => a + b, 0))}</React.Fragment>)}</tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>Delivered count, then delivered as a share of attempts and of that day's target. Deferred and bounced detail for each day is on the Delivery tab.</div>
+    </Panel>
+  );
+};
+
+// ───────────────────────────── The agent's check-in note, as a card (operator 2026-10-27: "clean this section up … make it fun")
+
+type NoteSection = { title: string; body: string; items: { label: string; text: string }[] };
+const PROBLEM = /fail|error|missed|503|weren't|wasn't|stuck|blocked|down\b/i;
+const SECTION_ICON: [RegExp, string][] = [
+  [PROBLEM, '🚨'], [/microsoft/i, '🪟'], [/apple/i, '🍎'], [/yahoo/i, '💜'], [/comcast/i, '📡'], [/charter/i, '🛰️'],
+  [/other|long tail/i, '🌐'], [/supply|reservoir|records/i, '📦'], [/freeze|keeping|hold/i, '🧊'], [/plan|next/i, '🧭'],
+];
+const ITEM_ICON: [RegExp, string][] = [
+  [/delivered/i, '📬'], [/block/i, '🧱'], [/dead|USER_UNKNOWN|mailbox/i, '👻'], [/rate.?limit|S844|S775|throttl/i, '🚦'],
+  [/defer|delay/i, '⏳'], [/connection|timeout/i, '🔌'], [/bounce/i, '↩️'], ...SECTION_ICON,
+];
+const iconFor = (t: string, table: [RegExp, string][], dflt: string) => table.find(([re]) => re.test(t))?.[1] ?? dflt;
+// Bold the numbers so a scan finds them (text already wrapped in ** is left alone).
+const boldNumbers = (t: string) => t.split(/(\*\*[^*]+\*\*)/g).map((c) => (c.startsWith('**') ? c : c.replace(/(~?\d[\d,]*(?:\.\d+)?%?(?:–\d[\d,]*%?)?)/g, '**$1**'))).join('');
+
+function parseNote(text: string): { lead: string[]; sections: NoteSection[]; tail: string[] } {
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const lead: string[] = []; const tail: string[] = []; const sections: NoteSection[] = [];
+  for (const p of paras) {
+    const lines = p.split('\n');
+    const head = /^\*\*(.+?):?\*\*:?\s*(.*)$/.exec(lines[0]);
+    const bullets = lines.filter((l) => /^\s*- /.test(l));
+    if (head) {
+      const items: NoteSection['items'] = [];
+      for (const l of lines.slice(1)) {
+        if (/^\s{2,}- /.test(l) && items.length) { items[items.length - 1].text += `\n${l.replace(/^\s*- /, '')}`; continue; }
+        const b = /^\s*- (?:\*\*(.+?):?\*\*:?\s*)?(.*)$/.exec(l); if (b) items.push({ label: b[1] ?? '', text: b[2] });
+      }
+      sections.push({ title: head[1].replace(/:$/, ''), body: head[2], items });
+    } else if (bullets.length && bullets.length === lines.length) {
+      sections.push({ title: 'Notes', body: '', items: bullets.map((l) => { const b = /^\s*- (?:\*\*(.+?):?\*\*:?\s*)?(.*)$/.exec(l)!; return { label: b[1] ?? '', text: b[2] }; }) });
+    } else if (sections.length === 0) lead.push(p); else tail.push(p);
+  }
+  return { lead, sections, tail };
+}
+
+export const CheckinNote: React.FC<{ text: string }> = ({ text }) => {
+  const { lead, sections, tail } = useMemo(() => parseNote(text), [text]);
+  const trouble = PROBLEM.test(text);
+  const moved = /\b(raised|eased|lowered|stepped|set .* to)\b/i.test(lead.join(' ')) && !/no (rate )?changes/i.test(lead.join(' '));
+  if (sections.length === 0) return <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.55, color: colors.text }}><Explain text={text} /></div>;
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <Pill color={trouble ? colors.warning : colors.success}>{trouble ? '🟡 One thing needs a look' : '🟢 All clear'}</Pill>
+        <Pill color={moved ? colors.indigo400 : colors.idle}>{moved ? '🎛️ Made a move' : '🧘 Held steady'}</Pill>
+      </div>
+      {lead.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 12 }}>
+          <div style={{ fontSize: 22, lineHeight: 1 }} aria-hidden>🤖</div>
+          <div style={{ background: alpha(colors.indigo500, '14'), border: `1px solid ${colors.panelBorder}`, borderRadius: '4px 12px 12px 12px', padding: '10px 14px', fontSize: 14, lineHeight: 1.5, color: colors.heading }}>
+            {lead.map((p, i) => <div key={i} style={{ marginTop: i ? 6 : 0 }}><Explain text={p} /></div>)}
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 10 }}>
+        {sections.map((s, i) => {
+          const bad = PROBLEM.test(`${s.title} ${s.body}`);
+          return (
+            <div key={i} style={{ border: `1px solid ${bad ? alpha(colors.warning, '66') : colors.panelBorder}`, background: bad ? alpha(colors.warning, '0d') : alpha(colors.indigo500, '0d'), borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: bad ? colors.warningText : colors.heading, marginBottom: 6 }}>
+                <span style={{ fontSize: 16 }} aria-hidden>{iconFor(s.title, SECTION_ICON, '📋')}</span><Explain text={s.title} />
+              </div>
+              {s.body && <div style={{ fontSize: 12.5, lineHeight: 1.5, color: colors.text, marginBottom: s.items.length ? 6 : 0 }}><Explain text={boldNumbers(s.body)} /></div>}
+              <div style={{ display: 'grid', gap: 6 }}>
+                {s.items.map((it, j) => (
+                  <div key={j} style={{ display: 'flex', gap: 8, fontSize: 12.5, lineHeight: 1.45, color: colors.text }}>
+                    <span aria-hidden style={{ width: 18, textAlign: 'center' }}>{iconFor(`${it.label} ${it.text}`, ITEM_ICON, '•')}</span>
+                    <div style={{ whiteSpace: 'pre-line' }}>{it.label && <span style={{ fontWeight: 700, color: colors.indigo200 }}><Explain text={it.label} />: </span>}<Explain text={boldNumbers(it.text)} /></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {tail.length > 0 && (
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, lineHeight: 1.5, color: colors.text, borderTop: `1px dashed ${colors.hairline}`, paddingTop: 8 }}>
+          <span aria-hidden>🧭</span><div><span style={{ fontWeight: 700, color: colors.indigo200 }}>Plan: </span>{tail.map((p, i) => <span key={i}><Explain text={p} /> </span>)}</div>
+        </div>
+      )}
+    </div>
   );
 };
