@@ -748,13 +748,14 @@ const EnhancedDashboard: React.FC = () => {
         if (!status?.enabled_read) return;
 
         // Canonical Reporting-tab query (METRIC_CONTRACT §1/§4): reclassified
-        // event_type buckets over transport sources only (pmta+ses — the 'app'
-        // mirror stream double-counts delivered). from/to are UTC dt partition
+        // event_type buckets over transport sources only (pmta+ses+kumo — the
+        // 'app' mirror stream double-counts delivered; kumo added 2026-10-28,
+        // the Kumo boxes are first-class delivery truth in the lake). from/to are UTC dt partition
         // bounds; passing local_dt makes the backend widen partitions and apply
         // the precise Denver-day predicate.
         const day = denverToday();
         const bdRes = await apiFetch(
-          `/api/mailing/analytics/lake/breakdown?from=${day}&to=${day}&group_by=event_type&local_dt=${day}&source_in=pmta,ses&limit=100`,
+          `/api/mailing/analytics/lake/breakdown?from=${day}&to=${day}&group_by=event_type&local_dt=${day}&source_in=pmta,ses,kumo&limit=100`,
           { credentials: 'include' },
         );
         if (!bdRes.ok) return;

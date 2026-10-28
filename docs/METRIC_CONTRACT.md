@@ -17,7 +17,7 @@ do not re-derive them; reference this file.
 
 | Question | Source | NOT this |
 |---|---|---|
-| Delivery outcomes (delivered/bounce/deferral) | **Athena lake** `ignite_analytics.email_events`, `source IN ('pmta','ses')` | PG campaign counters (dead since 2026-05-29); the lake's `app` stream (PG mirror — duplicates) |
+| Delivery outcomes (delivered/bounce/deferral) | **Athena lake** `ignite_analytics.email_events`, `source IN ('pmta','ses','kumo')` | PG campaign counters (dead since 2026-05-29); the lake's `app` stream (PG mirror — duplicates) |
 | Opens/clicks, RAW (machine incl.) | Lake `source='app'` (the PG-tracking mirror) — or PG `mailing_tracking_events` directly | Lake `pmta` rows (carry none). ⚠️ The "`ses` is only ~1% of opens" claim here was **stale**: 2026-09-01..03 `source='ses'` carried 2,733,470 opens / 61,565 clicks. `ses` alone is still the wrong RAW answer (SES-routed slice only) but is the ONLY correct basis for a VDM comparison (§12) |
 | Opens/clicks, HUMAN | PG `mailing_tracking_events` + `ignite_event_verdict(user_agent, ip_address)` | `is_machine_open` (still INERT, deliberately — §12.5) / `is_machine_click` (lake `ses` rows populated from 2026-09-04, §12.5). Both are LABELS, never audience filters (§12.1) |
 | Per-campaign delivered for CPM/billing | PG `mailing_tracking_events` (100% campaign-attributed) | Lake (loses ~20% of PMTA rows to blank campaign_id) |
@@ -28,9 +28,31 @@ mirror of PG `mailing_tracking_events` — including `delivered`/`attempted`/bou
 duplicate the pmta/ses truth, and open/click rows that duplicate the SES webhook's. Verified
 2026-07-01: one campaign showed delivered=17,448 under BOTH `pmta` and `app`; SES opens appeared
 identically (616=616) in `ses` and `app`. Therefore:
-- Delivery metrics: `source IN ('pmta','ses')` — never unfiltered, never `app`.
+- Delivery metrics: `source IN ('pmta','ses','kumo')` — never unfiltered, never `app`.
 - Engagement metrics: `app` ONLY — and when merging with delivery rows, STRIP the delivery set's
   own open/click slice first (see `mergeDeliveryAndEngagement`, EventLakeExplorer.tsx).
+
+### 1.1 Sending lanes — the transport selector vocabulary (2026-10-28)
+
+The portal's Transport selector (shared `FilterBar`) and `GET /api/mailing/analytics/lake/lanes`
+share ONE vocabulary of sending ENVIRONMENTS (operator 2026-10-28: "we only have SES and MTA —
+include the new lanes"). The lake carries no sending host; a box is told apart by the VMTA code
+(`split_part(vmta,'-',2)` = the profile's `pool_prefix`), and the box each code belongs to is read
+from `mailing_sending_profiles.api_endpoint` (`internal/api/lake_lanes.go`, cached 10 min).
+
+| lane | lake predicate | what it is |
+|---|---|---|
+| `combined` | `source IN ('pmta','ses','kumo')` | every real transport; never `app` |
+| `ses` | `source='ses'` | the SES account's own events (delivery truth for everything relayed to SES) |
+| `mta` | `source='pmta'` | both PMTA boxes (direct + `relayed_to_ses` rows) |
+| `pmta_a` / `pmta_b` | `source='pmta' AND split_part(vmta,'-',2) IN (<codes on 15.204.101.125 / .107.107>)` | one PMTA box; the shared `ses-relay` VMTA (pool `ses-relay-a`) belongs to A |
+| `kumo` | `source='kumo'` | both Kumo boxes (delivered/soft/hard/delay — kumo has no sent/open/click rows) |
+| `colo2` | `source='kumo' AND split_part(vmta,'-',2) IN (<codes on 15.204.105.55>)` | the warmup-agent box (egress 199.235.0.0/24) |
+| `colo1` | `source='kumo' AND split_part(vmta,'-',2) NOT IN (<colo2 codes>)` | the yahoo-set estate = the REST of kumo (its cold-board cells inject codes hlj/pmd/usf/trb that no colo1 profile owns, so colo1 cannot be profile-defined) |
+
+`lane` REPLACES `source`/`source_in` on the breakdown call. A box with no active profiles returns
+zero rows (never the whole transport). **Gmail is not a lane:** the `gm.`/`gt.` senders relay
+through SES and SES rows carry no sending domain — Gmail is the ISP filter (`isp_group=gmail`).
 
 ## 2. Counting
 
@@ -175,7 +197,7 @@ Lake reads re-derive bounce classes from `bounce_cat` + `dsn_diag` (`eventTypeEx
 
 - `GET /api/mailing/analytics/lake/breakdown` — generic lake GROUP BY (whitelisted dims incl.
   computed `isp`, `brand`, `local_dt`, `local_hour`, reclassified `event_type`; `source_in` for
-  the pmta+ses transport set). The Eq column list in `HandleLakeBreakdown` MUST include every
+  the pmta+ses+kumo transport set; `lane` for one sending box — see §1.1). The Eq column list in `HandleLakeBreakdown` MUST include every
   whitelisted dim (the dropped-`isp` bug rendered global data labeled as one ISP, fixed 2026-07-01).
 - `GET /api/mailing/analytics/engagement` — PG+verdict raw/human opens/clicks (Denver windows,
   anchored brand match).
@@ -208,7 +230,7 @@ clicks. Every response carries `attribution: {stamped_campaigns, inferred_campai
 NOT delivery-weighted (a delivery-weighted split would need a per-campaign lake group-by that
 blows the row cap).
 
-**Delivery cells (lake).** `source IN ('pmta','ses')`, `COUNT(DISTINCT event_uid)`, scoped by
+**Delivery cells (lake).** `source IN ('pmta','ses','kumo')`, `COUNT(DISTINCT event_uid)`, scoped by
 `campaign_id IN (<set>)` (reader `BreakdownFilter.CampaignIDs`, per-UUID validated, 2000 ids per
 Athena call). Drip-scale sets are fetched in FULL via chunked calls — chunks are disjoint campaign
 sets so per-chunk DISTINCT counts sum exactly (the earlier truncate-to-2000 behaviour read ~10% of

@@ -909,6 +909,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			r.Get("/analytics/lake/summary", s.HandleLakeSummary)
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
 			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
+			r.Get("/analytics/lake/lanes", s.HandleLakeLanes) // sending environments + their lake scope (lake_lanes.go)
 			r.Get("/analytics/deferral-funnel", s.HandleDeferralFunnel)
 
 			// Engagement KPIs (READ ONLY) — HUMAN opens/clicks from Postgres

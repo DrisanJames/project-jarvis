@@ -83,6 +83,7 @@ import {
   denverToday, daysAgoDenver,
   lakeFilterParams as filterParams,
   lakeFilterParamsNoTransport as filterParamsNoTransport,
+  transportSources,
   COMMON_ISP_GROUPS,
 } from '../shared/filters';
 import type { Transport, LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
@@ -741,14 +742,11 @@ function mergeDeliveryAndEngagement(deliveryRows: BreakdownRow[], engRows: Break
   return [...deliveryRows.filter((r) => !isEng(r)), ...engRows.filter(isEng)];
 }
 
-// transportSources maps the toolbar Transport selector to the lake `source`
-// values it covers. combined = pmta + ses (the headline excludes the duplicate
-// 'app' source by construction); mta = pmta; ses = ses.
-function transportSources(t: Transport): Set<string> {
-  if (t === 'mta') return new Set(['pmta']);
-  if (t === 'ses') return new Set(['ses']);
-  return new Set(['pmta', 'ses']);
-}
+// transportSources (shared/filters.tsx) maps the toolbar Transport selector to
+// the lake `source` values it covers: combined = pmta + ses + kumo (the
+// headline excludes the duplicate 'app' source by construction); a box lane
+// (PMTA A/B, Colo 1/2) reads its transport's source — the box scope itself is
+// applied server-side (lane=…) in the route-funnel query.
 
 // routeRowsForTransport projects the route-funnel breakdown (local_dt × source ×
 // route_type × event_type) down to the transport-filtered (local_dt, event_type)

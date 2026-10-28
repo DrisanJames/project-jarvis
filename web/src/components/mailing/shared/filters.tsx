@@ -29,11 +29,41 @@ import { colors as theme } from './theme';
 
 export type RouteTypeFilter = '' | 'pmta_direct' | 'ses' | 'ses_tenant';
 
-// Transport selector — which sending transport(s) the data covers.
-//   combined → both MTA + SES (source_in=pmta,ses)
-//   mta      → PMTA only (source=pmta)
-//   ses      → SES only (source=ses)
-export type Transport = 'combined' | 'mta' | 'ses';
+// Transport selector — which sending ENVIRONMENT the data covers (operator
+// 2026-10-28: "we only have SES and MTA — include the new lanes"). The backend
+// vocabulary is GET /api/mailing/analytics/lake/lanes (lake_lanes.go):
+//   combined → every real transport (source_in=pmta,ses,kumo; never 'app')
+//   ses      → SES account truth (source=ses)
+//   mta      → both PMTA boxes (source=pmta)
+//   pmta_a / pmta_b → one PMTA box (lane=…: source pmta + that box's VMTA codes)
+//   kumo     → both Kumo boxes (source=kumo)
+//   colo1 / colo2   → one Kumo box (lane=…: source kumo + that box's VMTA codes)
+// Gmail is not a transport in the lake (gm./gt. senders relay through SES and
+// SES rows carry no sending domain) — use the ISP filter (gmail) for it.
+export type Transport = 'combined' | 'ses' | 'mta' | 'pmta_a' | 'pmta_b' | 'kumo' | 'colo1' | 'colo2';
+
+export const TRANSPORT_OPTIONS: { id: Transport; label: string }[] = [
+  { id: 'combined', label: 'Combined' },
+  { id: 'ses', label: 'SES' },
+  { id: 'mta', label: 'MTA' },
+  { id: 'pmta_a', label: 'PMTA A' },
+  { id: 'pmta_b', label: 'PMTA B' },
+  { id: 'kumo', label: 'Kumo' },
+  { id: 'colo1', label: 'Colo 1' },
+  { id: 'colo2', label: 'Colo 2' },
+];
+export const transportLabel = (t: Transport): string => TRANSPORT_OPTIONS.find((o) => o.id === t)?.label ?? t;
+// A box lane scopes rows to ONE sending box (by VMTA code) — it is a scope on
+// top of the transport, so companion queries that otherwise ignore the
+// transport selector still honor it.
+export const isBoxLane = (t: Transport): boolean => t === 'pmta_a' || t === 'pmta_b' || t === 'colo1' || t === 'colo2';
+// The lake `source` values a transport selection reads.
+export function transportSources(t: Transport): Set<string> {
+  if (t === 'ses') return new Set(['ses']);
+  if (t === 'mta' || t === 'pmta_a' || t === 'pmta_b') return new Set(['pmta']);
+  if (t === 'kumo' || t === 'colo1' || t === 'colo2') return new Set(['kumo']);
+  return new Set(['pmta', 'ses', 'kumo']);
+}
 
 export interface LakeFilterDraft {
   from: string;
@@ -81,27 +111,32 @@ export const DENVER_PRESETS: Array<{ label: string; from: () => string; to: () =
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Filters → breakdown filter params, WITHOUT the transport→source mapping.
-// Used by companion queries that show MTA vs SES side by side and must always
-// read both transports regardless of the selector (otherwise picking MTA would
-// empty the SES side).
+// Used by companion queries that show the route split (direct vs SES relay)
+// side by side and must read every transport regardless of the selector
+// (otherwise picking MTA would empty the SES side). A BOX lane is different: it
+// is a scope (one sending box), so it is carried here too — the route split
+// then shows that box's own direct-vs-relay mix.
 export function lakeFilterParamsNoTransport(f: LakeFilterDraft): Record<string, string> {
   const out: Record<string, string> = {};
   if (f.ispGroup.trim()) out.isp_group = f.ispGroup.trim();
   if (f.brand.trim()) out.brand = f.brand.trim();
   if (f.routeType) out.route_type = f.routeType;
+  if (isBoxLane(f.transport)) out.lane = f.transport;
   return out;
 }
 
 // Filters → breakdown filter params (transport-aware). The transport selector
-// maps to the backend source contract: a single source=pmta|ses, or
-// source_in=pmta,ses for Combined. Threading transport through here keeps the
-// cache key (built from the serialized URL) correct automatically — no
-// separate cache field is needed.
+// maps to the backend contract: source=pmta|ses|kumo for a whole transport,
+// lane=<box> for one box (the backend adds the source + VMTA-code scope), or
+// source_in=pmta,ses,kumo for Combined. Threading transport through here keeps
+// the cache key (built from the serialized URL) correct automatically.
 export function lakeFilterParams(f: LakeFilterDraft): Record<string, string> {
   const out = lakeFilterParamsNoTransport(f);
+  if (isBoxLane(f.transport)) return out; // lane already set
   if (f.transport === 'mta') out.source = 'pmta';
   else if (f.transport === 'ses') out.source = 'ses';
-  else out.source_in = 'pmta,ses'; // combined
+  else if (f.transport === 'kumo') out.source = 'kumo';
+  else out.source_in = 'pmta,ses,kumo'; // combined = every real transport
   return out;
 }
 
@@ -266,7 +301,7 @@ export const FilterBar: React.FC<{
     onRemove: () => { const next = { ...draft, routeType: '' as RouteTypeFilter }; setDraft(next); onRun(next); },
   });
   if (on.transport && applied.transport !== 'combined') chips.push({
-    label: `transport=${applied.transport === 'mta' ? 'MTA' : 'SES'}`, tone: theme.success,
+    label: `transport=${transportLabel(applied.transport)}`, tone: theme.success,
     onRemove: () => { const next = { ...draft, transport: 'combined' as Transport }; setDraft(next); onRun(next); },
   });
   if (extraChips) chips.push(...extraChips);
@@ -342,11 +377,7 @@ export const FilterBar: React.FC<{
         {on.transport && (
           <div style={fstyles.fieldLabel}>Transport
             <div style={fstyles.segmented}>
-              {([
-                { id: 'combined' as Transport, label: 'Combined' },
-                { id: 'mta' as Transport, label: 'MTA' },
-                { id: 'ses' as Transport, label: 'SES' },
-              ]).map((opt) => {
+              {TRANSPORT_OPTIONS.map((opt) => {
                 const active = draft.transport === opt.id;
                 return (
                   <button

@@ -412,6 +412,10 @@ func TestBuildBreakdownSQLRejections(t *testing.T) {
 		// (d) source_in is allowlist-validated: only pmta|ses; anything else rejects.
 		{"source-in-bogus", func() BreakdownFilter { f := base(); f.SourceIn = []string{"pmta", "bogus"}; return f }()},
 		{"source-in-injection", func() BreakdownFilter { f := base(); f.SourceIn = []string{"'; DROP"}; return f }()},
+		// (e) vmta_code_in (sending-box lanes) is regex-validated: lowercase alnum only.
+		{"vmta-code-quote", func() BreakdownFilter { f := base(); f.VmtaCodeIn = []string{"db'"}; return f }()},
+		{"vmta-code-upper", func() BreakdownFilter { f := base(); f.VmtaCodeIn = []string{"DB"}; return f }()},
+		{"vmta-code-dash", func() BreakdownFilter { f := base(); f.VmtaCodeIn = []string{"ses-relay"}; return f }()},
 	}
 	for _, tc := range bad {
 		if _, err := buildBreakdownSQL(tc.f); err == nil {
@@ -588,5 +592,24 @@ func TestBuildBreakdownSQLCampaignIDs(t *testing.T) {
 	f = BreakdownFilter{From: "2026-06-01", To: "2026-06-08", GroupBy: []string{"event_type"}, CampaignIDs: big}
 	if _, err := buildBreakdownSQL(f); err == nil {
 		t.Errorf("over-cap campaign_ids should be rejected")
+	}
+}
+
+// TestBreakdownVmtaCodeIn — the lane scope renders as split_part(vmta,'-',2)
+// IN (...) with deduped, sorted, quoted codes, next to the source IN clause.
+func TestBreakdownVmtaCodeIn(t *testing.T) {
+	sqlText, err := buildBreakdownSQL(BreakdownFilter{
+		From: "2026-10-27", To: "2026-10-28", GroupBy: []string{"event_type"},
+		SourceIn: []string{"kumo"}, VmtaCodeIn: []string{"ufo", "dbz", "ufo"}, VmtaCodeNotIn: []string{"bcc"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(sqlText, "AND source IN ('kumo')") || !strings.Contains(sqlText, "AND split_part(vmta, '-', 2) IN ('dbz', 'ufo')") ||
+		!strings.Contains(sqlText, "AND split_part(vmta, '-', 2) NOT IN ('bcc')") {
+		t.Fatalf("lane scope not rendered: %s", sqlText)
+	}
+	if _, err := buildBreakdownSQL(BreakdownFilter{From: "2026-10-27", To: "2026-10-28", GroupBy: []string{"event_type"}, VmtaCodeNotIn: []string{"x'"}}); err == nil {
+		t.Fatal("vmta_code_not_in must be validated")
 	}
 }

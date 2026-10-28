@@ -114,6 +114,17 @@ type BreakdownFilter struct {
 	GroupBy  []string          // 1..3 dims from breakdownDims
 	Eq       map[string]string // optional equality predicates, column -> value
 	SourceIn []string          // optional; values must be in srcAllow {pmta,ses,kumo}; emits source IN (...)
+	// VmtaCodeIn scopes rows to a set of VMTA codes — the second dash-separated
+	// token of the vmta name ("vmta-rr-ses" → rr, "mta-dbjy-gn1" → dbjy,
+	// "mta-ufo-07" → ufo). This is how a sending BOX (PMTA A / PMTA B / Kumo
+	// colo1 / colo2) is told apart in the lake: the lake carries no sending host,
+	// but every pmta/kumo row carries the profile's pool_prefix inside vmta, and
+	// api.laneResolver maps pool_prefix → box from mailing_sending_profiles.
+	// Values must match vmtaCodeRe; emits split_part(vmta,'-',2) IN (...).
+	VmtaCodeIn []string
+	// VmtaCodeNotIn is the complement: rows whose VMTA code is NOT in the set
+	// (a box defined as "its transport minus the other box"). Same validation.
+	VmtaCodeNotIn []string
 	// CampaignIDs scopes the breakdown to a campaign set: emits
 	// campaign_id IN ('<uuid>', ...). Every value must be a UUID (uuidRe) —
 	// copying the validated-IN-list precedent from reader_audience.go
@@ -199,6 +210,9 @@ var localHourRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:00$`)
 // since 2026-06-17; rows are Athena-visible once the Glue partition-projection
 // enum (projection.source.values) includes kumo.
 var srcAllow = map[string]bool{"pmta": true, "ses": true, "kumo": true}
+
+// vmtaCodeRe validates a VmtaCodeIn value (a profile pool_prefix: lowercase alnum).
+var vmtaCodeRe = regexp.MustCompile(`^[a-z0-9]{1,12}$`)
 
 // localDtExpr converts event_epoch_ms to the America/Denver calendar day.
 // The operating day is Denver (CLAUDE.md §6); dt partitions stay UTC.
@@ -728,6 +742,19 @@ func validateBreakdownFilter(f BreakdownFilter) ([]string, error) {
 			return nil, fmt.Errorf("invalid source_in value %q", s)
 		}
 	}
+	// VmtaCodeIn: every code must match vmtaCodeRe (lowercase alnum, ≤12) —
+	// the values come from the DB (pool_prefix), never from caller text, but
+	// the regex is the guarantee at the SQL boundary.
+	for _, c := range f.VmtaCodeIn {
+		if !vmtaCodeRe.MatchString(c) {
+			return nil, fmt.Errorf("invalid vmta_code_in value %q", c)
+		}
+	}
+	for _, c := range f.VmtaCodeNotIn {
+		if !vmtaCodeRe.MatchString(c) {
+			return nil, fmt.Errorf("invalid vmta_code_not_in value %q", c)
+		}
+	}
 
 	// CampaignIDs: every id must be a UUID before it can reach SQL (mirrors
 	// buildAudienceMemberEventsSQL in reader_audience.go — but those ids are
@@ -845,6 +872,35 @@ func buildBreakdownSQL(f BreakdownFilter) (string, error) {
 		}
 		b.WriteString(" AND source IN (")
 		b.WriteString(strings.Join(quoted, ", "))
+		b.WriteString(")")
+	}
+
+	// VmtaCodeIn (sending-box lanes): emit "AND split_part(vmta, '-', 2) IN (...)".
+	// Validated above; dedupe + sort for stable SQL (cache keys).
+	for _, set := range []struct {
+		codes []string
+		op    string
+	}{{f.VmtaCodeIn, " IN ("}, {f.VmtaCodeNotIn, " NOT IN ("}} {
+		if len(set.codes) == 0 {
+			continue
+		}
+		seenCode := make(map[string]bool, len(set.codes))
+		codes := make([]string, 0, len(set.codes))
+		for _, c := range set.codes {
+			if seenCode[c] {
+				continue
+			}
+			seenCode[c] = true
+			codes = append(codes, c)
+		}
+		sort.Strings(codes)
+		quotedCodes := make([]string, len(codes))
+		for i, c := range codes {
+			quotedCodes[i] = sqlStr(c)
+		}
+		b.WriteString(" AND split_part(vmta, '-', 2)")
+		b.WriteString(set.op)
+		b.WriteString(strings.Join(quotedCodes, ", "))
 		b.WriteString(")")
 	}
 

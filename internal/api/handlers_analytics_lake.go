@@ -122,8 +122,10 @@ func (s *Server) HandleLakeEvents(w http.ResponseWriter, r *http.Request) {
 // (1..5000, default 1000), plus optional equality filters: campaign_id,
 // isp_group, event_type, brand, email_domain, route_type, source, bounce_cat,
 // vmta, pool, variant. Also accepts source_in (comma-separated "Combined"
-// transport filter, allowed values pmta|ses) which emits a source IN (...)
-// clause rather than a source= equality. Validation (dim whitelist, per-column
+// transport filter, allowed values pmta|ses|kumo) which emits a source IN (...)
+// clause rather than a source= equality, and lane (a sending environment —
+// ses|mta|pmta_a|pmta_b|kumo|colo1|colo2, see lake_lanes.go) which overrides
+// source/source_in with the environment's source + VMTA-code scope. Validation (dim whitelist, per-column
 // value patterns, source_in allowlist) lives in analytics.Breakdown — bad input
 // comes back as a 400 {"error":...}.
 // When the reader is disabled it returns 200 with {"disabled":true,"rows":[]}.
@@ -197,13 +199,40 @@ func (s *Server) HandleLakeBreakdown(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// lane: a sending ENVIRONMENT (ses|mta|pmta_a|pmta_b|kumo|colo1|colo2 —
+	// lake_lanes.go). It REPLACES source/source_in: the lane's lake source plus,
+	// for a box lane, the VMTA codes (profile pool_prefixes) wired to that box.
+	var vmtaCodes, vmtaCodesNot []string
+	if lane := q.Get("lane"); lane != "" {
+		lanes.db = s.mailingDB
+		sc, err := lanes.laneScope(r.Context(), lane)
+		if err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if sc != nil {
+			sourceIn = []string{sc.Source}
+			delete(eq, "source")
+			if sc.Prefixes != nil {
+				if len(sc.Prefixes) == 0 { // a box with no active profiles scopes to nothing
+					respondJSON(w, http.StatusOK, map[string]interface{}{"group_by": groupBy, "from": from, "to": to, "rows": []interface{}{}, "truncated": false, "lane": sc.Key})
+					return
+				}
+				vmtaCodes = sc.Prefixes
+			}
+			vmtaCodesNot = sc.Exclude
+		}
+	}
+
 	rows, err := analytics.Breakdown(r.Context(), analytics.BreakdownFilter{
-		From:     from,
-		To:       to,
-		GroupBy:  groupBy,
-		Eq:       eq,
-		SourceIn: sourceIn,
-		Limit:    limit,
+		From:          from,
+		To:            to,
+		GroupBy:       groupBy,
+		Eq:            eq,
+		SourceIn:      sourceIn,
+		VmtaCodeIn:    vmtaCodes,
+		VmtaCodeNotIn: vmtaCodesNot,
+		Limit:         limit,
 	})
 	if err != nil {
 		if analytics.IsDisabledErr(err) {
