@@ -214,6 +214,33 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 
 // ledgerForDate streams the change ledger (≈10 MB, append-only JSONL) and keeps
 // the day's rows by id prefix "cl-YYYYMMDD" — a filter, not a computation.
+// ledgerLineOnDenverDay: the line's id has one of the prefixes and its ts falls on the Denver calendar day.
+func ledgerLineOnDenverDay(line []byte, prefixes []string, day time.Time, loc *time.Location) bool {
+	head := string(line[:min(len(line), 48)])
+	hit := false
+	for _, p := range prefixes {
+		if strings.Contains(head, p) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return false
+	}
+	var r struct {
+		TS string `json:"ts"`
+	}
+	if json.Unmarshal(line, &r) != nil {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, r.TS)
+	if err != nil {
+		return false
+	}
+	y, m, d := t.In(loc).Date()
+	return y == day.Year() && m == day.Month() && d == day.Day()
+}
+
 func (s *WarmupAgentService) ledgerForDate(ctx context.Context, yyyymmdd string) ([]json.RawMessage, error) {
 	key := s.agentsPrefix + "ledger/change_ledger.jsonl"
 	res, err := s.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.agentsBucket, Key: &key})
@@ -224,17 +251,25 @@ func (s *WarmupAgentService) ledgerForDate(ctx context.Context, yyyymmdd string)
 		return nil, err
 	}
 	defer res.Body.Close()
-	want := []byte(`"id": "cl-` + yyyymmdd)
-	want2 := []byte(`"id":"cl-` + yyyymmdd)
+	// Ids carry the UTC date, so a change after 18:00 MT is cl-<D+1>: scan D and D+1, keep rows whose ts is on the Denver day.
+	day, err := time.Parse("20060102", yyyymmdd)
+	if err != nil {
+		return nil, err
+	}
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		return nil, err
+	}
+	prefixes := []string{}
+	for _, d := range []string{yyyymmdd, day.AddDate(0, 0, 1).Format("20060102")} {
+		prefixes = append(prefixes, `"id": "cl-`+d, `"id":"cl-`+d)
+	}
 	rows := []json.RawMessage{}
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for sc.Scan() {
 		line := sc.Bytes()
-		if !strings.Contains(string(line[:min(len(line), 48)]), string(want)) && !strings.Contains(string(line[:min(len(line), 48)]), string(want2)) {
-			continue
-		}
-		if !json.Valid(line) {
+		if !ledgerLineOnDenverDay(line, prefixes, day, loc) {
 			continue
 		}
 		rows = append(rows, json.RawMessage(append([]byte(nil), line...)))
