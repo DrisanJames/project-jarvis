@@ -186,7 +186,7 @@ const WarmupAgent: React.FC<{ date?: string }> = ({ date: dateProp }) => {
     setHistoryLoading(true);
     void Promise.all(days.map(async (d): Promise<DayTotals | null> => {
       try {
-        const res = await apiFetch(`/api/mailing/warmup-agent/overview?instance=${encodeURIComponent(instance)}&date=${d}`);
+        const res = await apiFetch(`/api/mailing/warmup-agent/overview?instance=${encodeURIComponent(instance)}&date=${d}&light=1`);
         if (!res.ok) return null;
         const o = (await res.json()) as Overview;
         const t = sumTicks(o.ticks ?? []);
