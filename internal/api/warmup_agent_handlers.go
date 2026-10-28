@@ -98,6 +98,9 @@ func (s *WarmupAgentService) RegisterRoutes(r chi.Router) {
 //	pmta_read/<D>.json            the PMTA A/B daily read (agents/reporting/pmta_daily_read.py, hourly): delivery per
 //	                              server × ISP split Yahoo family / non-family, cells by slot today + tomorrow, SMTP
 //	                              responses, flagged IPs, standing levels (operator 2026-10-27)
+//	gmail_lane/<D>.json           the gmail lane's daily status (agents/jobs/gmail_lane_status.py): per property today
+//	                              (sender, cap, delivered, opens, human clicks, complaints, 5.7.x blocks + first block),
+//	                              cells today + 3 days, gmail_ramp levels/holds (operator 2026-10-27)
 //	ses_lane/<D>.json             the SES offer board today (agents/reporting/ses_lane_today.py, every 30 min): one row per
 //	                              slot × offer split Yahoo family / non-family — delivered, delivery %, hard, complaints,
 //	                              opens, clicks, conversions, payout + basis; cells not yet delivering; NOT TRACKED offers
@@ -116,6 +119,9 @@ type agentsOverview struct {
 	PMTA struct {
 		Read json.RawMessage `json:"read"`
 	} `json:"pmta"`
+	Gmail struct {
+		Lane json.RawMessage `json:"lane"`
+	} `json:"gmail"`
 	SES struct {
 		Lane json.RawMessage `json:"lane"`
 	} `json:"ses"`
@@ -166,8 +172,9 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 		*dst = json.RawMessage(b)
 		mu.Unlock()
 	}
-	wg.Add(7)
+	wg.Add(8)
 	go getJSON("pmta.read", "state/pmta_read/"+date+".json", &out.PMTA.Read)
+	go getJSON("gmail.lane", "state/gmail_lane/"+date+".json", &out.Gmail.Lane)
 	go getJSON("scheduling.plan_for_date", "state/scheduling_agent/"+prev+".json", &out.Scheduling.PlanForDate)
 	go getJSON("scheduling.plan_tonight", "state/scheduling_agent/"+date+".json", &out.Scheduling.PlanTonight)
 	go getJSON("scheduling.supervisor", "state/scheduling_supervisor.json", &out.Scheduling.Supervisor)

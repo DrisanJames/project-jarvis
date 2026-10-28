@@ -37,10 +37,20 @@ type Pass = { at: string; live?: boolean; checks: Check[]; repairs?: string[] };
 type DataJournal = { date: string; passes: Pass[]; latest?: Pass };
 type DataState = { last_pass?: { at: string; checks: { name: string; verdict: string; measure: string }[]; repairs?: string[] }; last_verdicts?: Record<string, string>; days?: Record<string, { attempts?: Record<string, number>; paged?: string[]; repairs?: { at: string; repairs: string[] }[] }> };
 type LedgerRow = { id: string; ts: string; actor?: string; kind: string; target: string; why?: string; before?: unknown; after?: unknown; revert?: unknown; brain_claims?: number[]; no_claim_reason?: string };
+type GmailCell = { code: string; sender: string; cap: number; recipients: number; status: string; waves: number; campaign_id: string;
+  attempted?: number; delivered?: number; bounced?: number; blocked?: number; first_block_mt?: string | null; complaints?: number; opens?: number; human_clicks?: number };
+type GmailLane = {
+  date: string; as_of: string;
+  today: { cells: GmailCell[]; totals: Record<string, number> };
+  schedule: { day: string; due: string[]; missing: string[]; cells: GmailCell[]; total: number }[];
+  ramp: { levels: Record<string, number>; holds: Record<string, unknown>; sets: Record<string, number> };
+  rules?: string[];
+};
 type AgentsOverview = {
   date: string; fetched_at: string;
   scheduling: { plan_for_date: SchedJournal | null; plan_tonight: SchedJournal | null; supervisor: SupervisorState | null };
   data: { journal: DataJournal | null; state: DataState | null };
+  gmail?: { lane: GmailLane | null };
   pmta?: { read: PmtaRead | null };
   ledger: LedgerRow[]; errors?: Record<string, string>;
   ses?: { lane: SesLaneReport | null };
@@ -361,9 +371,76 @@ const ENV_NOTE: Record<EnvKey, string> = {
   pmta_a: 'PMTA Server A (15.204.101.125) — nx dedicated-IP lanes on 144.225.178.0/25 + mk lanes on 15.204.22.x. Gates keyed A:<isp>.',
   pmta_b: 'PMTA Server B (15.204.107.107) — nx dedicated-IP lanes on 144.225.178.128/25 + mk lanes on 15.204.38.x. Gates keyed B:<isp>.',
   ses: 'SES relay — the engaged board, cold / family / fresh sidecars, WCL and Internal Auto releases, yahoo ramp.',
-  gmail: 'Gmail — gm.<apex> SES senders, the gmail sidecar (standing levels, ramp held).',
+  gmail: 'Gmail — gm.<apex> SES senders (MH on gt., HT/TRB on their own), the gmail sidecar 01:01 MT, A odd / B even days, levels on operator request only.',
   colo1: 'Colo 1 — no agent assigned yet.',
   colo2: 'Colo 2 (15.204.105.55, 199.235.0.0/24) — the warmup agent owns every speed and target here.',
+};
+
+// ───────────────────────────── gmail lane status (operator 2026-10-27: "displays the information I request of you daily")
+//
+// agents/jobs/gmail_lane_status.py writes state/gmail_lane/<D>.json — the supplemental record: today per property from the
+// lake (distinct recipient_send_id; human clicks = is_machine_click false; 5.7.x blocks + the first one's MT time), the
+// cells by NAME for today + 3 days, and the gmail_ramp levels/holds. The journal's readiness row is a 21:00 snapshot.
+
+const pct = (n?: number, d?: number) => (n == null || !d ? '—' : `${((100 * n) / d).toFixed(1)}%`);
+
+const GmailLanePanel: React.FC<{ lane: GmailLane | null | undefined; decision?: VolumeDecision }> = ({ lane, decision }) => {
+  if (!lane) return <Panel style={{ marginBottom: 14 }}><EmptyState title="No gmail lane status for this day" hint="python3 -m agents.jobs.gmail_lane_status writes state/gmail_lane/<date>.json." /></Panel>;
+  const t = lane.today.totals;
+  const holds = Object.keys(lane.ramp.holds ?? {});
+  const blockedCodes = lane.today.cells.filter((c) => (c.blocked ?? 0) > 0);
+  return (
+    <>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title={`Gmail lane · today ${lane.date}`} right={<span style={{ fontSize: 11, color: colors.textMuted }}>as of {denverTime(lane.as_of)} MT · lake, ses · NL-GM-NEWSLETTER</span>} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 12 }}>
+          <Stat label="Mailed" value={fmt(t.attempted)} sub={`${lane.today.cells.length} cells · ${fmt(t.recipients)} planned`} />
+          <Stat label="Delivered" value={pct(t.delivered, t.attempted)} sub={fmt(t.delivered)} color={(t.delivered ?? 0) / (t.attempted || 1) < 0.98 ? colors.warning : colors.success} />
+          <Stat label="Opens" value={pct(t.opens, t.delivered)} sub={fmt(t.opens)} />
+          <Stat label="Human clicks" value={fmt(t.human_clicks)} />
+          <Stat label="Complaints" value={fmt(t.complaints)} color={t.complaints ? colors.danger : colors.success} />
+          <Stat label="5.7.x blocks" value={fmt(t.blocked)} sub={blockedCodes.map((c) => `${c.code} from ${c.first_block_mt ?? '—'} MT`).join(' · ') || 'none'} color={t.blocked ? colors.danger : colors.success} title="Policy blocks. A 5.7.1 run in the last waves preceded a full block on the next send 3 of 3 times (brain #16762)." />
+          <Stat label="Volume decision" value={decision ? (decision.decision ?? decision.posture).toUpperCase() : '—'} sub={decision?.rule ?? `holds: ${holds.join(', ') || 'none'}`} title={`ramp holds: ${holds.join(', ') || 'none'}`} />
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Property</th><th style={thStyle}>Sender</th><th style={numTh}>Cap</th><th style={numTh}>Mailed</th><th style={numTh}>Delivered</th><th style={numTh}>Opens</th><th style={numTh}>Human clicks</th><th style={numTh}>Complaints</th><th style={numTh}>5.7.x</th><th style={thStyle}>Ramp</th></tr></thead>
+            <tbody>{lane.today.cells.map((c) => (
+              <tr key={c.campaign_id}>
+                <td style={{ ...tdStyle, fontWeight: 600 }}>{c.code}</td>
+                <td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted }}>{c.sender}</td>
+                <td style={numTd}>{fmt(c.cap)}</td>
+                <td style={numTd}>{fmt(c.attempted)}</td>
+                <td style={{ ...numTd, color: c.attempted && (c.delivered ?? 0) / c.attempted < 0.98 ? colors.warningText : undefined }}>{pct(c.delivered, c.attempted)}</td>
+                <td style={numTd}>{pct(c.opens, c.delivered)}</td>
+                <td style={numTd}>{fmt(c.human_clicks)}</td>
+                <td style={numTd}>{fmt(c.complaints)}</td>
+                <td style={{ ...numTd, color: c.blocked ? colors.danger : undefined }}>{c.blocked ? `${fmt(c.blocked)} · ${c.first_block_mt ?? ''}` : '0'}</td>
+                <td style={tdStyle}>{holds.includes(c.code) ? <Pill color={colors.warning} style={{ fontSize: 10 }}>held</Pill> : <Pill color={colors.success} style={{ fontSize: 10 }}>open</Pill>}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </Panel>
+      <Panel style={{ marginBottom: 14 }}>
+        <SectionHeader title="Gmail lane · schedule" right={<span style={{ fontSize: 11, color: colors.textMuted }}>cells verified by name · {(lane.rules ?? []).join(' · ')}</span>} />
+        <div style={{ overflowX: 'auto' }}>
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Day</th><th style={numTh}>Cells</th><th style={numTh}>Recipients</th><th style={thStyle}>Per property (cap)</th><th style={thStyle}>Not built</th></tr></thead>
+            <tbody>{lane.schedule.map((s) => (
+              <tr key={s.day}>
+                <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{s.day}</td>
+                <td style={numTd}>{s.cells.length}/{s.due.length}</td>
+                <td style={numTd}>{fmt(s.total)}</td>
+                <td style={{ ...tdStyle, fontSize: 12, color: colors.textMuted }}>{s.cells.map((c) => `${c.code} ${fmt(c.cap)}`).join(' · ') || '—'}</td>
+                <td style={tdStyle}>{s.missing.length ? <Pill color={s.day === lane.date ? colors.danger : colors.idle} style={{ fontSize: 10 }}>{s.missing.length === s.due.length ? 'builds 23:50 MT the evening before' : s.missing.join(', ')}</Pill> : '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </Panel>
+    </>
+  );
 };
 
 export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, date }) => {
@@ -395,6 +472,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{ENV_NOTE[env]}</div>
       {env === 'ses' && <SesLaneToday report={data?.ses?.lane} date={date} />}
       {pmtaServer && <PmtaDailyRead read={data?.pmta?.read ?? null} server={pmtaServer} date={date} />}
+      {env === 'gmail' && <GmailLanePanel lane={data?.gmail?.lane} decision={(J?.volume ?? []).find((l) => l.lane === 'gmail')} />}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader title="Decisions · scheduling agent" icon={faCalendarCheck}
           right={(
