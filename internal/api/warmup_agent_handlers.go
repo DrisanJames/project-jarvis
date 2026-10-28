@@ -95,12 +95,15 @@ func (s *WarmupAgentService) RegisterRoutes(r chi.Router) {
 //	data_agent/<D>.json           {passes:[…], latest} — every 30-min pass with its 12 checks and repairs
 //	data_agent/state.json         last_pass, last_verdicts, days[D] (attempts, paged, repairs), daily caches
 //	ledger/change_ledger.jsonl    filtered to ids cl-<YYYYMMDD>-* (every LIVE change any agent or session made that day)
+//	pmta_read/<D>.json            the PMTA A/B daily read (agents/reporting/pmta_daily_read.py, hourly): delivery per
+//	                              server × ISP split Yahoo family / non-family, cells by slot today + tomorrow, SMTP
+//	                              responses, flagged IPs, standing levels (operator 2026-10-27)
 //	ses_lane/<D>.json             the SES offer board today (agents/reporting/ses_lane_today.py, every 30 min): one row per
 //	                              slot × offer split Yahoo family / non-family — delivered, delivery %, hard, complaints,
 //	                              opens, clicks, conversions, payout + basis; cells not yet delivering; NOT TRACKED offers
 type agentsOverview struct {
-	Date      string `json:"date"`
-	FetchedAt string `json:"fetched_at"`
+	Date       string `json:"date"`
+	FetchedAt  string `json:"fetched_at"`
 	Scheduling struct {
 		PlanForDate json.RawMessage `json:"plan_for_date"`
 		PlanTonight json.RawMessage `json:"plan_tonight"`
@@ -110,6 +113,9 @@ type agentsOverview struct {
 		Journal json.RawMessage `json:"journal"`
 		State   json.RawMessage `json:"state"`
 	} `json:"data"`
+	PMTA struct {
+		Read json.RawMessage `json:"read"`
+	} `json:"pmta"`
 	SES struct {
 		Lane json.RawMessage `json:"lane"`
 	} `json:"ses"`
@@ -160,7 +166,8 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 		*dst = json.RawMessage(b)
 		mu.Unlock()
 	}
-	wg.Add(6)
+	wg.Add(7)
+	go getJSON("pmta.read", "state/pmta_read/"+date+".json", &out.PMTA.Read)
 	go getJSON("scheduling.plan_for_date", "state/scheduling_agent/"+prev+".json", &out.Scheduling.PlanForDate)
 	go getJSON("scheduling.plan_tonight", "state/scheduling_agent/"+date+".json", &out.Scheduling.PlanTonight)
 	go getJSON("scheduling.supervisor", "state/scheduling_supervisor.json", &out.Scheduling.Supervisor)

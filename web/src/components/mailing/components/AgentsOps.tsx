@@ -16,11 +16,12 @@ import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill } from '../shared/ui';
 import { SesLaneToday, type SesLaneReport } from './SesLaneToday';
+import { PmtaDailyRead, type PmtaRead } from './PmtaDailyRead';
 
 // ───────────────────────────── API shapes (agents/jobs/scheduling_agent.py · scheduling_supervisor.py · data_agent.py)
 
 type Gate = { verdict: string; acc?: number; blk?: number; dfr?: number; msgs?: number };
-type VolumeDecision = { lane: string; date: string; posture: string; gates: Record<string, Gate>; needs_you?: string[] };
+type VolumeDecision = { lane: string; date: string; posture: string; gates?: Record<string, Gate>; needs_you?: string[]; decision?: string; rule?: string };
 type Readiness = { program: string; date: string; verdict: string; cells?: number; cancelled?: number; planned?: number; sent?: number; detail?: string; build_at?: string; problems?: string[]; note?: string };
 type Deal = { name: string; token?: string | null; budget?: number; ecpm?: number; owed?: number; sent?: number; remaining?: number; need_per_day?: number; days_left?: number | null; finishes?: boolean };
 type SchedJournal = {
@@ -40,6 +41,7 @@ type AgentsOverview = {
   date: string; fetched_at: string;
   scheduling: { plan_for_date: SchedJournal | null; plan_tonight: SchedJournal | null; supervisor: SupervisorState | null };
   data: { journal: DataJournal | null; state: DataState | null };
+  pmta?: { read: PmtaRead | null };
   ledger: LedgerRow[]; errors?: Record<string, string>;
   ses?: { lane: SesLaneReport | null };
 };
@@ -159,11 +161,11 @@ export const SchedulingAgentView: React.FC<{ date: string }> = ({ date }) => {
           {lanes.map((l) => (
             <div key={l.lane + l.date} style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 12, marginBottom: 4 }}><strong>{l.lane}</strong> for {l.date} · posture <Pill color={l.posture === 'grow' ? colors.success : colors.warning} style={{ fontSize: 10 }}>{l.posture}</Pill>{(l.needs_you ?? []).length ? <span style={{ color: colors.warningText, marginLeft: 8 }}>{l.needs_you?.length} held</span> : null}</div>
-              {Object.keys(l.gates).length > 0 && (
+              {Object.keys(l.gates ?? {}).length > 0 && (
                 <div style={{ overflowX: 'auto' }}>
                   <table style={tableStyle}>
                     <thead><tr><th style={thStyle}>Gate</th><th style={thStyle}>Verdict</th><th style={numTh}>Accepted %</th><th style={numTh}>Blocked %</th><th style={numTh}>Deferred %</th><th style={numTh}>Msgs</th></tr></thead>
-                    <tbody>{Object.entries(l.gates).map(([k, g]) => (
+                    <tbody>{Object.entries(l.gates ?? {}).map(([k, g]) => (
                       <tr key={k}><td style={tdStyle}>{k}</td><td style={tdStyle}><Pill color={vcolor(g.verdict)} style={{ fontSize: 10 }}>{g.verdict}</Pill></td><td style={numTd}>{g.acc ?? '—'}</td><td style={numTd}>{g.blk ?? '—'}</td><td style={numTd}>{g.dfr ?? '—'}</td><td style={numTd}>{fmt(g.msgs)}</td></tr>
                     ))}</tbody>
                   </table>
@@ -351,13 +353,13 @@ export const ENV_PROGRAMS: Record<EnvKey, string[]> = {
   colo1: [],
   colo2: [],
 };
-const ENV_LANE: Partial<Record<EnvKey, { lane: string; gatePrefix?: string }>> = {
-  kumo: { lane: 'kumo_nx' }, pmta_a: { lane: 'pmta_nx', gatePrefix: 'A:' }, pmta_b: { lane: 'pmta_nx', gatePrefix: 'B:' },
+const ENV_LANE: Partial<Record<EnvKey, { lanes: string[]; gatePrefix?: string }>> = {
+  kumo: { lanes: ['kumo_nx'] }, pmta_a: { lanes: ['pmta_nx', 'mk_yahoo'], gatePrefix: 'A:' }, pmta_b: { lanes: ['pmta_nx', 'mk_yahoo'], gatePrefix: 'B:' },
 };
 const ENV_NOTE: Record<EnvKey, string> = {
   kumo: 'KumoMTA Colo1 estate — nx lanes + em.* domains. The scheduling agent steps the kumo_nx lane; per-ISP gating stays in nx_ramp_gate.',
-  pmta_a: 'PMTA Server A (15.204.101.125) — nx dedicated-IP lanes on 144.225.178.0/25. Gates keyed A:<isp>.',
-  pmta_b: 'PMTA Server B (15.204.107.107) — nx dedicated-IP lanes on 144.225.178.128/25. Gates keyed B:<isp>.',
+  pmta_a: 'PMTA Server A (15.204.101.125) — nx dedicated-IP lanes on 144.225.178.0/25 + mk lanes on 15.204.22.x. Gates keyed A:<isp>.',
+  pmta_b: 'PMTA Server B (15.204.107.107) — nx dedicated-IP lanes on 144.225.178.128/25 + mk lanes on 15.204.38.x. Gates keyed B:<isp>.',
   ses: 'SES relay — the engaged board, cold / family / fresh sidecars, WCL and Internal Auto releases, yahoo ramp.',
   gmail: 'Gmail — gm.<apex> SES senders, the gmail sidecar (standing levels, ramp held).',
   colo1: 'Colo 1 — no agent assigned yet.',
@@ -372,9 +374,10 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
   const P = plan === 'tonight' ? T : J;
   const programs = ENV_PROGRAMS[env];
   const laneSpec = ENV_LANE[env];
-  const lanes = useMemo(() => (P?.volume ?? []).filter((l) => laneSpec && l.lane === laneSpec.lane).map((l) => ({
-    ...l, gates: Object.fromEntries(Object.entries(l.gates).filter(([k]) => !laneSpec?.gatePrefix || k.startsWith(laneSpec.gatePrefix))),
+  const lanes = useMemo(() => (P?.volume ?? []).filter((l) => laneSpec && laneSpec.lanes.includes(l.lane)).map((l) => ({
+    ...l, gates: Object.fromEntries(Object.entries(l.gates ?? {}).filter(([k]) => !laneSpec?.gatePrefix || k.startsWith(laneSpec.gatePrefix))),
   })), [P, laneSpec]);
+  const pmtaServer = env === 'pmta_a' ? 'A' : env === 'pmta_b' ? 'B' : null;
   const readiness = useMemo(() => (P?.readiness ?? []).filter((r) => programs.includes(r.program)), [P, programs]);
   const sup = data?.scheduling.supervisor?.[date] ?? null;
   const supPrograms = Object.entries(sup ?? {}).filter(([p, v]) => programs.includes(p) && ((v.attempts ?? 0) > 0 || v.paged || v.outcome));
@@ -391,6 +394,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
     <>
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{ENV_NOTE[env]}</div>
       {env === 'ses' && <SesLaneToday report={data?.ses?.lane} date={date} />}
+      {pmtaServer && <PmtaDailyRead read={data?.pmta?.read ?? null} server={pmtaServer} date={date} />}
       <Panel style={{ marginBottom: 14 }}>
         <SectionHeader title="Decisions · scheduling agent" icon={faCalendarCheck}
           right={(
@@ -402,7 +406,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
         {!P ? <EmptyState title="No plan journal" hint="The scheduling agent writes its journal at the 21:00 MT plan." /> : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
             <Stat label="Plan" value={P.plan_date} sub={`ran ${P.started ? denverTime(P.started) : '—'} MT · builds ${P.tomorrow ?? '—'} · ${P.live ? 'LIVE' : 'DRY'}`} />
-            {laneSpec && <Stat label="Volume decision" value={lanes.length ? lanes.map((l) => l.posture.toUpperCase()).join(' · ') : '—'} sub={lanes.length ? `${laneSpec.lane} for ${lanes[0].date} · ${gCounts.STEP ?? 0} gates STEP · ${gCounts.HOLD ?? 0} HOLD · ${gCounts.CUT ?? 0} CUT (held, never applied)` : 'no decision for this lane'} color={gCounts.CUT ? colors.warning : undefined} title="UP only when every gate says STEP; any HOLD holds the lane; a CUT verdict is held and raised to you, never applied." />}
+            {laneSpec && <Stat label="Volume decision" value={lanes.length ? lanes.map((l) => `${l.lane} ${(l.decision ?? l.posture).toUpperCase()}`).join(' · ') : '—'} sub={lanes.length ? `for ${lanes[0].date} · ${gCounts.STEP ?? 0} gates STEP · ${gCounts.HOLD ?? 0} HOLD · ${gCounts.CUT ?? 0} CUT (held, never applied)${lanes.map((l) => (l.rule ? ` · ${l.lane}: ${l.rule}` : '')).join('')}` : 'no decision for this lane'} color={gCounts.CUT ? colors.warning : undefined} title="UP only when every gate says STEP; any HOLD holds the lane; a CUT verdict is held and raised to you, never applied." />}
             <Stat label="Programs ready" value={`${rCounts.PASS ?? 0}/${readiness.length}`} sub={`${rCounts.WARN ?? 0} warn · ${rCounts.FAIL ?? 0} fail · programs: ${programs.join(', ')}`} color={rCounts.FAIL ? colors.danger : rCounts.WARN ? colors.warning : colors.success} />
             <Stat label="Repairs by supervisor" value={supPrograms.length} sub={supPrograms.map(([p, v]) => `${p} ${v.outcome ?? ''}`.trim()).join(' · ') || 'nothing needed repair'} color={supPrograms.some(([, v]) => v.outcome === 'FAIL') ? colors.danger : undefined} />
             <Stat label="Needs you" value={(P.needs_you ?? []).length} color={(P.needs_you ?? []).length ? colors.warning : colors.success} sub={(P.needs_you ?? []).slice(0, 2).join(' · ') || 'nothing escalated'} title={(P.needs_you ?? []).join('\n')} />
@@ -425,7 +429,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
 
       {readiness.length > 0 && (
         <Panel style={{ marginBottom: 14 }}>
-          <SectionHeader title="Programs · built and verified" />
+          <SectionHeader title="Programs · built and verified" right={pmtaServer ? <span style={{ fontSize: 11, color: colors.warningText }}>nx programs count Kumo + PMTA A + B together — server truth is the PMTA daily read above</span> : undefined} />
           <div style={{ overflowX: 'auto' }}>
             <table style={tableStyle}>
               <thead><tr><th style={thStyle}>Program</th><th style={thStyle}>Date</th><th style={thStyle}>Verdict</th><th style={numTh}>Cells</th><th style={numTh}>Planned</th><th style={numTh}>Sent</th><th style={thStyle}>Build</th><th style={thStyle}>Detail</th></tr></thead>
