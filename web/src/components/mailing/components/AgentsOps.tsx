@@ -16,6 +16,7 @@ import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill } from '../shared/ui';
 import { SesLaneToday, type SesLaneReport } from './SesLaneToday';
+import { KumoLaneToday, type KumoLaneReport } from './KumoLaneToday';
 import { PmtaDailyRead, type PmtaRead } from './PmtaDailyRead';
 
 // ───────────────────────────── API shapes (agents/jobs/scheduling_agent.py · scheduling_supervisor.py · data_agent.py)
@@ -54,6 +55,7 @@ type AgentsOverview = {
   pmta?: { read: PmtaRead | null };
   ledger: LedgerRow[]; errors?: Record<string, string>;
   ses?: { lane: SesLaneReport | null };
+  kumo?: { lane: KumoLaneReport | null };
 };
 
 const VERDICT_COLOR: Record<string, string> = { PASS: colors.success, OK: colors.success, STEP: colors.success, WARN: colors.warning, HOLD: colors.warning, PENDING: colors.idle, FAIL: colors.danger, ERROR: colors.danger, CUT: colors.danger };
@@ -452,13 +454,15 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
   const programs = ENV_PROGRAMS[env];
   const laneSpec = ENV_LANE[env];
   const lanes = useMemo(() => (P?.volume ?? []).filter((l) => laneSpec && laneSpec.lanes.includes(l.lane)).map((l) => ({
-    ...l, gates: Object.fromEntries(Object.entries(l.gates ?? {}).filter(([k]) => !laneSpec?.gatePrefix || k.startsWith(laneSpec.gatePrefix))),
+    ...l, gates: Object.fromEntries(Object.entries(l.gates ?? {}).filter(([k, g]) => typeof (g as Gate | undefined)?.verdict === 'string' && (!laneSpec?.gatePrefix || k.startsWith(laneSpec.gatePrefix)))),
   })), [P, laneSpec]);
   const pmtaServer = env === 'pmta_a' ? 'A' : env === 'pmta_b' ? 'B' : null;
   const readiness = useMemo(() => (P?.readiness ?? []).filter((r) => programs.includes(r.program)), [P, programs]);
   const sup = data?.scheduling.supervisor?.[date] ?? null;
   const supPrograms = Object.entries(sup ?? {}).filter(([p, v]) => programs.includes(p) && ((v.attempts ?? 0) > 0 || v.paged || v.outcome));
-  const ledger = useMemo(() => (data?.ledger ?? []).filter((r) => programs.some((pg) => r.target.toLowerCase().includes(pg) || r.kind.toLowerCase().includes(pg))), [data, programs]);
+  const ledger = useMemo(() => (data?.ledger ?? []).filter((r) => (env === 'kumo'
+    ? /kumo|NL-COLD-YF|KUMO-/i.test(`${r.kind} ${r.target}`)
+    : programs.some((pg) => r.target.toLowerCase().includes(pg) || r.kind.toLowerCase().includes(pg)))), [data, programs, env]);
 
   if (error && !data) return <SectionError label="agents overview" error={error} onRetry={() => { void reload(); }} />;
   if (loading && !data) return <div style={{ color: colors.textMuted }}>Loading the agents' record…</div>;
@@ -471,6 +475,7 @@ export const EnvironmentView: React.FC<{ env: EnvKey; date: string }> = ({ env, 
     <>
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12 }}>{ENV_NOTE[env]}</div>
       {env === 'ses' && <SesLaneToday report={data?.ses?.lane} date={date} />}
+      {env === 'kumo' && <KumoLaneToday report={data?.kumo?.lane} date={date} />}
       {pmtaServer && <PmtaDailyRead read={data?.pmta?.read ?? null} server={pmtaServer} date={date} />}
       {env === 'gmail' && <GmailLanePanel lane={data?.gmail?.lane} decision={(J?.volume ?? []).find((l) => l.lane === 'gmail')} />}
       <Panel style={{ marginBottom: 14 }}>

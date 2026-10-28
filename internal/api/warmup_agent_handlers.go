@@ -101,6 +101,9 @@ func (s *WarmupAgentService) RegisterRoutes(r chi.Router) {
 //	gmail_lane/<D>.json           the gmail lane's daily status (agents/jobs/gmail_lane_status.py): per property today
 //	                              (sender, cap, delivered, opens, human clicks, complaints, 5.7.x blocks + first block),
 //	                              cells today + 3 days, gmail_ramp levels/holds (operator 2026-10-27)
+//	kumo_lane/<D>.json            the Kumo Colo1 day (agents/reporting/kumo_lane_today.py, every 30 min): board by slot ×
+//	                              program × offer vs yesterday, delivery/engagement split Yahoo family / non-family, by ISP,
+//	                              Apple HM08 by domain, KUMO-UNOPENED-5 cap, ramp keys, kumo decisions + gate age, Kumo ledger
 //	ses_lane/<D>.json             the SES offer board today (agents/reporting/ses_lane_today.py, every 30 min): one row per
 //	                              slot × offer split Yahoo family / non-family — delivered, delivery %, hard, complaints,
 //	                              opens, clicks, conversions, payout + basis; cells not yet delivering; NOT TRACKED offers
@@ -125,6 +128,9 @@ type agentsOverview struct {
 	SES struct {
 		Lane json.RawMessage `json:"lane"`
 	} `json:"ses"`
+	Kumo struct {
+		Lane json.RawMessage `json:"lane"`
+	} `json:"kumo"`
 	Ledger []json.RawMessage `json:"ledger"`
 	Errors map[string]string `json:"errors,omitempty"`
 }
@@ -182,6 +188,8 @@ func (s *WarmupAgentService) handleAgentsOverview(w http.ResponseWriter, r *http
 	go getJSON("data.state", "state/data_agent/state.json", &out.Data.State)
 	wg.Add(1) // ses_lane/<D>.json — the SES offer board today, slot × offer, Yahoo family / non-family (agents/reporting/ses_lane_today.py)
 	go getJSON("ses.lane", "state/ses_lane/"+date+".json", &out.SES.Lane)
+	wg.Add(1) // kumo_lane/<D>.json — the Kumo Colo1 day as reported to the operator daily (agents/reporting/kumo_lane_today.py)
+	go getJSON("kumo.lane", "state/kumo_lane/"+date+".json", &out.Kumo.Lane)
 	go func() {
 		defer wg.Done()
 		rows, err := s.ledgerForDate(ctx, strings.ReplaceAll(date, "-", ""))
