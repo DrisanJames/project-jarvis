@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 
 	isppkg "github.com/ignite/sparkpost-monitor/internal/pkg/isp"
 )
@@ -313,9 +314,12 @@ var (
 // HandleOutboxEngineStatus returns the cached engine snapshot. The first call
 // (route registration) starts the background refresher; the request path is a
 // pure cache read so a 10s dashboard poll can never pile up DB load.
-func HandleOutboxEngineStatus(db *sql.DB) http.HandlerFunc {
+//
+// rdb (may be nil) makes ONE replica compute per cycle and the rest serve its
+// published snapshot (replica_snapshot.go); nil keeps per-replica compute.
+func HandleOutboxEngineStatus(db *sql.DB, rdb *redis.Client) http.HandlerFunc {
 	engineStatusOnce.Do(func() {
-		go runOutboxEngineRefresher(context.Background(), db, engineStatusCache, engineFastRefreshInterval)
+		go runOutboxEngineRefresher(context.Background(), db, engineStatusCache, engineFastRefreshInterval, engineStatusSnapshot(rdb, engineFastRefreshInterval))
 	})
 	return func(w http.ResponseWriter, r *http.Request) {
 		snap, populated := engineStatusCache.snapshot()
@@ -336,10 +340,21 @@ func HandleOutboxEngineStatus(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func runOutboxEngineRefresher(ctx context.Context, db *sql.DB, cache *outboxEngineCache, interval time.Duration) {
+// engineStatusSnapshot is the cross-replica share for the engine-status cache.
+func engineStatusSnapshot(rdb *redis.Client, interval time.Duration) *replicaSnapshot {
+	return &replicaSnapshot{
+		rdb:      rdb,
+		name:     "outbox-engine-status-refresh",
+		freshFor: interval * 9 / 10,
+		ttl:      3 * interval,
+		lockTTL:  2 * time.Minute,
+	}
+}
+
+func runOutboxEngineRefresher(ctx context.Context, db *sql.DB, cache *outboxEngineCache, interval time.Duration, share *replicaSnapshot) {
 	log.Printf("[EngineStatus] refresher started (fast=%s, baseline=%s)", interval, engineSlowRefreshInterval)
 	baseline := &engineBaseline{}
-	refreshOutboxEngineStatus(ctx, db, cache, baseline)
+	refreshOutboxEngineStatusShared(ctx, db, cache, baseline, share)
 
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -349,9 +364,21 @@ func runOutboxEngineRefresher(ctx context.Context, db *sql.DB, cache *outboxEngi
 			log.Println("[EngineStatus] refresher stopping")
 			return
 		case <-t.C:
-			refreshOutboxEngineStatus(ctx, db, cache, baseline)
+			refreshOutboxEngineStatusShared(ctx, db, cache, baseline, share)
 		}
 	}
+}
+
+// refreshOutboxEngineStatusShared is one tick: compute here (the slow-cadence
+// baseline stays per-process and only advances on the computing replica), or
+// serve the snapshot another replica published this cycle.
+func refreshOutboxEngineStatusShared(ctx context.Context, db *sql.DB, cache *outboxEngineCache, baseline *engineBaseline, share *replicaSnapshot) {
+	runReplicaSnapshot(ctx, share,
+		func() (OutboxEngineStatusResponse, bool) {
+			refreshOutboxEngineStatus(ctx, db, cache, baseline)
+			return cache.snapshot()
+		},
+		cache.store)
 }
 
 // refreshOutboxEngineStatus recomputes every section and swaps the snapshot

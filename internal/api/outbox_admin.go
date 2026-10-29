@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // OutboxSummaryResponse is the JSON shape returned by GET /api/outbox/summary.
@@ -92,15 +94,29 @@ const OutboxSummaryRefreshInterval = 30 * time.Second
 // package-level cache populated. Safe to call exactly once from main.go at
 // startup. Runs an immediate refresh on entry so the first curl after boot
 // doesn't see an empty payload.
-func StartOutboxSummaryRefresher(ctx context.Context, db *sql.DB) {
-	go runOutboxSummaryRefresher(ctx, db, defaultOutboxCache, OutboxSummaryRefreshInterval)
+//
+// rdb (may be nil) makes ONE replica compute per cycle and the rest serve its
+// published snapshot (replica_snapshot.go); nil keeps per-replica compute.
+func StartOutboxSummaryRefresher(ctx context.Context, db *sql.DB, rdb *redis.Client) {
+	go runOutboxSummaryRefresher(ctx, db, defaultOutboxCache, OutboxSummaryRefreshInterval, outboxSummarySnapshot(rdb, OutboxSummaryRefreshInterval))
+}
+
+// outboxSummarySnapshot is the cross-replica share for the summary cache.
+func outboxSummarySnapshot(rdb *redis.Client, interval time.Duration) *replicaSnapshot {
+	return &replicaSnapshot{
+		rdb:      rdb,
+		name:     "outbox-summary-refresh",
+		freshFor: interval * 9 / 10,
+		ttl:      3 * interval,
+		lockTTL:  3 * time.Minute, // 8 probes × 20s worst case
+	}
 }
 
 // runOutboxSummaryRefresher is the loop body, extracted so tests can drive it
 // with a shortened interval and a controllable context.
-func runOutboxSummaryRefresher(ctx context.Context, db *sql.DB, cache *OutboxSummaryCache, interval time.Duration) {
+func runOutboxSummaryRefresher(ctx context.Context, db *sql.DB, cache *OutboxSummaryCache, interval time.Duration, share *replicaSnapshot) {
 	log.Printf("[OutboxSummary] refresher started (interval=%s)", interval)
-	refreshOutboxSummary(ctx, db, cache)
+	refreshOutboxSummaryShared(ctx, db, cache, share)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -110,9 +126,20 @@ func runOutboxSummaryRefresher(ctx context.Context, db *sql.DB, cache *OutboxSum
 			log.Println("[OutboxSummary] refresher stopping")
 			return
 		case <-ticker.C:
-			refreshOutboxSummary(ctx, db, cache)
+			refreshOutboxSummaryShared(ctx, db, cache, share)
 		}
 	}
+}
+
+// refreshOutboxSummaryShared is one tick: compute here, or serve the snapshot
+// another replica published this cycle.
+func refreshOutboxSummaryShared(ctx context.Context, db *sql.DB, cache *OutboxSummaryCache, share *replicaSnapshot) {
+	runReplicaSnapshot(ctx, share,
+		func() (OutboxSummaryResponse, bool) {
+			refreshOutboxSummary(ctx, db, cache)
+			return cache.Snapshot()
+		},
+		cache.store)
 }
 
 // refreshOutboxSummary runs the full set of aggregate queries against the DB

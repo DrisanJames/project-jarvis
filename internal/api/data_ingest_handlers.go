@@ -429,8 +429,15 @@ func (s *DataIngestService) StartQueueStateRefresher(ctx context.Context) {
 	}
 	s.refresherOn = true
 	s.mu.Unlock()
+	share := &replicaSnapshot{
+		rdb:      s.rdb,
+		name:     "data-ingest-queue-state-refresh",
+		freshFor: dataIngestRefreshEvery * 9 / 10,
+		ttl:      3 * dataIngestRefreshEvery,
+		lockTTL:  2*dataIngestQueryTimeout + time.Minute, // reservoir pass + object pass
+	}
 	go func() {
-		s.refreshQueueState()
+		s.refreshQueueStateShared(ctx, share)
 		t := time.NewTicker(dataIngestRefreshEvery)
 		defer t.Stop()
 		for {
@@ -438,10 +445,37 @@ func (s *DataIngestService) StartQueueStateRefresher(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.refreshQueueState()
+				s.refreshQueueStateShared(ctx, share)
 			}
 		}
 	}()
+}
+
+// refreshQueueStateShared is one refresher tick: ONE replica runs the
+// partner_clean_queue scan and publishes it, the others serve that snapshot
+// (replica_snapshot.go). ?refresh=1 kicks keep calling refreshQueueState
+// directly — an explicit operator refresh always scans.
+func (s *DataIngestService) refreshQueueStateShared(ctx context.Context, share *replicaSnapshot) {
+	runReplicaSnapshot(ctx, share,
+		func() (*queueStateSnapshot, bool) {
+			s.mu.Lock()
+			before := s.cachedAt
+			s.mu.Unlock()
+			s.refreshQueueState()
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			// Publish only a scan that succeeded in THIS call; a failed scan
+			// leaves the previous snapshot in place and must not re-stamp it.
+			return s.cached, s.cached != nil && s.cachedAt.After(before)
+		},
+		func(snap *queueStateSnapshot) {
+			if snap == nil {
+				return
+			}
+			s.mu.Lock()
+			s.cached, s.cachedAt = snap, snap.GeneratedAt
+			s.mu.Unlock()
+		})
 }
 
 // refreshQueueState runs ONE scan under the same single-flight as the inline

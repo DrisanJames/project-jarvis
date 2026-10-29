@@ -1675,7 +1675,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// deferral storms, worker heartbeats). Cached snapshot — safe to poll
 			// every 10s. Authed: the payload carries campaign names + worker
 			// errors (QA finding H2).
-			r.Get("/outbox/engine-status", HandleOutboxEngineStatus(db))
+			r.Get("/outbox/engine-status", HandleOutboxEngineStatus(db, s.redisClient))
 			r.Get("/outbox/isp-pipes", HandleOutboxISPPipes(db))
 
 			// === AUDIENCE CADENCE v3 — messages-to-engage/convert KPIs per ISP +
@@ -1765,6 +1765,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 
 			// === CPM PLANNER — deal pricing, pacing & capacity (cpm_planner_handlers.go) ===
 			cpmPlanner := NewCpmPlannerHandlers(db)
+			cpmPlanner.SetRedisClient(s.redisClient)
 			r.Route("/cpm-planner", func(cp chi.Router) {
 				cp.Get("/deals", cpmPlanner.HandleListDeals)
 				cp.Post("/deals", cpmPlanner.HandleCreateDeal)

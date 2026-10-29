@@ -891,7 +891,7 @@ func main() {
 			// Outbox summary refresher. Keeps /api/outbox/summary on a warm
 			// in-memory cache so dashboard polls never block on the aggregate
 			// scans that previously took ~15s against a 1M+ row queue table.
-			api.StartOutboxSummaryRefresher(ctx, mailingDB)
+			api.StartOutboxSummaryRefresher(ctx, mailingDB, redisClient)
 			log.Println("Outbox Summary Refresher started (30s cache, decouples dashboard from DB load)")
 
 			// ── Kafka event backbone (SA-6) — DARK BY DEFAULT ──────────────

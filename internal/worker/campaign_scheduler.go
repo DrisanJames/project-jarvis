@@ -11,6 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/ignite/sparkpost-monitor/internal/pkg/distlock"
 )
 
 // =============================================================================
@@ -145,9 +147,45 @@ func (cs *CampaignScheduler) preparationLoop() {
 			return
 		case <-ticker.C:
 			cs.markCampaignsAsPreparing()
-			cs.checkCompletedCampaigns()
+			cs.checkCompletedCampaignsLeased()
 		}
 	}
+}
+
+const (
+	// completionLeaseKey elects the ONE replica that runs the completion scan
+	// per poll. Every ECS task runs this scheduler; without the lease both ran
+	// the same two queue-wide GROUP BYs every 30s (measured 100% of a 60s
+	// pg_stat_activity window on both replicas, 2026-10-28).
+	completionLeaseKey = "campaign-scheduler-completion"
+	// completionLease is shorter than the 30s poll and is NOT released: the
+	// holder keeps re-acquiring on its own cadence, the other replica's tick
+	// lands inside the lease and skips, and a dead holder is replaced within
+	// one poll.
+	completionLease = 25 * time.Second
+)
+
+// checkCompletedCampaignsLeased runs checkCompletedCampaigns on one replica
+// per poll. No Redis, or a Redis error, runs it here exactly as before — the
+// completion pass is idempotent, so running it twice is only wasted IO, while
+// skipping it on a lock fault would strand campaigns in 'sending'.
+func (cs *CampaignScheduler) checkCompletedCampaignsLeased() bool {
+	if cs.redisClient == nil {
+		cs.checkCompletedCampaigns()
+		return true
+	}
+	lock := distlock.NewLock(cs.redisClient, cs.db, completionLeaseKey, completionLease)
+	acquired, err := lock.Acquire(cs.ctx)
+	if err != nil {
+		log.Printf("[CampaignScheduler] completion lease unavailable, running locally: %v", err)
+		cs.checkCompletedCampaigns()
+		return true
+	}
+	if !acquired {
+		return false
+	}
+	cs.checkCompletedCampaigns()
+	return true
 }
 
 // campaignLandedGateClause is the produced-vs-landed completion gate (REQ-082).

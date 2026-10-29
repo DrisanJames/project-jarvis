@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 type CpmPlannerHandlers struct {
@@ -75,6 +76,18 @@ type CpmPlannerHandlers struct {
 	// nonCpmCache holds built non-CPM responses per (org, month). A full build
 	// is a multi-minute job on a busy DB; only COMPLETE builds are cached.
 	nonCpmCache map[string]nonCpmCached
+	// rdb (nil = per-replica compute) lets ONE replica run the event-cache
+	// refresh per cycle and the others load its snapshot. Guarded by evMu:
+	// eventCacheLoop starts in the constructor, before SetRedisClient.
+	rdb *redis.Client
+}
+
+// SetRedisClient enables the cross-replica event-cache share
+// (replica_snapshot.go). Safe to call after construction.
+func (h *CpmPlannerHandlers) SetRedisClient(rdb *redis.Client) {
+	h.evMu.Lock()
+	h.rdb = rdb
+	h.evMu.Unlock()
 }
 
 // nonCpmCached is one cached non-CPM payload.
@@ -134,10 +147,74 @@ func (h *CpmPlannerHandlers) eventCacheLoop() {
 			}
 			rows.Close()
 			for _, o := range orgs {
-				h.refreshOrgEventCounts(o)
+				h.refreshOrgEventCountsShared(o)
 			}
 		}
 		time.Sleep(cpmEventCacheRefresh)
+	}
+}
+
+// cpmEventCacheSnapshot is the published form of one org's event cache
+// (cpmDealEventCounts has unexported fields; [sent, delivered, hard, soft]).
+type cpmEventCacheSnapshot struct {
+	Counts   map[string][4]int64 `json:"counts"`
+	Gap      *cpmAttributionGap  `json:"gap,omitempty"`
+	WarmedAt time.Time           `json:"warmed_at"`
+}
+
+// cpmEventCacheFresh: a published event cache younger than this is served
+// instead of recomputing. One refresh is a 5-10 minute org-wide scan; 3x the
+// loop sleep keeps the fleet to about one scan per 12 minutes instead of one
+// per replica per (scan + 4 min).
+const cpmEventCacheFresh = 3 * cpmEventCacheRefresh
+
+// refreshOrgEventCountsShared is one eventCacheLoop pass for an org: ONE
+// replica runs refreshOrgEventCounts and publishes the result, the others
+// load it (replica_snapshot.go). Without Redis it is refreshOrgEventCounts.
+func (h *CpmPlannerHandlers) refreshOrgEventCountsShared(orgID string) {
+	h.evMu.Lock()
+	rdb := h.rdb
+	h.evMu.Unlock()
+	share := &replicaSnapshot{
+		rdb:      rdb,
+		name:     "cpm-event-cache-refresh:" + orgID,
+		freshFor: cpmEventCacheFresh,
+		ttl:      45 * time.Minute,
+		lockTTL:  30 * time.Minute, // event scan + attribution gap, 600s budget each
+	}
+	out := runReplicaSnapshot(context.Background(), share,
+		func() (cpmEventCacheSnapshot, bool) {
+			h.evMu.Lock()
+			before := h.evWarmed[orgID]
+			h.evMu.Unlock()
+			h.refreshOrgEventCounts(orgID)
+			h.evMu.Lock()
+			defer h.evMu.Unlock()
+			warmed := h.evWarmed[orgID]
+			if !warmed.After(before) {
+				return cpmEventCacheSnapshot{}, false // skipped or failed: publish nothing
+			}
+			snap := cpmEventCacheSnapshot{Counts: map[string][4]int64{}, Gap: h.gapByOrg[orgID], WarmedAt: warmed}
+			for id, c := range h.evByOrg[orgID] {
+				snap.Counts[id] = [4]int64{c.sent, c.delivered, c.hard, c.soft}
+			}
+			return snap, true
+		},
+		func(snap cpmEventCacheSnapshot) {
+			counts := make(map[string]*cpmDealEventCounts, len(snap.Counts))
+			for id, c := range snap.Counts {
+				counts[id] = &cpmDealEventCounts{sent: c[0], delivered: c[1], hard: c[2], soft: c[3]}
+			}
+			h.evMu.Lock()
+			h.evByOrg[orgID] = counts
+			h.evWarmed[orgID] = snap.WarmedAt
+			if snap.Gap != nil {
+				h.gapByOrg[orgID] = snap.Gap
+			}
+			h.evMu.Unlock()
+		})
+	if out == snapshotLoaded {
+		log.Printf("[CpmPlanner] event cache for org %s loaded from the shared snapshot", orgID)
 	}
 }
 
