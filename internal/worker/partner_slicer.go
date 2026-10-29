@@ -100,6 +100,23 @@ func NewPartnerSlicer(db *sql.DB, s3Client *s3.Client, bucket string, hub Suppre
 	}
 }
 
+// SetSuppressionHub attaches the global-suppression hub. Call it BEFORE Start:
+// the hub is read by every slicing worker without a lock. It exists because
+// server.GlobalHub is constructed inside SetMailingDB, which runs in a goroutine
+// and finishes ~100 s after the slicer is constructed — capturing the hub at
+// construction saw nil on EVERY boot (2026-10-28: "GlobalHub not yet ready —
+// slicer will operate without suppression check" on all five boots of the day;
+// a 153,463-row Attribits file landed with 0 drops while ~10% was globally
+// suppressed). Same class as the 2026-08-21 unsubscribe outage.
+func (ps *PartnerSlicer) SetSuppressionHub(h SuppressionHub) {
+	ps.hub = h
+}
+
+// HasSuppressionHub reports whether a hub is attached (boot wiring check).
+func (ps *PartnerSlicer) HasSuppressionHub() bool {
+	return ps.hub != nil
+}
+
 func (ps *PartnerSlicer) Start() {
 	ps.startOnce.Do(func() {
 		// Start cfg.Concurrency workers. Cost is per BATCH (one S3 GetObject

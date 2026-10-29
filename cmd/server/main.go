@@ -1667,13 +1667,12 @@ func main() {
 						s3RawClient := s3.NewFromConfig(awsCfg)
 
 						// Slicer: drains S3 NDJSON into partner_clean_queue with global suppression check.
-						hubAdapter := worker.SuppressionHub(nil)
-						if hub, ok := server.GlobalHub.(*engine.GlobalSuppressionHub); ok {
-							hubAdapter = worker.AdaptGlobalHub(hub)
-						}
-						if hubAdapter == nil {
-							log.Println("[PartnerSlicer] WARNING: GlobalHub not yet ready — slicer will operate without suppression check")
-						}
+						// The hub is NOT ready here: server.GlobalHub is built inside SetMailingDB, which
+						// runs in a goroutine (~100 s). Capturing it now saw nil on every boot (2026-10-28:
+						// five boots, every one "slicer will operate without suppression check"; a 153k-row
+						// file landed with 0 drops while ~10% was suppressed). The slicer is therefore
+						// started in the deferred wiring below, after mailingRoutesReady — and NOT started
+						// at all if the hub never appears (fail closed: batches wait in 'received').
 						// Slicer cost is per BATCH, and partners may post one record
 						// per call, so throughput is bound by API-call count rather
 						// than data volume. Env-tunable so the pool can be dialed
@@ -1686,11 +1685,26 @@ func main() {
 								log.Printf("[PartnerSlicer] ignoring PARTNER_SLICER_CONCURRENCY=%q (want 1-32)", v)
 							}
 						}
-						partnerSlicer = worker.NewPartnerSlicer(mailingDB, s3RawClient, partnerS3.Bucket(), hubAdapter, worker.PartnerSlicerConfig{
+						partnerSlicer = worker.NewPartnerSlicer(mailingDB, s3RawClient, partnerS3.Bucket(), nil, worker.PartnerSlicerConfig{
 							Concurrency: slicerWorkers,
 						})
-						partnerSlicer.Start()
 						server.SetPartnerSlicer(partnerSlicer)
+						go func(ps *worker.PartnerSlicer) {
+							select {
+							case <-mailingRoutesReady:
+							case <-time.After(20 * time.Minute):
+								log.Printf("ERROR: [PartnerSlicer] NOT STARTED — suppression hub wiring timed out waiting for mailing route registration; partner batches wait in 'received' until next boot")
+								return
+							}
+							hub, ok := server.GlobalHub.(*engine.GlobalSuppressionHub)
+							if !ok || hub == nil {
+								log.Printf("ERROR: [PartnerSlicer] NOT STARTED — server.GlobalHub is not a *GlobalSuppressionHub after route registration; refusing to slice without the suppression check")
+								return
+							}
+							ps.SetSuppressionHub(worker.AdaptGlobalHub(hub))
+							ps.Start()
+							log.Printf("[PartnerSlicer] suppression hub wired (late pass) — slicer started")
+						}(partnerSlicer)
 
 						// Validator: drains pending_eo with EmailOversight.
 						eoToken := cfg.DataPipeline.EOAPIToken
