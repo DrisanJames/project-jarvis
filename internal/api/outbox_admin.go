@@ -85,10 +85,23 @@ func (c *OutboxSummaryCache) store(resp OutboxSummaryResponse) {
 var defaultOutboxCache = &OutboxSummaryCache{}
 
 // OutboxSummaryRefreshInterval is how often the background goroutine recomputes
-// the summary. 30s is short enough that operators see fresh data during an
-// incident, long enough that the cost is negligible (a handful of aggregate
-// scans per tick against indexed partial predicates).
-const OutboxSummaryRefreshInterval = 30 * time.Second
+// the summary. Was 30s on the belief the aggregates hit indexed partial
+// predicates; they do not — created_at / sent_at / idempotency_key IS NULL and
+// the status GROUP BY are full scans of a 44.7M-row, 21 GB heap. Measured
+// 2026-10-29 (pg_stat_statements, 150s): this refresher's five queue scans were
+// ~50% of every block the RDS instance read, with the disk queue at ~67.
+// /api/outbox/summary is an operator curl endpoint, not a portal screen.
+const OutboxSummaryRefreshInterval = 5 * time.Minute
+
+// OutboxIdempotencyCountInterval bounds the two idempotency_key COUNT(*)s (a
+// migration-progress number that moves slowly); between runs the previous
+// values are carried forward.
+const OutboxIdempotencyCountInterval = time.Hour
+
+var (
+	outboxIdemMu sync.Mutex
+	outboxIdemAt time.Time
+)
 
 // StartOutboxSummaryRefresher launches a long-lived goroutine that keeps the
 // package-level cache populated. Safe to call exactly once from main.go at
@@ -170,10 +183,19 @@ func refreshOutboxSummary(ctx context.Context, db *sql.DB, cache *OutboxSummaryC
 		`SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(locked_at)))::bigint, 0)
 		 FROM mailing_campaign_queue WHERE status = 'submitting' AND locked_at IS NOT NULL`)
 
-	resp.IdempotencyKeyedRows = queryInt64(ctx, db,
-		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NOT NULL`)
-	resp.IdempotencyNullRows = queryInt64(ctx, db,
-		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NULL`)
+	outboxIdemMu.Lock()
+	prev, havePrev := cache.Snapshot()
+	if havePrev && !outboxIdemAt.IsZero() && time.Since(outboxIdemAt) < OutboxIdempotencyCountInterval {
+		resp.IdempotencyKeyedRows = prev.IdempotencyKeyedRows
+		resp.IdempotencyNullRows = prev.IdempotencyNullRows
+	} else {
+		resp.IdempotencyKeyedRows = queryInt64(ctx, db,
+			`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NOT NULL`)
+		resp.IdempotencyNullRows = queryInt64(ctx, db,
+			`SELECT COUNT(*)::bigint FROM mailing_campaign_queue WHERE idempotency_key IS NULL`)
+		outboxIdemAt = time.Now()
+	}
+	outboxIdemMu.Unlock()
 
 	resp.Last5MinInserted = queryInt64(ctx, db,
 		`SELECT COUNT(*)::bigint FROM mailing_campaign_queue

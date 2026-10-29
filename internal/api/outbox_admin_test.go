@@ -167,6 +167,40 @@ func TestRefreshOutboxSummary_PopulatesCache(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestRefreshOutboxSummary_IdempotencyCountsHourly pins the 2026-10-29 cost
+// fix: inside OutboxIdempotencyCountInterval a refresh carries the two
+// idempotency_key counts forward (both are full scans of the 21 GB queue) and
+// issues neither query; the 5-minute counts still run every refresh.
+func TestRefreshOutboxSummary_IdempotencyCountsHourly(t *testing.T) {
+	db, mock := newOutboxMockDB(t)
+	cache := &OutboxSummaryCache{}
+	cache.store(OutboxSummaryResponse{IdempotencyKeyedRows: 42, IdempotencyNullRows: 8, DepthByStatus: map[string]int{}})
+	outboxIdemMu.Lock()
+	outboxIdemAt = time.Now()
+	outboxIdemMu.Unlock()
+	t.Cleanup(func() { outboxIdemMu.Lock(); outboxIdemAt = time.Time{}; outboxIdemMu.Unlock() })
+
+	mock.MatchExpectationsInOrder(true)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT status, COUNT(*)::int")).
+		WillReturnRows(sqlmock.NewRows([]string{"status", "count"}).AddRow("queued", 1))
+	mock.ExpectQuery(`status = 'queued'`).WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(1)))
+	mock.ExpectQuery(`status = 'sending' AND locked_at IS NOT NULL`).WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(0)))
+	mock.ExpectQuery(`status = 'submitting' AND locked_at IS NOT NULL`).WillReturnRows(sqlmock.NewRows([]string{"sec"}).AddRow(int64(0)))
+	// no idempotency_key queries expected here
+	mock.ExpectQuery(`created_at > NOW\(\) - INTERVAL '5 minutes'`).WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(5)))
+	mock.ExpectQuery(`sent_at > NOW\(\) - INTERVAL '5 minutes'`).WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(4)))
+	mock.ExpectQuery(`last_attempt_at > NOW\(\) - INTERVAL '5 minutes'`).WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(int64(0)))
+
+	refreshOutboxSummary(context.Background(), db, cache)
+
+	snap, ok := cache.Snapshot()
+	require.True(t, ok)
+	require.Equal(t, int64(42), snap.IdempotencyKeyedRows, "carried forward, not re-counted")
+	require.Equal(t, int64(8), snap.IdempotencyNullRows, "carried forward, not re-counted")
+	require.Equal(t, int64(5), snap.Last5MinInserted)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestRefreshOutboxSummary_DepthFailureKeepsPreviousCache verifies that a
 // transient DB error on the depth query does not blank out the cache — the
 // previous-good snapshot remains readable so dashboards don't blink empty

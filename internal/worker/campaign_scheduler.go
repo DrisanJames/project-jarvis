@@ -158,11 +158,13 @@ const (
 	// the same two queue-wide GROUP BYs every 30s (measured 100% of a 60s
 	// pg_stat_activity window on both replicas, 2026-10-28).
 	completionLeaseKey = "campaign-scheduler-completion"
-	// completionLease is shorter than the 30s poll and is NOT released: the
-	// holder keeps re-acquiring on its own cadence, the other replica's tick
-	// lands inside the lease and skips, and a dead holder is replaced within
-	// one poll.
-	completionLease = 25 * time.Second
+	// completionLease is NOT released, so it also sets the cadence: a tick that
+	// lands inside the lease (either replica's) skips, so the completion pass
+	// runs about once per lease. 115s, not 25s: each pass sums the queue for
+	// every in-flight campaign (~1.4M blocks read, measured 2026-10-29), and
+	// flipping 'sending' -> 'sent' two minutes later costs nothing. A dead
+	// holder is replaced within one lease.
+	completionLease = 115 * time.Second
 )
 
 // checkCompletedCampaignsLeased runs checkCompletedCampaigns on one replica
