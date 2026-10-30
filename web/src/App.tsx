@@ -1,7 +1,10 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { GoogleLogin } from './components/auth';
 
-import { MailingPortal } from './components/mailing/pages/MailingPortal';
+// Lazy so signed-out marketing visitors never download the portal bundle.
+const MailingPortal = lazy(() =>
+  import('./components/mailing/pages/MailingPortal').then((m) => ({ default: m.MailingPortal })),
+);
 import { AuthProvider } from './contexts/AuthContext';
 import { DateFilterProvider } from './context/DateFilterContext';
 import { CostOverrideProvider } from './context/CostOverrideContext';
@@ -18,7 +21,9 @@ const App: React.FC = () => {
         <GoogleLogin>
           <DateFilterProvider>
             <CostOverrideProvider>
-              <MailingPortal />
+              <Suspense fallback={null}>
+                <MailingPortal />
+              </Suspense>
             </CostOverrideProvider>
           </DateFilterProvider>
         </GoogleLogin>

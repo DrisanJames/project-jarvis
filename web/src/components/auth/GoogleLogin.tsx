@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBolt, faExclamationCircle, faSpinner } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../contexts/AuthContext';
+
+// Signed-out visitors get the public marketing site; /login (and any OAuth
+// error redirect, e.g. ?error=domain_not_allowed) keeps the sign-in box below.
+const MarketingSite = lazy(() => import('../marketing/MarketingSite'));
 
 interface GoogleLoginProps {
   children: React.ReactNode;
@@ -19,6 +23,14 @@ export const GoogleLogin: React.FC<GoogleLoginProps> = ({ children }) => {
           <p style={styles.loadingText}>Checking authentication...</p>
         </div>
       </div>
+    );
+  }
+
+  if (!isAuthenticated && !error && window.location.pathname !== '/login') {
+    return (
+      <Suspense fallback={<div style={{ minHeight: '100vh', background: '#fff8ee' }} />}>
+        <MarketingSite onSignIn={login} />
+      </Suspense>
     );
   }
 
