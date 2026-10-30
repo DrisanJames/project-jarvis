@@ -109,21 +109,21 @@ export const HeroScene: React.FC = () => (
       <span className="jv-float-dot jv-dot-lime" />
       <div>
         <strong>Already handled</strong>
-        <p>Outlook slowed two IPs. I moved that wave 40 min later.</p>
+        <p>Your sale email had a broken link. Fixed before it went out.</p>
       </div>
     </div>
     <div className="jv-float jv-float--b">
       <span className="jv-float-dot jv-dot-pink" />
       <div>
         <strong>Before you ask</strong>
-        <p>Your best subject line is #3. I promoted it.</p>
+        <p>Subject line B is winning. Sending the rest with B.</p>
       </div>
     </div>
     <div className="jv-float jv-float--c">
       <span className="jv-float-dot jv-dot-cyan" />
       <div>
         <strong>Waiting on you</strong>
-        <p>Tomorrow's send is staged. One tap to approve.</p>
+        <p>Thursday's newsletter is drafted. One tap to approve.</p>
       </div>
     </div>
   </div>
@@ -146,7 +146,7 @@ const Envelope: React.FC<{ fill: string; mark?: string }> = ({ fill, mark }) => 
 
 // Mail rides the belt into the inbox; the scanner envelope gets plucked.
 export const InboxSorterLoop: React.FC = () => (
-  <svg className="jv-loop jv-loop--sorter" viewBox="0 0 480 220" role="img" aria-label="Jarvis lets real mail through and plucks out a scanner">
+  <svg className="jv-loop jv-loop--sorter" viewBox="0 0 480 220" role="img" aria-label="Jarvis delivers good mail and pulls out a bad address before it bounces">
     <rect x="1" y="1" width="478" height="218" rx="24" fill="#FFFFFF" stroke={INK} strokeWidth="2.5" />
     <rect x="20" y="170" width="380" height="14" rx="7" fill={INK} />
     {[40, 110, 180, 250, 320, 380].map((x) => (
@@ -158,7 +158,7 @@ export const InboxSorterLoop: React.FC = () => (
     <g className="jv-loop-burst">
       <path d="M244 70l4 8 8 4-8 4-4 8-4-8-8-4 8-4z" fill="#C6F432" stroke={INK} strokeWidth="1.5" />
     </g>
-    <text x="300" y="56" className="jv-loop-label">scanner? caught.</text>
+    <text x="300" y="56" className="jv-loop-label">bad address? skipped.</text>
     <g className="jv-env">
       <Envelope fill="#19D3F0" />
     </g>
@@ -178,7 +178,7 @@ export const InboxSorterLoop: React.FC = () => (
 
 // Night falls, Jarvis keeps working, the sun comes up on a finished report.
 export const NightShiftLoop: React.FC = () => (
-  <svg className="jv-loop jv-loop--night" viewBox="0 0 360 240" role="img" aria-label="Jarvis works through the night and delivers the morning report">
+  <svg className="jv-loop jv-loop--night" viewBox="0 0 360 240" role="img" aria-label="Jarvis works through the night and has your report ready by morning">
     <defs>
       <linearGradient id="jv-dawn" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stopColor="#6D28FF" />

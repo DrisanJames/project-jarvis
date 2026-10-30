@@ -1486,6 +1486,10 @@ body.jv-body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .jv-loop-burst,
+  .jv-env--bot {
+    opacity: 0;
+  }
   .jv-site *,
   .jv-site *::before,
   .jv-site *::after {

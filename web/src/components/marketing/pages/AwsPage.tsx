@@ -3,37 +3,37 @@ import { Spot } from '../Art';
 import { EarlyAccessButton, Eyebrow, PageHero } from '../parts';
 
 // Every service listed here is one the production platform runs on today
-// (go.mod AWS SDK v2 modules + the ECS/WAF/CloudFront estate in us-west-2).
+// (go.mod AWS SDK v2 modules + the ECS/WAF/CloudFront stack in us-west-2).
 const STACK = [
-  { svc: 'Amazon SES', use: 'High-reach delivery for every brand, with event tracking feeding the lake.' },
-  { svc: 'Amazon Bedrock', use: 'Foundation-model access for agent and creative workloads.' },
-  { svc: 'Amazon ECS', use: 'The platform, its worker fleet and the agent jobs run as ECS services and scheduled tasks.' },
-  { svc: 'Amazon EventBridge', use: 'Schedules the agent’s nightly builds, 15-minute checks and morning reports.' },
-  { svc: 'Amazon RDS for PostgreSQL', use: 'Subscribers, campaigns, waves and the Brain’s verified memory.' },
-  { svc: 'Amazon S3 + Athena', use: 'The analytics lake: delivery truth across every transport, queried in SQL.' },
-  { svc: 'Amazon Data Firehose', use: 'Streams sending and engagement events into the lake.' },
-  { svc: 'AWS WAF Bot Control', use: 'Challenges bot clicks at the edge so reports count people.' },
-  { svc: 'Amazon CloudFront', use: 'Tracking and click edge for every sending domain.' },
-  { svc: 'Amazon Route 53 + ACM', use: 'DNS and certificates for every sending and tracking domain.' },
-  { svc: 'Amazon SQS + DynamoDB', use: 'Event intake and site sign-up state.' },
-  { svc: 'AWS Lambda', use: 'Sign-up confirmation and edge automation.' },
+  { svc: 'Amazon SES', use: 'Reliable, high-reputation delivery for every newsletter and promotion.' },
+  { svc: 'Amazon Bedrock', use: 'Foundation models behind Jarvis’s drafts, subject lines and suggestions.' },
+  { svc: 'Amazon ECS', use: 'The app, the sending workers and Jarvis’s scheduled jobs.' },
+  { svc: 'Amazon EventBridge', use: 'Schedules sends, daily checks and the weekly report.' },
+  { svc: 'Amazon RDS for PostgreSQL', use: 'Contacts, campaigns and Jarvis’s verified memory.' },
+  { svc: 'Amazon S3 + Athena', use: 'Reporting: every delivery, open and click, queryable in SQL.' },
+  { svc: 'Amazon Data Firehose', use: 'Streams email events into reporting in near real time.' },
+  { svc: 'AWS WAF Bot Control', use: 'Filters robot clicks at the edge so reports stay honest.' },
+  { svc: 'Amazon CloudFront', use: 'Fast, secure link tracking on every sending domain.' },
+  { svc: 'Amazon Route 53 + ACM', use: 'DNS and certificates for sending and tracking domains.' },
+  { svc: 'Amazon SQS + DynamoDB', use: 'Event intake and sign-up form state.' },
+  { svc: 'AWS Lambda', use: 'Sign-up confirmations and lightweight automation.' },
 ];
 
 const ASKS = [
   {
     kind: 'learn' as const,
-    title: 'Scale the agent on Bedrock',
-    body: 'Move every lane — not just the busiest — onto continuous agent supervision.',
+    title: 'Scale Jarvis on Bedrock',
+    body: 'Give every small business a full-time AI marketing teammate, not just the ones who can hire one.',
   },
   {
     kind: 'send' as const,
     title: 'Grow on Amazon SES',
-    body: 'Bring design-partner senders onto SES with Jarvis managing their reputation from day one.',
+    body: 'Bring thousands of small senders onto SES with Jarvis protecting their reputation from day one.',
   },
   {
     kind: 'gate' as const,
     title: 'Go to market together',
-    body: 'Launch in 2027 as an AWS-native email platform for the next generation of marketers.',
+    body: 'Launch in 2027 as the AWS-native email platform for small and medium businesses.',
   },
 ];
 
@@ -46,7 +46,7 @@ export const AwsPage: React.FC = () => (
           AWS-native, <span className="jv-hl">end to end.</span>
         </>
       }
-      body="Jarvis runs entirely on AWS in us-west-2 — sending, storage, analytics, edge security and the agent itself. We built it in production on our own portfolio first, and we’re ready to bring it to market."
+      body="Jarvis runs entirely on AWS — sending, storage, reporting, edge security and the agent itself. We proved it at volume on our own sending first; now we’re bringing it to small and medium businesses."
     >
       <div className="jv-cta-row">
         <EarlyAccessButton label="Partner with us" intent="AWS partnership" />
@@ -74,7 +74,7 @@ export const AwsPage: React.FC = () => (
       <div className="jv-wrap">
         <div className="jv-section-head">
           <Eyebrow tone="lime">What we’re building next with AWS</Eyebrow>
-          <h2>From our own inboxes to every young marketing team.</h2>
+          <h2>From our own sending to every small business.</h2>
         </div>
         <div className="jv-card-grid jv-card-grid--3">
           {ASKS.map((a) => (

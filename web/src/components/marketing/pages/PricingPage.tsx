@@ -7,69 +7,69 @@ const TIERS = [
     name: 'Sidekick',
     price: '$0',
     per: '/month',
-    tagline: 'For your first list.',
+    tagline: 'For your first newsletter.',
     tone: 'cyan',
     cta: 'Start free',
-    features: ['Up to 5,000 contacts', '1 sending domain on Amazon SES', 'Jarvis daily report', 'Creative Studio basics'],
+    features: ['Up to 500 contacts', '1,000 emails a month', 'Templates and a sign-up form', 'Jarvis weekly tips'],
   },
   {
     name: 'Right Hand',
-    price: '$149',
+    price: '$19',
     per: '/month',
-    tagline: 'For growing teams who send every day.',
+    tagline: 'For small businesses ready to grow.',
     tone: 'pink',
     cta: 'Get early access',
     featured: true,
     features: [
-      'Up to 100,000 contacts',
-      '5 sending domains',
-      'Jarvis plans and stages every send day',
-      'Per-provider routing and wave pacing',
-      'Bot-click protection',
+      'Up to 2,500 contacts',
+      'Jarvis drafts emails and subject lines',
+      'Welcome, thank-you and win-back automations',
+      'Smart send times',
+      'Reports in plain English',
     ],
   },
   {
     name: 'Chief of Staff',
-    price: '$899',
+    price: '$79',
     per: '/month',
-    tagline: 'For portfolios and high-volume senders.',
+    tagline: 'For busy teams with growing lists.',
     tone: 'violet',
-    cta: 'Talk to us',
+    cta: 'Get early access',
     features: [
-      'Up to 1M contacts',
-      'Unlimited sending domains',
-      'Bring your own MTAs and dedicated IPs',
-      'The Brain: verified team memory',
-      'Analytics lake + exports',
+      'Up to 10,000 contacts',
+      'Unlimited automations',
+      'Behaviour-based segments',
+      'A/B tests Jarvis runs for you',
+      'Priority support',
     ],
   },
   {
     name: 'Mission Control',
     price: 'Custom',
     per: '',
-    tagline: 'For estates sending tens of millions.',
+    tagline: 'For multi-location and high-volume senders.',
     tone: 'lime',
     cta: 'Contact sales',
-    features: ['Multi-transport estate', 'Dedicated deliverability engineer', 'Custom agent playbooks', 'SSO and audit exports'],
+    features: ['50,000+ contacts', 'Multiple brands or locations', 'Dedicated sending setup', 'SSO and audit exports'],
   },
 ];
 
 const FAQ = [
   {
     q: 'Is this pricing final?',
-    a: 'No. It is our 2027 launch preview. Design partners lock their rate for the first year.',
+    a: 'No. It is our 2027 launch preview. Early-access members lock their rate for the first year.',
   },
   {
     q: 'Does Jarvis send anything without me?',
-    a: 'Only inside the limits you set. Deploys, live changes and volume increases beyond your rules wait for a human yes.',
+    a: 'Only inside rules you set. New campaigns, big list changes and anything unusual wait for your yes.',
   },
   {
-    q: 'Can I bring my own sending infrastructure?',
-    a: 'Yes. Amazon SES is built in; Chief of Staff and above connect your own PowerMTA or KumoMTA servers too.',
+    q: 'Can I bring my list from another email tool?',
+    a: 'Yes. Import a CSV and Jarvis removes duplicates and bad addresses before your first send. Only import people who asked to hear from you.',
   },
   {
     q: 'What counts as a contact?',
-    a: 'A unique, mailable address. Suppressed and unsubscribed addresses are free — Jarvis keeps them suppressed.',
+    a: 'A unique, active subscriber. Unsubscribed and bounced addresses are free — Jarvis keeps them off your sends.',
   },
 ];
 
@@ -82,7 +82,7 @@ export const PricingPage: React.FC = () => (
           Pick how much Jarvis <span className="jv-hl">takes off your plate.</span>
         </>
       }
-      body="Every plan includes the agent. Bigger plans give it more lanes to run. Indicative pricing for our 2027 launch."
+      body="Every plan includes Jarvis. Bigger plans give it more to look after. Indicative pricing for our 2027 launch."
     />
 
     <section className="jv-section jv-section--tight">

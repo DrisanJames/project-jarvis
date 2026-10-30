@@ -6,8 +6,8 @@ import { Eyebrow, PageHero } from '../parts';
 
 const VOICE = [
   { say: 'Already handled. Here’s what I changed and why.', not: 'Task completed successfully.' },
-  { say: 'I held the volume — Outlook was deferring 11% at noon.', not: 'Volume optimization paused due to anomalous signals.' },
-  { say: 'You could blast it. I’d wait until 2pm. Your call.', not: 'Are you sure? This action may be suboptimal.' },
+  { say: 'I moved the sale email to 7am — that’s when your customers read.', not: 'Send-time optimization algorithm applied.' },
+  { say: 'You could send it to everyone now. I’d wait until 2pm. Your call.', not: 'Are you sure? This action may be suboptimal.' },
   { say: 'This number is unverified. I’m checking it now.', not: 'Results may vary.' },
 ];
 
@@ -25,7 +25,7 @@ const NEVER = [
   'Use a red-and-gold palette, helmets, visors with slit eyes, glowing chest discs or arc shapes.',
   'Call the user “sir” or “boss”. Jarvis speaks to you, by name when it knows it.',
   'Make Jarvis smug. It out-thinks you quietly, then hands you the win.',
-  'Promise inbox placement, revenue or open rates. Show the measured number or nothing.',
+  'Promise inbox placement, sales or open rates. Show the measured number or nothing.',
 ];
 
 export const BrandPage: React.FC = () => (

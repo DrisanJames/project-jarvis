@@ -84,8 +84,8 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
           Skip to content
         </a>
         <div className="jv-announce">
-          <span>Jarvis opens to design partners in 2027.</span>
-          <button type="button" onClick={() => nav.openEarlyAccess('Design partner')}>
+          <span>Jarvis opens for early access in 2027.</span>
+          <button type="button" onClick={() => nav.openEarlyAccess('Early access')}>
             Claim a seat →
           </button>
         </div>
@@ -183,7 +183,7 @@ const EarlyAccessModal: React.FC<{ intent: string; onClose: () => void }> = ({ i
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const line = (k: string) => `${k}: ${String(f.get(k) ?? '').trim()}`;
-    const body = [line('Name'), line('Work email'), line('Company'), line('Monthly volume'), '', String(f.get('Notes') ?? '')].join('\n');
+    const body = [line('Name'), line('Work email'), line('Company'), line('List size'), '', String(f.get('Notes') ?? '')].join('\n');
     const subject = `Jarvis ${intent} — ${String(f.get('Company') ?? '').trim() || 'request'}`;
     window.location.href = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     setSent(true);
@@ -221,17 +221,18 @@ const EarlyAccessModal: React.FC<{ intent: string; onClose: () => void }> = ({ i
               <input name="Company" required autoComplete="organization" />
             </label>
             <label>
-              Monthly email volume
-              <select name="Monthly volume" defaultValue="100k–1M">
-                <option>Under 100k</option>
-                <option>100k–1M</option>
-                <option>1M–10M</option>
-                <option>10M+</option>
+              List size
+              <select name="List size" defaultValue="1,000–10,000">
+                <option>Just starting</option>
+                <option>Under 1,000</option>
+                <option>1,000–10,000</option>
+                <option>10,000–50,000</option>
+                <option>50,000+</option>
               </select>
             </label>
             <label className="jv-form-wide">
               What should Jarvis take off your plate?
-              <textarea name="Notes" rows={3} placeholder="Deliverability, scheduling, reporting, all of it…" />
+              <textarea name="Notes" rows={3} placeholder="Newsletters, sale announcements, welcome emails, all of it…" />
             </label>
             <button type="submit" className="jv-btn jv-btn--primary jv-form-wide">
               Send it to the team

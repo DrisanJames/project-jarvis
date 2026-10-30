@@ -5,52 +5,52 @@ import { CtaBand, EarlyAccessButton, Eyebrow, PageHero } from '../parts';
 const FEATURES = [
   {
     kind: 'plan' as const,
-    eyebrow: 'Send-day board',
-    title: 'The whole day on one board.',
-    body: 'Every brand, every mailbox provider, every wave in a single grid. Jarvis builds tomorrow tonight, clones what worked, rotates offers so nobody sees the same one three days running, and stages it for your approval.',
-    points: ['Engaged-first anchor order', 'Offer fatigue rules built in', 'One-tap approve, one-step undo'],
-  },
-  {
-    kind: 'send' as const,
-    eyebrow: 'Multi-transport sending',
-    title: 'Amazon SES and your own MTAs. One switch.',
-    body: 'Route by sending profile: Amazon SES for reach, your own PowerMTA or KumoMTA servers for dedicated IP control. If one path pauses, Jarvis can move a domain to the other mid-day.',
-    points: ['Per-provider routing and pools', 'Wave pacing and gentle throttles', 'Emergency transport swap'],
-  },
-  {
-    kind: 'audience' as const,
-    eyebrow: 'Audience intelligence',
-    title: 'Real humans, not just opens.',
-    body: 'Most "engagement" is machines: link scanners, image proxies, privacy prefetch. Jarvis grades people by what they did — converted, clicked, opened — and keeps tired addresses from dragging your reputation down.',
-    points: ['Conversion > click > open grading', 'Unopened-five caps', 'Fresh data gated into one controlled send'],
+    eyebrow: 'Campaign calendar',
+    title: 'Your whole month on one calendar.',
+    body: 'Tell Jarvis what’s coming — a sale, a launch, an event, a new blog post. It plans the emails, drafts them, picks the send times and lines everything up for your approval.',
+    points: ['Newsletters and promotions in one view', 'Send times picked per subscriber', 'One-tap approve, one-tap undo'],
   },
   {
     kind: 'creative' as const,
-    eyebrow: 'Creative Studio',
-    title: 'Every creative, subject and sender in one place.',
-    body: 'Approved creatives, subject lines, preheaders and from-names live in the Studio. Jarvis only mails what you approved, then ranks it by what actually performs.',
-    points: ['Approved pool only', 'Inbox-score checks before send', 'Performance-ranked subject rotation'],
+    eyebrow: 'Templates & writing',
+    title: 'Beautiful emails in your voice, in minutes.',
+    body: 'Drag-and-drop templates in your colours and fonts. Jarvis drafts from your blog, your store or three bullet points, writes subject lines that sound like you, and checks every link and image before anything sends.',
+    points: ['Brand kit: logo, colours, fonts', 'Drafts and subject lines in your voice', 'Every link and image checked'],
+  },
+  {
+    kind: 'audience' as const,
+    eyebrow: 'Audience & segments',
+    title: 'Know who’s who on your list.',
+    body: 'Jarvis groups subscribers by what they actually do — bought, clicked, opened — so your VIPs get early access, new subscribers get a proper welcome, and quiet subscribers aren’t pestered.',
+    points: ['Segments built from real behaviour', 'Sign-up forms with double opt-in', 'Gentle re-engagement for quiet subscribers'],
+  },
+  {
+    kind: 'send' as const,
+    eyebrow: 'Automations',
+    title: 'Set it once. Jarvis keeps it running.',
+    body: 'Welcome new subscribers, thank first-time customers, win back the ones who drifted, wish people a happy birthday. Pick a recipe; Jarvis writes it and keeps it fresh.',
+    points: ['Welcome series', 'Thank-you and win-back emails', 'Birthday and anniversary notes'],
   },
   {
     kind: 'protect' as const,
-    eyebrow: 'Deliverability guardrails',
-    title: 'A reputation bodyguard on every lane.',
-    body: 'Hard bounces, policy blocks, velocity limits and complaint spikes, read straight from mailbox-provider replies. Bot clicks are challenged at the edge so your reports count people, not scanners.',
-    points: ['Hard vs soft bounce split, always', 'Bot challenge on click links', 'Ramps that step, then hold'],
+    eyebrow: 'Deliverability, handled',
+    title: 'Land in the inbox, not the spam folder.',
+    body: 'Jarvis walks you through setting up your sending domain, paces new lists gently, removes bounces and unsubscribes automatically, and filters robot clicks out of your stats so your numbers are honest.',
+    points: ['Guided domain setup (SPF, DKIM, DMARC)', 'Automatic bounce and unsubscribe handling', 'Robot clicks filtered from reports'],
   },
   {
     kind: 'lake' as const,
-    eyebrow: 'Analytics lake',
-    title: 'One source of truth for every number.',
-    body: 'Delivery truth across every transport lands in one lake. Every screen computes a metric the same way, so two dashboards never argue.',
-    points: ['Delivered, not merely accepted', 'Per-provider, per-domain, per-wave', 'Daily reports that arrive on time'],
+    eyebrow: 'Reports in plain English',
+    title: 'Numbers that tell you what to do next.',
+    body: 'Opens, clicks, sales and unsubscribes — and what they mean. Every Monday Jarvis sends a short note: what worked, what didn’t, and one thing to try this week.',
+    points: ['Sales from every email', 'Delivered, not just sent', 'A weekly coaching note'],
   },
   {
     kind: 'learn' as const,
-    eyebrow: 'The Brain',
-    title: 'Institutional memory that checks its own facts.',
-    body: 'Jarvis records what it learns as claims with evidence attached. Facts get verified, wrong ones get superseded, and your rulings become the rules every future session follows.',
-    points: ['Verified vs unverified, always labelled', 'Your corrections become policy', 'Shared by every agent on the team'],
+    eyebrow: 'Memory',
+    title: 'Tell it once. It remembers.',
+    body: 'Jarvis keeps your brand voice, your rules and every correction you make. It checks its facts before it reports them and never makes you explain the same thing twice.',
+    points: ['Remembers your brand voice', 'Your rules become its rules', 'Facts checked before they’re reported'],
   },
 ];
 
@@ -60,10 +60,10 @@ export const PlatformPage: React.FC = () => (
       eyebrow="Platform"
       title={
         <>
-          The sending platform with an agent <span className="jv-hl">built in</span>, not bolted on.
+          Email marketing with an AI teammate <span className="jv-hl">built in</span>, not bolted on.
         </>
       }
-      body="Jarvis isn't a chat window on top of an email tool. It's the operator inside the platform — reading the same data you do, using the same controls, and asking before anything it can't undo."
+      body="Jarvis isn't a chatbot stuck on the side of an email tool. It works inside your account — reading the same numbers you do, using the same buttons, and asking before anything it can't undo."
     >
       <div className="jv-cta-row">
         <EarlyAccessButton label="Get a demo" intent="Demo" />
@@ -92,6 +92,6 @@ export const PlatformPage: React.FC = () => (
       </div>
     </section>
 
-    <CtaBand title="See it run on real inboxes." body="A 30-minute walkthrough of a live send day — board, lanes, reports and the agent." intent="Demo" />
+    <CtaBand title="See Jarvis build your next newsletter." body="A 20-minute walkthrough: import a list, draft a campaign, meet the agent." intent="Demo" />
   </>
 );

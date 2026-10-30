@@ -7,34 +7,34 @@ const PILLARS = [
   {
     kind: 'plan' as const,
     tone: 'violet',
-    title: 'Plan',
-    body: 'Tell Jarvis the goal. It builds the whole send day — who, when, which inbox, which offer — and stages it for your nod.',
+    title: 'Create',
+    body: 'Tell Jarvis what’s coming — a sale, a launch, a new post. It plans the emails, drafts them in your voice and lines them up for your nod.',
   },
   {
     kind: 'send' as const,
     tone: 'cyan',
     title: 'Send',
-    body: 'Amazon SES and your own MTAs behind one switch. Jarvis routes every message by mailbox provider and paces it in waves.',
+    body: 'Each subscriber gets your email when they usually read. Jarvis handles the inbox-placement homework so you don’t have to.',
   },
   {
     kind: 'protect' as const,
     tone: 'pink',
     title: 'Protect',
-    body: 'Bounces, blocks, bot clicks, tired lists. Jarvis watches every lane and pulls the brake before your reputation notices.',
+    body: 'Broken links, bounces, spam complaints, robot clicks. Jarvis catches them before your customers — or the inboxes — do.',
   },
   {
-    kind: 'learn' as const,
+    kind: 'audience' as const,
     tone: 'lime',
-    title: 'Learn',
-    body: 'Every correction you make becomes a rule Jarvis keeps. It checks its own facts and never forgets the lesson.',
+    title: 'Grow',
+    body: 'Sign-up forms, a warm welcome series and smart segments that turn new subscribers into regulars.',
   },
 ];
 
 const STEPS = [
-  { n: '01', title: 'Notices', body: 'Delivery, opens, clicks, conversions and mailbox replies, read every 15 minutes.' },
+  { n: '01', title: 'Notices', body: 'Opens, clicks, sales, unsubscribes and replies — all day, every day.' },
   { n: '02', title: 'Proposes', body: 'A plain-language plan with the numbers behind it. No jargon, no mystery.' },
-  { n: '03', title: 'Acts in your lanes', body: 'Inside the limits you set. Anything bigger waits for your yes.' },
-  { n: '04', title: 'Remembers', body: 'Every change logged with a one-step undo. Every lesson kept.' },
+  { n: '03', title: 'Acts within your rules', body: 'Small fixes happen on their own. Anything bigger waits for your yes.' },
+  { n: '04', title: 'Remembers', body: 'Your brand voice, your rules, every correction. Plus an undo for every change.' },
 ];
 
 export const HomePage: React.FC = () => {
@@ -44,13 +44,13 @@ export const HomePage: React.FC = () => {
       <section className="jv-hero">
         <div className="jv-wrap jv-hero-grid">
           <div className="jv-hero-copy">
-            <Eyebrow tone="pink">The AI agent for email marketing</Eyebrow>
+            <Eyebrow tone="pink">Email marketing with an AI right hand</Eyebrow>
             <h1>
-              Your email program, <span className="jv-hl">already handled.</span>
+              Your newsletter, <span className="jv-hl">already handled.</span>
             </h1>
             <p className="jv-lede">
-              Jarvis plans, sends and protects your email — and usually spots the problem before you do. Loyal to your
-              goals, honest about your numbers, and quietly one step ahead.
+              Jarvis writes, schedules and sends your newsletters and promotions — and usually spots the problem before
+              you do. Built for small teams with big plans.
             </p>
             <div className="jv-cta-row">
               <EarlyAccessButton />
@@ -58,7 +58,7 @@ export const HomePage: React.FC = () => {
                 Watch Jarvis work
               </button>
             </div>
-            <p className="jv-fine">Opening to design partners in 2027. No card, no sales script.</p>
+            <p className="jv-fine">Free to start when we open in 2027. No card, no sales script.</p>
           </div>
           <HeroScene />
         </div>
@@ -78,8 +78,8 @@ export const HomePage: React.FC = () => {
       <section className="jv-section">
         <div className="jv-wrap">
           <div className="jv-section-head">
-            <Eyebrow>One agent, four jobs</Eyebrow>
-            <h2>Everything your email team juggles. Jarvis carries it.</h2>
+            <Eyebrow>One teammate, four jobs</Eyebrow>
+            <h2>The marketing teammate you couldn’t afford. Until now.</h2>
           </div>
           <div className="jv-card-grid jv-card-grid--4">
             {PILLARS.map((p) => (
@@ -102,8 +102,8 @@ export const HomePage: React.FC = () => {
             <Eyebrow tone="lime">Watch Jarvis work</Eyebrow>
             <h2>You ask for one thing. Jarvis delivers the thing you meant.</h2>
             <p className="jv-lede">
-              Jarvis follows your lead — and when your plan would cost you inboxes, it says so, fixes it, and tells you
-              exactly what changed. Every time.
+              Jarvis follows your lead — and when a plan would cost you subscribers or sales, it says so, fixes it, and
+              tells you exactly what changed. Every time.
             </p>
             <PageLink to="agent" className="jv-btn jv-btn--light">
               Meet the agent
@@ -139,19 +139,19 @@ export const HomePage: React.FC = () => {
           <div className="jv-proof-card">
             <JarvisMark size={64} />
             <blockquote>
-              “Jarvis wasn’t designed in a pitch deck. It runs our own publishing portfolio — 27 sending brands, three
-              sending transports, every mailbox provider — every single day.”
+              “Jarvis wasn’t designed in a pitch deck. It grew up running a real sending platform that delivers millions of
+              emails every week.”
             </blockquote>
-            <span>— The James Ventures team</span>
+            <span>— The Jarvis team</span>
           </div>
           <div>
             <Eyebrow tone="tangerine">Built in production first</Eyebrow>
-            <h2>Battle-tested on our own inboxes before it touches yours.</h2>
+            <h2>Battle-tested at scale before it touches your list.</h2>
             <ul className="jv-checks">
-              <li>Engaged readers mail first and warm the way for everyone else.</li>
-              <li>Each mailbox provider gets its own rules, pace and playbook.</li>
-              <li>Every live change is logged with a before, an after and an undo.</li>
-              <li>Big moves always wait for a human yes.</li>
+              <li>Your most loyal subscribers hear from you first.</li>
+              <li>Gmail, Outlook, Yahoo and Apple Mail each get the care they need.</li>
+              <li>Every change Jarvis makes is logged with an undo.</li>
+              <li>Big moves always wait for your yes.</li>
             </ul>
           </div>
         </div>
@@ -159,22 +159,22 @@ export const HomePage: React.FC = () => {
 
       <CtaBand
         title="Let Jarvis take it from here."
-        body="Join the 2027 design-partner cohort. Bring your goals; Jarvis brings the rest."
+        body="Join the 2027 early-access list. Bring your list; Jarvis brings the rest."
       />
     </>
   );
 };
 
 const CHAT: { who: 'you' | 'jarvis'; text: string; wink?: boolean }[] = [
-  { who: 'you', text: 'Send the Friday promo to everyone at 9am.' },
+  { who: 'you', text: 'Send the spring sale email to everyone tonight.' },
   {
     who: 'jarvis',
-    text: "Done — mostly. 18% of that list hasn't opened in 90 days, and Yahoo is cooling on two of your IPs. Engaged readers go at 9:00; everyone else rides gentle waves until 2pm.",
+    text: "Scheduled — with two tweaks. 1,200 people haven't opened anything since last spring, so they get a friendly “still want to hear from us?” note instead. And your regular buyers get it at 7am, when they usually read.",
   },
   {
     who: 'jarvis',
     wink: true,
-    text: 'Expect more inboxes and fewer complaints. If you\'d rather blast it anyway, say "undo" and I will. I won\'t even sigh.',
+    text: 'Fewer unsubscribes, more sales. If you\'d rather send it to everyone at once, say "undo" and I will. I won\'t even sigh.',
   },
   { who: 'you', text: '…fine. Keep it.' },
 ];
