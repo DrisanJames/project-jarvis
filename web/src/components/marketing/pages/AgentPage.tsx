@@ -5,25 +5,24 @@ import { CtaBand, Eyebrow, PageHero } from '../parts';
 
 const TRAITS = [
   { title: 'Loyal', tone: 'violet', body: 'Your goals are its goals. Jarvis works for your business, not for a vanity metric.' },
-  { title: 'Always on', tone: 'cyan', body: 'Drafts overnight, watches your sends all day, and has your report ready before your coffee.' },
+  { title: 'Always on', tone: 'cyan', body: 'Nights, weekends, holidays. Jarvis is there whenever your business needs it.' },
   { title: 'One step ahead', tone: 'pink', body: 'It spots the broken link, the tired subject line, the subscriber drifting away — and says so first.' },
-  { title: 'Honest', tone: 'lime', body: 'Unverified numbers are labelled. Bad news comes early and in plain language.' },
+  { title: 'Honest', tone: 'lime', body: 'Straight answers in plain language — good news and bad.' },
 ];
 
-const DAY = [
-  { t: '06:00', what: 'This week’s newsletter is drafted from your latest posts and products, waiting for your thumbs-up.' },
-  { t: '07:00', what: 'Your most loyal readers get it first, at the time they usually open.' },
-  { t: 'All day', what: 'Bounces, spam complaints and broken links caught and fixed — anything bigger held for you.' },
-  { t: '17:00', what: 'A two-line note: what’s working today and one idea for tomorrow.' },
-  { t: 'Monday', what: 'Your weekly report: sales from email, list growth, and the one thing to try next.' },
+const HELPS = [
+  'Drafts your next newsletter before you’ve thought about it.',
+  'Picks the best moment to send for every subscriber.',
+  'Catches mistakes before your customers do.',
+  'Tells you what worked — in plain English.',
 ];
 
 const RULES = [
-  'Asks before anything it can’t undo. New campaigns, big list changes and anything unusual wait for you.',
-  'Shows its work. Every number comes with where it came from and when.',
-  'Logs every change with a before, an after and the undo.',
-  'Remembers your corrections and turns them into rules.',
-  'Tells you when you’re wrong. Politely. Once.',
+  'Nothing goes out without your approval.',
+  'Every suggestion comes with the reason why.',
+  'Every change comes with an undo.',
+  'It remembers your preferences, so you only say things once.',
+  'It tells you when there’s a better way. Politely. Once.',
 ];
 
 export const AgentPage: React.FC = () => (
@@ -52,21 +51,18 @@ export const AgentPage: React.FC = () => (
     <section className="jv-section jv-section--ink">
       <div className="jv-wrap jv-split">
         <div>
-          <Eyebrow tone="lime">A day with Jarvis</Eyebrow>
+          <Eyebrow tone="lime">Works while you sleep</Eyebrow>
           <h2>While you run the business, Jarvis runs the inbox.</h2>
-          <p className="jv-lede">The same rhythm, every day, with the receipts to prove it.</p>
+          <p className="jv-lede">Wake up to emails drafted, sends scheduled and a short note on how yesterday went.</p>
           <div className="jv-night-wrap">
             <NightShiftLoop />
           </div>
         </div>
-        <ol className="jv-timeline">
-          {DAY.map((d) => (
-            <li key={d.t}>
-              <span>{d.t}</span>
-              <p>{d.what}</p>
-            </li>
+        <ul className="jv-helps">
+          {HELPS.map((h) => (
+            <li key={h}>{h}</li>
           ))}
-        </ol>
+        </ul>
       </div>
     </section>
 
@@ -75,13 +71,13 @@ export const AgentPage: React.FC = () => (
         <div className="jv-proof-card jv-proof-card--violet">
           <JarvisMark size={72} mood="wink" />
           <blockquote>
-            “I could have sent the sale to everyone at noon. I held your quiet subscribers until Saturday — they
-            unsubscribe twice as often on Fridays. Want me to make that the rule?”
+            “I could have sent the sale to everyone at noon. I saved your quiet subscribers for Saturday morning — they
+            tend to read on weekends. Want me to make that a habit?”
           </blockquote>
-          <span>— Jarvis, in a typical weekly note</span>
+          <span>— Jarvis</span>
         </div>
         <div>
-          <Eyebrow tone="pink">House rules</Eyebrow>
+          <Eyebrow tone="pink">You’re always in charge</Eyebrow>
           <h2>Smart enough to act. Wise enough to ask.</h2>
           <ul className="jv-checks">
             {RULES.map((r) => (

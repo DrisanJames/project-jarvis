@@ -50,7 +50,7 @@ const TIERS = [
     tagline: 'For multi-location and high-volume senders.',
     tone: 'lime',
     cta: 'Contact sales',
-    features: ['50,000+ contacts', 'Multiple brands or locations', 'Dedicated sending setup', 'SSO and audit exports'],
+    features: ['50,000+ contacts', 'Multiple brands or locations', 'A dedicated success manager', 'Single sign-on'],
   },
 ];
 
@@ -65,11 +65,11 @@ const FAQ = [
   },
   {
     q: 'Can I bring my list from another email tool?',
-    a: 'Yes. Import a CSV and Jarvis removes duplicates and bad addresses before your first send. Only import people who asked to hear from you.',
+    a: 'Yes. Bring your list and Jarvis tidies it up before your first send. Only import people who asked to hear from you.',
   },
   {
     q: 'What counts as a contact?',
-    a: 'A unique, active subscriber. Unsubscribed and bounced addresses are free — Jarvis keeps them off your sends.',
+    a: 'A unique, active subscriber. Unsubscribed addresses are always free.',
   },
 ];
 

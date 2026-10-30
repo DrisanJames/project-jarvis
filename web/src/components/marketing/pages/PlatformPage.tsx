@@ -5,59 +5,52 @@ import { CtaBand, EarlyAccessButton, Eyebrow, PageHero } from '../parts';
 const FEATURES = [
   {
     kind: 'plan' as const,
-    eyebrow: 'Campaign calendar',
-    title: 'Your whole month on one calendar.',
-    body: 'Tell Jarvis what’s coming — a sale, a launch, an event, a new blog post. It plans the emails, drafts them, picks the send times and lines everything up for your approval.',
-    points: ['Newsletters and promotions in one view', 'Send times picked per subscriber', 'One-tap approve, one-tap undo'],
+    eyebrow: 'Campaign planning',
+    title: 'Your whole month, planned in minutes.',
+    body: 'Tell Jarvis what’s coming up — a sale, a launch, an event. It suggests the emails, drafts them and lines them up for your approval.',
+    points: ['Newsletters and promotions in one calendar', 'Suggestions based on what’s working', 'Approve with one tap'],
   },
   {
     kind: 'creative' as const,
-    eyebrow: 'Templates & writing',
-    title: 'Beautiful emails in your voice, in minutes.',
-    body: 'Drag-and-drop templates in your colours and fonts. Jarvis drafts from your blog, your store or three bullet points, writes subject lines that sound like you, and checks every link and image before anything sends.',
-    points: ['Brand kit: logo, colours, fonts', 'Drafts and subject lines in your voice', 'Every link and image checked'],
+    eyebrow: 'AI writing & design',
+    title: 'Beautiful emails, in your voice.',
+    body: 'Start from a template in your colours and fonts, or a few bullet points. Jarvis writes the copy and subject lines, and learns how you like to sound.',
+    points: ['Templates in your brand', 'Copy and subject lines in your voice', 'Mistakes caught before you send'],
   },
   {
     kind: 'audience' as const,
-    eyebrow: 'Audience & segments',
-    title: 'Know who’s who on your list.',
-    body: 'Jarvis groups subscribers by what they actually do — bought, clicked, opened — so your VIPs get early access, new subscribers get a proper welcome, and quiet subscribers aren’t pestered.',
-    points: ['Segments built from real behaviour', 'Sign-up forms with double opt-in', 'Gentle re-engagement for quiet subscribers'],
+    eyebrow: 'Smart audiences',
+    title: 'The right message for every subscriber.',
+    body: 'Jarvis groups your subscribers by what they love, so your best customers get early access, newcomers get a warm welcome, and no one gets too much.',
+    points: ['Audiences built for you', 'Sign-up forms in minutes', 'Gentle check-ins for quiet subscribers'],
   },
   {
     kind: 'send' as const,
     eyebrow: 'Automations',
     title: 'Set it once. Jarvis keeps it running.',
-    body: 'Welcome new subscribers, thank first-time customers, win back the ones who drifted, wish people a happy birthday. Pick a recipe; Jarvis writes it and keeps it fresh.',
+    body: 'Welcome new subscribers, thank first-time customers, win back the ones who drifted and celebrate birthdays — on autopilot, always fresh.',
     points: ['Welcome series', 'Thank-you and win-back emails', 'Birthday and anniversary notes'],
   },
   {
     kind: 'protect' as const,
-    eyebrow: 'Deliverability, handled',
+    eyebrow: 'Inbox-ready',
     title: 'Land in the inbox, not the spam folder.',
-    body: 'Jarvis walks you through setting up your sending domain, paces new lists gently, removes bounces and unsubscribes automatically, and filters robot clicks out of your stats so your numbers are honest.',
-    points: ['Guided domain setup (SPF, DKIM, DMARC)', 'Automatic bounce and unsubscribe handling', 'Robot clicks filtered from reports'],
+    body: 'Jarvis takes care of the technical side of getting delivered and keeps your list healthy, so your emails reach the people who want them.',
+    points: ['Simple, guided setup', 'A healthy list, automatically', 'Honest stats you can trust'],
   },
   {
     kind: 'lake' as const,
-    eyebrow: 'Reports in plain English',
-    title: 'Numbers that tell you what to do next.',
-    body: 'Opens, clicks, sales and unsubscribes — and what they mean. Every Monday Jarvis sends a short note: what worked, what didn’t, and one thing to try this week.',
-    points: ['Sales from every email', 'Delivered, not just sent', 'A weekly coaching note'],
-  },
-  {
-    kind: 'learn' as const,
-    eyebrow: 'Memory',
-    title: 'Tell it once. It remembers.',
-    body: 'Jarvis keeps your brand voice, your rules and every correction you make. It checks its facts before it reports them and never makes you explain the same thing twice.',
-    points: ['Remembers your brand voice', 'Your rules become its rules', 'Facts checked before they’re reported'],
+    eyebrow: 'Insights',
+    title: 'Know what worked — and what’s next.',
+    body: 'Opens, clicks and sales, explained in plain English. Every week Jarvis tells you what worked and suggests one thing to try.',
+    points: ['Sales from every email', 'Weekly tips from Jarvis', 'Easy A/B testing'],
   },
 ];
 
 export const PlatformPage: React.FC = () => (
   <>
     <PageHero
-      eyebrow="Platform"
+      eyebrow="Features"
       title={
         <>
           Email marketing with an AI teammate <span className="jv-hl">built in</span>, not bolted on.
@@ -92,6 +85,6 @@ export const PlatformPage: React.FC = () => (
       </div>
     </section>
 
-    <CtaBand title="See Jarvis build your next newsletter." body="A 20-minute walkthrough: import a list, draft a campaign, meet the agent." intent="Demo" />
+    <CtaBand title="See Jarvis build your next newsletter." body="A quick walkthrough: bring your list, draft a campaign, meet Jarvis." intent="Demo" />
   </>
 );

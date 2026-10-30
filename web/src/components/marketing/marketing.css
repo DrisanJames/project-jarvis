@@ -826,7 +826,7 @@ body.jv-body {
   color: var(--jv-muted);
 }
 
-/* AWS stack */
+/* Stack grid (unused) */
 .jv-stack {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1496,4 +1496,61 @@ body.jv-body {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* Use-case tiles + helper list (home / meet-jarvis) */
+.jv-usecases {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.jv-usecases article {
+  background: #fff;
+  border: 2.5px solid var(--jv-ink);
+  border-radius: 18px;
+  padding: 22px 24px;
+  border-left-width: 10px;
+}
+.jv-usecases article:nth-child(6n + 1) { border-left-color: var(--jv-violet); }
+.jv-usecases article:nth-child(6n + 2) { border-left-color: var(--jv-pink); }
+.jv-usecases article:nth-child(6n + 3) { border-left-color: var(--jv-tangerine); }
+.jv-usecases article:nth-child(6n + 4) { border-left-color: var(--jv-lime); }
+.jv-usecases article:nth-child(6n + 5) { border-left-color: var(--jv-cyan); }
+.jv-usecases article:nth-child(6n) { border-left-color: var(--jv-violet); }
+.jv-usecases p {
+  color: var(--jv-muted);
+  margin-top: 6px;
+}
+.jv-helps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+.jv-helps li {
+  background: var(--jv-ink-2);
+  border: 2px solid #3d3770;
+  border-radius: 16px;
+  padding: 18px 20px 18px 56px;
+  position: relative;
+  color: #e6e3f7;
+  font-size: 1.05rem;
+}
+.jv-helps li::before {
+  content: '';
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  background: var(--jv-lime);
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+}
+@media (max-width: 860px) {
+  .jv-usecases { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .jv-usecases { grid-template-columns: 1fr; }
 }

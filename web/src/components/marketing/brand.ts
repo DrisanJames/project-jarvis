@@ -20,14 +20,13 @@ export const PALETTE: Swatch[] = [
   { name: 'Cream Paper', hex: '#FFF8EE', role: 'Page background. Never pure white for large fields.', ink: '#14112B' },
 ];
 
-export type PageId = 'home' | 'platform' | 'agent' | 'pricing' | 'aws' | 'brand';
+export type PageId = 'home' | 'platform' | 'agent' | 'pricing' | 'brand';
 
 export const PAGES: { id: PageId; path: string; label: string; title: string }[] = [
   { id: 'home', path: '/', label: 'Home', title: 'Jarvis — your newsletter, already handled' },
-  { id: 'platform', path: '/platform', label: 'Platform', title: 'Platform — Jarvis' },
+  { id: 'platform', path: '/features', label: 'Features', title: 'Features — Jarvis' },
   { id: 'agent', path: '/meet-jarvis', label: 'Meet Jarvis', title: 'Meet Jarvis — the agent' },
   { id: 'pricing', path: '/pricing', label: 'Pricing', title: 'Pricing (2027 preview) — Jarvis' },
-  { id: 'aws', path: '/built-on-aws', label: 'Built on AWS', title: 'Built on AWS — Jarvis' },
   { id: 'brand', path: '/brand', label: 'Brand', title: 'Brand guidelines — Jarvis' },
 ];
 

@@ -7,7 +7,6 @@ import { HomePage } from './pages/HomePage';
 import { PlatformPage } from './pages/PlatformPage';
 import { AgentPage } from './pages/AgentPage';
 import { PricingPage } from './pages/PricingPage';
-import { AwsPage } from './pages/AwsPage';
 import { BrandPage } from './pages/BrandPage';
 
 // Public marketing site, shown to signed-out visitors. Signing in still goes
@@ -17,7 +16,7 @@ import { BrandPage } from './pages/BrandPage';
 const FONT_HREF =
   'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600;700&display=swap';
 
-const NAV: PageId[] = ['platform', 'agent', 'pricing', 'aws'];
+const NAV: PageId[] = ['platform', 'agent', 'pricing'];
 
 interface Props {
   onSignIn: () => void;
@@ -73,7 +72,6 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
     platform: PlatformPage,
     agent: AgentPage,
     pricing: PricingPage,
-    aws: AwsPage,
     brand: BrandPage,
   }[page];
 
@@ -136,22 +134,19 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
             </div>
             <div>
               <h4>Product</h4>
-              <PageLink to="platform">Platform</PageLink>
+              <PageLink to="platform">Features</PageLink>
               <PageLink to="agent">Meet Jarvis</PageLink>
               <PageLink to="pricing">Pricing</PageLink>
             </div>
             <div>
               <h4>Company</h4>
-              <PageLink to="aws">Built on AWS</PageLink>
-              <PageLink to="brand">Brand guidelines</PageLink>
               <a href={`mailto:${CONTACT_EMAIL}`}>Contact</a>
             </div>
             <div>
-              <h4>Team</h4>
+              <h4>Account</h4>
               <button type="button" className="jv-footer-btn" onClick={onSignIn}>
-                Team sign in
+                Sign in
               </button>
-              <span className="jv-footer-note">Company Google accounts only.</span>
             </div>
           </div>
           <div className="jv-wrap jv-footer-base">
