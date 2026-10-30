@@ -20,18 +20,18 @@ export interface BadgeMeta {
   clickable: boolean; // true ⇒ opens the SMTP evidence panel
 }
 
-// HARD RULES: BLOCKING red #ef4444, THROTTLED amber #f59e0b (capacity
+// HARD RULES: BLOCKING red var(--j-hard), THROTTLED amber var(--j-soft) (capacity
 // language, never reputation), LIST_QUALITY orange, LOW_VOLUME grey.
 export const BADGE_META: Record<string, BadgeMeta> = {
   BLOCKING: {
-    color: '#ef4444',
+    color: 'var(--j-hard)',
     short: 'B',
     label: 'Blocking',
     blurb: 'ISP is rejecting on reputation/policy. Click for the SMTP evidence.',
     clickable: true,
   },
   THROTTLED: {
-    color: '#f59e0b',
+    color: 'var(--j-soft)',
     short: 'T',
     label: 'Throttled',
     blurb: 'Deferral/velocity throttle — capacity, not reputation. Click for the SMTP evidence.',

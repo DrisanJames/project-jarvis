@@ -67,11 +67,11 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
         </div>
 
         {/* Close button */}
-        <button
+        <button aria-label="Close"
           onClick={onClose}
           style={{
             position: 'absolute', top: 16, right: 16,
-            background: 'none', border: 'none', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)',
+            background: 'none', border: 'none', color: 'var(--j-text-muted)',
             cursor: 'pointer', fontSize: 16, padding: 4,
           }}
         >
@@ -127,7 +127,7 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
         </h2>
 
         <div style={{
-          color: 'color-mix(in srgb, var(--j-cyan) 80%, transparent)', fontSize: 14, fontWeight: 500,
+          color: 'var(--j-text-2)', fontSize: 14, fontWeight: 500,
           marginBottom: 20,
           opacity: phase >= 1 ? 1 : 0,
           transition: 'opacity 0.5s ease 0.15s',
@@ -151,7 +151,7 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
                 <div style={{ color: 'var(--j-cyan)', fontSize: 20, fontWeight: 700 }}>
                   {stats.recipients.toLocaleString()}
                 </div>
-                <div style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11, marginTop: 2 }}>Recipients</div>
+                <div style={{ color: 'var(--j-text-muted)', fontSize: 11, marginTop: 2 }}>Recipients</div>
               </div>
             )}
             {stats.variants != null && (
@@ -160,7 +160,7 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
                 border: '1px solid color-mix(in srgb, var(--j-blue) 10%, transparent)',
               }}>
                 <div style={{ color: 'var(--j-blue)', fontSize: 20, fontWeight: 700 }}>{stats.variants}</div>
-                <div style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11, marginTop: 2 }}>Variants</div>
+                <div style={{ color: 'var(--j-text-muted)', fontSize: 11, marginTop: 2 }}>Variants</div>
               </div>
             )}
           </div>
@@ -168,7 +168,7 @@ export const JarvisCompleteModal: React.FC<JarvisCompleteModalProps> = ({
 
         {/* JARVIS monitoring message */}
         <div style={{
-          color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, lineHeight: 1.6,
+          color: 'var(--j-text-muted)', fontSize: 12, lineHeight: 1.6,
           opacity: phase >= 3 ? 1 : 0,
           transition: 'opacity 0.5s ease',
         }}>

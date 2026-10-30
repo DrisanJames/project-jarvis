@@ -35,7 +35,7 @@
   font-weight: 700;
   text-transform: uppercase;
 }
-.mc-badge-warn { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
+.mc-badge-warn { background: rgba(245, 158, 11, 0.2); color: var(--j-soft); }
 .mc-badge-green { background: color-mix(in srgb, var(--j-success) 20%, transparent); color: var(--j-success); margin-left: 8px; }
 
 .mc-btn {
@@ -184,7 +184,7 @@
 .mc-funnel-value { font-size: 12px; font-weight: 700; color: var(--j-text); }
 .mc-funnel-label { display: block; font-size: 10px; color: var(--j-text-faint); }
 .mc-funnel-rate { display: block; font-size: 11px; font-weight: 600; color: var(--j-text-2); }
-.mc-funnel-arrow { color: color-mix(in srgb, var(--j-cyan) 8%, transparent); font-size: 14px; align-self: center; padding-bottom: 24px; }
+.mc-funnel-arrow { color: var(--j-text-muted); font-size: 14px; align-self: center; padding-bottom: 24px; }
 .mc-funnel-summary {
   display: flex;
   justify-content: space-around;
@@ -247,7 +247,7 @@
   transition: width 0.5s;
 }
 .mc-race-winner { background: linear-gradient(90deg, var(--j-warn), var(--j-success)) !important; }
-.mc-race-elim { background: #7f1d1d !important; }
+.mc-race-elim { background: color-mix(in srgb, var(--j-hard) 14%, transparent) !important; }
 .mc-race-value { font-size: 10px; font-weight: 700; width: 36px; text-align: right; }
 
 /* Decisions */
@@ -293,7 +293,7 @@
 .mc-event-converted { background: color-mix(in srgb, var(--j-cyan) 12%, transparent); color: var(--j-blue); }
 .mc-event-email { color: var(--j-text-faint); width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-event-variant { color: var(--j-text-faint); font-size: 9px; }
-.mc-event-details { color: color-mix(in srgb, var(--j-cyan) 8%, transparent); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-event-details { color: var(--j-text-muted); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Chat */
 .mc-chat-card {
@@ -330,7 +330,7 @@
 }
 .mc-chat-empty svg { font-size: 24px; margin-bottom: 8px; opacity: 0.3; }
 .mc-chat-empty p { font-size: 11px; margin: 0; }
-.mc-chat-empty span { font-size: 9px; color: color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+.mc-chat-empty span { font-size: 9px; color: var(--j-text-muted); }
 .mc-chat-msg {
   max-width: 85%;
   padding: 8px 10px;

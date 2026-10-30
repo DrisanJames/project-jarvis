@@ -249,8 +249,8 @@ export const BaselineVerdictBanner: React.FC<BannerProps> = ({ domain, data, loa
               )}
               <span style={{ color: C.muted, fontSize: 11.5 }}>
                 baseline {fmtInt(Math.round(r.baseline_daily_sends))}/day · recent open {fmtRate(r.recent.human_open_rate)} ·
-                hard <span style={{ color: '#ef4444' }}>{fmtRate(r.recent.hard_bounce_rate)}</span> ·
-                soft <span style={{ color: '#f59e0b' }}>{fmtRate(r.recent.soft_bounce_rate)}</span>
+                hard <span style={{ color: 'var(--j-hard)' }}>{fmtRate(r.recent.hard_bounce_rate)}</span> ·
+                soft <span style={{ color: 'var(--j-soft)' }}>{fmtRate(r.recent.soft_bounce_rate)}</span>
               </span>
             </div>
             <ul style={{ margin: '0 0 0 4px', paddingLeft: 18 }}>

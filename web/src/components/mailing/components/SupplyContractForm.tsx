@@ -627,7 +627,7 @@ export const SupplyContractForm: React.FC<{
                     <button type="button" style={segBtn(values[s.key] !== 'true', colors.idle)} onClick={() => setValues(v => ({ ...v, [s.key]: 'false' }))}>Off</button>
                   </div>
                 ) : s.type === 'select' ? (
-                  <select
+                  <select aria-label="Key"
                     value={values[s.key] ?? s.def}
                     onChange={e => setValues(v => ({ ...v, [s.key]: e.target.value }))}
                     style={{ ...inputStyle, width: s.width ?? 170, ...(bad(s.key) ? { borderColor: colors.danger } : {}) }}
@@ -635,7 +635,7 @@ export const SupplyContractForm: React.FC<{
                     {(s.options ?? []).map(o => <option key={o} value={o}>{o === '' ? '(unset)' : o}</option>)}
                   </select>
                 ) : (
-                  <input
+                  <input aria-label="Key"
                     type={s.type === 'time' ? 'time' : (s.type === 'int' || s.type === 'num' || s.type === 'nullable-int') ? 'number' : 'text'}
                     step={s.type === 'num' ? '0.01' : undefined}
                     value={values[s.key] ?? s.def}

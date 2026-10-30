@@ -56,22 +56,22 @@ interface OfferPerfResp {
 }
 
 const fmt = (n: number) => n.toLocaleString();
-const bounceColor = (p: number) => p >= 30 ? '#ef4444' : p >= 15 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 70%, transparent)';
+const bounceColor = (p: number) => p >= 30 ? 'var(--j-hard)' : p >= 15 ? 'var(--j-soft)' : 'color-mix(in srgb, var(--j-text) 70%, transparent)';
 
 // OfferBreakdown — the per-offer funnel shown when a dataset row is expanded.
 // Which offers the dataset's audience clicked (human, money-slug attributed) and
 // converted on, with CTR / conversion rate / click→conv over the dataset's reach.
 const OfferBreakdown: React.FC<{ id: string; loading: boolean; err?: string; resp?: OfferPerfResp }> = ({ loading, err, resp }) => {
-  const sth: React.CSSProperties = { textAlign: 'right', padding: '6px 12px', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: 0.4, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', whiteSpace: 'nowrap' };
+  const sth: React.CSSProperties = { textAlign: 'right', padding: '6px 12px', fontSize: 9.5, textTransform: 'uppercase', letterSpacing: 0.4, color: 'var(--j-text-muted)', whiteSpace: 'nowrap' };
   const snum: React.CSSProperties = { padding: '6px 12px', fontSize: 12.5, color: 'var(--j-text)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
-  if (loading) return <div style={{ padding: '14px 18px', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 12 }}><FontAwesomeIcon icon={faSpinner} spin /> Resolving offer funnel…</div>;
-  if (err) return <div style={{ padding: '14px 18px', color: '#ef4444', fontSize: 12 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {err}</div>;
+  if (loading) return <div style={{ padding: '14px 18px', color: 'var(--j-text-muted)', fontSize: 12 }}><FontAwesomeIcon icon={faSpinner} spin /> Resolving offer funnel…</div>;
+  if (err) return <div style={{ padding: '14px 18px', color: 'var(--j-hard)', fontSize: 12 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {err}</div>;
   if (!resp) return null;
-  if (!resp.offers || resp.offers.length === 0) return <div style={{ padding: '14px 18px', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>No offer-attributed human clicks or conversions for this activation yet.</div>;
+  if (!resp.offers || resp.offers.length === 0) return <div style={{ padding: '14px 18px', color: 'var(--j-text-muted)', fontSize: 12 }}>No offer-attributed human clicks or conversions for this activation yet.</div>;
   return (
     <div style={{ padding: '10px 18px 14px 30px' }}>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', marginBottom: 8 }}>
-        <FontAwesomeIcon icon={faBullseye} style={{ color: '#f59e0b', marginRight: 6 }} />
+      <div style={{ fontSize: 11, color: 'var(--j-text-2)', marginBottom: 8 }}>
+        <FontAwesomeIcon icon={faBullseye} style={{ color: 'var(--j-soft)', marginRight: 6 }} />
         Offer funnel — rates over <b>{fmt(resp.mailed)}</b> mailed reach · clicks are <b>human</b> (verdict-filtered, money-slug attributed) · conversions are postback truth
       </div>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -87,13 +87,13 @@ const OfferBreakdown: React.FC<{ id: string; loading: boolean; err?: string; res
         <tbody>
           {resp.offers.map((o, i) => (
             <tr key={o.offer_key || o.offer_name + i} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)' }}>
-              <td style={{ padding: '6px 12px', fontSize: 12.5, color: 'var(--j-text)' }}>{o.offer_name}{o.everflow_offer_id && <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 11, marginLeft: 6 }}>EF {o.everflow_offer_id}</span>}</td>
+              <td style={{ padding: '6px 12px', fontSize: 12.5, color: 'var(--j-text)' }}>{o.offer_name}{o.everflow_offer_id && <span style={{ color: 'var(--j-text-muted)', fontSize: 11, marginLeft: 6 }}>EF {o.everflow_offer_id}</span>}</td>
               <td style={{ ...snum, color: 'var(--j-violet)' }}>{fmt(o.clickers)}</td>
-              <td style={{ ...snum, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{fmt(o.clicks)}</td>
+              <td style={{ ...snum, color: 'var(--j-text-muted)' }}>{fmt(o.clicks)}</td>
               <td style={snum}>{o.ctr_pct}%</td>
               <td style={{ ...snum, color: 'var(--j-success)', fontWeight: o.conversions > 0 ? 700 : 400 }}>{o.conversions}</td>
               <td style={{ ...snum, color: o.conv_pct > 0 ? 'var(--j-success)' : undefined }}>{o.conv_pct}%</td>
-              <td style={{ ...snum, color: 'color-mix(in srgb, var(--j-text) 85%, transparent)' }}>{o.click_to_conv_pct}%</td>
+              <td style={{ ...snum, color: 'var(--j-text)' }}>{o.click_to_conv_pct}%</td>
             </tr>
           ))}
         </tbody>
@@ -140,39 +140,39 @@ export const PreviousActivationsPanel: React.FC = () => {
     }
   }, [expanded, offers]);
 
-  if (loading && !data) return <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', padding: 30 }}><FontAwesomeIcon icon={faSpinner} spin /> Computing lifetime engagement footprint… (~10s)</div>;
-  if (error) return <div style={{ color: '#ef4444', padding: 20 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>;
+  if (loading && !data) return <div style={{ color: 'var(--j-text-muted)', padding: 30 }}><FontAwesomeIcon icon={faSpinner} spin /> Computing lifetime engagement footprint… (~10s)</div>;
+  if (error) return <div style={{ color: 'var(--j-hard)', padding: 20 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>;
   if (!data) return null;
   const t = data.totals;
 
   const card = (label: string, value: string, sub: string, accent: string, icon: typeof faHandPointer) => (
     <div style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', padding: '12px 14px', borderRadius: 8, minWidth: 140, flex: 1 }}>
-      <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <div style={{ fontSize: 10, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
         <FontAwesomeIcon icon={icon} style={{ marginRight: 6, color: accent }} />{label}
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: accent }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 2 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>{sub}</div>}
     </div>
   );
-  const th: React.CSSProperties = { textAlign: 'left', padding: '8px 10px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', whiteSpace: 'nowrap' };
+  const th: React.CSSProperties = { textAlign: 'left', padding: '8px 10px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--j-text-muted)', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', whiteSpace: 'nowrap' };
   const num: React.CSSProperties = { padding: '8px 10px', fontSize: 13, color: 'var(--j-text)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
   const txt: React.CSSProperties = { padding: '8px 10px', fontSize: 13, color: 'var(--j-text)' };
-  const trendIcon = (tr: string) => tr === 'up' ? <FontAwesomeIcon icon={faArrowTrendUp} style={{ color: 'var(--j-success)' }} /> : tr === 'down' ? <FontAwesomeIcon icon={faArrowTrendDown} style={{ color: '#ef4444' }} /> : <FontAwesomeIcon icon={faMinus} style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} />;
+  const trendIcon = (tr: string) => tr === 'up' ? <FontAwesomeIcon icon={faArrowTrendUp} style={{ color: 'var(--j-success)' }} /> : tr === 'down' ? <FontAwesomeIcon icon={faArrowTrendDown} style={{ color: 'var(--j-hard)' }} /> : <FontAwesomeIcon icon={faMinus} style={{ color: 'var(--j-text-muted)' }} />;
 
   return (
     <div style={{ padding: '4px 2px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--j-text)' }}>Previous Activations <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--j-success)', background: 'color-mix(in srgb, var(--j-success) 12%, transparent)', padding: '2px 7px', borderRadius: 4, marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>Lifetime</span></div>
-          <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+          <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
             Lifetime engagement of each data partner's records on their OWN mail — judge the whole activation, rank by clicks + conversions, weigh bounce
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Recent window</span>
+          <span style={{ fontSize: 10, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Recent window</span>
           <div style={{ display: 'flex', gap: 6 }}>
             {[7, 14, 30].map(d => (
-              <button key={d} onClick={() => setDays(d)} style={{ background: d === days ? 'color-mix(in srgb, var(--j-violet-strong) 35%, transparent)' : 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: d === days ? 'var(--j-violet-soft)' : 'color-mix(in srgb, var(--j-text) 70%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>{d}d</button>
+              <button key={d} onClick={() => setDays(d)} style={{ background: d === days ? 'color-mix(in srgb, var(--j-violet-strong) 35%, transparent)' : 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: d === days ? 'var(--j-violet-soft)' : 'var(--j-text-2)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>{d}d</button>
             ))}
           </div>
         </div>
@@ -200,21 +200,21 @@ export const PreviousActivationsPanel: React.FC = () => {
             <th style={{ ...th, textAlign: 'center' }}>Trend</th>
           </tr></thead>
           <tbody>
-            {data.activations.length === 0 && <tr><td colSpan={10} style={{ ...txt, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', padding: 24 }}>No mailed activations found.</td></tr>}
+            {data.activations.length === 0 && <tr><td colSpan={10} style={{ ...txt, textAlign: 'center', color: 'var(--j-text-muted)', padding: 24 }}>No mailed activations found.</td></tr>}
             {data.activations.map(a => {
               const isOpen = expanded === a.dataset_id;
               return (
               <React.Fragment key={a.dataset_id}>
               <tr onClick={() => toggleRow(a.dataset_id)} title="Click for the per-offer funnel (clicks, CTR, conversions)" style={{ borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)', cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' : undefined }}>
-                <td style={txt}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ marginRight: 8, fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} />{a.partner_name}</td>
-                <td style={txt}>{a.dataset_name}{a.low_sample && <span title="Low sample (<1k lifetime mailed) — high variance" style={{ color: '#f59e0b', marginLeft: 5, fontSize: 11 }}>⚠</span>}</td>
-                <td style={{ ...txt, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{a.vertical}</td>
+                <td style={txt}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ marginRight: 8, fontSize: 10, color: 'var(--j-text-muted)' }} />{a.partner_name}</td>
+                <td style={txt}>{a.dataset_name}{a.low_sample && <span title="Low sample (<1k lifetime mailed) — high variance" style={{ color: 'var(--j-soft)', marginLeft: 5, fontSize: 11 }}>⚠</span>}</td>
+                <td style={{ ...txt, color: 'var(--j-text-2)' }}>{a.vertical}</td>
                 <td style={num} title={`${fmt(a.total_records)} imported`}>{fmt(a.mailed)}</td>
-                <td style={{ ...num, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }} title={`${fmt(a.opens)} openers — ~90% machine, weak signal`}>{a.opens_pct}%</td>
+                <td style={{ ...num, color: 'var(--j-text-muted)' }} title={`${fmt(a.opens)} openers — ~90% machine, weak signal`}>{a.opens_pct}%</td>
                 <td style={{ ...num, color: 'var(--j-violet)' }} title={`${fmt(a.clicks)} clickers`}>{a.clicks_pct}%</td>
                 <td style={{ ...num, fontWeight: a.bounce_pct >= 30 ? 700 : 400, color: bounceColor(a.bounce_pct) }} title={`${fmt(a.bounced)} bounced — lifetime list health`}>{a.bounce_pct}%</td>
                 <td style={{ ...num, color: 'var(--j-success)', fontWeight: a.conv_lifetime > 0 ? 700 : 400 }}>{a.conv_lifetime}</td>
-                <td style={{ ...num, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }} title={`${fmt(a.recent_mailed)} mailed / ${fmt(a.recent_clicks)} clicked in last ${a.recent_days}d`}>{fmt(a.recent_mailed)} / {fmt(a.recent_clicks)}</td>
+                <td style={{ ...num, color: 'var(--j-text-muted)' }} title={`${fmt(a.recent_mailed)} mailed / ${fmt(a.recent_clicks)} clicked in last ${a.recent_days}d`}>{fmt(a.recent_mailed)} / {fmt(a.recent_clicks)}</td>
                 <td style={{ ...num, textAlign: 'center' }} title="Recent clicks vs prior period">{trendIcon(a.trend)}</td>
               </tr>
               {isOpen && (
@@ -231,8 +231,8 @@ export const PreviousActivationsPanel: React.FC = () => {
         </table>
       </div>
 
-      <div style={{ marginTop: 12, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', lineHeight: 1.6 }}>
-        <div><b>How to read:</b> all headline columns are <b>lifetime</b> (the whole activation), scoped to the partner's OWN campaigns. Rank by <span style={{ color: 'var(--j-violet)' }}>clicks</span> + <span style={{ color: 'var(--j-success)' }}>conversions</span>; penalize <span style={{ color: '#ef4444' }}>bounce</span>.</div>
+      <div style={{ marginTop: 12, fontSize: 11, color: 'var(--j-text-muted)', lineHeight: 1.6 }}>
+        <div><b>How to read:</b> all headline columns are <b>lifetime</b> (the whole activation), scoped to the partner's OWN campaigns. Rank by <span style={{ color: 'var(--j-violet)' }}>clicks</span> + <span style={{ color: 'var(--j-success)' }}>conversions</span>; penalize <span style={{ color: 'var(--j-hard)' }}>bounce</span>.</div>
         <div>• <b>Mailed</b> = distinct records ever mailed (hover for imported total). <b>Recent {data.days}d</b> = mailed / clicked in the chosen window (freshness only — never mixed into the lifetime rates).</div>
         <div>• <b>Bounce %</b> is the best list-quality tell — dirty lists run 30-47%. <b>Open %</b> is ~90% automated machine opens — treat as weak.</div>
         <div>• Conversion revenue is $0 by design (CPM deals pay per-send). <b>Cost/CPM per record isn't in the system</b> — needed from partner deal terms for true ROI.</div>

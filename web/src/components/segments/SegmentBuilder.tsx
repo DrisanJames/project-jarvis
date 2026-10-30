@@ -390,7 +390,7 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
           ))}
         </select>
       ) : condition.condition_type === 'tag' ? (
-        <span style={{ padding: '7px 10px', fontSize: 13, fontWeight: 500, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Tags</span>
+        <span style={{ padding: '7px 10px', fontSize: 13, fontWeight: 500, color: 'var(--j-text-muted)' }}>Tags</span>
       ) : (
         <select
           value={condition.field}
@@ -435,7 +435,7 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
 
       {selectedOperator?.requires_secondary && (
         <>
-          <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>and</span>
+          <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>and</span>
           <input
             type={fieldType === 'number' || fieldType === 'integer' || fieldType === 'decimal' ? 'number' : 'text'}
             value={condition.value_secondary || ''}
@@ -461,7 +461,7 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
 
       {condition.condition_type === 'event' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>in last</span>
+          <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>in last</span>
           <input
             type="number"
             value={condition.event_time_window_days || ''}
@@ -469,13 +469,13 @@ const ConditionEditor: React.FC<ConditionEditorProps> = ({
             placeholder="days"
             style={{ ...inputStyle, width: 60 }}
           />
-          <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>days</span>
+          <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>days</span>
         </div>
       )}
 
       {condition.condition_type === 'event' && TRACKING_EVENTS.has(condition.event_name || '') && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>from domain</span>
+          <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>from domain</span>
           <input
             type="text"
             value={condition.event_sending_domain || ''}
@@ -623,7 +623,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
           >
             {group.logic_operator}
           </button>
-          <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+          <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>
             Match {group.logic_operator === 'AND' ? 'all' : 'any'} of the following
           </span>
         </div>
@@ -634,7 +634,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
             style={{
               padding: '4px 10px', fontSize: 11, borderRadius: 4, border: 'none', cursor: 'pointer',
               background: group.is_negated ? 'color-mix(in srgb, var(--j-danger) 15%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
-              color: group.is_negated ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+              color: group.is_negated ? 'var(--j-danger)' : 'var(--j-text-muted)',
             }}
           >
             {group.is_negated ? 'Negated' : 'Negate'}
@@ -645,7 +645,7 @@ export const ConditionGroupEditor: React.FC<ConditionGroupEditorProps> = ({
               onClick={onRemove}
               style={{
                 padding: 4, background: 'none', border: 'none', cursor: 'pointer',
-                color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', borderRadius: 4,
+                color: 'var(--j-text-muted)', borderRadius: 4,
               }}
               title="Remove group"
             >

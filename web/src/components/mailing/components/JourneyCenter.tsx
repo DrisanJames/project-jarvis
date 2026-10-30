@@ -584,7 +584,7 @@ const JourneyList: React.FC<{
               onChange={(e) => onSearchChange(e.target.value)}
             />
           </div>
-          <button className="jc-refresh-btn" onClick={onRefresh}>
+          <button aria-label="Refresh" className="jc-refresh-btn" onClick={onRefresh}>
             <FontAwesomeIcon icon={faSync} spin={loading} />
           </button>
           <button className="jc-create-btn" onClick={onCreateJourney}>
@@ -729,7 +729,7 @@ const JourneyDetail: React.FC<{
             <h2>{journey.name}</h2>
             <StatusBadge status={journey.status} />
           </div>
-          <button className="jc-close-btn" onClick={onClose}>
+          <button aria-label="Close" className="jc-close-btn" onClick={onClose}>
             <FontAwesomeIcon icon={faTimes} />
           </button>
         </div>
@@ -986,7 +986,7 @@ const JourneyEnrollments: React.FC<{
             <h2>Enrollments: {journey.name}</h2>
             <span className="jc-enrollment-count">{enrollments.length} total</span>
           </div>
-          <button className="jc-close-btn" onClick={onClose}>
+          <button aria-label="Close" className="jc-close-btn" onClick={onClose}>
             <FontAwesomeIcon icon={faTimes} />
           </button>
         </div>
@@ -1001,7 +1001,7 @@ const JourneyEnrollments: React.FC<{
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select 
+          <select aria-label="Status filter" 
             value={statusFilter} 
             onChange={(e) => setStatusFilter(e.target.value as any)}
             className="jc-status-select"

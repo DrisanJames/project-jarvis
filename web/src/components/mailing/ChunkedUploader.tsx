@@ -466,7 +466,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         <h2>Import Subscribers</h2>
         {listName && <p>Importing to: <strong>{listName}</strong></p>}
         {onCancel && (
-          <button className="cu-close" onClick={onCancel}>
+          <button aria-label="Close" className="cu-close" onClick={onCancel}>
             <FontAwesomeIcon icon={faTimes} />
           </button>
         )}
@@ -496,7 +496,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         <div className="cu-error">
           <FontAwesomeIcon icon={faExclamationTriangle} />
           <span>{error}</span>
-          <button onClick={() => setError(null)}><FontAwesomeIcon icon={faTimes} /></button>
+          <button aria-label="Close" onClick={() => setError(null)}><FontAwesomeIcon icon={faTimes} /></button>
         </div>
       )}
 
@@ -518,7 +518,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
             <h4>Drag & drop your CSV file here</h4>
             <p>or</p>
             <label className="cu-file-input">
-              <input
+              <input aria-label="Choose a file to upload"
                 ref={fileInputRef}
                 type="file"
                 accept=".csv,text/csv"
@@ -591,7 +591,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
                       )}
                     </td>
                     <td>
-                      <select
+                      <select aria-label="Header"
                         value={fieldMappings[header] || ''}
                         onChange={(e) => updateMapping(header, e.target.value)}
                       >
@@ -789,16 +789,16 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         }
 
         .cu-header h2 { margin: 0; font-size: 20px; color: var(--j-text); }
-        .cu-header p { margin: 4px 0 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
+        .cu-header p { margin: 4px 0 0; color: var(--j-text-muted); font-size: 14px; }
         .cu-close { 
           background: none; 
           border: none; 
           cursor: pointer; 
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           padding: 8px;
           border-radius: 6px;
         }
-        .cu-close:hover { background: var(--j-surface-2); color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .cu-close:hover { background: var(--j-surface-2); color: var(--j-text-muted); }
 
         .cu-steps {
           display: flex;
@@ -813,7 +813,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           display: flex;
           align-items: center;
           gap: 8px;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           font-size: 13px;
         }
 
@@ -860,7 +860,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         }
 
         .cu-section-header h3 { margin: 0 0 4px; font-size: 18px; color: var(--j-text); }
-        .cu-section-header p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
+        .cu-section-header p { margin: 0; color: var(--j-text-muted); font-size: 14px; }
 
         /* File Selection */
         .cu-select { padding: 0 24px 24px; }
@@ -883,10 +883,10 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           background: var(--j-surface-2);
         }
 
-        .cu-dropzone-icon { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin-bottom: 16px; }
+        .cu-dropzone-icon { color: var(--j-text-muted); margin-bottom: 16px; }
         .cu-dropzone h4 { margin: 0 0 8px; color: var(--j-text-faint); }
-        .cu-dropzone > p { margin: 0 0 16px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
-        .cu-file-hint { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); margin-top: 16px !important; }
+        .cu-dropzone > p { margin: 0 0 16px; color: var(--j-text-muted); }
+        .cu-file-hint { font-size: 12px; color: var(--j-text-muted); margin-top: 16px !important; }
 
         .cu-file-input input { display: none; }
         .cu-file-input span {
@@ -938,8 +938,8 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
 
         .cu-spinner { color: var(--j-cyan); margin-bottom: 16px; }
         .cu-loading-container h3 { margin: 0 0 8px; color: var(--j-text); }
-        .cu-loading-container p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
-        .cu-file-name { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-top: 16px; }
+        .cu-loading-container p { margin: 0; color: var(--j-text-muted); }
+        .cu-file-name { color: var(--j-text-muted); font-size: 13px; margin-top: 16px; }
 
         /* Mapping */
         .cu-mapping { padding: 0 24px 24px; }
@@ -955,7 +955,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           color: #1e40af;
         }
 
-        .cu-file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .cu-file-size { color: var(--j-text-muted); }
         .cu-file-info button {
           margin-left: auto;
           background: none;
@@ -988,7 +988,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           background: var(--j-surface-2);
           font-size: 11px;
           font-weight: 600;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           text-transform: uppercase;
         }
 
@@ -1012,7 +1012,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           font-size: 13px;
         }
 
@@ -1055,7 +1055,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         }
 
         .cu-progress-container h3 { margin: 20px 0 8px; color: var(--j-text); }
-        .cu-progress-container p { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 0; }
+        .cu-progress-container p { color: var(--j-text-muted); margin: 0; }
 
         .cu-progress-bar-container {
           width: 100%;
@@ -1073,7 +1073,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           transition: width 0.3s;
         }
 
-        .cu-progress-text { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; margin-top: 8px; }
+        .cu-progress-text { color: var(--j-text-muted); font-size: 14px; margin-top: 8px; }
 
         /* Complete */
         .cu-complete { padding: 48px 24px; text-align: center; }
@@ -1112,12 +1112,12 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         }
 
         .cu-stat-value { display: block; font-size: 24px; font-weight: 700; color: var(--j-text); }
-        .cu-stat-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 65%, transparent); text-transform: uppercase; }
+        .cu-stat-label { font-size: 11px; color: var(--j-text-muted); text-transform: uppercase; }
         .cu-stat.success .cu-stat-value { color: var(--j-success); }
         .cu-stat.warning .cu-stat-value { color: var(--j-warn); }
         .cu-stat.error .cu-stat-value { color: var(--j-danger); }
 
-        .cu-duration { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-bottom: 16px; }
+        .cu-duration { color: var(--j-text-muted); font-size: 13px; margin-bottom: 16px; }
 
         .cu-error-list {
           max-width: 500px;

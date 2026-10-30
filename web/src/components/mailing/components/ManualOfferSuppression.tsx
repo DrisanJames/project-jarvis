@@ -16,7 +16,7 @@ const btn: React.CSSProperties = {
 
 const thStyle: React.CSSProperties = {
   textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5,
-  color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', padding: '6px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
+  color: 'var(--j-text-muted)', padding: '6px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
 };
 
 const tdStyle: React.CSSProperties = {
@@ -131,21 +131,21 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>Manual Address Suppression</div>
         {total !== null && (
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>{total.toLocaleString()} total entries on this offer</span>
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{total.toLocaleString()} total entries on this offer</span>
         )}
       </div>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 10 }}>
         Paste one or more addresses (newline / comma separated) or upload a .csv/.txt file. Addresses are matched
         against the subscriber base and blocked for this offer at planning and send time.
       </div>
-      <textarea
+      <textarea aria-label="Paste text"
         value={pasteText}
         onChange={e => setPasteText(e.target.value)}
         placeholder={'someone@example.com\nanother@example.com'}
         rows={3}
         style={{
           width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: 12, fontFamily: 'monospace',
-          background: '#0a0f1d', color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, padding: 10,
+          background: 'var(--j-surface)', color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, padding: 10,
         }}
         disabled={submitting}
       />
@@ -157,9 +157,9 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
         >
           {submitting ? 'Suppressing…' : `Suppress ${parseEmails(pasteText).length || ''} Address${parseEmails(pasteText).length === 1 ? '' : 'es'}`}
         </button>
-        <label style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
+        <label style={{ fontSize: 12, color: 'var(--j-text-muted)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
           or upload file:{' '}
-          <input type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: 'var(--j-text)' }} />
+          <input aria-label="Choose a file to upload" type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: 'var(--j-text)' }} />
         </label>
       </div>
       {resultMsg && (
@@ -194,7 +194,7 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
                     <td style={tdStyle}>
                       {en.email && (
                         <button
-                          style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 11 }}
+                          style={{ background: 'none', border: 'none', color: 'var(--j-hard)', cursor: 'pointer', fontSize: 11 }}
                           title="Remove from offer suppression"
                           onClick={() => removeEntry(en.email)}
                         >

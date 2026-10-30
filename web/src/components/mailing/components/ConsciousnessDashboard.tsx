@@ -275,14 +275,14 @@ const postureColor: Record<string, string> = {
   healthy: 'var(--j-success)',
   watch: 'var(--j-warn)',
   degraded: 'var(--j-warn)',
-  critical: '#ef4444',
+  critical: 'var(--j-hard)',
   idle: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
 };
 
 const recSeverityColor: Record<string, string> = {
   info: 'var(--j-blue)',
-  warn: '#f59e0b',
-  critical: '#ef4444',
+  warn: 'var(--j-soft)',
+  critical: 'var(--j-hard)',
 };
 
 const TS_METRICS = ['delivered', 'deferred', 'hard_bounce', 'soft_bounce'] as const;
@@ -339,8 +339,8 @@ const severityColor: Record<string, string> = {
 
 const toneColor: Record<Suggestion['tone'], string> = {
   good: 'var(--j-success)',
-  warn: '#f59e0b',
-  bad: '#ef4444',
+  warn: 'var(--j-soft)',
+  bad: 'var(--j-hard)',
   info: 'var(--j-blue)',
 };
 
@@ -446,11 +446,11 @@ function buildSuggestions(row: ISPRow, cfg: ISPConfigEntry | undefined, engineTh
 }
 
 function posture(cfg: ISPConfigEntry | undefined): { label: string; color: string } {
-  if (!cfg) return { label: 'no agent', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' };
-  if (!cfg.enabled) return { label: 'disabled', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' };
-  if (cfg.in_recovery) return { label: 'recovering', color: '#f59e0b' };
-  if (cfg.backoff_count > 0) return { label: `backoff ×${cfg.backoff_count}`, color: '#f59e0b' };
-  if (cfg.rate_adjustment < 0.95) return { label: `throttled ${Math.round(cfg.rate_adjustment * 100)}%`, color: '#f59e0b' };
+  if (!cfg) return { label: 'no agent', color: 'var(--j-text-muted)' };
+  if (!cfg.enabled) return { label: 'disabled', color: 'var(--j-text-muted)' };
+  if (cfg.in_recovery) return { label: 'recovering', color: 'var(--j-soft)' };
+  if (cfg.backoff_count > 0) return { label: `backoff ×${cfg.backoff_count}`, color: 'var(--j-soft)' };
+  if (cfg.rate_adjustment < 0.95) return { label: `throttled ${Math.round(cfg.rate_adjustment * 100)}%`, color: 'var(--j-soft)' };
   return { label: 'full rate', color: 'var(--j-success)' };
 }
 
@@ -670,7 +670,7 @@ export const ConsciousnessDashboard: React.FC = () => {
     return (
       <div style={styles.loadingContainer}>
         <FontAwesomeIcon icon={faBrain} spin style={{ fontSize: 48, color: 'var(--j-blue)' }} />
-        <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 16 }}>Initializing consciousness...</p>
+        <p style={{ color: 'var(--j-text-muted)', marginTop: 16 }}>Initializing consciousness...</p>
       </div>
     );
   }
@@ -699,7 +699,7 @@ export const ConsciousnessDashboard: React.FC = () => {
           <div style={styles.liveBadge}>
             <span style={styles.liveDot} />
             <span style={{ color: 'var(--j-success)', fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>LIVE</span>
-            <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11 }}>
+            <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>
               {lastUpdated ? `updated ${lastUpdated.toLocaleTimeString()}` : 'loading…'}
             </span>
           </div>
@@ -711,7 +711,7 @@ export const ConsciousnessDashboard: React.FC = () => {
             <AnimatedCounter value={Math.round(state?.health_score || 0)} style={styles.healthValue} />
             <span style={styles.healthLabel}>Health</span>
           </div>
-          <button onClick={() => { fetchState(); fetchOps(); }} style={styles.refreshBtn}>
+          <button aria-label="Refresh" onClick={() => { fetchState(); fetchOps(); }} style={styles.refreshBtn}>
             <FontAwesomeIcon icon={faSyncAlt} />
           </button>
         </div>
@@ -868,15 +868,15 @@ const AssessmentsPanel: React.FC = () => {
       <h3 style={styles.cardTitle}>
         <FontAwesomeIcon icon={faBrain} style={{ marginRight: 8, color: 'var(--j-blue)' }} />
         Hourly Assessments
-        <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+        <span style={{ color: 'var(--j-text-muted)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
           one per scope per hour · latest + history
         </span>
       </h3>
 
-      {error && <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: 0 }}>{error}</p>}
 
       {!error && latest.length === 0 && (
-        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>
+        <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: 0 }}>
           No hourly assessments persisted yet — the engine writes one per scope each hour
           (first one lands a few minutes after boot).
         </p>
@@ -914,7 +914,7 @@ const AssessmentsPanel: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
                 <span style={{ color: 'var(--j-text)', fontSize: 14, fontWeight: 700 }}>{scopeLabel(current.scope)}</span>
                 <PostureChip posture={current.posture} />
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
+                <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>
                   assessed {new Date(current.created_at).toLocaleString()} · {current.body.window_minutes}m window
                   · {current.body.recommendations.length} recommendation{current.body.recommendations.length === 1 ? '' : 's'}
                 </span>
@@ -927,10 +927,10 @@ const AssessmentsPanel: React.FC = () => {
                 <span style={{ color: deferralColor(current.body.totals?.deferral_pct || 0) }}>
                   {(current.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
                 </span>
-                <span style={{ color: (current.body.totals?.hard_pct || 0) > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
+                <span style={{ color: (current.body.totals?.hard_pct || 0) > 2 ? 'var(--j-hard)' : 'var(--j-text-2)' }}>
                   {(current.body.totals?.hard_pct || 0).toFixed(1)}% hard
                 </span>
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+                <span style={{ color: 'var(--j-text-muted)' }}>
                   {current.body.signals?.total || 0} engine signals
                 </span>
               </div>
@@ -941,7 +941,7 @@ const AssessmentsPanel: React.FC = () => {
                   {(current.body.notable_events || []).slice(0, 6).map((ev, i) => (
                     <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginBottom: 3 }}>
                       <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-warn)', fontSize: 10, marginTop: 3, flexShrink: 0 }} />
-                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 12, lineHeight: 1.35 }}>{ev}</span>
+                      <span style={{ color: 'var(--j-text-2)', fontSize: 12, lineHeight: 1.35 }}>{ev}</span>
                     </div>
                   ))}
                 </div>
@@ -963,13 +963,13 @@ const AssessmentsPanel: React.FC = () => {
                         <tr key={`${p.isp}-${p.vmta}-${i}`} style={styles.opsTr}>
                           <td style={{ ...styles.opsTd, fontWeight: 700, color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{ispLabel(p.isp)}</td>
                           <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{p.vmta}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', whiteSpace: 'nowrap' }}>{p.pool || '—'}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text-2)', whiteSpace: 'nowrap' }}>{p.pool || '—'}</td>
                           <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{p.attempted.toLocaleString()}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? 'var(--j-soft)' : 'var(--j-hard)' }}>
                             {p.delivered_pct.toFixed(1)}%
                           </td>
                           <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>{p.deferral_pct.toFixed(1)}%</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.hard_pct > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>{p.hard_pct.toFixed(1)}%</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.hard_pct > 2 ? 'var(--j-hard)' : 'var(--j-text-2)' }}>{p.hard_pct.toFixed(1)}%</td>
                         </tr>
                       ))}
                     </tbody>
@@ -980,7 +980,7 @@ const AssessmentsPanel: React.FC = () => {
               {/* History scroll for this scope */}
               {history.length > 0 && (
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                  <div style={{ color: 'var(--j-text-muted)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
                     History — last {data?.hours || 24}h
                   </div>
                   <div style={{ maxHeight: 160, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -990,14 +990,14 @@ const AssessmentsPanel: React.FC = () => {
                         padding: '6px 10px', borderRadius: 6, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)',
                         fontSize: 12,
                       }}>
-                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        <span style={{ color: 'var(--j-text-muted)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                           {new Date(a.created_at).toLocaleString()}
                         </span>
                         <PostureChip posture={a.posture} />
-                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace' }}>
+                        <span style={{ color: 'var(--j-text-muted)', fontFamily: 'monospace' }}>
                           {(a.body.totals?.attempted || 0).toLocaleString()} attempted · {(a.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
                         </span>
-                        <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
+                        <span style={{ marginLeft: 'auto', color: 'var(--j-text-muted)' }}>
                           {a.body.recommendations.length} rec{a.body.recommendations.length === 1 ? '' : 's'}
                         </span>
                       </div>
@@ -1061,13 +1061,13 @@ const RecommendationCard: React.FC<{ rec: AssessmentRecommendation; hour?: strin
           textTransform: 'uppercase', letterSpacing: 0.5,
           background: 'color-mix(in srgb, var(--j-cyan) 10%, transparent)', color: 'var(--j-blue)',
         }}>{rec.type}</span>
-        <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 10, fontFamily: 'monospace' }}>{rec.scope}</span>
+        <span style={{ color: 'var(--j-text-muted)', fontSize: 10, fontFamily: 'monospace' }}>{rec.scope}</span>
         <button
           onClick={copy}
           title="Copy as text"
           style={{
             marginLeft: 'auto', background: 'none', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
-            color: copied ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)', borderRadius: 5,
+            color: copied ? 'var(--j-success)' : 'var(--j-text-muted)', borderRadius: 5,
             padding: '2px 7px', fontSize: 10, cursor: 'pointer', flexShrink: 0,
           }}
         >
@@ -1075,8 +1075,8 @@ const RecommendationCard: React.FC<{ rec: AssessmentRecommendation; hour?: strin
         </button>
       </div>
       <p style={{ color: 'var(--j-text)', fontSize: 12, margin: '0 0 4px', lineHeight: 1.45 }}>{rec.action}</p>
-      <p style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>{rec.evidence}</p>
-      <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10, display: 'block', marginTop: 5 }}>
+      <p style={{ color: 'var(--j-text-muted)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>{rec.evidence}</p>
+      <span style={{ color: 'var(--j-text-muted)', fontSize: 10, display: 'block', marginTop: 5 }}>
         {new Date(rec.created_at).toLocaleString()}
       </span>
     </div>
@@ -1137,12 +1137,12 @@ const RecommendationsRail: React.FC = () => {
         <FontAwesomeIcon icon={faClipboardList} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
         Recommendations
       </h3>
-      <p style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, margin: '0 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <p style={{ color: 'var(--j-text-muted)', fontSize: 10, margin: '0 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
         Advisory only — nothing is auto-applied
         {current?.assessment_hour && ` · assessed ${new Date(current.assessment_hour).toLocaleTimeString()}`}
       </p>
 
-      {error && <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--j-text-muted)', fontSize: 12 }}>{error}</p>}
 
       {!error && currentRecs.length === 0 && (
         <p style={{ color: 'var(--j-success)', fontSize: 12, margin: 0 }}>
@@ -1159,7 +1159,7 @@ const RecommendationsRail: React.FC = () => {
       {historyRecs.length > 0 && (
         <>
           <div style={{
-            color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, fontWeight: 700,
+            color: 'var(--j-text-muted)', fontSize: 10, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: 0.5, margin: '16px 0 8px',
             borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)', paddingTop: 12,
           }}>
@@ -1184,8 +1184,8 @@ const RecommendationsRail: React.FC = () => {
 const HOURLY_ASSESS_POLL_MS = 10 * 60 * 1000;
 
 function deferralColor(pct: number): string {
-  if (pct > 50) return '#ef4444';
-  if (pct > 10) return '#f59e0b';
+  if (pct > 50) return 'var(--j-hard)';
+  if (pct > 10) return 'var(--j-soft)';
   return 'color-mix(in srgb, var(--j-text) 80%, transparent)';
 }
 
@@ -1224,18 +1224,18 @@ const HourlyAssessmentPanel: React.FC = () => {
       <h3 style={styles.cardTitle}>
         <FontAwesomeIcon icon={faBolt} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
         Hourly Assessment
-        <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+        <span style={{ color: 'var(--j-text-muted)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
           last 60 min · per-pipe routing read
           {assessment && ` · generated ${new Date(assessment.generated_at).toLocaleTimeString()}`}
         </span>
       </h3>
 
       {error && (
-        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>{error}</p>
+        <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: 0 }}>{error}</p>
       )}
 
       {!error && !assessment && (
-        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>Assessing the last hour…</p>
+        <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: 0 }}>Assessing the last hour…</p>
       )}
 
       {assessment && (
@@ -1248,7 +1248,7 @@ const HourlyAssessmentPanel: React.FC = () => {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
               {recommendations.map((rec, i) => {
-                const color = rec.severity === 'critical' ? '#ef4444' : '#f59e0b';
+                const color = rec.severity === 'critical' ? 'var(--j-hard)' : 'var(--j-soft)';
                 return (
                   <div key={i} style={{
                     display: 'flex', alignItems: 'flex-start', gap: 8,
@@ -1259,7 +1259,7 @@ const HourlyAssessmentPanel: React.FC = () => {
                     <div style={{ minWidth: 0 }}>
                       <span style={{ color: 'var(--j-text)', fontSize: 13, lineHeight: 1.4 }}>{rec.message}</span>
                       {rec.type === 'reroute' && (
-                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11, display: 'block', fontFamily: 'monospace' }}>
+                        <span style={{ color: 'var(--j-text-muted)', fontSize: 11, display: 'block', fontFamily: 'monospace' }}>
                           {rec.bad_vmta}: {rec.bad_deferral_pct?.toFixed(1)}% deferral vs {rec.good_vmta}: {rec.good_deferral_pct?.toFixed(1)}%
                         </span>
                       )}
@@ -1272,7 +1272,7 @@ const HourlyAssessmentPanel: React.FC = () => {
 
           {/* Per-ISP → VMTA pipes table */}
           {pipes.length === 0 ? (
-            <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>
+            <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: 0 }}>
               No PMTA traffic in the last 60 minutes.
             </p>
           ) : (
@@ -1295,13 +1295,13 @@ const HourlyAssessmentPanel: React.FC = () => {
                         </td>
                         <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{p.vmta}</td>
                         <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{p.attempted.toLocaleString()}</td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? 'var(--j-soft)' : 'var(--j-hard)' }}>
                           {p.delivered_pct.toFixed(1)}%
                         </td>
                         <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>
                           {p.deferral_pct.toFixed(1)}%
                         </td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.bounce_pct > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.bounce_pct > 2 ? 'var(--j-hard)' : 'var(--j-text-2)' }}>
                           {p.bounce_pct.toFixed(2)}%
                         </td>
                       </tr>
@@ -1394,15 +1394,15 @@ const OperationsBoard: React.FC<{
         {[
           { label: 'Sent 24h', value: totals.attempted, color: 'var(--j-violet)', fmt: (v: number) => v.toLocaleString() },
           { label: 'Delivered %', value: pctOf(totals.delivered, totals.attempted), color: 'var(--j-success)', fmt: (v: number) => `${v.toFixed(1)}%` },
-          { label: 'Deferred %', value: pctOf(totals.deferred, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(1)}%` },
-          { label: 'Hard %', value: pctOf(totals.hard, totals.attempted), color: '#ef4444', fmt: (v: number) => `${v.toFixed(2)}%` },
-          { label: 'Soft %', value: pctOf(totals.soft, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(2)}%` },
+          { label: 'Deferred %', value: pctOf(totals.deferred, totals.attempted), color: 'var(--j-soft)', fmt: (v: number) => `${v.toFixed(1)}%` },
+          { label: 'Hard %', value: pctOf(totals.hard, totals.attempted), color: 'var(--j-hard)', fmt: (v: number) => `${v.toFixed(2)}%` },
+          { label: 'Soft %', value: pctOf(totals.soft, totals.attempted), color: 'var(--j-soft)', fmt: (v: number) => `${v.toFixed(2)}%` },
           { label: 'Rep. Blocked', value: totals.repBlocked, color: 'var(--j-danger)', fmt: (v: number) => v.toLocaleString() },
           { label: 'Complaints', value: totals.complaint, color: 'var(--j-danger)', fmt: (v: number) => v.toLocaleString() },
         ].map(m => (
           <div key={m.label} className="ig-card-hover" style={styles.kpiCard}>
             <div style={{ color: m.color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>{m.fmt(m.value)}</div>
-            <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+            <div style={{ color: 'var(--j-text-muted)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
       </div>
@@ -1420,7 +1420,7 @@ const OperationsBoard: React.FC<{
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} style={{ ...styles.opsTd, textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                <td colSpan={10} style={{ ...styles.opsTd, textAlign: 'center', padding: 40, color: 'var(--j-text-muted)' }}>
                   No delivery events in the last 24h.
                 </td>
               </tr>
@@ -1450,19 +1450,19 @@ const OperationsBoard: React.FC<{
                     </AreaChart>
                   </td>
                   <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{r.attempted.toLocaleString()}</td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deliveredPct >= 92 ? 'var(--j-success)' : r.deliveredPct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deliveredPct >= 92 ? 'var(--j-success)' : r.deliveredPct >= 80 ? 'var(--j-soft)' : 'var(--j-hard)' }}>
                     {r.attempted > 0 ? `${r.deliveredPct.toFixed(1)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deferPct > 10 ? '#ef4444' : r.deferPct > 5 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deferPct > 10 ? 'var(--j-hard)' : r.deferPct > 5 ? 'var(--j-soft)' : 'var(--j-text-2)' }}>
                     {r.attempted > 0 ? `${r.deferPct.toFixed(1)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.hardPct > 2 ? '#ef4444' : r.hardPct > 1 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.hardPct > 2 ? 'var(--j-hard)' : r.hardPct > 1 ? 'var(--j-danger)' : 'var(--j-text-2)' }}>
                     {r.attempted > 0 ? `${r.hardPct.toFixed(2)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.softPct > 5 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.softPct > 5 ? 'var(--j-soft)' : 'var(--j-text-2)' }}>
                     {r.attempted > 0 ? `${r.softPct.toFixed(2)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.complaint > 0 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.complaint > 0 ? 'var(--j-danger)' : 'var(--j-text-muted)' }}>
                     {r.complaint.toLocaleString()}
                   </td>
                   <td style={styles.opsTd}>
@@ -1472,7 +1472,7 @@ const OperationsBoard: React.FC<{
                       background: `color-mix(in srgb, ${post.color} 13%, transparent)`, color: post.color, whiteSpace: 'nowrap',
                     }}>{post.label}</span>
                     {cfg && (
-                      <div style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}>
+                      <div style={{ color: 'var(--j-text-muted)', fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}>
                         {Math.round(cfg.current_rate)}/{cfg.max_msg_rate} msg/hr · {cfg.ip_count} IPs
                       </div>
                     )}
@@ -1498,7 +1498,7 @@ const OperationsBoard: React.FC<{
           <h3 style={{ color: 'var(--j-text)', fontSize: 15, fontWeight: 700, margin: '0 0 12px' }}>
             {ispLabel(selected)} — last 24h
             {selectedCfg && (
-              <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, fontWeight: 500, marginLeft: 10 }}>
+              <span style={{ color: 'var(--j-text-muted)', fontSize: 12, fontWeight: 500, marginLeft: 10 }}>
                 pool {selectedCfg.pool_name} · {selectedCfg.ip_count} IPs · rate {Math.round(selectedCfg.current_rate)}/{selectedCfg.max_msg_rate}
               </span>
             )}
@@ -1506,7 +1506,7 @@ const OperationsBoard: React.FC<{
           <div style={styles.detailGrid}>
             <div className="ig-card-hover" style={{ ...styles.card, gridColumn: 'span 2' }}>
               {detailData.length === 0 ? (
-                <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 13 }}>No timeseries data for this ISP in the last 24h.</p>
+                <p style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No timeseries data for this ISP in the last 24h.</p>
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={detailData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
@@ -1514,13 +1514,13 @@ const OperationsBoard: React.FC<{
                     <XAxis dataKey="time" stroke="var(--j-text-faint)" fontSize={11} tickLine={false} />
                     <YAxis stroke="var(--j-text-faint)" fontSize={11} tickLine={false} width={50} />
                     <Tooltip
-                      contentStyle={{ background: '#0b1220', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 35%, transparent)', borderRadius: 8, fontSize: 12 }}
+                      contentStyle={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 35%, transparent)', borderRadius: 8, fontSize: 12 }}
                       labelStyle={{ color: 'var(--j-text)' }}
                     />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Line type="monotone" dataKey="delivered" name="Delivered" stroke="var(--j-success)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="deferred" name="Deferred" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="deferred" name="Deferred" stroke="var(--j-soft)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="var(--j-hard)" strokeWidth={2} dot={false} isAnimationActive={false} />
                     <Line type="monotone" dataKey="soft_bounce" name="Soft Bounce" stroke="var(--j-warn)" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 3" />
                   </LineChart>
                 </ResponsiveContainer>
@@ -1533,7 +1533,7 @@ const OperationsBoard: React.FC<{
                 Engine Signals
               </h4>
               {selectedThoughts.length === 0 ? (
-                <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>No recent engine signals for this ISP.</p>
+                <p style={{ color: 'var(--j-text-muted)', fontSize: 12 }}>No recent engine signals for this ISP.</p>
               ) : (
                 selectedThoughts.map(t => (
                   <div key={t.id} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
@@ -1543,7 +1543,7 @@ const OperationsBoard: React.FC<{
                     />
                     <div style={{ minWidth: 0 }}>
                       <p style={{ color: 'var(--j-text)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
-                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10 }}>
+                      <span style={{ color: 'var(--j-text-muted)', fontSize: 10 }}>
                         {new Date(t.timestamp).toLocaleTimeString()} · {t.type}
                       </span>
                     </div>
@@ -1559,9 +1559,9 @@ const OperationsBoard: React.FC<{
                   {selectedBeliefs.map(p => (
                     <div key={p.id} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                       <span style={{ width: 7, height: 7, borderRadius: '50%', background: sentimentColor[p.sentiment] || 'color-mix(in srgb, var(--j-text) 65%, transparent)', flexShrink: 0, marginTop: 5 }} />
-                      <p style={{ color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>
+                      <p style={{ color: 'var(--j-text-2)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>
                         {p.belief}
-                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10 }}> · {Math.round(p.confidence * 100)}% conf</span>
+                        <span style={{ color: 'var(--j-text-muted)', fontSize: 10 }}> · {Math.round(p.confidence * 100)}% conf</span>
                       </p>
                     </div>
                   ))}
@@ -1639,11 +1639,11 @@ function renderOverview(
                 <span style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12, textTransform: 'uppercase' }}>
                   {p.isp} / {p.domain}
                 </span>
-                <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'var(--j-text-muted)', fontSize: 11 }}>
                   {Math.round(p.strength * 100)}% strength
                 </span>
               </div>
-              <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
+              <p style={{ color: 'var(--j-text-muted)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
             </div>
           ))}
         </div>
@@ -1656,7 +1656,7 @@ function renderOverview(
           Active Campaigns
         </h3>
         {campaigns.length === 0 ? (
-          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No active campaigns</p>
+          <p style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No active campaigns</p>
         ) : (
           <div style={styles.campaignMiniList}>
             {campaigns.slice(0, 4).map(c => (
@@ -1691,7 +1691,7 @@ function renderOverview(
         </h3>
         <div style={styles.thoughtFeed}>
           {recentThoughts.length === 0 ? (
-            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>Awaiting observations...</p>
+            <p style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>Awaiting observations...</p>
           ) : (
             recentThoughts.map(t => (
               <div key={t.id} style={styles.thoughtItem}>
@@ -1701,7 +1701,7 @@ function renderOverview(
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <p style={{ color: 'var(--j-text)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
+                  <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>
                     {new Date(t.timestamp).toLocaleTimeString()}
                     {t.isp && ` · ${t.isp}`}
                     {t.agent_type && ` · ${t.agent_type}`}
@@ -1745,8 +1745,8 @@ function renderPhilosophies(
       <div style={styles.philosophyGrid}>
         {philosophies.length === 0 ? (
           <div style={styles.emptyState}>
-            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
-            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No insights yet. The system needs more data.</p>
+            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'var(--j-text-muted)', marginBottom: 16 }} />
+            <p style={{ color: 'var(--j-text-muted)' }}>No insights yet. The system needs more data.</p>
           </div>
         ) : (
           philosophies.map(p => (
@@ -1759,9 +1759,9 @@ function renderPhilosophies(
                     background: `color-mix(in srgb, ${sentimentColor[p.sentiment]} 13%, transparent)`,
                     color: sentimentColor[p.sentiment],
                   }}>{p.sentiment}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{p.isp} / {p.domain}</span>
+                  <span style={{ color: 'var(--j-text-muted)', fontSize: 12 }}>{p.isp} / {p.domain}</span>
                 </div>
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{p.evidence_count} observations</span>
+                <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>{p.evidence_count} observations</span>
               </div>
 
               <p style={styles.philosophyBelief}>{p.belief}</p>
@@ -1771,7 +1771,7 @@ function renderPhilosophies(
                 <div style={styles.strengthBar}>
                   <div style={{ ...styles.strengthFill, width: `${p.strength * 100}%` }} />
                 </div>
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>
+                <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>
                   {Math.round(p.confidence * 100)}% confidence · {Math.round(p.strength * 100)}% strength
                   {p.challenges > 0 && ` · ${p.challenges} challenges`}
                 </span>
@@ -1802,7 +1802,7 @@ function renderThoughts(
     <div>
       {/* Default is paused/snapshot — the firehose only runs when toggled on */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
+        <span style={{ color: 'var(--j-text-muted)', fontSize: 12 }}>
           {live ? 'Streaming thoughts live' : 'Snapshot view (stream paused)'}
         </span>
         <button
@@ -1811,7 +1811,7 @@ function renderThoughts(
             padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
             background: live ? 'color-mix(in srgb, var(--j-success) 12%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
             border: live ? '1px solid color-mix(in srgb, var(--j-success) 40%, transparent)' : '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
-            color: live ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 80%, transparent)',
+            color: live ? 'var(--j-success)' : 'var(--j-text-2)',
             display: 'flex', alignItems: 'center',
           }}
         >
@@ -1823,8 +1823,8 @@ function renderThoughts(
       <div className="ig-data-stream" style={styles.thoughtsContainer}>
       {thoughts.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
-          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No thoughts yet. The system is still forming its initial observations.</p>
+          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'var(--j-text-muted)', marginBottom: 16 }} />
+          <p style={{ color: 'var(--j-text-muted)' }}>No thoughts yet. The system is still forming its initial observations.</p>
         </div>
       ) : (
         <>
@@ -1838,23 +1838,23 @@ function renderThoughts(
                   icon={thoughtTypeIcon[t.type] || faCommentDots}
                   style={{ color: severityColor[t.severity || 'info'], marginRight: 8 }}
                 />
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
+                <span style={{ color: 'var(--j-text-muted)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
                   {t.type}
                 </span>
                 {t.isp && <span style={styles.thoughtTag}>{t.isp}</span>}
                 {t.agent_type && <span style={styles.thoughtTag}>{t.agent_type}</span>}
-                <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'var(--j-text-muted)', fontSize: 11 }}>
                   {new Date(t.timestamp).toLocaleString()}
                 </span>
               </div>
               <p style={{ color: 'var(--j-text)', fontSize: 14, margin: '8px 0', lineHeight: 1.5 }}>{t.content}</p>
               {t.reasoning && (
-                <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
+                <p style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
                   Reasoning: {t.reasoning}
                 </p>
               )}
               {t.confidence != null && t.confidence > 0 && (
-                <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
+                <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
               )}
             </div>
           ))}
@@ -1886,21 +1886,21 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
           { label: 'Delivered', value: totals.delivered, color: 'var(--j-success)' },
           { label: 'Opens', value: totals.opens, color: 'var(--j-cyan)' },
           { label: 'Clicks', value: totals.clicks, color: 'var(--j-cyan)' },
-          { label: 'Hard Bounces', value: totals.hard_bounces, color: '#ef4444' },
-          { label: 'Soft Bounces', value: totals.soft_bounces, color: '#f59e0b' },
+          { label: 'Hard Bounces', value: totals.hard_bounces, color: 'var(--j-hard)' },
+          { label: 'Soft Bounces', value: totals.soft_bounces, color: 'var(--j-soft)' },
           { label: 'Complaints', value: totals.complaints, color: 'var(--j-danger)' },
         ].map(m => (
           <div key={m.label} className="ig-card-hover" style={{ background: 'var(--j-surface)', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
             <AnimatedCounter value={m.value} style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }} />
-            <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+            <div style={{ color: 'var(--j-text-muted)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
       </div>
 
       {campaigns.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
-          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
+          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: 'var(--j-text-muted)', marginBottom: 16 }} />
+          <p style={{ color: 'var(--j-text-muted)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
         </div>
       ) : (
         <div className="ig-stagger" style={styles.campaignGrid}>
@@ -1921,7 +1921,7 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
                   >
                     {campaignLabel(c)}
                   </h3>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
+                  <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>
                     Started {new Date(c.started_at).toLocaleDateString()}
                   </span>
                 </div>
@@ -1946,7 +1946,7 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
 
                 {c.isp_metrics && Object.keys(c.isp_metrics).length > 0 && (
                   <div style={styles.ispBreakdown}>
-                    <h4 style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
+                    <h4 style={{ color: 'var(--j-text-muted)', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
                     {Object.entries(c.isp_metrics).map(([isp, m]: [string, any]) => (
                       <div key={isp} style={styles.ispRow}>
                         <span style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12, width: 80 }}>{isp}</span>
@@ -1955,9 +1955,9 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
                         <span style={{ color: 'var(--j-cyan)', fontSize: 11 }}>{m.unique_clicks} clicks</span>
                         {(m.hard_bounce > 0 || m.soft_bounce > 0) && (
                           <span style={{ fontSize: 11 }}>
-                            <span style={{ color: '#ef4444' }}>{m.hard_bounce} hard</span>
-                            <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}> / </span>
-                            <span style={{ color: '#f59e0b' }}>{m.soft_bounce} soft</span>
+                            <span style={{ color: 'var(--j-hard)' }}>{m.hard_bounce} hard</span>
+                            <span style={{ color: 'var(--j-text-muted)' }}> / </span>
+                            <span style={{ color: 'var(--j-soft)' }}>{m.soft_bounce} soft</span>
                           </span>
                         )}
                       </div>
@@ -1978,15 +1978,15 @@ const MetricBox: React.FC<{ label: string; value: number; color: string; sub?: s
     <span style={{ color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>
       {value.toLocaleString()}
     </span>
-    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{label}</span>
-    {sub && <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10 }}>{sub}</span>}
+    <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>{label}</span>
+    {sub && <span style={{ color: 'var(--j-text-muted)', fontSize: 10 }}>{sub}</span>}
   </div>
 );
 
 const RateBar: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
   <div style={{ flex: 1 }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-      <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{label}</span>
+      <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>{label}</span>
       <span style={{ color, fontSize: 11, fontWeight: 600 }}>{value.toFixed(1)}%</span>
     </div>
     <div style={{ height: 4, background: 'var(--j-surface)', borderRadius: 2 }}>
@@ -2069,7 +2069,7 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: -0.5,
   },
   subtitle: {
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 14,
     margin: '4px 0 0',
   },
@@ -2118,14 +2118,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
   },
   healthLabel: {
-    color: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 10,
     textTransform: 'uppercase' as const,
   },
   refreshBtn: {
     background: 'none',
     border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     padding: '8px 12px',
     borderRadius: 8,
     cursor: 'pointer',
@@ -2145,7 +2145,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '10px 16px',
     background: 'transparent',
     border: 'none',
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
@@ -2258,7 +2258,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'width 0.5s ease',
   },
   beliefCount: {
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 13,
     fontWeight: 600,
     width: 20,
@@ -2314,7 +2314,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '6px 14px',
     background: 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
     border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     borderRadius: 8,
     fontSize: 12,
     fontWeight: 600,
@@ -2356,7 +2356,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
   },
   philosophyExplanation: {
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 13,
     lineHeight: 1.5,
     margin: '0 0 12px',
@@ -2388,7 +2388,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
     border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 4,
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 11,
   },
   thoughtsContainer: {

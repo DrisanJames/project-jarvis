@@ -89,7 +89,7 @@ const Agents = lazy(() => import('../components/Agents'));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
 const ChunkLoader: React.FC = () => (
-  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', gap: 10, fontSize: 14 }}>
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'var(--j-text-muted)', gap: 10, fontSize: 14 }}>
     <FontAwesomeIcon icon={faSpinner} spin /> Loading…
   </div>
 );
@@ -960,18 +960,18 @@ const EnhancedDashboard: React.FC = () => {
           {/*
             Per .cursor/rules/bounce-metrics.mdc:
               Never display a single combined "Bounced" metric. Always break
-              bounces into hard (#ef4444 = red) and soft (#f59e0b = amber).
+              bounces into hard (var(--j-hard) = red) and soft (var(--j-soft) = amber).
             The fields hard_bounces / soft_bounces are returned by HandleDashboard
             from ComputeMetrics; surfacing them here closes the visibility gap
             the audit identified (the Dashboard previously showed zero bounce
             information at all).
           */}
           <div className="metric-card">
-            <span className="metric-icon" style={{ color: todayHard > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>
+            <span className="metric-icon" style={{ color: todayHard > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>
               <FontAwesomeIcon icon={faBan} />
             </span>
             <div className="metric-content">
-              <span className="metric-value" style={{ color: todayHard > 0 ? '#ef4444' : undefined }}>
+              <span className="metric-value" style={{ color: todayHard > 0 ? 'var(--j-hard)' : undefined }}>
                 {todayHard.toLocaleString()}
               </span>
               <span className="metric-label">
@@ -983,11 +983,11 @@ const EnhancedDashboard: React.FC = () => {
             className="metric-card"
             title="Soft bounces from the analytics lake include transient failures (greylisting, throttling, temporary defers) that were later RETRIED and delivered — so this is NOT a final-undelivered rate and reads higher than the mail that actually failed. Hard bounces (list-hygiene failures) are the reputation signal."
           >
-            <span className="metric-icon" style={{ color: todaySoft > 0 ? '#f59e0b' : 'var(--j-border-strong)' }}>
+            <span className="metric-icon" style={{ color: todaySoft > 0 ? 'var(--j-soft)' : 'var(--j-border-strong)' }}>
               <FontAwesomeIcon icon={faBan} />
             </span>
             <div className="metric-content">
-              <span className="metric-value" style={{ color: todaySoft > 0 ? '#f59e0b' : undefined }}>
+              <span className="metric-value" style={{ color: todaySoft > 0 ? 'var(--j-soft)' : undefined }}>
                 {todaySoft.toLocaleString()}
               </span>
               <span className="metric-label">
@@ -1469,7 +1469,7 @@ const AutomationsManager: React.FC = () => {
                     <>
                       <span className="step-icon">⏱️</span>
                       <span>Wait</span>
-                      <input type="number" value={step.wait_minutes / 60} onChange={e => {
+                      <input aria-label="Wait" type="number" value={step.wait_minutes / 60} onChange={e => {
                         const steps = [...newAuto.steps];
                         steps[i].wait_minutes = parseInt(e.target.value) * 60;
                         setNewAuto(p => ({...p, steps}));
@@ -1869,7 +1869,7 @@ const TemplatesManager: React.FC = () => {
           >
             {hasChildren && (
               <span onClick={e => { e.stopPropagation(); toggleExpand(f.id); }}
-                style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', cursor: 'pointer', width: 12, textAlign: 'center' }}>
+                style={{ fontSize: 10, color: 'var(--j-text-muted)', cursor: 'pointer', width: 12, textAlign: 'center' }}>
                 {isExpanded ? '▾' : '▸'}
               </span>
             )}
@@ -1877,7 +1877,7 @@ const TemplatesManager: React.FC = () => {
             <span style={{ fontSize: 13 }}>{depth === 0 ? '📁' : '📄'}</span>
             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
             {f.template_count > 0 && (
-              <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', marginLeft: 'auto' }}>{f.template_count}</span>
+              <span style={{ fontSize: 10, color: 'var(--j-text-muted)', marginLeft: 'auto' }}>{f.template_count}</span>
             )}
           </div>
           {hasChildren && isExpanded && renderFolderTree(f.children, depth + 1)}
@@ -1904,19 +1904,19 @@ const TemplatesManager: React.FC = () => {
     <div className="manager-page" style={{ background: 'var(--j-bg)' }}>
       <div className="page-explanation">
         <h3 style={{ color: 'var(--j-text)' }}>Content Library</h3>
-        <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the Campaign Manager are automatically filed here.</p>
+        <p style={{ color: 'var(--j-text-muted)' }}>Reusable email templates organized by sending domain. Templates saved from the <strong>AI Generator</strong> in the Campaign Manager are automatically filed here.</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>
         {/* Folder tree sidebar */}
         <div style={{ background: 'var(--j-surface)', borderRadius: 10, padding: 12, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', maxHeight: 'calc(100vh - 200px)', overflowY: 'auto' }}>
-          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Folders</h4>
+          <h4 style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--j-text-muted)' }}>Folders</h4>
           <div style={{ ...folderItemStyle(null) }} onClick={() => setSelectedFolder(null)}>
             <span style={{ width: 12 }} /><span style={{ fontSize: 13 }}>🗂️</span> All Templates
           </div>
           {renderFolderTree(folderTree)}
           {folderTree.length === 0 && (
-            <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', margin: '8px 0 0' }}>No folders yet.</p>
+            <p style={{ fontSize: 11, color: 'var(--j-text-muted)', margin: '8px 0 0' }}>No folders yet.</p>
           )}
         </div>
 
@@ -1942,7 +1942,7 @@ const TemplatesManager: React.FC = () => {
               </div>
               <textarea placeholder="HTML Content" value={newTemplate.html_content} onChange={e => setNewTemplate(p => ({...p, html_content: e.target.value}))} rows={6} style={{ width: '100%', ...inputStyle, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box', marginBottom: 8 }} />
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button onClick={() => setShowCreate(false)} style={{ ...btnGhost, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Cancel</button>
+                <button onClick={() => setShowCreate(false)} style={{ ...btnGhost, color: 'var(--j-text-muted)' }}>Cancel</button>
                 <button onClick={createTemplate} disabled={!newTemplate.name} style={{ background: 'var(--j-cyan)', color: 'var(--j-bg)', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, cursor: 'pointer', fontWeight: 600, opacity: newTemplate.name ? 1 : 0.5 }}>Create</button>
               </div>
             </div>
@@ -1959,7 +1959,7 @@ const TemplatesManager: React.FC = () => {
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                         <h4 style={{ margin: 0, fontSize: 14, color: 'var(--j-cyan)' }}>Edit Template</h4>
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <button onClick={() => { setEditingId(null); setEditData(null); }} style={{ ...btnGhost, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Cancel</button>
+                          <button onClick={() => { setEditingId(null); setEditData(null); }} style={{ ...btnGhost, color: 'var(--j-text-muted)' }}>Cancel</button>
                           <button onClick={saveEdit} disabled={editSaving || !editData.name} style={{ background: 'var(--j-cyan)', color: 'var(--j-bg)', border: 'none', borderRadius: 6, padding: '4px 14px', fontSize: 12, cursor: 'pointer', fontWeight: 600, opacity: editData.name ? 1 : 0.5 }}>
                             {editSaving ? 'Saving...' : 'Save'}
                           </button>
@@ -1967,24 +1967,24 @@ const TemplatesManager: React.FC = () => {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                         <div>
-                          <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', display: 'block', marginBottom: 3 }}>Template Name</label>
+                          <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 3 }}>Template Name</label>
                           <input value={editData.name} onChange={e => setEditData((p: any) => ({...p, name: e.target.value}))} style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', display: 'block', marginBottom: 3 }}>Subject Line</label>
+                          <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 3 }}>Subject Line</label>
                           <input value={editData.subject} onChange={e => setEditData((p: any) => ({...p, subject: e.target.value}))} style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', display: 'block', marginBottom: 3 }}>From Name</label>
+                          <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 3 }}>From Name</label>
                           <input value={editData.from_name} onChange={e => setEditData((p: any) => ({...p, from_name: e.target.value}))} style={inputStyle} />
                         </div>
                         <div>
-                          <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', display: 'block', marginBottom: 3 }}>Pre-header</label>
+                          <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 3 }}>Pre-header</label>
                           <input value={editData.preview_text} onChange={e => setEditData((p: any) => ({...p, preview_text: e.target.value}))} style={inputStyle} />
                         </div>
                       </div>
                       <div>
-                        <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', display: 'block', marginBottom: 3 }}>HTML Content</label>
+                        <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 3 }}>HTML Content</label>
                         <textarea value={editData.html_content} onChange={e => setEditData((p: any) => ({...p, html_content: e.target.value}))} rows={12}
                           style={{ width: '100%', ...inputStyle, fontSize: 12, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }} />
                       </div>
@@ -1994,19 +1994,19 @@ const TemplatesManager: React.FC = () => {
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <strong style={{ color: 'var(--j-text)', fontSize: 14 }}>{t.name}</strong>
-                          {t.description && <span style={{ marginLeft: 8, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{t.description}</span>}
+                          {t.description && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--j-text-muted)' }}>{t.description}</span>}
                         </div>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
                           <span style={{ background: t.status === 'active' ? 'color-mix(in srgb, var(--j-success) 12.5%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 12%, transparent)', color: t.status === 'active' ? 'var(--j-success)' : 'var(--j-cyan)', fontSize: 11, padding: '2px 8px', borderRadius: 4 }}>{t.status}</span>
                           <button onClick={() => setPreviewId(previewId === t.id ? null : t.id)} style={{ ...btnGhost, color: 'var(--j-blue)' }}>Preview</button>
-                          <button onClick={() => startEdit(t)} style={{ ...btnGhost, color: '#f59e0b' }}>Edit</button>
+                          <button onClick={() => startEdit(t)} style={{ ...btnGhost, color: 'var(--j-soft)' }}>Edit</button>
                           <button onClick={() => deleteTemplate(t.id)} style={{ ...btnGhost, color: 'var(--j-danger)' }}>Delete</button>
                         </div>
                       </div>
                       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                        {t.subject && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Subject: <span style={{ color: 'var(--j-blue)' }}>{t.subject}</span></div>}
-                        {t.from_name && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>From: <span style={{ color: 'var(--j-blue)' }}>{t.from_name}</span></div>}
-                        {t.preview_text && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Pre-header: <span style={{ color: 'var(--j-violet-strong)' }}>{t.preview_text}</span></div>}
+                        {t.subject && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Subject: <span style={{ color: 'var(--j-blue)' }}>{t.subject}</span></div>}
+                        {t.from_name && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>From: <span style={{ color: 'var(--j-blue)' }}>{t.from_name}</span></div>}
+                        {t.preview_text && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Pre-header: <span style={{ color: 'var(--j-violet-strong)' }}>{t.preview_text}</span></div>}
                       </div>
                       {previewId === t.id && t.html_content && (
                         <div style={{ marginTop: 10, background: 'var(--j-bg)', borderRadius: 8, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
@@ -2018,7 +2018,7 @@ const TemplatesManager: React.FC = () => {
                 </div>
               );
             })}
-            {templates.length === 0 && <p style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13, padding: 40 }}>No templates in this folder.</p>}
+            {templates.length === 0 && <p style={{ textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 13, padding: 40 }}>No templates in this folder.</p>}
           </div>
         </div>
       </div>
@@ -2088,14 +2088,14 @@ const PreparationBanner: React.FC<{
         <div key={c.id} style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 16px', borderRadius: 8,
-          background: 'rgba(245, 158, 11, 0.08)', borderLeft: '3px solid #f59e0b',
+          background: 'rgba(245, 158, 11, 0.08)', borderLeft: '3px solid var(--j-soft)',
           fontSize: 13, color: 'var(--j-warn)',
         }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 12 }} />
             <strong>Finalizing Audience:</strong> {c.name}
           </span>
-          <span style={{ color: 'color-mix(in srgb, var(--j-warn) 60%, transparent)', fontSize: 12 }}>{elapsed(c.acceptedAt)}</span>
+          <span style={{ color: 'var(--j-text-muted)', fontSize: 12 }}>{elapsed(c.acceptedAt)}</span>
         </div>
       ))}
       {transitions.map(t => (
@@ -2103,7 +2103,7 @@ const PreparationBanner: React.FC<{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 16px', borderRadius: 8,
           background: t.status === 'failed' ? 'rgba(239,68,68,0.08)' : 'color-mix(in srgb, var(--j-success) 8%, transparent)',
-          borderLeft: `3px solid ${t.status === 'failed' ? '#ef4444' : 'var(--j-success)'}`,
+          borderLeft: `3px solid ${t.status === 'failed' ? 'var(--j-hard)' : 'var(--j-success)'}`,
           fontSize: 13, color: t.status === 'failed' ? 'var(--j-danger)' : 'var(--j-success-soft)',
         }}>
           <span>

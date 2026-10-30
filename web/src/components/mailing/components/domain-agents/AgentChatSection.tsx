@@ -147,7 +147,7 @@ export const AgentChatSection: React.FC<{ domain: string | null }> = ({ domain }
       )}
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-        <textarea
+        <textarea aria-label="Input"
           ref={inputRef}
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -159,7 +159,7 @@ export const AgentChatSection: React.FC<{ domain: string | null }> = ({ domain }
           style={inputStyle}
           disabled={busy}
         />
-        <button onClick={() => send(input)} disabled={busy || !input.trim()} style={sendBtn}>
+        <button aria-label="Send" onClick={() => send(input)} disabled={busy || !input.trim()} style={sendBtn}>
           <FontAwesomeIcon icon={busy ? faSpinner : faPaperPlane} spin={busy} />
         </button>
       </div>

@@ -67,7 +67,7 @@
 .ii-header p {
   margin: 4px 0 0;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-refresh-btn {
@@ -142,7 +142,7 @@
 
 .ii-stat-label {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 2px;
 }
 
@@ -161,7 +161,7 @@
 .ii-tier-label {
   font-size: 13px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   white-space: nowrap;
 }
 
@@ -183,7 +183,7 @@
   border: 1px solid transparent;
   transition: all 0.2s;
   background: color-mix(in srgb, var(--j-text) 4%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-tier-chip span {
@@ -289,7 +289,7 @@
 .ii-result-count {
   margin-left: auto;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   white-space: nowrap;
 }
 
@@ -316,7 +316,7 @@
   align-items: center;
   justify-content: center;
   padding: 80px 40px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-align: center;
 }
 
@@ -327,7 +327,7 @@
 
 .ii-empty h3 {
   margin: 20px 0 8px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 18px;
 }
 
@@ -351,7 +351,7 @@
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   background: var(--j-surface);
   border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   white-space: nowrap;
@@ -403,7 +403,7 @@
 }
 
 .ii-td-time {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -508,7 +508,7 @@
   border-radius: 8px;
   background: color-mix(in srgb, var(--j-text) 4%, transparent);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -528,7 +528,7 @@
 
 .ii-page-info {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Detail Panel (Slide-over overlay) ─────────────────────────────────── */
@@ -562,7 +562,7 @@
   border-radius: 8px;
   background: color-mix(in srgb, var(--j-text) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -583,7 +583,7 @@
   align-items: center;
   justify-content: center;
   padding: 80px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-detail-loading p {
@@ -636,7 +636,7 @@
 .ii-detail-score-label {
   position: relative;
   font-size: 9px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -695,7 +695,7 @@
 
 .ii-metric svg {
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-metric-val {
@@ -706,7 +706,7 @@
 
 .ii-metric-lbl {
   font-size: 10px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
@@ -729,7 +729,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-rate-pct {
@@ -807,7 +807,7 @@
 .ii-avg-delay {
   margin-top: 12px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   padding-top: 10px;
   border-top: 1px solid color-mix(in srgb, var(--j-text) 6%, transparent);
 }
@@ -856,7 +856,7 @@
 
 .ii-tl-time {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ii-tl-ago {
@@ -1038,7 +1038,7 @@
 .ii-decision-confidence > span {
   display: block;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 6px;
 }
 
@@ -1048,7 +1048,7 @@
 }
 
 .ii-decision-reasons strong, .ii-decision-risks strong {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   display: block;
   margin-bottom: 6px;
 }

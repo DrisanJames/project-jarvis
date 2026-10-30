@@ -1595,7 +1595,7 @@ const ThrottleEditor: React.FC<{
         </div>
       ))}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
-        <select value={addISP} onChange={(e) => setAddISP(e.target.value)} style={{ ...inputStyle, width: 140 }}>
+        <select aria-label="Add isp" value={addISP} onChange={(e) => setAddISP(e.target.value)} style={{ ...inputStyle, width: 140 }}>
           <option value="">add ISP…</option>
           {availableISPs.map((g) => <option key={g} value={g}>{g}</option>)}
         </select>
@@ -3589,7 +3589,7 @@ export const DripJourneyCanvas: React.FC<{
                       <td style={tdStyle}>{r.isp}</td>
                       <td style={numTd} title={r.daily_budget <= 0 ? 'Cap 0 — this lane introduces nothing, identical in effect to a hold.' : 'daily_budget. Edits apply from tomorrow (Denver) — the counter worker promotes them at the boundary.'}>
                         {ledgerWritable ? (
-                          <input
+                          <input aria-label="Cell k"
                             type="number" min={0} step={100}
                             value={budgetEdit[cellK] ?? String(r.daily_budget)}
                             disabled={cellBusy}
@@ -4412,7 +4412,7 @@ const AddToDripRow: React.FC<{
       display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
     }}>
       <span style={{ ...panelTitleStyle, fontSize: 11 }}>Add a domain to this drip</span>
-      <select style={{ ...inputStyle, width: 240 }} value={code} disabled={!writeEnabled}
+      <select aria-label="Add a domain to this drip" style={{ ...inputStyle, width: 240 }} value={code} disabled={!writeEnabled}
         onChange={(e) => setCode(e.target.value)}>
         <option value="">select a domain…</option>
         {candidates.map((d) => <option key={d.code} value={d.code}>{d.domain} ({d.code})</option>)}

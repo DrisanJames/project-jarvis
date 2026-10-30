@@ -59,10 +59,10 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-          <button type="button" style={btnStyle} onClick={() => setDay(shiftDay(day, -1))}>
+          <button aria-label="Previous" type="button" style={btnStyle} onClick={() => setDay(shiftDay(day, -1))}>
             <FontAwesomeIcon icon={faChevronLeft} style={{ marginRight: 6 }} />{shiftDay(day, -1).slice(5)}
           </button>
-          <button type="button" style={btnStyle} disabled={atToday} onClick={() => setDay(shiftDay(day, 1))}>
+          <button aria-label="Next" type="button" style={btnStyle} disabled={atToday} onClick={() => setDay(shiftDay(day, 1))}>
             {shiftDay(day, 1).slice(5)}<FontAwesomeIcon icon={faChevronRight} style={{ marginLeft: 6 }} />
           </button>
         </div>

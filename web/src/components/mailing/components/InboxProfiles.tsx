@@ -159,7 +159,7 @@ const EngagementBand: React.FC<{ score: number; tier?: string; showValue?: boole
       <FontAwesomeIcon icon={meta.icon} />
       {meta.label}
       {showValue && (
-        <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.85 }}>{Math.round(score)}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.round(score)}</span>
       )}
     </Pill>
   );
@@ -542,7 +542,7 @@ export const InboxProfiles: React.FC = () => {
             }}
           />
         </div>
-        <select
+        <select aria-label="Isp filter"
           value={ispFilter}
           onChange={(e) => { setIspFilter(e.target.value); setPage(1); }}
           style={{
@@ -669,7 +669,7 @@ export const InboxProfiles: React.FC = () => {
 
               {/* Pagination */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, padding: '12px 16px', borderTop: `1px solid ${colors.hairline}` }}>
-                <button
+                <button aria-label="Previous"
                   disabled={page <= 1}
                   onClick={() => setPage(p => Math.max(1, p - 1))}
                   style={{ ...btnStyle, opacity: page <= 1 ? 0.4 : 1, cursor: page <= 1 ? 'not-allowed' : 'pointer' }}
@@ -679,7 +679,7 @@ export const InboxProfiles: React.FC = () => {
                 <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>
                   Page {page} of {totalPages}
                 </span>
-                <button
+                <button aria-label="Next"
                   disabled={page >= totalPages}
                   onClick={() => setPage(p => p + 1)}
                   style={{ ...btnStyle, opacity: page >= totalPages ? 0.4 : 1, cursor: page >= totalPages ? 'not-allowed' : 'pointer' }}
@@ -694,7 +694,7 @@ export const InboxProfiles: React.FC = () => {
         {/* ─── Detail Panel ─────────────────────────────────────────────── */}
         {selectedDetail && (
           <div className="ii-detail-panel">
-            <button className="ii-detail-close" onClick={() => { setSelectedDetail(null); setSelectedDecision(null); }}>
+            <button aria-label="Close" className="ii-detail-close" onClick={() => { setSelectedDetail(null); setSelectedDecision(null); }}>
               <FontAwesomeIcon icon={faTimes} />
             </button>
 

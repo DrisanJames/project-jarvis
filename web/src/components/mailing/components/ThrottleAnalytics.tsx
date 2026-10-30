@@ -100,7 +100,7 @@ const ISP_DISPLAY: Record<string, string> = {
 };
 
 const ACTION_META: Record<string, { label: string; color: string; icon: typeof faArrowDown }> = {
-  reduce_rate: { label: 'Rate Reduced', color: '#ef4444', icon: faArrowDown },
+  reduce_rate: { label: 'Rate Reduced', color: 'var(--j-hard)', icon: faArrowDown },
   backoff_mode: { label: 'Backoff Mode', color: 'var(--j-danger)', icon: faExclamationTriangle },
   increase_rate: { label: 'Rate Increased', color: 'var(--j-success)', icon: faArrowUp },
   snap_to_stable_rate: { label: 'Snap to Stable', color: 'var(--j-blue)', icon: faExchangeAlt },
@@ -108,8 +108,8 @@ const ACTION_META: Record<string, { label: string; color: string; icon: typeof f
 
 function getBarColor(pct: number): string {
   if (pct >= 80) return 'var(--j-success)';
-  if (pct >= 40) return '#f59e0b';
-  return '#ef4444';
+  if (pct >= 40) return 'var(--j-soft)';
+  return 'var(--j-hard)';
 }
 
 function formatTime(dateStr: string): string {
@@ -218,7 +218,7 @@ export const ThrottleAnalytics: React.FC = () => {
       <div className="ta-controls-bar">
         <div className="ta-control-group">
           <label className="ta-control-label">Date</label>
-          <input
+          <input aria-label="Date"
             type="date"
             className="ta-date-input"
             value={selectedDate}

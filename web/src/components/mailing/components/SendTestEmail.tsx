@@ -138,7 +138,7 @@ export const SendTestEmail: React.FC = () => {
   <div style="background: var(--j-surface); border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
     <div style="text-align: center; margin-bottom: 32px;">
       <h1 style="color: var(--j-cyan); margin: 0; font-size: 28px;">📬 Mailing Platform</h1>
-      <p style="color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 8px 0 0;">Mailing Platform Test</p>
+      <p style="color: var(--j-text-muted); margin: 8px 0 0;">Mailing Platform Test</p>
     </div>
     
     <h2 style="color: var(--j-text); margin-bottom: 16px;">${subject}</h2>
@@ -155,7 +155,7 @@ export const SendTestEmail: React.FC = () => {
     </div>
     
     <div style="background: var(--j-bg); border-radius: 8px; padding: 16px; margin-top: 24px;">
-      <p style="margin: 0; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent);">
+      <p style="margin: 0; font-size: 13px; color: var(--j-text-muted);">
         <strong>Sent via:</strong> sending infrastructure<br>
         <strong>From:</strong> ${fromName} &lt;${fromEmail}&gt;<br>
         <strong>Timestamp:</strong> ${new Date().toISOString()}
@@ -163,7 +163,7 @@ export const SendTestEmail: React.FC = () => {
     </div>
   </div>
   
-  <p style="text-align: center; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; margin-top: 24px;">
+  <p style="text-align: center; color: var(--j-text-muted); font-size: 12px; margin-top: 24px;">
     Powered by your mailing platform
   </p>
 </body>
@@ -174,7 +174,7 @@ export const SendTestEmail: React.FC = () => {
       <div className="send-test-email">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', gap: 16 }}>
           <FontAwesomeIcon icon={faSpinner} spin style={{ color: 'var(--j-cyan)', fontSize: 28 }} />
-          <span style={{ fontSize: 14, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Loading sending profiles...</span>
+          <span style={{ fontSize: 14, color: 'var(--j-text-muted)' }}>Loading sending profiles...</span>
           <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
             {[1, 2, 3].map(i => (
               <div key={i} style={{ height: 8, width: 48, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 4 }}>
@@ -215,7 +215,7 @@ export const SendTestEmail: React.FC = () => {
           {profiles.length > 0 && (
             <div className="form-group full-width profile-selector">
               <label>🚀 Sending Profile</label>
-              <select 
+              <select aria-label="Selected profile id" 
                 value={selectedProfileId} 
                 onChange={(e) => handleProfileChange(e.target.value)}
                 className="profile-select"

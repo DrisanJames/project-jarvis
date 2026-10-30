@@ -145,9 +145,9 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0.875rem',
     marginBottom: '1.5rem',
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    border: '1px solid var(--accent-red, #ef4444)',
+    border: '1px solid var(--accent-red, var(--j-hard))',
     borderRadius: '8px',
-    color: 'var(--accent-red, #ef4444)',
+    color: 'var(--accent-red, var(--j-hard))',
     fontSize: '0.875rem',
   },
   googleButton: {

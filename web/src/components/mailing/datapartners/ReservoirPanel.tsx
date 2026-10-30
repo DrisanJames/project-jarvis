@@ -47,11 +47,11 @@ const card: React.CSSProperties = {
 };
 const th: React.CSSProperties = {
   textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: 0.6,
-  textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  textTransform: 'uppercase', color: 'var(--j-text-muted)',
   borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', whiteSpace: 'nowrap',
 };
 const td: React.CSSProperties = {
-  padding: '7px 10px', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
+  padding: '7px 10px', fontSize: 13, color: 'var(--j-text)',
   borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
 };
 const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -64,9 +64,9 @@ const btn: React.CSSProperties = {
 const BigNumber: React.FC<{ label: string; value: number; tone: string; hint: string }> =
   ({ label, value, tone, hint }) => (
     <div style={{ ...card, flex: '1 1 180px' }}>
-      <div style={{ fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{label}</div>
+      <div style={{ fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase', color: 'var(--j-text-muted)' }}>{label}</div>
       <div style={{ fontSize: 28, fontWeight: 700, color: tone, fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>{num(value)}</div>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{hint}</div>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{hint}</div>
     </div>
   );
 
@@ -147,7 +147,7 @@ export const ReservoirPanel: React.FC = () => {
           <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 8, opacity: 0.8 }} />
           Reservoir
         </h3>
-        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+        <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
           {data
             ? `${data.cached ? `cached ${data.age_seconds}s` : 'fresh'} · scan ${num(data.query_ms)}ms · ${new Date(data.generated_at).toLocaleTimeString()}`
             : 'loading…'}
@@ -217,9 +217,9 @@ export const ReservoirPanel: React.FC = () => {
                 {data.by_vertical.map((v) => (
                   <tr key={v.vertical}>
                     <td style={td}>{labelForVertical(v.vertical)}</td>
-                    <td style={{ ...tdNum, color: v.mailable > 0 ? 'var(--j-success-soft)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{num(v.mailable)}</td>
+                    <td style={{ ...tdNum, color: v.mailable > 0 ? 'var(--j-success-soft)' : 'var(--j-text-muted)' }}>{num(v.mailable)}</td>
                     <td style={tdNum}>{num(v.reserve)}</td>
-                    <td style={{ ...tdNum, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{num(v.exhausted)}</td>
+                    <td style={{ ...tdNum, color: 'var(--j-text-muted)' }}>{num(v.exhausted)}</td>
                     <td style={tdNum}>{num(v.total)}</td>
                     <td style={td}>
                       <button
@@ -237,13 +237,13 @@ export const ReservoirPanel: React.FC = () => {
 
           {expanded && (
             <div style={{ ...card, marginBottom: 14 }}>
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)', marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: 'var(--j-text-2)', marginBottom: 8 }}>
                 {labelForVertical(expanded)} — every record by ISP (all statuses)
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {ispRows.map(([isp, n]) => (
                   <div key={isp} style={{ ...card, padding: '8px 12px', minWidth: 120 }}>
-                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{isp}</div>
+                    <div style={{ fontSize: 11, color: 'var(--j-text-2)' }}>{isp}</div>
                     <div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{num(n)}</div>
                   </div>
                 ))}
@@ -252,11 +252,11 @@ export const ReservoirPanel: React.FC = () => {
           )}
 
           <div style={{ ...card }}>
-            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)', marginBottom: 8 }}>Every status</div>
+            <div style={{ fontSize: 12, color: 'var(--j-text-2)', marginBottom: 8 }}>Every status</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {data.by_status.map((s) => (
                 <div key={s.status} style={{ ...card, padding: '8px 12px', minWidth: 130 }}>
-                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{s.status}</div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-2)' }}>{s.status}</div>
                   <div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{num(s.count)}</div>
                 </div>
               ))}

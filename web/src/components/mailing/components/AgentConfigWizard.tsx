@@ -993,7 +993,7 @@ export const AgentConfigWizard: React.FC<{
 
         <div className="aw-select-group">
           <label>End Hour</label>
-          <select value={endHour} onChange={e => { setEndHour(Number(e.target.value)); setSendWindow(null); }}>
+          <select aria-label="End Hour" value={endHour} onChange={e => { setEndHour(Number(e.target.value)); setSendWindow(null); }}>
             {Array.from({ length: 12 }, (_, i) => i + 1).map(h => (
               <option key={h} value={h + 12}>{h} PM</option>
             ))}
@@ -1002,7 +1002,7 @@ export const AgentConfigWizard: React.FC<{
 
         <div className="aw-select-group">
           <label>Timezone</label>
-          <select value={timezone} onChange={e => { setTimezone(e.target.value); setSendWindow(null); }}>
+          <select aria-label="Timezone" value={timezone} onChange={e => { setTimezone(e.target.value); setSendWindow(null); }}>
             {TIMEZONES.map(tz => (
               <option key={tz.value} value={tz.value}>{tz.label}</option>
             ))}

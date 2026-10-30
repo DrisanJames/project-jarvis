@@ -161,7 +161,7 @@ export const JarvisDashboard: React.FC = () => {
         <div style={styles.idleCard}>
           <p style={{ fontSize: 48, margin: 0 }}>🔋</p>
           <h3 style={{ color: 'var(--j-text)', margin: '10px 0' }}>Jarvis is Standing By</h3>
-          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 14 }}>
+          <p style={{ color: 'var(--j-text-muted)', fontSize: 14 }}>
             Launch an autonomous campaign via the API to start AI-driven sending.
           </p>
           <code style={styles.codeBlock}>
@@ -206,7 +206,7 @@ export const JarvisDashboard: React.FC = () => {
           }}>
             {campaign.status === 'running' ? '● LIVE' : campaign.status.toUpperCase()}
           </span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--j-text-muted)', fontSize: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
             Auto-refresh
           </label>
@@ -255,12 +255,12 @@ export const JarvisDashboard: React.FC = () => {
           <div style={{ flex: '0 0 auto', minWidth: 80, padding: '8px 10px', borderLeft: '2px solid color-mix(in srgb, var(--j-danger) 26.7%, transparent)' }}>
             <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--j-danger)', opacity: 0.8 }}>BOUNCED</div>
             <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'monospace' }}>
-              <span style={{ color: '#ef4444' }}>{campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0}</span> hard / <span style={{ color: '#f59e0b' }}>{campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0}</span> soft
+              <span style={{ color: 'var(--j-hard)' }}>{campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0}</span> hard / <span style={{ color: 'var(--j-soft)' }}>{campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0}</span> soft
             </div>
             <div style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 600 }}>
-              <span style={{ color: '#ef4444' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
-              <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', margin: '0 4px' }}>/</span>
-              <span style={{ color: '#f59e0b' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
+              <span style={{ color: 'var(--j-hard)' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
+              <span style={{ color: 'var(--j-text-muted)', margin: '0 4px' }}>/</span>
+              <span style={{ color: 'var(--j-soft)' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
             </div>
           </div>
         )}
@@ -295,16 +295,16 @@ export const JarvisDashboard: React.FC = () => {
                 <span style={{
                   ...styles.recipientStatus,
                   background: (statusColors[r.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)') + '22',
-                  color: statusColors[r.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+                  color: statusColors[r.status] || 'var(--j-text-muted)',
                 }}>{r.status.toUpperCase()}</span>
               </div>
-              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: 'var(--j-text-muted)' }}>
                 <span>ISP: <strong>{r.isp}</strong></span>
                 <span>ESP: <strong>{r.esp || '—'}</strong></span>
                 <span>Sends: <strong>{r.send_count}</strong></span>
               </div>
               {r.subject && (
-                <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4, fontStyle: 'italic' }}>
+                <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 4, fontStyle: 'italic' }}>
                   Subject: &quot;{r.subject}&quot;
                 </div>
               )}
@@ -320,7 +320,7 @@ export const JarvisDashboard: React.FC = () => {
           {(campaign.creatives || []).map(c => (
             <div key={c.id} style={styles.creativeCard}>
               <div style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
-              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>
+              <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 4 }}>
                 ID: {c.id} | Sends: {c.sends} | Opens: {c.opens} | Clicks: {c.clicks}
               </div>
             </div>
@@ -339,7 +339,7 @@ export const JarvisDashboard: React.FC = () => {
                 style={{
                   ...styles.filterBtn,
                   background: logFilter === f ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'transparent',
-                  color: logFilter === f ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+                  color: logFilter === f ? 'var(--j-text)' : 'var(--j-text-muted)',
                 }}
                 onClick={() => setLogFilter(f)}
               >
@@ -354,7 +354,7 @@ export const JarvisDashboard: React.FC = () => {
               <span style={styles.logTime}>
                 {new Date(entry.timestamp).toLocaleTimeString()}
               </span>
-              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || 'var(--j-text-muted)' }}>
                 {levelIcons[entry.level] || '●'} {entry.level}
               </span>
               <span style={styles.logComponent}>[{entry.component}]</span>
@@ -376,8 +376,8 @@ const MetricCard: React.FC<{
 }> = ({ label, value, sub, color }) => (
   <div style={styles.metricCard}>
     <div style={{ color, fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{value}</div>
-    <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{label}</div>
-    {sub && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 10 }}>{sub}</div>}
+    <div style={{ color: 'var(--j-text-muted)', fontSize: 11, marginTop: 4 }}>{label}</div>
+    {sub && <div style={{ color: 'var(--j-text-muted)', fontSize: 10 }}>{sub}</div>}
   </div>
 );
 
@@ -402,7 +402,7 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
   },
   subtitle: {
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     fontSize: 13,
     margin: '4px 0 0',
   },
@@ -513,7 +513,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid color-mix(in srgb, var(--j-surface) 13.3%, transparent)',
   },
   logTime: {
-    color: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
+    color: 'var(--j-text-muted)',
     minWidth: 70,
     flexShrink: 0,
   },
@@ -523,7 +523,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   logComponent: {
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     minWidth: 100,
     flexShrink: 0,
   },

@@ -67,7 +67,7 @@
 .ia-header p {
   margin: 4px 0 0;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ia-refresh-btn {
@@ -111,7 +111,7 @@
   border: none;
   border-radius: 10px;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -122,7 +122,7 @@
 }
 
 .ia-subtab-btn:hover {
-  color: color-mix(in srgb, var(--j-text) 80%, transparent);
+  color: var(--j-text-2);
   background: color-mix(in srgb, var(--j-text) 4%, transparent);
 }
 
@@ -244,7 +244,7 @@
 }
 
 .ia-loading p, .ia-empty p { margin: 16px 0 0; font-size: 14px; }
-.ia-empty h3 { margin: 20px 0 8px; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 18px; }
+.ia-empty h3 { margin: 20px 0 8px; color: var(--j-text-muted); font-size: 18px; }
 
 /* ─── Agents Grid ───────────────────────────────────────────────────────── */
 .ia-agents-grid {
@@ -366,7 +366,7 @@
 
 .ia-knowledge-label {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -452,7 +452,7 @@
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ia-learn-item svg {
@@ -531,7 +531,7 @@
 
 .ia-detail-close:hover {
   background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 /* Detail Header */
@@ -670,7 +670,7 @@
 .ia-kd-details p {
   margin: 0 0 6px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
@@ -710,7 +710,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 4px;
 }
 
@@ -731,7 +731,7 @@
 
 .ia-bar-opens { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }
 .ia-bar-clicks { background: linear-gradient(90deg, var(--j-success), var(--j-success)); }
-.ia-bar-engagement { background: linear-gradient(90deg, #f59e0b, var(--j-warn)); }
+.ia-bar-engagement { background: linear-gradient(90deg, var(--j-soft), var(--j-warn)); }
 
 /* Learning Sources Breakdown */
 .ia-sources-section {
@@ -842,8 +842,8 @@
 .ia-tier-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
 
 .ia-tier-high { background: color-mix(in srgb, var(--j-success) 8%, transparent); color: var(--j-success); }
-.ia-tier-med { background: rgba(245, 158, 11, 0.08); color: #f59e0b; }
-.ia-tier-low { background: rgba(239, 68, 68, 0.08); color: #ef4444; }
+.ia-tier-med { background: rgba(245, 158, 11, 0.08); color: var(--j-soft); }
+.ia-tier-low { background: rgba(239, 68, 68, 0.08); color: var(--j-hard); }
 .ia-tier-inactive { background: rgba(107, 114, 128, 0.08); color: var(--j-text-faint); }
 
 /* Optimal Send Section */
@@ -930,7 +930,7 @@
 }
 
 .ia-risk-list li svg {
-  color: #f59e0b;
+  color: var(--j-soft);
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -1213,7 +1213,7 @@
   justify-content: space-between;
   align-items: center;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 5px;
 }
 
@@ -1251,7 +1251,7 @@
   gap: 6px;
   font-size: 10px;
   font-weight: 600;
-  color: #f59e0b;
+  color: var(--j-soft);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   margin-bottom: 8px;
@@ -1272,7 +1272,7 @@
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ia-managed-knowledge-item svg {
@@ -1282,11 +1282,11 @@
 }
 
 .ia-managed-risk-low svg { color: var(--j-success); }
-.ia-managed-risk-medium svg { color: #f59e0b; }
-.ia-managed-risk-high svg { color: #ef4444; }
+.ia-managed-risk-medium svg { color: var(--j-soft); }
+.ia-managed-risk-high svg { color: var(--j-hard); }
 .ia-managed-risk-low { color: var(--j-success); }
-.ia-managed-risk-medium { color: #f59e0b; }
-.ia-managed-risk-high { color: #ef4444; }
+.ia-managed-risk-medium { color: var(--j-soft); }
+.ia-managed-risk-high { color: var(--j-hard); }
 
 /* Card Footer */
 .ia-managed-card-footer {
@@ -1457,7 +1457,7 @@
 .ia-feed-breakdown-title {
   font-size: 11px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   margin-bottom: 8px;
@@ -1565,7 +1565,7 @@
   font-weight: 500;
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   background: color-mix(in srgb, var(--j-text) 2%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.2s;
   text-transform: capitalize;
@@ -1609,7 +1609,7 @@
   align-items: center;
   font-size: 11px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   margin-bottom: 8px;
@@ -1692,12 +1692,12 @@
 
 .ia-feed-cls-defer {
   background: rgba(245, 158, 11, 0.12);
-  color: #f59e0b;
+  color: var(--j-soft);
 }
 
 .ia-feed-cls-suppress {
   background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 /* ─── Strategy Badge ───────────────────────────────────────────────────── */
@@ -1755,12 +1755,12 @@
 
 .ia-feed-result-bounced {
   background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 .ia-feed-result-pending {
   background: rgba(245, 158, 11, 0.1);
-  color: #f59e0b;
+  color: var(--j-soft);
   animation: iaFeedPendingPulse 2s ease-in-out infinite;
 }
 
@@ -1799,7 +1799,7 @@
 }
 .ia-engine-no-mapping {
   display: flex; align-items: center; gap: 8px;
-  color: color-mix(in srgb, var(--j-text-muted) 70%, transparent);
+  color: var(--j-text-2);
   font-size: 0.82rem;
   padding: 12px;
 }
@@ -1851,9 +1851,9 @@
 .ia-engine-decision-action {
   font-weight: 600; text-transform: capitalize;
 }
-.ia-engine-dec-red { color: #ef4444; }
+.ia-engine-dec-red { color: var(--j-hard); }
 .ia-engine-dec-green { color: var(--j-success); }
-.ia-engine-dec-amber { color: #f59e0b; }
+.ia-engine-dec-amber { color: var(--j-soft); }
 .ia-engine-decision-time { color: var(--j-text-faint); font-size: 0.7rem; }
 .ia-engine-conviction-list { display: flex; flex-direction: column; gap: 6px; }
 .ia-engine-conviction-item {
@@ -1864,7 +1864,7 @@
   font-weight: 700; font-size: 0.65rem; padding: 1px 6px; border-radius: 3px;
 }
 .ia-engine-verdict-will { background: color-mix(in srgb, var(--j-success) 15%, transparent); color: var(--j-success); }
-.ia-engine-verdict-wont { background: rgba(239,68,68,0.15); color: #ef4444; }
+.ia-engine-verdict-wont { background: rgba(239,68,68,0.15); color: var(--j-hard); }
 .ia-engine-conviction-text { color: var(--j-text-muted); flex: 1; min-width: 200px; }
 .ia-engine-conviction-time { color: var(--j-text-faint); font-size: 0.65rem; white-space: nowrap; }
 

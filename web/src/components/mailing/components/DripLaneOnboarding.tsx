@@ -334,7 +334,7 @@ export const DripLaneOnboarding: React.FC = () => {
         <div style={cardGrid(240)}>
           <div>
             <label style={labelStyle}>Vertical (the ingested feed)</label>
-            <select style={inputStyle} value={vertical} onChange={e => setVertical(e.target.value)}>
+            <select aria-label="Vertical (the ingested feed)" style={inputStyle} value={vertical} onChange={e => setVertical(e.target.value)}>
               <option value="">— select —</option>
               {(opts?.verticals ?? []).map(v => (
                 <option key={v.vertical} value={v.vertical}>
@@ -350,7 +350,7 @@ export const DripLaneOnboarding: React.FC = () => {
 
           <div>
             <label style={labelStyle}>Sending domain (brand)</label>
-            <select style={inputStyle} value={brand} onChange={e => setBrand(e.target.value)}>
+            <select aria-label="Sending domain (brand)" style={inputStyle} value={brand} onChange={e => setBrand(e.target.value)}>
               <option value="">— select —</option>
               {(opts?.brands ?? []).map(b => (
                 <option key={b.brand} value={b.brand}>
@@ -383,7 +383,7 @@ export const DripLaneOnboarding: React.FC = () => {
 
           <div>
             <label style={labelStyle}>Offer</label>
-            <select style={inputStyle} value={offerId} onChange={e => setOfferId(e.target.value)}>
+            <select aria-label="Offer" style={inputStyle} value={offerId} onChange={e => setOfferId(e.target.value)}>
               <option value="">— select —</option>
               {(opts?.offers ?? []).map(o => (
                 <option key={o.offer_id} value={o.offer_id}>
@@ -406,7 +406,7 @@ export const DripLaneOnboarding: React.FC = () => {
 
           <div>
             <label style={labelStyle}>Ladder length (incl. welcome)</label>
-            <input
+            <input aria-label="Ladder length (incl. welcome)"
               style={inputStyle} type="number" min={1} max={opts?.max_touch ?? 5}
               value={touches}
               onChange={e => setTouches(Math.max(1, Math.min(opts?.max_touch ?? 5, parseInt(e.target.value, 10) || 1)))}
@@ -420,7 +420,7 @@ export const DripLaneOnboarding: React.FC = () => {
 
           <div>
             <label style={labelStyle}>Roster weight (1–20)</label>
-            <input
+            <input aria-label="Weight"
               style={inputStyle} type="number" min={1} max={20} value={weight}
               onChange={e => setWeight(Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 1)))}
             />

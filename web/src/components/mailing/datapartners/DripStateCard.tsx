@@ -43,7 +43,7 @@ export const DripStateCard: React.FC<Props> = ({
 
       <div style={divider} />
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: 'var(--j-text-2)' }}>
         <div>
           <FontAwesomeIcon icon={faClock} style={{ marginRight: 6 }} />
           Last send batch: {lastWaveAt ? `${new Date(lastWaveAt).toLocaleTimeString()} (${lastWaveBrand?.toUpperCase()}, ${lastWaveSize ?? 0} sent)` : '—'}
@@ -59,7 +59,7 @@ export const DripStateCard: React.FC<Props> = ({
 
 const Stat: React.FC<{ label: string; value: string; accent?: string }> = ({ label, value, accent }) => (
   <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 8, borderRadius: 4, textAlign: 'center' }}>
-    <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 10, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2, color: accent ?? 'var(--j-text)' }}>{value}</div>
   </div>
 );

@@ -62,10 +62,10 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
   if (loading && !report) {
-    return <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', padding: 30 }}><FontAwesomeIcon icon={faSpinner} spin /> Building quality report…</div>;
+    return <div style={{ color: 'var(--j-text-muted)', padding: 30 }}><FontAwesomeIcon icon={faSpinner} spin /> Building quality report…</div>;
   }
   if (error) {
-    return <div style={{ color: '#ef4444', padding: 20 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>;
+    return <div style={{ color: 'var(--j-hard)', padding: 20 }}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>;
   }
   if (!report) return null;
 
@@ -95,7 +95,7 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
         <div>
           <h3 style={{ margin: 0, color: 'var(--j-text)' }}>{report.partner_name} / {report.dataset_name}</h3>
-          <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{report.vertical} · last {report.days} days</div>
+          <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>{report.vertical} · last {report.days} days</div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {[7, 14, 30].map(d => (
@@ -114,9 +114,9 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginBottom: 16 }}>
         <Stat label="Posts (API calls)" value={t.posts} />
         <Stat label="Leads received" value={t.records_received} />
-        <Stat label="Dropped at intake" value={t.intake_dropped} sub={pctOf(t.intake_dropped, t.records_received)} accent={t.intake_dropped > 0 ? '#f59e0b' : undefined} title="Already suppressed / duplicates — never entered the queue" />
+        <Stat label="Dropped at intake" value={t.intake_dropped} sub={pctOf(t.intake_dropped, t.records_received)} accent={t.intake_dropped > 0 ? 'var(--j-soft)' : undefined} title="Already suppressed / duplicates — never entered the queue" />
         <Stat label="Verified" value={t.eo_passed} sub={pctOf(t.eo_passed, validated)} accent="var(--j-success)" title="Confirmed deliverable by email verification" />
-        <Stat label="Rejected" value={t.eo_rejected} sub={pctOf(t.eo_rejected, validated)} accent="#ef4444" title="Failed mailbox validation — see reasons below" />
+        <Stat label="Rejected" value={t.eo_rejected} sub={pctOf(t.eo_rejected, validated)} accent="var(--j-hard)" title="Failed mailbox validation — see reasons below" />
         <Stat label="Awaiting verification" value={t.eo_pending} accent="var(--j-violet)" />
         <Stat label="Mailed" value={t.mailed} accent="var(--j-violet-strong)" />
         <Stat label="Engaged" value={t.engaged} sub={pctOf(t.engaged, t.mailed)} accent="var(--j-success)" title="Opened or clicked after mailing" />
@@ -129,13 +129,13 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
           <ResponsiveContainer width="100%" height={200}>
             <ComposedChart data={chartData} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
               <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
-              <XAxis dataKey="day" tick={{ fill: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
-              <YAxis tick={{ fill: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+              <XAxis dataKey="day" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+              <YAxis tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
               <Tooltip contentStyle={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, fontSize: 12 }} labelStyle={{ color: 'var(--j-text)' }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="Received" fill="var(--j-violet-strong)" radius={[2, 2, 0, 0]} />
               <Bar dataKey="Passed" fill="var(--j-success)" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="Rejected" fill="#ef4444" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="Rejected" fill="var(--j-hard)" radius={[2, 2, 0, 0]} />
               <Line type="monotone" dataKey="Mailed" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="Engaged" stroke="var(--j-violet)" strokeWidth={2} dot={false} />
             </ComposedChart>
@@ -158,13 +158,13 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
             <tbody>
               {report.rejection_reasons.map(rr => (
                 <tr key={`${rr.reason}-${rr.code}`}>
-                  <td style={td}><span style={{ color: '#ef4444' }}>{rr.reason}</span> <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>(code {rr.code})</span></td>
+                  <td style={td}><span style={{ color: 'var(--j-hard)' }}>{rr.reason}</span> <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>(code {rr.code})</span></td>
                   <td style={tdNum}>{rr.count.toLocaleString()}</td>
                   <td style={tdNum}>{pctOf(rr.count, validated)}</td>
                 </tr>
               ))}
               {report.rejection_reasons.length === 0 && (
-                <tr><td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={3}>No rejections in this window.</td></tr>
+                <tr><td style={{ ...td, color: 'var(--j-text-muted)' }} colSpan={3}>No rejections in this window.</td></tr>
               )}
             </tbody>
           </table>
@@ -203,9 +203,9 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
 
 const Stat: React.FC<{ label: string; value: number; sub?: string; accent?: string; title?: string }> = ({ label, value, sub, accent, title }) => (
   <div title={title} style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', padding: '10px 8px', borderRadius: 6, textAlign: 'center' }}>
-    <div style={{ fontSize: 9.5, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 9.5, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 17, fontWeight: 700, marginTop: 2, color: accent ?? 'var(--j-text)' }}>{value.toLocaleString()}</div>
-    {sub && <div style={{ fontSize: 11, color: accent ?? 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{sub}</div>}
+    {sub && <div style={{ fontSize: 11, color: accent ?? 'var(--j-text-muted)' }}>{sub}</div>}
   </div>
 );
 
@@ -215,11 +215,11 @@ const verdictBox: React.CSSProperties = {
   color: 'var(--j-text)', marginBottom: 16,
 };
 const sectionLabel: React.CSSProperties = {
-  fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase',
+  fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase',
   letterSpacing: 0.6, marginBottom: 6,
 };
 const pillBtn: React.CSSProperties = {
-  background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 12, padding: '3px 12px',
   cursor: 'pointer', fontSize: 12,
 };
@@ -231,7 +231,7 @@ const tableStyle: React.CSSProperties = {
   borderRadius: 8, overflow: 'hidden', fontSize: 13,
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '8px 10px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  textAlign: 'left', padding: '8px 10px', color: 'var(--j-text-muted)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
 const thNum: React.CSSProperties = { ...th, textAlign: 'right' };

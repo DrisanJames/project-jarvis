@@ -103,7 +103,7 @@ export const DataPipelineDashboard: React.FC = () => {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', gap: 10, fontSize: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', color: 'var(--j-text-muted)', gap: 10, fontSize: 14 }}>
         <FontAwesomeIcon icon={faSpinner} spin /> Loading list import data...
       </div>
     );
@@ -119,7 +119,7 @@ export const DataPipelineDashboard: React.FC = () => {
             <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: 'var(--j-violet)' }} />
             List Import
           </h2>
-          <p style={{ color: 'color-mix(in srgb, var(--j-text-muted) 80%, transparent)', margin: '6px 0 0', fontSize: 13 }}>
+          <p style={{ color: 'var(--j-text-2)', margin: '6px 0 0', fontSize: 13 }}>
             Automated list import, email verification & list replenishment
           </p>
         </div>
@@ -149,8 +149,8 @@ export const DataPipelineDashboard: React.FC = () => {
       {/* Stats Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 28 }}>
         <StatCard icon={faCheckCircle} label="Total Verified" value={s?.total_verified ?? 0} color="var(--j-success)" sub="Added to lists" />
-        <StatCard icon={faBan} label="Total Suppressed" value={s?.total_suppressed ?? 0} color="#ef4444" sub="Sent to global suppression" />
-        <StatCard icon={faCopy} label="Total Deduped" value={s?.total_deduped ?? 0} color="#f59e0b" sub="Already existed" />
+        <StatCard icon={faBan} label="Total Suppressed" value={s?.total_suppressed ?? 0} color="var(--j-hard)" sub="Sent to global suppression" />
+        <StatCard icon={faCopy} label="Total Deduped" value={s?.total_deduped ?? 0} color="var(--j-soft)" sub="Already existed" />
         <StatCard icon={faFolderOpen} label="Files Available" value={s?.files_available ?? 0} color="var(--j-violet)" sub={`${s?.files_processed ?? 0} processed`} />
         <StatCard icon={faSync} label="Total Runs" value={s?.total_runs ?? 0} color="var(--j-cyan)" sub={s?.last_run_at ? `Last: ${new Date(s.last_run_at).toLocaleDateString()}` : 'Never run'} />
       </div>
@@ -179,8 +179,8 @@ export const DataPipelineDashboard: React.FC = () => {
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="verified" name="Verified" fill="var(--j-success)" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="suppressed" name="Suppressed" fill="#ef4444" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="deduped" name="Deduped" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="suppressed" name="Suppressed" fill="var(--j-hard)" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="deduped" name="Deduped" fill="var(--j-soft)" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -216,7 +216,7 @@ export const DataPipelineDashboard: React.FC = () => {
                     <td style={{ ...tdStyle, color: 'var(--j-text-muted)' }}>{h.list_name}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 600, fontFamily: 'monospace' }}>{h.subscriber_count.toLocaleString()}</td>
                     <td style={{ ...tdStyle, textAlign: 'right' }}>
-                      <span style={{ color: h.files_available > 0 ? 'var(--j-success)' : '#ef4444', fontWeight: 600, fontFamily: 'monospace' }}>
+                      <span style={{ color: h.files_available > 0 ? 'var(--j-success)' : 'var(--j-hard)', fontWeight: 600, fontFamily: 'monospace' }}>
                         {h.files_available}
                       </span>
                     </td>
@@ -259,8 +259,8 @@ export const DataPipelineDashboard: React.FC = () => {
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace' }}>{r.files_processed}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: 'var(--j-success)' }}>{r.emails_verified.toLocaleString()}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: '#ef4444' }}>{r.emails_suppressed.toLocaleString()}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: '#f59e0b' }}>{r.emails_deduped.toLocaleString()}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: 'var(--j-hard)' }}>{r.emails_suppressed.toLocaleString()}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontFamily: 'monospace', color: 'var(--j-soft)' }}>{r.emails_deduped.toLocaleString()}</td>
                     <td style={{ ...tdStyle, fontFamily: 'monospace', color: 'var(--j-text-muted)' }}>
                       {r.completed_at ? formatDuration(r.started_at, r.completed_at) : '—'}
                     </td>
@@ -307,8 +307,8 @@ const DayCard: React.FC<{ title: string; data?: { verified: number; suppressed: 
     <h4 style={{ color: 'var(--j-text-muted)', margin: '0 0 12px', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>{title}</h4>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
       <MiniStat label="Verified" value={data?.verified ?? 0} color="var(--j-success)" />
-      <MiniStat label="Suppressed" value={data?.suppressed ?? 0} color="#ef4444" />
-      <MiniStat label="Deduped" value={data?.deduped ?? 0} color="#f59e0b" />
+      <MiniStat label="Suppressed" value={data?.suppressed ?? 0} color="var(--j-hard)" />
+      <MiniStat label="Deduped" value={data?.deduped ?? 0} color="var(--j-soft)" />
       <MiniStat label="Files" value={data?.files ?? 0} color="var(--j-violet)" />
     </div>
   </div>
@@ -325,7 +325,7 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   const colors: Record<string, { bg: string; text: string }> = {
     running: { bg: 'color-mix(in srgb, var(--j-blue) 15%, transparent)', text: 'var(--j-blue)' },
     completed: { bg: 'color-mix(in srgb, var(--j-success) 15%, transparent)', text: 'var(--j-success)' },
-    failed: { bg: 'rgba(239,68,68,0.15)', text: '#ef4444' },
+    failed: { bg: 'rgba(239,68,68,0.15)', text: 'var(--j-hard)' },
   };
   const c = colors[status] ?? { bg: 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)', text: 'var(--j-text-muted)' };
   return (

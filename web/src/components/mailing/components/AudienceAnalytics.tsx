@@ -37,8 +37,8 @@
 //   delivery/hard/soft/complaint rate denominator = attempted when attempted>0,
 //   else delivered+hard_bounce+soft_bounce (the label says which was used).
 //   open_rate = open/delivered · click_rate = click/delivered · CTOR = click/open.
-//   HARD RULE: hard bounce is ALWAYS red #ef4444, soft bounce ALWAYS amber
-//   #f59e0b, and the two are NEVER summed into a combined "bounces" number.
+//   HARD RULE: hard bounce is ALWAYS red var(--j-hard), soft bounce ALWAYS amber
+//   var(--j-soft), and the two are NEVER summed into a combined "bounces" number.
 //
 // DATA CAVEAT (footnoted wherever opens/clicks render): open/click events
 // exist in the lake only for SES-routed mail and app-tracking backfill —
@@ -288,13 +288,13 @@ const COLORS = {
   accentAlt:     theme.indigo300,           // var(--j-violet)
   accentPink:    theme.indigo200,           // var(--j-violet-soft) (was pink → indigo light)
   good:          theme.success,             // var(--j-success)
-  warn:          theme.warning,             // #f59e0b
-  danger:        theme.danger,              // #ef4444
+  warn:          theme.warning,             // var(--j-soft)
+  danger:        theme.danger,              // var(--j-hard)
 };
 
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber. Always.
-const HARD_RED = '#ef4444';
-const SOFT_AMBER = '#f59e0b';
+const HARD_RED = 'var(--j-hard)';
+const SOFT_AMBER = 'var(--j-soft)';
 const INFO_BLUE = 'var(--j-blue)';
 const OPEN_CYAN = 'var(--j-cyan)';
 const CLICK_VIOLET = 'var(--j-violet)';
@@ -2728,7 +2728,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11, fontWeight: 600,
   },
   chartTip: {
-    background: '#0d1226', border: `1px solid ${COLORS.borderStrong}`,
+    background: 'var(--j-surface)', border: `1px solid ${COLORS.borderStrong}`,
     borderRadius: 8, padding: '10px 12px', fontSize: 12, minWidth: 170,
     boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
   },

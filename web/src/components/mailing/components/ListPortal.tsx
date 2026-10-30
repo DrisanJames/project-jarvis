@@ -477,9 +477,9 @@ const DASH_DEFAULT_CAT_COLOR = { bg: 'color-mix(in srgb, var(--j-cyan) 8%, trans
 /** Build ledger status → dot color (matches SegmentsCenter). */
 const DASH_BUILD_STATUS_COLORS: Record<string, string> = {
   ok: 'var(--j-success)',
-  failed: '#ef4444',
+  failed: 'var(--j-hard)',
   running: 'var(--j-blue)',
-  blocked_delta: '#f59e0b',
+  blocked_delta: 'var(--j-soft)',
 };
 
 /** Build ledger pipeline → badge tint. */
@@ -564,8 +564,8 @@ const WORKER_ITEM_LABELS: Record<string, string> = {
 
 const RUN_STATUS_COLORS: Record<string, string> = {
   ok: 'var(--j-success)',
-  partial: '#f59e0b',
-  failed: '#ef4444',
+  partial: 'var(--j-soft)',
+  failed: 'var(--j-hard)',
 };
 
 const formatDurationMs = (ms: number): string => {
@@ -959,9 +959,9 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetc
                   const catColor = DASH_CATEGORY_COLORS[cat] ?? DASH_DEFAULT_CAT_COLOR;
                   const chip =
                     reason === 'failed'
-                      ? { label: 'failed', color: '#ef4444' }
+                      ? { label: 'failed', color: 'var(--j-hard)' }
                       : reason === 'blocked_delta'
-                        ? { label: 'blocked Δ', color: '#f59e0b' }
+                        ? { label: 'blocked Δ', color: 'var(--j-soft)' }
                         : { label: 'stale', color: 'var(--j-text-muted)' };
                   return (
                     <div key={seg.id} className="segment-item" onClick={() => onNavigate('segments')}>
@@ -1161,7 +1161,7 @@ const ListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigate, onRefres
           />
         </div>
         <div className="filter-group">
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <select aria-label="Status filter" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="all">All Status</option>
             <option value="active">Active</option>
             <option value="paused">Paused</option>
@@ -1480,7 +1480,7 @@ const EditList: React.FC<EditListProps> = ({ list, onCancel, onSuccess, orgFetch
           <h3>Basic Information</h3>
           <div className="form-group">
             <label>List Name *</label>
-            <input
+            <input aria-label="Basic Information"
               type="text"
               value={formData.name}
               onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
@@ -1489,7 +1489,7 @@ const EditList: React.FC<EditListProps> = ({ list, onCancel, onSuccess, orgFetch
           </div>
           <div className="form-group">
             <label>Description</label>
-            <textarea
+            <textarea aria-label="Description"
               value={formData.description}
               onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))}
               rows={3}
@@ -1497,7 +1497,7 @@ const EditList: React.FC<EditListProps> = ({ list, onCancel, onSuccess, orgFetch
           </div>
           <div className="form-group">
             <label>Status</label>
-            <select
+            <select aria-label="Status"
               value={formData.status}
               onChange={e => setFormData(prev => ({ ...prev, status: e.target.value as any }))}
             >
@@ -1513,7 +1513,7 @@ const EditList: React.FC<EditListProps> = ({ list, onCancel, onSuccess, orgFetch
           <div className="form-row">
             <div className="form-group">
               <label>From Name</label>
-              <input
+              <input aria-label="From Name"
                 type="text"
                 value={formData.default_from_name}
                 onChange={e => setFormData(prev => ({ ...prev, default_from_name: e.target.value }))}
@@ -1521,7 +1521,7 @@ const EditList: React.FC<EditListProps> = ({ list, onCancel, onSuccess, orgFetch
             </div>
             <div className="form-group">
               <label>From Email</label>
-              <input
+              <input aria-label="From Email"
                 type="email"
                 value={formData.default_from_email}
                 onChange={e => setFormData(prev => ({ ...prev, default_from_email: e.target.value }))}
@@ -1717,7 +1717,7 @@ const SubscribersView: React.FC<SubscribersViewProps> = ({ list, onBack, orgFetc
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3><FontAwesomeIcon icon={faUserPlus} /> Add Subscriber</h3>
-              <button className="modal-close" onClick={() => setShowAddModal(false)}>
+              <button aria-label="Close" className="modal-close" onClick={() => setShowAddModal(false)}>
                 <FontAwesomeIcon icon={faTimes} />
               </button>
             </div>
@@ -1883,7 +1883,7 @@ const CreateSegment: React.FC<CreateSegmentProps> = ({ lists, onCancel, onSucces
           </div>
           <div className="form-group">
             <label>Based on List (optional)</label>
-            <select
+            <select aria-label="Based on List (optional)"
               value={formData.list_id}
               onChange={e => setFormData(prev => ({ ...prev, list_id: e.target.value }))}
             >
@@ -2095,7 +2095,7 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
           <h3>Basic Information</h3>
           <div className="form-group">
             <label>Segment Name *</label>
-            <input
+            <input aria-label="Basic Information"
               type="text"
               value={formData.name}
               onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
@@ -2104,7 +2104,7 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
           </div>
           <div className="form-group">
             <label>Description</label>
-            <textarea
+            <textarea aria-label="Description"
               value={formData.description}
               onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))}
               rows={2}
@@ -2113,7 +2113,7 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
           <div className="form-row">
             <div className="form-group">
               <label>Based on List</label>
-              <select
+              <select aria-label="Based on List"
                 value={formData.list_id}
                 onChange={e => setFormData(prev => ({ ...prev, list_id: e.target.value }))}
               >
@@ -2125,7 +2125,7 @@ const EditSegment: React.FC<EditSegmentProps> = ({ segment, lists: availableList
             </div>
             <div className="form-group">
               <label>Status</label>
-              <select
+              <select aria-label="Status"
                 value={formData.status}
                 onChange={e => setFormData(prev => ({ ...prev, status: e.target.value as any }))}
               >
@@ -2666,7 +2666,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
               <h3>2. Select List</h3>
               <div className="form-group">
                 <label>Target List *</label>
-                <select value={selectedList} onChange={e => setSelectedList(e.target.value)} required>
+                <select aria-label="Note" value={selectedList} onChange={e => setSelectedList(e.target.value)} required>
                   <option value="">Choose a list...</option>
                   {lists.map(list => (
                     <option key={list.id} value={list.id}>{list.name}</option>
@@ -2679,7 +2679,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
             <div className="form-section">
               <h3>3. Upload CSV File</h3>
               <div className="file-upload-area">
-                <input type="file" accept=".csv" onChange={handleFileChange} id="csv-upload" disabled={analyzing} />
+                <input aria-label="Choose a file to upload" type="file" accept=".csv" onChange={handleFileChange} id="csv-upload" disabled={analyzing} />
                 <label htmlFor="csv-upload" className="file-upload-label">
                   {analyzing ? (
                     <>
@@ -2998,24 +2998,24 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
       
       <style>{`
         .template-section { background: var(--j-surface); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .section-desc { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; margin-bottom: 16px; }
+        .section-desc { color: var(--j-text-muted); font-size: 14px; margin-bottom: 16px; }
         .template-buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
         .template-btn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--j-surface); border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; text-decoration: none; color: var(--j-text); transition: all 0.2s; flex: 1; min-width: 200px; }
         .template-btn:hover { border-color: var(--j-cyan); background: color-mix(in srgb, var(--j-cyan) 10%, transparent); }
         .template-btn > svg:first-child { color: var(--j-cyan); font-size: 24px; }
         .template-info { flex: 1; }
         .template-info strong { display: block; font-size: 14px; margin-bottom: 2px; }
-        .template-info small { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
-        .download-icon { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .template-info small { color: var(--j-text-muted); font-size: 12px; }
+        .download-icon { color: var(--j-text-muted); }
         .template-btn:hover .download-icon { color: var(--j-cyan); }
         .fields-toggle { background: none; border: none; color: var(--j-cyan); cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
         .fields-reference { margin-top: 16px; background: var(--j-surface); border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; overflow: hidden; }
         .fields-reference table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .fields-reference th, .fields-reference td { padding: 10px 12px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); color: var(--j-text); }
-        .fields-reference th { background: var(--j-surface); font-weight: 600; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; text-transform: uppercase; }
+        .fields-reference th { background: var(--j-surface); font-weight: 600; color: var(--j-text-muted); font-size: 12px; text-transform: uppercase; }
         .fields-reference code { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--j-cyan); }
         .required-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; background: color-mix(in srgb, var(--j-danger) 15%, transparent); color: var(--j-danger); border-radius: 4px; font-size: 10px; font-weight: 600; }
-        .example-cell { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-family: monospace; font-size: 12px; }
+        .example-cell { color: var(--j-text-muted); font-family: monospace; font-size: 12px; }
         .fields-note { padding: 12px; background: color-mix(in srgb, var(--j-warn) 10%, transparent); color: var(--j-warn); font-size: 13px; margin: 0; }
 
         /* Analysis */
@@ -3029,11 +3029,11 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         .stat-card.success .stat-value { color: var(--j-success); }
         .stat-card.warning .stat-value { color: var(--j-warn); }
         .stat-card.info .stat-value { color: var(--j-cyan); }
-        .stat-label { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .stat-label { font-size: 12px; color: var(--j-text-muted); }
 
         .file-info { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--j-surface); border-radius: 6px; font-size: 14px; color: var(--j-text); }
         .file-info svg { color: var(--j-cyan); }
-        .file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .file-size { color: var(--j-text-muted); }
         .file-info button { margin-left: auto; background: none; border: none; color: var(--j-cyan); cursor: pointer; font-size: 13px; }
 
         .detected-columns { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -3042,7 +3042,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         .preview-table-wrapper { overflow-x: auto; border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; }
         .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--j-text); }
         .preview-table th, .preview-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
-        .preview-table th { background: var(--j-surface); font-weight: 600; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .preview-table th { background: var(--j-surface); font-weight: 600; color: var(--j-text-muted); }
 
         .warning-section { background: color-mix(in srgb, var(--j-warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-warn) 20%, transparent); border-radius: 8px; padding: 16px; }
         .warning-note { margin: 12px 0 0; font-size: 13px; color: var(--j-warn); }
@@ -3052,7 +3052,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         .checkbox-option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
         .checkbox-option input { margin-top: 4px; width: 18px; height: 18px; }
         .checkbox-option span strong { display: block; margin-bottom: 2px; color: var(--j-text); }
-        .checkbox-option span small { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; }
+        .checkbox-option span small { color: var(--j-text-muted); font-size: 13px; }
 
         .target-list-reminder { padding: 12px; background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 6px; font-size: 14px; color: var(--j-text); }
 
@@ -3060,10 +3060,10 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         .importing-section { padding: 48px 24px; text-align: center; }
         .progress-container { max-width: 400px; margin: 0 auto; }
         .progress-icon { color: var(--j-cyan); margin-bottom: 20px; }
-        .progress-message { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 8px 0 24px; }
+        .progress-message { color: var(--j-text-muted); margin: 8px 0 24px; }
         .progress-bar-container { height: 8px; background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 4px; overflow: hidden; }
         .progress-bar { height: 100%; background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); transition: width 0.3s; }
-        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: var(--j-text-muted); }
 
         /* Complete */
         .complete-section { padding: 32px 24px; text-align: center; }
@@ -3081,8 +3081,8 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         .result-stat.info .result-value { color: var(--j-cyan); }
         .result-stat.warning .result-value { color: var(--j-warn); }
         .result-stat.error .result-value { color: var(--j-danger); }
-        .result-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 65%, transparent); text-transform: uppercase; }
-        .skip-note { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-top: 16px; }
+        .result-label { font-size: 11px; color: var(--j-text-muted); text-transform: uppercase; }
+        .skip-note { color: var(--j-text-muted); font-size: 13px; margin-top: 16px; }
         .error-list-container { text-align: left; background: color-mix(in srgb, var(--j-danger) 8%, transparent); border-radius: 8px; padding: 16px; margin-top: 16px; }
         .error-list-container h4 { margin: 0 0 8px; color: var(--j-danger); }
         .error-list { margin: 0; padding-left: 20px; color: var(--j-danger); font-size: 13px; }

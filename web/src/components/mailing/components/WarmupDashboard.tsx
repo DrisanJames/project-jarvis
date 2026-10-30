@@ -110,7 +110,7 @@ export const WarmupDashboard: React.FC = () => {
       <div style={styles.header}>
         <h2 style={styles.title}>IP Warmup Dashboard</h2>
         <div style={styles.controls}>
-          <select
+          <select aria-label="IP Warmup Dashboard"
             value={selectedPool}
             onChange={e => setSelectedPool(e.target.value)}
             style={styles.select}
@@ -139,7 +139,7 @@ export const WarmupDashboard: React.FC = () => {
             key={pool.pool}
             style={{
               ...styles.poolCard,
-              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? '#ef4444' : pool.avg_bounce_rate > 0.01 ? '#f59e0b' : 'var(--j-success)'}`,
+              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? 'var(--j-hard)' : pool.avg_bounce_rate > 0.01 ? 'var(--j-soft)' : 'var(--j-success)'}`,
             }}
             onClick={() => setSelectedPool(pool.pool === selectedPool ? 'all' : pool.pool)}
           >
@@ -147,7 +147,7 @@ export const WarmupDashboard: React.FC = () => {
             <div style={styles.poolStats}>
               <span>{pool.active_ips} IPs</span>
               <span>{pool.total_sent_today.toLocaleString()} sent today</span>
-              <span style={{ color: pool.avg_bounce_rate > 0.02 ? '#ef4444' : 'var(--j-text-muted)' }}>
+              <span style={{ color: pool.avg_bounce_rate > 0.02 ? 'var(--j-hard)' : 'var(--j-text-muted)' }}>
                 {(pool.avg_bounce_rate * 100).toFixed(1)}% bounce
               </span>
             </div>
@@ -229,7 +229,7 @@ export const WarmupDashboard: React.FC = () => {
                   <span style={{
                     ...styles.statusBadge,
                     background: ip.status === 'active' ? 'color-mix(in srgb, var(--j-success) 20%, transparent)' : 'rgba(245,158,11,0.2)',
-                    color: ip.status === 'active' ? 'var(--j-success)' : '#f59e0b',
+                    color: ip.status === 'active' ? 'var(--j-success)' : 'var(--j-soft)',
                   }}>
                     {ip.status}
                   </span>
@@ -240,7 +240,7 @@ export const WarmupDashboard: React.FC = () => {
                     <div style={{
                       ...styles.progressBar,
                       width: `${Math.min(100, (ip.today_sent / Math.max(ip.warmup_daily_limit, 1)) * 100)}%`,
-                      background: ip.today_sent >= ip.warmup_daily_limit ? '#ef4444' : 'var(--j-violet-strong)',
+                      background: ip.today_sent >= ip.warmup_daily_limit ? 'var(--j-hard)' : 'var(--j-violet-strong)',
                     }} />
                     <span style={styles.progressText}>
                       {ip.today_sent.toLocaleString()} / {ip.warmup_daily_limit.toLocaleString()}
@@ -251,7 +251,7 @@ export const WarmupDashboard: React.FC = () => {
                 <td style={styles.td}>{ip.total_delivered.toLocaleString()}</td>
                 <td style={{
                   ...styles.td,
-                  color: ip.today_bounce_rate > 0.02 ? '#ef4444' : ip.today_bounce_rate > 0.01 ? '#f59e0b' : 'var(--j-text-muted)',
+                  color: ip.today_bounce_rate > 0.02 ? 'var(--j-hard)' : ip.today_bounce_rate > 0.01 ? 'var(--j-soft)' : 'var(--j-text-muted)',
                 }}>
                   {(ip.today_bounce_rate * 100).toFixed(1)}%
                 </td>
@@ -277,7 +277,7 @@ export const WarmupDashboard: React.FC = () => {
               : recentBounceRates.some(r => r > 0.05)
               ? 'Hold — bounce rate too high'
               : 'Continue at current limit';
-            const recoColor = allBelow1 ? 'var(--j-success)' : recentBounceRates.some(r => r > 0.05) ? '#ef4444' : 'var(--j-text-muted)';
+            const recoColor = allBelow1 ? 'var(--j-success)' : recentBounceRates.some(r => r > 0.05) ? 'var(--j-hard)' : 'var(--j-text-muted)';
 
             return (
               <div key={ip.id} style={styles.recoCard}>
@@ -378,7 +378,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
   },
   error: {
-    color: '#ef4444',
+    color: 'var(--j-hard)',
     textAlign: 'center' as const,
     padding: 48,
     fontSize: 14,

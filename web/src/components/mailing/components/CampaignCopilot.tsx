@@ -33,12 +33,12 @@ interface SchedulerCommand {
 }
 
 const COMMAND_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
-  queued: { bg: '#3b2f14', fg: '#f59e0b' },
-  running: { bg: '#14243b', fg: 'var(--j-blue)' },
-  completed: { bg: '#12301f', fg: 'var(--j-success)' },
-  done: { bg: '#12301f', fg: 'var(--j-success)' },
-  failed: { bg: '#3a1518', fg: '#ef4444' },
-  error: { bg: '#3a1518', fg: '#ef4444' },
+  queued: { bg: 'color-mix(in srgb, var(--j-soft) 14%, transparent)', fg: 'var(--j-soft)' },
+  running: { bg: 'color-mix(in srgb, var(--j-blue) 14%, transparent)', fg: 'var(--j-blue)' },
+  completed: { bg: 'color-mix(in srgb, var(--j-success) 14%, transparent)', fg: 'var(--j-success)' },
+  done: { bg: 'color-mix(in srgb, var(--j-success) 14%, transparent)', fg: 'var(--j-success)' },
+  failed: { bg: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', fg: 'var(--j-hard)' },
+  error: { bg: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', fg: 'var(--j-hard)' },
 };
 
 const INITIAL_MESSAGE: CopilotMessage = {
@@ -262,7 +262,7 @@ export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClos
             style={styles.input}
             disabled={loading}
           />
-          <button type="submit" style={styles.sendBtn} disabled={loading || !input.trim()}>
+          <button type="submit" aria-label="Send" style={styles.sendBtn} disabled={loading || !input.trim()}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -286,7 +286,7 @@ function simpleMarkdown(text: string): string {
     .replace(/>/g, '&gt;');
 
   out = out.replace(/```([\s\S]*?)```/g, '<pre style="background:var(--j-surface);padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0"><code>$1</code></pre>');
-  out = out.replace(/`([^`]+)`/g, '<code style="background:#1a2233;padding:1px 5px;border-radius:3px;font-size:12px">$1</code>');
+  out = out.replace(/`([^`]+)`/g, '<code style="background:var(--j-surface-2);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>');
   out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*(.+?)\*/g, '<em>$1</em>');
   out = out.replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:14px;color:var(--j-violet)">$1</h4>');
@@ -351,7 +351,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   commandStrip: {
     borderBottom: '1px solid var(--j-surface-2)',
-    background: '#0b1322',
+    background: 'var(--j-surface-2)',
     padding: '6px 14px',
     display: 'flex',
     flexDirection: 'column',

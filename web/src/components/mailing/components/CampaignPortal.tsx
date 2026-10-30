@@ -597,20 +597,20 @@ const CampaignDetailsModal: React.FC<{
                       .cv-header { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
                       .cv-badge { background: color-mix(in srgb, var(--j-violet-strong) 15%, transparent); color: var(--j-violet); padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
                       .cv-tabs { display: flex; gap: 4px; margin: 14px 0 16px; }
-                      .cv-tab { padding: 7px 18px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent); background: color-mix(in srgb, var(--j-violet-strong) 4%, transparent); color: color-mix(in srgb, var(--j-text) 60%, transparent); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
+                      .cv-tab { padding: 7px 18px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent); background: color-mix(in srgb, var(--j-violet-strong) 4%, transparent); color: var(--j-text-muted); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
                       .cv-tab:hover { background: color-mix(in srgb, var(--j-violet-strong) 8%, transparent); color: var(--j-violet-soft); border-color: color-mix(in srgb, var(--j-violet-strong) 25%, transparent); }
                       .cv-tab.active { background: color-mix(in srgb, var(--j-violet-strong) 18%, transparent); color: var(--j-violet); border-color: color-mix(in srgb, var(--j-violet-strong) 40%, transparent); }
                       .cv-tab .cv-winner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--j-success); display: inline-block; }
                       .cv-card { background: color-mix(in srgb, var(--j-shade) 60%, transparent); border: 1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent); border-radius: 10px; padding: 16px; }
                       .cv-field { margin-bottom: 12px; }
-                      .cv-field-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 40%, transparent); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
+                      .cv-field-label { font-size: 11px; color: var(--j-text-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
                       .cv-field-value { font-size: 14px; color: var(--j-text); line-height: 1.4; }
                       .cv-split-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--j-violet-strong) 10%, transparent); margin-top: 6px; overflow: hidden; }
                       .cv-split-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--j-violet), var(--j-violet-strong)); transition: width 0.3s; }
                       .cv-metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent); }
                       .cv-metric { text-align: center; }
                       .cv-metric-val { font-size: 18px; font-weight: 700; color: var(--j-text); }
-                      .cv-metric-lbl { font-size: 11px; color: color-mix(in srgb, var(--j-text) 45%, transparent); margin-top: 2px; }
+                      .cv-metric-lbl { font-size: 11px; color: var(--j-text-muted); margin-top: 2px; }
                       .cv-preview-toggle { margin-top: 14px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent); }
                       .cv-preview-btn { background: color-mix(in srgb, var(--j-violet-strong) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent); color: var(--j-violet); padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: all 0.15s; }
                       .cv-preview-btn:hover { background: color-mix(in srgb, var(--j-violet-strong) 14%, transparent); border-color: color-mix(in srgb, var(--j-violet-strong) 30%, transparent); }
@@ -697,8 +697,8 @@ const CampaignDetailsModal: React.FC<{
               {/* Performance Metrics */}
               {stats && (
                 <div className="details-section">
-                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>engagement counters</span></h3>
-                  <p style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', margin: '-4px 0 10px' }}>
+                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--j-text-muted)' }}>engagement counters</span></h3>
+                  <p style={{ fontSize: 11.5, color: 'var(--j-text-muted)', margin: '-4px 0 10px' }}>
                     Engagement (opens/clicks) shown here. For the authoritative delivery &amp; bounce breakdown —
                     including hard bounce vs provider block — see the <strong>Delivery Summary</strong> below
                     (from our Reporting data). The two can differ while a campaign is still settling.
@@ -720,12 +720,12 @@ const CampaignDetailsModal: React.FC<{
                       <div className="metric-label">Clicks ({stats.click_rate.toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: '#ef4444' }} />
+                      <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: 'var(--j-hard)' }} />
                       <div className="metric-value"><AnimatedCounter value={stats.hard_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Hard Bounces ({(stats.hard_bounce_rate ?? 0).toFixed(1)}%)</div>
                     </div>
                     <div className="metric-box">
-                      <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
+                      <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: 'var(--j-soft)' }} />
                       <div className="metric-value"><AnimatedCounter value={stats.soft_bounces} formatFn={(n) => Math.round(n).toLocaleString()} /></div>
                       <div className="metric-label">Soft Bounces ({(stats.soft_bounce_rate ?? 0).toFixed(1)}%)</div>
                     </div>
@@ -756,7 +756,7 @@ const CampaignDetailsModal: React.FC<{
                   className="details-section"
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
-                    color: '#f59e0b', fontSize: 13,
+                    color: 'var(--j-soft)', fontSize: 13,
                   }}
                 >
                   <FontAwesomeIcon icon={faExclamationTriangle} />
@@ -798,7 +798,7 @@ const CampaignDetailsModal: React.FC<{
                       >
                         {c.route_type}
                       </span>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--j-text-muted)' }}>
                         from Reporting
                       </span>
                     </h3>
@@ -833,7 +833,7 @@ const CampaignDetailsModal: React.FC<{
                         >
                           {meta.map(([label, value]) => (
                             <div key={label} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                              <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>
+                              <span style={{ color: 'var(--j-text-muted)', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>
                               <span style={{ color: 'var(--j-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof value === 'string' ? value : undefined}>{value}</span>
                             </div>
                           ))}
@@ -871,9 +871,9 @@ const CampaignDetailsModal: React.FC<{
                       {tile('Recipients', c.recipients, 'var(--j-text-muted)', undefined, 'Distinct recipients after list cleaning')}
                       {isSes && tile('Relayed', c.relayed_to_ses, 'var(--j-violet)', undefined, 'Handed off to the relay route — not yet a delivery')}
                       {tile('Delivered', c.delivered, 'var(--j-success)')}
-                      {tile('Hard Bounce', c.hard_bounce, '#ef4444', undefined, 'Invalid address, dead domain, or disabled mailbox. These ARE suppressed.')}
+                      {tile('Hard Bounce', c.hard_bounce, 'var(--j-hard)', undefined, 'Invalid address, dead domain, or disabled mailbox. These ARE suppressed.')}
                       {tile('Provider Block', c.reputation_block, 'var(--j-warn)', undefined, 'Sender-side block by the mailbox provider of a VALID recipient. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
-                      {tile('Soft Bounce', c.soft_bounce, '#f59e0b', undefined, 'Transient failure (mailbox full, rate-limit, timeout). Clears on retry.')}
+                      {tile('Soft Bounce', c.soft_bounce, 'var(--j-soft)', undefined, 'Transient failure (mailbox full, rate-limit, timeout). Clears on retry.')}
                       {tile('Deferred / Open', c.deferred_open, 'var(--j-blue)', undefined, 'Deferred but later observed open')}
                       {tile('Sent Only', c.sent_only, 'var(--j-text-faint)', undefined, 'Sent with no delivery result yet')}
                     </div>
@@ -886,8 +886,8 @@ const CampaignDetailsModal: React.FC<{
                         <div className="metric-label">Delivery (of sent)</div>
                       </div>
                       <div className="metric-box" title="TRUE list-hygiene hard bounces (invalid address / dead domain / disabled mailbox) over processed (delivered + hard + reputation block + soft).">
-                        <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: '#ef4444' }} />
-                        <div className="metric-value" style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</div>
+                        <FontAwesomeIcon icon={faBan} className="metric-icon" style={{ color: 'var(--j-hard)' }} />
+                        <div className="metric-value" style={{ color: 'var(--j-hard)' }}>{c.hard_bounce_rate.toFixed(2)}%</div>
                         <div className="metric-label">Hard Bounce (of processed)</div>
                       </div>
                       <div className="metric-box" title="Provider blocks over processed. High here = a sender-reputation / warmup problem, not a dirty list.">
@@ -896,8 +896,8 @@ const CampaignDetailsModal: React.FC<{
                         <div className="metric-label">Provider Block (of processed)</div>
                       </div>
                       <div className="metric-box" title="Transient failures over processed. Clears on retry.">
-                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#f59e0b' }} />
-                        <div className="metric-value" style={{ color: '#f59e0b' }}>{c.soft_bounce_rate.toFixed(2)}%</div>
+                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: 'var(--j-soft)' }} />
+                        <div className="metric-value" style={{ color: 'var(--j-soft)' }}>{c.soft_bounce_rate.toFixed(2)}%</div>
                         <div className="metric-label">Soft Bounce (of processed)</div>
                       </div>
                       <div className="metric-box">
@@ -918,7 +918,7 @@ const CampaignDetailsModal: React.FC<{
                     </div>
 
                     {c.data_as_of && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'var(--j-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FontAwesomeIcon icon={faClock} />
                         <span>Source: Reporting · as of {new Date(c.data_as_of).toLocaleString()}</span>
                       </div>
@@ -934,7 +934,7 @@ const CampaignDetailsModal: React.FC<{
                   return (
                     <div className="details-section">
                       <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
-                      <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontStyle: 'italic' }}>
+                      <div style={{ fontSize: 13, color: 'var(--j-text-muted)', fontStyle: 'italic' }}>
                         Funnel not recorded for this campaign (finalized before funnel tracking).
                       </div>
                     </div>
@@ -954,7 +954,7 @@ const CampaignDetailsModal: React.FC<{
                       background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
                     }}
                   >
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{label}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text-2)' }}>{label}</span>
                     <span style={{ fontSize: 18, fontWeight: 700, color }}>{value.toLocaleString()}</span>
                   </div>
                 );
@@ -963,16 +963,16 @@ const CampaignDetailsModal: React.FC<{
                     <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       {stage('Total Seen', funnel.total_seen, 'var(--j-text)', 'Subscribers evaluated during list cleaning')}
-                      <div style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', lineHeight: 1 }}>
+                      <div style={{ textAlign: 'center', color: 'var(--j-text-muted)', lineHeight: 1 }}>
                         <FontAwesomeIcon icon={faArrowDown} />
                       </div>
                       {stage('Targeted (selected)', funnel.targeted, 'var(--j-success)', 'Recipients that passed every filter')}
-                      <div style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', lineHeight: 1 }}>
+                      <div style={{ textAlign: 'center', color: 'var(--j-text-muted)', lineHeight: 1 }}>
                         <FontAwesomeIcon icon={faArrowDown} />
                       </div>
-                      {stage('Suppressed (total)', funnel.suppressed_total, '#f59e0b', 'Sum of all suppression reasons below')}
+                      {stage('Suppressed (total)', funnel.suppressed_total, 'var(--j-soft)', 'Sum of all suppression reasons below')}
                       {funnel.reserve > 0 && (
-                        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textAlign: 'right' }}>
                           + {funnel.reserve.toLocaleString()} held in reserve
                         </div>
                       )}
@@ -980,7 +980,7 @@ const CampaignDetailsModal: React.FC<{
 
                     {reasons.length > 0 && (
                       <div style={{ marginTop: 16 }}>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, color: 'var(--j-text-muted)', marginBottom: 8 }}>
                           Suppression Reasons
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1022,7 +1022,7 @@ const CampaignDetailsModal: React.FC<{
                                       position: 'relative', zIndex: 1,
                                       fontSize: isPrimary ? 15 : 14,
                                       fontWeight: 700,
-                                      color: isPrimary ? '#ef4444' : 'var(--j-violet-soft)',
+                                      color: isPrimary ? 'var(--j-hard)' : 'var(--j-violet-soft)',
                                     }}
                                   >
                                     {r.count.toLocaleString()}
@@ -1036,7 +1036,7 @@ const CampaignDetailsModal: React.FC<{
                     )}
 
                     {funnel.computed_at && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'var(--j-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FontAwesomeIcon icon={faClock} />
                         <span>Funnel computed {new Date(funnel.computed_at).toLocaleString()}</span>
                       </div>
@@ -1061,9 +1061,9 @@ const CampaignDetailsModal: React.FC<{
                         submitting:    'var(--j-cyan)',
                         sent:          'var(--j-success)',
                         delivered:     'var(--j-success)',
-                        failed:        '#ef4444',
+                        failed:        'var(--j-hard)',
                         dead_lettered: '#b91c1c',
-                        bounced:       '#f59e0b',
+                        bounced:       'var(--j-soft)',
                       };
                       const color = statusColor[status] || 'var(--j-text-muted)';
                       return (
@@ -1117,30 +1117,30 @@ const CampaignDetailsModal: React.FC<{
                                     {quotaUsed !== null && (
                                       <span style={{
                                         fontSize: '0.7rem',
-                                        color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : 'var(--j-success)',
+                                        color: quotaUsed >= 90 ? 'var(--j-hard)' : quotaUsed >= 70 ? 'var(--j-soft)' : 'var(--j-success)',
                                         fontWeight: 700,
                                       }}>{quotaUsed}% used</span>
                                     )}
                                   </span>
-                                ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>}
+                                ) : <span style={{ color: 'var(--j-text-muted)' }}>—</span>}
                               </td>
                               <td>{row.sent.toLocaleString()}</td>
                               <td>{row.delivered.toLocaleString()}</td>
                               <td>
                                 <span>{row.opens.toLocaleString()}</span>
-                                <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--j-text-muted)', marginLeft: 4 }}>
                                   ({pct(row.opens, row.delivered)})
                                 </span>
                               </td>
                               <td>
                                 <span>{row.clicks.toLocaleString()}</span>
-                                <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--j-text-muted)', marginLeft: 4 }}>
                                   ({pct(row.clicks, row.delivered)})
                                 </span>
                               </td>
-                              <td style={{ color: row.hard_bounces > 0 ? '#ef4444' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
-                              <td style={{ color: row.soft_bounces > 0 ? '#f59e0b' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
-                              <td style={{ color: row.complaints > 0 ? '#ef4444' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
+                              <td style={{ color: row.hard_bounces > 0 ? 'var(--j-hard)' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
+                              <td style={{ color: row.soft_bounces > 0 ? 'var(--j-soft)' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
+                              <td style={{ color: row.complaints > 0 ? 'var(--j-hard)' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
                             </tr>
                           );
                         })}
@@ -1164,7 +1164,7 @@ const CampaignDetailsModal: React.FC<{
                   className="details-section"
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
-                    color: '#ef4444', fontSize: 13,
+                    color: 'var(--j-hard)', fontSize: 13,
                   }}
                 >
                   <FontAwesomeIcon icon={faExclamationTriangle} />
@@ -1704,7 +1704,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
           {editStatsExpanded && (
             <div className="cb-perf-banner-content">
               {editStatsLoading ? (
-                <div style={{ textAlign: 'center', padding: '16px 0', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+                <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--j-text-muted)' }}>
                   <FontAwesomeIcon icon={faSpinner} spin /> Loading stats...
                 </div>
               ) : editStats ? (
@@ -1724,11 +1724,11 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                       <span className="cb-perf-metric-label">Clicks ({editStats.click_rate.toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
-                      <span className="cb-perf-metric-value" style={{ color: '#ef4444' }}>{editStats.hard_bounces.toLocaleString()}</span>
+                      <span className="cb-perf-metric-value" style={{ color: 'var(--j-hard)' }}>{editStats.hard_bounces.toLocaleString()}</span>
                       <span className="cb-perf-metric-label">Hard Bounces ({(editStats.hard_bounce_rate ?? 0).toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
-                      <span className="cb-perf-metric-value" style={{ color: '#f59e0b' }}>{editStats.soft_bounces.toLocaleString()}</span>
+                      <span className="cb-perf-metric-value" style={{ color: 'var(--j-soft)' }}>{editStats.soft_bounces.toLocaleString()}</span>
                       <span className="cb-perf-metric-label">Soft Bounces ({(editStats.soft_bounce_rate ?? 0).toFixed(1)}%)</span>
                     </div>
                     <div className="cb-perf-metric">
@@ -1777,30 +1777,30 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                                       {quotaUsed !== null && (
                                         <span style={{
                                           fontSize: '0.7rem',
-                                          color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : 'var(--j-success)',
+                                          color: quotaUsed >= 90 ? 'var(--j-hard)' : quotaUsed >= 70 ? 'var(--j-soft)' : 'var(--j-success)',
                                           fontWeight: 700,
                                         }}>{quotaUsed}% used</span>
                                       )}
                                     </span>
-                                  ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>}
+                                  ) : <span style={{ color: 'var(--j-text-muted)' }}>—</span>}
                                 </td>
                                 <td>{row.sent.toLocaleString()}</td>
                                 <td>{row.delivered.toLocaleString()}</td>
                                 <td>
                                   <span>{row.opens.toLocaleString()}</span>
-                                  <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--j-text-muted)', marginLeft: 4 }}>
                                     ({pct(row.opens, row.delivered)})
                                   </span>
                                 </td>
                                 <td>
                                   <span>{row.clicks.toLocaleString()}</span>
-                                  <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--j-text-muted)', marginLeft: 4 }}>
                                     ({pct(row.clicks, row.delivered)})
                                   </span>
                                 </td>
-                                <td style={{ color: row.hard_bounces > 0 ? '#ef4444' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
-                                <td style={{ color: row.soft_bounces > 0 ? '#f59e0b' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
-                                <td style={{ color: row.complaints > 0 ? '#ef4444' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
+                                <td style={{ color: row.hard_bounces > 0 ? 'var(--j-hard)' : 'inherit' }}>{row.hard_bounces.toLocaleString()}</td>
+                                <td style={{ color: row.soft_bounces > 0 ? 'var(--j-soft)' : 'inherit' }}>{row.soft_bounces.toLocaleString()}</td>
+                                <td style={{ color: row.complaints > 0 ? 'var(--j-hard)' : 'inherit' }}>{row.complaints.toLocaleString()}</td>
                               </tr>
                             );
                           })}
@@ -1959,7 +1959,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
               <div className="cb-form-grid">
                 <div className="cb-form-group">
                   <label>Sending Profile <span className="required">*</span></label>
-                  <select value={selectedProfile} onChange={e => handleProfileChange(e.target.value)} className="cb-select">
+                  <select aria-label="Sending Profile" value={selectedProfile} onChange={e => handleProfileChange(e.target.value)} className="cb-select">
                     <option value="">Select a sending profile</option>
                     {profiles.map(p => (
                       <option key={p.id} value={p.id}>
@@ -2097,7 +2097,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                     .cb-creative-content { border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 10px; overflow: hidden; background: var(--j-surface); }
                     .cb-creative-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); background: color-mix(in srgb, var(--j-cyan) 3%, transparent); }
                     .cb-creative-toolbar .cb-ct-badge { background: var(--j-success); color: white; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
-                    .cb-creative-toolbar .cb-ct-label { color: color-mix(in srgb, var(--j-text) 50%, transparent); font-size: 12px; flex: 1; }
+                    .cb-creative-toolbar .cb-ct-label { color: var(--j-text-muted); font-size: 12px; flex: 1; }
                     .cb-creative-toolbar button { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent); color: var(--j-text); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
                     .cb-creative-toolbar button:hover { background: color-mix(in srgb, var(--j-cyan) 12%, transparent); }
                     .cb-creative-toolbar button.active { background: var(--j-blue); border-color: var(--j-blue); color: white; }
@@ -2142,7 +2142,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                     </div>
                   ) : (
                     <div className="cb-creative-code">
-                      <textarea
+                      <textarea aria-label="Html content"
                         value={formData.html_content}
                         onChange={(e) => setFormData(prev => ({ ...prev, html_content: e.target.value }))}
                         spellCheck={false}

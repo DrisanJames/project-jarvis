@@ -384,7 +384,7 @@ export const ImageDomainManager: React.FC = () => {
       >
         <div
           style={{
-            background: '#16213e',
+            background: 'var(--j-surface-2)',
             padding: '14px 20px',
             borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
@@ -451,7 +451,7 @@ export const ImageDomainManager: React.FC = () => {
                             onClick={() => provisionDomain(s.suggested_image_domain)}
                             disabled={isProvisioning}
                             style={{
-                              background: '#0f3460',
+                              background: 'var(--j-surface-3)',
                               color: 'var(--j-text)',
                               border: 'none',
                               borderRadius: '6px',
@@ -569,7 +569,7 @@ export const ImageDomainManager: React.FC = () => {
       >
         <div
           style={{
-            background: '#16213e',
+            background: 'var(--j-surface-2)',
             padding: '14px 20px',
             borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
@@ -632,7 +632,7 @@ export const ImageDomainManager: React.FC = () => {
       >
         <div
           style={{
-            background: '#16213e',
+            background: 'var(--j-surface-2)',
             padding: '14px 20px',
             borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
@@ -664,11 +664,11 @@ export const ImageDomainManager: React.FC = () => {
               }}
               onKeyDown={(e) => e.key === 'Enter' && handleAddCustomDomain()}
             />
-            <button
+            <button aria-label="Add"
               onClick={handleAddCustomDomain}
               disabled={addingCustom || !customDomain.trim()}
               style={{
-                background: '#0f3460',
+                background: 'var(--j-surface-3)',
                 color: 'var(--j-text)',
                 border: 'none',
                 borderRadius: '6px',

@@ -88,11 +88,11 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
           <h3 style={{ margin: 0, color: 'var(--j-text)' }}>
             Batch Inspector — <code style={{ fontSize: 12, color: '#a5f3fc' }}>{batchId.slice(0, 8)}…</code>
           </h3>
-          <button onClick={onClose} style={iconBtn}><FontAwesomeIcon icon={faTimes} /></button>
+          <button aria-label="Close" onClick={onClose} style={iconBtn}><FontAwesomeIcon icon={faTimes} /></button>
         </div>
 
         {loading && (
-          <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--j-text-muted)' }}>
             <FontAwesomeIcon icon={faSpinner} spin /> Loading…
           </div>
         )}
@@ -117,8 +117,8 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
                 <h4 style={{ color: 'var(--j-text-2)', margin: '0 0 8px 0' }}>List processing counters</h4>
                 <div style={grid}>
                   <Stat label="Processed" value={detail.counters.sliced.toLocaleString()} />
-                  <Stat label="Suppressed (global)" value={detail.counters.suppressed_global.toLocaleString()} accent="#f59e0b" />
-                  <Stat label="Suppressed (verification)" value={detail.counters.suppressed_eo.toLocaleString()} accent="#f59e0b" />
+                  <Stat label="Suppressed (global)" value={detail.counters.suppressed_global.toLocaleString()} accent="var(--j-soft)" />
+                  <Stat label="Suppressed (verification)" value={detail.counters.suppressed_eo.toLocaleString()} accent="var(--j-soft)" />
                   <Stat label="Ready" value={detail.counters.ready.toLocaleString()} accent="var(--j-success)" />
                   <Stat label="Mailed" value={detail.counters.mailed.toLocaleString()} accent="var(--j-violet-strong)" />
                 </div>
@@ -138,7 +138,7 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
 
 const Stat: React.FC<{ label: string; value: string; accent?: string }> = ({ label, value, accent }) => (
   <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 12, borderRadius: 6 }}>
-    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, color: accent ?? 'var(--j-text)' }}>{value}</div>
   </div>
 );
@@ -155,10 +155,10 @@ const modalBody: React.CSSProperties = {
   background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 720,
   maxHeight: '90vh', overflowY: 'auto',
-  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'var(--j-text)',
 };
 const iconBtn: React.CSSProperties = {
-  background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'transparent', color: 'var(--j-text)',
   border: 'none', padding: '4px 8px', cursor: 'pointer', fontSize: 16,
 };
 const errorBox: React.CSSProperties = {

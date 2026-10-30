@@ -113,7 +113,7 @@ const Panel: React.FC<PanelProps> = ({
       </div>
     )}
     {!loading && error && (
-      <div style={{ padding: 16, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ padding: 16, color: 'var(--j-hard)', display: 'flex', alignItems: 'center', gap: 8 }}>
         <FontAwesomeIcon icon={faExclamationTriangle} /> {error}
       </div>
     )}
@@ -213,8 +213,8 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                   <th>Recipients</th>
                   <th>Delivered</th>
                   <th>Del%</th>
-                  <th style={{ color: '#ef4444' }}>Hard Bnc</th>
-                  <th style={{ color: '#f59e0b' }}>Soft Bnc (final)</th>
+                  <th style={{ color: 'var(--j-hard)' }}>Hard Bnc</th>
+                  <th style={{ color: 'var(--j-soft)' }}>Soft Bnc (final)</th>
                   <th>Deferred Open</th>
                   <th>Sent Only</th>
                   <th>SB Events</th>
@@ -230,8 +230,8 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                       <td>{fmt(c.recipients)}</td>
                       <td>{fmt(c.delivered)}</td>
                       <td>{delPct.toFixed(1)}%</td>
-                      <td style={{ color: '#ef4444' }}>{fmt(c.hard_bounce)}</td>
-                      <td style={{ color: '#f59e0b' }}>{fmt(c.soft_bounce_final)}</td>
+                      <td style={{ color: 'var(--j-hard)' }}>{fmt(c.hard_bounce)}</td>
+                      <td style={{ color: 'var(--j-soft)' }}>{fmt(c.soft_bounce_final)}</td>
                       <td>{fmt(c.deferred_open)}</td>
                       <td style={{ color: 'var(--j-text-faint)' }}>{fmt(c.sent_only)}</td>
                       <td>{fmt(c.soft_bounce_events)}</td>
@@ -265,8 +265,8 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                   <th>Delivered</th>
                   <th>Del%</th>
                   <th style={{ color: 'var(--j-violet-strong)' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
-                  <th style={{ color: '#ef4444' }}>Hard%</th>
-                  <th style={{ color: '#f59e0b' }}>Soft%</th>
+                  <th style={{ color: 'var(--j-hard)' }}>Hard%</th>
+                  <th style={{ color: 'var(--j-soft)' }}>Soft%</th>
                   <th>Complaints</th>
                   <th>Deferred</th>
                 </tr>
@@ -280,8 +280,8 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                     <td>{fmt(c.delivered)}</td>
                     <td>{c.delivery_rate.toFixed(1)}%</td>
                     <td style={{ color: 'var(--j-violet-strong)' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
-                    <td style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</td>
-                    <td style={{ color: '#f59e0b' }}>{c.soft_bounce_rate.toFixed(2)}%</td>
+                    <td style={{ color: 'var(--j-hard)' }}>{c.hard_bounce_rate.toFixed(2)}%</td>
+                    <td style={{ color: 'var(--j-soft)' }}>{c.soft_bounce_rate.toFixed(2)}%</td>
                     <td>{fmt(c.complaints)}</td>
                     <td>{fmt(c.deferred)}</td>
                   </tr>
@@ -342,7 +342,7 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(grand.total)}</span><span className="ac-kpi-label">Total Opens</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-success)' }}>{fmt(grand.human)}</span><span className="ac-kpi-label">Human ({ratio(grand.human, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-blue)' }}>{fmt(grand.mpp)}</span><span className="ac-kpi-label">Apple Mail Privacy ({ratio(grand.mpp, grand.total)})</span></div></div>
-            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{fmt(grand.scanner)}</span><span className="ac-kpi-label">Scanner ({ratio(grand.scanner, grand.total)})</span></div></div>
+            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-soft)' }}>{fmt(grand.scanner)}</span><span className="ac-kpi-label">Scanner ({ratio(grand.scanner, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#a3a3a3' }}>{fmt(grand.no_send)}</span><span className="ac-kpi-label">Orphan / No-Send</span></div></div>
           </div>
           <div style={{ overflowX: 'auto' }}>
@@ -352,7 +352,7 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
                 <th>Total</th>
                 <th style={{ color: 'var(--j-success)' }}>Human</th>
                 <th style={{ color: 'var(--j-blue)' }}>Apple Mail Privacy</th>
-                <th style={{ color: '#f59e0b' }}>Scanner</th>
+                <th style={{ color: 'var(--j-soft)' }}>Scanner</th>
                 <th>Orphan</th>
                 <th>Human %</th>
               </tr></thead>
@@ -363,7 +363,7 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
                     <td>{fmt(r.total)}</td>
                     <td style={{ color: 'var(--j-success)' }}>{fmt(r.human)}</td>
                     <td style={{ color: 'var(--j-blue)' }}>{fmt(r.mpp)}</td>
-                    <td style={{ color: '#f59e0b' }}>{fmt(r.scanner)}</td>
+                    <td style={{ color: 'var(--j-soft)' }}>{fmt(r.scanner)}</td>
                     <td>{fmt(r.no_send)}</td>
                     <td>{ratio(r.human, r.total)}</td>
                   </tr>
@@ -512,7 +512,7 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
                 <tr key={c.campaign_id}>
                   <td>{c.name}</td>
                   <td>{(c.detected_slugs || []).map(s => <code key={s} style={{ marginRight: 6, fontSize: 11 }}>{s}</code>)}</td>
-                  <td>{c.has_tracking_suffix ? <span style={{ color: 'var(--j-success)' }}>YES</span> : <span style={{ color: '#ef4444' }}>NO</span>}</td>
+                  <td>{c.has_tracking_suffix ? <span style={{ color: 'var(--j-success)' }}>YES</span> : <span style={{ color: 'var(--j-hard)' }}>NO</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -632,7 +632,7 @@ const AudienceTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null
                 <tr key={s.segment_id}>
                   <td>{s.segment_name}</td>
                   <td>{fmt(s.member_count)}</td>
-                  <td style={{ color: s.stale_hours > 24 ? '#f59e0b' : undefined }}>{s.stale_hours.toFixed(1)}</td>
+                  <td style={{ color: s.stale_hours > 24 ? 'var(--j-soft)' : undefined }}>{s.stale_hours.toFixed(1)}</td>
                   <td style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{new Date(s.updated_at).toLocaleString()}</td>
                 </tr>
               ))}
@@ -717,13 +717,13 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
         {waves && (
           <>
             {waves.action_required && (
-              <div style={{ background: '#7f1d1d', color: 'var(--j-danger-soft)', padding: 8, borderRadius: 4, marginBottom: 12 }}>
+              <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: 8, borderRadius: 4, marginBottom: 12 }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> Action required — run pre-deploy cleanup.
               </div>
             )}
             <div className="ac-kpi-grid" style={{ marginBottom: 12 }}>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? '#ef4444' : 'var(--j-success)' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Stalled</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.expired > 50 ? '#ef4444' : undefined }}>{fmt(waves.summary.expired)}</span><span className="ac-kpi-label">Expired</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? 'var(--j-hard)' : 'var(--j-success)' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Stalled</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.expired > 50 ? 'var(--j-hard)' : undefined }}>{fmt(waves.summary.expired)}</span><span className="ac-kpi-label">Expired</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.due_now)}</span><span className="ac-kpi-label">Due Now</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.planned)}</span><span className="ac-kpi-label">Planned</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.enqueued)}</span><span className="ac-kpi-label">Queued</span></div></div>
@@ -770,8 +770,8 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                   <td style={{ fontSize: 11 }}>{new Date(b.minute).toLocaleTimeString()}</td>
                   <td>{fmt(b.sent)}</td>
                   <td>{fmt(b.delivered)}</td>
-                  <td style={{ color: '#ef4444' }}>{fmt(b.hard_bounces)}</td>
-                  <td style={{ color: '#f59e0b' }}>{fmt(b.soft_bounces)}</td>
+                  <td style={{ color: 'var(--j-hard)' }}>{fmt(b.hard_bounces)}</td>
+                  <td style={{ color: 'var(--j-soft)' }}>{fmt(b.soft_bounces)}</td>
                   <td>{fmt(b.deferred)}</td>
                 </tr>
               ))}
@@ -812,7 +812,7 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td>{fmt(c.queue_total)}</td>
                     <td style={{ color: 'var(--j-success)' }}>{fmt(sent)}</td>
                     <td>{fmt(pending)}</td>
-                    <td style={{ color: '#ef4444' }}>{fmt(failed)}</td>
+                    <td style={{ color: 'var(--j-hard)' }}>{fmt(failed)}</td>
                     <td style={{ color: 'var(--j-text-faint)' }}>{fmt(Math.max(0, other))}</td>
                   </tr>
                 );
@@ -906,8 +906,8 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(data.summary.total_sent)}</span><span className="ac-kpi-label">Total Sent</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-success)' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-violet-strong)' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#ef4444' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-hard)' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-soft)' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
             </div>
             <table className="ac-table" style={{ width: '100%' }}>
               <thead><tr>
@@ -916,8 +916,8 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                 <th>Delivered</th>
                 <th>Del%</th>
                 <th style={{ color: 'var(--j-violet-strong)' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
-                <th style={{ color: '#ef4444' }}>Hard%</th>
-                <th style={{ color: '#f59e0b' }}>Soft%</th>
+                <th style={{ color: 'var(--j-hard)' }}>Hard%</th>
+                <th style={{ color: 'var(--j-soft)' }}>Soft%</th>
               </tr></thead>
               <tbody>
                 {(data.daily || []).slice().reverse().map(d => (
@@ -927,8 +927,8 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td>{fmt(d.delivered)}</td>
                     <td>{d.delivery_rate.toFixed(1)}%</td>
                     <td style={{ color: 'var(--j-violet-strong)' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
-                    <td style={{ color: '#ef4444' }}>{d.hard_bounce_rate.toFixed(2)}%</td>
-                    <td style={{ color: '#f59e0b' }}>{d.soft_bounce_rate.toFixed(2)}%</td>
+                    <td style={{ color: 'var(--j-hard)' }}>{d.hard_bounce_rate.toFixed(2)}%</td>
+                    <td style={{ color: 'var(--j-soft)' }}>{d.soft_bounce_rate.toFixed(2)}%</td>
                   </tr>
                 ))}
               </tbody>

@@ -290,7 +290,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
   const navBtn = (active: boolean): React.CSSProperties => ({
     background: active ? 'color-mix(in srgb, var(--j-cyan) 25%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 4%, transparent)',
     border: `1px solid ${active ? 'color-mix(in srgb, var(--j-cyan) 50%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)'}`,
-    color: active ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: active ? 'var(--j-cyan)' : 'var(--j-text-muted)',
     padding: '8px 16px',
     borderRadius: 8,
     cursor: 'pointer',
@@ -309,7 +309,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-danger)' }} />
             Global Suppression Hub
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--j-text-muted)' }}>
             Single source of truth — all suppression signals converge here. Securely hashed for instant comparison.
           </p>
         </div>
@@ -357,7 +357,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               the counts below may overstate what sends are actually checked
               against. Amber, not red: the hub auto-reloads on divergence. */}
           {stats.reconcile?.diverged && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(245,158,11,0.45)', background: 'rgba(245,158,11,0.08)', color: '#f59e0b', fontSize: 13 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(245,158,11,0.45)', background: 'rgba(245,158,11,0.08)', color: 'var(--j-soft)', fontSize: 13 }}>
               <span style={{ fontWeight: 700 }}>⚠ ENFORCEMENT SET DEGRADED</span>
               <span>
                 in-memory {stats.reconcile.memory_count.toLocaleString()} vs DB {Number(stats.reconcile.db_count).toLocaleString()}
@@ -369,19 +369,19 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={statCard}>
               <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-danger)' }}>{(stats.total_suppressed || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Total Suppressed</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>Total Suppressed</div>
             </div>
             <div style={statCard}>
               <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-warn)' }}>{(stats.recent_additions || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Recent Additions</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>Recent Additions</div>
             </div>
             <div style={statCard}>
               <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-warn)' }}>{(gs?.hard_bounces || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Hard Bounces</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>Hard Bounces</div>
             </div>
             <div style={statCard}>
               <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-blue)' }}>{(gs?.invalid || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Invalid</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>Invalid</div>
             </div>
           </div>
 
@@ -401,7 +401,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{count.toLocaleString()}</span>
                 </div>
               ))}
-              {Object.keys(gs?.by_category || {}).length === 0 && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</div>}
+              {Object.keys(gs?.by_category || {}).length === 0 && <div style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No data yet</div>}
             </div>
 
             {/* By Source */}
@@ -415,7 +415,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{(item.count || 0).toLocaleString()}</span>
                 </div>
               ))}
-              {(!stats.by_source || (Array.isArray(stats.by_source) && stats.by_source.length === 0)) && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</div>}
+              {(!stats.by_source || (Array.isArray(stats.by_source) && stats.by_source.length === 0)) && <div style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No data yet</div>}
             </div>
           </div>
 
@@ -433,7 +433,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 onKeyDown={e => e.key === 'Enter' && handleSuppress()}
                 style={{ flex: 1, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               />
-              <select
+              <select aria-label="Suppress reason"
                 value={suppressReason}
                 onChange={e => setSuppressReason(e.target.value)}
                 style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
@@ -475,7 +475,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             </button>
           </div>
 
-          <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: 'var(--j-text-muted)', marginBottom: 8 }}>
             {totalEntries.toLocaleString()} results {searchQuery && `for "${searchQuery}"`}
           </div>
 
@@ -483,12 +483,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: 'color-mix(in srgb, var(--j-cyan) 3%, transparent)' }}>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Email</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Hash</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Reason</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Source</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Date</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Action</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--j-text-muted)', fontWeight: 500 }}>Email</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--j-text-muted)', fontWeight: 500 }}>Hash</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--j-text-muted)', fontWeight: 500 }}>Reason</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--j-text-muted)', fontWeight: 500 }}>Source</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'var(--j-text-muted)', fontWeight: 500 }}>Date</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'center', color: 'var(--j-text-muted)', fontWeight: 500 }}>Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -509,23 +509,23 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 {entries.map(entry => (
                   <tr key={entry.id} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 4%, transparent)' }}>
                     <td style={{ padding: '8px 14px', color: 'var(--j-text)' }}>{entry.email || '(hash-only)'}</td>
-                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
+                    <td style={{ padding: '8px 14px', color: 'var(--j-text-muted)', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
                     <td style={{ padding: '8px 14px' }}>
                       <span style={{ background: `color-mix(in srgb, ${reasonColor(entry.reason)} 13%, transparent)`, color: reasonColor(entry.reason), padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
                         {reasonLabel(entry.reason)}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{entry.source}</td>
-                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
+                    <td style={{ padding: '8px 14px', color: 'var(--j-text-muted)', fontSize: 12 }}>{entry.source}</td>
+                    <td style={{ padding: '8px 14px', color: 'var(--j-text-muted)', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
                     <td style={{ padding: '8px 14px', textAlign: 'center' }}>
-                      <button onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: 'var(--j-danger)', cursor: 'pointer', fontSize: 13 }}>
+                      <button aria-label="Delete" onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: 'var(--j-danger)', cursor: 'pointer', fontSize: 13 }}>
                         <FontAwesomeIcon icon={faTrash} />
                       </button>
                     </td>
                   </tr>
                 ))}
                 {entries.length === 0 && !loading && (
-                  <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No entries found</td></tr>
+                  <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: 'var(--j-text-muted)' }}>No entries found</td></tr>
                 )}
               </tbody>
             </table>
@@ -550,7 +550,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 onKeyDown={e => e.key === 'Enter' && handleSuppress()}
                 style={{ flex: 1, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               />
-              <select
+              <select aria-label="Suppress reason"
                 value={suppressReason}
                 onChange={e => setSuppressReason(e.target.value)}
                 style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
@@ -578,10 +578,10 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faPaste} style={{ marginRight: 6 }} />Paste Emails
             </h3>
-            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--j-text-muted)' }}>
               Paste one email per line, or separated by commas. Duplicates are removed automatically.
             </p>
-            <textarea
+            <textarea aria-label="Paste Emails"
               placeholder={"user1@example.com\nuser2@example.com\nuser3@example.com"}
               value={pasteInput}
               onChange={e => setPasteInput(e.target.value)}
@@ -589,7 +589,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               style={{ width: '100%', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
-              <select
+              <select aria-label="Paste reason"
                 value={pasteReason}
                 onChange={e => setPasteReason(e.target.value)}
                 style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
@@ -607,7 +607,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               >
                 <FontAwesomeIcon icon={faBan} /> Suppress All
               </button>
-              <span style={{ fontSize: 12, color: pasteEmailCount > 0 ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: pasteEmailCount > 0 ? 600 : 400 }}>
+              <span style={{ fontSize: 12, color: pasteEmailCount > 0 ? 'var(--j-cyan)' : 'var(--j-text-muted)', fontWeight: pasteEmailCount > 0 ? 600 : 400 }}>
                 {pasteEmailCount > 0 ? `${pasteEmailCount.toLocaleString()} valid email${pasteEmailCount !== 1 ? 's' : ''} detected` : 'No valid emails yet'}
               </span>
             </div>
@@ -618,10 +618,10 @@ export const GlobalSuppressionDashboard: React.FC = () => {
             <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faUpload} style={{ marginRight: 6 }} />Upload File
             </h3>
-            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'var(--j-text-muted)' }}>
               CSV or TXT file with email addresses. Supports files with an "email" column header, or one email per line.
             </p>
-            <input
+            <input aria-label="Upload File"
               ref={fileInputRef}
               type="file"
               accept=".csv,.txt,.tsv"
@@ -680,20 +680,20 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               <div style={{ display: 'flex', gap: 16 }}>
                 <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                   <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-text)' }}>{bulkProgress.total.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Total Emails</div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Total Emails</div>
                 </div>
                 <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                   <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-cyan)' }}>{bulkProgress.processed.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Processed</div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Processed</div>
                 </div>
                 <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-success) 8%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-success) 15%, transparent)' }}>
                   <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-success)' }}>{bulkProgress.succeeded.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Suppressed</div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Suppressed</div>
                 </div>
                 {bulkProgress.failed > 0 && (
                   <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-danger) 15%, transparent)' }}>
                     <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-danger)' }}>{bulkProgress.failed.toLocaleString()}</div>
-                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Failed</div>
+                    <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Failed</div>
                   </div>
                 )}
               </div>

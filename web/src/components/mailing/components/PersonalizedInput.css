@@ -34,7 +34,7 @@
   margin-left: auto;
   font-size: 11px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .pi-char-count.over {
@@ -78,7 +78,7 @@
 }
 
 .pi-input::placeholder {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .pi-textarea {
@@ -124,7 +124,7 @@
   border: none;
   border-left: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 0 8px 8px 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -166,7 +166,7 @@
   display: block;
   margin-top: 4px;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================
@@ -261,7 +261,7 @@
   background: transparent;
   border: none;
   border-radius: 4px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -315,7 +315,7 @@
 .pi-tag-sample {
   margin-left: auto;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-style: italic;
 }
 
@@ -367,7 +367,7 @@
 }
 
 .pi-search svg {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   flex-shrink: 0;
 }
 
@@ -381,7 +381,7 @@
 }
 
 .pi-search input::placeholder {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .pi-tags-list {
@@ -400,7 +400,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .pi-tag-item {
@@ -439,7 +439,7 @@
 }
 
 .pi-copy-icon {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   transition: color 0.15s ease;
 }
 
@@ -450,7 +450,7 @@
 .pi-no-results {
   padding: 30px 20px;
   text-align: center;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 13px;
 }
 
@@ -472,7 +472,7 @@
   background: var(--j-surface);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }

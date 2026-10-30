@@ -66,9 +66,9 @@ const rowState = (r: WorkerRow): 'stalled' | 'error' | 'late' | 'ok' => {
 
 const stateMeta: Record<string, { color: string; label: string; icon: typeof faCircleCheck }> = {
   ok: { color: 'var(--j-success)', label: 'Healthy', icon: faCircleCheck },
-  late: { color: '#f59e0b', label: 'Late', icon: faTriangleExclamation },
-  error: { color: '#f59e0b', label: 'Error', icon: faTriangleExclamation },
-  stalled: { color: '#ef4444', label: 'Stalled', icon: faSkull },
+  late: { color: 'var(--j-soft)', label: 'Late', icon: faTriangleExclamation },
+  error: { color: 'var(--j-soft)', label: 'Error', icon: faTriangleExclamation },
+  stalled: { color: 'var(--j-hard)', label: 'Stalled', icon: faSkull },
 };
 
 export const WorkerHealthDashboard: React.FC = () => {
@@ -106,7 +106,7 @@ export const WorkerHealthDashboard: React.FC = () => {
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faHeartPulse} style={{ color: stalledCount > 0 ? '#ef4444' : 'var(--j-success)' }} />
+            <FontAwesomeIcon icon={faHeartPulse} style={{ color: stalledCount > 0 ? 'var(--j-hard)' : 'var(--j-success)' }} />
             Worker Health
           </h1>
           <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
@@ -131,15 +131,15 @@ export const WorkerHealthDashboard: React.FC = () => {
       </header>
 
       {error && (
-        <div style={{ background: '#3f1d1d', color: 'var(--j-danger-soft)', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faTriangleExclamation} />
           Error loading background processing status: {error}
         </div>
       )}
 
       {stalledCount > 0 && (
-        <div style={{ background: '#3f1d1d', color: 'var(--j-danger-soft)', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #ef444455' }}>
-          <FontAwesomeIcon icon={faSkull} style={{ color: '#ef4444' }} />
+        <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid color-mix(in srgb, var(--j-hard) 33%, transparent)' }}>
+          <FontAwesomeIcon icon={faSkull} style={{ color: 'var(--j-hard)' }} />
           <strong>{stalledCount}</strong> background process{stalledCount === 1 ? '' : 'es'} stalled — the team has been alerted.
         </div>
       )}
@@ -178,7 +178,7 @@ export const WorkerHealthDashboard: React.FC = () => {
                         {meta.label}
                       </span>
                     </td>
-                    <td style={{ ...tdStyle, color: st === 'stalled' ? '#ef4444' : 'var(--j-text)' }}>
+                    <td style={{ ...tdStyle, color: st === 'stalled' ? 'var(--j-hard)' : 'var(--j-text)' }}>
                       {fmtSeconds(r.seconds_since_beat)} ago
                     </td>
                     <td style={tdStyle}>{fmtInterval(r.expected_interval_seconds)}</td>
@@ -215,9 +215,9 @@ const tdStyle: React.CSSProperties = {
 // Dot colors: green ok / amber late / red stalled-or-error.
 const widgetDotColor: Record<ReturnType<typeof rowState>, string> = {
   ok: 'var(--j-success)',
-  late: '#f59e0b',
-  error: '#ef4444',
-  stalled: '#ef4444',
+  late: 'var(--j-soft)',
+  error: 'var(--j-hard)',
+  stalled: 'var(--j-hard)',
 };
 
 export const WorkerHealthWidget: React.FC = () => {
@@ -253,7 +253,7 @@ export const WorkerHealthWidget: React.FC = () => {
   return (
     <div className="system-card ig-card-hover" style={{ borderColor: healthy ? undefined : 'rgba(239,68,68,0.5)' }}>
       <div className="system-header">
-        <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? 'var(--j-success)' : '#ef4444' }} /></span>
+        <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? 'var(--j-success)' : 'var(--j-hard)' }} /></span>
         <h3>Background Processing</h3>
         <span className={`status-badge ${healthy ? 'active' : 'inactive'}`}>
           {error ? 'unknown' : healthy ? `${total} healthy` : `${stalled.length} stalled`}

@@ -258,7 +258,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
     setPreviewOpen(true);
   };
 
-  const label: React.CSSProperties = { display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', marginBottom: 4 };
+  const label: React.CSSProperties = { display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 };
   const field: React.CSSProperties = {
     width: '100%', background: 'var(--j-bg)', color: 'var(--j-text)',
     border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 8, padding: '8px 10px', fontSize: 13,
@@ -281,7 +281,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <h4 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--j-blue)' }}>
             KumoMTA warm-up route &mdash; newsletter content
           </h4>
-          <p style={{ margin: 0, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--j-text-2)' }}>
             This property warms on its own brand newsletters, rebuilt fresh each morning.
             <strong> Offers are banned in warm-up content</strong>, so the offer selector and the
             offers library are not available here. The creative comes from the newsletter library
@@ -291,11 +291,11 @@ export const OfferCreativePicker: React.FC<Props> = ({
       ) : (
       <div style={box}>
         <h4 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--j-text)' }}>Offer</h4>
-        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--j-text-muted)' }}>
           Stamps the campaign for attribution and fires offer / converted suppression at send time.
         </p>
-        {offersError && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 6 }}>{offersError}</div>}
-        <select value={selectedOfferId} onChange={e => onOfferChange(e.target.value)} style={field}>
+        {offersError && <div style={{ fontSize: 12, color: 'var(--j-hard)', marginBottom: 6 }}>{offersError}</div>}
+        <select aria-label="Offer" value={selectedOfferId} onChange={e => onOfferChange(e.target.value)} style={field}>
           <option value="">— no offer (attribution falls back to name inference) —</option>
           {/* Status is on the label because mailing_offers carries sunset
               duplicates of live advertisers, and the sunset row is often the
@@ -310,7 +310,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
         {selectedOfferId && (
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-              <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 11, color: '#ef4444' }} />
+              <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 11, color: 'var(--j-hard)' }} />
               <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>
                 Offer suppression that will fire
               </span>
@@ -318,7 +318,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
             </div>
 
             {offerSuppError && (
-              <div style={{ fontSize: 12, color: '#f59e0b' }}>
+              <div style={{ fontSize: 12, color: 'var(--j-soft)' }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> Could not read this offer&apos;s
                 suppression ({offerSuppError}). Treat the suppression state as UNKNOWN.
               </div>
@@ -333,11 +333,11 @@ export const OfferCreativePicker: React.FC<Props> = ({
                 }}>
                   <span style={{
                     fontSize: 18, fontWeight: 700,
-                    color: offerSupp.suppression_count > 0 ? 'var(--j-success)' : '#ef4444',
+                    color: offerSupp.suppression_count > 0 ? 'var(--j-success)' : 'var(--j-hard)',
                   }}>
                     {offerSupp.suppression_count.toLocaleString()}
                   </span>
-                  <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
+                  <span style={{ fontSize: 12, color: 'var(--j-text-2)' }}>
                     subscribers suppressed for this offer (applied automatically at plan time)
                   </span>
                 </div>
@@ -346,7 +346,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                     {offerSupp.reasons.map(rn => (
                       <span key={rn.reason} style={{
-                        fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', background: 'var(--j-bg)',
+                        fontSize: 10, color: 'var(--j-text-muted)', background: 'var(--j-bg)',
                         border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 999, padding: '2px 8px',
                       }}>
                         {rn.reason} · {rn.count.toLocaleString()}
@@ -367,7 +367,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
 
                 {offerSupp.siblings.length > 0 && (
                   <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>
                       Other offer rows for what looks like the same advertiser:
                     </div>
                     {offerSupp.siblings.map(sib => (
@@ -377,7 +377,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                                 background: 'var(--j-bg)', border: '1px solid color-mix(in srgb, var(--j-cyan) 12%, transparent)',
                                 borderRadius: 6, padding: '6px 10px', marginBottom: 4, color: 'var(--j-text)', fontSize: 12,
                               }}>
-                        {sib.name} <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>({sib.status})</span>
+                        {sib.name} <span style={{ color: 'var(--j-text-muted)' }}>({sib.status})</span>
                         {' — '}
                         <strong style={{ color: 'var(--j-success)' }}>{sib.suppression_count.toLocaleString()}</strong>
                         {' suppressed · click to use this row instead'}
@@ -387,7 +387,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                 )}
 
                 {offerSupp.suggested_lists.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'var(--j-text-muted)' }}>
                     Curated advertiser list(s) that look like this offer&apos;s —{' '}
                     <strong>not applied automatically</strong>, tick them in the audience step:{' '}
                     {offerSupp.suggested_lists
@@ -410,11 +410,11 @@ export const OfferCreativePicker: React.FC<Props> = ({
               ? 'Creative \u2014 Creative Studio newsletter library'
               : 'Creative \u2014 Creative Studio offers library'}
           </h4>
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
             {isKumoRoute ? newsletters.length : matching.length} approved for {brandRoot || sendingDomain}
           </span>
         </div>
-        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--j-text-muted)' }}>
           {isKumoRoute
             ? "Today's approved newsletter for this property. The article payload is rewritten every morning, so the newest row already carries today's editorial."
             : "Approved, active proofs only. Subject, preheader and from-name come from the proof's approved pools \u2014 this wizard has no free-form content path."}
@@ -423,7 +423,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
         {isKumoRoute ? (
           <>
             {!loading && newsletters.length === 0 && (
-              <div style={{ fontSize: 13, color: '#f59e0b', padding: '8px 0' }}>
+              <div style={{ fontSize: 13, color: 'var(--j-soft)', padding: '8px 0' }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> No approved newsletter creative for{' '}
                 <strong>{brandRoot || sendingDomain}</strong>. The daily builder registers and
                 approves one each morning \u2014 if this is empty it has not run today, or this property
@@ -447,7 +447,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                       {loadingProofId === c.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
                       <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>{c.subject || '(no subject)'}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 3 }}>
+                    <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 3 }}>
                       {c.source} \u00b7 {c.html_bytes.toLocaleString()} bytes
                       {c.updated_at ? ` \u00b7 built ${new Date(c.updated_at).toLocaleString()}` : ''}
                     </div>
@@ -459,16 +459,16 @@ export const OfferCreativePicker: React.FC<Props> = ({
         ) : (
         <>
 
-        {loading && <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading approved creatives…</div>}
+        {loading && <div style={{ fontSize: 13, color: 'var(--j-text-2)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading approved creatives…</div>}
         {error && (
-          <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--j-hard)', marginBottom: 8 }}>
             <FontAwesomeIcon icon={faExclamationTriangle} /> {error}{' '}
             <button onClick={load} style={{ marginLeft: 6, background: 'transparent', color: 'var(--j-blue)', border: 'none', cursor: 'pointer', fontSize: 12 }}>retry</button>
           </div>
         )}
 
         {!loading && visible.length === 0 && (
-          <div style={{ fontSize: 13, color: '#f59e0b', padding: '8px 0' }}>
+          <div style={{ fontSize: 13, color: 'var(--j-soft)', padding: '8px 0' }}>
             <FontAwesomeIcon icon={faExclamationTriangle} /> No approved creative is cleared for{' '}
             <strong>{brandRoot || sendingDomain}</strong>. Approve one in Creative Studio → Offers, or
             show all approved creatives below and confirm the domain is cleared.
@@ -494,10 +494,10 @@ export const OfferCreativePicker: React.FC<Props> = ({
                   {loadingProofId === p.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{p.name}</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 3 }}>
+                <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 3 }}>
                   {(p.variants || []).length} subject{(p.variants || []).length === 1 ? '' : 's'} ·{' '}
                   {(p.from_names || []).length} from-name{(p.from_names || []).length === 1 ? '' : 's'}
-                  {!cleared && <span style={{ color: '#f59e0b' }}> · not cleared for this property</span>}
+                  {!cleared && <span style={{ color: 'var(--j-soft)' }}> · not cleared for this property</span>}
                 </div>
               </div>
             );
@@ -507,7 +507,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
         {proofs.length > matching.length && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, cursor: 'pointer' }}>
             <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
-            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+            <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
               Show all {proofs.length} approved creatives, including those not cleared for this property
             </span>
           </label>
@@ -527,17 +527,17 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <div style={{ display: 'grid', gap: 8 }}>
             <div>
               <label style={label}>Subject (from the newsletter)</label>
-              <input value={subject} readOnly style={{ ...field, opacity: 0.85 }} />
+              <input aria-label="Subject (from the newsletter)" value={subject} readOnly style={{ ...field, opacity: 0.85 }} />
             </div>
             <div>
               <label style={label}>Preheader</label>
-              <input value={preheader} readOnly style={{ ...field, opacity: 0.85 }} />
+              <input aria-label="Preheader" value={preheader} readOnly style={{ ...field, opacity: 0.85 }} />
             </div>
             <div>
               <label style={label}>From name (this domain's sending profile)</label>
-              <input value={fromName} readOnly style={{ ...field, opacity: 0.85 }} />
+              <input aria-label="From name (this domain's sending profile)" value={fromName} readOnly style={{ ...field, opacity: 0.85 }} />
               {!fromName && (
-                <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 5 }}>
+                <div style={{ fontSize: 11, color: 'var(--j-soft)', marginTop: 5 }}>
                   <FontAwesomeIcon icon={faExclamationTriangle} /> This domain's sending profile has no
                   from_name. Set it on the profile — it must not come from the creative.
                 </div>
@@ -545,7 +545,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
             </div>
           </div>
           <button onClick={openPreview} disabled={!hasHtml}
-                  style={{ marginTop: 10, background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'color-mix(in srgb, var(--j-text) 30%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
+                  style={{ marginTop: 10, background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'var(--j-text-muted)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
             <FontAwesomeIcon icon={faEye} /> Preview
           </button>
         </div>
@@ -557,7 +557,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
             <h4 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>Approved copy — {selectedProof.name}</h4>
             <button onClick={openPreview} disabled={!hasHtml}
-                    style={{ background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'color-mix(in srgb, var(--j-text) 30%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
+                    style={{ background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'var(--j-text-muted)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
               <FontAwesomeIcon icon={faEye} /> Preview
             </button>
           </div>
@@ -565,12 +565,12 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <div style={{ marginBottom: 10 }}>
             <label style={label}>Subject + preheader (from the proof's approved variants)</label>
             {proofVariants.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#f59e0b' }}>
+              <div style={{ fontSize: 12, color: 'var(--j-soft)' }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> This proof carries no approved subject
                 variants — approve subjects on it in Creative Studio before scheduling.
               </div>
             ) : (
-              <select
+              <select aria-label="Subject"
                 value={subject}
                 onChange={e => {
                   const v = proofVariants.find(x => x.subject === e.target.value);
@@ -583,7 +583,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
               </select>
             )}
             {preheader && (
-              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 5 }}>
+              <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 5 }}>
                 Preheader: {preheader}
               </div>
             )}
@@ -593,15 +593,15 @@ export const OfferCreativePicker: React.FC<Props> = ({
             <label style={label}>From name (from the proof's approved pool)</label>
             {proofFromNames.length === 0 ? (
               <>
-                <input value={fromName} readOnly style={{ ...field, opacity: 0.75 }} />
-                <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 5 }}>
+                <input aria-label="From name (from the proof's approved pool)" value={fromName} readOnly style={{ ...field, opacity: 0.75 }} />
+                <div style={{ fontSize: 11, color: 'var(--j-soft)', marginTop: 5 }}>
                   <FontAwesomeIcon icon={faExclamationTriangle} /> This proof carries no approved
                   from-names; falling back to the sending profile's persona
                   {profileFromName ? ` ("${profileFromName}")` : ''}.
                 </div>
               </>
             ) : (
-              <select value={fromName} onChange={e => onFieldChange({ fromName: e.target.value })} style={field}>
+              <select aria-label="From name" value={fromName} onChange={e => onFieldChange({ fromName: e.target.value })} style={field}>
                 <option value="">— select an approved from-name —</option>
                 {proofFromNames.map((f, i) => <option key={i} value={f}>{f}</option>)}
               </select>

@@ -280,12 +280,12 @@ const btnPrimary: React.CSSProperties = {
 
 const btnGhost: React.CSSProperties = {
   background: 'transparent', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 6,
-  padding: '5px 12px', fontSize: 11, cursor: 'pointer', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+  padding: '5px 12px', fontSize: 11, cursor: 'pointer', color: 'var(--j-text-muted)',
   fontFamily: 'inherit',
 };
 
 const btnDanger: React.CSSProperties = {
-  ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)',
+  ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)',
 };
 
 const sectionTitle: React.CSSProperties = {
@@ -295,8 +295,8 @@ const sectionTitle: React.CSSProperties = {
 function statusColor(s: string): string {
   switch (s) {
     case 'active': case 'approved': case 'scrubbed': return 'var(--j-success)';
-    case 'draft': case 'pending': case 'scrub_pending': case 'processing': return '#f59e0b';
-    case 'paused': case 'rejected': case 'failed': case 'scrub_failed': case 'cancelled': return '#ef4444';
+    case 'draft': case 'pending': case 'scrub_pending': case 'processing': return 'var(--j-soft)';
+    case 'paused': case 'rejected': case 'failed': case 'scrub_failed': case 'cancelled': return 'var(--j-hard)';
     default: return 'var(--j-text-muted)';
   }
 }
@@ -565,7 +565,7 @@ export const OfferManagement: React.FC = () => {
         )}
 
         {treeLoading && (
-          <div style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 12 }}>Loading…</div>
+          <div style={{ padding: 20, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 12 }}>Loading…</div>
         )}
 
         {filteredTree.map(v => {
@@ -580,7 +580,7 @@ export const OfferManagement: React.FC = () => {
                   userSelect: 'none',
                 }}
               >
-                <span style={{ fontSize: 10, width: 12, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>
+                <span style={{ fontSize: 10, width: 12, color: 'var(--j-text-muted)' }}>
                   {isExpanded ? '▼' : '▶'}
                 </span>
                 {v.name}
@@ -595,15 +595,15 @@ export const OfferManagement: React.FC = () => {
                       onClick={() => toggleBrand(brandKey)}
                       style={{
                         padding: '4px 12px 4px 28px', cursor: 'pointer', fontSize: 12,
-                        color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', display: 'flex', alignItems: 'center', gap: 6,
+                        color: 'var(--j-text-muted)', display: 'flex', alignItems: 'center', gap: 6,
                         userSelect: 'none',
                       }}
                     >
-                      <span style={{ fontSize: 9, width: 10, color: 'color-mix(in srgb, var(--j-text) 30%, transparent)' }}>
+                      <span style={{ fontSize: 9, width: 10, color: 'var(--j-text-muted)' }}>
                         {brandExpanded ? '▼' : '▶'}
                       </span>
                       {b.brand_name}
-                      <span style={{ marginLeft: 'auto', fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 25%, transparent)' }}>{b.offers.length}</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--j-text-muted)' }}>{b.offers.length}</span>
                     </div>
 
                     {brandExpanded && b.offers.map(o => {
@@ -614,7 +614,7 @@ export const OfferManagement: React.FC = () => {
                           onClick={() => { setSelectedOfferId(o.id); setShowRollup(false); }}
                           style={{
                             padding: '4px 12px 4px 48px', cursor: 'pointer', fontSize: 12,
-                            color: selectedOfferId === o.id ? 'var(--j-violet)' : 'color-mix(in srgb, var(--j-text) 55%, transparent)',
+                            color: selectedOfferId === o.id ? 'var(--j-violet)' : 'var(--j-text-muted)',
                             background: selectedOfferId === o.id ? 'color-mix(in srgb, var(--j-violet) 8%, transparent)' : 'transparent',
                             display: 'flex', alignItems: 'center', gap: 6,
                             borderLeft: selectedOfferId === o.id ? '2px solid var(--j-violet)' : '2px solid transparent',
@@ -639,7 +639,7 @@ export const OfferManagement: React.FC = () => {
                               {counts.suppression_count > 0 && (
                                 <span
                                   title={`${counts.suppression_count.toLocaleString()} suppressed (includes offer-tracking conversion exits)`}
-                                  style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}
+                                  style={{ fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text-muted)' }}
                                 >
                                   {fmtCompact(counts.suppression_count)} sup
                                 </span>
@@ -657,7 +657,7 @@ export const OfferManagement: React.FC = () => {
         })}
 
         {!treeLoading && filteredTree.length === 0 && (
-          <div style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontSize: 12 }}>
+          <div style={{ padding: 20, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 12 }}>
             {searchTerm ? 'No matching offers' : 'No offers yet'}
           </div>
         )}
@@ -677,7 +677,7 @@ export const OfferManagement: React.FC = () => {
   // ─── Render: Empty State ───────────────────────────────────────────────
 
   const renderEmptyState = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--j-text-muted)' }}>
       <div style={{ fontSize: 48, marginBottom: 16 }}>📦</div>
       <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Select an offer</div>
       <div style={{ fontSize: 13 }}>Choose an offer from the left panel to view details</div>
@@ -688,7 +688,7 @@ export const OfferManagement: React.FC = () => {
 
   const renderDetail = () => {
     if (detailLoading || !offer) {
-      return <div style={{ padding: 40, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>Loading…</div>;
+      return <div style={{ padding: 40, textAlign: 'center', color: 'var(--j-text-muted)' }}>Loading…</div>;
     }
 
     return (
@@ -696,13 +696,13 @@ export const OfferManagement: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--j-text)' }}>{offer.name}</h2>
-            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginTop: 2 }}>
+            <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 2 }}>
               {offer.brand_name} · <span className={statusBadgeClass(offer.status)}>{offer.status}</span>
               {(offerCounts[offer.id]?.suppression_count ?? 0) > 0 && (
                 <span
                   onClick={() => setActiveTab('compliance')}
                   title="Includes offer-tracking conversion exits — click to view the suppression list"
-                  style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', cursor: 'pointer' }}
+                  style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text-muted)', cursor: 'pointer' }}
                 >
                   {offerCounts[offer.id].suppression_count.toLocaleString()} suppressed
                 </span>
@@ -773,7 +773,7 @@ export const OfferManagement: React.FC = () => {
         {showRollup ? <OfferRollupView /> : selectedOfferId && offer ? renderDetail() : renderEmptyState()}
       </div>
       {showNewOfferModal && renderNewOfferModal()}
-      <div style={{ position: 'fixed', bottom: 8, right: 12, fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 15%, transparent)' }}>
+      <div style={{ position: 'fixed', bottom: 8, right: 12, fontSize: 10, color: 'var(--j-text-muted)' }}>
         Offer Management v{PAGE_VERSION}
       </div>
     </div>
@@ -834,7 +834,7 @@ const OfferRollupView: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'right', padding: '8px 10px', fontSize: 11, fontWeight: 700,
-    color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5,
+    color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5,
     borderBottom: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
@@ -847,7 +847,7 @@ const OfferRollupView: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <h3 style={{ ...sectionTitle, margin: 0 }}>Offer Rollup</h3>
-          <div style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginTop: 2 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--j-text-muted)', marginTop: 2 }}>
             Campaigns grouped by stamped offer_id · conversions from the converted-suppression ledger · last {days} days
           </div>
         </div>
@@ -865,18 +865,18 @@ const OfferRollupView: React.FC = () => {
       </div>
 
       {error && (
-        <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', fontSize: 12.5, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: 'var(--j-hard)', fontSize: 12.5, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
           <span>{error}</span>
-          <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }} onClick={fetchRollup}>Retry</button>
+          <button style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.3)' }} onClick={fetchRollup}>Retry</button>
         </div>
       )}
 
       {loading && (
-        <div style={{ padding: 30, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 12 }}>Loading…</div>
+        <div style={{ padding: 30, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 12 }}>Loading…</div>
       )}
 
       {!loading && !error && rows.length === 0 && (
-        <div style={{ padding: 30, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 12 }}>
+        <div style={{ padding: 30, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 12 }}>
           No campaigns in the last {days} days.
         </div>
       )}
@@ -902,24 +902,24 @@ const OfferRollupView: React.FC = () => {
                   <td style={{ ...td, textAlign: 'left' }}>
                     <span style={{ fontWeight: 600 }}>{r.offer_name}</span>
                     {r.offer_key && (
-                      <span style={{ marginLeft: 8, fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontFamily: 'monospace' }}>{r.offer_key}</span>
+                      <span style={{ marginLeft: 8, fontSize: 10.5, color: 'var(--j-text-muted)', fontFamily: 'monospace' }}>{r.offer_key}</span>
                     )}
                   </td>
                   <td style={td}>{r.campaigns.toLocaleString()}</td>
                   <td style={td}>{r.delivered_count.toLocaleString()}</td>
                   <td style={td}>
                     {r.unique_open_count.toLocaleString()}
-                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>{fmtRate(r.unique_open_count, r.delivered_count)}</span>
+                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--j-text-muted)' }}>{fmtRate(r.unique_open_count, r.delivered_count)}</span>
                   </td>
                   <td style={td}>
                     {r.unique_click_count.toLocaleString()}
-                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>{fmtRate(r.unique_click_count, r.delivered_count)}</span>
+                    <span style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--j-text-muted)' }}>{fmtRate(r.unique_click_count, r.delivered_count)}</span>
                   </td>
                   <td style={{ ...td, color: r.conversions > 0 ? 'var(--j-success)' : td.color as string, fontWeight: r.conversions > 0 ? 700 : 400 }}>
                     {r.conversions.toLocaleString()}
                   </td>
-                  <td style={{ ...td, color: r.hard_bounce_count > 0 ? '#ef4444' : td.color as string }}>{r.hard_bounce_count.toLocaleString()}</td>
-                  <td style={{ ...td, color: r.soft_bounce_count > 0 ? '#f59e0b' : td.color as string }}>{r.soft_bounce_count.toLocaleString()}</td>
+                  <td style={{ ...td, color: r.hard_bounce_count > 0 ? 'var(--j-hard)' : td.color as string }}>{r.hard_bounce_count.toLocaleString()}</td>
+                  <td style={{ ...td, color: r.soft_bounce_count > 0 ? 'var(--j-soft)' : td.color as string }}>{r.soft_bounce_count.toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -979,8 +979,8 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
 
   const field = (label: string, key: keyof Offer, type: string = 'text') => (
     <div style={{ marginBottom: 10 }}>
-      <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>{label}</label>
-      <input
+      <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>{label}</label>
+      <input aria-label="String"
         type={type}
         value={(form[key] as string | number) ?? ''}
         onChange={e => setForm(prev => ({ ...prev, [key]: type === 'number' ? (e.target.value ? parseFloat(e.target.value) : null) : e.target.value }))}
@@ -996,8 +996,8 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
         {field('Brand Name', 'brand_name')}
         {field('Description', 'description')}
         <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Web Property</label>
-          <select
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Web Property</label>
+          <select aria-label="Web Property"
             value={form.web_property ?? ''}
             onChange={e => setForm(prev => ({ ...prev, web_property: e.target.value }))}
             style={inputStyle}
@@ -1014,8 +1014,8 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
         {field('Landing Page Slug', 'landing_page_slug')}
         {field('Payout', 'payout', 'number')}
         <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Payout Type</label>
-          <select
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Payout Type</label>
+          <select aria-label="Payout Type"
             value={form.payout_type ?? ''}
             onChange={e => setForm(prev => ({ ...prev, payout_type: e.target.value }))}
             style={inputStyle}
@@ -1027,8 +1027,8 @@ const OverviewTab: React.FC<{ offer: Offer; onSave: (o: Offer) => void }> = ({ o
           </select>
         </div>
         <div style={{ marginBottom: 10 }}>
-          <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Status</label>
-          <select
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Status</label>
+          <select aria-label="Status"
             value={form.status ?? 'draft'}
             onChange={e => setForm(prev => ({ ...prev, status: e.target.value }))}
             style={inputStyle}
@@ -1138,7 +1138,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
               <td>
                 {editId === s.id ? (
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <input value={editValue} onChange={e => setEditValue(e.target.value)} style={{ ...inputStyle, padding: '3px 6px', fontSize: 12 }} />
+                    <input aria-label="Actions" value={editValue} onChange={e => setEditValue(e.target.value)} style={{ ...inputStyle, padding: '3px 6px', fontSize: 12 }} />
                     <button style={{ ...btnPrimary, padding: '3px 8px', fontSize: 11 }} onClick={() => updateSubject(s.id, { subject_line: editValue })}>Save</button>
                     <button style={{ ...btnGhost, padding: '3px 6px', fontSize: 11 }} onClick={() => setEditId(null)}>×</button>
                   </div>
@@ -1158,7 +1158,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
                     <button style={{ ...btnGhost, color: 'var(--j-success)', borderColor: 'color-mix(in srgb, var(--j-success) 20%, transparent)' }} onClick={() => updateSubject(s.id, { status: 'approved' })}>Approve</button>
                   )}
                   {s.status !== 'rejected' && (
-                    <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateSubject(s.id, { status: 'rejected' })}>Reject</button>
+                    <button style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateSubject(s.id, { status: 'rejected' })}>Reject</button>
                   )}
                   <button style={btnDanger} onClick={() => deleteSubject(s.id)}>Delete</button>
                 </div>
@@ -1166,7 +1166,7 @@ const SubjectsTab: React.FC<{ offerId: string; subjects: SubjectLine[]; onRefres
             </tr>
           ))}
           {subjects.length === 0 && (
-            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 24 }}>No subject lines yet</td></tr>
+            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--j-text-muted)', padding: 24 }}>No subject lines yet</td></tr>
           )}
         </tbody>
       </table>
@@ -1264,7 +1264,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
               <td>
                 {editId === f.id ? (
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <input value={editValue} onChange={e => setEditValue(e.target.value)} style={{ ...inputStyle, padding: '3px 6px', fontSize: 12 }} />
+                    <input aria-label="Actions" value={editValue} onChange={e => setEditValue(e.target.value)} style={{ ...inputStyle, padding: '3px 6px', fontSize: 12 }} />
                     <button style={{ ...btnPrimary, padding: '3px 8px', fontSize: 11 }} onClick={() => updateFromName(f.id, { from_name: editValue })}>Save</button>
                     <button style={{ ...btnGhost, padding: '3px 6px', fontSize: 11 }} onClick={() => setEditId(null)}>×</button>
                   </div>
@@ -1277,14 +1277,14 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
               <td><span className={statusBadgeClass(f.status)}>{f.status}</span></td>
               <td>{f.total_sends.toLocaleString()}</td>
               <td>{f.total_opens.toLocaleString()}</td>
-              <td style={{ color: f.complaint_rate > 0.001 ? '#ef4444' : undefined }}>{(f.complaint_rate * 100).toFixed(3)}%</td>
+              <td style={{ color: f.complaint_rate > 0.001 ? 'var(--j-hard)' : undefined }}>{(f.complaint_rate * 100).toFixed(3)}%</td>
               <td>
                 <div style={{ display: 'flex', gap: 4 }}>
                   {f.status !== 'approved' && (
                     <button style={{ ...btnGhost, color: 'var(--j-success)', borderColor: 'color-mix(in srgb, var(--j-success) 20%, transparent)' }} onClick={() => updateFromName(f.id, { status: 'approved' })}>Approve</button>
                   )}
                   {f.status !== 'rejected' && (
-                    <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateFromName(f.id, { status: 'rejected' })}>Reject</button>
+                    <button style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateFromName(f.id, { status: 'rejected' })}>Reject</button>
                   )}
                   <button style={btnDanger} onClick={() => deleteFromName(f.id)}>Delete</button>
                 </div>
@@ -1292,7 +1292,7 @@ const FromNamesTab: React.FC<{ offerId: string; fromNames: FromName[]; onRefresh
             </tr>
           ))}
           {fromNames.length === 0 && (
-            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 24 }}>No from names yet</td></tr>
+            <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--j-text-muted)', padding: 24 }}>No from names yet</td></tr>
           )}
         </tbody>
       </table>
@@ -1415,13 +1415,13 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
             >
               Download ZIP
             </a>
-            <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={deleteAllCreatives}>
+            <button style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }} onClick={deleteAllCreatives}>
               Delete All ({creatives.length})
             </button>
           </>
         )}
         {isGenerating && (
-          <span style={{ fontSize: 11, color: '#f59e0b' }}>AI is crafting your emails — this takes 1-2 minutes</span>
+          <span style={{ fontSize: 11, color: 'var(--j-soft)' }}>AI is crafting your emails — this takes 1-2 minutes</span>
         )}
         {genResult && !isGenerating && (
           <span style={{ fontSize: 11, color: 'var(--j-success)' }}>{genResult}</span>
@@ -1429,15 +1429,15 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
       </div>
 
       {genError && (
-        <div style={{ padding: 10, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 12, color: '#ef4444', marginBottom: 12 }}>
+        <div style={{ padding: 10, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 12, color: 'var(--j-hard)', marginBottom: 12 }}>
           {genError}
         </div>
       )}
 
       {showUpload && (
         <div style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 10, padding: 14, marginBottom: 14 }}>
-          <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', display: 'block', marginBottom: 4 }}>HTML Content</label>
-          <textarea
+          <label style={{ fontSize: 11, color: 'var(--j-text-muted)', display: 'block', marginBottom: 4 }}>HTML Content</label>
+          <textarea aria-label="HTML Content"
             value={htmlContent}
             onChange={e => setHtmlContent(e.target.value)}
             rows={8}
@@ -1457,7 +1457,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
               <span className={statusBadgeClass(c.status)}>{c.status}</span>
             </div>
             {c.approval_notes && (
-              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginBottom: 8, lineHeight: 1.3 }}>{c.approval_notes}</div>
+              <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 8, lineHeight: 1.3 }}>{c.approval_notes}</div>
             )}
 
             {c.html_content && (
@@ -1474,7 +1474,7 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 8 }}>
               <span>Sends: {c.total_sends.toLocaleString()}</span>
               <span>Opens: {(c.open_rate * 100).toFixed(1)}%</span>
               <span>Clicks: {(c.click_rate * 100).toFixed(1)}%</span>
@@ -1489,13 +1489,13 @@ const CreativesTab: React.FC<{ offerId: string; creatives: OfferCreative[]; onRe
                 <button style={{ ...btnGhost, color: 'var(--j-success)', borderColor: 'color-mix(in srgb, var(--j-success) 20%, transparent)' }} onClick={() => updateCreativeStatus(c.id, 'approved')}>Approve</button>
               )}
               {c.status !== 'rejected' && (
-                <button style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateCreativeStatus(c.id, 'rejected')}>Reject</button>
+                <button style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => updateCreativeStatus(c.id, 'rejected')}>Reject</button>
               )}
             </div>
           </div>
         ))}
         {creatives.length === 0 && (
-          <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 40 }}>No creatives yet</div>
+          <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--j-text-muted)', padding: 40 }}>No creatives yet</div>
         )}
       </div>
 
@@ -1545,7 +1545,7 @@ const CreativePreviewModal: React.FC<{
             <span className={statusBadgeClass(creative.status)}>{creative.status}</span>
           </div>
           <button
-            style={{ background: 'transparent', border: 'none', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 20, cursor: 'pointer', padding: '0 4px', fontFamily: 'inherit' }}
+            style={{ background: 'transparent', border: 'none', color: 'var(--j-text-muted)', fontSize: 20, cursor: 'pointer', padding: '0 4px', fontFamily: 'inherit' }}
             onClick={onClose}
           >
             ×
@@ -1556,9 +1556,9 @@ const CreativePreviewModal: React.FC<{
         {(creative.approval_notes || creative.total_sends > 0) && (
           <div style={{ padding: '10px 20px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             {creative.approval_notes && (
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', lineHeight: 1.4 }}>{creative.approval_notes}</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)', lineHeight: 1.4 }}>{creative.approval_notes}</div>
             )}
-            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginLeft: 'auto' }}>
+            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--j-text-muted)', marginLeft: 'auto' }}>
               <span>Sends: {creative.total_sends.toLocaleString()}</span>
               <span>Opens: {(creative.open_rate * 100).toFixed(1)}%</span>
               <span>Clicks: {(creative.click_rate * 100).toFixed(1)}%</span>
@@ -1584,7 +1584,7 @@ const CreativePreviewModal: React.FC<{
               }}
             />
           ) : (
-            <div style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 40 }}>No HTML content</div>
+            <div style={{ color: 'var(--j-text-muted)', padding: 40 }}>No HTML content</div>
           )}
         </div>
 
@@ -1597,7 +1597,7 @@ const CreativePreviewModal: React.FC<{
             <button style={{ ...btnPrimary, background: 'var(--j-success)' }} onClick={onApprove}>Approve</button>
           )}
           {creative.status !== 'rejected' && (
-            <button style={{ ...btnPrimary, background: '#ef4444' }} onClick={onReject}>Reject</button>
+            <button style={{ ...btnPrimary, background: 'var(--j-hard)' }} onClick={onReject}>Reject</button>
           )}
           <button style={btnGhost} onClick={onClose}>Close</button>
         </div>
@@ -1805,7 +1805,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
   const formatBytes = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
 
-  if (loading) return <div style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', padding: 24 }}>Loading assets…</div>;
+  if (loading) return <div style={{ color: 'var(--j-text-muted)', padding: 24 }}>Loading assets…</div>;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1823,7 +1823,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
           transition: 'all 0.2s',
         }}
       >
-        <div style={{ fontSize: 14, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', marginBottom: 12 }}>
+        <div style={{ fontSize: 14, color: 'var(--j-text-muted)', marginBottom: 12 }}>
           Drop images or a <strong>.zip bundle</strong> here
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -1841,7 +1841,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
           </button>
           {assets.length > 0 && (
             <button
-              style={{ ...btnGhost, color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }}
+              style={{ ...btnGhost, color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }}
               onClick={deleteAllAssets}
               disabled={uploading}
             >
@@ -1857,7 +1857,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
                   height: '100%', borderRadius: 2,
                   background: uploadPhase === 'uploading'
                     ? 'linear-gradient(90deg, var(--j-violet-strong), var(--j-violet))'
-                    : 'linear-gradient(90deg, #f59e0b, var(--j-warn))',
+                    : 'linear-gradient(90deg, var(--j-soft), var(--j-warn))',
                   animation: 'indeterminate-progress 1.5s ease-in-out infinite',
                   width: '40%',
                 }} />
@@ -1865,9 +1865,9 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
             )}
             <div style={{
               fontSize: 12,
-              color: uploadPhase === 'done' && uploadHasErrors ? '#ef4444'
+              color: uploadPhase === 'done' && uploadHasErrors ? 'var(--j-hard)'
                 : uploadPhase === 'done' ? 'var(--j-success)'
-                : '#f59e0b',
+                : 'var(--j-soft)',
             }}>
               {uploadProgress || 'Processing…'}
             </div>
@@ -1877,7 +1877,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
           <div style={{ marginTop: 10, width: '100%', maxWidth: 500, margin: '10px auto 0' }}>
             <button
               onClick={() => setShowErrors(!showErrors)}
-              style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+              style={{ background: 'none', border: 'none', color: 'var(--j-hard)', fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
             >
               {showErrors ? 'Hide error details' : `Show ${zipErrors.length} error details`}
             </button>
@@ -1888,7 +1888,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
                 maxHeight: 160, overflowY: 'auto', textAlign: 'left',
               }}>
                 {zipErrors.map((e, i) => (
-                  <div key={i} style={{ fontSize: 11, color: '#ef4444', lineHeight: 1.6, fontFamily: 'monospace' }}>
+                  <div key={i} style={{ fontSize: 11, color: 'var(--j-hard)', lineHeight: 1.6, fontFamily: 'monospace' }}>
                     {e}
                   </div>
                 ))}
@@ -1900,13 +1900,13 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
 
       {/* Asset grid grouped by category */}
       {assets.length === 0 ? (
-        <div style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', padding: 40 }}>
+        <div style={{ textAlign: 'center', color: 'var(--j-text-muted)', padding: 40 }}>
           No creative assets yet — upload images or a zip bundle above
         </div>
       ) : (
         Object.entries(grouped).map(([category, items]) => (
           <div key={category}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               {category} ({items.length})
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
@@ -1937,10 +1937,10 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
                       }}>
                         {a.asset_role.replace(/_/g, ' ')}
                       </div>
-                      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginBottom: 2 }}>
+                      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 2 }}>
                         {a.width}×{a.height} · {formatBytes(a.file_size)}
                       </div>
-                      <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontSize: 10, color: 'var(--j-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {a.original_filename}
                       </div>
                       <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
@@ -1951,7 +1951,7 @@ const AssetsTab: React.FC<{ offerId: string }> = ({ offerId }) => {
                           {copiedId === a.id ? '✓ Copied' : 'Copy URL'}
                         </button>
                         <button
-                          style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)' }}
+                          style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: 'var(--j-hard)', borderColor: 'rgba(239,68,68,0.2)' }}
                           onClick={() => deleteAsset(a.id)}
                         >
                           Delete
@@ -2009,7 +2009,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
       <h3 style={sectionTitle}>Landing Page</h3>
 
       {error && (
-        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: 'var(--j-hard)', marginBottom: 16 }}>
           {error}
         </div>
       )}
@@ -2018,7 +2018,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
             <div>
-              <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>Live URL: </span>
+              <span style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Live URL: </span>
               <a href={offer.landing_page_url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--j-violet)', fontSize: 13 }}>
                 {offer.landing_page_url}
               </a>
@@ -2042,7 +2042,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
           </div>
         </div>
       ) : (
-        <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--j-text-muted)' }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>🌐</div>
           <div style={{ marginBottom: 16 }}>No landing page generated yet</div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
@@ -2068,7 +2068,7 @@ const LandingPageTab: React.FC<{ offer: Offer; onRefresh: () => void }> = ({ off
 const ProgressBar: React.FC<{ pct: number; message: string }> = ({ pct, message }) => (
   <div style={{ marginTop: 8 }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-      <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{message || 'Processing…'}</span>
+      <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{message || 'Processing…'}</span>
       <span style={{ fontSize: 11, color: 'var(--j-violet)', fontWeight: 600 }}>{pct}%</span>
     </div>
     <div style={{ height: 6, borderRadius: 3, background: 'color-mix(in srgb, var(--j-text) 8%, transparent)', overflow: 'hidden' }}>
@@ -2192,21 +2192,21 @@ const ManualSuppressionSection: React.FC<{ offerId: string }> = ({ offerId }) =>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>Manual Address Suppression</div>
         {total !== null && (
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>{total.toLocaleString()} total entries on this offer</span>
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{total.toLocaleString()} total entries on this offer</span>
         )}
       </div>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 10 }}>
         Paste one or more addresses (newline / comma separated) or upload a .csv/.txt file. Addresses are matched
         against the subscriber base and blocked for this offer at planning and send time.
       </div>
-      <textarea
+      <textarea aria-label="Paste text"
         value={pasteText}
         onChange={e => setPasteText(e.target.value)}
         placeholder={'someone@example.com\nanother@example.com'}
         rows={3}
         style={{
           width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: 12, fontFamily: 'monospace',
-          background: '#0a0f1d', color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, padding: 10,
+          background: 'var(--j-surface)', color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, padding: 10,
         }}
         disabled={submitting}
       />
@@ -2218,9 +2218,9 @@ const ManualSuppressionSection: React.FC<{ offerId: string }> = ({ offerId }) =>
         >
           {submitting ? 'Suppressing…' : `Suppress ${parseEmails(pasteText).length || ''} Address${parseEmails(pasteText).length === 1 ? '' : 'es'}`}
         </button>
-        <label style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
+        <label style={{ fontSize: 12, color: 'var(--j-text-muted)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
           or upload file:{' '}
-          <input type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: 'var(--j-text)' }} />
+          <input aria-label="Choose a file to upload" type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: 'var(--j-text)' }} />
         </label>
       </div>
       {resultMsg && (
@@ -2249,7 +2249,7 @@ const ManualSuppressionSection: React.FC<{ offerId: string }> = ({ offerId }) =>
                     <td>
                       {en.email && (
                         <button
-                          style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 11 }}
+                          style={{ background: 'none', border: 'none', color: 'var(--j-hard)', cursor: 'pointer', fontSize: 11 }}
                           title="Remove from offer suppression"
                           onClick={() => removeEntry(en.email)}
                         >
@@ -2370,12 +2370,12 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, padding: 16, background: 'var(--j-surface)', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
         <div>
-          <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>Scrub Status</div>
+          <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>Scrub Status</div>
           <span className={statusBadgeClass(scrubStatus)} style={{ fontSize: 13 }}>{scrubStatus.replace(/_/g, ' ')}</span>
         </div>
         {optizmoStatus?.optizmo_last_scrubbed_at && (
           <div style={{ marginLeft: 24 }}>
-            <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>Last Scrubbed</div>
+            <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>Last Scrubbed</div>
             <div style={{ fontSize: 13, color: 'var(--j-text)' }}>{new Date(optizmoStatus.optizmo_last_scrubbed_at).toLocaleDateString()}</div>
           </div>
         )}
@@ -2421,7 +2421,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
           </div>
           <ProgressBar pct={activeJob.progress_pct ?? 0} message={activeJob.progress_message || 'Initializing…'} />
           {(activeJob.file_count ?? 0) > 0 && (
-            <div style={{ marginTop: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--j-text-muted)' }}>
               {(activeJob.file_count ?? 0).toLocaleString()} entries downloaded
               {(activeJob.audience_count ?? 0) > 0 && ` · ${(activeJob.audience_count ?? 0).toLocaleString()} audience scanned`}
             </div>
@@ -2436,31 +2436,31 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
       )}
 
       {scrubStatus === 'not_scrubbed' && !activeJob && (
-        <div style={{ padding: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, fontSize: 13, color: '#f59e0b', marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8, fontSize: 13, color: 'var(--j-soft)', marginBottom: 16 }}>
           This offer has not been scrubbed — request a scrub before deploying
         </div>
       )}
 
       {isFailed && !activeJob && (
-        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: 'var(--j-hard)', marginBottom: 16 }}>
           Scrub failed — {optizmoStatus?.jobs?.[0]?.error_message || 'check the compliance sync link and try again'}
         </div>
       )}
 
       <div style={{ marginBottom: 20, padding: 16, background: 'var(--j-surface)', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
-        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginBottom: 8 }}>Manual Import (upload compliance suppression file)</div>
+        <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginBottom: 8 }}>Manual Import (upload compliance suppression file)</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <input
+          <input aria-label="Choose a file to upload"
             type="file"
             accept=".csv,.txt"
             onChange={handleFileUpload}
             disabled={uploading}
             style={{ fontSize: 12, color: 'var(--j-text)' }}
           />
-          {uploading && <span style={{ fontSize: 12, color: '#f59e0b' }}>Uploading…</span>}
+          {uploading && <span style={{ fontSize: 12, color: 'var(--j-soft)' }}>Uploading…</span>}
         </div>
         {uploadMsg && (
-          <div style={{ marginTop: 8, fontSize: 12, color: uploadMsg.startsWith('Error') ? '#ef4444' : 'var(--j-success)' }}>{uploadMsg}</div>
+          <div style={{ marginTop: 8, fontSize: 12, color: uploadMsg.startsWith('Error') ? 'var(--j-hard)' : 'var(--j-success)' }}>{uploadMsg}</div>
         )}
       </div>
 
@@ -2527,7 +2527,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
             </button>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>
+        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>
           {!offer?.optizmo_link
             ? 'Configure a compliance sync link to enable nightly sync'
             : offer?.suppression_sync_enabled
@@ -2536,12 +2536,12 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
           }
         </div>
         {offer?.last_suppression_sync_at && (
-          <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 4 }}>
             Last synced: {new Date(offer.last_suppression_sync_at).toLocaleString()}
           </div>
         )}
         {offer?.last_suppression_sync_error && (
-          <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-hard)', marginTop: 4 }}>
             Last error: {offer.last_suppression_sync_error}
           </div>
         )}
@@ -2577,7 +2577,7 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                       <span style={{
                         fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4,
                         background: j.scrub_type === 'nightly_sync' ? 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)' : 'color-mix(in srgb, var(--j-text) 6%, transparent)',
-                        color: j.scrub_type === 'nightly_sync' ? 'var(--j-violet)' : 'color-mix(in srgb, var(--j-text) 55%, transparent)',
+                        color: j.scrub_type === 'nightly_sync' ? 'var(--j-violet)' : 'var(--j-text-muted)',
                       }}>
                         {j.scrub_type === 'nightly_sync' ? 'Nightly' : 'Manual'}
                       </span>
@@ -2589,25 +2589,25 @@ const ComplianceTab: React.FC<{ offerId: string; offer?: Offer; optizmoStatus: O
                           <div style={{ height: 4, borderRadius: 2, background: 'color-mix(in srgb, var(--j-text) 8%, transparent)', overflow: 'hidden' }}>
                             <div style={{ height: '100%', borderRadius: 2, background: 'var(--j-violet-strong)', width: `${j.progress_pct ?? 0}%`, transition: 'width 0.5s' }} />
                           </div>
-                          <span style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>{j.progress_pct ?? 0}%</span>
+                          <span style={{ fontSize: 9, color: 'var(--j-text-muted)' }}>{j.progress_pct ?? 0}%</span>
                         </div>
                       ) : (
-                        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>{j.status === 'completed' ? '100%' : '—'}</span>
+                        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{j.status === 'completed' ? '100%' : '—'}</span>
                       )}
                     </td>
                     <td>{new Date(j.requested_at).toLocaleDateString()}</td>
                     <td>{j.completed_at ? new Date(j.completed_at).toLocaleDateString() : '—'}</td>
                     <td>{(j.file_count ?? 0).toLocaleString()}</td>
                     <td>{(j.audience_count ?? 0).toLocaleString()}</td>
-                    <td style={{ color: (j.suppressed_count ?? 0) > 0 ? 'var(--j-success)' : (j.status === 'completed' ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 35%, transparent)'), fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
+                    <td style={{ color: (j.suppressed_count ?? 0) > 0 ? 'var(--j-success)' : (j.status === 'completed' ? 'var(--j-hard)' : 'var(--j-text-muted)'), fontWeight: 600 }}>{(j.suppressed_count ?? 0).toLocaleString()}</td>
                     <td>
                       {hasS3 ? (
                         <span style={{ fontSize: 10, color: 'var(--j-success)' }} title="Stored in Reporting">&#x2713; Stored</span>
                       ) : (
-                        <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 25%, transparent)' }}>—</span>
+                        <span style={{ fontSize: 10, color: 'var(--j-text-muted)' }}>—</span>
                       )}
                     </td>
-                    <td style={{ fontSize: 11, color: '#ef4444', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
+                    <td style={{ fontSize: 11, color: 'var(--j-hard)', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.error_message || '—'}</td>
                   </tr>
                 );
               })}
@@ -2711,9 +2711,9 @@ const PerformanceTab: React.FC<{
     { label: 'Sent', value: t.sent.toLocaleString(), sub: `${stats?.campaign_count ?? 0} campaigns`, color: 'var(--j-violet)' },
     { label: 'Delivered', value: t.delivered.toLocaleString(), sub: `${fmtRate(t.delivered, t.sent)} of sent`, color: 'var(--j-success)' },
     { label: 'Human Opens', value: t.opened.toLocaleString(), sub: `${fmtRate(t.opened, t.sent)} of sent`, color: 'var(--j-success)' },
-    { label: 'Human Clicks', value: t.clicked.toLocaleString(), sub: `${fmtRate(t.clicked, t.sent)} of sent`, color: '#f59e0b' },
-    { label: 'Hard Bounces', value: t.hard_bounces.toLocaleString(), sub: `${fmtRate(t.hard_bounces, t.sent)} of sent`, color: '#ef4444' },
-    { label: 'Soft Bounces', value: t.soft_bounces.toLocaleString(), sub: `${fmtRate(t.soft_bounces, t.sent)} of sent`, color: '#f59e0b' },
+    { label: 'Human Clicks', value: t.clicked.toLocaleString(), sub: `${fmtRate(t.clicked, t.sent)} of sent`, color: 'var(--j-soft)' },
+    { label: 'Hard Bounces', value: t.hard_bounces.toLocaleString(), sub: `${fmtRate(t.hard_bounces, t.sent)} of sent`, color: 'var(--j-hard)' },
+    { label: 'Soft Bounces', value: t.soft_bounces.toLocaleString(), sub: `${fmtRate(t.soft_bounces, t.sent)} of sent`, color: 'var(--j-soft)' },
     { label: 'Conversions', value: t.conversions.toLocaleString(), sub: `last ${days}d`, color: 'var(--j-blue)' },
     {
       label: 'Suppressed', value: t.suppression_total.toLocaleString(),
@@ -2731,7 +2731,7 @@ const PerformanceTab: React.FC<{
     <div>
       {/* Window toggle + suppression list shortcut */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>Window:</span>
+        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Window:</span>
         {STATS_WINDOWS.map(d => (
           <button
             key={d}
@@ -2740,7 +2740,7 @@ const PerformanceTab: React.FC<{
               ...btnGhost,
               padding: '4px 12px',
               background: days === d ? 'color-mix(in srgb, var(--j-violet) 15%, transparent)' : 'transparent',
-              color: days === d ? 'var(--j-violet)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)',
+              color: days === d ? 'var(--j-violet)' : 'var(--j-text-muted)',
               borderColor: days === d ? 'color-mix(in srgb, var(--j-violet) 40%, transparent)' : 'color-mix(in srgb, var(--j-text) 10%, transparent)',
             }}
           >
@@ -2776,13 +2776,13 @@ const PerformanceTab: React.FC<{
       </div>
 
       {statsError && (
-        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: '#ef4444', marginBottom: 16 }}>
+        <div style={{ padding: 12, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, fontSize: 13, color: 'var(--j-hard)', marginBottom: 16 }}>
           {statsError}
         </div>
       )}
 
       {statsLoading && !stats && (
-        <div style={{ padding: 30, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>Loading delivery stats…</div>
+        <div style={{ padding: 30, textAlign: 'center', color: 'var(--j-text-muted)' }}>Loading delivery stats…</div>
       )}
 
       {t && (
@@ -2793,29 +2793,29 @@ const PerformanceTab: React.FC<{
               <div key={m.label} className="offer-mgmt-metric">
                 <div className="offer-mgmt-metric-value" style={{ color: m.color }}>{m.value}</div>
                 <div className="offer-mgmt-metric-label">{m.label}</div>
-                <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', marginTop: 2 }}>{m.sub}</div>
+                <div style={{ fontSize: 10, color: 'var(--j-text-muted)', marginTop: 2 }}>{m.sub}</div>
               </div>
             ))}
           </div>
 
           {/* Secondary line: deferrals + complaints */}
-          <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 16 }}>
-            <span>Deferred events: <strong style={{ color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{t.deferred.toLocaleString()}</strong></span>
-            <span>Complaints: <strong style={{ color: t.complaints > 0 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{t.complaints.toLocaleString()}</strong></span>
+          <div style={{ display: 'flex', gap: 16, fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 16 }}>
+            <span>Deferred events: <strong style={{ color: 'var(--j-text-2)' }}>{t.deferred.toLocaleString()}</strong></span>
+            <span>Complaints: <strong style={{ color: t.complaints > 0 ? 'var(--j-hard)' : 'var(--j-text-2)' }}>{t.complaints.toLocaleString()}</strong></span>
           </div>
 
           {/* Daily chart */}
           {chartData.length > 0 && (t.sent > 0 || t.conversions > 0) ? (
             <div style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 10, padding: '16px 8px 8px', marginBottom: 20 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', marginBottom: 8, paddingLeft: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text-muted)', marginBottom: 8, paddingLeft: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Daily Volume &amp; Engagement
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <ComposedChart data={chartData} margin={{ top: 4, right: 16, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} interval="preserveStartEnd" />
-                  <YAxis yAxisId="vol" tick={{ fontSize: 10, fill: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} tickFormatter={(v: number) => fmtCompact(v)} />
-                  <YAxis yAxisId="eng" orientation="right" tick={{ fontSize: 10, fill: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} tickFormatter={(v: number) => fmtCompact(v)} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: 'var(--j-text-muted)' }} interval="preserveStartEnd" />
+                  <YAxis yAxisId="vol" tick={{ fontSize: 10, fill: 'var(--j-text-muted)' }} tickFormatter={(v: number) => fmtCompact(v)} />
+                  <YAxis yAxisId="eng" orientation="right" tick={{ fontSize: 10, fill: 'var(--j-text-muted)' }} tickFormatter={(v: number) => fmtCompact(v)} />
                   <RechartsTooltip
                     contentStyle={{ background: 'var(--j-bg)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, fontSize: 11 }}
                     labelStyle={{ color: 'var(--j-text)' }}
@@ -2825,13 +2825,13 @@ const PerformanceTab: React.FC<{
                   <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="color-mix(in srgb, var(--j-violet) 45%, transparent)" radius={[2, 2, 0, 0]} />
                   <Bar yAxisId="vol" dataKey="delivered" name="Delivered" fill="color-mix(in srgb, var(--j-success) 45%, transparent)" radius={[2, 2, 0, 0]} />
                   <Line yAxisId="eng" type="monotone" dataKey="opened" name="Human Opens" stroke="var(--j-success)" strokeWidth={2} dot={false} />
-                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Human Clicks" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Human Clicks" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
                   <Line yAxisId="eng" type="monotone" dataKey="conversions" name="Conversions" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
           ) : (
-            <div style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', fontSize: 12, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 10, marginBottom: 20 }}>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 12, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 10, marginBottom: 20 }}>
               No send activity for this offer in the last {days} days
             </div>
           )}
@@ -2865,7 +2865,7 @@ const PerformanceTab: React.FC<{
                 </tr>
               ))}
               {(stats?.campaigns ?? []).length === 0 && (
-                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 24 }}>No campaigns linked to this offer in the last {days} days</td></tr>
+                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--j-text-muted)', padding: 24 }}>No campaigns linked to this offer in the last {days} days</td></tr>
               )}
             </tbody>
           </table>
@@ -2874,7 +2874,7 @@ const PerformanceTab: React.FC<{
 
       {/* Legacy revenue metrics (deployment-based) */}
       {performance && (performance.revenue > 0 || performance.epc > 0) && (
-        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: 'var(--j-text-muted)', marginBottom: 16 }}>
           <span>Revenue: <strong style={{ color: 'var(--j-success)' }}>${performance.revenue.toFixed(2)}</strong></span>
           <span>EPC: <strong style={{ color: 'var(--j-violet)' }}>${performance.epc.toFixed(2)}</strong></span>
         </div>
@@ -2900,7 +2900,7 @@ const PerformanceTab: React.FC<{
             </tr>
           ))}
           {deployments.length === 0 && (
-            <tr><td colSpan={4} style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', padding: 24 }}>No deployments yet</td></tr>
+            <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--j-text-muted)', padding: 24 }}>No deployments yet</td></tr>
           )}
         </tbody>
       </table>
@@ -3091,34 +3091,34 @@ const DeployTab: React.FC<{
       <div style={{ display: 'grid', gap: 10, maxWidth: 560, marginBottom: 20 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>Creative</label>
-            <select value={selectedCreative} onChange={e => setSelectedCreative(e.target.value)} style={inputStyle}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>Creative</label>
+            <select aria-label="Creative" value={selectedCreative} onChange={e => setSelectedCreative(e.target.value)} style={inputStyle}>
               <option value="">Select…</option>
               {approvedCreatives.map(c => (
                 <option key={c.id} value={c.id}>v{c.version} — {(c.open_rate * 100).toFixed(1)}% OR</option>
               ))}
             </select>
-            {approvedCreatives.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved creatives</div>}
+            {approvedCreatives.length === 0 && <div style={{ fontSize: 10, color: 'var(--j-soft)', marginTop: 2 }}>No approved creatives</div>}
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>Subject Line</label>
-            <select value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)} style={inputStyle}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>Subject Line</label>
+            <select aria-label="Subject Line" value={selectedSubject} onChange={e => setSelectedSubject(e.target.value)} style={inputStyle}>
               <option value="">Select…</option>
               {approvedSubjects.map(s => (
                 <option key={s.id} value={s.id}>{s.subject_line.length > 40 ? s.subject_line.slice(0, 40) + '…' : s.subject_line}</option>
               ))}
             </select>
-            {approvedSubjects.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved subjects</div>}
+            {approvedSubjects.length === 0 && <div style={{ fontSize: 10, color: 'var(--j-soft)', marginTop: 2 }}>No approved subjects</div>}
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 4 }}>From Name</label>
-            <select value={selectedFromName} onChange={e => setSelectedFromName(e.target.value)} style={inputStyle}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4 }}>From Name</label>
+            <select aria-label="From Name" value={selectedFromName} onChange={e => setSelectedFromName(e.target.value)} style={inputStyle}>
               <option value="">Select…</option>
               {approvedFromNames.map(f => (
                 <option key={f.id} value={f.id}>{f.from_name}</option>
               ))}
             </select>
-            {approvedFromNames.length === 0 && <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 2 }}>No approved from names</div>}
+            {approvedFromNames.length === 0 && <div style={{ fontSize: 10, color: 'var(--j-soft)', marginTop: 2 }}>No approved from names</div>}
           </div>
         </div>
         <button
@@ -3133,7 +3133,7 @@ const DeployTab: React.FC<{
       {/* Proof Queue */}
       {proofQueue.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Proof Queue ({proofQueue.length})
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
@@ -3162,7 +3162,7 @@ const DeployTab: React.FC<{
                     style={{
                       position: 'absolute', top: 4, right: 4, zIndex: 2,
                       background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', border: 'none', borderRadius: 4,
-                      color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', cursor: 'pointer', fontSize: 14, padding: '0 5px', lineHeight: '20px',
+                      color: 'var(--j-text-muted)', cursor: 'pointer', fontSize: 14, padding: '0 5px', lineHeight: '20px',
                     }}
                     title="Remove"
                   >×</button>
@@ -3186,11 +3186,11 @@ const DeployTab: React.FC<{
                     [PROOF] {card.subject_text}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>From: {card.from_name_text}</span>
-                    <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-violet) 70%, transparent)', fontWeight: 600 }}>v{card.version}</span>
+                    <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>From: {card.from_name_text}</span>
+                    <span style={{ fontSize: 10, color: 'var(--j-text-muted)', fontWeight: 600 }}>v{card.version}</span>
                   </div>
                   {card.status === 'error' && card.error && (
-                    <div style={{ fontSize: 10, color: '#ef4444', marginTop: 4 }}>{card.error}</div>
+                    <div style={{ fontSize: 10, color: 'var(--j-hard)', marginTop: 4 }}>{card.error}</div>
                   )}
                   {card.status === 'sent' && card.message_id && (
                     <div style={{ fontSize: 10, color: 'var(--j-success)', marginTop: 4 }}>ID: {card.message_id.slice(0, 20)}…</div>
@@ -3221,7 +3221,7 @@ const DeployTab: React.FC<{
                 style={{
                   padding: '8px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer', border: 'none',
                   background: proofTransport === t ? (t === 'ses' ? 'rgba(245,158,11,0.25)' : 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)') : 'transparent',
-                  color: proofTransport === t ? (t === 'ses' ? '#f59e0b' : 'var(--j-violet)') : 'var(--j-text-faint)',
+                  color: proofTransport === t ? (t === 'ses' ? 'var(--j-soft)' : 'var(--j-violet)') : 'var(--j-text-faint)',
                 }}
               >
                 {t === 'ses' ? 'SES' : 'PMTA'}
@@ -3244,10 +3244,10 @@ const DeployTab: React.FC<{
         background: isCompliant ? 'color-mix(in srgb, var(--j-success) 8%, transparent)' : 'rgba(239,68,68,0.08)',
         border: `1px solid ${isCompliant ? 'color-mix(in srgb, var(--j-success) 20%, transparent)' : 'rgba(239,68,68,0.2)'}`, borderRadius: 8,
       }}>
-        <div style={{ fontSize: 13, color: isCompliant ? 'var(--j-success)' : '#ef4444', fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: isCompliant ? 'var(--j-success)' : 'var(--j-hard)', fontWeight: 600 }}>
           {isCompliant ? 'Compliance gate passed' : 'Compliance gate failed — scrub required'}
         </div>
-        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginTop: 2 }}>
+        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
           Compliance status: {optizmoStatus?.optizmo_status?.replace(/_/g, ' ') || 'unknown'}
         </div>
       </div>
@@ -3338,8 +3338,8 @@ const NewOfferModal: React.FC<{
 
   const field = (label: string, key: string, opts?: { type?: string; placeholder?: string }) => (
     <div>
-      <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>{label}</label>
-      <input
+      <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>{label}</label>
+      <input aria-label="Key"
         type={opts?.type || 'text'}
         value={(form as Record<string, string>)[key] ?? ''}
         onChange={e => setForm(prev => ({ ...prev, [key]: e.target.value }))}
@@ -3360,8 +3360,8 @@ const NewOfferModal: React.FC<{
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
           {field('Offer Name *', 'name')}
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Vertical</label>
-            <select
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Vertical</label>
+            <select aria-label="Vertical"
               value={form.vertical_id}
               onChange={e => setForm(prev => ({ ...prev, vertical_id: e.target.value }))}
               style={inputStyle}
@@ -3372,8 +3372,8 @@ const NewOfferModal: React.FC<{
           </div>
           {field('Brand Name *', 'brand_name')}
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Web Property</label>
-            <select
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Web Property</label>
+            <select aria-label="Web Property"
               value={form.web_property}
               onChange={e => setForm(prev => ({ ...prev, web_property: e.target.value }))}
               style={inputStyle}
@@ -3389,8 +3389,8 @@ const NewOfferModal: React.FC<{
           {field('Offer Opt-Out Link', 'offer_optout_link')}
           {field('Payout', 'payout', { type: 'number' })}
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Payout Type</label>
-            <select value={form.payout_type} onChange={e => setForm(prev => ({ ...prev, payout_type: e.target.value }))} style={inputStyle}>
+            <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Payout Type</label>
+            <select aria-label="Payout Type" value={form.payout_type} onChange={e => setForm(prev => ({ ...prev, payout_type: e.target.value }))} style={inputStyle}>
               <option value="cpa">CPA</option>
               <option value="cpl">CPL</option>
               <option value="revshare">RevShare</option>
@@ -3399,7 +3399,7 @@ const NewOfferModal: React.FC<{
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Raw HTML Creative</label>
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Raw HTML Creative</label>
           <textarea
             value={form.original_html_creative}
             onChange={e => setForm(prev => ({ ...prev, original_html_creative: e.target.value }))}
@@ -3410,7 +3410,7 @@ const NewOfferModal: React.FC<{
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 3 }}>Creative Assets Bundle (optional .zip)</label>
+          <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 3 }}>Creative Assets Bundle (optional .zip)</label>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 8,
             padding: '8px 12px',
@@ -3418,7 +3418,7 @@ const NewOfferModal: React.FC<{
             borderRadius: 6,
             background: 'color-mix(in srgb, var(--j-text) 2%, transparent)',
           }}>
-            <input
+            <input aria-label="Creative Assets Bundle (optional .zip)"
               type="file"
               accept=".zip"
               onChange={e => {
@@ -3426,11 +3426,11 @@ const NewOfferModal: React.FC<{
                 setZipFile(f);
                 setZipStatus(f ? `Selected: ${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : '');
               }}
-              style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
+              style={{ fontSize: 12, color: 'var(--j-text-muted)' }}
             />
             {zipFile && (
               <button
-                style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#ef4444' }}
+                style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: 'var(--j-hard)' }}
                 onClick={() => { setZipFile(null); setZipStatus(''); }}
               >
                 Remove
@@ -3438,11 +3438,11 @@ const NewOfferModal: React.FC<{
             )}
           </div>
           {zipStatus && (
-            <div style={{ marginTop: 4, fontSize: 11, color: zipStatus.startsWith('Error') || zipStatus.includes('failed') ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+            <div style={{ marginTop: 4, fontSize: 11, color: zipStatus.startsWith('Error') || zipStatus.includes('failed') ? 'var(--j-hard)' : 'var(--j-text-muted)' }}>
               {zipStatus}
             </div>
           )}
-          <div style={{ marginTop: 3, fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 30%, transparent)' }}>
+          <div style={{ marginTop: 3, fontSize: 10, color: 'var(--j-text-muted)' }}>
             Images will be extracted, uploaded to CDN, and auto-classified. Text files (ad copy, taglines) will also be extracted.
           </div>
         </div>

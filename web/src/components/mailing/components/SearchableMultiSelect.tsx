@@ -105,7 +105,7 @@ const customStyles: StylesConfig<any, true> = {
   multiValueRemove: (base, state) => ({
     ...base,
     display: (state.data as any)?.isLocked ? 'none' : 'flex',
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     '&:hover': {
       backgroundColor: '#c53030',
       color: 'var(--j-text)',
@@ -113,7 +113,7 @@ const customStyles: StylesConfig<any, true> = {
   }),
   placeholder: (base) => ({
     ...base,
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
   }),
   input: (base) => ({
     ...base,
@@ -124,7 +124,7 @@ const customStyles: StylesConfig<any, true> = {
     fontSize: '11px',
     fontWeight: 700,
     textTransform: 'uppercase',
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+    color: 'var(--j-text-muted)',
     padding: '8px 12px 4px',
     letterSpacing: '0.05em',
   }),

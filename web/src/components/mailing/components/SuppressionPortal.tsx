@@ -864,7 +864,7 @@ const SuppressionListsManager: React.FC<ListsManagerProps> = ({ lists, onNavigat
         </div>
         <div className="sort-options">
           <label>Sort by:</label>
-          <select value={sortBy} onChange={e => setSortBy(e.target.value as any)}>
+          <select aria-label="Sort by" value={sortBy} onChange={e => setSortBy(e.target.value as any)}>
             <option value="date">Recently Updated</option>
             <option value="name">Name</option>
             <option value="count">Entry Count</option>
@@ -1062,7 +1062,7 @@ const CreateSuppressionList: React.FC<CreateListProps> = ({ onCancel, onSuccess,
 
         <div className="form-group">
           <label>Source</label>
-          <select
+          <select aria-label="Source"
             value={formData.source}
             onChange={e => setFormData(p => ({ ...p, source: e.target.value }))}
           >
@@ -1150,7 +1150,7 @@ const EditSuppressionList: React.FC<EditListProps> = ({ list, onCancel, onSucces
 
         <div className="form-group">
           <label>List Name *</label>
-          <input
+          <input aria-label="Edit Suppression List"
             type="text"
             value={formData.name}
             onChange={e => setFormData(p => ({ ...p, name: e.target.value }))}
@@ -1159,7 +1159,7 @@ const EditSuppressionList: React.FC<EditListProps> = ({ list, onCancel, onSucces
 
         <div className="form-group">
           <label>Description</label>
-          <textarea
+          <textarea aria-label="Description"
             value={formData.description}
             onChange={e => setFormData(p => ({ ...p, description: e.target.value }))}
             rows={3}
@@ -1168,7 +1168,7 @@ const EditSuppressionList: React.FC<EditListProps> = ({ list, onCancel, onSucces
 
         <div className="form-group">
           <label>Source</label>
-          <select
+          <select aria-label="Source"
             value={formData.source}
             onChange={e => setFormData(p => ({ ...p, source: e.target.value }))}
           >
@@ -1296,7 +1296,7 @@ const SuppressionEntries: React.FC<EntriesProps> = ({ list, onBack, animateIn })
             onChange={e => setAddEmail(e.target.value)}
             autoFocus
           />
-          <select value={addReason} onChange={e => setAddReason(e.target.value)}>
+          <select aria-label="Add reason" value={addReason} onChange={e => setAddReason(e.target.value)}>
             <option value="Manual addition">Manual addition</option>
             <option value="User request">User request</option>
             <option value="Complaint">Complaint</option>
@@ -1496,7 +1496,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
                 <strong>Records Synced:</strong> {status.records_synced.toLocaleString()}
               </div>
             )}
-            <button
+            <button aria-label="Refresh"
               className="btn-primary sync-btn"
               onClick={handleSync}
               disabled={syncing}
@@ -1527,7 +1527,7 @@ const OptizmoManager: React.FC<OptizmoManagerProps> = ({ onBack, onRefresh, anim
               </div>
               <div className="config-row">
                 <label>Sync Time (UTC)</label>
-                <input
+                <input aria-label="Sync Time (UTC)"
                   type="time"
                   value={config.sync_time}
                   onChange={e => setConfig(p => ({ ...p, sync_time: e.target.value }))}
@@ -1919,7 +1919,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
         <div className="upload-form">
           <div className="form-group">
             <label>Select Suppression List *</label>
-            <select
+            <select aria-label="No campaigns are scheduled."
               value={selectedList}
               onChange={e => setSelectedList(e.target.value)}
             >
@@ -1935,7 +1935,7 @@ const BulkUpload: React.FC<BulkUploadProps> = ({ lists, onCancel, onSuccess, ani
           <div className="form-group">
             <label>Upload File *</label>
             <div className="file-upload-zone">
-              <input
+              <input aria-label="Choose a file to upload"
                 type="file"
                 accept=".csv,.txt,.gz"
                 onChange={e => setFile(e.target.files?.[0] || null)}

@@ -316,7 +316,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           border-radius: 8px;
           font-size: 14px;
         }
-        .ef-search-input::placeholder { color: color-mix(in srgb, var(--j-text) 35%, transparent); }
+        .ef-search-input::placeholder { color: var(--j-text-muted); }
         .ef-search-btn {
           background: var(--j-violet-strong);
           color: white;
@@ -329,7 +329,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           align-items: center;
           gap: 6px;
         }
-        .ef-search-btn:hover { background: #5a4bd1; }
+        .ef-search-btn:hover { background: var(--j-violet-strong); }
         .ef-search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .ef-error {
           background: rgba(231,76,60,0.15);
@@ -376,7 +376,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           font-weight: 500;
         }
         .ef-category-count {
-          color: color-mix(in srgb, var(--j-text) 40%, transparent);
+          color: var(--j-text-muted);
           font-size: 12px;
         }
         .ef-manual-badge {
@@ -417,14 +417,14 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           font-size: 13px;
         }
         .ef-creative-id {
-          color: color-mix(in srgb, var(--j-text) 30%, transparent);
+          color: var(--j-text-muted);
           font-size: 11px;
         }
         .ef-link-icon {
           color: #27ae60;
           font-size: 12px;
         }
-        .ef-link-icon.missing { color: color-mix(in srgb, var(--j-text) 20%, transparent); }
+        .ef-link-icon.missing { color: var(--j-text-muted); }
         
         /* Tracking Link Builder */
         .ef-link-builder {
@@ -447,7 +447,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         }
         .ef-link-row label {
           min-width: 80px;
-          color: color-mix(in srgb, var(--j-text) 50%, transparent);
+          color: var(--j-text-muted);
           font-size: 12px;
         }
         .ef-link-row select,
@@ -506,7 +506,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           background: var(--j-violet-strong);
           color: white;
         }
-        .ef-btn-primary:hover { background: #5a4bd1; }
+        .ef-btn-primary:hover { background: var(--j-violet-strong); }
         .ef-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
         .ef-btn-success {
           background: #27ae60;
@@ -564,7 +564,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         .ef-empty {
           text-align: center;
           padding: 30px;
-          color: color-mix(in srgb, var(--j-text) 30%, transparent);
+          color: var(--j-text-muted);
           font-size: 14px;
         }
         .ef-selection-summary {
@@ -616,7 +616,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                   </span>
                   <span className="ef-category-name">
                     {cat.offer_name}
-                    {cat.internal_id && <span style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', marginLeft: 6, fontSize: 11 }}>({cat.internal_id})</span>}
+                    {cat.internal_id && <span style={{ color: 'var(--j-text-muted)', marginLeft: 6, fontSize: 11 }}>({cat.internal_id})</span>}
                   </span>
                   <span className="ef-category-count">{cat.creatives.length} creative{cat.creatives.length !== 1 ? 's' : ''}</span>
                   {cat.requires_manual_link && (
@@ -624,7 +624,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                       <FontAwesomeIcon icon={faExclamationTriangle} /> Manual Link
                     </span>
                   )}
-                  <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)' }} />
+                  <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} style={{ color: 'var(--j-text-muted)' }} />
                 </div>
                 {isExpanded && (
                   <div className="ef-creatives-list">
@@ -642,7 +642,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                             setError('');
                           }}
                         >
-                          <FontAwesomeIcon icon={faTag} style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', fontSize: 12 }} />
+                          <FontAwesomeIcon icon={faTag} style={{ color: 'var(--j-text-muted)', fontSize: 12 }} />
                           <span className="ef-creative-name">{creative.name}</span>
                           <span className="ef-creative-id">ID: {creative.creative_id}</span>
                           <FontAwesomeIcon
@@ -720,7 +720,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
               <h4><FontAwesomeIcon icon={faLink} /> Build Tracking Link</h4>
               <div className="ef-link-row">
                 <label>Affiliate</label>
-                <select value={selectedAffiliate} onChange={e => { setSelectedAffiliate(e.target.value); setTrackingLink(''); }}>
+                <select aria-label="Affiliate" value={selectedAffiliate} onChange={e => { setSelectedAffiliate(e.target.value); setTrackingLink(''); }}>
                   {affiliates.map(a => (
                     <option key={a.affiliate_id} value={a.affiliate_id}>
                       {a.affiliate_name || `Affiliate ${a.affiliate_id}`} ({a.affiliate_id} → {a.encoded_value})
@@ -730,11 +730,11 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
               </div>
               <div className="ef-link-row">
                 <label>Offer ID</label>
-                <input type="text" value={String(selectedCategory.offer_id)} disabled />
+                <input aria-label="Offer ID" type="text" value={String(selectedCategory.offer_id)} disabled />
               </div>
               <div className="ef-link-row">
                 <label>Creative ID</label>
-                <input type="text" value={String(selectedCreative.creative_id)} disabled />
+                <input aria-label="Creative ID" type="text" value={String(selectedCreative.creative_id)} disabled />
               </div>
               <div className="ef-actions">
                 <button className="ef-btn ef-btn-primary" onClick={buildTrackingLink} disabled={buildingLink || !selectedAffiliate}>

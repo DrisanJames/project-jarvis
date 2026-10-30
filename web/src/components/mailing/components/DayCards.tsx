@@ -462,7 +462,7 @@ export const DayCards: React.FC = () => {
                     style={{
                       ...panelStyle,
                       cursor: 'pointer',
-                      opacity: cancelled ? 0.5 : 1,
+                      opacity: cancelled ? 0.9 : 1,
                       borderLeft: `4px solid ${statusColor(c.status)}`,
                     }}
                   >

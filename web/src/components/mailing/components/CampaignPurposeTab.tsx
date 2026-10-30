@@ -490,7 +490,7 @@ const DataActivationSettings: React.FC<{
         <div className="form-group">
           <label>Target Engagement Rate</label>
           <div className="input-with-suffix">
-            <input
+            <input aria-label="Target Engagement Rate"
               type="number"
               step="0.1"
               min="0"
@@ -509,7 +509,7 @@ const DataActivationSettings: React.FC<{
         <div className="form-group">
           <label>Max Complaint Rate</label>
           <div className="input-with-suffix">
-            <input
+            <input aria-label="Max Complaint Rate"
               type="number"
               step="0.01"
               min="0"
@@ -531,7 +531,7 @@ const DataActivationSettings: React.FC<{
         <div className="form-row warmup-settings">
           <div className="form-group">
             <label>Daily Increment</label>
-            <input
+            <input aria-label="Daily Increment"
               type="number"
               min="100"
               max="10000"
@@ -544,7 +544,7 @@ const DataActivationSettings: React.FC<{
           </div>
           <div className="form-group">
             <label>Max Daily Volume</label>
-            <input
+            <input aria-label="Max Daily Volume"
               type="number"
               min="1000"
               max="500000"
@@ -900,7 +900,7 @@ const OfferRevenueSettings: React.FC<{
               <FontAwesomeIcon icon={faLightbulb} />
               <h5>AI Recommendations - What to Send Today</h5>
             </div>
-            <button
+            <button aria-label="Refresh"
               type="button"
               className="refresh-btn"
               onClick={fetchNetworkTopOffers}
@@ -992,7 +992,7 @@ const OfferRevenueSettings: React.FC<{
           />
         </div>
         <div className="type-filter">
-          <select
+          <select aria-label="Offer type filter"
             value={offerTypeFilter}
             onChange={(e) => setOfferTypeFilter(e.target.value)}
           >
@@ -1186,7 +1186,7 @@ const OfferRevenueSettings: React.FC<{
           <label>ECM Target (from contract)</label>
           <div className="input-with-prefix">
             <span className="prefix">$</span>
-            <input
+            <input aria-label="ECM Target (from contract)"
               type="number"
               step="0.01"
               min="0"
@@ -1202,7 +1202,7 @@ const OfferRevenueSettings: React.FC<{
 
         <div className="form-group">
           <label>Campaign Budget</label>
-          <select
+          <select aria-label="Campaign Budget"
             value={objective.budget_limit ?? ''}
             onChange={(e) =>
               updateField('budget_limit', parseFloat(e.target.value) || undefined)
@@ -1219,7 +1219,7 @@ const OfferRevenueSettings: React.FC<{
 
         <div className="form-group">
           <label>Property Code</label>
-          <select
+          <select aria-label="Property Code"
             value={objective.property_code ?? ''}
             onChange={(e) => updateField('property_code', e.target.value || undefined)}
           >
@@ -1237,7 +1237,7 @@ const OfferRevenueSettings: React.FC<{
       <div className="form-row">
         <div className="form-group">
           <label>Target Metric</label>
-          <select
+          <select aria-label="Target Metric"
             value={objective.target_metric ?? ''}
             onChange={(e) =>
               updateField('target_metric', (e.target.value as TargetMetric) || undefined)
@@ -1253,7 +1253,7 @@ const OfferRevenueSettings: React.FC<{
 
         <div className="form-group">
           <label>Target Value</label>
-          <input
+          <input aria-label="Target Value"
             type="number"
             min="0"
             value={objective.target_value ?? ''}
@@ -1290,7 +1290,7 @@ const AdvancedSettings: React.FC<{
         <div className="form-row three-col">
           <div className="form-group">
             <label>Sensitivity</label>
-            <select
+            <select aria-label="Sensitivity"
               value={objective.throughput_sensitivity}
               onChange={(e) =>
                 updateField('throughput_sensitivity', e.target.value as ThroughputSensitivity)
@@ -1303,7 +1303,7 @@ const AdvancedSettings: React.FC<{
           </div>
           <div className="form-group">
             <label>Min Throughput (per hour)</label>
-            <input
+            <input aria-label="Min Throughput (per hour)"
               type="number"
               min="100"
               max="100000"
@@ -1315,7 +1315,7 @@ const AdvancedSettings: React.FC<{
           </div>
           <div className="form-group">
             <label>Max Throughput (per hour)</label>
-            <input
+            <input aria-label="Max Throughput (per hour)"
               type="number"
               min="1000"
               max="500000"
@@ -1335,7 +1335,7 @@ const AdvancedSettings: React.FC<{
           <div className="form-group">
             <label>Spam Signal Threshold</label>
             <div className="input-with-suffix">
-              <input
+              <input aria-label="Spam Signal Threshold"
                 type="number"
                 step="0.01"
                 min="0"
@@ -1351,7 +1351,7 @@ const AdvancedSettings: React.FC<{
           <div className="form-group">
             <label>Bounce Rate Threshold</label>
             <div className="input-with-suffix">
-              <input
+              <input aria-label="Bounce Rate Threshold"
                 type="number"
                 step="0.1"
                 min="0"
@@ -1393,7 +1393,7 @@ const AdvancedSettings: React.FC<{
       <div className="settings-group">
         <h5><FontAwesomeIcon icon={faCog} /> Creative Rotation</h5>
         <div className="form-group">
-          <select
+          <select aria-label="Creative Rotation"
             value={objective.rotation_strategy}
             onChange={(e) => updateField('rotation_strategy', e.target.value as RotationStrategy)}
           >

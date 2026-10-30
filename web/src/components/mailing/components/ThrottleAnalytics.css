@@ -14,7 +14,7 @@
   justify-content: center;
   gap: 10px;
   height: 200px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -53,7 +53,7 @@
 
 .ta-updated {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ta-refresh-btn {
@@ -83,7 +83,7 @@
 
 .ta-count-badge {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   background: color-mix(in srgb, var(--j-text-muted) 15%, transparent);
   padding: 3px 10px;
   border-radius: 10px;
@@ -92,7 +92,7 @@
 .ta-empty-section {
   padding: 24px;
   text-align: center;
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
   font-size: 13px;
   background: color-mix(in srgb, var(--j-text) 2%, transparent);
   border-radius: 12px;
@@ -155,11 +155,11 @@
   justify-content: space-between;
   margin-top: 8px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 70%, transparent);
+  color: var(--j-text-2);
 }
 
 .ta-gauge-max {
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Decision Timeline ────────────────────────────────────────────────── */
@@ -241,7 +241,7 @@
 
 .ta-timeline-time {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
   margin-left: auto;
 }
 
@@ -249,7 +249,7 @@
   display: flex;
   gap: 16px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 60%, transparent);
+  color: var(--j-text-muted);
   flex-wrap: wrap;
 }
 
@@ -300,7 +300,7 @@
 }
 
 .ta-chevron {
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
   font-size: 11px;
   width: 12px;
 }
@@ -321,12 +321,12 @@
 }
 
 .ta-wont-count {
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 .ta-conviction-total {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
   min-width: 60px;
   text-align: right;
 }
@@ -380,19 +380,19 @@
 
 .ta-verdict-wont {
   background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 .ta-conviction-time {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ta-conviction-statement {
   margin: 0 0 8px;
   font-size: 12px;
   line-height: 1.55;
-  color: color-mix(in srgb, var(--j-text) 70%, transparent);
+  color: var(--j-text-2);
   word-break: break-word;
 }
 
@@ -400,7 +400,7 @@
   display: flex;
   gap: 14px;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 45%, transparent);
+  color: var(--j-text-muted);
   flex-wrap: wrap;
 }
 
@@ -420,7 +420,7 @@
 
 .ta-control-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
   font-weight: 600;
@@ -449,7 +449,7 @@
 
 .ta-mpp-toggle {
   background: color-mix(in srgb, var(--j-text-muted) 10%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   border: 1px solid color-mix(in srgb, var(--j-text) 10%, transparent);
   padding: 6px 14px;
   border-radius: 8px;
@@ -470,7 +470,7 @@
 
 .ta-mpp-active {
   background: rgba(245, 158, 11, 0.15);
-  color: #f59e0b;
+  color: var(--j-soft);
   border-color: rgba(245, 158, 11, 0.3);
 }
 
@@ -496,7 +496,7 @@
 .ta-audience-table th {
   text-align: left;
   padding: 10px 14px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
@@ -523,7 +523,7 @@ td.ta-col-intro {
 
 th.ta-col-churn,
 td.ta-col-churn {
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 .ta-audience-totals td {

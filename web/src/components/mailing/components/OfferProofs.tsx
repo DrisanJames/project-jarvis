@@ -63,7 +63,7 @@ const badge = (fg: string): React.CSSProperties => ({
   whiteSpace: 'nowrap',
 });
 const statusColor = (s: OfferProof['approval_status']) =>
-  s === 'approved' ? 'var(--j-success)' : s === 'rejected' ? '#ef4444' : '#f59e0b';
+  s === 'approved' ? 'var(--j-success)' : s === 'rejected' ? 'var(--j-hard)' : 'var(--j-soft)';
 
 const btn = (bg: string, border: string): React.CSSProperties => ({
   background: bg, border: `1px solid ${border}`, borderRadius: 6, color: 'var(--j-text)',
@@ -441,7 +441,7 @@ export const OfferProofs: React.FC = () => {
                 <FontAwesomeIcon icon={rc.is_active ? faToggleOn : faToggleOff} style={{ color: rc.is_active ? 'var(--j-success)' : 'var(--j-text-faint)' }} />
               </button>
               <button title="delete" style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => deleteRecipient(rc)}>
-                <FontAwesomeIcon icon={faTrash} style={{ color: '#ef4444' }} />
+                <FontAwesomeIcon icon={faTrash} style={{ color: 'var(--j-hard)' }} />
               </button>
             </div>
           ))}
@@ -471,7 +471,7 @@ export const OfferProofs: React.FC = () => {
                 borderTop: '1px solid var(--j-surface-2)',
                 background: selected?.id === p.id ? '#1e1b4b' : 'transparent', borderRadius: 6,
               }}>
-              <input type="checkbox" checked={!!checked[p.id]} onClick={(e) => e.stopPropagation()}
+              <input aria-label="Id" type="checkbox" checked={!!checked[p.id]} onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setChecked((c) => ({ ...c, [p.id]: e.target.checked }))} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: p.is_active ? 'var(--j-text)' : 'var(--j-text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
@@ -529,8 +529,8 @@ export const OfferProofs: React.FC = () => {
                       <input style={{ ...input, marginTop: 4, fontSize: 12, color: 'var(--j-text-muted)' }} value={v.preheader} placeholder="Preheader"
                         onChange={(e) => setVariant(i, { preheader: e.target.value })} />
                     </div>
-                    <button style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => delVariant(i)}>
-                      <FontAwesomeIcon icon={faXmark} style={{ color: '#ef4444' }} />
+                    <button aria-label="Close" style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => delVariant(i)}>
+                      <FontAwesomeIcon icon={faXmark} style={{ color: 'var(--j-hard)' }} />
                     </button>
                   </div>
                 ))}
@@ -541,8 +541,8 @@ export const OfferProofs: React.FC = () => {
                   <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
                     <input style={input} value={fn} placeholder="From name"
                       onChange={(e) => setFromName(i, e.target.value)} />
-                    <button style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => delFromName(i)}>
-                      <FontAwesomeIcon icon={faXmark} style={{ color: '#ef4444' }} />
+                    <button aria-label="Close" style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => delFromName(i)}>
+                      <FontAwesomeIcon icon={faXmark} style={{ color: 'var(--j-hard)' }} />
                     </button>
                   </div>
                 ))}
@@ -561,7 +561,7 @@ export const OfferProofs: React.FC = () => {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                 <div style={{ flex: '1 1 200px' }}>
                   <label style={label}>Sending domain</label>
-                  <select style={input as React.CSSProperties} value={sendDomain} onChange={(e) => setSendDomain(e.target.value)}>
+                  <select aria-label="Sending domain" style={input as React.CSSProperties} value={sendDomain} onChange={(e) => setSendDomain(e.target.value)}>
                     <option value="">— choose domain —</option>
                     {domains.map((d) => <option key={d.domain} value={d.domain}>{d.domain}</option>)}
                   </select>
@@ -569,7 +569,7 @@ export const OfferProofs: React.FC = () => {
                 <div style={{ flex: '0 1 140px' }}
                   title="Sending route — PMTA = dedicated IPs (default); SES = the brand's live SES tenant route, for cold-inbox placement checks on that path">
                   <label style={label}>Route</label>
-                  <select style={input as React.CSSProperties} value={sendTransport}
+                  <select aria-label="Route" style={input as React.CSSProperties} value={sendTransport}
                     onChange={(e) => setSendTransport(e.target.value === 'ses' ? 'ses' : 'pmta')}>
                     <option value="pmta">PMTA (dedicated IPs)</option>
                     <option value="ses">SES (tenant relay)</option>
@@ -638,7 +638,7 @@ export const OfferProofs: React.FC = () => {
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button style={btn('#14532d', 'var(--j-success)')} disabled={busy} onClick={approveProof}>
+                <button style={btn('color-mix(in srgb, var(--j-success) 20%, transparent)', 'var(--j-success)')} disabled={busy} onClick={approveProof}>
                   <FontAwesomeIcon icon={faCircleCheck} /> Approve
                 </button>
                 <button style={btn('#3f1d1d', '#7f1d1d')} disabled={busy} onClick={rejectProof}>

@@ -840,7 +840,7 @@ export const SegmentFreshnessBoard: React.FC = () => {
               <label style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 Sending domain
               </label>
-              <select
+              <select aria-label="Sending domain"
                 value={selected}
                 onChange={e => setBrandChoice(e.target.value)}
                 style={{

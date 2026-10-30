@@ -562,18 +562,18 @@ const NewClaimForm: React.FC<{ onCreated: (c: Claim) => void; onCancel: () => vo
       </div>
       <div style={formGrid}>
         <Field label="claim_type">
-          <select value={f.claim_type} onChange={e => setF(x => ({ ...x, claim_type: e.target.value }))} style={inputStyle}>
+          <select aria-label="Claim type" value={f.claim_type} onChange={e => setF(x => ({ ...x, claim_type: e.target.value }))} style={inputStyle}>
             {CLAIM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </Field>
         <Field label="scope (comma list)" hint="e.g. isp:gmail,lane:yahoo_family">
-          <input type="text" value={f.scope} onChange={e => setF(x => ({ ...x, scope: e.target.value }))} style={inputStyle} />
+          <input aria-label="Scope" type="text" value={f.scope} onChange={e => setF(x => ({ ...x, scope: e.target.value }))} style={inputStyle} />
         </Field>
         <Field label="title" span>
-          <input type="text" value={f.title} onChange={e => setF(x => ({ ...x, title: e.target.value }))} style={inputStyle} />
+          <input aria-label="Title" type="text" value={f.title} onChange={e => setF(x => ({ ...x, title: e.target.value }))} style={inputStyle} />
         </Field>
         <Field label="body" span>
-          <textarea value={f.body} onChange={e => setF(x => ({ ...x, body: e.target.value }))} style={textareaStyle} />
+          <textarea aria-label="Body" value={f.body} onChange={e => setF(x => ({ ...x, body: e.target.value }))} style={textareaStyle} />
         </Field>
       </div>
       <div style={{ marginTop: 10 }}>
@@ -626,10 +626,10 @@ const ClaimDetailPanel: React.FC<{
   const evidenceFields = (
     <>
       <Field label="checker (query / command / file:line)" span>
-        <textarea value={ev.checker} onChange={e => setEv(x => ({ ...x, checker: e.target.value }))} style={monoInput} />
+        <textarea aria-label="Checker" value={ev.checker} onChange={e => setEv(x => ({ ...x, checker: e.target.value }))} style={monoInput} />
       </Field>
       <Field label="result (verbatim; credentials are redacted server-side)" span>
-        <textarea value={ev.result} onChange={e => setEv(x => ({ ...x, result: e.target.value }))} style={monoInput} />
+        <textarea aria-label="Result" value={ev.result} onChange={e => setEv(x => ({ ...x, result: e.target.value }))} style={monoInput} />
       </Field>
     </>
   )
@@ -715,9 +715,9 @@ const ClaimDetailPanel: React.FC<{
             {' '}Evidence environment is fixed to <code>operator</code>.
           </div>
           <div style={formGrid}>
-            <Field label="verifier_name"><input type="text" value={verifierName} onChange={e => setVerifierName(e.target.value)} style={inputStyle} /></Field>
+            <Field label="verifier_name"><input aria-label="Verifier name" type="text" value={verifierName} onChange={e => setVerifierName(e.target.value)} style={inputStyle} /></Field>
             <Field label="verdict">
-              <select value={ev.verdict} onChange={e => setEv(x => ({ ...x, verdict: e.target.value }))} style={inputStyle}>
+              <select aria-label="Verdict" value={ev.verdict} onChange={e => setEv(x => ({ ...x, verdict: e.target.value }))} style={inputStyle}>
                 {EVIDENCE_VERDICTS.map(v => <option key={v} value={v}>{v}</option>)}
               </select>
             </Field>
@@ -734,15 +734,15 @@ const ClaimDetailPanel: React.FC<{
           <div style={{ fontSize: 11, color: colors.textMuted }}>POST /claims/{c.id}/evidence — does not change status by itself.</div>
           <div style={formGrid}>
             <Field label="environment">
-              <input type="text" list="brain-envs" value={ev.environment} onChange={e => setEv(x => ({ ...x, environment: e.target.value }))} style={inputStyle} />
+              <input aria-label="Environment" type="text" list="brain-envs" value={ev.environment} onChange={e => setEv(x => ({ ...x, environment: e.target.value }))} style={inputStyle} />
               <datalist id="brain-envs">{EVIDENCE_ENVS.map(v => <option key={v} value={v} />)}</datalist>
             </Field>
             <Field label="verdict">
-              <select value={ev.verdict} onChange={e => setEv(x => ({ ...x, verdict: e.target.value }))} style={inputStyle}>
+              <select aria-label="Verdict" value={ev.verdict} onChange={e => setEv(x => ({ ...x, verdict: e.target.value }))} style={inputStyle}>
                 {EVIDENCE_VERDICTS.map(v => <option key={v} value={v}>{v}</option>)}
               </select>
             </Field>
-            <Field label="code_version (git sha, optional)"><input type="text" value={ev.code_version} onChange={e => setEv(x => ({ ...x, code_version: e.target.value }))} style={inputStyle} /></Field>
+            <Field label="code_version (git sha, optional)"><input aria-label="Code version" type="text" value={ev.code_version} onChange={e => setEv(x => ({ ...x, code_version: e.target.value }))} style={inputStyle} /></Field>
             {evidenceFields}
           </div>
           <button type="button" style={{ ...btnStyle, marginTop: 8 }} disabled={busy || !ev.checker.trim() || !ev.result.trim()}
@@ -754,7 +754,7 @@ const ClaimDetailPanel: React.FC<{
       {action === 'retract' && (
         <div style={{ marginTop: 10 }}>
           <div style={formGrid}>
-            <Field label="reason (required)" span><textarea value={reason} onChange={e => setReason(e.target.value)} style={textareaStyle} /></Field>
+            <Field label="reason (required)" span><textarea aria-label="Reason" value={reason} onChange={e => setReason(e.target.value)} style={textareaStyle} /></Field>
           </div>
           <button type="button" style={{ ...dangerBtn, marginTop: 8 }} disabled={busy || !reason.trim()}
             onClick={() => post(`/claims/${c.id}/retract`, { reason: reason.trim(), by: 'operator' }, `Retract #${c.id}`)}>
@@ -766,8 +766,8 @@ const ClaimDetailPanel: React.FC<{
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 11, color: colors.textMuted }}>Marks #{c.id} superseded by an EXISTING claim id (record the replacement first with New claim).</div>
           <div style={formGrid}>
-            <Field label="new_id"><input type="number" min={1} value={newID} onChange={e => setNewID(e.target.value)} style={inputStyle} /></Field>
-            <Field label="reason" span><textarea value={reason} onChange={e => setReason(e.target.value)} style={textareaStyle} /></Field>
+            <Field label="new_id"><input aria-label="New id" type="number" min={1} value={newID} onChange={e => setNewID(e.target.value)} style={inputStyle} /></Field>
+            <Field label="reason" span><textarea aria-label="Reason" value={reason} onChange={e => setReason(e.target.value)} style={textareaStyle} /></Field>
           </div>
           <button type="button" style={{ ...btnStyle, marginTop: 8 }} disabled={busy || !newID.trim()}
             onClick={() => post(`/claims/${c.id}/supersede`, { new_id: Number(newID), reason: reason.trim(), by: 'operator' }, `Supersede #${c.id}`)}>
@@ -810,12 +810,12 @@ const CapabilitiesPane: React.FC<{ bump: () => void; nonce: number }> = ({ bump,
           <SectionHeader title="Register new version" right={<button type="button" style={smallBtn} onClick={() => setShowForm(false)}>Cancel</button>} />
           <div style={{ fontSize: 11, color: colors.textMuted }}>Versions are never edited in place: this creates version N+1 of <code>name</code> and retires the active one. name must match <code>^[a-z][a-z0-9_]{'{1,63}'}$</code>.</div>
           <div style={formGrid}>
-            <Field label="name"><input type="text" value={f.name} onChange={e => setF(x => ({ ...x, name: e.target.value }))} style={{ ...inputStyle, fontFamily: mono.fontFamily }} /></Field>
-            <Field label="tool (endpoint / module / command)"><input type="text" value={f.tool} onChange={e => setF(x => ({ ...x, tool: e.target.value }))} style={{ ...inputStyle, fontFamily: mono.fontFamily }} /></Field>
-            <Field label="task (the recognised question it answers)" span><textarea value={f.task} onChange={e => setF(x => ({ ...x, task: e.target.value }))} style={textareaStyle} /></Field>
-            <Field label="inputs"><textarea value={f.inputs} onChange={e => setF(x => ({ ...x, inputs: e.target.value }))} style={textareaStyle} /></Field>
-            <Field label="required_evidence"><textarea value={f.required_evidence} onChange={e => setF(x => ({ ...x, required_evidence: e.target.value }))} style={textareaStyle} /></Field>
-            <Field label="completion_condition" span><textarea value={f.completion_condition} onChange={e => setF(x => ({ ...x, completion_condition: e.target.value }))} style={textareaStyle} /></Field>
+            <Field label="name"><input aria-label="Name" type="text" value={f.name} onChange={e => setF(x => ({ ...x, name: e.target.value }))} style={{ ...inputStyle, fontFamily: mono.fontFamily }} /></Field>
+            <Field label="tool (endpoint / module / command)"><input aria-label="Tool" type="text" value={f.tool} onChange={e => setF(x => ({ ...x, tool: e.target.value }))} style={{ ...inputStyle, fontFamily: mono.fontFamily }} /></Field>
+            <Field label="task (the recognised question it answers)" span><textarea aria-label="Task" value={f.task} onChange={e => setF(x => ({ ...x, task: e.target.value }))} style={textareaStyle} /></Field>
+            <Field label="inputs"><textarea aria-label="Inputs" value={f.inputs} onChange={e => setF(x => ({ ...x, inputs: e.target.value }))} style={textareaStyle} /></Field>
+            <Field label="required_evidence"><textarea aria-label="Required evidence" value={f.required_evidence} onChange={e => setF(x => ({ ...x, required_evidence: e.target.value }))} style={textareaStyle} /></Field>
+            <Field label="completion_condition" span><textarea aria-label="Completion condition" value={f.completion_condition} onChange={e => setF(x => ({ ...x, completion_condition: e.target.value }))} style={textareaStyle} /></Field>
           </div>
           <button type="button" style={{ ...btnStyle, marginTop: 8 }} disabled={busy || !f.name.trim() || !f.task.trim() || !f.tool.trim()} onClick={submit}>{busy ? 'Registering…' : 'Register version'}</button>
         </Panel>

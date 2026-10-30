@@ -1587,7 +1587,7 @@
 
 .arc-strategy.strategy-volume { background: color-mix(in srgb, var(--j-blue) 25%, transparent); color: var(--j-blue); }
 .arc-strategy.strategy-revenue { background: color-mix(in srgb, var(--j-success) 25%, transparent); color: var(--j-success-soft); }
-.arc-strategy.strategy-conversion { background: color-mix(in srgb, var(--j-violet) 25%, transparent); color: color-mix(in srgb, var(--j-cyan) 70%, transparent); }
+.arc-strategy.strategy-conversion { background: color-mix(in srgb, var(--j-violet) 25%, transparent); color: var(--j-text-2); }
 
 .arc-confidence {
   font-size: 10px;
@@ -2066,7 +2066,7 @@
   justify-content: center;
 }
 
-.isp-icon.isp-gmail { color: #ef4444; }
+.isp-icon.isp-gmail { color: var(--j-hard); }
 .isp-icon.isp-yahoo { color: var(--j-violet); }
 .isp-icon.isp-outlook { color: var(--j-cyan); }
 .isp-icon.isp-aol { color: var(--j-warn); }

@@ -6,7 +6,12 @@
  * preference. Spec: docs/PORTAL_DESIGN_SYSTEM.md §2.
  *
  * Accents have a separate value per mode so the same token is readable as
- * text on both a cream page and an ink page.
+ * text on both a cream page and an ink page. Light values are held to WCAG AA:
+ * every text token >= 4.5:1 on every surface and on a 30% tint of itself;
+ * --j-border-strong >= 3:1 for form-control outlines.
+ *
+ * --j-hard / --j-soft are the hard- and soft-bounce colours: #ef4444 / #f59e0b
+ * in dark, the same hues darkened to pass AA in light.
  */
 
 :root,
@@ -39,6 +44,8 @@
   --j-warn: #ffb547;
   --j-danger: #ff5c7a;
   --j-danger-soft: #ffa3b5;
+  --j-hard: #ef4444;
+  --j-soft: #f59e0b;
 
   --j-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
   --j-shadow-pop: 4px 4px 0 #0a0818;
@@ -54,25 +61,27 @@
   --j-shade: #ede5f7;
   --j-border: #ddd3ee;
   --j-border-subtle: #ece5f5;
-  --j-border-strong: #b9afd2;
+  --j-border-strong: #958bab;
 
   --j-text: #14112b;
   --j-text-2: #34305a;
   --j-text-muted: #5b5675;
-  --j-text-faint: #7e7899;
+  --j-text-faint: #66607a;
   --j-on-accent: #ffffff;
 
-  --j-violet: #6d28ff;
+  --j-violet: #5920d1;
   --j-violet-strong: #6d28ff;
   --j-violet-soft: #5420d0;
-  --j-pink: #d1136a;
-  --j-cyan: #0a8ca3;
-  --j-blue: #1f6fd1;
-  --j-success: #3e7c0a;
+  --j-pink: #980b4c;
+  --j-cyan: #005a68;
+  --j-blue: #14519a;
+  --j-success: #2e5d03;
   --j-success-soft: #2f6108;
-  --j-warn: #b25600;
-  --j-danger: #d0103a;
+  --j-warn: #853d00;
+  --j-danger: #9a0a2b;
   --j-danger-soft: #a50e30;
+  --j-hard: #942929;
+  --j-soft: #744800;
 
   --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
   --j-shadow-pop: 4px 4px 0 #14112b;
@@ -90,21 +99,23 @@
     --j-shade: #ede5f7;
     --j-border: #ddd3ee;
     --j-border-subtle: #ece5f5;
-    --j-border-strong: #b9afd2;
+    --j-border-strong: #958bab;
     --j-text: #14112b;
     --j-text-2: #34305a;
     --j-text-muted: #5b5675;
-    --j-text-faint: #7e7899;
-    --j-violet: #6d28ff;
+    --j-text-faint: #66607a;
+    --j-violet: #5920d1;
     --j-violet-soft: #5420d0;
-    --j-pink: #d1136a;
-    --j-cyan: #0a8ca3;
-    --j-blue: #1f6fd1;
-    --j-success: #3e7c0a;
+    --j-pink: #980b4c;
+    --j-cyan: #005a68;
+    --j-blue: #14519a;
+    --j-success: #2e5d03;
     --j-success-soft: #2f6108;
-    --j-warn: #b25600;
-    --j-danger: #d0103a;
+    --j-warn: #853d00;
+    --j-danger: #9a0a2b;
     --j-danger-soft: #a50e30;
+    --j-hard: #942929;
+    --j-soft: #744800;
     --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
     --j-shadow-pop: 4px 4px 0 #14112b;
   }

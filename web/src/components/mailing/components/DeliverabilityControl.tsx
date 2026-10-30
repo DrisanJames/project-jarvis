@@ -152,7 +152,7 @@ const ISP_COLORS: Record<string, string> = {
 };
 
 const SENDING_DOMAIN_COLORS: Record<string, string> = {
-  'em.discountblog.com': '#f59e0b',
+  'em.discountblog.com': 'var(--j-soft)',
   'em.quizfiesta.com': 'var(--j-success)',
   'em.historythinking.com': 'var(--j-violet-strong)',
   'em.myownhealth.net': 'var(--j-pink)',
@@ -165,8 +165,8 @@ const ISP_ORDER = ['gmail', 'microsoft', 'yahoo', 'apple', 'comcast', 'att', 'co
 const METRIC_LABELS: Record<Metric, { label: string; color: string }> = {
   attempted: { label: 'Attempted', color: 'var(--j-blue)' },
   delivered: { label: 'Delivered', color: 'var(--j-success)' },
-  hard_bounce: { label: 'Hard Bounce', color: '#ef4444' },
-  soft_bounce: { label: 'Soft Bounce', color: '#f59e0b' },
+  hard_bounce: { label: 'Hard Bounce', color: 'var(--j-hard)' },
+  soft_bounce: { label: 'Soft Bounce', color: 'var(--j-soft)' },
   deferred: { label: 'Deferred', color: 'var(--j-warn)' },
   complaint: { label: 'Complaint', color: 'var(--j-violet)' },
   reputation_blocked: { label: 'Reputation Block', color: 'var(--j-danger)' },
@@ -368,15 +368,15 @@ export const DeliverabilityControl: React.FC = () => {
       <div style={styles.calculator}>
         <div style={styles.calcRow}>
           <label style={styles.calcLabel}>Target Volume</label>
-          <input type="number" value={targetVolume} onChange={e => setTargetVolume(Number(e.target.value))}
+          <input aria-label="Target Volume" type="number" value={targetVolume} onChange={e => setTargetVolume(Number(e.target.value))}
             style={styles.calcInput} />
           <label style={styles.calcLabel}>Hours</label>
-          <input type="number" value={targetHours} onChange={e => setTargetHours(Number(e.target.value))}
+          <input aria-label="Hours" type="number" value={targetHours} onChange={e => setTargetHours(Number(e.target.value))}
             style={{ ...styles.calcInput, width: 60 }} min={1} max={24} />
           <span style={styles.calcResult}>
             Required: <strong>{fmtNum(requiredRate)}/hr</strong>
           </span>
-          <span style={{ ...styles.calcResult, color: capacityPct >= 100 ? 'var(--j-success)' : '#ef4444' }}>
+          <span style={{ ...styles.calcResult, color: capacityPct >= 100 ? 'var(--j-success)' : 'var(--j-hard)' }}>
             Capacity: <strong>{capacityPct}%</strong>
           </span>
           <span style={styles.calcResult}>
@@ -395,7 +395,7 @@ export const DeliverabilityControl: React.FC = () => {
           const isYahoo = cfg.isp === 'yahoo';
           const isEditing = cfg.isp in editingRates;
           const isSaving = saving[cfg.isp];
-          const adjColor = cfg.rate_adjustment >= 1.0 ? 'var(--j-success)' : cfg.rate_adjustment >= 0.7 ? '#f59e0b' : '#ef4444';
+          const adjColor = cfg.rate_adjustment >= 1.0 ? 'var(--j-success)' : cfg.rate_adjustment >= 0.7 ? 'var(--j-soft)' : 'var(--j-hard)';
           const deliveryRate = cfg.sent_1h > 0 ? Math.round((cfg.delivered_1h / cfg.sent_1h) * 100) : 0;
 
           return (
@@ -413,7 +413,7 @@ export const DeliverabilityControl: React.FC = () => {
                 <div style={styles.rateRow}>
                   <span style={styles.rateLabel}>Config Rate</span>
                   <div style={styles.rateInput}>
-                    <input type="number" min={1}
+                    <input aria-label="Config Rate" type="number" min={1}
                       value={isEditing ? editingRates[cfg.isp] : cfg.max_msg_rate}
                       onChange={e => setEditingRates(prev => ({ ...prev, [cfg.isp]: Number(e.target.value) }))}
                       style={styles.numberInput}
@@ -445,7 +445,7 @@ export const DeliverabilityControl: React.FC = () => {
                 {cfg.backoff_count > 0 && (
                   <div style={styles.rateRow}>
                     <span style={styles.rateLabel}>Backoff</span>
-                    <span style={{ ...styles.rateValue, color: '#ef4444' }}>
+                    <span style={{ ...styles.rateValue, color: 'var(--j-hard)' }}>
                       Step {cfg.backoff_count}
                     </span>
                   </div>
@@ -455,10 +455,10 @@ export const DeliverabilityControl: React.FC = () => {
               <div style={styles.statsGrid}>
                 <MiniStat label="Sent" value={cfg.sent_1h} />
                 <MiniStat label="Delivered" value={cfg.delivered_1h} color="var(--j-success)" />
-                <MiniStat label="Hard Bounce" value={cfg.hard_bounce_1h} color={cfg.hard_bounce_1h > 0 ? '#ef4444' : undefined} />
-                <MiniStat label="Soft Bounce" value={cfg.soft_bounce_1h} color={cfg.soft_bounce_1h > 0 ? '#f59e0b' : undefined} />
-                <MiniStat label="Deferred" value={cfg.deferred_1h} color={cfg.deferred_1h > 0 ? '#f59e0b' : undefined} />
-                <MiniStat label="Complained" value={cfg.complained_1h} color={cfg.complained_1h > 0 ? '#ef4444' : undefined} />
+                <MiniStat label="Hard Bounce" value={cfg.hard_bounce_1h} color={cfg.hard_bounce_1h > 0 ? 'var(--j-hard)' : undefined} />
+                <MiniStat label="Soft Bounce" value={cfg.soft_bounce_1h} color={cfg.soft_bounce_1h > 0 ? 'var(--j-soft)' : undefined} />
+                <MiniStat label="Deferred" value={cfg.deferred_1h} color={cfg.deferred_1h > 0 ? 'var(--j-soft)' : undefined} />
+                <MiniStat label="Complained" value={cfg.complained_1h} color={cfg.complained_1h > 0 ? 'var(--j-hard)' : undefined} />
               </div>
 
               <div style={styles.cardFooter}>
@@ -536,9 +536,9 @@ const KPIStrip: React.FC<{ windowKey: WindowKey }> = ({ windowKey }) => {
     <div style={{ ...styles.kpiStrip, opacity: stale ? 0.6 : 1 }}>
       <KPI label="Attempted" value={fmtNum(totals.attempted)} sub={`${windowKey} window`} />
       <KPI label="Delivered" value={fmtNum(totals.delivered)} sub={`${totals.accept_pct.toFixed(2)}%`} color="var(--j-success)" />
-      <KPI label="Hard Bounce" value={fmtNum(totals.hard_bounce)} sub={`${totals.hard_pct.toFixed(2)}%`} color={totals.hard_bounce > 0 ? '#ef4444' : 'var(--j-border-strong)'} />
-      <KPI label="Soft Bounce" value={fmtNum(totals.soft_bounce)} sub={`${totals.soft_pct.toFixed(2)}%`} color={totals.soft_bounce > 0 ? '#f59e0b' : 'var(--j-border-strong)'} />
-      <KPI label="Deferred" value={fmtNum(totals.deferred)} sub={`${totals.defer_pct.toFixed(2)}%`} color={totals.defer_pct > 20 ? '#f59e0b' : 'var(--j-text-muted)'} />
+      <KPI label="Hard Bounce" value={fmtNum(totals.hard_bounce)} sub={`${totals.hard_pct.toFixed(2)}%`} color={totals.hard_bounce > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)'} />
+      <KPI label="Soft Bounce" value={fmtNum(totals.soft_bounce)} sub={`${totals.soft_pct.toFixed(2)}%`} color={totals.soft_bounce > 0 ? 'var(--j-soft)' : 'var(--j-border-strong)'} />
+      <KPI label="Deferred" value={fmtNum(totals.deferred)} sub={`${totals.defer_pct.toFixed(2)}%`} color={totals.defer_pct > 20 ? 'var(--j-soft)' : 'var(--j-text-muted)'} />
       <KPI label="Complaint" value={fmtNum(totals.complaint)} sub={`${totals.complaint_pct.toFixed(3)}%`} color={totals.complaint > 0 ? 'var(--j-violet)' : 'var(--j-border-strong)'} />
       <KPI label="Reputation Block" value={fmtNum(totals.reputation_blocked)} sub="spam/policy" color={totals.reputation_blocked > 0 ? 'var(--j-danger)' : 'var(--j-border-strong)'} />
     </div>
@@ -608,7 +608,7 @@ const HealthCenterChart: React.FC<{
           </span>
         </h3>
         <div style={styles.chartControls}>
-          <select value={metric} onChange={e => onMetricChange(e.target.value as Metric)} style={styles.select}>
+          <select aria-label="Metric" value={metric} onChange={e => onMetricChange(e.target.value as Metric)} style={styles.select}>
             {(Object.keys(METRIC_LABELS) as Metric[]).map(m => (
               <option key={m} value={m}>{METRIC_LABELS[m].label}</option>
             ))}
@@ -801,8 +801,8 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
 };
 
 const CellContent: React.FC<{ c: MatrixCell; bounceActionPct: number; complaintActionPct: number }> = ({ c, bounceActionPct, complaintActionPct }) => {
-  const acceptColor = c.accept_pct >= 99 ? 'var(--j-success)' : c.accept_pct >= 95 ? '#f59e0b' : '#ef4444';
-  const hardColor = c.hard_pct >= bounceActionPct ? '#ef4444' : c.hard_pct >= bounceActionPct / 2 ? '#f59e0b' : 'var(--j-border-strong)';
+  const acceptColor = c.accept_pct >= 99 ? 'var(--j-success)' : c.accept_pct >= 95 ? 'var(--j-soft)' : 'var(--j-hard)';
+  const hardColor = c.hard_pct >= bounceActionPct ? 'var(--j-hard)' : c.hard_pct >= bounceActionPct / 2 ? 'var(--j-soft)' : 'var(--j-border-strong)';
   const compColor = c.complaint_pct >= complaintActionPct ? 'var(--j-danger)' : c.complaint_pct >= complaintActionPct / 2 ? 'var(--j-violet)' : 'var(--j-border-strong)';
   return (
     <>
@@ -969,7 +969,7 @@ const IPActivityPanel: React.FC = () => {
       <div style={styles.ipColumns}>
         <IPColumn title="Active" color="var(--j-success)" rows={data.active} emptyMsg="No active IPs in 24h." />
         <IPColumn title="Cold" color="var(--j-text-muted)" rows={data.cold} emptyMsg="No cold IPs (everything sent in 24h)." />
-        <IPColumn title="Paused / Quarantined" color="#ef4444" rows={data.paused} emptyMsg="No paused IPs." />
+        <IPColumn title="Paused / Quarantined" color="var(--j-hard)" rows={data.paused} emptyMsg="No paused IPs." />
       </div>
     </div>
   );
@@ -997,11 +997,11 @@ const IPColumn: React.FC<{ title: string; color: string; rows: IPActivityRow[]; 
             {ip.sent > 0 ? (
               <div style={styles.ipRowMetrics}>
                 <span>sent <strong>{fmtNum(ip.sent)}</strong></span>
-                <span style={{ color: ip.accept_pct >= 99 ? 'var(--j-success)' : ip.accept_pct >= 95 ? '#f59e0b' : '#ef4444' }}>
+                <span style={{ color: ip.accept_pct >= 99 ? 'var(--j-success)' : ip.accept_pct >= 95 ? 'var(--j-soft)' : 'var(--j-hard)' }}>
                   {ip.accept_pct.toFixed(2)}%
                 </span>
-                {ip.hard_bounce > 0 && <span style={{ color: '#ef4444' }}>h {fmtNum(ip.hard_bounce)}</span>}
-                {ip.soft_bounce > 0 && <span style={{ color: '#f59e0b' }}>s {fmtNum(ip.soft_bounce)}</span>}
+                {ip.hard_bounce > 0 && <span style={{ color: 'var(--j-hard)' }}>h {fmtNum(ip.hard_bounce)}</span>}
+                {ip.soft_bounce > 0 && <span style={{ color: 'var(--j-soft)' }}>s {fmtNum(ip.soft_bounce)}</span>}
                 {ip.deferred > 0 && <span>d {fmtNum(ip.deferred)}</span>}
                 {ip.complaint > 0 && <span style={{ color: 'var(--j-violet)' }}>c {fmtNum(ip.complaint)}</span>}
               </div>
@@ -1020,9 +1020,9 @@ const IPColumn: React.FC<{ title: string; color: string; rows: IPActivityRow[]; 
 function ipStatusColor(status: string): string {
   switch (status) {
     case 'active': return 'var(--j-success)';
-    case 'warmup': return '#f59e0b';
+    case 'warmup': return 'var(--j-soft)';
     case 'cold': return 'var(--j-text-muted)';
-    case 'paused': return '#ef4444';
+    case 'paused': return 'var(--j-hard)';
     case 'quarantined': return 'var(--j-danger)';
     default: return 'var(--j-text-faint)';
   }
@@ -1053,7 +1053,7 @@ function fmtNum(n: number): string {
 const styles: Record<string, React.CSSProperties> = {
   container: { padding: '24px 32px', maxWidth: 1400, margin: '0 auto', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
   loading: { textAlign: 'center', padding: 80, color: 'var(--j-text-muted)', fontSize: 14 },
-  error: { textAlign: 'center', padding: 80, color: '#ef4444', fontSize: 14 },
+  error: { textAlign: 'center', padding: 80, color: 'var(--j-hard)', fontSize: 14 },
   toast: { position: 'fixed', top: 20, right: 20, padding: '10px 20px', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' as const, gap: 12 },
   headerLeft: { display: 'flex', alignItems: 'baseline', gap: 12 },
@@ -1158,7 +1158,7 @@ const styles: Record<string, React.CSSProperties> = {
   miniValue: { fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
   cardFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },
   footerInfo: { fontSize: 10, color: 'var(--j-text-faint)' },
-  resetBtn: { background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, padding: '4px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer' },
+  resetBtn: { background: 'rgba(239,68,68,0.15)', color: 'var(--j-hard)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, padding: '4px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer' },
   variablesSection: { marginTop: 8, borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)', paddingTop: 12 },
   variablesToggle: { background: 'none', border: 'none', color: 'var(--j-text-muted)', fontSize: 13, cursor: 'pointer', fontWeight: 600, padding: '4px 0' },
   variablesTable: { marginTop: 8, background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 8, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },

@@ -267,7 +267,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         <h2>Import Subscribers</h2>
         {listName && <p>Importing to: <strong>{listName}</strong></p>}
         {onCancel && (
-          <button className="si-close" onClick={onCancel}>
+          <button aria-label="Close" className="si-close" onClick={onCancel}>
             <FontAwesomeIcon icon={faTimes} />
           </button>
         )}
@@ -297,7 +297,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         <div className="si-error">
           <FontAwesomeIcon icon={faExclamationCircle} />
           <span>{error}</span>
-          <button onClick={() => setError(null)}><FontAwesomeIcon icon={faTimes} /></button>
+          <button aria-label="Close" onClick={() => setError(null)}><FontAwesomeIcon icon={faTimes} /></button>
         </div>
       )}
 
@@ -405,7 +405,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
                 <h4>Drag & drop your CSV file here</h4>
                 <p>or</p>
                 <label className="si-file-input">
-                  <input
+                  <input aria-label="Choose a file to upload"
                     type="file"
                     accept=".csv,text/csv"
                     onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
@@ -458,7 +458,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
                       {col.confidence === 'high' && <FontAwesomeIcon icon={faCheck} className="si-confidence-high" />}
                     </td>
                     <td>
-                      <select
+                      <select aria-label="Idx"
                         value={getFinalMapping(idx)}
                         onChange={(e) => updateMapping(idx, e.target.value)}
                       >
@@ -637,8 +637,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-header h2 { margin: 0; font-size: 20px; }
-        .si-header p { margin: 4px 0 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
-        .si-close { background: none; border: none; cursor: pointer; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-header p { margin: 4px 0 0; color: var(--j-text-muted); font-size: 14px; }
+        .si-close { background: none; border: none; cursor: pointer; color: var(--j-text-muted); }
 
         .si-steps {
           display: flex;
@@ -652,7 +652,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           display: flex;
           align-items: center;
           gap: 8px;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           font-size: 14px;
         }
 
@@ -698,7 +698,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-section-header h3 { margin: 0 0 4px; font-size: 18px; }
-        .si-section-header p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-section-header p { margin: 0; color: var(--j-text-muted); }
 
         /* Templates */
         .si-templates { padding-bottom: 24px; }
@@ -729,9 +729,9 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-template-icon { color: var(--j-cyan); }
         .si-template-info h4 { margin: 0 0 4px; font-size: 15px; }
-        .si-template-info p { margin: 0; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
-        .si-template-fields { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
-        .si-download-icon { margin-left: auto; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-template-info p { margin: 0; font-size: 13px; color: var(--j-text-muted); }
+        .si-template-fields { font-size: 12px; color: var(--j-text-muted); }
+        .si-download-icon { margin-left: auto; color: var(--j-text-muted); }
 
         .si-tips {
           margin: 0 24px;
@@ -792,7 +792,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-category-header:hover { background: var(--j-surface-2); }
         .si-category-name { font-weight: 500; }
-        .si-category-count { margin-left: auto; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
+        .si-category-count { margin-left: auto; color: var(--j-text-muted); font-size: 12px; }
 
         .si-category-fields { padding: 8px 16px 16px 40px; }
 
@@ -819,7 +819,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           border-radius: 4px;
           font-size: 11px;
         }
-        .si-field-example { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
+        .si-field-example { color: var(--j-text-muted); font-size: 12px; }
 
         /* Upload */
         .si-upload { padding: 24px; }
@@ -840,7 +840,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-dropzone.loading { pointer-events: none; opacity: 0.7; }
 
         .si-dropzone h4 { margin: 16px 0 8px; }
-        .si-dropzone p { margin: 0 0 16px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-dropzone p { margin: 0 0 16px; color: var(--j-text-muted); }
 
         .si-file-input input { display: none; }
         .si-file-input span {
@@ -869,7 +869,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           font-size: 14px;
         }
 
-        .si-file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-file-size { color: var(--j-text-muted); }
         .si-file-info button {
           margin-left: auto;
           background: none;
@@ -902,7 +902,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           background: var(--j-surface-2);
           font-size: 12px;
           font-weight: 600;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           text-transform: uppercase;
         }
 
@@ -923,7 +923,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: color-mix(in srgb, var(--j-text) 65%, transparent);
+          color: var(--j-text-muted);
           font-size: 13px;
         }
 
@@ -961,7 +961,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-progress-container h3 { margin: 20px 0 8px; }
-        .si-progress-container p { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 0; }
+        .si-progress-container p { color: var(--j-text-muted); margin: 0; }
 
         .si-progress-bar-container {
           width: 100%;
@@ -979,7 +979,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           transition: width 0.3s;
         }
 
-        .si-progress-text { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
+        .si-progress-text { color: var(--j-text-muted); font-size: 14px; }
 
         .si-complete-icon {
           width: 80px;
@@ -1010,12 +1010,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-stat-value { display: block; font-size: 24px; font-weight: 700; }
-        .si-stat-label { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-stat-label { font-size: 12px; color: var(--j-text-muted); }
         .si-stat.success .si-stat-value { color: var(--j-success); }
         .si-stat.warning .si-stat-value { color: var(--j-warn); }
         .si-stat.error .si-stat-value { color: var(--j-danger); }
 
-        .si-skip-note { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; }
+        .si-skip-note { color: var(--j-text-muted); font-size: 13px; }
 
         /* Actions */
         .si-actions {

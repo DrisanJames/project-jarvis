@@ -91,7 +91,7 @@ export const DripLanesView: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.6,
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'var(--j-text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
     padding: '8px 10px', fontSize: 13, color: 'var(--j-text)',
@@ -103,12 +103,12 @@ export const DripLanesView: React.FC = () => {
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
         <h2 style={{ margin: 0, fontSize: 18, color: 'var(--j-text)' }}>Drip Lanes</h2>
-        <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+        <span style={{ fontSize: 12, color: 'var(--j-text-2)' }}>
           {lanes.length} lanes · {num(totalCapped)}/day capped
           {lanes.some(l => l.daily_cap === 0) ? ' (+ uncapped lanes)' : ''}
         </span>
         <button onClick={() => void load()} style={{
-          marginLeft: 'auto', background: 'transparent', color: '#9fd3ff',
+          marginLeft: 'auto', background: 'transparent', color: 'var(--j-blue)',
           border: '1px solid rgba(120,180,255,0.35)', borderRadius: 6,
           padding: '6px 12px', fontSize: 12, cursor: 'pointer',
         }}>{loading ? 'Loading…' : 'Refresh'}</button>
@@ -137,9 +137,9 @@ export const DripLanesView: React.FC = () => {
             {lanes.map(l => (
               <tr key={l.dataset_id} style={{ opacity: l.paused ? 0.55 : 1 }}>
                 <td style={{ ...td, fontWeight: 600 }}>{l.slug}</td>
-                <td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>{l.vertical}</td>
+                <td style={{ ...td, color: 'var(--j-text-2)' }}>{l.vertical}</td>
                 <td style={td}>
-                  <select
+                  <select aria-label="State"
                     value={l.offer_id || 'none'}
                     disabled={busy[l.dataset_id] || !!offersErr}
                     title={offersErr ?? undefined}
@@ -152,7 +152,7 @@ export const DripLanesView: React.FC = () => {
                   </select>
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>
-                  <input
+                  <input aria-label="Dataset id"
                     type="number" min={0} step={1000}
                     value={edit[l.dataset_id] ?? String(l.daily_cap)}
                     disabled={busy[l.dataset_id]}
@@ -167,8 +167,8 @@ export const DripLanesView: React.FC = () => {
                   {l.daily_cap === 0 && <span style={{ fontSize: 10, color: 'var(--j-warn)', marginLeft: 6 }}>UNCAPPED</span>}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>{num(l.ready)}</td>
-                <td style={{ ...td, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{num(l.held)}</td>
-                <td style={{ ...td, textAlign: 'right', color: l.mailed_today ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                <td style={{ ...td, textAlign: 'right', color: 'var(--j-text-muted)' }}>{num(l.held)}</td>
+                <td style={{ ...td, textAlign: 'right', color: l.mailed_today ? 'var(--j-success)' : 'var(--j-text-muted)' }}>
                   {num(l.mailed_today)}
                 </td>
                 <td style={td}>
@@ -188,7 +188,7 @@ export const DripLanesView: React.FC = () => {
           </tbody>
         </table>
       </div>
-      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 14, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 14, lineHeight: 1.6 }}>
         Daily cap = new records released to the drip per day (0 = uncapped). Enforced supply-side:
         the release job keeps at most this many rows claimable and parks the rest as held reserve.
         Held records are never lost and never mailed until released.

@@ -143,11 +143,11 @@ const hour24To12 = (h: number): string => {
 //   Complaint:    <0.1 good, <0.3 ok, else bad
 //   Open rate:    >20 good, >10 ok, else bad
 //   Click rate:   >3 good, >1 ok, else bad
-const hardColor   = (r: number) => r < 1   ? 'var(--j-success)' : r < 2   ? '#f59e0b' : '#ef4444';
-const softColor   = (r: number) => r < 5   ? 'var(--j-success)' : r < 10  ? '#f59e0b' : '#ef4444';
-const cmpColor    = (r: number) => r < 0.1 ? 'var(--j-success)' : r < 0.3 ? '#f59e0b' : '#ef4444';
-const openColor   = (r: number) => r > 20  ? 'var(--j-success)' : r > 10  ? '#f59e0b' : 'var(--j-text-muted)';
-const clickColor  = (r: number) => r > 3   ? 'var(--j-success)' : r > 1   ? '#f59e0b' : 'var(--j-text-muted)';
+const hardColor   = (r: number) => r < 1   ? 'var(--j-success)' : r < 2   ? 'var(--j-soft)' : 'var(--j-hard)';
+const softColor   = (r: number) => r < 5   ? 'var(--j-success)' : r < 10  ? 'var(--j-soft)' : 'var(--j-hard)';
+const cmpColor    = (r: number) => r < 0.1 ? 'var(--j-success)' : r < 0.3 ? 'var(--j-soft)' : 'var(--j-hard)';
+const openColor   = (r: number) => r > 20  ? 'var(--j-success)' : r > 10  ? 'var(--j-soft)' : 'var(--j-text-muted)';
+const clickColor  = (r: number) => r > 3   ? 'var(--j-success)' : r > 1   ? 'var(--j-soft)' : 'var(--j-text-muted)';
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -385,7 +385,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </div>
             </div>
             <div style={{ padding: '12px', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', background: 'rgba(239,68,68,0.05)' }}>
-              <div style={{ fontSize: '0.75em', color: '#ef4444', fontWeight: 600, marginBottom: '4px' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-hard)', fontWeight: 600, marginBottom: '4px' }}>
                 <FontAwesomeIcon icon={faSkullCrossbones} /> DAMAGE
               </div>
               <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.engagement_vs_damage.damage)}</div>
@@ -436,7 +436,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                         </td>
                         <td>{fmt(r.new_count)}</td>
                         <td>{fmt(r.confirmed_new)}</td>
-                        <td style={{ color: rate >= 90 ? 'var(--j-success)' : rate >= 70 ? '#f59e0b' : 'var(--j-text-muted)' }}>{pct(rate)}</td>
+                        <td style={{ color: rate >= 90 ? 'var(--j-success)' : rate >= 70 ? 'var(--j-soft)' : 'var(--j-text-muted)' }}>{pct(rate)}</td>
                       </tr>
                     );
                   })}
@@ -481,10 +481,10 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                     <td style={{ color: openColor(r.metrics.open_rate) }}>{pct(r.metrics.open_rate)}</td>
                     <td>{fmt(r.metrics.unique_clicks)}</td>
                     <td style={{ color: clickColor(r.metrics.click_rate) }}>{pct(r.metrics.click_rate)}</td>
-                    <td style={{ color: r.metrics.hard_bounces > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.metrics.hard_bounces)}</td>
+                    <td style={{ color: r.metrics.hard_bounces > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>{fmt(r.metrics.hard_bounces)}</td>
                     <td style={{ color: hardColor(r.metrics.hard_bounce_rate) }}>{pct(r.metrics.hard_bounce_rate)}</td>
                     <td style={{ color: softColor(r.metrics.soft_bounce_rate) }}>{pct(r.metrics.soft_bounce_rate)}</td>
-                    <td style={{ color: r.metrics.complaints > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.metrics.complaints)}</td>
+                    <td style={{ color: r.metrics.complaints > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>{fmt(r.metrics.complaints)}</td>
                     <td style={{ color: cmpColor(r.metrics.complaint_rate) }}>{pct(r.metrics.complaint_rate)}</td>
                   </tr>
                 ))}

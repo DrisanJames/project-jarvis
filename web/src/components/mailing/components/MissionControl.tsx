@@ -546,7 +546,7 @@ export const MissionControl: React.FC = () => {
                 onKeyDown={(e) => e.key === 'Enter' && sendConsult()}
                 placeholder="Consult the agent..."
               />
-              <button className="ig-btn-cyber" onClick={sendConsult} disabled={!consultInput.trim()}>
+              <button aria-label="Send" className="ig-btn-cyber" onClick={sendConsult} disabled={!consultInput.trim()}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </button>
             </div>

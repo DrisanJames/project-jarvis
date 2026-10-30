@@ -47,8 +47,8 @@ const matchesStatus = (status: string, f: ListStatusFilter): boolean => {
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'var(--j-text-muted)', scheduled: 'var(--j-blue)', preparing: 'var(--j-cyan)', sending: 'var(--j-cyan)',
-  paused: '#f59e0b', sent: 'var(--j-success)', completed: 'var(--j-success)',
-  completed_with_errors: '#f59e0b', cancelled: 'var(--j-text-faint)', failed: '#ef4444',
+  paused: 'var(--j-soft)', sent: 'var(--j-success)', completed: 'var(--j-success)',
+  completed_with_errors: 'var(--j-soft)', cancelled: 'var(--j-text-faint)', failed: 'var(--j-hard)',
 };
 
 // Status priority for the DEFAULT "live" ordering — lower rank = higher in the
@@ -76,7 +76,7 @@ const inputStyle: React.CSSProperties = {
 
 const thStyle: React.CSSProperties = {
   padding: '7px 8px', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4,
-  color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 700, whiteSpace: 'nowrap',
+  color: 'var(--j-text-muted)', fontWeight: 700, whiteSpace: 'nowrap',
   cursor: 'pointer', userSelect: 'none', textAlign: 'right',
 };
 
@@ -430,7 +430,7 @@ export const CampaignCenterList: React.FC<{
     const m = r.metrics;
     const dim = !r.enriched;
     const cell = (v: number, color?: string, tip?: string): React.ReactNode => (
-      <span title={tip} style={{ color: dim ? 'color-mix(in srgb, var(--j-text-muted) 35%, transparent)' : color, fontVariantNumeric: 'tabular-nums' }}>
+      <span title={tip} style={{ color: dim ? 'var(--j-text-muted)' : color, fontVariantNumeric: 'tabular-nums' }}>
         {dim ? '…' : numFmt(v)}
       </span>
     );
@@ -441,9 +441,9 @@ export const CampaignCenterList: React.FC<{
         <td style={tdNum}>{cell(m.human_opens, 'var(--j-blue)', `Human opens, unique (${pctStr(m.human_opens, m.delivered)} of delivered)`)}</td>
         <td style={tdNum}>{cell(m.human_clicks, 'var(--j-violet)', `Human clicks, unique (${pctStr(m.human_clicks, m.delivered)} of delivered)`)}</td>
         <td style={tdNum}>{cell(m.unsubscribes)}</td>
-        <td style={tdNum}>{cell(m.hard_bounces, m.hard_bounces > 0 ? '#ef4444' : undefined, 'Hard bounces (list hygiene) — always split from soft')}</td>
-        <td style={tdNum}>{cell(m.soft_bounces, m.soft_bounces > 0 ? '#f59e0b' : undefined, 'Soft bounces (transient)')}</td>
-        <td style={tdNum}>{cell(m.complaints, m.complaints > 0 ? '#ef4444' : undefined)}</td>
+        <td style={tdNum}>{cell(m.hard_bounces, m.hard_bounces > 0 ? 'var(--j-hard)' : undefined, 'Hard bounces (list hygiene) — always split from soft')}</td>
+        <td style={tdNum}>{cell(m.soft_bounces, m.soft_bounces > 0 ? 'var(--j-soft)' : undefined, 'Soft bounces (transient)')}</td>
+        <td style={tdNum}>{cell(m.complaints, m.complaints > 0 ? 'var(--j-hard)' : undefined)}</td>
       </>
     );
   };
@@ -467,7 +467,7 @@ export const CampaignCenterList: React.FC<{
             {expandable ? (
               <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet-strong)' }} />
             ) : (
-              <FontAwesomeIcon icon={faLayerGroup} title="Automated follow-ups grouped — individual sends aggregated; no inline expand" style={{ fontSize: 10, color: '#f59e0b' }} />
+              <FontAwesomeIcon icon={faLayerGroup} title="Automated follow-ups grouped — individual sends aggregated; no inline expand" style={{ fontSize: 10, color: 'var(--j-soft)' }} />
             )}
           </td>
           <td style={{ padding: '6px 8px', maxWidth: 320, paddingLeft: indent ? 24 : 8 }}>
@@ -481,7 +481,7 @@ export const CampaignCenterList: React.FC<{
               {r.isRollup && (
                 <span style={{
                   fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 6,
-                  border: '1px solid #f59e0b55', background: '#f59e0b1a', color: '#f59e0b', whiteSpace: 'nowrap',
+                  border: '1px solid color-mix(in srgb, var(--j-soft) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft) 10%, transparent)', color: 'var(--j-soft)', whiteSpace: 'nowrap',
                 }}>
                   ROLLUP · {numFmt(r.identity.wave_count || 0)}
                 </span>
@@ -569,16 +569,16 @@ export const CampaignCenterList: React.FC<{
       {error && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 8,
-          borderRadius: 8, border: '1px solid #ef444455', background: '#ef44441a', color: 'var(--j-danger-soft)', fontSize: 12.5,
+          borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-hard) 33%, transparent)', background: 'color-mix(in srgb, var(--j-hard) 10%, transparent)', color: 'var(--j-danger-soft)', fontSize: 12.5,
         }}>
-          <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444' }} />
+          <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-hard)' }} />
           Failed to load campaigns: {error}
         </div>
       )}
       {enrichNote && (
         <div style={{
           padding: '8px 12px', marginBottom: 8, borderRadius: 8, fontSize: 12,
-          border: '1px solid #f59e0b55', background: '#f59e0b14', color: 'var(--j-warn)',
+          border: '1px solid color-mix(in srgb, var(--j-soft) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft) 8%, transparent)', color: 'var(--j-warn)',
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
           Row metrics unavailable: {enrichNote} (campaign details still shown)
@@ -614,8 +614,8 @@ export const CampaignCenterList: React.FC<{
                 <th style={thStyle} onClick={() => toggleSort('opens')} title="Unique human opens (Apple Mail privacy & automated opens excluded)">Opens (h)<SortIcon k="opens" /></th>
                 <th style={thStyle} onClick={() => toggleSort('clicks')} title="Unique clicks">Clicks (h)<SortIcon k="clicks" /></th>
                 <th style={thStyle} onClick={() => toggleSort('unsubs')}>Unsubs<SortIcon k="unsubs" /></th>
-                <th style={{ ...thStyle, color: '#ef4444' }} onClick={() => toggleSort('hard')}>Hard<SortIcon k="hard" /></th>
-                <th style={{ ...thStyle, color: '#f59e0b' }} onClick={() => toggleSort('soft')}>Soft<SortIcon k="soft" /></th>
+                <th style={{ ...thStyle, color: 'var(--j-hard)' }} onClick={() => toggleSort('hard')}>Hard<SortIcon k="hard" /></th>
+                <th style={{ ...thStyle, color: 'var(--j-soft)' }} onClick={() => toggleSort('soft')}>Soft<SortIcon k="soft" /></th>
                 <th style={thStyle} onClick={() => toggleSort('complaints')}>Compl<SortIcon k="complaints" /></th>
               </tr>
             </thead>
@@ -649,7 +649,7 @@ export const CampaignCenterList: React.FC<{
                           {g.subjects.length > 0 && (
                             <tr style={{ background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)' }}>
                               <td colSpan={COL_COUNT} style={{ padding: '8px 16px' }}>
-                                <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontWeight: 700, marginBottom: 4 }}>
+                                <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--j-text-muted)', fontWeight: 700, marginBottom: 4 }}>
                                   Top subject lines by click-through rate (clicks / delivered)
                                 </div>
                                 {g.subjects.map(s => (
@@ -699,7 +699,7 @@ export const CampaignCenterList: React.FC<{
         </div>
       )}
 
-      <div style={{ marginTop: 8, fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text-muted) 80%, transparent)' }}>
+      <div style={{ marginTop: 8, fontSize: 10.5, color: 'var(--j-text-2)' }}>
         Opens shown are human (Apple Mail privacy & automated opens excluded), clicks unique.
         Relayed sends may under-report here (Reporting follow-up). Follow-ups {showDrips ? 'shown grouped by category' : 'hidden'}.
       </div>

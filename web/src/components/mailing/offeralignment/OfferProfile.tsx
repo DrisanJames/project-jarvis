@@ -1,8 +1,8 @@
 // OfferProfile.tsx — Offer Alignment Level 1: one offer, decomposed.
 //
 // Hierarchy (PORTAL_DESIGN_SYSTEM §1): KPI band (≤8 tiles) + one plain-English
-// status line → per-ISP delivery/engagement table (hard #ef4444 and soft
-// #f59e0b ALWAYS split, never combined) → creative × subject panel recut by
+// status line → per-ISP delivery/engagement table (hard var(--j-hard) and soft
+// var(--j-soft) ALWAYS split, never combined) → creative × subject panel recut by
 // ISP (with the sandboxed-iframe preview reused from the old Creatives tab) →
 // data-source panel (incl. the "(unattributed)" row) → a collapsed Diagnostics
 // section holding the sending-domain filter (sending domain is NOT a primary
@@ -30,8 +30,8 @@ import { badgeMeta, BadgePill, InferredChip } from './badges';
 import './OfferProfile.css';
 
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber.
-const HARD_RED = '#ef4444';
-const SOFT_AMBER = '#f59e0b';
+const HARD_RED = 'var(--j-hard)';
+const SOFT_AMBER = 'var(--j-soft)';
 const LOW_VOLUME_FLOOR = 1000; // creatives under this delivered are greyed ("low volume")
 
 interface ProfileState {

@@ -29,12 +29,12 @@ interface DistributionPanelProps {
 const ISP_FAMILIES = ['gmail', 'yahoo', 'aol', 'microsoft', 'comcast', 'att', 'other'];
 
 const ISP_COLORS: Record<string, string> = {
-  gmail: '#ef4444',
+  gmail: 'var(--j-hard)',
   yahoo: 'var(--j-violet)',
   aol: 'var(--j-cyan)',
   microsoft: 'var(--j-blue)',
   comcast: '#84cc16',
-  att: '#f59e0b',
+  att: 'var(--j-soft)',
   other: 'var(--j-text-muted)',
 };
 
@@ -121,7 +121,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
             <h3 style={{ margin: 0, color: 'var(--j-text)' }}>
               <FontAwesomeIcon icon={faChartBar} /> Mailbox Provider Distribution — {datasetName}
             </h3>
-            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
               Override mailbox provider percentages and per-batch caps. Empty = use natural distribution from queue.
             </div>
           </div>
@@ -135,7 +135,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
         )}
 
         {loading && !data && (
-          <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--j-text-muted)' }}>
             <FontAwesomeIcon icon={faSpinner} spin /> Loading…
           </div>
         )}
@@ -189,7 +189,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
                         <b>{isp}</b>
                       </td>
                       <td style={tdNum}>
-                        {count.toLocaleString()} <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>({livePct.toFixed(1)}%)</span>
+                        {count.toLocaleString()} <span style={{ color: 'var(--j-text-muted)' }}>({livePct.toFixed(1)}%)</span>
                       </td>
                       <td style={td}>
                         <input
@@ -201,7 +201,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
                           onChange={ev => updateEdit(isp, 'pct', ev.target.value)}
                           style={inputSmall}
                         />
-                        <span style={{ marginLeft: 4, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>%</span>
+                        <span style={{ marginLeft: 4, color: 'var(--j-text-muted)' }}>%</span>
                       </td>
                       <td style={td}>
                         <input
@@ -234,7 +234,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
 
 const Metric: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div style={metricCard}>
-    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 22, color: 'var(--j-text)', fontWeight: 600, marginTop: 4 }}>{value}</div>
   </div>
 );
@@ -264,7 +264,7 @@ const primaryBtn: React.CSSProperties = {
   fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const iconBtn: React.CSSProperties = {
-  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '6px 12px', borderRadius: 6,
   cursor: 'pointer', fontSize: 12,
 };
@@ -274,7 +274,7 @@ const ghostBtn: React.CSSProperties = {
   cursor: 'pointer',
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '8px 12px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  textAlign: 'left', padding: '8px 12px', color: 'var(--j-text-muted)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
 const td: React.CSSProperties = { padding: '8px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };

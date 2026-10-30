@@ -783,7 +783,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           onChange={(e) => { setSourcesSearch(e.target.value); setSourcesPage(1); }}
         />
         {sourcesSearch && (
-          <button
+          <button aria-label="Close"
             style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', padding: '2px 4px' }}
             onClick={() => { setSourcesSearch(''); setSourcesPage(1); }}
           >
@@ -793,7 +793,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       </div>
 
       <div className="sr-filter-group">
-        <select
+        <select aria-label="Active"
           className="sr-filter-btn"
           value={sourcesFilter.active === undefined ? '' : String(sourcesFilter.active)}
           onChange={(e) => {
@@ -807,7 +807,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           <option value="false">Inactive</option>
         </select>
 
-        <select
+        <select aria-label="Provider"
           className="sr-filter-btn"
           value={sourcesFilter.provider || ''}
           onChange={(e) => {
@@ -819,7 +819,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           {uniqueProviders.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
 
-        <select
+        <select aria-label="Group"
           className="sr-filter-btn"
           value={sourcesFilter.group || ''}
           onChange={(e) => {
@@ -831,7 +831,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           {uniqueGroups.map((g) => <option key={g} value={g}>{g}</option>)}
         </select>
 
-        <select
+        <select aria-label="Status"
           className="sr-filter-btn"
           value={sourcesFilter.status || ''}
           onChange={(e) => {
@@ -846,7 +846,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           <option value="running">Running</option>
         </select>
 
-        <select
+        <select aria-label="Sources sort"
           className="sr-filter-btn"
           value={sourcesSort}
           onChange={(e) => { setSourcesSort(e.target.value); setSourcesPage(1); }}
@@ -866,7 +866,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         >
           <FontAwesomeIcon icon={faFileImport} /> Import CSV
         </button>
-        <button className="sr-btn-secondary" onClick={fetchSources}>
+        <button aria-label="Refresh" className="sr-btn-secondary" onClick={fetchSources}>
           <FontAwesomeIcon icon={faSync} />
         </button>
       </div>
@@ -1061,7 +1061,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
             <thead>
               <tr>
                 <th style={{ width: 40 }}>
-                  <input
+                  <input aria-label="All visible selected"
                     type="checkbox"
                     className="sr-checkbox"
                     checked={allVisibleSelected}
@@ -1084,7 +1084,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               {sources.map((source) => (
                 <tr key={source.id} className={selectedSources.has(source.id) ? 'selected' : ''}>
                   <td>
-                    <input
+                    <input aria-label="Actions"
                       type="checkbox"
                       className="sr-checkbox"
                       checked={selectedSources.has(source.id)}
@@ -1220,7 +1220,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       padding: '8px 10px', textAlign: 'left', color: 'var(--j-text-muted)',
       fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
       letterSpacing: 0.4, borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
-      background: '#1e2128', position: 'sticky', top: 0,
+      background: 'var(--j-surface-2)', position: 'sticky', top: 0,
     };
     const tdStyle: React.CSSProperties = {
       padding: '8px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 3%, transparent)',
@@ -1417,7 +1417,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                       <button className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(null)} style={{ fontSize: 11, padding: '5px 10px' }}>Cancel</button>
                     </div>
                   ) : (
-                    <button className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(group.name)} style={{ fontSize: 11, padding: '5px 10px', color: 'var(--j-danger)' }}>
+                    <button aria-label="Delete" className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(group.name)} style={{ fontSize: 11, padding: '5px 10px', color: 'var(--j-danger)' }}>
                       <FontAwesomeIcon icon={faTrash} />
                     </button>
                   )}
@@ -1467,7 +1467,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
       <div className="sr-import-panel">
         <header>
           <h3><FontAwesomeIcon icon={faFileImport} style={{ marginRight: 10 }} /> Import Suppression Sources</h3>
-          <button
+          <button aria-label="Close"
             style={{ padding: '6px 10px', background: 'transparent', border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', borderRadius: 6, color: 'var(--j-text-muted)', cursor: 'pointer', fontSize: 16 }}
             onClick={() => setShowImport(false)}
           >
@@ -1568,7 +1568,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         <div className="sr-source-detail">
           <div className="sr-detail-header">
             <h3><FontAwesomeIcon icon={faEye} style={{ marginRight: 10, color: 'var(--j-cyan)' }} /> Source Details</h3>
-            <button className="close-btn" onClick={closeDetailDrawer}><FontAwesomeIcon icon={faTimes} /></button>
+            <button aria-label="Close" className="close-btn" onClick={closeDetailDrawer}><FontAwesomeIcon icon={faTimes} /></button>
           </div>
 
           {!detailSource ? (
@@ -1665,7 +1665,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               {/* Test Download */}
               <div className="sr-detail-section">
                 <h4>Test Download</h4>
-                <button className="sr-btn-primary" onClick={() => testSource(detailSource.id)} disabled={testingSource === detailSource.id} style={{ fontSize: 12, padding: '7px 16px' }}>
+                <button aria-label="Refresh" className="sr-btn-primary" onClick={() => testSource(detailSource.id)} disabled={testingSource === detailSource.id} style={{ fontSize: 12, padding: '7px 16px' }}>
                   {testingSource === detailSource.id
                     ? <><FontAwesomeIcon icon={faSpinner} spin /> Testing&hellip;</>
                     : <><FontAwesomeIcon icon={faSync} /> Test Download</>}

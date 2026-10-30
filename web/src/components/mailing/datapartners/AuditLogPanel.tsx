@@ -17,7 +17,7 @@ interface AuditEvent {
 const ACTION_COLORS: Record<string, string> = {
   create_partner: 'var(--j-success)',
   create_dataset: 'var(--j-success)',
-  emergency_stop_dataset: '#ef4444',
+  emergency_stop_dataset: 'var(--j-hard)',
   resume_dataset: 'var(--j-success)',
   update_isp_distribution: 'var(--j-violet)',
   update_creative: 'var(--j-blue)',
@@ -62,7 +62,7 @@ export const AuditLogPanel: React.FC = () => {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+        <div style={{ fontSize: 13, color: 'var(--j-text-2)' }}>
           <FontAwesomeIcon icon={faClipboardList} /> Every admin action — partner creation, dataset changes, pause / resume, mailbox provider overrides, creative swaps — is recorded here with before/after state.
         </div>
         <button onClick={fetchEvents} style={iconBtn}>
@@ -71,11 +71,11 @@ export const AuditLogPanel: React.FC = () => {
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={selectStyle}>
+        <select aria-label="Action filter" value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={selectStyle}>
           <option value="">All actions</option>
           {uniqueActions.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
-        <select value={actorFilter} onChange={e => setActorFilter(e.target.value)} style={selectStyle}>
+        <select aria-label="Actor filter" value={actorFilter} onChange={e => setActorFilter(e.target.value)} style={selectStyle}>
           <option value="">All actors</option>
           {uniqueActors.map(a => <option key={a} value={a}>{a}</option>)}
         </select>
@@ -88,7 +88,7 @@ export const AuditLogPanel: React.FC = () => {
       )}
 
       {loading && events.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+        <div style={{ textAlign: 'center', padding: 40, color: 'var(--j-text-muted)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading…
         </div>
       )}
@@ -114,7 +114,7 @@ export const AuditLogPanel: React.FC = () => {
                 </td>
                 <td style={tdMono}>
                   {ev.target_type}
-                  {ev.target_id ? <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>: {ev.target_id.slice(0, 8)}…</span> : null}
+                  {ev.target_id ? <span style={{ color: 'var(--j-text-muted)' }}>: {ev.target_id.slice(0, 8)}…</span> : null}
                 </td>
                 <td style={td}>
                   {(ev.before_state != null || ev.after_state != null) ? (
@@ -129,7 +129,7 @@ export const AuditLogPanel: React.FC = () => {
                   <td colSpan={5} style={{ ...td, background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                       <div>
-                        <div style={{ fontSize: 11, color: '#ef4444', textTransform: 'uppercase', marginBottom: 4 }}>Before</div>
+                        <div style={{ fontSize: 11, color: 'var(--j-hard)', textTransform: 'uppercase', marginBottom: 4 }}>Before</div>
                         <pre style={preStyle}>{String(JSON.stringify(ev.before_state ?? null, null, 2))}</pre>
                       </div>
                       <div>
@@ -144,7 +144,7 @@ export const AuditLogPanel: React.FC = () => {
           ))}
           {!loading && events.length === 0 && (
             <tr>
-              <td colSpan={5} style={{ ...td, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', padding: 32 }}>
+              <td colSpan={5} style={{ ...td, textAlign: 'center', color: 'var(--j-text-muted)', padding: 32 }}>
                 No audit events yet.
               </td>
             </tr>
@@ -160,14 +160,14 @@ const tableStyle: React.CSSProperties = {
   borderRadius: 8, overflow: 'hidden', fontSize: 13,
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '10px 12px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  textAlign: 'left', padding: '10px 12px', color: 'var(--j-text-muted)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
 const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'ui-monospace, monospace', fontSize: 12 };
 const tr: React.CSSProperties = {};
 const iconBtn: React.CSSProperties = {
-  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '6px 12px', borderRadius: 6,
   cursor: 'pointer', fontSize: 12,
 };
@@ -182,7 +182,7 @@ const selectStyle: React.CSSProperties = {
 };
 const preStyle: React.CSSProperties = {
   background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', padding: 12, borderRadius: 4,
-  color: 'color-mix(in srgb, var(--j-text) 85%, transparent)', fontSize: 11, fontFamily: 'ui-monospace, monospace',
+  color: 'var(--j-text)', fontSize: 11, fontFamily: 'ui-monospace, monospace',
   margin: 0, overflow: 'auto', maxHeight: 240,
 };
 const errorBox: React.CSSProperties = {

@@ -203,7 +203,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
             <div className="ai-settings">
               <div className="ai-setting-row">
                 <label>Tone</label>
-                <select
+                <select aria-label="Tone"
                   value={settings.tone}
                   onChange={(e) => setSettings({ ...settings, tone: e.target.value })}
                 >
@@ -216,7 +216,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
               </div>
               <div className="ai-setting-row">
                 <label>Include Emojis</label>
-                <input
+                <input aria-label="Include Emojis"
                   type="checkbox"
                   checked={settings.includeEmoji}
                   onChange={(e) => setSettings({ ...settings, includeEmoji: e.target.checked })}

@@ -826,7 +826,7 @@ export const BoardGrid: React.FC = () => {
                           <>
                             {/* Editable column time: remaps this slot for the
                                 WHOLE proposal (board-level timing ruling). */}
-                            <input type="time" value={slotTimes[s] ?? s}
+                            <input aria-label="Property" type="time" value={slotTimes[s] ?? s}
                               title={`Denver fire time for the ${s} column — remapping applies to every cell in it`}
                               onChange={e => {
                                 const v = e.target.value
@@ -1078,7 +1078,7 @@ export const BoardGrid: React.FC = () => {
                       this CREATES {exec.length} scheduled campaign{exec.length === 1 ? '' : 's'} on {serverGrid.date}.
                       Nothing is cancelled or modified.
                     </div>
-                    <input style={{ ...inputStyle, width: 220 }}
+                    <input aria-label="Typed" style={{ ...inputStyle, width: 220 }}
                       placeholder={confirmPhrase}
                       value={stage.typed}
                       onChange={e => {
@@ -1200,7 +1200,7 @@ export const BoardGrid: React.FC = () => {
                       Type <b style={{ color: colors.danger }}>{confirmPhrase}</b> to execute — this
                       CANCELS and REDEPLOYS {execCount} live campaign{execCount === 1 ? '' : 's'}.
                     </div>
-                    <input style={{ ...inputStyle, width: 220 }}
+                    <input aria-label="Typed" style={{ ...inputStyle, width: 220 }}
                       placeholder={confirmPhrase}
                       value={batch.typed}
                       onChange={e => {

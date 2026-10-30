@@ -56,7 +56,7 @@ interface Props {
   onRetry: () => void;
 }
 
-const CLICK_COLOR = '#f59e0b';   // clicks = GOLD (signal-grading doctrine)
+const CLICK_COLOR = 'var(--j-soft)';   // clicks = GOLD (signal-grading doctrine)
 const OPEN_COLOR = 'var(--j-text-muted)';    // opens  = silver
 const ALLTIME_COLOR = 'var(--j-blue)'; // all-time pools (the kumo warm-up audience)
 
@@ -88,7 +88,7 @@ const Chip: React.FC<{
       display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
       minWidth: tier.window_days > 0 ? 108 : 150, padding: '8px 12px', cursor: 'pointer', textAlign: 'left',
       background: selected ? `color-mix(in srgb, ${color} 9%, transparent)` : 'var(--j-bg)',
-      border: `1.5px solid ${selected ? color : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)'}`,
+      border: `1.5px solid ${selected ? color : 'var(--j-text-muted)'}`,
       borderRadius: 8, transition: 'all 0.15s ease',
     }}
   >
@@ -96,10 +96,10 @@ const Chip: React.FC<{
       {tier.window_days > 0 ? `${tier.window_days}D` : 'all-time'}
       {(tier.stale || tier.counter_mismatch || !tier.count_is_live ||
         (!!tier.build_status && tier.build_status !== 'ok')) && (
-        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: '#f59e0b' }} />
+        <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 9, color: 'var(--j-soft)' }} />
       )}
     </span>
-    <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+    <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
       {fmt(tier.count)}{tier.window_days > 0 ? '' : ` · ${tier.name}`}
     </span>
   </button>
@@ -115,11 +115,11 @@ const Row: React.FC<{
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color }}>
         <FontAwesomeIcon icon={icon} style={{ fontSize: 11 }} /> {label}
       </div>
-      <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginTop: 2 }}>{hint}</div>
+      <div style={{ fontSize: 10, color: 'var(--j-text-muted)', marginTop: 2 }}>{hint}</div>
     </div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, flex: 1 }}>
       {tiers.length === 0
-        ? <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', padding: '10px 0' }}>
+        ? <div style={{ fontSize: 12, color: 'var(--j-text-muted)', padding: '10px 0' }}>
             No {label.toLowerCase()} segments exist for this property.
           </div>
         : tiers.map(t => (
@@ -144,14 +144,14 @@ export const EngagementTierPicker: React.FC<Props> = ({
     return (
       <div style={box}>
         <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8, color: 'var(--j-blue)' }} />
-        <span style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>Loading engagement ranges…</span>
+        <span style={{ fontSize: 13, color: 'var(--j-text-2)' }}>Loading engagement ranges…</span>
       </div>
     );
   }
   if (error) {
     return (
       <div style={{ ...box, borderColor: 'rgba(239,68,68,0.35)' }}>
-        <div style={{ fontSize: 13, color: '#ef4444', marginBottom: 8 }}>
+        <div style={{ fontSize: 13, color: 'var(--j-hard)', marginBottom: 8 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> Engagement ranges unavailable — {error}
         </div>
         <button onClick={onRetry} style={{ background: 'var(--j-bg)', color: 'var(--j-blue)', border: '1px solid color-mix(in srgb, var(--j-cyan) 20%, transparent)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' }}>Retry</button>
@@ -161,7 +161,7 @@ export const EngagementTierPicker: React.FC<Props> = ({
   if (!tiers) {
     return (
       <div style={box}>
-        <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>Select a sending domain to load its engagement ranges.</div>
+        <div style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>Select a sending domain to load its engagement ranges.</div>
       </div>
     );
   }
@@ -177,15 +177,15 @@ export const EngagementTierPicker: React.FC<Props> = ({
     <div style={box}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <h4 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>Engagement range</h4>
-        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{tiers.brand_root}</span>
+        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{tiers.brand_root}</span>
       </div>
-      <p style={{ margin: '0 0 8px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+      <p style={{ margin: '0 0 8px', fontSize: 12, color: 'var(--j-text-muted)' }}>
         Pick the recency windows that make up this send's engaged audience. Counts are the live
         segment membership, rebuilt daily.
       </p>
 
       {empty ? (
-        <div style={{ padding: '14px 0', fontSize: 13, color: '#f59e0b' }}>
+        <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--j-soft)' }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> No engagement segments exist for{' '}
           <strong>{tiers.brand_root}</strong>. Use the advanced picker below, or have the segment
           family built for this property first.
@@ -213,7 +213,7 @@ export const EngagementTierPicker: React.FC<Props> = ({
             <div style={{
               marginTop: 10, padding: '8px 10px', borderRadius: 8,
               background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.35)',
-              fontSize: 11, color: '#f59e0b',
+              fontSize: 11, color: 'var(--j-soft)',
             }}>
               <FontAwesomeIcon icon={faExclamationTriangle} /> Some cached segment counters disagree
               with the segment build ledger. The numbers above come from the LEDGER — what the builder
@@ -230,7 +230,7 @@ export const EngagementTierPicker: React.FC<Props> = ({
             <input type="checkbox" checked={excludeClickers && canDisjoin} disabled={!canDisjoin}
                    onChange={e => onExcludeClickersChange(e.target.checked)}
                    style={{ marginTop: 2, width: 15, height: 15, cursor: canDisjoin ? 'pointer' : 'default' }} />
-            <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
+            <span style={{ fontSize: 12, color: 'var(--j-text-2)' }}>
               Exclude the selected clickers from this send (engager disjointness — the board's
               OFR-ENG campaigns exclude their own clicker segments so the two tiers never
               double-mail the same person on the same day).
@@ -239,10 +239,10 @@ export const EngagementTierPicker: React.FC<Props> = ({
 
           <div style={{
             marginTop: 12, paddingTop: 10, borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
-            fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)',
+            fontSize: 12, color: 'var(--j-text-2)',
           }}>
             {selectedTiers.length === 0
-              ? <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>No engagement range selected.</span>
+              ? <span style={{ color: 'var(--j-text-muted)' }}>No engagement range selected.</span>
               : <>
                   <strong style={{ color: 'var(--j-text)' }}>{selectedTiers.map(t => t.name).join(' + ')}</strong>
                   <span> — up to {fmt(rawTotal)} before dedupe and suppression</span>

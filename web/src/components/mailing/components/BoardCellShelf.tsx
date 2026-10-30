@@ -789,11 +789,11 @@ export const BoardCellShelf: React.FC<{
           </div>
         ) : (
           <>
-            <input style={{ ...input, width: '100%', boxSizing: 'border-box' }}
+            <input aria-label="Query" style={{ ...input, width: '100%', boxSizing: 'border-box' }}
               placeholder={`Filter ${offers.length} active offers…`}
               value={query} onChange={e => setQuery(e.target.value)} />
             <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
-              <select style={{ ...input, flex: 1, minWidth: 0 }}
+              <select aria-label="Sel offer" style={{ ...input, flex: 1, minWidth: 0 }}
                 value={selOffer} onChange={e => setSelOffer(e.target.value)}>
                 <option value="">select offer… ({filtered.length} match{filtered.length === 1 ? '' : 'es'})</option>
                 {filtered.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -825,7 +825,7 @@ export const BoardCellShelf: React.FC<{
                 <div style={{ marginTop: 8 }}>
                   <div style={label}>Approved proof ({cloneProofs.length}, newest first) — ships as the creative</div>
                   {cloneProofs.length > 1 ? (
-                    <select style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                    <select aria-label="Sel clone proof" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                       value={selCloneProof} onChange={e => setSelCloneProof(e.target.value)}>
                       {cloneProofs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
@@ -921,7 +921,7 @@ export const BoardCellShelf: React.FC<{
                   <summary style={{ fontSize: 11, color: colors.textMuted, cursor: 'pointer' }}>
                     Add other segment (cold data)…
                   </summary>
-                  <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                  <input aria-label="Aud query" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                     placeholder={segPool ? `search ${segPool.length} segments…` : 'loading segments…'}
                     value={audQuery} onChange={e => setAudQuery(e.target.value)} />
                   {audMatches.length > 0 && (
@@ -1078,7 +1078,7 @@ export const BoardCellShelf: React.FC<{
                     )}
                     <div style={{ marginTop: 8 }}>
                       <div style={label}>Type the campaign name exactly to confirm</div>
-                      <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                      <input aria-label="Type the campaign name exactly to confirm" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                         placeholder={cell.name}
                         value={typedName} onChange={e => setTypedName(e.target.value)} />
                       <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -1128,7 +1128,7 @@ export const BoardCellShelf: React.FC<{
                     <div style={{ fontSize: 11, marginBottom: 8 }}>
                       <span style={label}>Approved proof ({rebuildProofs.length}, newest first): </span>
                       {rebuildProofs.length > 1 ? (
-                        <select style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                        <select aria-label="Sel proof" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                           value={selProof}
                           onChange={e => {
                             setSelProof(e.target.value)
@@ -1179,7 +1179,7 @@ export const BoardCellShelf: React.FC<{
                         )}
                         <div style={{ marginTop: 8 }}>
                           <div style={label}>Type the campaign name exactly to confirm — this CANCELS and REDEPLOYS</div>
-                          <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                          <input aria-label="Rebuild typed" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                             placeholder={cell.name}
                             value={rebuildTyped} onChange={e => setRebuildTyped(e.target.value)} />
                           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
@@ -1236,7 +1236,7 @@ export const BoardCellShelf: React.FC<{
                 ) : (
                   <>
                     <div style={label}>Type the campaign name exactly to confirm — this CANCELS the live campaign</div>
-                    <input style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
+                    <input aria-label="Cancel typed" style={{ ...input, width: '100%', boxSizing: 'border-box', marginTop: 4 }}
                       placeholder={cell.name}
                       value={cancelTyped} onChange={e => setCancelTyped(e.target.value)} />
                     <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>

@@ -178,7 +178,7 @@ export const DataNormalizerPanel: React.FC = () => {
       <div style={{ padding: '24px', color: 'var(--j-text)', maxWidth: 1200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
           <FontAwesomeIcon icon={faSpinner} spin style={{ color: 'var(--j-cyan)', fontSize: 18 }} />
-          <span style={{ fontSize: 14, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Loading list import data...</span>
+          <span style={{ fontSize: 14, color: 'var(--j-text-muted)' }}>Loading list import data...</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
           {[1, 2, 3, 4, 5, 6].map(i => (
@@ -206,7 +206,7 @@ export const DataNormalizerPanel: React.FC = () => {
             <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: 'var(--j-cyan)' }} />
             List Import
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--j-text-muted)' }}>
             Imports and cleans CSV data from your list storage
           </p>
         </div>
@@ -247,7 +247,7 @@ export const DataNormalizerPanel: React.FC = () => {
 
       {/* Progress Bar */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: 'var(--j-text-muted)' }}>
           <span>Import Progress</span>
           <span>{progressPct}% ({(status?.files.completed ?? 0) + (status?.files.failed ?? 0)} / {status?.files.total ?? 0} files)</span>
         </div>
@@ -271,7 +271,7 @@ export const DataNormalizerPanel: React.FC = () => {
             Verification Quality
           </h3>
           {qualityData.length === 0 ? (
-            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</p>
+            <p style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No data yet</p>
           ) : (
             qualityData.map(q => {
               const maxQ = Math.max(...qualityData.map(x => x.count), 1);
@@ -286,7 +286,7 @@ export const DataNormalizerPanel: React.FC = () => {
                     <span style={{ color, fontWeight: 600, textTransform: 'capitalize' }}>
                       {q.verification_status || 'unverified'}
                     </span>
-                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{formatNumber(q.count)} (avg {q.avg_quality})</span>
+                    <span style={{ color: 'var(--j-text-muted)' }}>{formatNumber(q.count)} (avg {q.avg_quality})</span>
                   </div>
                   <div style={{ height: 6, borderRadius: 3, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                     <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, background: color, transition: 'width 0.5s' }} />
@@ -304,7 +304,7 @@ export const DataNormalizerPanel: React.FC = () => {
             Domain Groups
           </h3>
           {domainData.length === 0 ? (
-            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</p>
+            <p style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No data yet</p>
           ) : (
             domainData.slice(0, 10).map(d => {
               const pct = (d.count / maxDomain) * 100;
@@ -312,7 +312,7 @@ export const DataNormalizerPanel: React.FC = () => {
                 <div key={d.domain_group} style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3 }}>
                     <span style={{ color: 'var(--j-text)', fontWeight: 600, textTransform: 'capitalize' }}>{d.domain_group}</span>
-                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{formatNumber(d.count)}</span>
+                    <span style={{ color: 'var(--j-text-muted)' }}>{formatNumber(d.count)}</span>
                   </div>
                   <div style={{ height: 6, borderRadius: 3, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                     <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, background: 'var(--j-cyan)', transition: 'width 0.5s' }} />
@@ -333,7 +333,7 @@ export const DataNormalizerPanel: React.FC = () => {
           </h3>
           <button
             onClick={() => { fetchLogs(); fetchStatus(); }}
-            style={{ background: 'none', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}
+            style={{ background: 'none', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 6, color: 'var(--j-text-muted)', padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}
           >
             <FontAwesomeIcon icon={faSync} style={{ marginRight: 6 }} /> Refresh
           </button>
@@ -355,7 +355,7 @@ export const DataNormalizerPanel: React.FC = () => {
             </thead>
             <tbody>
               {logs.length === 0 ? (
-                <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No import records yet</td></tr>
+                <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'var(--j-text-muted)' }}>No import records yet</td></tr>
               ) : (
                 logs.map(log => {
                   const est = estimateTotal(log);
@@ -371,7 +371,7 @@ export const DataNormalizerPanel: React.FC = () => {
                         {log.classification ? (
                           <span style={{
                             background: (CLASSIFICATION_COLORS[log.classification] || 'color-mix(in srgb, var(--j-text) 65%, transparent)') + '22',
-                            color: CLASSIFICATION_COLORS[log.classification] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+                            color: CLASSIFICATION_COLORS[log.classification] || 'var(--j-text-muted)',
                             padding: '2px 8px',
                             borderRadius: 4,
                             fontSize: 11,
@@ -381,7 +381,7 @@ export const DataNormalizerPanel: React.FC = () => {
                             {log.classification}
                           </span>
                         ) : (
-                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontSize: 11 }}>—</span>
+                          <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>—</span>
                         )}
                       </td>
                       <td style={tdStyle}>
@@ -389,7 +389,7 @@ export const DataNormalizerPanel: React.FC = () => {
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: 5,
-                          color: STATUS_COLORS[log.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+                          color: STATUS_COLORS[log.status] || 'var(--j-text-muted)',
                           fontWeight: 600,
                           fontSize: 12,
                         }}>
@@ -406,12 +406,12 @@ export const DataNormalizerPanel: React.FC = () => {
                           </div>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-text-muted)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
                         {formatBytes(log.file_size)}
                       </td>
                       <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                         {log.status === 'pending' ? (
-                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>
+                          <span style={{ color: 'var(--j-text-muted)' }}>—</span>
                         ) : log.status === 'processing' ? (
                           <div style={{ minWidth: 120 }}>
                             <div style={{
@@ -435,17 +435,17 @@ export const DataNormalizerPanel: React.FC = () => {
                           <span>{formatNumber(log.record_count)}</span>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontVariantNumeric: 'tabular-nums' }}>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? 'var(--j-danger)' : 'var(--j-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                         {formatNumber(log.error_count)}
                       </td>
                       <td style={{ ...tdStyle, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
                         {log.status === 'processing' ? (
                           <span style={{ color: 'var(--j-warn)' }}>{computeEta(log)}</span>
                         ) : (
-                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>
+                          <span style={{ color: 'var(--j-text-muted)' }}>—</span>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
+                      <td style={{ ...tdStyle, color: 'var(--j-text-muted)', fontSize: 12 }}>
                         {formatTime(log.processed_at)}
                       </td>
                     </tr>
@@ -466,7 +466,7 @@ export const DataNormalizerPanel: React.FC = () => {
             >
               Previous
             </button>
-            <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13, padding: '6px 12px' }}>Page {page + 1}</span>
+            <span style={{ color: 'var(--j-text-muted)', fontSize: 13, padding: '6px 12px' }}>Page {page + 1}</span>
             <button
               onClick={() => setPage(page + 1)}
               disabled={logs.length < 20}
@@ -500,7 +500,7 @@ const StatCard: React.FC<{ icon: any; label: string; value: string | number; col
       <FontAwesomeIcon icon={icon} />
     </div>
     <div>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
       <div style={{ fontSize: small ? 13 : 20, fontWeight: 700, color: 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   </div>
@@ -509,7 +509,7 @@ const StatCard: React.FC<{ icon: any; label: string; value: string | number; col
 const thStyle: React.CSSProperties = {
   textAlign: 'left',
   padding: '10px 12px',
-  color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  color: 'var(--j-text-muted)',
   fontSize: 11,
   fontWeight: 600,
   textTransform: 'uppercase',
@@ -523,7 +523,7 @@ const tdStyle: React.CSSProperties = {
 
 const pageBtnStyle = (enabled: boolean): React.CSSProperties => ({
   background: enabled ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'var(--j-surface)',
-  color: enabled ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 35%, transparent)',
+  color: enabled ? 'var(--j-text)' : 'var(--j-text-muted)',
   border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)',
   borderRadius: 6,
   padding: '6px 14px',

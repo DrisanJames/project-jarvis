@@ -539,7 +539,7 @@ export const DayCardEditor: React.FC<{
             {pickError ? (
               <div style={{ ...noteStyle, color: colors.dangerText }}>{pickError}</div>
             ) : (
-              <select
+              <select aria-label="Is kumo"
                 style={{ ...inputStyle, marginBottom: 8 }}
                 value={isKumo ? selCreativeId : selProofId}
                 onChange={e => (isKumo ? (setSelCreativeId(e.target.value), setDry(null)) : pickProof(e.target.value))}
@@ -567,13 +567,13 @@ export const DayCardEditor: React.FC<{
               />
             )}
             <span style={fieldLabel}>Name</span>
-            <input style={{ ...inputStyle, marginBottom: 8 }} value={name} onChange={e => invalidate(setName)(e.target.value)} />
+            <input aria-label="Name" style={{ ...inputStyle, marginBottom: 8 }} value={name} onChange={e => invalidate(setName)(e.target.value)} />
             <span style={fieldLabel}>Subject</span>
-            <input style={{ ...inputStyle, marginBottom: 8 }} value={subject} onChange={e => invalidate(setSubject)(e.target.value)} />
+            <input aria-label="Subject" style={{ ...inputStyle, marginBottom: 8 }} value={subject} onChange={e => invalidate(setSubject)(e.target.value)} />
             <span style={fieldLabel}>Preview text (preheader)</span>
             <input style={{ ...inputStyle, marginBottom: 8 }} value={previewText} onChange={e => invalidate(setPreviewText)(e.target.value)} placeholder="leave empty to keep current" />
             <span style={fieldLabel}>From name</span>
-            <input style={inputStyle} value={fromName} onChange={e => invalidate(setFromName)(e.target.value)} />
+            <input aria-label="From name" style={inputStyle} value={fromName} onChange={e => invalidate(setFromName)(e.target.value)} />
           </>
         )}
       </Section>
@@ -602,7 +602,7 @@ export const DayCardEditor: React.FC<{
         {offerError ? (
           <div style={{ ...noteStyle, color: colors.dangerText }}>{offerError}</div>
         ) : (
-          <select
+          <select aria-label="Sel offer id"
             style={{ ...inputStyle, marginBottom: 8 }}
             value={selOfferId}
             onChange={e => { setSelOfferId(e.target.value); setDry(null) }}
@@ -717,7 +717,7 @@ export const DayCardEditor: React.FC<{
       {/* TIME */}
       <Section title="Time">
         <span style={fieldLabel}>Scheduled at (America/Denver)</span>
-        <input
+        <input aria-label="Scheduled at (America/Denver)"
           type="datetime-local"
           style={{ ...inputStyle, maxWidth: 240 }}
           value={scheduledLocal}

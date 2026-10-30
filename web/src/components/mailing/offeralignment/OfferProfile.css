@@ -509,7 +509,7 @@
 
 .oa-op-modal-error {
   padding: 24px;
-  color: #ef4444;
+  color: var(--j-hard);
 }
 
 .oa-op-modal-note {

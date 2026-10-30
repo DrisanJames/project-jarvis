@@ -135,7 +135,9 @@ export const Pill: React.FC<{ color: string; children: React.ReactNode; style?: 
       gap: 6,
       background: alpha(color, "22"),
       border: `1px solid ${alpha(color, "66")}`,
-      color,
+      // Callers pass arbitrary colours (ISP brands, series): pull toward the
+      // text colour so the label holds AA on its own tint in either mode.
+      color: `color-mix(in srgb, ${color} 62%, var(--j-text))`,
       borderRadius: 999,
       padding: "2px 10px",
       fontSize: 11,
@@ -180,7 +182,7 @@ export const ProgressBar: React.FC<{ pct: number; height?: number }> = ({ pct, h
         style={{
           width: `${clamped * 100}%`,
           height: "100%",
-          background: hot ? "linear-gradient(90deg,#f59e0b,#ef4444)" : "linear-gradient(90deg,var(--j-violet-strong),var(--j-success))",
+          background: hot ? "linear-gradient(90deg,var(--j-soft),var(--j-hard))" : "linear-gradient(90deg,var(--j-violet-strong),var(--j-success))",
           transition: "width 600ms ease",
         }}
       />

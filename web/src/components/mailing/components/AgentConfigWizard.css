@@ -49,12 +49,12 @@
 .aw-header p {
   margin: 4px 0 0;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-cancel-btn {
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   padding: 10px 20px;
   border-radius: 10px;
@@ -103,7 +103,7 @@
   transition: all 0.3s;
   z-index: 1;
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   border: 2px solid color-mix(in srgb, var(--j-cyan) 10%, transparent);
 }
 
@@ -142,7 +142,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   white-space: nowrap;
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   transition: color 0.3s;
 }
 
@@ -181,7 +181,7 @@
 
 .aw-step-subtitle {
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin: 0 0 24px;
 }
 
@@ -208,7 +208,7 @@
 
 .aw-loading span {
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Error ─────────────────────────────────────────────────────────────── */
@@ -236,7 +236,7 @@
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -258,7 +258,7 @@
 }
 
 .aw-search-input::placeholder {
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Offer List ────────────────────────────────────────────────────────── */
@@ -316,7 +316,7 @@
 
 .aw-offer-type {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -333,7 +333,7 @@
 
 .aw-offer-metric-label {
   font-size: 10px;
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -392,7 +392,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-analysis-row {
@@ -404,7 +404,7 @@
 
 .aw-analysis-row span:first-child {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-analysis-row span:last-child {
@@ -472,7 +472,7 @@
 .aw-payout-card p {
   margin: 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
@@ -495,7 +495,7 @@
 
 .aw-ai-tip span {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
   line-height: 1.5;
 }
 
@@ -516,7 +516,7 @@
 .aw-input-group label {
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -538,7 +538,7 @@
 }
 
 .aw-input-group input::placeholder {
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   font-weight: 400;
 }
 
@@ -599,7 +599,7 @@
 
 .aw-projection-stat-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   display: block;
@@ -689,7 +689,7 @@
 
 .aw-audience-stat-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   display: block;
@@ -747,7 +747,7 @@
 .aw-day-selector label {
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -766,14 +766,14 @@
   cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   background: var(--j-surface);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   transition: all 0.2s;
 }
 
 .aw-day-chip.active {
   background: color-mix(in srgb, var(--j-cyan) 15%, transparent);
   border-color: var(--j-cyan);
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
 }
 
 .aw-day-chip:hover {
@@ -789,7 +789,7 @@
 .aw-select-group label {
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -878,7 +878,7 @@
 }
 
 .aw-isp-detail span:first-child {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-isp-detail span:last-child {
@@ -902,7 +902,7 @@
 
 .aw-window-stat-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   display: block;
@@ -956,7 +956,7 @@
 
 .aw-review-row-label {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-review-row-value {
@@ -973,7 +973,7 @@
   margin: 0 0 12px;
   font-size: 13px;
   font-weight: 700;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.8px;
 }
@@ -1020,7 +1020,7 @@
 .aw-deploy-success p {
   margin: 0 0 24px;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-deployed-grid {
@@ -1077,7 +1077,7 @@
 
 .aw-deployed-card-detail {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Navigation Buttons ────────────────────────────────────────────────── */
@@ -1126,7 +1126,7 @@
 
 .aw-btn-secondary {
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
 
@@ -1221,7 +1221,7 @@
 .aw-formula-banner code {
   font-size: 13px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
   letter-spacing: 0.3px;
 }
 
@@ -1236,7 +1236,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── ECPM Range Bar ───────────────────────────────────────────────────── */
@@ -1257,7 +1257,7 @@
 .aw-range-label {
   font-size: 10px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1307,7 +1307,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 4px;
 }
 
@@ -1365,7 +1365,7 @@
 .aw-scenario-detail {
   display: block;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ─── Math Breakdown ───────────────────────────────────────────────────── */
@@ -1381,7 +1381,7 @@
   margin: 0 0 12px;
   font-size: 13px;
   font-weight: 700;
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1403,7 +1403,7 @@
 }
 
 .aw-math-row span:first-child {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
 }
@@ -1419,7 +1419,7 @@
 }
 
 .aw-math-row.highlight span:last-child {
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
   font-size: 15px;
 }
 
@@ -1481,7 +1481,7 @@
 
 .aw-audience-summary-arrow {
   font-size: 20px;
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   font-weight: 700;
 }
 
@@ -1580,7 +1580,7 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-audience-list-item {
@@ -1615,7 +1615,7 @@
 
 .aw-audience-list-sub {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .aw-audience-list-count {
@@ -1654,7 +1654,7 @@
 .aw-audience-col-total.target {
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 20%, transparent);
-  color: color-mix(in srgb, var(--j-cyan) 70%, transparent);
+  color: var(--j-text-2);
 }
 
 .aw-audience-col-total.suppression {
@@ -1702,7 +1702,7 @@
 
 .aw-empty-lists-note {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   font-style: italic;
   padding: 6px 14px;
   text-align: center;
@@ -1710,7 +1710,7 @@
 
 .aw-loading-sub {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 35%, transparent);
+  color: var(--j-text-muted);
   margin-top: -8px;
 }
 
@@ -1728,7 +1728,7 @@
 .aw-audience-engagement-bar > span:first-child {
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   white-space: nowrap;
 }
 

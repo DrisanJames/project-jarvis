@@ -198,8 +198,8 @@ const isMiscategorizedExclusion = (s: SegmentRow): boolean =>
 
 const BUILD_STATUS_DOT: Record<string, string> = {
   ok: 'var(--j-success)',
-  failed: '#ef4444',
-  blocked_delta: '#f59e0b',
+  failed: 'var(--j-hard)',
+  blocked_delta: 'var(--j-soft)',
 };
 
 const BUILD_STATUS_TOOLTIP: Record<string, string> = {
@@ -1807,9 +1807,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
               {/* metadata grid */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Metadata</h4>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--j-text-muted)' }}>Metadata</h4>
                 <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: 'var(--j-text)' }}>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>ID</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>ID</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <code style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis' }}>{drawerRow.id}</code>
                     <button
@@ -1821,19 +1821,19 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                       <FontAwesomeIcon icon={copiedId === drawerRow.id ? faCheck : faCopy} style={{ fontSize: 11 }} />
                     </button>
                   </span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Category</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Category</span>
                   <span>{drawerRow.category || 'uncategorized'}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Type</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Type</span>
                   <span>{drawerRow.segment_type}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Status</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Status</span>
                   <span>{drawerRow.status}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Created</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Created</span>
                   <span>{fmtAbs(drawerRow.created_at)}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Updated</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Updated</span>
                   <span>{fmtAbs(drawerRow.updated_at)}</span>
                   {drawerRow.description && (
                     <>
-                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Description</span>
+                      <span style={{ color: 'var(--j-text-muted)' }}>Description</span>
                       <span style={{ whiteSpace: 'pre-wrap' }}>{drawerRow.description}</span>
                     </>
                   )}
@@ -1842,32 +1842,32 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
               {/* build block */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Last Build</h4>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--j-text-muted)' }}>Last Build</h4>
                 <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: 'var(--j-text)' }}>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Built</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Built</span>
                   <span>{drawerRow.last_built_at ? `${fmtAbs(drawerRow.last_built_at)} (${fmtRel(drawerRow.last_built_at)})` : 'never built via ledger'}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Source</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Source</span>
                   <span>{drawerRow.build_source || '—'}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Status</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Status</span>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                     {renderBuildDot(drawerRow)}
                     {effectiveBuildStatus(drawerRow) || 'no build recorded'}
                   </span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Duration</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Duration</span>
                   <span>{typeof drawerRow.last_build_ms === 'number' ? `${drawerRow.last_build_ms.toLocaleString()} ms` : '—'}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Delta</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Delta</span>
                   <span>{typeof drawerRow.last_delta_pct === 'number' ? `${drawerRow.last_delta_pct > 0 ? '+' : ''}${drawerRow.last_delta_pct.toFixed(1)}% vs previous build` : '—'}</span>
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Members</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>Members</span>
                   <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {memberCount(drawerRow).toLocaleString()}
-                    <span style={{ marginLeft: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>({drawerRow.audience_source || 'cached'})</span>
+                    <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--j-text-muted)' }}>({drawerRow.audience_source || 'cached'})</span>
                   </span>
                 </div>
               </div>
 
               {/* member sample */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--j-text-muted)' }}>
                   Member Sample
                   {!sample.loading && !sample.error && (
                     <span style={{ marginLeft: 8, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
@@ -1876,13 +1876,13 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                   )}
                 </h4>
                 {sample.loading ? (
-                  <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+                  <div style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>
                     <FontAwesomeIcon icon={faSpinner} spin /> loading sample…
                   </div>
                 ) : sample.error ? (
-                  <div style={{ fontSize: 13, color: '#f59e0b' }}>{sample.error}</div>
+                  <div style={{ fontSize: 13, color: 'var(--j-soft)' }}>{sample.error}</div>
                 ) : sample.emails.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+                  <div style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>
                     no audience members yet — Refresh the segment, then re-open
                   </div>
                 ) : (
@@ -1946,7 +1946,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3><FontAwesomeIcon icon={faRocket} /> Request Segment</h3>
-              <button className="modal-close" onClick={() => setShowRequestModal(false)}>
+              <button aria-label="Close" className="modal-close" onClick={() => setShowRequestModal(false)}>
                 <FontAwesomeIcon icon={faTimes} />
               </button>
             </div>
@@ -2011,7 +2011,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
               <div className="form-group">
                 <label>Scope *</label>
-                <select value={reqScope} onChange={e => setReqScope(e.target.value as 'global' | 'brand' | 'isp')}>
+                <select aria-label="Req scope" value={reqScope} onChange={e => setReqScope(e.target.value as 'global' | 'brand' | 'isp')}>
                   <option value="global">Global (all brands, all providers)</option>
                   <option value="brand">Brand (single sending brand)</option>
                   <option value="isp">Mailbox provider (single recipient provider)</option>
@@ -2113,7 +2113,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                 background: t.kind === 'ok'
                   ? 'linear-gradient(135deg, var(--j-success), var(--j-success))'
                   : t.kind === 'error'
-                    ? 'linear-gradient(135deg, var(--j-danger), #ef4444)'
+                    ? 'linear-gradient(135deg, var(--j-danger), var(--j-hard))'
                     : 'linear-gradient(135deg, var(--j-violet-strong), var(--j-violet-strong))',
               }}
             >

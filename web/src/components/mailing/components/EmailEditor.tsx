@@ -477,7 +477,7 @@ export const EmailEditor: React.FC<EmailEditorProps> = ({
 
         {viewMode === 'code' && (
           <div className="ee-code-area">
-            <textarea
+            <textarea aria-label="Get html"
               className="ee-code-editor"
               value={editor.getHTML()}
               onChange={(e) => {

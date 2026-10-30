@@ -9,7 +9,7 @@
 .ac-header-left { display: flex; align-items: center; gap: 16px; }
 .ac-header-icon { width: 52px; height: 52px; border-radius: 16px; background: linear-gradient(135deg, var(--j-cyan), var(--j-blue)); display: flex; align-items: center; justify-content: center; font-size: 24px; color: var(--j-on-accent); flex-shrink: 0; }
 .ac-header h1 { margin: 0; font-size: 26px; font-weight: 700; color: var(--j-text); }
-.ac-header p { margin: 4px 0 0; font-size: 14px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+.ac-header p { margin: 4px 0 0; font-size: 14px; color: var(--j-text-muted); }
 .ac-header-right { display: flex; align-items: center; gap: 12px; }
 
 .ac-range-selector { display: flex; background: var(--j-surface); border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 10px; overflow: hidden; }
@@ -72,7 +72,7 @@
 .ac-camp-status.completed, .ac-camp-status.sent { background: var(--j-success); }
 .ac-camp-status.sending, .ac-camp-status.active { background: var(--j-cyan); }
 .ac-camp-status.draft { background: var(--j-text-faint); }
-.ac-camp-status.paused { background: #f59e0b; }
+.ac-camp-status.paused { background: var(--j-soft); }
 .ac-good { color: var(--j-success); }
 .ac-ok { color: var(--j-warn); }
 .ac-bad { color: var(--j-danger); }
@@ -85,7 +85,7 @@
 .ac-deliver-ring span { position: relative; font-size: 18px; font-weight: 700; color: var(--ring-color, var(--j-success)); }
 .ac-deliver-label { font-size: 11px; color: var(--j-text-faint); text-transform: uppercase; letter-spacing: 0.3px; }
 .ac-deliver-details { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.ac-dd-row { display: flex; justify-content: space-between; font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); padding: 4px 0; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+.ac-dd-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--j-text-muted); padding: 4px 0; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
 .ac-dd-row strong { color: var(--j-text); }
 .ac-bounce-breakdown { margin-top: 10px; }
 .ac-bounce-breakdown h4 { font-size: 11px; font-weight: 600; color: var(--j-text-faint); margin: 0 0 6px; text-transform: uppercase; }
@@ -115,7 +115,7 @@
 .ac-agent-mini-name { font-size: 13px; font-weight: 600; color: var(--j-text); }
 .ac-agent-mini-status { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; padding: 2px 8px; border-radius: 8px; }
 .ac-st-active { background: color-mix(in srgb, var(--j-success) 12%, transparent); color: var(--j-success); }
-.ac-st-idle { background: rgba(245, 158, 11, 0.12); color: #f59e0b; }
+.ac-st-idle { background: rgba(245, 158, 11, 0.12); color: var(--j-soft); }
 .ac-st-sleeping { background: color-mix(in srgb, var(--j-cyan) 12%, transparent); color: var(--j-cyan); }
 .ac-st-dormant { background: rgba(107, 114, 128, 0.12); color: var(--j-text-faint); }
 .ac-agent-mini-stats { display: flex; gap: 12px; font-size: 11px; color: var(--j-text-faint); }
@@ -128,7 +128,7 @@
 .ac-seg-med, .ac-legend-dot.ac-seg-med { background: var(--j-warn); }
 .ac-seg-low, .ac-legend-dot.ac-seg-low { background: var(--j-danger); }
 .ac-seg-none, .ac-legend-dot.ac-seg-none { background: var(--j-border-strong); }
-.ac-engage-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+.ac-engage-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--j-text-muted); }
 .ac-engage-avg { font-size: 12px; color: var(--j-text-faint); padding-top: 4px; border-top: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
 .ac-engage-avg strong { color: var(--j-text); font-size: 16px; }
 
@@ -142,7 +142,7 @@
 .ac-conf-bar { flex: 1; height: 6px; background: color-mix(in srgb, var(--j-text) 6%, transparent); border-radius: 3px; overflow: hidden; }
 .ac-conf-bar div { height: 100%; background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); border-radius: 3px; transition: width 0.4s; }
 .ac-conf-pct { font-weight: 700; color: var(--j-blue); min-width: 36px; text-align: right; }
-.ac-reasoning { margin: 0; padding: 0 0 0 16px; font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+.ac-reasoning { margin: 0; padding: 0 0 0 16px; font-size: 12px; color: var(--j-text-muted); }
 .ac-reasoning li { margin-bottom: 4px; }
 
 /* ─── Revenue List ──────────────────────────────────────────────────────── */
@@ -158,7 +158,7 @@
 /* ─── ISP Distribution ──────────────────────────────────────────────────── */
 .ac-isp-dist { display: flex; flex-direction: column; gap: 8px; }
 .ac-isp-row { display: flex; align-items: center; gap: 8px; }
-.ac-isp-name { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); min-width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-isp-name { font-size: 12px; color: var(--j-text-muted); min-width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ac-isp-bar-bg { flex: 1; height: 6px; background: color-mix(in srgb, var(--j-text) 4%, transparent); border-radius: 3px; overflow: hidden; }
 .ac-isp-bar-fill { height: 100%; background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); border-radius: 3px; transition: width 0.4s; }
 .ac-isp-count { font-size: 12px; font-weight: 600; color: var(--j-text-2); min-width: 24px; text-align: right; }
@@ -209,11 +209,11 @@
 .ac-agent-perf-chart { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .ac-agent-perf-chart h4 { font-size: 11px; font-weight: 600; color: var(--j-text-faint); margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.3px; }
 .ac-agent-perf-bar-row { display: flex; align-items: center; gap: 8px; }
-.ac-agent-perf-bar-label { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-agent-perf-bar-label { font-size: 12px; color: var(--j-text-muted); min-width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ac-agent-perf-bar-track { flex: 1; height: 8px; background: color-mix(in srgb, var(--j-text) 4%, transparent); border-radius: 4px; overflow: hidden; }
 .ac-agent-perf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s; min-width: 2px; }
 .ac-agent-perf-bar-fill.ac-st-active { background: linear-gradient(90deg, var(--j-success), var(--j-success)); }
-.ac-agent-perf-bar-fill.ac-st-idle { background: linear-gradient(90deg, #f59e0b, var(--j-warn)); }
+.ac-agent-perf-bar-fill.ac-st-idle { background: linear-gradient(90deg, var(--j-soft), var(--j-warn)); }
 .ac-agent-perf-bar-fill.ac-st-sleeping { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }
 .ac-agent-perf-bar-fill.ac-st-dormant { background: linear-gradient(90deg, var(--j-border-strong), var(--j-text-faint)); }
 .ac-agent-perf-bar-fill.ac-st-sending { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }
@@ -330,7 +330,7 @@
   font-family: inherit;
 }
 .ac-isp-close:hover {
-  color: #ef4444;
+  color: var(--j-hard);
   background: rgba(239, 68, 68, 0.08);
 }
 
@@ -407,7 +407,7 @@
 .ac-live-status-preparing, .ac-live-status-finalizing_audience { background: color-mix(in srgb, var(--j-blue) 18%, transparent); color: var(--j-blue); }
 .ac-live-status-scheduled { background: color-mix(in srgb, var(--j-violet) 18%, transparent); color: var(--j-violet); }
 .ac-live-status-running { background: color-mix(in srgb, var(--j-success) 18%, transparent); color: var(--j-success); }
-.ac-live-status-paused { background: rgba(245, 158, 11, 0.18); color: #f59e0b; }
+.ac-live-status-paused { background: rgba(245, 158, 11, 0.18); color: var(--j-soft); }
 .ac-live-status-completed { background: color-mix(in srgb, var(--j-text-muted) 18%, transparent); color: var(--j-text-muted); }
 .ac-live-status-failed, .ac-live-status-cancelled { background: rgba(239, 68, 68, 0.18); color: var(--j-danger); }
 
@@ -512,7 +512,7 @@
 }
 .ac-bounce-code { font-family: 'SF Mono', ui-monospace, monospace; color: var(--j-text-2); font-size: 0.85em; }
 .ac-bounce-label { color: var(--j-text); }
-.ac-bounce-count { color: #f59e0b; font-weight: 600; text-align: right; }
+.ac-bounce-count { color: var(--j-soft); font-weight: 600; text-align: right; }
 .ac-bounce-pct { color: var(--j-text-muted); text-align: right; font-size: 0.85em; }
 .ac-bounce-isp-grid {
   padding: 8px 14px 12px;

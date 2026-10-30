@@ -589,14 +589,14 @@ export const FreshBroadcastConfig: React.FC = () => {
                               </div>
                             </td>
                             <td style={tdStyle}>
-                              <input
+                              <input aria-label="Enabled"
                                 type="checkbox"
                                 checked={draft.enabled}
                                 onChange={e => setDraft(s.stream_key, { enabled: e.target.checked })}
                               />
                             </td>
                             <td style={numTd}>
-                              <input
+                              <input aria-label="Daily cap"
                                 type="number" min={0} step={1000}
                                 value={draft.daily_cap}
                                 onChange={e => setDraft(s.stream_key, { daily_cap: e.target.value })}
@@ -604,7 +604,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                               />
                             </td>
                             <td style={tdStyle}>
-                              <select
+                              <select aria-label="Offer"
                                 value={draft.offer}
                                 onChange={e => setDraft(s.stream_key, { offer: e.target.value })}
                                 style={{ ...inputStyle, width: 160 }}
@@ -621,7 +621,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                               </select>
                             </td>
                             <td style={tdStyle}>
-                              <input
+                              <input aria-label="Isp caps"
                                 type="text"
                                 value={draft.isp_caps}
                                 onChange={e => setDraft(s.stream_key, { isp_caps: e.target.value })}
@@ -630,7 +630,7 @@ export const FreshBroadcastConfig: React.FC = () => {
                               />
                             </td>
                             <td style={numTd}>
-                              <input
+                              <input aria-label="Throttle hours"
                                 type="number" min={1} max={24}
                                 value={draft.throttle_hours}
                                 onChange={e => setDraft(s.stream_key, { throttle_hours: e.target.value })}

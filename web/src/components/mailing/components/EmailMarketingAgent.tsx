@@ -15,7 +15,7 @@ const PAGE_VERSION = '1.7';
 function simpleMarkdown(text: string): string {
   let out = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   out = out.replace(/```([\s\S]*?)```/g, '<pre style="background:var(--j-surface);padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0"><code>$1</code></pre>');
-  out = out.replace(/`([^`]+)`/g, '<code style="background:#1a2233;padding:1px 5px;border-radius:3px;font-size:12px">$1</code>');
+  out = out.replace(/`([^`]+)`/g, '<code style="background:var(--j-surface-2);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>');
   out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*(.+?)\*/g, '<em>$1</em>');
   out = out.replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:14px;color:var(--j-violet)">$1</h4>');
@@ -64,7 +64,7 @@ const S = {
   header: { display: 'flex', alignItems: 'center', gap: 12, padding: '16px 24px', borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', background: 'linear-gradient(135deg, var(--j-surface) 0%, #131b33 100%)' },
   headerIcon: { width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: 'var(--j-on-accent)', flexShrink: 0 },
   headerTitle: { fontSize: 18, fontWeight: 700, color: 'var(--j-text)', margin: 0 },
-  headerSubtitle: { fontSize: 12, color: 'color-mix(in srgb, var(--j-text-muted) 70%, transparent)', marginTop: 2 },
+  headerSubtitle: { fontSize: 12, color: 'var(--j-text-2)', marginTop: 2 },
   tabs: { display: 'flex', gap: 2, padding: '0 24px', background: 'var(--j-bg)', borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent)' },
   tab: (active: boolean) => ({ padding: '10px 20px', fontSize: 13, fontWeight: active ? 600 : 400, color: active ? 'var(--j-violet)' : 'var(--j-text-muted)', background: active ? 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' : 'transparent', border: 'none', borderBottom: active ? '2px solid var(--j-violet-strong)' : '2px solid transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, transition: 'all 0.15s' }),
   body: { flex: 1, overflow: 'hidden', display: 'flex' },
@@ -211,7 +211,7 @@ const AgentChat: React.FC = () => {
         <form onSubmit={(e) => { e.preventDefault(); sendMessage(input); }} style={{ padding: '12px 16px', borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', display: 'flex', gap: 8 }}>
           <input ref={inputRef} value={input} onChange={e => setInput(e.target.value)} placeholder="Ask Jarvis anything about your email program..."
             disabled={loading} style={{ flex: 1, padding: '10px 14px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', borderRadius: 10, color: 'var(--j-text)', fontSize: 13, outline: 'none' }} />
-          <button type="submit" disabled={loading || !input.trim()} style={{ padding: '10px 16px', background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', border: 'none', borderRadius: 10, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: loading || !input.trim() ? 0.5 : 1 }}>
+          <button aria-label="Send" type="submit" disabled={loading || !input.trim()} style={{ padding: '10px 16px', background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', border: 'none', borderRadius: 10, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: loading || !input.trim() ? 0.5 : 1 }}>
             <FontAwesomeIcon icon={faPaperPlane} />
           </button>
         </form>
@@ -341,9 +341,9 @@ const ActiveSendsPanel: React.FC = () => {
                   { label: 'Delivered', value: c.delivered_count, color: 'var(--j-success)' },
                   { label: 'Opens', value: c.open_count, color: 'var(--j-blue)' },
                   { label: 'Clicks', value: c.click_count, color: 'var(--j-violet-strong)' },
-                  { label: 'Hard Bounce', value: c.hard_bounce_count, color: c.hard_bounce_count > 0 ? '#ef4444' : 'var(--j-border-strong)' },
-                  { label: 'Soft Bounce', value: c.soft_bounce_count, color: c.soft_bounce_count > 0 ? '#f59e0b' : 'var(--j-border-strong)' },
-                  { label: 'Complaints', value: c.complaint_count, color: c.complaint_count > 0 ? '#ef4444' : 'var(--j-border-strong)' },
+                  { label: 'Hard Bounce', value: c.hard_bounce_count, color: c.hard_bounce_count > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' },
+                  { label: 'Soft Bounce', value: c.soft_bounce_count, color: c.soft_bounce_count > 0 ? 'var(--j-soft)' : 'var(--j-border-strong)' },
+                  { label: 'Complaints', value: c.complaint_count, color: c.complaint_count > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' },
                 ].map(m => (
                   <span key={m.label} style={{ fontSize: 10, color: 'var(--j-text-faint)' }}>
                     {m.label}: <strong style={{ color: m.value > 0 ? m.color : 'var(--j-border-strong)' }}>{m.value.toLocaleString()}</strong>
@@ -708,7 +708,7 @@ const AgentCalendar: React.FC = () => {
   };
 
   const statusColor = (s: string) => {
-    switch (s) { case 'approved': return 'var(--j-success)'; case 'rejected': return '#ef4444'; case 'executed': return 'var(--j-blue)'; case 'failed': return 'var(--j-warn)'; default: return 'var(--j-warn)'; }
+    switch (s) { case 'approved': return 'var(--j-success)'; case 'rejected': return 'var(--j-hard)'; case 'executed': return 'var(--j-blue)'; case 'failed': return 'var(--j-warn)'; default: return 'var(--j-warn)'; }
   };
 
   return (
@@ -716,11 +716,11 @@ const AgentCalendar: React.FC = () => {
       <ActiveSendsPanel />
       {/* Controls */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-        <select value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)} style={{ padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13 }}>
+        <select aria-label="Selected domain" value={selectedDomain} onChange={e => setSelectedDomain(e.target.value)} style={{ padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13 }}>
           <option value="">Select Domain</option>
           {domains.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
-        <input type="month" value={month} onChange={e => setMonth(e.target.value)} style={{ padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13 }} />
+        <input aria-label="Month" type="month" value={month} onChange={e => setMonth(e.target.value)} style={{ padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13 }} />
         <button onClick={generateForecast} disabled={generating || !selectedDomain}
           style={{ padding: '8px 16px', background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', border: 'none', borderRadius: 8, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 13, fontWeight: 600, opacity: generating || !selectedDomain ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
           <FontAwesomeIcon icon={generating ? faSpinner : faSyncAlt} spin={generating} /> {generating ? 'Generating...' : 'Generate Forecast'}
@@ -779,7 +779,7 @@ const AgentCalendar: React.FC = () => {
         <div style={{ position: 'fixed', top: 0, right: 0, width: 440, height: '100vh', background: 'var(--j-surface)', borderLeft: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', zIndex: 100, display: 'flex', flexDirection: 'column', boxShadow: '-10px 0 40px rgba(0,0,0,0.5)' }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <h3 style={{ margin: 0, fontSize: 15, color: 'var(--j-text)' }}>{new Date(selectedDay.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</h3>
-            <button onClick={() => setSelectedDay(null)} style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
+            <button aria-label="Close" onClick={() => setSelectedDay(null)} style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
             <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginBottom: 12 }}>Projected volume: <strong style={{ color: 'var(--j-violet)' }}>{selectedDay.projected_volume.toLocaleString()}</strong></div>
@@ -805,7 +805,7 @@ const AgentCalendar: React.FC = () => {
                     <button onClick={() => approveRec(rec.id)} style={{ flex: 1, padding: '6px 12px', background: 'color-mix(in srgb, var(--j-success) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--j-success) 30%, transparent)', borderRadius: 6, color: 'var(--j-success)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                       <FontAwesomeIcon icon={faCheck} /> Approve
                     </button>
-                    <button onClick={() => rejectRec(rec.id)} style={{ flex: 1, padding: '6px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, color: '#ef4444', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+                    <button onClick={() => rejectRec(rec.id)} style={{ flex: 1, padding: '6px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
                       <FontAwesomeIcon icon={faTimes} /> Reject
                     </button>
                   </div>
@@ -815,7 +815,7 @@ const AgentCalendar: React.FC = () => {
                     View Details <FontAwesomeIcon icon={faEdit} style={{ marginLeft: 4 }} />
                   </button>
                   {rec.status === 'rejected' && (
-                    <button onClick={(e) => { e.stopPropagation(); deleteRecommendation(rec.id); }} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: '#ef4444', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                    <button aria-label="Delete" onClick={(e) => { e.stopPropagation(); deleteRecommendation(rec.id); }} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 6, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
                       <FontAwesomeIcon icon={faTrash} />
                     </button>
                   )}
@@ -889,9 +889,9 @@ const AgentCalendar: React.FC = () => {
               )}
               <div style={{ flex: 1 }} />
               <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: `color-mix(in srgb, ${statusColor(selectedRec.status)} 8%, transparent)`, color: statusColor(selectedRec.status), fontWeight: 600 }}>{selectedRec.status}</span>
-              <button onClick={() => { setSelectedRec(null); setCameFromDay(null); }} style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
+              <button aria-label="Close" onClick={() => { setSelectedRec(null); setCameFromDay(null); }} style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', fontSize: 16 }}><FontAwesomeIcon icon={faTimes} /></button>
             </div>
-            <input value={editConfig.campaign_name || ''} onChange={e => setEditConfig(c => ({ ...c, campaign_name: e.target.value }))} style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 16, fontWeight: 700, padding: '8px 12px', width: '100%', outline: 'none', boxSizing: 'border-box' as const }} />
+            <input aria-label="Campaign name" value={editConfig.campaign_name || ''} onChange={e => setEditConfig(c => ({ ...c, campaign_name: e.target.value }))} style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 16, fontWeight: 700, padding: '8px 12px', width: '100%', outline: 'none', boxSizing: 'border-box' as const }} />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, fontWeight: 600, background: selectedRec.strategy === 'warmup' ? 'color-mix(in srgb, var(--j-warn) 10%, transparent)' : 'color-mix(in srgb, var(--j-success) 10%, transparent)', color: selectedRec.strategy === 'warmup' ? 'var(--j-warn)' : 'var(--j-success)', border: `1px solid ${selectedRec.strategy === 'warmup' ? 'color-mix(in srgb, var(--j-warn) 20%, transparent)' : 'color-mix(in srgb, var(--j-success) 20%, transparent)'}` }}>
                 <FontAwesomeIcon icon={selectedRec.strategy === 'warmup' ? faArrowUp : faChartLine} style={{ marginRight: 4 }} />{selectedRec.strategy || 'N/A'}
@@ -908,15 +908,15 @@ const AgentCalendar: React.FC = () => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Date</label>
-                  <input type="date" value={editConfig.scheduled_date || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_date: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  <input aria-label="Date" type="date" value={editConfig.scheduled_date || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_date: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Time (MST)</label>
-                  <input type="time" value={editConfig.scheduled_time || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_time: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  <input aria-label="Time (MST)" type="time" value={editConfig.scheduled_time || ''} onChange={e => setEditConfig(c => ({ ...c, scheduled_time: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Send Batch Interval (min)</label>
-                  <input type="number" value={editConfig.wave_interval_minutes ?? 15} onChange={e => setEditConfig(c => ({ ...c, wave_interval_minutes: +e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  <input aria-label="Send Batch Interval (min)" type="number" value={editConfig.wave_interval_minutes ?? 15} onChange={e => setEditConfig(c => ({ ...c, wave_interval_minutes: +e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Throttle / Batch</label>
@@ -932,20 +932,20 @@ const AgentCalendar: React.FC = () => {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div>
                     <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>From Name</label>
-                    <input value={editConfig.from_name || ''} onChange={e => setEditConfig(c => ({ ...c, from_name: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                    <input aria-label="From Name" value={editConfig.from_name || ''} onChange={e => setEditConfig(c => ({ ...c, from_name: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                   </div>
                   <div>
                     <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>From Email</label>
-                    <input value={editConfig.from_email || ''} readOnly style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text-muted)', fontSize: 13, cursor: 'not-allowed', boxSizing: 'border-box' as const }} />
+                    <input aria-label="From Email" value={editConfig.from_email || ''} readOnly style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text-muted)', fontSize: 13, cursor: 'not-allowed', boxSizing: 'border-box' as const }} />
                   </div>
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Subject Line</label>
-                  <input value={editConfig.subject || ''} onChange={e => setEditConfig(c => ({ ...c, subject: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  <input aria-label="Subject Line" value={editConfig.subject || ''} onChange={e => setEditConfig(c => ({ ...c, subject: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 4, fontWeight: 600 }}>Preview Text</label>
-                  <input value={editConfig.preview_text || ''} onChange={e => setEditConfig(c => ({ ...c, preview_text: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
+                  <input aria-label="Preview Text" value={editConfig.preview_text || ''} onChange={e => setEditConfig(c => ({ ...c, preview_text: e.target.value }))} style={{ width: '100%', padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, boxSizing: 'border-box' as const }} />
                 </div>
                 {editConfig.template_id ? (
                   <div>
@@ -955,7 +955,7 @@ const AgentCalendar: React.FC = () => {
                         <div style={{ fontSize: 10, color: 'var(--j-text-faint)', marginTop: 2 }}>ID: {editConfig.template_id}</div>
                       </div>
                       <button onClick={() => setShowTemplatePreview(!showTemplatePreview)}
-                        style={{ padding: '5px 12px', background: showTemplatePreview ? 'rgba(239,68,68,0.1)' : 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', border: `1px solid ${showTemplatePreview ? 'rgba(239,68,68,0.2)' : 'color-mix(in srgb, var(--j-violet-strong) 20%, transparent)'}`, borderRadius: 6, color: showTemplatePreview ? '#ef4444' : 'var(--j-violet)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
+                        style={{ padding: '5px 12px', background: showTemplatePreview ? 'rgba(239,68,68,0.1)' : 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', border: `1px solid ${showTemplatePreview ? 'rgba(239,68,68,0.2)' : 'color-mix(in srgb, var(--j-violet-strong) 20%, transparent)'}`, borderRadius: 6, color: showTemplatePreview ? 'var(--j-hard)' : 'var(--j-violet)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>
                         {showTemplatePreview ? 'Hide Preview' : 'Preview Template'}
                       </button>
                     </div>
@@ -1030,7 +1030,7 @@ const AgentCalendar: React.FC = () => {
                           <div style={{ fontSize: 11, color: 'var(--j-text)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
                         </div>
                         {selectedRec?.status === 'pending' && (
-                          <button onClick={() => removeList('inclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: '#ef4444', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
+                          <button aria-label="Close" onClick={() => removeList('inclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
                             <FontAwesomeIcon icon={faTimes} />
                           </button>
                         )}
@@ -1082,7 +1082,7 @@ const AgentCalendar: React.FC = () => {
                           <div style={{ fontSize: 11, color: 'var(--j-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{typeof item === 'object' ? item.name : item}</div>
                         </div>
                         {selectedRec?.status === 'pending' && (
-                          <button onClick={() => removeList('exclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: '#ef4444', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
+                          <button aria-label="Close" onClick={() => removeList('exclusion', i)} style={{ padding: '2px 5px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 4, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 10, flexShrink: 0 }}>
                             <FontAwesomeIcon icon={faTimes} />
                           </button>
                         )}
@@ -1104,7 +1104,7 @@ const AgentCalendar: React.FC = () => {
                             <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'rgba(239,68,68,0.1)', color: 'var(--j-danger)', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>SUPP</span>
                           )}
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
-                          <FontAwesomeIcon icon={faPlus} style={{ color: '#ef4444', fontSize: 10, flexShrink: 0 }} />
+                          <FontAwesomeIcon icon={faPlus} style={{ color: 'var(--j-hard)', fontSize: 10, flexShrink: 0 }} />
                         </div>
                       ))}
                     </div>
@@ -1127,7 +1127,7 @@ const AgentCalendar: React.FC = () => {
                 ))}
                 <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
                   <input value={miniChatInput} onChange={e => setMiniChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendMiniChat()} placeholder="Ask Jarvis about this campaign..." style={{ flex: 1, padding: '8px 12px', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', borderRadius: 8, color: 'var(--j-text)', fontSize: 12, outline: 'none' }} />
-                  <button onClick={sendMiniChat} disabled={!miniChatInput.trim() || miniChatLoading} style={{ padding: '8px 12px', background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', border: 'none', borderRadius: 8, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 12, opacity: !miniChatInput.trim() || miniChatLoading ? 0.5 : 1 }}>
+                  <button aria-label="Send" onClick={sendMiniChat} disabled={!miniChatInput.trim() || miniChatLoading} style={{ padding: '8px 12px', background: 'linear-gradient(135deg,var(--j-violet-strong),var(--j-violet-strong))', border: 'none', borderRadius: 8, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 12, opacity: !miniChatInput.trim() || miniChatLoading ? 0.5 : 1 }}>
                     {miniChatLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faPaperPlane} />}
                   </button>
                 </div>
@@ -1145,7 +1145,7 @@ const AgentCalendar: React.FC = () => {
               {testSendOpen && (
                 <div style={{ marginTop: 8, padding: 12, background: 'var(--j-surface)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-blue) 15%, transparent)' }}>
                   <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginBottom: 6 }}>Enter email addresses (comma or newline separated):</div>
-                  <textarea
+                  <textarea aria-label="Test send emails"
                     value={testSendEmails}
                     onChange={e => setTestSendEmails(e.target.value)}
                     placeholder={"you@example.com\nanother@example.com"}
@@ -1153,7 +1153,7 @@ const AgentCalendar: React.FC = () => {
                     style={{ width: '100%', padding: '8px 10px', background: 'var(--j-bg)', border: '1px solid color-mix(in srgb, var(--j-blue) 15%, transparent)', borderRadius: 6, color: 'var(--j-text)', fontSize: 12, resize: 'vertical', outline: 'none', boxSizing: 'border-box' as const, fontFamily: 'inherit' }}
                   />
                   {!templateHtml && (
-                    <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4, padding: '4px 8px', background: 'rgba(245,158,11,0.06)', borderRadius: 4, border: '1px solid rgba(245,158,11,0.1)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--j-soft)', marginTop: 4, padding: '4px 8px', background: 'rgba(245,158,11,0.06)', borderRadius: 4, border: '1px solid rgba(245,158,11,0.1)' }}>
                       No template loaded — assign a template first
                     </div>
                   )}
@@ -1168,7 +1168,7 @@ const AgentCalendar: React.FC = () => {
                     <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 6, background: testSendResult.failed > 0 ? 'rgba(245,158,11,0.06)' : 'color-mix(in srgb, var(--j-success) 6%, transparent)', border: `1px solid ${testSendResult.failed > 0 ? 'rgba(245,158,11,0.15)' : 'color-mix(in srgb, var(--j-success) 15%, transparent)'}`, fontSize: 12 }}>
                       <div style={{ color: 'var(--j-success)', fontWeight: 600 }}>{testSendResult.sent} sent successfully</div>
                       {testSendResult.failed > 0 && (
-                        <div style={{ color: '#f59e0b', marginTop: 4 }}>
+                        <div style={{ color: 'var(--j-soft)', marginTop: 4 }}>
                           {testSendResult.failed} failed:
                           {testSendResult.errors.map((e, i) => <div key={i} style={{ fontSize: 11, color: 'var(--j-text-muted)', marginLeft: 8 }}>{e}</div>)}
                         </div>
@@ -1185,7 +1185,7 @@ const AgentCalendar: React.FC = () => {
               {approvalResult && (
                 <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 8, background: approvalResult.error ? 'rgba(239,68,68,0.08)' : 'color-mix(in srgb, var(--j-success) 8%, transparent)', border: `1px solid ${approvalResult.error ? 'rgba(239,68,68,0.2)' : 'color-mix(in srgb, var(--j-success) 20%, transparent)'}` }}>
                   {approvalResult.error ? (
-                    <div style={{ fontSize: 12, color: '#ef4444' }}>{approvalResult.error}</div>
+                    <div style={{ fontSize: 12, color: 'var(--j-hard)' }}>{approvalResult.error}</div>
                   ) : (
                     <div style={{ fontSize: 12 }}>
                       <div style={{ color: 'var(--j-success)', fontWeight: 600, marginBottom: 4 }}>Campaign Deployed Successfully</div>
@@ -1210,7 +1210,7 @@ const AgentCalendar: React.FC = () => {
                       {approving ? <><FontAwesomeIcon icon={faSpinner} spin /> Deploying...</> : <><FontAwesomeIcon icon={faCheck} /> Approve &amp; Deploy</>}
                     </button>
                     <button onClick={() => rejectRec(selectedRec.id)} disabled={approving}
-                      style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+                      style={{ flex: 1, padding: '10px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
                       <FontAwesomeIcon icon={faTimes} /> Reject
                     </button>
                   </div>
@@ -1228,7 +1228,7 @@ const AgentCalendar: React.FC = () => {
                     <button
                       onClick={() => deleteRecommendation(selectedRec.id)}
                       disabled={deleting}
-                      style={{ marginTop: 8, width: '100%', padding: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, color: '#ef4444', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: deleting ? 0.5 : 1 }}
+                      style={{ marginTop: 8, width: '100%', padding: '10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, opacity: deleting ? 0.5 : 1 }}
                     >
                       <FontAwesomeIcon icon={deleting ? faSpinner : faTrash} spin={deleting} /> {deleting ? 'Deleting...' : 'Delete from Calendar'}
                     </button>
@@ -1336,7 +1336,7 @@ const AgentStrategy: React.FC = () => {
             )}
             <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
               <button onClick={() => openEdit(s)} style={{ flex: 1, padding: '6px', background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 6, color: 'var(--j-violet)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Edit</button>
-              <button onClick={() => deleteStrategy(s.id)} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: '#ef4444', cursor: 'pointer', fontSize: 11 }}>
+              <button aria-label="Delete" onClick={() => deleteStrategy(s.id)} style={{ padding: '6px 10px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: 'var(--j-hard)', cursor: 'pointer', fontSize: 11 }}>
                 <FontAwesomeIcon icon={faTrash} />
               </button>
             </div>
@@ -1364,18 +1364,18 @@ const AgentStrategy: React.FC = () => {
               </div>
               <div>
                 <label style={labelStyle}>Strategy</label>
-                <select style={inputStyle} value={form.strategy} onChange={e => setForm(f => ({ ...f, strategy: e.target.value }))}>
+                <select aria-label="Strategy" style={inputStyle} value={form.strategy} onChange={e => setForm(f => ({ ...f, strategy: e.target.value }))}>
                   <option value="warmup">Warmup — Increase volume, prioritize engaged</option>
                   <option value="performance">Performance — Monetize engaged audience</option>
                 </select>
               </div>
               <div>
                 <label style={labelStyle}>Daily Volume Increase %</label>
-                <input style={inputStyle} type="number" value={form.daily_volume_increase_pct} onChange={e => setForm(f => ({ ...f, daily_volume_increase_pct: +e.target.value }))} />
+                <input aria-label="Daily Volume Increase %" style={inputStyle} type="number" value={form.daily_volume_increase_pct} onChange={e => setForm(f => ({ ...f, daily_volume_increase_pct: +e.target.value }))} />
               </div>
               <div>
                 <label style={labelStyle}>Max Daily Volume</label>
-                <input style={inputStyle} type="number" value={form.max_daily_volume} onChange={e => setForm(f => ({ ...f, max_daily_volume: +e.target.value }))} />
+                <input aria-label="Max Daily Volume" style={inputStyle} type="number" value={form.max_daily_volume} onChange={e => setForm(f => ({ ...f, max_daily_volume: +e.target.value }))} />
               </div>
               <div>
                 <label style={labelStyle}>Audience Priority (comma-separated)</label>

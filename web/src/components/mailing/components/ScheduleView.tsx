@@ -14,10 +14,10 @@ const PAGE_VERSION = '1.0.0';
 
 // offer → color (kept local; these are domain identities, like series colors)
 const OFFER_COLOR: Record<string, string> = {
-  'metal-roofing': '#e0862f',
-  'liberty-mutual': '#4a8fd6',
-  'sams-club': '#3fa66a',
-  'fidelity': '#b06fd6',
+  'metal-roofing': 'var(--j-soft)',
+  'liberty-mutual': 'var(--j-blue)',
+  'sams-club': 'var(--j-success)',
+  'fidelity': 'var(--j-violet)',
 };
 const OFFER_NAME: Record<string, string> = {
   'metal-roofing': 'Metal Roofing', 'liberty-mutual': 'Liberty Mutual',
@@ -121,7 +121,7 @@ const LaneRow: React.FC<{ lane: Lane; t0: number; t1: number; last: boolean }> =
 
 const Timeline: React.FC<{ lanes: Lane[]; t0: number; t1: number }> = ({ lanes, t0, t1 }) => (
   <div style={{ position: 'relative', background: colors.panelBg, border: `1px solid ${colors.panelBorder}`,
-    borderRadius: 10, padding: '16px 18px 10px', overflowX: 'auto' }}>
+    borderRadius: 10, padding: '16px 18px 10px', overflowX: 'auto' }} tabIndex={0}>
     <Ruler t0={t0} t1={t1} />
     <div style={{ position: 'relative', minWidth: 640 }}>
       {lanes.map((l, i) => <LaneRow key={l.name} lane={l} t0={t0} t1={t1} last={i === lanes.length - 1} />)}

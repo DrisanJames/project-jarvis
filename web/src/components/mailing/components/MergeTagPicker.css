@@ -104,7 +104,7 @@
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -128,7 +128,7 @@
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -161,7 +161,7 @@
 }
 
 .search-bar svg {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   flex-shrink: 0;
 }
 
@@ -175,7 +175,7 @@
 }
 
 .search-bar input::placeholder {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Category Filter */
@@ -196,7 +196,7 @@
   border-radius: 20px;
   font-size: 12px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -233,7 +233,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   padding: 4px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   margin-bottom: 4px;
@@ -285,7 +285,7 @@
 
 .tag-sample {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-style: italic;
 }
 
@@ -320,7 +320,7 @@
   background: color-mix(in srgb, var(--j-cyan) 6%, transparent);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -333,7 +333,7 @@
 .no-results {
   text-align: center;
   padding: 40px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -396,7 +396,7 @@
 
 .filter-description {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .filter-example {
@@ -516,7 +516,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .preview-subject {
@@ -540,14 +540,14 @@
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
 .no-preview {
   text-align: center;
   padding: 60px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .no-preview p {
@@ -567,7 +567,7 @@
 
 .footer-hint {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .footer-hint code {
@@ -576,7 +576,7 @@
   border-radius: 4px;
   font-size: 10px;
   font-family: 'Monaco', 'Menlo', monospace;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================
@@ -596,7 +596,7 @@
 .toolbar-label {
   font-size: 12px;
   font-weight: 500;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .quick-tag-btn {

@@ -68,7 +68,7 @@
 
 .jc-header-title p {
   margin: 4px 0 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.95rem;
 }
 
@@ -162,7 +162,7 @@
   padding: 12px 20px;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-weight: 500;
   cursor: pointer;
   border-radius: 8px;
@@ -171,7 +171,7 @@
 
 .jc-nav-tab:hover {
   background: color-mix(in srgb, var(--j-cyan) 6%, transparent);
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-nav-tab.active {
@@ -182,7 +182,7 @@
 
 .jc-nav-count {
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
   padding: 2px 8px;
   border-radius: 10px;
   font-size: 0.75rem;
@@ -205,19 +205,19 @@
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-align: center;
 }
 
 .jc-loading-state svg,
 .jc-empty-state svg {
-  color: color-mix(in srgb, var(--j-text) 40%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 16px;
 }
 
 .jc-empty-state h3 {
   margin: 0 0 8px;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-empty-list {
@@ -226,7 +226,7 @@
   justify-content: center;
   gap: 10px;
   padding: 40px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   background: var(--j-surface);
   border-radius: 10px;
 }
@@ -243,7 +243,7 @@
 }
 
 .jc-time-label {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.9rem;
   font-weight: 500;
 }
@@ -261,7 +261,7 @@
   padding: 8px 16px;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.85rem;
   font-weight: 500;
   cursor: pointer;
@@ -351,13 +351,13 @@
 }
 
 .jc-metric-label {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.9rem;
   font-weight: 500;
 }
 
 .jc-metric-sub {
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.8rem;
   margin-top: 2px;
 }
@@ -467,8 +467,8 @@
   background: linear-gradient(135deg, color-mix(in srgb, var(--j-cyan) 4%, transparent), color-mix(in srgb, var(--j-cyan) 4%, transparent));
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
-.jc-status-item.jc-status-draft .jc-status-count { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
-.jc-status-item.jc-status-draft .jc-status-label { color: color-mix(in srgb, var(--j-text) 50%, transparent); }
+.jc-status-item.jc-status-draft .jc-status-count { color: var(--j-text-muted); }
+.jc-status-item.jc-status-draft .jc-status-label { color: var(--j-text-muted); }
 
 .jc-status-item.jc-status-active {
   background: linear-gradient(135deg, color-mix(in srgb, var(--j-success) 8%, transparent), rgba(0,160,128,0.08));
@@ -507,11 +507,11 @@
   letter-spacing: 0.02em;
 }
 
-.jc-status-draft { background: color-mix(in srgb, var(--j-cyan) 6%, transparent); color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+.jc-status-draft { background: color-mix(in srgb, var(--j-cyan) 6%, transparent); color: var(--j-text-muted); }
 .jc-status-active { background: color-mix(in srgb, var(--j-success) 15%, transparent); color: var(--j-success); }
 .jc-status-paused { background: color-mix(in srgb, var(--j-warn) 15%, transparent); color: #e5b84e; }
 .jc-status-completed { background: color-mix(in srgb, var(--j-cyan) 15%, transparent); color: var(--j-cyan); }
-.jc-status-archived { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+.jc-status-archived { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); color: var(--j-text-muted); }
 
 /* ============================================================================
    PERFORMANCE RATES
@@ -552,7 +552,7 @@
 
 .jc-rate-label {
   font-size: 0.85rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-rate-blue { background: color-mix(in srgb, var(--j-cyan) 6%, transparent); }
@@ -685,7 +685,7 @@
 .jc-activity-text {
   display: block;
   font-size: 0.85rem;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -694,12 +694,12 @@
 .jc-activity-journey {
   display: block;
   font-size: 0.75rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-activity-time {
   font-size: 0.75rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================================================
@@ -734,7 +734,7 @@
   padding: 8px 14px;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-weight: 500;
   font-size: 0.85rem;
   cursor: pointer;
@@ -779,7 +779,7 @@
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-search-input-wrapper input {
@@ -843,7 +843,7 @@
   height: 32px;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   border-radius: 6px;
   transition: all 0.2s;
@@ -881,7 +881,7 @@
 
 .jc-card-body .jc-journey-description {
   margin: 0 0 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.9rem;
   line-height: 1.4;
 }
@@ -897,7 +897,7 @@
   align-items: center;
   gap: 6px;
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-card-stats {
@@ -926,7 +926,7 @@
 .jc-stat-label {
   display: block;
   font-size: 0.7rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   margin-top: 2px;
 }
@@ -941,7 +941,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 8px;
 }
 
@@ -978,7 +978,7 @@
 .jc-progress-label {
   font-size: 0.8rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
   min-width: 50px;
   text-align: right;
 }
@@ -1057,7 +1057,7 @@
 
 .jc-enrollment-count {
   font-size: 0.9rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-close-btn {
@@ -1065,7 +1065,7 @@
   height: 36px;
   border: none;
   background: var(--j-surface);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 1.25rem;
   border-radius: 8px;
   cursor: pointer;
@@ -1095,7 +1095,7 @@
   padding: 14px 20px;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-weight: 500;
   cursor: pointer;
   position: relative;
@@ -1103,7 +1103,7 @@
 }
 
 .jc-tab:hover {
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-tab.active {
@@ -1170,7 +1170,7 @@
 .jc-quick-label {
   display: block;
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================================================
@@ -1185,7 +1185,7 @@
   margin: 0 0 16px;
   font-size: 1rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-funnel {
@@ -1249,7 +1249,7 @@
   align-items: center;
   gap: 6px;
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-funnel-drop {
@@ -1266,7 +1266,7 @@
   align-items: center;
   gap: 8px;
   padding: 40px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   background: var(--j-surface);
   border-radius: 10px;
 }
@@ -1325,7 +1325,7 @@
 
 .jc-metric-box-label {
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 4px;
 }
 
@@ -1339,7 +1339,7 @@
   margin: 0 0 16px;
   font-size: 0.9rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-info-grid {
@@ -1356,7 +1356,7 @@
 
 .jc-info-label {
   font-size: 0.75rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
 }
 
@@ -1374,7 +1374,7 @@
   margin: 0 0 16px;
   font-size: 1rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-email-nodes {
@@ -1419,7 +1419,7 @@
 .jc-email-stat-label {
   display: block;
   font-size: 0.7rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
 }
 
@@ -1429,7 +1429,7 @@
   align-items: center;
   gap: 8px;
   padding: 40px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   background: var(--j-surface);
   border-radius: 10px;
 }
@@ -1452,7 +1452,7 @@
 
 .jc-btn-secondary {
   background: var(--j-surface);
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
 
@@ -1541,7 +1541,7 @@
   padding: 12px 16px;
   font-size: 0.8rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
@@ -1571,7 +1571,7 @@
 
 .jc-subscriber-name {
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-current-step {
@@ -1597,7 +1597,7 @@
 .jc-enrollment-status.jc-status-paused { background: color-mix(in srgb, var(--j-warn) 15%, transparent); color: #e5b84e; }
 
 .jc-date {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 0.85rem;
 }
 
@@ -1627,7 +1627,7 @@
   height: 32px;
   border: none;
   background: color-mix(in srgb, var(--j-cyan) 6%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s;
@@ -1690,7 +1690,7 @@
   margin: 0 0 16px;
   font-size: 0.9rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .jc-comparison-list {
@@ -1716,7 +1716,7 @@
 .jc-comparison-rank {
   font-size: 0.75rem;
   font-weight: 700;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   width: 24px;
 }
 
@@ -1750,7 +1750,7 @@
 .jc-comparison-value {
   font-size: 0.85rem;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
   min-width: 60px;
   text-align: right;
 }
@@ -1812,7 +1812,7 @@
 
 .jc-dropoff-stats {
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .jc-dropoff-rate {

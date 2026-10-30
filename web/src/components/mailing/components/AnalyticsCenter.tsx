@@ -246,7 +246,7 @@ const INS_METRIC_LABELS: Record<InsMetric, string> = {
 // Deterministic color for a sending domain. The ISP palette is reserved for
 // the global ISP cards, so sending-domain lines use a separate set.
 const SENDING_DOMAIN_COLORS = [
-  'var(--j-cyan)', 'var(--j-violet)', '#f59e0b', 'var(--j-success)',
+  'var(--j-cyan)', 'var(--j-violet)', 'var(--j-soft)', 'var(--j-success)',
   'var(--j-pink)', 'var(--j-blue)', 'var(--j-warn)', 'var(--j-success)',
 ];
 function colorForDomain(domain: string): string {
@@ -464,7 +464,7 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
     { label: 'Sent', value: sent, color: 'var(--j-violet)' },
     { label: 'Delivered', value: delivered, color: 'var(--j-success)' },
     { label: 'Opens', value: opens, color: 'var(--j-blue)' },
-    { label: 'Clicks', value: clicks, color: '#f59e0b' },
+    { label: 'Clicks', value: clicks, color: 'var(--j-soft)' },
   ];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 12 }}>
@@ -494,12 +494,12 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
         </div>
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Hard Bounce</span>
-          <span className="ac-isp-tile-value" style={{ color: '#ef4444' }}>{pct(card.hard_bounce_rate)}</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-hard)' }}>{pct(card.hard_bounce_rate)}</span>
           <span className="ac-isp-tile-sub">{fmt(card.hard_bounces)}</span>
         </div>
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Soft Bounce</span>
-          <span className="ac-isp-tile-value" style={{ color: '#f59e0b' }}>{pct(card.soft_bounce_rate)}</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-soft)' }}>{pct(card.soft_bounce_rate)}</span>
           <span className="ac-isp-tile-sub">{fmt(card.soft_bounces)}</span>
         </div>
         <div className="ac-isp-tile">
@@ -663,7 +663,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
               </button>
             ))}
           </div>
-          <select
+          <select aria-label="Isp"
             value={isp}
             onChange={(e) => setIsp(e.target.value)}
             style={{
@@ -1176,7 +1176,7 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-kpi bounces ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value" style={{ color: '#ef4444' }}><AnimatedCounter value={rates.hard_bounce_rate} decimals={1} suffix="%" /></span>
+                <span className="ac-kpi-value" style={{ color: 'var(--j-hard)' }}><AnimatedCounter value={rates.hard_bounce_rate} decimals={1} suffix="%" /></span>
                 <span className="ac-kpi-label">Hard Bounce Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.hard_bounces)} hard bounced</span>
               </div>
@@ -1184,7 +1184,7 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-kpi bounces ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faExclamationTriangle} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value" style={{ color: '#f59e0b' }}><AnimatedCounter value={rates.soft_bounce_rate} decimals={1} suffix="%" /></span>
+                <span className="ac-kpi-value" style={{ color: 'var(--j-soft)' }}><AnimatedCounter value={rates.soft_bounce_rate} decimals={1} suffix="%" /></span>
                 <span className="ac-kpi-label">Soft Bounce Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.soft_bounces)} soft bounced</span>
               </div>
@@ -1230,7 +1230,7 @@ export const AnalyticsCenter: React.FC = () => {
                 <div className="ac-isp-grid">
                   {ispCards.filter(c => c.isp !== 'other').map(card => {
                     const score = Math.max(0, Math.min(100, Math.round((card.open_rate || 0) - ((card.hard_bounce_rate || 0) + (card.soft_bounce_rate || 0)) * 2 - (card.complaint_rate || 0) * 10)));
-                    const scoreColor = score >= 60 ? 'var(--j-success)' : score >= 30 ? '#f59e0b' : '#ef4444';
+                    const scoreColor = score >= 60 ? 'var(--j-success)' : score >= 30 ? 'var(--j-soft)' : 'var(--j-hard)';
                     const isSelected = selectedISP === card.isp;
                     return (
                       <div
@@ -1258,15 +1258,15 @@ export const AnalyticsCenter: React.FC = () => {
                             <span className="ac-isp-metric-lbl">Clicks</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.hard_bounce_rate ?? 0}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: 'var(--j-hard)' }}>{card.hard_bounce_rate ?? 0}%</span>
                             <span className="ac-isp-metric-lbl">Hard Bnc</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#f59e0b' }}>{card.soft_bounce_rate ?? 0}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: 'var(--j-soft)' }}>{card.soft_bounce_rate ?? 0}%</span>
                             <span className="ac-isp-metric-lbl">Soft Bnc</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#ef4444' }}>{card.complaint_rate}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: 'var(--j-hard)' }}>{card.complaint_rate}%</span>
                             <span className="ac-isp-metric-lbl">Complaints</span>
                           </div>
                         </div>
@@ -1340,8 +1340,8 @@ export const AnalyticsCenter: React.FC = () => {
                             <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || 'var(--j-violet)'} strokeWidth={2} dot={false} name="Sent" />
                             <Line yAxisId="right" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={1.5} dot={false} name="Opens" />
                             <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="var(--j-blue)" strokeWidth={1.5} dot={false} name="Clicks" />
-                            <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" />
-                            <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard)" strokeWidth={1.5} dot={false} name="Hard Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft)" strokeWidth={1.5} dot={false} name="Soft Bounces" />
                             <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" />
                           </LineChart>
                         </ResponsiveContainer>
@@ -1437,9 +1437,9 @@ export const AnalyticsCenter: React.FC = () => {
                         />
                         <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="var(--j-cyan)" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="#f59e0b" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="var(--j-soft)" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard)" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft)" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
                       </LineChart>
                     </ResponsiveContainer>
@@ -1545,12 +1545,12 @@ export const AnalyticsCenter: React.FC = () => {
                             <td style={{ fontWeight: 500 }}>{r.sending_domain}</td>
                             <td>{fmt(r.total)}</td>
                             <td style={{ color: 'var(--j-text-muted)' }}>{fmt(r.cold)}</td>
-                            <td style={{ color: '#f59e0b' }}>{fmt(r.warming)}</td>
+                            <td style={{ color: 'var(--j-soft)' }}>{fmt(r.warming)}</td>
                             <td style={{ color: 'var(--j-success)' }}>{fmt(r.engaged)}</td>
                             <td style={{ color: 'var(--j-text-faint)' }}>{fmt(r.dormant)}</td>
                             <td>{fmt(r.unsubscribed)}</td>
-                            <td style={{ color: r.hard_bounced > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.hard_bounced)}</td>
-                            <td style={{ color: r.complained > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.complained)}</td>
+                            <td style={{ color: r.hard_bounced > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>{fmt(r.hard_bounced)}</td>
+                            <td style={{ color: r.complained > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>{fmt(r.complained)}</td>
                             <td>{fmt(r.recently_mailed_7d)}</td>
                             <td style={{ color: 'var(--j-blue)' }}>{fmt(r.recently_opened_7d)}</td>
                           </tr>

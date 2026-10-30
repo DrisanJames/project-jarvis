@@ -213,7 +213,7 @@ const getISPIcon = (isp: string): string => {
 const getStatusColor = (status: string): string => {
   switch (status) {
     case 'active': return 'var(--j-success)';
-    case 'idle': return '#f59e0b';
+    case 'idle': return 'var(--j-soft)';
     case 'sleeping': return 'var(--j-cyan)';
     case 'dormant': return 'var(--j-text-faint)';
     default: return 'var(--j-text-faint)';
@@ -233,7 +233,7 @@ const getStatusLabel = (status: string): string => {
 const getManagedStatusColor = (status: string): string => {
   switch (status) {
     case 'spawned': return 'var(--j-blue)';
-    case 'learning': return '#f59e0b';
+    case 'learning': return 'var(--j-soft)';
     case 'sending': return 'var(--j-success)';
     case 'adapting': return 'var(--j-cyan)';
     case 'complete': return 'var(--j-text-faint)';
@@ -303,8 +303,8 @@ const getKnowledgeDepth = (agent: ISPAgent): { score: number; label: string; col
   let color = 'var(--j-text-faint)';
   if (score >= 80) { label = 'Expert'; color = 'var(--j-success)'; }
   else if (score >= 60) { label = 'Proficient'; color = 'var(--j-blue)'; }
-  else if (score >= 40) { label = 'Learning'; color = '#f59e0b'; }
-  else if (score >= 20) { label = 'Beginner'; color = '#ef4444'; }
+  else if (score >= 40) { label = 'Learning'; color = 'var(--j-soft)'; }
+  else if (score >= 20) { label = 'Beginner'; color = 'var(--j-hard)'; }
 
   return { score, label, color };
 };
@@ -522,7 +522,7 @@ export const ISPAgentIntelligence: React.FC = () => {
             </div>
           </div>
           <div className="ia-summary-card ig-card-hover">
-            <div className="ia-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
+            <div className="ia-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: 'var(--j-soft)' }}>
               <FontAwesomeIcon icon={faBrain} />
             </div>
             <div className="ia-summary-body">
@@ -592,7 +592,7 @@ export const ISPAgentIntelligence: React.FC = () => {
               </div>
             </div>
             <div className="ia-managed-summary-card ig-card-hover">
-              <div className="ia-managed-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b' }}>
+              <div className="ia-managed-summary-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: 'var(--j-soft)' }}>
                 <FontAwesomeIcon icon={faGraduationCap} />
               </div>
               <div className="ia-managed-summary-body">
@@ -721,7 +721,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                         className="ia-managed-engagement-fill ig-progress-fill"
                         style={{
                           width: `${Math.min(agent.avg_engagement, 100)}%`,
-                          background: agent.avg_engagement >= 60 ? 'var(--j-success)' : agent.avg_engagement >= 30 ? '#f59e0b' : '#ef4444'
+                          background: agent.avg_engagement >= 60 ? 'var(--j-success)' : agent.avg_engagement >= 30 ? 'var(--j-soft)' : 'var(--j-hard)'
                         }}
                       />
                     </div>
@@ -747,9 +747,9 @@ export const ISPAgentIntelligence: React.FC = () => {
                         {(hardBounceRate !== undefined || softBounceRate !== undefined) && (
                           <span className="ia-managed-knowledge-item">
                             <FontAwesomeIcon icon={faExclamationTriangle} />
-                            <span style={{ color: '#ef4444' }}>Hard: {(hardBounceRate ?? 0).toFixed(1)}%</span>
-                            <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}> / </span>
-                            <span style={{ color: '#f59e0b' }}>Soft: {(softBounceRate ?? 0).toFixed(1)}%</span>
+                            <span style={{ color: 'var(--j-hard)' }}>Hard: {(hardBounceRate ?? 0).toFixed(1)}%</span>
+                            <span style={{ color: 'var(--j-text-muted)' }}> / </span>
+                            <span style={{ color: 'var(--j-soft)' }}>Soft: {(softBounceRate ?? 0).toFixed(1)}%</span>
                           </span>
                         )}
                       </div>
@@ -833,8 +833,8 @@ export const ISPAgentIntelligence: React.FC = () => {
                           <div className="ia-engine-meta-item">
                             <span className="ia-engine-meta-label">Adjustment</span>
                             <span className="ia-engine-meta-value" style={{
-                              color: (engineData.rate_adjustment || 1) < 0.9 ? '#ef4444'
-                                : (engineData.rate_adjustment || 1) < 1.0 ? '#f59e0b' : 'var(--j-success)'
+                              color: (engineData.rate_adjustment || 1) < 0.9 ? 'var(--j-hard)'
+                                : (engineData.rate_adjustment || 1) < 1.0 ? 'var(--j-soft)' : 'var(--j-success)'
                             }}>
                               {((engineData.rate_adjustment || 1) * 100).toFixed(0)}%
                             </span>
@@ -844,8 +844,8 @@ export const ISPAgentIntelligence: React.FC = () => {
                         <div className="ia-bar-bg" style={{ marginTop: '8px' }}>
                           <div className="ia-bar-fill" style={{
                             width: `${Math.min((engineData.rate_adjustment || 1) * 100, 100)}%`,
-                            background: (engineData.rate_adjustment || 1) < 0.5 ? '#ef4444'
-                              : (engineData.rate_adjustment || 1) < 0.9 ? '#f59e0b' : 'var(--j-success)',
+                            background: (engineData.rate_adjustment || 1) < 0.5 ? 'var(--j-hard)'
+                              : (engineData.rate_adjustment || 1) < 0.9 ? 'var(--j-soft)' : 'var(--j-success)',
                             transition: 'width 0.5s ease'
                           }} />
                         </div>
@@ -858,13 +858,13 @@ export const ISPAgentIntelligence: React.FC = () => {
                           <div className="ia-engine-throttle-grid">
                             <div className="ia-engine-ts-item">
                               <span className="ia-engine-ts-label">Backoff Steps</span>
-                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.backoff_count > 3 ? '#ef4444' : 'var(--j-text-muted)' }}>
+                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.backoff_count > 3 ? 'var(--j-hard)' : 'var(--j-text-muted)' }}>
                                 {engineData.throttle_state.backoff_count}
                               </span>
                             </div>
                             <div className="ia-engine-ts-item">
                               <span className="ia-engine-ts-label">Recovery</span>
-                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.in_recovery ? '#f59e0b' : 'var(--j-text-faint)' }}>
+                              <span className="ia-engine-ts-value" style={{ color: engineData.throttle_state.in_recovery ? 'var(--j-soft)' : 'var(--j-text-faint)' }}>
                                 {engineData.throttle_state.in_recovery ? 'Active' : 'No'}
                               </span>
                             </div>
@@ -908,7 +908,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                               <div key={ip.vmta} className="ia-engine-ip-item">
                                 <span className="ia-engine-ip-name">{ip.vmta}</span>
                                 <span style={{ color: 'var(--j-success)', fontSize: '0.75rem' }}>{ip.delivered_1h} delivered</span>
-                                <span style={{ color: '#ef4444', fontSize: '0.75rem' }}>{ip.bounces_1h} bounced</span>
+                                <span style={{ color: 'var(--j-hard)', fontSize: '0.75rem' }}>{ip.bounces_1h} bounced</span>
                                 {ip.complaints_1h > 0 && (
                                   <span style={{ color: 'var(--j-pink)', fontSize: '0.75rem' }}>{ip.complaints_1h} complaints</span>
                                 )}
@@ -1016,11 +1016,11 @@ export const ISPAgentIntelligence: React.FC = () => {
                               <span className="ia-feed-result-lbl">Clicks</span>
                             </div>
                             <div className="ia-feed-result-stat">
-                              <span className="ia-feed-result-val" style={{ color: '#ef4444' }}>{(agentActivity.by_result.hard_bounced || 0).toLocaleString()}</span>
+                              <span className="ia-feed-result-val" style={{ color: 'var(--j-hard)' }}>{(agentActivity.by_result.hard_bounced || 0).toLocaleString()}</span>
                               <span className="ia-feed-result-lbl">Hard Bounced</span>
                             </div>
                             <div className="ia-feed-result-stat">
-                              <span className="ia-feed-result-val" style={{ color: '#f59e0b' }}>{(agentActivity.by_result.soft_bounced || 0).toLocaleString()}</span>
+                              <span className="ia-feed-result-val" style={{ color: 'var(--j-soft)' }}>{(agentActivity.by_result.soft_bounced || 0).toLocaleString()}</span>
                               <span className="ia-feed-result-lbl">Soft Bounced</span>
                             </div>
                           </div>
@@ -1217,9 +1217,9 @@ export const ISPAgentIntelligence: React.FC = () => {
                     {((agent.learning_sources.hard_bounces || 0) + (agent.learning_sources.soft_bounces || 0) > 0) && (
                       <span className="ia-source-tag ia-src-bounces">
                         <FontAwesomeIcon icon={faExclamationTriangle} />
-                        <span style={{ color: '#ef4444' }}>{agent.learning_sources.hard_bounces || 0} hard</span>
-                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}> / </span>
-                        <span style={{ color: '#f59e0b' }}>{agent.learning_sources.soft_bounces || 0} soft</span>
+                        <span style={{ color: 'var(--j-hard)' }}>{agent.learning_sources.hard_bounces || 0} hard</span>
+                        <span style={{ color: 'var(--j-text-muted)' }}> / </span>
+                        <span style={{ color: 'var(--j-soft)' }}>{agent.learning_sources.soft_bounces || 0} soft</span>
                       </span>
                     )}
                   </div>
@@ -1233,7 +1233,7 @@ export const ISPAgentIntelligence: React.FC = () => {
       {/* ─── Detail Slide-over ──────────────────────────────────────────── */}
       {selectedAgent && (
         <div className="ia-detail-panel">
-          <button className="ia-detail-close" onClick={() => setSelectedAgent(null)}>
+          <button aria-label="Close" className="ia-detail-close" onClick={() => setSelectedAgent(null)}>
             <FontAwesomeIcon icon={faTimes} />
           </button>
 
@@ -1295,12 +1295,12 @@ export const ISPAgentIntelligence: React.FC = () => {
               </div>
               <div className="ia-dm">
                 <FontAwesomeIcon icon={faExclamationTriangle} />
-                <span className="ia-dm-val" style={{ color: '#ef4444' }}>{selectedAgent.total_hard_bounces}</span>
+                <span className="ia-dm-val" style={{ color: 'var(--j-hard)' }}>{selectedAgent.total_hard_bounces}</span>
                 <span className="ia-dm-lbl">Hard Bounces</span>
               </div>
               <div className="ia-dm">
                 <FontAwesomeIcon icon={faExclamationTriangle} />
-                <span className="ia-dm-val" style={{ color: '#f59e0b' }}>{selectedAgent.total_soft_bounces}</span>
+                <span className="ia-dm-val" style={{ color: 'var(--j-soft)' }}>{selectedAgent.total_soft_bounces}</span>
                 <span className="ia-dm-lbl">Soft Bounces</span>
               </div>
             </div>
@@ -1341,9 +1341,9 @@ export const ISPAgentIntelligence: React.FC = () => {
               {[
                 { label: 'Email Sends', value: selectedAgent.learning_sources.sends, icon: faEnvelope, color: 'var(--j-blue)' },
                 { label: 'Opens Tracked', value: selectedAgent.learning_sources.opens, icon: faEye, color: 'var(--j-success)' },
-                { label: 'Clicks Tracked', value: selectedAgent.learning_sources.clicks, icon: faMousePointer, color: '#f59e0b' },
-                { label: 'Hard Bounces Analyzed', value: selectedAgent.learning_sources.hard_bounces ?? 0, icon: faExclamationTriangle, color: '#ef4444' },
-                { label: 'Soft Bounces Analyzed', value: selectedAgent.learning_sources.soft_bounces ?? 0, icon: faExclamationTriangle, color: '#f59e0b' },
+                { label: 'Clicks Tracked', value: selectedAgent.learning_sources.clicks, icon: faMousePointer, color: 'var(--j-soft)' },
+                { label: 'Hard Bounces Analyzed', value: selectedAgent.learning_sources.hard_bounces ?? 0, icon: faExclamationTriangle, color: 'var(--j-hard)' },
+                { label: 'Soft Bounces Analyzed', value: selectedAgent.learning_sources.soft_bounces ?? 0, icon: faExclamationTriangle, color: 'var(--j-soft)' },
                 { label: 'Complaints Analyzed', value: selectedAgent.learning_sources.complaints, icon: faShieldAlt, color: 'var(--j-pink)' },
               ].map((src, i) => (
                 <div key={i} className="ia-source-item">

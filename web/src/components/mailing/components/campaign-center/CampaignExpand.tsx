@@ -33,7 +33,7 @@ const PANEL: React.CSSProperties = {
 
 const LABEL: React.CSSProperties = {
   fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5,
-  color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontWeight: 600,
+  color: 'var(--j-text-muted)', fontWeight: 600,
 };
 
 const SERIES_COLORS: Record<string, string> = {
@@ -82,7 +82,7 @@ const KpiChip: React.FC<{ label: string; value: string; sub?: string; color?: st
     <div title={tip} style={{ ...PANEL, padding: '8px 12px', minWidth: 96, flex: '0 0 auto' }}>
       <div style={{ fontSize: 16, fontWeight: 700, color: color || 'var(--j-text)' }}>{value}</div>
       <div style={LABEL}>{label}</div>
-      {sub && <div style={{ fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 10.5, color: 'var(--j-text-muted)' }}>{sub}</div>}
     </div>
   );
 
@@ -132,7 +132,7 @@ export const CampaignExpand: React.FC<{
 
   if (loading) {
     return (
-      <div style={{ padding: '18px 14px', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13 }}>
+      <div style={{ padding: '18px 14px', color: 'var(--j-text-muted)', fontSize: 13 }}>
         <FontAwesomeIcon icon={faSpinner} spin /> Loading inline analytics…
       </div>
     );
@@ -195,9 +195,9 @@ export const CampaignExpand: React.FC<{
           <KpiChip label="Human Open" value={`${k.human_open_rate.toFixed(1)}%`} sub={`${numFmt(k.human_opens)} uniq`} color="var(--j-blue)" tip="unique human opens / delivered (Apple Mail privacy & automated opens excluded)" />
           <KpiChip label="Human Click" value={`${k.human_click_rate.toFixed(2)}%`} sub={`${numFmt(k.human_clicks)} uniq`} color="var(--j-violet)" tip="unique clicks / delivered" />
           <KpiChip label="CTOR" value={`${k.ctor.toFixed(1)}%`} tip="unique clicks / unique human opens" />
-          <KpiChip label="Hard" value={`${k.hard_bounce_rate.toFixed(2)}%`} sub={numFmt(k.hard_bounces)} color="#ef4444" tip="True hard bounces (invalid addresses)" />
-          <KpiChip label="Soft" value={`${k.soft_bounce_rate.toFixed(2)}%`} sub={numFmt(k.soft_bounces)} color="#f59e0b" tip="transient bounces" />
-          <KpiChip label="Complaints" value={numFmt(k.complaints)} color={k.complaints > 0 ? '#ef4444' : undefined} />
+          <KpiChip label="Hard" value={`${k.hard_bounce_rate.toFixed(2)}%`} sub={numFmt(k.hard_bounces)} color="var(--j-hard)" tip="True hard bounces (invalid addresses)" />
+          <KpiChip label="Soft" value={`${k.soft_bounce_rate.toFixed(2)}%`} sub={numFmt(k.soft_bounces)} color="var(--j-soft)" tip="transient bounces" />
+          <KpiChip label="Complaints" value={numFmt(k.complaints)} color={k.complaints > 0 ? 'var(--j-hard)' : undefined} />
           <KpiChip label="Unsubs" value={numFmt(k.unsubscribes)} />
           <KpiChip label="Deferrals" value={numFmt(k.deferrals)} color="var(--j-blue)" />
           {k.conversions !== null && k.conversions !== undefined && (
@@ -213,12 +213,12 @@ export const CampaignExpand: React.FC<{
           <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--j-violet-soft)' }}>
             Send pace · {series?.bucket || '—'} buckets
           </span>
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
             send batches marked · times in Denver
           </span>
         </div>
         {chartData.length === 0 ? (
-          <div style={{ fontSize: 12.5, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', padding: '14px 0' }}>
+          <div style={{ fontSize: 12.5, color: 'var(--j-text-muted)', padding: '14px 0' }}>
             No tracking events in the send window yet.
           </div>
         ) : (
@@ -269,17 +269,17 @@ export const CampaignExpand: React.FC<{
         <div style={PANEL}>
           <div style={{ ...LABEL, marginBottom: 6 }}>Per-mailbox-provider (recipient)</div>
           {(detail.isp_breakdown || []).length === 0 ? (
-            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>No per-mailbox-provider events yet.</div>
+            <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>No per-mailbox-provider events yet.</div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
-                <tr style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', textAlign: 'right' }}>
+                <tr style={{ color: 'var(--j-text-muted)', textAlign: 'right' }}>
                   <th style={{ textAlign: 'left', padding: '3px 6px' }}>Mailbox Provider</th>
                   <th style={{ padding: '3px 6px' }}>Delivered</th>
                   <th style={{ padding: '3px 6px' }}>H. Opens</th>
                   <th style={{ padding: '3px 6px' }}>H. Clicks</th>
-                  <th style={{ padding: '3px 6px', color: '#ef4444' }}>Hard</th>
-                  <th style={{ padding: '3px 6px', color: '#f59e0b' }}>Soft</th>
+                  <th style={{ padding: '3px 6px', color: 'var(--j-hard)' }}>Hard</th>
+                  <th style={{ padding: '3px 6px', color: 'var(--j-soft)' }}>Soft</th>
                   <th style={{ padding: '3px 6px' }}>Defer</th>
                 </tr>
               </thead>
@@ -292,8 +292,8 @@ export const CampaignExpand: React.FC<{
                     <td style={{ padding: '4px 6px' }}>{numFmt(row.delivered)}</td>
                     <td style={{ padding: '4px 6px' }}>{numFmt(row.human_opens)}</td>
                     <td style={{ padding: '4px 6px' }}>{numFmt(row.human_clicks)}</td>
-                    <td style={{ padding: '4px 6px', color: row.hard > 0 ? '#ef4444' : undefined }}>{numFmt(row.hard)}</td>
-                    <td style={{ padding: '4px 6px', color: row.soft > 0 ? '#f59e0b' : undefined }}>{numFmt(row.soft)}</td>
+                    <td style={{ padding: '4px 6px', color: row.hard > 0 ? 'var(--j-hard)' : undefined }}>{numFmt(row.hard)}</td>
+                    <td style={{ padding: '4px 6px', color: row.soft > 0 ? 'var(--j-soft)' : undefined }}>{numFmt(row.soft)}</td>
                     <td style={{ padding: '4px 6px' }}>{numFmt(row.deferrals)}</td>
                   </tr>
                 ))}
@@ -307,7 +307,7 @@ export const CampaignExpand: React.FC<{
           <div style={PANEL}>
             <div style={{ ...LABEL, marginBottom: 6 }}>Top clicked links</div>
             {(detail.top_links || []).length === 0 ? (
-              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>No clicks yet.</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>No clicks yet.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {(detail.top_links || []).map(l => (
@@ -323,7 +323,7 @@ export const CampaignExpand: React.FC<{
                       {l.url}
                     </span>
                     <span style={{ color: 'var(--j-text)', fontWeight: 600 }}>{numFmt(l.clicks)}</span>
-                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>({numFmt(l.unique_clicks)} uniq)</span>
+                    <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>({numFmt(l.unique_clicks)} uniq)</span>
                   </div>
                 ))}
               </div>
@@ -358,7 +358,7 @@ export const CampaignExpand: React.FC<{
                   </span>
                 ))}
                 {(detail.segments?.inclusion || []).length === 0 && (detail.segments?.exclusion || []).length === 0 && (
-                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>none recorded</span>
+                  <span style={{ color: 'var(--j-text-muted)' }}>none recorded</span>
                 )}
               </div>
             </div>
@@ -367,7 +367,7 @@ export const CampaignExpand: React.FC<{
       </div>
 
       {k?.data_as_of && (
-        <div style={{ fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>
+        <div style={{ fontSize: 10.5, color: 'var(--j-text-muted)' }}>
           Source: tracking events · last event {fmtDenverTime(k.data_as_of)} MT
         </div>
       )}

@@ -260,7 +260,7 @@ export const PersonalizedInput: React.FC<PersonalizedInputProps> = ({
         <div className="pi-picker-dropdown">
           <div className="pi-picker-header">
             <span className="pi-picker-title">Quick Insert</span>
-            <button
+            <button aria-label="Close"
               type="button"
               className="pi-close-btn"
               onClick={() => setShowPicker(false)}
@@ -309,7 +309,7 @@ export const PersonalizedInput: React.FC<PersonalizedInputProps> = ({
               ← Back
             </button>
             <span className="pi-picker-title">All Variables</span>
-            <button
+            <button aria-label="Close"
               type="button"
               className="pi-close-btn"
               onClick={() => { setShowPicker(false); setShowAllTags(false); }}

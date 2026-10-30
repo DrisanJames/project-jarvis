@@ -15,7 +15,7 @@
   justify-content: center;
   min-height: 400px;
   gap: 16px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .loading-spinner {
@@ -52,7 +52,7 @@
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
   cursor: pointer;
   transition: all 0.2s;
@@ -74,7 +74,7 @@
 }
 
 .list-portal .breadcrumb-separator {
-  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-muted);
   font-size: 18px;
 }
 
@@ -184,12 +184,12 @@
 
 .list-portal .hero-stat-card.primary .hero-stat-icon {
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-cyan) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .hero-stat-card.engagement .hero-stat-icon {
   background: color-mix(in srgb, var(--j-success) 8%, transparent);
-  color: color-mix(in srgb, var(--j-success) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .hero-stat-content {
@@ -220,7 +220,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  opacity: 0.9;
+  opacity: 1;
 }
 
 .list-portal .hero-stat-trend.positive {
@@ -232,7 +232,7 @@
 }
 
 .list-portal .hero-stat-card.engagement .hero-stat-trend {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Dashboard Sections */
@@ -340,7 +340,7 @@
 
 .list-portal .qa-content small {
   font-size: 12px;
-  opacity: 0.7;
+  opacity: 0.95;
 }
 
 .list-portal .qa-arrow {
@@ -429,7 +429,7 @@
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .top-list-item:first-child .list-rank {
@@ -451,7 +451,7 @@
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .list-meta svg {
@@ -459,7 +459,7 @@
 }
 
 .list-portal .list-arrow {
-  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Segments Overview */
@@ -518,7 +518,7 @@
   display: flex;
   gap: 12px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .segment-status {
@@ -532,7 +532,7 @@
 .list-portal .empty-state {
   text-align: center;
   padding: 32px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .empty-state svg {
@@ -572,7 +572,7 @@
 
 .list-portal .empty-state-large svg {
   font-size: 48px;
-  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 16px;
 }
 
@@ -583,7 +583,7 @@
 
 .list-portal .empty-state-large p {
   margin: 0 0 24px 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* How It Works */
@@ -618,7 +618,7 @@
   align-items: center;
   justify-content: center;
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
-  color: color-mix(in srgb, var(--j-cyan) 60%, transparent);
+  color: var(--j-text-muted);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent);
   border-radius: 50%;
   font-weight: 700;
@@ -634,7 +634,7 @@
 .list-portal .how-step p {
   margin: 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
@@ -670,7 +670,7 @@
 
 .list-portal .header-left p {
   margin: 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -697,7 +697,7 @@
   left: 12px;
   top: 50%;
   transform: translateY(-50%);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .search-box input {
@@ -766,7 +766,7 @@
 .list-portal .list-description {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
@@ -797,7 +797,7 @@
 
 .list-portal .list-stats .stat-label {
   font-size: 10px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -810,7 +810,7 @@
 
 .list-portal .list-date {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .list-date svg {
@@ -831,7 +831,7 @@
   background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border: none;
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -876,7 +876,7 @@
 
 .list-portal .segment-type-icon.system {
   background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(217,119,6,0.15));
-  color: #f59e0b;
+  color: var(--j-soft);
 }
 
 .list-portal .segment-card.system-segment {
@@ -911,7 +911,7 @@
 .list-portal .segment-description {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .segment-stats {
@@ -927,11 +927,11 @@
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .segment-stats .stat svg {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .segment-stats .stat span {
@@ -973,7 +973,7 @@
 .list-portal .status-badge.status-archived,
 .list-portal .status-badge.status-draft {
   background: color-mix(in srgb, var(--j-text) 10%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================================================
@@ -1004,7 +1004,7 @@
 
 .list-portal .form-header p {
   margin: 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .create-form,
@@ -1050,7 +1050,7 @@
 .list-portal .section-hint {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .form-group {
@@ -1144,7 +1144,7 @@
 }
 
 .list-portal .radio-content svg {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 2px;
 }
 
@@ -1159,7 +1159,7 @@
 }
 
 .list-portal .radio-content small {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
 }
 
@@ -1216,7 +1216,7 @@
 .list-portal .info-item label {
   display: block;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   margin-bottom: 4px;
 }
@@ -1329,7 +1329,7 @@
 
 .list-portal .subscribers-header .list-info p {
   margin: 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -1357,7 +1357,7 @@
   background: var(--j-surface);
   font-size: 11px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1404,7 +1404,7 @@
 
 .list-portal .engagement-score {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Pagination */
@@ -1437,7 +1437,7 @@
 }
 
 .list-portal .pagination span {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -1499,7 +1499,7 @@
 .list-portal .modal-close {
   background: none;
   border: none;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   padding: 4px;
   font-size: 18px;
@@ -1549,7 +1549,7 @@
 
 .list-portal .file-upload-label svg {
   font-size: 32px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .file-upload-label span {
@@ -1558,7 +1558,7 @@
 }
 
 .list-portal .file-upload-label small {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
 }
 
@@ -1645,7 +1645,7 @@
 
 .list-portal .large-file-info small {
   display: block;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -1677,7 +1677,7 @@
   display: block;
   width: 100%;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 8px;
   text-align: right;
 }
@@ -1844,7 +1844,7 @@
   text-align: right;
   font-size: 12px;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 80%, transparent);
+  color: var(--j-text-2);
 }
 
 /* ============================================================================
@@ -1951,11 +1951,11 @@
 
 .list-portal .worker-items {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 85%, transparent);
+  color: var(--j-text);
 }
 
 .list-portal .worker-items.muted {
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   font-style: italic;
 }
 
@@ -1966,7 +1966,7 @@
 
 .list-portal .worker-detail {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .worker-detail.error {
@@ -1978,7 +1978,7 @@
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   border-top: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   padding-top: 8px;
   margin-top: auto;
@@ -2029,13 +2029,13 @@
   width: 100%;
   border-collapse: collapse;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 80%, transparent);
+  color: var(--j-text-2);
 }
 
 .list-portal .worker-runs-table th {
   text-align: left;
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 50%, transparent);
+  color: var(--j-text-muted);
   padding: 4px 6px;
   border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent);
   white-space: nowrap;
@@ -2051,7 +2051,7 @@
 .list-portal .worker-runs-table td.run-detail {
   white-space: normal;
   min-width: 120px;
-  color: color-mix(in srgb, var(--j-text) 60%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-portal .run-status-chip {

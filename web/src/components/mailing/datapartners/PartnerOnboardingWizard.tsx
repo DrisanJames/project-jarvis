@@ -164,7 +164,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
             <label style={fieldLabel}>Contact email (optional)</label>
             <input value={contactEmail} onChange={e => setContactEmail(e.target.value)} placeholder="datapartner@attribits.com" style={input} />
             <label style={fieldLabel}>Notes (optional)</label>
-            <textarea value={partnerNotes} onChange={e => setPartnerNotes(e.target.value)} rows={3} style={{ ...input, fontFamily: 'inherit' }} />
+            <textarea aria-label="Notes (optional)" value={partnerNotes} onChange={e => setPartnerNotes(e.target.value)} rows={3} style={{ ...input, fontFamily: 'inherit' }} />
             {error && <div style={errorBox}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={onClose} style={ghostBtn}>Cancel</button>
@@ -178,13 +178,13 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
         {step === 2 && (
           <>
             <h4 style={sectionTitle}>Add First Dataset</h4>
-            <div style={{ marginBottom: 12, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+            <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--j-text-2)' }}>
               Each dataset is bound to one vertical. A partner can have multiple datasets (e.g. Attribits HOME → remodel, Attribits PERSONAL LOAN → personal_loans).
             </div>
             <label style={fieldLabel}>Dataset name</label>
             <input value={datasetName} onChange={e => setDatasetName(e.target.value)} placeholder="Attribits HOME" style={input} />
             <label style={fieldLabel}>Vertical</label>
-            <select value={vertical} onChange={e => setVertical(e.target.value)} style={input}>
+            <select aria-label="Vertical" value={vertical} onChange={e => setVertical(e.target.value)} style={input}>
               {verticals.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
               {/* Keep the selected value visible even if the server list omits it. */}
               {!verticals.some(v => v.value === vertical) && (
@@ -192,7 +192,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
               )}
             </select>
             <label style={fieldLabel}>Send window (hours) — how long before all records have been sent</label>
-            <input type="number" min={1} max={168} value={flushHours} onChange={e => setFlushHours(parseInt(e.target.value || '24', 10))} style={input} />
+            <input aria-label="Flush hours" type="number" min={1} max={168} value={flushHours} onChange={e => setFlushHours(parseInt(e.target.value || '24', 10))} style={input} />
             {error && <div style={errorBox}><FontAwesomeIcon icon={faExclamationTriangle} /> {error}</div>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
               <button onClick={() => setStep(1)} style={ghostBtn}>← Back</button>
@@ -207,7 +207,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
           <>
             <h4 style={sectionTitle}>API Key Generated</h4>
             <div style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.35)', padding: 12, borderRadius: 6, marginBottom: 16 }}>
-              <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#f59e0b', marginRight: 8 }} />
+              <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-soft)', marginRight: 8 }} />
               <b>Show this key to the partner ONCE.</b> It cannot be retrieved later. Only the prefix ({apiKeyPrefix}…) is stored.
             </div>
             <label style={fieldLabel}>API key</label>
@@ -231,12 +231,12 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
             <div style={{ textAlign: 'center', padding: 24, color: 'var(--j-success)' }}>
               <FontAwesomeIcon icon={faCheckCircle} size="3x" />
               <div style={{ marginTop: 12, fontSize: 16, color: 'var(--j-text)' }}>{partnerName} is live.</div>
-              <div style={{ marginTop: 8, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 13 }}>
+              <div style={{ marginTop: 8, color: 'var(--j-text-2)', fontSize: 13 }}>
                 Dataset <b>{datasetName}</b> ({vertical}) is ready to receive records.
                 Records will start list processing within 30s of submission.
               </div>
             </div>
-            <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 16, borderRadius: 6, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+            <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 16, borderRadius: 6, fontSize: 12, color: 'var(--j-text-2)' }}>
               <b>What happens next:</b><br />
               1. Partner POSTs records to <code>/api/partner-ingest/v1/records</code> with their X-Partner-Key.<br />
               2. Records are saved to list storage and queued for list processing.<br />
@@ -274,11 +274,11 @@ const modalBody: React.CSSProperties = {
   background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 640,
   maxHeight: '90vh', overflowY: 'auto',
-  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'var(--j-text)',
 };
 const sectionTitle: React.CSSProperties = { margin: '0 0 12px 0', color: 'var(--j-text-2)', fontSize: 14 };
 const fieldLabel: React.CSSProperties = {
-  display: 'block', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', margin: '12px 0 4px 0',
+  display: 'block', fontSize: 12, color: 'var(--j-text-2)', margin: '12px 0 4px 0',
 };
 const input: React.CSSProperties = {
   width: '100%', padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
@@ -300,12 +300,12 @@ const primaryBtn: React.CSSProperties = {
   fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'transparent', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer',
 };
 const iconBtn: React.CSSProperties = {
-  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer',
 };

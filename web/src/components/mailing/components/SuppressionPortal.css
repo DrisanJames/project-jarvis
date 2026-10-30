@@ -15,7 +15,7 @@
   justify-content: center;
   min-height: 400px;
   gap: 16px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .loading-spinner {
@@ -52,7 +52,7 @@
   background: transparent;
   border: none;
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
   cursor: pointer;
   transition: all 0.2s;
@@ -74,7 +74,7 @@
 }
 
 .breadcrumb-separator {
-  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-muted);
   font-size: 18px;
 }
 
@@ -205,11 +205,11 @@
 }
 
 .hero-stat-card.primary .hero-stat-icon {
-  color: color-mix(in srgb, var(--j-cyan) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 .hero-stat-card.optizmo .hero-stat-icon {
-  color: color-mix(in srgb, var(--j-blue) 40%, transparent);
+  color: var(--j-text-muted);
 }
 
 .hero-stat-content {
@@ -237,7 +237,7 @@
 .hero-stat-trend {
   font-size: 12px;
   margin-top: 8px;
-  opacity: 0.7;
+  opacity: 1;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -253,7 +253,7 @@
 }
 
 .hero-stat-card.optizmo .hero-stat-trend {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Dashboard Sections */
@@ -332,7 +332,7 @@
 
 .qa-content small {
   font-size: 13px;
-  opacity: 0.7;
+  opacity: 0.95;
 }
 
 .qa-arrow {
@@ -379,7 +379,7 @@
 .bar-label {
   width: 80px;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .bar-track {
@@ -451,7 +451,7 @@
 
 .donut-label {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .donut-chart.empty {
@@ -470,7 +470,7 @@
   justify-content: center;
   padding: 40px 20px;
   text-align: center;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .empty-chart-icon {
@@ -482,12 +482,12 @@
 .empty-chart p {
   margin: 0;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .empty-chart small {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 4px;
 }
 
@@ -520,7 +520,7 @@
 
 .legend-label {
   flex: 1;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .legend-value {
@@ -601,7 +601,7 @@
 
 .list-meta {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .list-preview-status {
@@ -643,7 +643,7 @@
   display: flex;
   justify-content: space-between;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .health-value {
@@ -678,7 +678,7 @@
 
 .health-detail {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* How It Works */
@@ -734,14 +734,14 @@
 .how-step-content p {
   margin: 0;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
 .how-step-arrow {
   display: flex;
   align-items: center;
-  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-muted);
   font-size: 24px;
   padding: 0 4px;
 }
@@ -766,13 +766,13 @@
 
 .empty-state p {
   margin: 0 0 20px 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .empty-state-mini {
   text-align: center;
   padding: 24px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .empty-state-mini button {
@@ -810,7 +810,7 @@
 
 .manager-title p {
   margin: 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -847,7 +847,7 @@
 }
 
 .search-icon {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .sort-options {
@@ -858,7 +858,7 @@
 
 .sort-options label {
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .sort-options select {
@@ -916,7 +916,7 @@
 
 .list-source {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: capitalize;
 }
 
@@ -946,7 +946,7 @@
 .list-description {
   margin: 0 0 16px 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
 }
 
@@ -972,7 +972,7 @@
 
 .stat-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
 }
 
@@ -1031,7 +1031,7 @@
 
 .form-header p {
   margin: 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -1094,7 +1094,7 @@
 .form-info p {
   margin: 0 0 8px 0;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .form-info p:last-child {
@@ -1158,13 +1158,13 @@
 }
 
 .file-size {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 13px;
 }
 
 .file-hint {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 4px;
 }
 
@@ -1190,7 +1190,7 @@
 
 .progress-text {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Upload Result */
@@ -1227,7 +1227,7 @@
 
 .result-stat .stat-label {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .upload-hints {
@@ -1248,7 +1248,7 @@
   margin: 0;
   padding-left: 20px;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .upload-hints li {
@@ -1276,7 +1276,7 @@
   background: var(--j-surface);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 8px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -1298,7 +1298,7 @@
 
 .entries-title p {
   margin: 4px 0 0 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -1350,7 +1350,7 @@
 
 .search-count {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .entries-table {
@@ -1376,7 +1376,7 @@
 .entries-table th {
   background: var(--j-surface);
   font-weight: 600;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 12px;
   text-transform: uppercase;
 }
@@ -1389,7 +1389,7 @@
 .hash-cell {
   font-family: monospace;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .reason-badge {
@@ -1412,7 +1412,7 @@
   padding: 16px;
   text-align: center;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   background: var(--j-surface);
 }
 
@@ -1444,7 +1444,7 @@
 
 .optizmo-title p {
   margin: 4px 0 0 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -1485,7 +1485,7 @@
 
 .status-detail {
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 8px;
 }
 
@@ -1598,14 +1598,14 @@
 
 .sync-badge.disabled {
   background: color-mix(in srgb, var(--j-text) 10%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .optizmo-list-stats {
   display: flex;
   gap: 16px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .how-delta-works {
@@ -1630,7 +1630,7 @@
 .how-delta-works li {
   margin-bottom: 12px;
   line-height: 1.6;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .how-delta-works strong {
@@ -1695,7 +1695,7 @@
 
 .modal p {
   margin: 0 0 24px 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.6;
 }
 
@@ -1876,7 +1876,7 @@
 .global-header-title p {
   margin: 4px 0 0;
   font-size: 14px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .global-header-stats {
@@ -1899,7 +1899,7 @@
 
 .global-total-label {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1989,7 +1989,7 @@
 
 .global-category-card.disposable .category-icon {
   background: color-mix(in srgb, var(--j-text) 15%, transparent);
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .global-category-card.manual .category-icon {
@@ -2012,7 +2012,7 @@
 
 .category-label {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .category-badge {
@@ -2050,7 +2050,7 @@
   justify-content: center;
   padding: 32px;
   text-align: center;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .global-empty-state svg {

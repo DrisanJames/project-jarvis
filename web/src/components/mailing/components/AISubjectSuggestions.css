@@ -272,7 +272,7 @@
 
 .ai-loading span {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
 }
 
 .ai-empty {
@@ -281,7 +281,7 @@
   align-items: center;
   justify-content: center;
   padding: 50px 20px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   gap: 12px;
   text-align: center;
 }
@@ -354,7 +354,7 @@
 
 .suggestion-preview {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
 }
 
 .suggestion-preview em {
@@ -380,7 +380,7 @@
 
 .suggestion-reasoning {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.5;
   padding: 8px 10px;
   background: var(--j-surface);
@@ -426,7 +426,7 @@
   background: color-mix(in srgb, var(--j-cyan) 6%, transparent);
   border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 6px;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -439,7 +439,7 @@
 .char-count {
   margin-left: auto;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================
@@ -454,7 +454,7 @@
 
 .ai-tip {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 55%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* ============================================

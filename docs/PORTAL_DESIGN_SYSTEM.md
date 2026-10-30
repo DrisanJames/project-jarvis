@@ -57,19 +57,30 @@ The portal wears the marketing site's brand (`web/src/components/marketing/`), i
 | `bg` / `bg-grad` | `#14112b` ink | `#fff8ee` cream | page |
 | `surface` · `surface-2` · `surface-3` | `#1c1838` · `#242046` · `#302a5c` | `#fff` · `#fbf6ee` · `#f1e9ff` | panels · inputs/rows · selected |
 | `shade` | `#0d0b20` | `#ede5f7` | wells, insets (always via `color-mix`) |
-| `border` · `border-subtle` · `border-strong` | `#3d3770` · `#2b2650` · `#4f4888` | `#ddd3ee` · `#ece5f5` · `#b9afd2` | lines only — never text |
-| `text` · `text-2` · `text-muted` · `text-faint` | `#fff8ee` → `#7d77a3` | `#14112b` → `#7e7899` | headings/numbers → captions |
+| `border` · `border-subtle` · `border-strong` | `#3d3770` · `#2b2650` · `#4f4888` | `#ddd3ee` · `#ece5f5` · `#958bab` | lines only — never text; `border-strong` outlines form controls (3:1) |
+| `text` · `text-2` · `text-muted` · `text-faint` | `#fff8ee` → `#7d77a3` | `#14112b` → `#66607a` | headings/numbers → captions |
 | `on-accent` | `#fff` | `#fff` | text on a filled accent (buttons, active pills) |
-| `violet` · `violet-strong` · `violet-soft` | `#a48bff` · `#6d28ff` · `#cbbcff` | `#6d28ff` · `#6d28ff` · `#5420d0` | primary accent, active nav, links |
-| `pink` · `cyan` · `blue` | `#ff5ca8` · `#19d3f0` · `#5ab0ff` | `#d1136a` · `#0a8ca3` · `#1f6fd1` | secondary accents, chart series |
-| `success` · `warn` · `danger` (+ `-soft` text) | lime `#c6f432` · `#ffb547` · `#ff5c7a` | `#3e7c0a` · `#b25600` · `#d0103a` | semantic |
+| `violet` · `violet-strong` · `violet-soft` | `#a48bff` · `#6d28ff` · `#cbbcff` | `#5920d1` · `#6d28ff` · `#5420d0` | primary accent, active nav, links |
+| `pink` · `cyan` · `blue` | `#ff5ca8` · `#19d3f0` · `#5ab0ff` | `#980b4c` · `#005a68` · `#14519a` | secondary accents, chart series |
+| `success` · `warn` · `danger` (+ `-soft` text) | lime `#c6f432` · `#ffb547` · `#ff5c7a` | `#2e5d03` · `#853d00` · `#9a0a2b` | semantic |
+| `hard` · `soft` | `#ef4444` · `#f59e0b` | `#942929` · `#744800` | hard bounce · soft bounce |
 
 - Accents carry a **per-mode value** so the same token reads as text on cream and on ink.
 - Translucent fills: `alpha(c,'22')` bg / `'66'` border → `color-mix(in srgb, c N%, transparent)`.
   Hex-suffix concatenation (`c + '22'`, `` `${c}22` ``) does **not** work on tokens — never use it.
-- **HARD RULES (never violate, mode-independent literals):** hard bounce `#ef4444` red, soft bounce
-  `#f59e0b` amber, never combined into one number. State keywords colour via `stateColor()` so
-  pass/fail/storm/sending are identical across screens.
+- **HARD RULES (never violate):** hard bounce is always red (`--j-hard`), soft bounce always amber
+  (`--j-soft`), never combined into one number. Dark uses `#ef4444` / `#f59e0b` exactly; light uses
+  the same hues darkened for AA. State keywords colour via `stateColor()` so pass/fail/storm/sending
+  are identical across screens.
+- **Accessibility (WCAG 2.1 AA, both modes):**
+  - Every text token ≥ 4.5:1 on every surface and on a 30% tint of itself. Never dim text with
+    `color-mix` or `opacity` — pick `text-2`, `text-muted` or `text-faint`.
+  - Arbitrary colours (ISP brands, series) as text go through `Pill`, which pulls the label toward
+    `--j-text`. Don't put a raw brand hex on a tint of itself.
+  - Every `input`, `select`, `textarea` and icon-only `button` has an accessible name: a `<label>`,
+    or `aria-label` matching the visible label.
+  - Form controls outline in `border-strong` (3:1). Horizontally scrolling regions get `tabIndex={0}`.
+  - Verify with axe-core on real data before calling a palette change done.
 - **Type:** headings Bricolage Grotesque (`--j-font-display`, 700–800, tight tracking); everything
   else Inter (`--j-font-body`). Numbers `fontVariantNumeric: 'tabular-nums'` always. Section titles
   uppercase 13px (`panelTitleStyle`). Explanatory subtext 11–12px `textMuted`, complete sentences.
@@ -170,3 +181,4 @@ mediator's own records rather than raw event counts.
   the active narrowing; single-day screens use the shared range bar's `To` day and warn when a wider
   range was applied.
 - 2026-10-29: §2 rewritten: portal restyled to the Jarvis marketing brand with light/dark mode. All portal colour literals codemodded to `--j-*` tokens (`styles/jarvis-tokens.css`); `theme.ts` resolves to tokens and `alpha()` is `color-mix`; legacy `index.css` vars alias the tokens; sidebar + sign-in carry `JarvisMark`. Supersedes the indigo/slate palette.
+- 2026-10-30: §2 accessibility pass (operator). Light tokens darkened to AA including on self-tints; `--j-hard` / `--j-soft` added (literals kept in dark); translucent text replaced with solid tokens; accessible names added to controls; rules recorded in §2.

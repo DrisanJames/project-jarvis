@@ -16,7 +16,7 @@
 }
 
 .send-header .subtitle {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin: 0;
 }
 
@@ -37,7 +37,7 @@
 
 .throttle-label {
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   text-transform: uppercase;
 }
 
@@ -170,7 +170,7 @@
 
 .result-content p {
   margin: 4px 0;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
 }
 
@@ -223,7 +223,7 @@
 
 .history-time {
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 /* Profile Selector */
@@ -255,7 +255,7 @@
   background: linear-gradient(135deg, color-mix(in srgb, var(--j-cyan) 10%, transparent) 0%, color-mix(in srgb, var(--j-blue) 10%, transparent) 100%);
   border-radius: 8px;
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .profile-info strong {

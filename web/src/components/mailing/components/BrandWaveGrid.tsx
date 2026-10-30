@@ -323,10 +323,10 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
     <div>
       <style>{`.bwg-cell{transition:background 120ms ease} .bwg-cell:hover{background:color-mix(in srgb, var(--j-violet-strong) 12%, transparent)}`}</style>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text)' }}>
           {brands.length} brands · {waves.length} send batches · {num(grandTotal)} planned
         </span>
-        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>Mature → Warming → New · scroll down through the bands</span>
+        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Mature → Warming → New · scroll down through the bands</span>
       </div>
 
       {/* One titled, stacked section per volume-category band. */}
@@ -345,7 +345,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
               }}>
                 {meta.label}
               </span>
-              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+              <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
                 {secBrands.length} {secBrands.length === 1 ? 'domain' : 'domains'} · {num(secTotal)} planned
               </span>
             </div>
@@ -357,8 +357,8 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                     {secBrands.map(b => (
                       <th key={b.domain} style={thBase}>
                         <div style={{ fontWeight: 700, color: 'var(--j-cyan)', fontSize: 12 }}>{b.label}</div>
-                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{b.domain}</div>
-                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
+                        <div style={{ fontSize: 9, color: 'var(--j-text-muted)' }}>{b.domain}</div>
+                        <div style={{ fontSize: 9, color: 'var(--j-text-2)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
                       </th>
                     ))}
                   </tr>
@@ -371,12 +371,12 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                     return (
                       <tr key={w}>
                         <td style={{ ...tdBase, ...stickyLeft }}>
-                          <div style={{ fontWeight: 700, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>{w}</div>
-                          <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{mtTime(repTime)} MT</div>
+                          <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--j-text)' }}>{w}</div>
+                          <div style={{ fontSize: 10, color: 'var(--j-text-muted)' }}>{mtTime(repTime)} MT</div>
                         </td>
                         {secBrands.map(b => {
                           const cell = matrix[w]?.[b.domain];
-                          if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'color-mix(in srgb, var(--j-text) 25%, transparent)', textAlign: 'center' }}>—</td>;
+                          if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'var(--j-text-muted)', textAlign: 'center' }}>—</td>;
                           const isSel = selected?.wave === w && selected?.domain === b.domain;
                           const st = cellStatus(cell.statuses);
                           const clickable = cell.volume > 0;
@@ -384,7 +384,7 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                           // per-ISP composition + segments. Zero-volume cells aren't clickable.
                           const inner = (
                             <>
-                              <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
+                              <div style={{ fontSize: 10, color: 'var(--j-text-2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
                               <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? 'var(--j-text-2)' }}>{num(cell.volume)}</div>
                             </>
                           );
@@ -576,7 +576,7 @@ const shelfLabel: React.CSSProperties = {
 };
 const pillWrap: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8 };
 
-const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' };
+const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'var(--j-text-2)' };
 const thBase: React.CSSProperties = {
   padding: '8px 12px', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 20%, transparent)', borderRight: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
   background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', minWidth: 130, verticalAlign: 'top',

@@ -227,7 +227,7 @@ export const DripPerformancePanel: React.FC = () => {
           <span style={{ color: 'var(--j-success)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faCircle} style={{ fontSize: 8 }} beat={secondsAgo !== null && secondsAgo < 3} />
             LIVE — refreshed from delivery activity every {FAST_POLL_MS / 1000}s
-            {secondsAgo !== null && <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>(updated {secondsAgo}s ago)</span>}
+            {secondsAgo !== null && <span style={{ color: 'var(--j-text-muted)' }}>(updated {secondsAgo}s ago)</span>}
           </span>
         </div>
       </div>
@@ -248,17 +248,17 @@ export const DripPerformancePanel: React.FC = () => {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14, marginBottom: 18 }}>
         {funnel.map(v => <FunnelCard key={v.vertical} v={v} isps={funnelISP.filter(i => i.vertical === v.vertical)} />)}
         {funnel.length === 0 && (
-          <div style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 13 }}>No queue data yet.</div>
+          <div style={{ color: 'var(--j-text-muted)', fontSize: 13 }}>No queue data yet.</div>
         )}
       </div>
 
       {/* ───── Wave rollup by vertical × brand ───── */}
-      <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', marginBottom: 8 }}>
+      <div style={{ fontSize: 13, color: 'var(--j-text-2)', marginBottom: 8 }}>
         <FontAwesomeIcon icon={faPaperPlane} style={{ marginRight: 6 }} />
         Send batches — last {WINDOW_HOURS}h, rolled up per <b>vertical × brand</b>, biggest senders first. Expand a lane for its
         hourly delivery graph and individual send batches. Rates are against sent, not planned.
       </div>
-      <div style={{ fontSize: 11, color: '#f59e0b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ fontSize: 11, color: 'var(--j-soft)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
         <FontAwesomeIcon icon={faExclamationTriangle} style={{ fontSize: 10 }} />
         Drip open-tracking is limited — <b>opens/clicks are under-reported for partner-drip waves</b> (the tracking pixel isn&apos;t
         reliably injected in the drip creative). Read ~0 opens as a template/tracking gap, not a performance signal.
@@ -297,8 +297,8 @@ export const DripPerformancePanel: React.FC = () => {
                   </td>
                   <td style={td}><SentProgress sent={g.sent} planned={g.recipients} status={g.active > 0 ? 'sending' : 'sent'} /></td>
                   <td style={tdNum}><RateCell count={g.delivered} denom={g.sent} color="var(--j-success)" bold /></td>
-                  <td style={tdNum}><RateCell count={g.hard_bounces} denom={g.sent} color="#ef4444" bold={g.hard_bounces > 0} warnAt={1} /></td>
-                  <td style={tdNum}><RateCell count={g.soft_bounces} denom={g.sent} color="#f59e0b" /></td>
+                  <td style={tdNum}><RateCell count={g.hard_bounces} denom={g.sent} color="var(--j-hard)" bold={g.hard_bounces > 0} warnAt={1} /></td>
+                  <td style={tdNum}><RateCell count={g.soft_bounces} denom={g.sent} color="var(--j-soft)" /></td>
                   <td style={tdNum}>{g.opens.toLocaleString()}</td>
                   <td style={tdNum}><span style={{ color: 'var(--j-violet)', fontWeight: g.clicks > 0 ? 600 : 400 }}>{g.clicks.toLocaleString()}</span></td>
                   <td style={td}>{relativeTime(g.last_wave_at)}</td>
@@ -314,14 +314,14 @@ export const DripPerformancePanel: React.FC = () => {
             );
           })}
           {sortedRollup.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={10}>No send batches in the last {WINDOW_HOURS}h.</td></tr>
+            <tr><td style={{ ...td, textAlign: 'center', color: 'var(--j-text-muted)' }} colSpan={10}>No send batches in the last {WINDOW_HOURS}h.</td></tr>
           )}
         </tbody>
       </table>
 
       {/* ───── Inbound flow roll-up ───── */}
       <div style={{ marginTop: 22 }}>
-        <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', marginBottom: 8 }}>
+        <div style={{ fontSize: 13, color: 'var(--j-text-2)', marginBottom: 8 }}>
           <FontAwesomeIcon icon={faInbox} style={{ marginRight: 6 }} />
           <b style={{ color: 'var(--j-text)' }}>Inbound Flow — last 24h.</b> Partners post leads in real time, often <b>one record per API call</b> — each "batch" is one POST, not a send. This rolls them up per feed; per-post detail lives in the Inbound Batches tab.
         </div>
@@ -341,21 +341,21 @@ export const DripPerformancePanel: React.FC = () => {
               <tr key={g.dataset_id}>
                 <td style={td}>
                   <div style={{ fontWeight: 600 }}>{g.partner_name}</div>
-                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{g.dataset_name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{g.dataset_name}</div>
                 </td>
                 <td style={td}>{labelForVertical(g.vertical)}</td>
                 <td style={tdNum}>{g.posts.toLocaleString()}</td>
                 <td style={tdNum}><b style={{ color: 'var(--j-success)' }}>{g.records.toLocaleString()}</b></td>
                 <td style={tdNum}>
                   {g.stopped > 0
-                    ? <span style={{ color: '#f59e0b', fontWeight: 600 }}>{g.stopped} stopped</span>
-                    : <span style={{ color: g.in_flight > 0 ? 'var(--j-violet)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{g.in_flight.toLocaleString()}</span>}
+                    ? <span style={{ color: 'var(--j-soft)', fontWeight: 600 }}>{g.stopped} stopped</span>
+                    : <span style={{ color: g.in_flight > 0 ? 'var(--j-violet)' : 'var(--j-text-muted)' }}>{g.in_flight.toLocaleString()}</span>}
                 </td>
                 <td style={td}>{g.last_received ? relativeTime(g.last_received) : '—'}</td>
               </tr>
             ))}
             {ingest.length === 0 && (
-              <tr><td style={{ ...td, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={6}>No inbound posts in the last 24h.</td></tr>
+              <tr><td style={{ ...td, textAlign: 'center', color: 'var(--j-text-muted)' }} colSpan={6}>No inbound posts in the last 24h.</td></tr>
             )}
           </tbody>
         </table>
@@ -379,16 +379,16 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
 
   return (
     <div style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', padding: '14px 16px' }}>
-      <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 6 }}>
+      <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginBottom: 6 }}>
         Hourly delivery & performance — {labelForVertical(group.vertical)} / {group.brand.toUpperCase()} (delivery activity as received)
       </div>
       {chartData.length > 0 ? (
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={chartData} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
             <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
-            <XAxis dataKey="hour" tick={{ fill: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
-            <YAxis yAxisId="vol" tick={{ fill: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
-            <YAxis yAxisId="eng" orientation="right" tick={{ fill: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+            <XAxis dataKey="hour" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+            <YAxis yAxisId="vol" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+            <YAxis yAxisId="eng" orientation="right" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
             <Tooltip
               contentStyle={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, fontSize: 12 }}
               labelStyle={{ color: 'var(--j-text)' }}
@@ -396,17 +396,17 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
             <Legend wrapperStyle={{ fontSize: 12 }} />
             <Bar yAxisId="vol" dataKey="Sent" fill="var(--j-violet-strong)" radius={[2, 2, 0, 0]} />
             <Bar yAxisId="vol" dataKey="Delivered" fill="var(--j-success)" radius={[2, 2, 0, 0]} />
-            <Line yAxisId="eng" type="monotone" dataKey="Hard" stroke="#ef4444" strokeWidth={2} dot={false} />
-            <Line yAxisId="eng" type="monotone" dataKey="Soft" stroke="#f59e0b" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Hard" stroke="var(--j-hard)" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Soft" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
             <Line yAxisId="eng" type="monotone" dataKey="Opens" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
             <Line yAxisId="eng" type="monotone" dataKey="Clicks" stroke="var(--j-violet)" strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       ) : (
-        <div style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, padding: '18px 0' }}>No activity recorded for this lane yet — the graph fills in as delivery activity arrives.</div>
+        <div style={{ color: 'var(--j-text-muted)', fontSize: 12, padding: '18px 0' }}>No activity recorded for this lane yet — the graph fills in as delivery activity arrives.</div>
       )}
 
-      <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', margin: '12px 0 6px' }}>
+      <div style={{ fontSize: 12, color: 'var(--j-text-muted)', margin: '12px 0 6px' }}>
         Individual send batches (newest first, live)
       </div>
       <table style={{ ...tableStyle, background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)' }}>
@@ -428,22 +428,22 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
             <tr key={wv.campaign_id}>
               <td style={td}>
                 <div style={{ fontWeight: 600 }}>{relativeTime(wv.scheduled_at)}</div>
-                <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
                   {wv.partner_name || wv.partner_slug}{wv.dataset_name ? ` / ${wv.dataset_name}` : ''}
                 </div>
               </td>
               <td style={td}><SentProgress sent={wv.sent} planned={wv.total_recipients} status={wv.status} /></td>
               <td style={tdNum}><RateCell count={wv.delivered} denom={wv.sent} color="var(--j-success)" bold /></td>
-              <td style={tdNum}><RateCell count={wv.hard_bounces} denom={wv.sent} color="#ef4444" bold={wv.hard_bounces > 0} warnAt={1} /></td>
-              <td style={tdNum}><span style={{ color: '#f59e0b' }}>{wv.soft_bounces.toLocaleString()}</span></td>
-              <td style={tdNum}><span style={{ color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{wv.deferred.toLocaleString()}</span></td>
+              <td style={tdNum}><RateCell count={wv.hard_bounces} denom={wv.sent} color="var(--j-hard)" bold={wv.hard_bounces > 0} warnAt={1} /></td>
+              <td style={tdNum}><span style={{ color: 'var(--j-soft)' }}>{wv.soft_bounces.toLocaleString()}</span></td>
+              <td style={tdNum}><span style={{ color: 'var(--j-text-muted)' }}>{wv.deferred.toLocaleString()}</span></td>
               <td style={tdNum}>{wv.opens.toLocaleString()}</td>
               <td style={tdNum}><span style={{ color: 'var(--j-violet)', fontWeight: wv.clicks > 0 ? 600 : 400 }}>{wv.clicks.toLocaleString()}</span></td>
               <td style={td}><WaveStatus status={wv.status} /></td>
             </tr>
           ))}
           {waves.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={9}>Loading send batches…</td></tr>
+            <tr><td style={{ ...td, textAlign: 'center', color: 'var(--j-text-muted)' }} colSpan={9}>Loading send batches…</td></tr>
           )}
         </tbody>
       </table>
@@ -460,20 +460,20 @@ const OverallStrip: React.FC<{
   const pct = (n: number) => totals.sent > 0 ? `${((n / totals.sent) * 100).toFixed(1)}%` : '—';
   return (
     <div style={overallBox}>
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8 }}>
         Overall — all follow-ups, last 24h ({totals.waves.toLocaleString()} send batches)
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8 }}>
         <BigStat label="Sent" value={totals.sent.toLocaleString()} />
         <BigStat label="Delivered" value={totals.delivered.toLocaleString()} sub={pct(totals.delivered)} accent="var(--j-success)" />
-        <BigStat label="Hard bounce" value={totals.hard_bounces.toLocaleString()} sub={pct(totals.hard_bounces)} accent="#ef4444" />
-        <BigStat label="Soft bounce" value={totals.soft_bounces.toLocaleString()} sub={pct(totals.soft_bounces)} accent="#f59e0b" />
+        <BigStat label="Hard bounce" value={totals.hard_bounces.toLocaleString()} sub={pct(totals.hard_bounces)} accent="var(--j-hard)" />
+        <BigStat label="Soft bounce" value={totals.soft_bounces.toLocaleString()} sub={pct(totals.soft_bounces)} accent="var(--j-soft)" />
         <BigStat label="Opens*" value={totals.opens.toLocaleString()} title="Raw opens — includes automated privacy and scanner traffic. *Under-reported for partner-drip waves: the drip open-pixel isn't reliably injected, so treat ~0 as a tracking gap, not a performance signal." />
         <BigStat label="Clicks*" value={totals.clicks.toLocaleString()} accent="var(--j-violet)" title="*Under-reported for partner-drip waves — drip tracking limited." />
         <BigStat label="Ready pending" value={overall.ready.toLocaleString()} title="Verified leads waiting for their first send" />
         <BigStat label="In follow-up" value={overall.inDrip.toLocaleString()} title="Recipients somewhere in the T1–T4 journey" />
         <BigStat label="Engaged" value={overall.engaged.toLocaleString()} accent="var(--j-success)" title="Opened/clicked — exited the follow-up sequence as a win" />
-        <BigStat label="Due now" value={overall.dueNow.toLocaleString()} accent={overall.dueNow > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their scheduled time" />
+        <BigStat label="Due now" value={overall.dueNow.toLocaleString()} accent={overall.dueNow > 0 ? 'var(--j-soft)' : undefined} title="Follow-up touches past their scheduled time" />
       </div>
     </div>
   );
@@ -481,9 +481,9 @@ const OverallStrip: React.FC<{
 
 const BigStat: React.FC<{ label: string; value: string; sub?: string; accent?: string; title?: string }> = ({ label, value, sub, accent, title }) => (
   <div title={title} style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', padding: '10px 8px', borderRadius: 6, textAlign: 'center' }}>
-    <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 10, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div style={{ fontSize: 18, fontWeight: 700, marginTop: 2, color: accent ?? 'var(--j-text)' }}>{value}</div>
-    {sub && <div style={{ fontSize: 11, color: accent ?? 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 1 }}>{sub}</div>}
+    {sub && <div style={{ fontSize: 11, color: accent ?? 'var(--j-text-muted)', marginTop: 1 }}>{sub}</div>}
   </div>
 );
 
@@ -499,7 +499,7 @@ const SentProgress: React.FC<{ sent: number; planned: number; status: string }> 
     <div>
       <div style={{ fontVariantNumeric: 'tabular-nums', fontSize: 13 }}>
         <b>{sent.toLocaleString()}</b>
-        <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}> / {denom.toLocaleString()}</span>
+        <span style={{ color: 'var(--j-text-muted)' }}> / {denom.toLocaleString()}</span>
       </div>
       <div style={{ height: 4, borderRadius: 2, background: 'color-mix(in srgb, var(--j-shade) 75%, transparent)', marginTop: 3, overflow: 'hidden' }}>
         <div style={{
@@ -520,7 +520,7 @@ const RateCell: React.FC<{ count: number; denom: number; color: string; bold?: b
   return (
     <span>
       <span style={{ color, fontWeight: bold || hot ? 700 : 400 }}>{count.toLocaleString()}</span>
-      <span style={{ fontSize: 11, color: hot ? color : 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginLeft: 4 }}>
+      <span style={{ fontSize: 11, color: hot ? color : 'var(--j-text-muted)', marginLeft: 4 }}>
         {rate === null ? '—' : `${rate.toFixed(rate >= 10 ? 0 : 1)}%`}
       </span>
     </span>
@@ -562,11 +562,11 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
         />
         <MiniStat label="Ready" value={v.ready} accent="var(--j-success)" />
         <MiniStat label="Mailed" value={v.mailed} accent="var(--j-violet-strong)" />
-        <MiniStat label="Due now" value={v.followups_due} accent={v.followups_due > 0 ? '#f59e0b' : undefined} title="Follow-up touches past their next scheduled time" />
+        <MiniStat label="Due now" value={v.followups_due} accent={v.followups_due > 0 ? 'var(--j-soft)' : undefined} title="Follow-up touches past their next scheduled time" />
       </div>
 
       {/* Multi-touch state machine */}
-      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
+      <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
         Touch journey ({touchTotal.toLocaleString()} in follow-up)
       </div>
       <TouchBar t1={v.touch_1} t2={v.touch_2} t3={v.touch_3} t4={v.touch_4} />
@@ -578,7 +578,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
           In progress: <b style={{ color: 'var(--j-blue)' }}>{inProgress.toLocaleString()}</b>
         </span>
         <span title="Conversions tied to this dataset's records — CPM, $0 revenue by design">
-          Conv: <b style={{ color: (v.conversions ?? 0) > 0 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{(v.conversions ?? 0).toLocaleString()}</b>
+          Conv: <b style={{ color: (v.conversions ?? 0) > 0 ? 'var(--j-soft)' : 'var(--j-text-muted)' }}>{(v.conversions ?? 0).toLocaleString()}</b>
         </span>
       </div>
       {/* Three outcome buckets — engaged + in-progress + churn partition the drip
@@ -598,7 +598,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
         </span>
         <span
           title="churn = exhausted all touches without ever engaging"
-          style={{ color: churned > 0 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontWeight: 600 }}
+          style={{ color: churned > 0 ? 'var(--j-soft)' : 'var(--j-text-muted)', fontWeight: 600 }}
         >
           Churn {ratePct(churned, dripDenom)}
         </span>
@@ -609,7 +609,7 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
           <div style={{ height: 1, background: 'color-mix(in srgb, var(--j-text-muted) 12%, transparent)', margin: '10px 0' }} />
           <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              <tr style={{ color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
                 <th style={ispTh}>Mailbox provider</th>
                 <th style={ispThNum}>Ready</th>
                 <th style={ispThNum}>Sent 24h</th>
@@ -619,14 +619,14 @@ const FunnelCard: React.FC<{ v: FunnelVertical; isps: FunnelISP[] }> = ({ v, isp
               {allISPs.map(i => (
                 <tr key={i.isp}>
                   <td style={ispTd}>{i.isp}</td>
-                  <td style={{ ...ispTdNum, color: i.ready > 50000 ? '#f59e0b' : undefined }} title={i.ready > 50000 ? 'large held/queued pending' : undefined}>{i.ready.toLocaleString()}</td>
+                  <td style={{ ...ispTdNum, color: i.ready > 50000 ? 'var(--j-soft)' : undefined }} title={i.ready > 50000 ? 'large held/queued pending' : undefined}>{i.ready.toLocaleString()}</td>
                   <td style={{ ...ispTdNum, color: i.sent_24h > 0 ? 'var(--j-success)' : undefined }}>{i.sent_24h.toLocaleString()}</td>
                 </tr>
               ))}
               <tr style={{ borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)' }}>
-                <td style={{ ...ispTd, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: 10 }}>Total</td>
-                <td style={{ ...ispTdNum, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{allISPs.reduce((s, i) => s + i.ready, 0).toLocaleString()}</td>
-                <td style={{ ...ispTdNum, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{allISPs.reduce((s, i) => s + i.sent_24h, 0).toLocaleString()}</td>
+                <td style={{ ...ispTd, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontSize: 10 }}>Total</td>
+                <td style={{ ...ispTdNum, color: 'var(--j-text-2)' }}>{allISPs.reduce((s, i) => s + i.ready, 0).toLocaleString()}</td>
+                <td style={{ ...ispTdNum, color: 'var(--j-text-2)' }}>{allISPs.reduce((s, i) => s + i.sent_24h, 0).toLocaleString()}</td>
               </tr>
             </tbody>
           </table>
@@ -648,7 +648,7 @@ const TouchBar: React.FC<{ t1: number; t2: number; t3: number; t4: number }> = (
           n > 0 ? <div key={i} style={{ width: `${(n / total) * 100}%`, background: TOUCH_COLORS[i] }} title={`T${i + 1}: ${n.toLocaleString()}`} /> : null
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 4, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+      <div style={{ display: 'flex', gap: 10, marginTop: 4, fontSize: 11, color: 'var(--j-text-muted)' }}>
         {parts.map((n, i) => (
           <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: TOUCH_COLORS[i], display: 'inline-block' }} />
@@ -675,9 +675,9 @@ const compactNum = (n: number): string => {
 // (>=100k) are compacted (see compactNum) with the full number in the tooltip.
 const MiniStat: React.FC<{ label: string; value: number; accent?: string; title?: string; sub?: string }> = ({ label, value, accent, title, sub }) => (
   <div title={title} style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 6, borderRadius: 4, textAlign: 'center', minWidth: 0, overflowWrap: 'break-word' }}>
-    <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 9, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
     <div title={value.toLocaleString()} style={{ fontSize: 15, fontWeight: 700, marginTop: 2, color: accent ?? 'var(--j-text)', whiteSpace: 'nowrap' }}>{compactNum(value)}</div>
-    {sub && <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 1 }}>{sub}</div>}
+    {sub && <div style={{ fontSize: 9, color: 'var(--j-text-muted)', marginTop: 1 }}>{sub}</div>}
   </div>
 );
 
@@ -694,7 +694,7 @@ const WaveStatus: React.FC<{ status: string }> = ({ status }) => {
     finalizing_audience: 'var(--j-violet)',
     sent: 'var(--j-success)',
     completed: 'var(--j-success)',
-    failed: '#ef4444',
+    failed: 'var(--j-hard)',
     cancelled: 'color-mix(in srgb, var(--j-text) 50%, transparent)',
   };
   return <span style={{ color: colors[status] ?? 'var(--j-text-2)', fontWeight: 500, fontSize: 12 }}>{status}</span>;
@@ -729,7 +729,7 @@ const tableStyle: React.CSSProperties = {
   borderRadius: 8, overflow: 'hidden', fontSize: 13,
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '8px 10px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  textAlign: 'left', padding: '8px 10px', color: 'var(--j-text-muted)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
 const thNum: React.CSSProperties = { ...th, textAlign: 'right' };

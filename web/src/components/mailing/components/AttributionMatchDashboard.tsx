@@ -149,7 +149,7 @@ const fmtTime = (s?: string): string => {
 
 const tierColor = (tier: string): string => {
   if (tier === 'tight') return 'var(--j-success)';
-  if (tier === 'fallback') return '#f59e0b';
+  if (tier === 'fallback') return 'var(--j-soft)';
   return 'var(--j-text-faint)';
 };
 
@@ -231,11 +231,11 @@ export const AttributionMatchDashboard: React.FC = () => {
             <FontAwesomeIcon icon={faCrosshairs} style={{ marginRight: 10, color: 'var(--j-violet)' }} />
             Attribution Match
           </h1>
-          <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, marginTop: 4 }}>
+          <div style={{ color: 'var(--j-text-muted)', fontSize: 12, marginTop: 4 }}>
             Resolve offer tracking click and conversion CSVs back to subscriber profiles
           </div>
         </div>
-        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>v{PAGE_VERSION}</div>
+        <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>v{PAGE_VERSION}</div>
       </header>
 
       <section style={cardStyle}>
@@ -256,7 +256,7 @@ export const AttributionMatchDashboard: React.FC = () => {
 
         <div style={{ display: 'flex', gap: 12, marginTop: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 280px' }}>
-            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+            <span style={{ fontSize: 11, color: 'var(--j-text-2)' }}>
               Offer link pattern (match)
             </span>
             <input
@@ -330,7 +330,7 @@ export const AttributionMatchDashboard: React.FC = () => {
                 label="Offer pattern"
                 value={result.offer_link_pattern}
                 pct=""
-                color="#f59e0b"
+                color="var(--j-soft)"
               />
             </div>
 
@@ -338,8 +338,8 @@ export const AttributionMatchDashboard: React.FC = () => {
               <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {Object.entries(result.unmatched_reasons).map(([k, v]) => (
                   <span key={k} style={chipStyle} title={REASON_HINTS[k] || ''}>
-                    <strong style={{ color: '#f59e0b' }}>{v}</strong>{' '}
-                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
+                    <strong style={{ color: 'var(--j-soft)' }}>{v}</strong>{' '}
+                    <span style={{ color: 'var(--j-text-muted)' }}>
                       {REASON_LABELS[k] || k}
                     </span>
                   </span>
@@ -378,7 +378,7 @@ export const AttributionMatchDashboard: React.FC = () => {
                   result.unmatched_clicks.length + result.unmatched_conversions.length
                 }
                 label="Unmatched"
-                color="#f59e0b"
+                color="var(--j-soft)"
               />
             </div>
 
@@ -392,7 +392,7 @@ export const AttributionMatchDashboard: React.FC = () => {
       )}
 
       {!result && !loading && (
-        <section style={{ ...cardStyle, marginTop: 16, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>
+        <section style={{ ...cardStyle, marginTop: 16, color: 'var(--j-text-muted)', fontSize: 13 }}>
           <FontAwesomeIcon icon={faRobot} style={{ marginRight: 8, color: 'var(--j-violet)' }} />
           Drop the offer tracking click and conversion exports above. We correlate each row's IP and
           timestamp against your recorded email clicks, look for a matching click on a link that
@@ -418,7 +418,7 @@ const FileSlot: React.FC<FileSlotProps> = ({ label, placeholder, file, onChange 
   const inputId = `file-${label.replace(/\s+/g, '-').toLowerCase()}`;
   return (
     <label htmlFor={inputId} style={fileSlotStyle}>
-      <input
+      <input aria-label="Choose a file to upload"
         id={inputId}
         type="file"
         accept=".csv,text/csv"
@@ -431,12 +431,12 @@ const FileSlot: React.FC<FileSlotProps> = ({ label, placeholder, file, onChange 
           style={{ fontSize: 22, color: file ? 'var(--j-success)' : 'var(--j-violet)' }}
         />
         <div>
-          <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{label}</div>
+          <div style={{ fontSize: 12, color: 'var(--j-text-2)' }}>{label}</div>
           <div style={{ fontSize: 14, color: 'var(--j-text)', marginTop: 2 }}>
             {file ? file.name : <span style={{ opacity: 0.5 }}>{placeholder}</span>}
           </div>
           {file && (
-            <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 2 }}>
+            <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
               {(file.size / 1024).toFixed(1)} KB
             </div>
           )}
@@ -453,7 +453,7 @@ const Counter: React.FC<{ label: string; value: string; pct: string; color: stri
   color,
 }) => (
   <div style={counterStyle}>
-    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+    <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
       {label}
     </div>
     <div style={{ fontSize: 20, color: 'var(--j-text)', fontWeight: 600, marginTop: 4 }}>
@@ -477,7 +477,7 @@ const TabButton: React.FC<{
     style={{
       ...tabButtonStyle,
       borderBottomColor: active ? color : 'transparent',
-      color: active ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+      color: active ? 'var(--j-text)' : 'var(--j-text-muted)',
     }}
   >
     <FontAwesomeIcon
@@ -509,7 +509,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
         }}
       >
         <h3 style={{ ...tableTitleStyle, margin: 0 }}>Clicks by sending domain</h3>
-        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+        <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
           {counts.length} domain{counts.length === 1 ? '' : 's'} · {totalClicks} click
           {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
         </div>
@@ -576,7 +576,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                     textAlign: 'right',
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    color: c.conversions > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)',
+                    color: c.conversions > 0 ? 'var(--j-success)' : 'var(--j-text-muted)',
                   }}
                 >
                   {c.conversions}
@@ -587,7 +587,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                     textAlign: 'right',
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+                    color: 'var(--j-text-muted)',
                   }}
                 >
                   {share.toFixed(1)}%
@@ -597,7 +597,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
           })}
           {counts.length > top.length && (
             <tr style={trBodyStyle}>
-              <td colSpan={4} style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>
+              <td colSpan={4} style={{ ...tdStyle, color: 'var(--j-text-muted)', fontSize: 12 }}>
                 +{counts.length - top.length} more domain
                 {counts.length - top.length === 1 ? '' : 's'} hidden — full list in the JSON
                 download.
@@ -671,7 +671,7 @@ const UploadListBreakdown: React.FC<{
         }}
       >
         <h3 style={{ ...tableTitleStyle, margin: 0 }}>Matched subscribers by upload list</h3>
-        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+        <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
           {tally.length} list{tally.length === 1 ? '' : 's'} · {totalClicks} click
           {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
         </div>
@@ -697,7 +697,7 @@ const UploadListBreakdown: React.FC<{
                     {b.listID && (
                       <span
                         style={{
-                          color: 'color-mix(in srgb, var(--j-text) 40%, transparent)',
+                          color: 'var(--j-text-muted)',
                           fontFamily: 'monospace',
                           fontSize: 10,
                         }}
@@ -732,7 +732,7 @@ const UploadListBreakdown: React.FC<{
                 <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-success)' }}>
                   {b.conversions}
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-text-2)' }}>
                   {share.toFixed(1)}%
                 </td>
               </tr>
@@ -853,7 +853,7 @@ const MatchedTable: React.FC<{
                   {listName}
                 </td>
                 <td style={tdStyle}>{m.subscriber?.email || '—'}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'var(--j-text-muted)' }}>
                   {subId ? subId.slice(0, 8) : '—'}
                 </td>
                 <td style={tdStyle}>{m.campaign_name || (m.campaign_id ? m.campaign_id.slice(0, 8) : '—')}</td>
@@ -904,11 +904,11 @@ const UnmatchedTable: React.FC<{
                     {REASON_LABELS[u.reason] || u.reason}
                   </span>
                 </td>
-                <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
+                <td style={{ ...tdStyle, color: 'var(--j-text-muted)', fontSize: 12 }}>
                   {u.detail || '—'}
                 </td>
                 {kind === 'conversion' && (
-                  <td style={{ ...tdStyle, textAlign: 'right', color: '#f59e0b' }}>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-soft)' }}>
                     ${(u.row.revenue ?? 0).toFixed(2)}
                   </td>
                 )}
@@ -922,7 +922,7 @@ const UnmatchedTable: React.FC<{
 );
 
 const EmptyState: React.FC<{ text: string }> = ({ text }) => (
-  <div style={{ padding: 32, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13 }}>
+  <div style={{ padding: 32, textAlign: 'center', color: 'var(--j-text-muted)', fontSize: 13 }}>
     {text}
   </div>
 );
@@ -1060,7 +1060,7 @@ const thStyle: React.CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
   letterSpacing: 0.5,
-  color: 'color-mix(in srgb, var(--j-text) 70%, transparent)',
+  color: 'var(--j-text-2)',
   fontWeight: 600,
 };
 

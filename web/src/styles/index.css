@@ -231,7 +231,7 @@ body {
   padding: 9px 14px;
   background: transparent;
   border: none;
-  color: color-mix(in srgb, var(--j-text) 70%, transparent);
+  color: var(--j-text-2);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -246,7 +246,7 @@ body {
 
 .sidebar-nav-item:hover {
   background: color-mix(in srgb, var(--j-text) 8%, transparent);
-  color: color-mix(in srgb, var(--j-text) 95%, transparent);
+  color: var(--j-text);
 }
 
 .sidebar-nav-item.active {
@@ -1625,7 +1625,7 @@ body {
 }
 
 .btn-danger {
-  background: #ef4444;
+  background: var(--j-hard);
   color: var(--j-on-accent);
 }
 
@@ -2132,4 +2132,11 @@ h1, h2, h3,
 .panel-title {
   font-family: var(--j-font-display);
   letter-spacing: -0.01em;
+}
+
+/* Form controls keep a visible edge in both modes (WCAG 1.4.11, 3:1). */
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+select,
+textarea {
+  border-color: var(--j-border-strong) !important;
 }

@@ -206,7 +206,7 @@ const ToggleSwitch: React.FC<{
       border: 'none',
       cursor: pending || disabled ? 'not-allowed' : 'pointer',
       padding: 0,
-      color: value ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 40%, transparent)',
+      color: value ? 'var(--j-success)' : 'var(--j-text-muted)',
       fontSize: 22,
       lineHeight: 1,
       opacity: pending ? 0.6 : 1,
@@ -278,7 +278,7 @@ const BlurInput: React.FC<{
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
-      <input
+      <input aria-label="Draft"
         type="text"
         value={draft}
         placeholder={placeholder}
@@ -318,7 +318,7 @@ const BlurInput: React.FC<{
             right: 10,
             top: '50%',
             transform: 'translateY(-50%)',
-            color: 'color-mix(in srgb, var(--j-text) 50%, transparent)',
+            color: 'var(--j-text-muted)',
             fontSize: 11,
           }}
         />
@@ -426,9 +426,9 @@ const OfferJourneyEditModal: React.FC<{
           <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16, fontWeight: 600 }}>
             Edit offer follow-up mapping
           </h3>
-          <button
+          <button aria-label="Close"
             onClick={onClose}
-            style={{ background: 'none', border: 'none', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', cursor: 'pointer', fontSize: 14 }}
+            style={{ background: 'none', border: 'none', color: 'var(--j-text-muted)', cursor: 'pointer', fontSize: 14 }}
           >
             <FontAwesomeIcon icon={faTimes} />
           </button>
@@ -436,16 +436,16 @@ const OfferJourneyEditModal: React.FC<{
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'var(--j-text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Offer ID
             </label>
-            <div style={{ marginTop: 4, padding: '8px 12px', background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 6, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13, fontFamily: 'monospace' }}>
+            <div style={{ marginTop: 4, padding: '8px 12px', background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 6, color: 'var(--j-text-muted)', fontSize: 13, fontFamily: 'monospace' }}>
               {initial.everflow_offer_id}
             </div>
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'var(--j-text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Follow-Up Sequence ID *
             </label>
             <input
@@ -462,10 +462,10 @@ const OfferJourneyEditModal: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'var(--j-text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Payout Type
             </label>
-            <select
+            <select aria-label="Payout Type"
               value={payoutType}
               onChange={(e) => setPayoutType(e.target.value as PayoutType)}
               style={{
@@ -493,7 +493,7 @@ const OfferJourneyEditModal: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'var(--j-text-2)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Notes
             </label>
             <textarea
@@ -525,7 +525,7 @@ const OfferJourneyEditModal: React.FC<{
             style={{
               padding: '8px 16px', background: 'transparent',
               border: '1px solid color-mix(in srgb, var(--j-text) 20%, transparent)', borderRadius: 6,
-              color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
+              color: 'var(--j-text-2)', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
             }}
           >
             Cancel
@@ -874,10 +874,10 @@ export const ClickDripAdmin: React.FC = () => {
           <FontAwesomeIcon icon={faHandPointer} style={{ color: 'var(--j-violet)' }} />
           Automated Follow-Ups Admin
         </h2>
-        <p style={{ margin: '6px 0 0', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13 }}>
+        <p style={{ margin: '6px 0 0', color: 'var(--j-text-muted)', fontSize: 13 }}>
           Wire offers to click-triggered follow-up sequences. Toggling{' '}
           <strong style={{ color: 'var(--j-success-soft)' }}>Enabled</strong> stops new enrollments immediately.{' '}
-          <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>v{CLICK_DRIP_ADMIN_VERSION}</span>
+          <span style={{ color: 'var(--j-text-muted)' }}>v{CLICK_DRIP_ADMIN_VERSION}</span>
         </p>
       </div>
 
@@ -893,11 +893,11 @@ export const ClickDripAdmin: React.FC = () => {
           <div>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--j-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               Offer Follow-Up Map
-              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 400 }}>
+              <span style={{ fontSize: 11, color: 'var(--j-text-muted)', fontWeight: 400 }}>
                 {journeyMap.length} {journeyMap.length === 1 ? 'mapping' : 'mappings'}
               </span>
             </h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--j-text-muted)' }}>
               Click an offer row to load its reminder subjects below.
             </p>
           </div>
@@ -948,7 +948,7 @@ export const ClickDripAdmin: React.FC = () => {
                 </>
               ) : journeyMap.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'var(--j-text-muted)' }}>
                     No offer follow-up mappings yet.
                   </td>
                 </tr>
@@ -997,13 +997,13 @@ export const ClickDripAdmin: React.FC = () => {
                           title={row.notes || ''}
                           style={{
                             display: 'block', whiteSpace: 'nowrap', overflow: 'hidden',
-                            textOverflow: 'ellipsis', color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 12,
+                            textOverflow: 'ellipsis', color: 'var(--j-text-2)', fontSize: 12,
                           }}
                         >
                           {row.notes || '—'}
                         </span>
                       </td>
-                      <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }}>
+                      <td style={{ ...tdStyle, color: 'var(--j-text-muted)', fontSize: 11 }}>
                         <FontAwesomeIcon icon={faClock} style={{ marginRight: 4, fontSize: 9 }} />
                         {relativeTime(row.updated_at)}
                       </td>
@@ -1046,12 +1046,12 @@ export const ClickDripAdmin: React.FC = () => {
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--j-text)' }}>
               Reminder Subjects
               {selectedOfferId && (
-                <span style={{ marginLeft: 8, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 400 }}>
+                <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--j-text-muted)', fontWeight: 400 }}>
                   for offer <code style={{ color: 'var(--j-violet)' }}>{selectedOfferId}</code>
                 </span>
               )}
             </h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--j-text-muted)' }}>
               {selectedOfferId
                 ? 'Edits persist on blur. Subject is required. Reset deletes the row so the system default takes over.'
                 : 'Select an offer above to manage its reminder subjects.'}
@@ -1165,7 +1165,7 @@ export const ClickDripAdmin: React.FC = () => {
                               title={row.enabled ? 'Disable this reminder' : 'Enable this reminder'}
                             />
                           </td>
-                          <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }}>
+                          <td style={{ ...tdStyle, color: 'var(--j-text-muted)', fontSize: 11 }}>
                             <FontAwesomeIcon icon={faClock} style={{ marginRight: 4, fontSize: 9 }} />
                             {relativeTime(row.updated_at)}
                           </td>
@@ -1185,7 +1185,7 @@ export const ClickDripAdmin: React.FC = () => {
                           </td>
                         </>
                       ) : (
-                        <td colSpan={6} style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                        <td colSpan={6} style={{ ...tdStyle, color: 'var(--j-text-muted)' }}>
                           <span style={{ marginRight: 12 }}>No custom subject — system default in use.</span>
                           <button
                             onClick={() => handleAddReminder(seq)}
@@ -1217,7 +1217,7 @@ export const ClickDripAdmin: React.FC = () => {
               marginTop: 14, padding: '8px 12px',
               background: 'color-mix(in srgb, var(--j-success) 8%, transparent)',
               border: '1px solid color-mix(in srgb, var(--j-success) 20%, transparent)',
-              borderRadius: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)',
+              borderRadius: 6, fontSize: 11, color: 'var(--j-text-2)',
               display: 'flex', alignItems: 'center', gap: 8,
             }}
           >
@@ -1246,7 +1246,7 @@ const thStyle: React.CSSProperties = {
   fontWeight: 600,
   textTransform: 'uppercase',
   letterSpacing: 0.5,
-  color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+  color: 'var(--j-text-muted)',
 };
 
 const tdStyle: React.CSSProperties = {

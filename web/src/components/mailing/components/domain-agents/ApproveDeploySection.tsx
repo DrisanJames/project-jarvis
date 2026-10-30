@@ -180,7 +180,7 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
                 Type <span style={{ color: C.text, fontWeight: 700 }}>{plan.sending_domain}</span> to confirm.
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <input
+                <input aria-label="Typed domain"
                   style={{ ...inputStyle, maxWidth: 280 }}
                   placeholder={plan.sending_domain}
                   value={typedDomain}

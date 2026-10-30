@@ -48,8 +48,8 @@ const C = {
   muted: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   indigo: 'var(--j-violet-strong)',
   green: 'var(--j-success)',
-  red: '#ef4444',
-  amber: '#f59e0b',
+  red: 'var(--j-hard)',
+  amber: 'var(--j-soft)',
 };
 
 // ─── Types (mirror cpm_planner_handlers.go JSON) ─────────────────────────────
@@ -1561,7 +1561,7 @@ export const CpmPlanner: React.FC = () => {
                 Top unattributed
               </button>
             )}
-            <button onClick={loadAttrGap} disabled={attrGapLoading}
+            <button aria-label="Refresh attribution gap" onClick={loadAttrGap} disabled={attrGapLoading}
               style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 12, cursor: 'pointer' }}>
               {attrGapLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
             </button>
@@ -1825,7 +1825,7 @@ export const CpmPlanner: React.FC = () => {
                 : 'MTD sent vs target, at the last-3-day send rate.'}
             </div>
           </div>
-          <button onClick={loadPacing} disabled={pacingLoading}
+          <button aria-label="Refresh pacing" onClick={loadPacing} disabled={pacingLoading}
             style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, background: 'transparent', color: C.muted, fontSize: 12, cursor: 'pointer' }}>
             {pacingLoading ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Refresh'}
           </button>
@@ -2121,14 +2121,14 @@ export const CpmPlanner: React.FC = () => {
         }}>
           <div>
             <label style={labelStyle}>Date</label>
-            <input
+            <input aria-label="Date"
               style={{ ...inputStyle, width: 140 }} type="date" value={convForm.date}
               onChange={e => setConvForm({ ...convForm, date: e.target.value })}
             />
           </div>
           <div>
             <label style={labelStyle}>Count</label>
-            <input
+            <input aria-label="Count"
               style={{ ...inputStyle, width: 80 }} type="number" min="1" step="1" value={convForm.count}
               onChange={e => setConvForm({ ...convForm, count: e.target.value })}
             />
@@ -2598,7 +2598,7 @@ export const CpmPlanner: React.FC = () => {
             </div>
             <div style={{ gridColumn: '1 / -1' }}>
               <label style={labelStyle}>Offer (maps live delivery + conversions back to the deal)</label>
-              <select
+              <select aria-label="Offer id"
                 style={inputStyle}
                 value={form.offer_id}
                 onChange={e => {
@@ -2652,7 +2652,7 @@ export const CpmPlanner: React.FC = () => {
             </div>
             <div>
               <label style={labelStyle}>Start date</label>
-              <input
+              <input aria-label="Start date"
                 style={inputStyle} type="date"
                 value={form.start_date}
                 onChange={e => setForm({ ...form, start_date: e.target.value })}
@@ -2660,7 +2660,7 @@ export const CpmPlanner: React.FC = () => {
             </div>
             <div>
               <label style={labelStyle}>Deadline (optional)</label>
-              <input
+              <input aria-label="Deadline (optional)"
                 style={inputStyle} type="date"
                 value={form.end_date}
                 min={form.start_date || undefined}
@@ -2674,7 +2674,7 @@ export const CpmPlanner: React.FC = () => {
             {editingId && (
               <div>
                 <label style={labelStyle}>Status</label>
-                <select
+                <select aria-label="Status"
                   style={inputStyle}
                   value={form.status}
                   onChange={e => setForm({ ...form, status: e.target.value })}
@@ -2701,7 +2701,7 @@ export const CpmPlanner: React.FC = () => {
             )}
             <div style={{ gridColumn: '1 / -1' }}>
               <label style={labelStyle}>Notes</label>
-              <textarea
+              <textarea aria-label="Notes"
                 style={{ ...inputStyle, minHeight: 60, resize: 'vertical' }}
                 value={form.notes}
                 onChange={e => setForm({ ...form, notes: e.target.value })}
@@ -3162,7 +3162,7 @@ export const CpmPlanner: React.FC = () => {
                 <div>Payout rate schedule (all months)</div>
                 {b.rates.map((r, i) => (
                   <div key={i} style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center' }}>
-                    <input type="date" style={{ ...revInput, width: 140 }} value={r.effective_from} onChange={e => setRate(i, { effective_from: e.target.value })} />
+                    <input aria-label="Payout rate schedule (all months)" type="date" style={{ ...revInput, width: 140 }} value={r.effective_from} onChange={e => setRate(i, { effective_from: e.target.value })} />
                     <input type="number" step="0.01" style={revInput} value={r.rate} onChange={e => setRate(i, { rate: e.target.value })} placeholder="$ / unit" />
                     <button onClick={() => set({ rates: b.rates.filter((_, j) => j !== i) })}
                       style={{ background: 'none', border: 'none', color: C.red, cursor: 'pointer' }}>✕</button>
@@ -3222,7 +3222,7 @@ export const CpmPlanner: React.FC = () => {
               }}>
               {nonCpmShowAll ? 'Non-CPM only' : 'Show CPM too'}
             </button>
-            <button onClick={() => loadNonCpm(nonCpmMonth)} disabled={nonCpmLoading}
+            <button aria-label="Refresh non-CPM deals" onClick={() => loadNonCpm(nonCpmMonth)} disabled={nonCpmLoading}
               style={{
                 padding: '6px 12px', borderRadius: 16, fontSize: 12,
                 cursor: nonCpmLoading ? 'default' : 'pointer',

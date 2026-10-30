@@ -199,8 +199,8 @@ function approvalColor(status: CreativeMeta['approval_status']): string {
 
 function moneyLinkColor(status: CreativeMeta['money_link_status']): string {
   if (status === 'pass') return 'var(--j-success)';
-  if (status === 'warn') return '#f59e0b';
-  if (status === 'dead') return '#ef4444';
+  if (status === 'warn') return 'var(--j-soft)';
+  if (status === 'dead') return 'var(--j-hard)';
   return 'var(--j-text-muted)'; // untested / undefined
 }
 
@@ -794,12 +794,12 @@ export const CreativeStudio: React.FC = () => {
             <FontAwesomeIcon icon={faStamp} /> Offers
           </button>
           <button onClick={() => setChatOpen((v) => !v)}
-            style={btnStyle(chatOpen ? '#14532d' : 'var(--j-surface-2)', chatOpen ? 'var(--j-success)' : 'var(--j-border)')}>
+            style={btnStyle(chatOpen ? 'color-mix(in srgb, var(--j-success) 20%, transparent)' : 'var(--j-surface-2)', chatOpen ? 'var(--j-success)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faRobot} /> Agent
           </button>
         </div>
         {engineUp === false && (
-          <span style={{ color: '#f59e0b', fontSize: 12 }}>
+          <span style={{ color: 'var(--j-soft)', fontSize: 12 }}>
             <FontAwesomeIcon icon={faTriangleExclamation} /> creative engine offline — generation unavailable
           </span>
         )}
@@ -854,14 +854,14 @@ export const CreativeStudio: React.FC = () => {
                 </div>
 
                 <label style={labelStyle}>Primary offer brand</label>
-                <select value={primaryBrandKey} onChange={(e) => setPrimaryBrandKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+                <select aria-label="Primary offer brand" value={primaryBrandKey} onChange={(e) => setPrimaryBrandKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
                   {brandOptions}
                 </select>
 
                 {mode === 'newsletter' && (
                   <>
                     <label style={labelStyle}>Secondary offer (optional)</label>
-                    <select value={secondaryBrandKey} onChange={(e) => setSecondaryBrandKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
+                    <select aria-label="Secondary offer (optional)" value={secondaryBrandKey} onChange={(e) => setSecondaryBrandKey(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }}>
                       <option value="">— none —</option>
                       {brandOptions}
                     </select>
@@ -874,7 +874,7 @@ export const CreativeStudio: React.FC = () => {
                     <input value={soloCreativeUrl} onChange={(e) => setSoloCreativeUrl(e.target.value)}
                       placeholder="https://img.projectjarvis.io/…" style={{ ...inputStyle, marginBottom: 12 }} />
                     <label style={labelStyle}>Below the ad</label>
-                    <select value={soloBelowMode} onChange={(e) => setSoloBelowMode(e.target.value as typeof soloBelowMode)} style={{ ...inputStyle, marginBottom: 12 }}>
+                    <select aria-label="Below the ad" value={soloBelowMode} onChange={(e) => setSoloBelowMode(e.target.value as typeof soloBelowMode)} style={{ ...inputStyle, marginBottom: 12 }}>
                       <option value="review_card">Review card</option>
                       <option value="full_review">Full review + articles</option>
                       <option value="none">Nothing (pure ad)</option>
@@ -892,7 +892,7 @@ export const CreativeStudio: React.FC = () => {
                       <input value={bannerUrl} onChange={(e) => setBannerUrl(e.target.value)}
                         placeholder="blank = brand default" style={{ ...inputStyle, marginBottom: 10 }} />
                       <label style={labelStyle}>Image orientation</label>
-                      <select value={imageOrientation} onChange={(e) => setImageOrientation(e.target.value as typeof imageOrientation)} style={{ ...inputStyle, marginBottom: 10 }}>
+                      <select aria-label="Image orientation" value={imageOrientation} onChange={(e) => setImageOrientation(e.target.value as typeof imageOrientation)} style={{ ...inputStyle, marginBottom: 10 }}>
                         <option value="">auto</option>
                         <option value="horizontal">horizontal (full-bleed)</option>
                         <option value="vertical">vertical (portrait)</option>
@@ -904,19 +904,19 @@ export const CreativeStudio: React.FC = () => {
                   <input value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)}
                     placeholder="blank = brand default" style={{ ...inputStyle, marginBottom: 10 }} />
                   <label style={labelStyle}>{mode === 'solo' ? 'Headline' : 'Title'}</label>
-                  <input value={titleOverride} onChange={(e) => setTitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <input aria-label="Logo URL" value={titleOverride} onChange={(e) => setTitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                   <label style={labelStyle}>{mode === 'solo' ? 'Subheadline' : 'Subtitle'}</label>
-                  <input value={subtitleOverride} onChange={(e) => setSubtitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <input aria-label="Subtitle override" value={subtitleOverride} onChange={(e) => setSubtitleOverride(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                   <label style={labelStyle}>CTA label</label>
-                  <input value={ctaLabel} onChange={(e) => setCtaLabel(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <input aria-label="CTA label" value={ctaLabel} onChange={(e) => setCtaLabel(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                   <label style={labelStyle}>CTA URL (leave blank — tracking links are added automatically)</label>
-                  <input value={ctaUrl} onChange={(e) => setCtaUrl(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
+                  <input aria-label="CTA label" value={ctaUrl} onChange={(e) => setCtaUrl(e.target.value)} style={{ ...inputStyle, marginBottom: 10 }} />
                 </div>
 
                 <label style={labelStyle}>Subject (leave blank to auto-fill)</label>
-                <input value={subjectLine} onChange={(e) => setSubjectLine(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
+                <input aria-label="Subject (leave blank to auto-fill)" value={subjectLine} onChange={(e) => setSubjectLine(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
                 <label style={labelStyle}>Preview text (leave blank to auto-fill)</label>
-                <input value={preheader} onChange={(e) => setPreheader(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
+                <input aria-label="Preview text (leave blank to auto-fill)" value={preheader} onChange={(e) => setPreheader(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
 
                 <label style={{ fontSize: 13, color: 'var(--j-text-2)', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                   <input type="checkbox" checked={refreshContent} onChange={(e) => setRefreshContent(e.target.checked)} />
@@ -935,7 +935,7 @@ export const CreativeStudio: React.FC = () => {
                 </div>
 
                 {error && (
-                  <div style={{ marginTop: 12, color: '#ef4444', fontSize: 13 }}>
+                  <div style={{ marginTop: 12, color: 'var(--j-hard)', fontSize: 13 }}>
                     <FontAwesomeIcon icon={faTriangleExclamation} /> {error}
                   </div>
                 )}
@@ -955,7 +955,7 @@ export const CreativeStudio: React.FC = () => {
                         <span key={r.site_key}
                           style={{
                             ...chipStyle(activeResultSite === r.site_key),
-                            ...(r.error ? { borderColor: '#ef4444', color: '#ef4444' } : {}),
+                            ...(r.error ? { borderColor: 'var(--j-hard)', color: 'var(--j-hard)' } : {}),
                           }}
                           onClick={() => setActiveResultSite(r.site_key)}>
                           {r.site_key.toUpperCase()}{r.error ? ' ✕' : r.saved ? ' ✓' : ''}
@@ -963,7 +963,7 @@ export const CreativeStudio: React.FC = () => {
                       ))}
                     </div>
                     {activeResult?.error ? (
-                      <div style={{ color: '#ef4444', fontSize: 13, padding: 16 }}>
+                      <div style={{ color: 'var(--j-hard)', fontSize: 13, padding: 16 }}>
                         <FontAwesomeIcon icon={faTriangleExclamation} /> {activeResult.site_key.toUpperCase()}: {activeResult.error}
                       </div>
                     ) : activeResult ? (
@@ -1045,7 +1045,7 @@ export const CreativeStudio: React.FC = () => {
                     Route offers through gateway (test)
                   </label>
                   {routeViaGateway && (
-                    <select
+                    <select aria-label="Route offers through gateway (test)"
                       value={gatewaySlug}
                       onChange={(e) => setGatewaySlug(e.target.value)}
                       style={{ ...inputStyle, width: 300, padding: '5px 8px' }}>
@@ -1068,7 +1068,7 @@ export const CreativeStudio: React.FC = () => {
                     border: '1px solid var(--j-surface-2)', borderRadius: 8, fontSize: 12,
                     display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                   }}>
-                    <span style={badgeStyle(lastGatewayProof.risk === 'high' ? '#f59e0b' : 'var(--j-success)')}>
+                    <span style={badgeStyle(lastGatewayProof.risk === 'high' ? 'var(--j-soft)' : 'var(--j-success)')}>
                       risk:{lastGatewayProof.risk}
                     </span>
                     <span style={{ color: 'var(--j-text-muted)' }}>offers routed via</span>
@@ -1220,7 +1220,7 @@ export const CreativeStudio: React.FC = () => {
                           <FontAwesomeIcon icon={faSpinner} spin /> Scanning creative for money links…
                         </div>
                       ) : offerLinksError ? (
-                        <div style={{ fontSize: 12, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: 12, color: 'var(--j-hard)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           <FontAwesomeIcon icon={faTriangleExclamation} /> {offerLinksError}
                           <button onClick={() => selected && fetchOfferLinks(selected.id)} style={smallBtnStyle('var(--j-surface-2)', 'var(--j-border)')}>
                             Retry
@@ -1266,14 +1266,14 @@ export const CreativeStudio: React.FC = () => {
                                 borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 8,
                               }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                  <span style={badgeStyle('#f59e0b')}>unmapped</span>
+                                  <span style={badgeStyle('var(--j-soft)')}>unmapped</span>
                                   <span style={{ fontSize: 12, color: 'var(--j-text-2)', fontWeight: 600 }}>{row.host}</span>
                                   <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>— Create tracking map</span>
                                 </div>
 
                                 <div>
                                   <label style={labelStyle}>Destination URL — verify this is where the offer should land</label>
-                                  <input
+                                  <input aria-label="Destination"
                                     value={draft.destination}
                                     onChange={(e) => setOfferDraft(row.normalized, { destination: e.target.value })}
                                     style={{ ...inputStyle, fontFamily: 'monospace', fontSize: 12 }} />
@@ -1282,7 +1282,7 @@ export const CreativeStudio: React.FC = () => {
                                 <div style={{ display: 'flex', gap: 8 }}>
                                   <div style={{ flex: 1, minWidth: 0 }}>
                                     <label style={labelStyle}>Slug</label>
-                                    <input
+                                    <input aria-label="Slug"
                                       value={draft.slug}
                                       onChange={(e) => setOfferDraft(row.normalized, { slug: e.target.value })}
                                       placeholder={row.suggested_slug || 'offer-slug'}
@@ -1290,7 +1290,7 @@ export const CreativeStudio: React.FC = () => {
                                   </div>
                                   <div style={{ flex: '0 0 200px' }}>
                                     <label style={labelStyle}>Risk profile</label>
-                                    <select
+                                    <select aria-label="Risk profile"
                                       value={draft.risk}
                                       onChange={(e) => setOfferDraft(row.normalized, { risk: e.target.value === 'high' ? 'high' : 'low' })}
                                       style={inputStyle}>
@@ -1374,7 +1374,7 @@ export const CreativeStudio: React.FC = () => {
               <div ref={chatBottomRef} />
             </div>
             <div style={{ padding: 10, borderTop: '1px solid var(--j-surface-2)', display: 'flex', gap: 8 }}>
-              <input
+              <input aria-label="Chat input"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
@@ -1382,7 +1382,7 @@ export const CreativeStudio: React.FC = () => {
                 style={{ ...inputStyle, flex: 1 }}
                 disabled={chatBusy}
               />
-              <button onClick={sendChat} disabled={chatBusy || !chatInput.trim()} style={btnStyle('var(--j-surface-3)', 'var(--j-violet-strong)')}>
+              <button aria-label="Send" onClick={sendChat} disabled={chatBusy || !chatInput.trim()} style={btnStyle('var(--j-surface-3)', 'var(--j-violet-strong)')}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </button>
             </div>

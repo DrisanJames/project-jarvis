@@ -134,7 +134,7 @@ export const EvidencePanel: React.FC<{
   return (
     <div className="oa-ev-root">
       <div className="oa-ev-header">
-        <button type="button" className="oa-ev-back" onClick={onBack}>
+        <button aria-label="Back" type="button" className="oa-ev-back" onClick={onBack}>
           <FontAwesomeIcon icon={faArrowLeft} /> {offerName || offer}
         </button>
         <div className="oa-ev-titleblock">

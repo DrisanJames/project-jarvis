@@ -33,11 +33,11 @@ const fmt = (iso: string | null | undefined): string => {
 const panel: React.CSSProperties = {
   marginTop: 14, background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
   border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', borderRadius: 10, padding: '14px 16px',
-  color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
+  color: 'var(--j-text)',
 };
 const th: React.CSSProperties = {
   textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.5,
-  color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+  color: 'var(--j-text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap',
 };
 const td: React.CSSProperties = {
   padding: '8px 10px', fontSize: 13, borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
@@ -48,7 +48,7 @@ const ghostBtn: React.CSSProperties = {
   cursor: 'pointer', fontSize: 12,
 };
 const dangerBtn: React.CSSProperties = {
-  background: 'rgba(239,68,68,0.12)', color: '#ef4444',
+  background: 'rgba(239,68,68,0.12)', color: 'var(--j-hard)',
   border: '1px solid rgba(239,68,68,0.35)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };
@@ -185,10 +185,10 @@ export const DatasetKeysPanel: React.FC<{
         </div>
       )}
 
-      {loading && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading keys…</div>}
+      {loading && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading keys…</div>}
 
       {!loading && keys && keys.length === 0 && (
-        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+        <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
           No keys recorded for this dataset.
         </div>
       )}
@@ -211,7 +211,7 @@ export const DatasetKeysPanel: React.FC<{
               return (
                 <tr key={k.id} style={{ opacity: revoked ? 0.55 : 1 }}>
                   <td style={{ ...td, fontFamily: 'ui-monospace, monospace' }}>{k.key_prefix}…</td>
-                  <td style={{ ...td, color: revoked ? '#f59e0b' : 'var(--j-success)', fontWeight: 600 }}>{k.status}</td>
+                  <td style={{ ...td, color: revoked ? 'var(--j-soft)' : 'var(--j-success)', fontWeight: 600 }}>{k.status}</td>
                   <td style={td}>{fmt(k.created_at)}</td>
                   <td style={td} title="Last time the partner authenticated with this key.">{fmt(k.last_used_at)}</td>
                   <td style={td}>{fmt(k.revoked_at)}</td>
@@ -229,7 +229,7 @@ export const DatasetKeysPanel: React.FC<{
         </table>
       )}
 
-      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 10, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 10, lineHeight: 1.6 }}>
         Only the key prefix is stored — a full key is shown exactly once, at rotation. Revoking is
         immediate and irreversible; rotate first, hand the partner the new key, then revoke the old
         one when they have switched.

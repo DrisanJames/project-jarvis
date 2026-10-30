@@ -289,7 +289,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
           <label htmlFor="di-picker" style={{ fontSize: 11, color: colors.textMuted, display: 'block', marginBottom: 4 }}>
             Files (csv · csv.gz · ndjson · zip — multipart, no size ceiling)
           </label>
-          <input
+          <input aria-label="Choose a file to upload"
             id="di-picker"
             type="file"
             multiple

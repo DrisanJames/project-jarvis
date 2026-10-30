@@ -303,7 +303,7 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
     const worst = storms[0];
     return {
       state: 'STORM',
-      color: '#ef4444',
+      color: 'var(--j-hard)',
       sentence: `${ratePhrase} ${titleCase(worst.isp)} delaying at ${fmtPct(worst.recent_rate)} (${worst.multiplier.toFixed(1)}× baseline) — sending is being paced automatically.${
         storms.length > 1 ? ` ${storms.length - 1} more mailbox provider${storms.length > 2 ? 's' : ''} delaying heavily.` : ''
       }`,
@@ -312,7 +312,7 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
   if (queued > BACKLOG_QUEUED_THRESHOLD && oldest > BACKLOG_AGE_THRESHOLD_SEC) {
     return {
       state: 'BACKLOGGED',
-      color: '#f59e0b',
+      color: 'var(--j-soft)',
       sentence: `${fmt(queued)} queued with oldest waiting ${fmtDuration(oldest)} — sending is behind schedule. ${ratePhrase}`,
     };
   }
@@ -445,7 +445,7 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
       </thead>
       <tbody>
         {state.rows.map((p) => {
-          const defColor = p.deferral_rate > 0.5 ? '#ef4444' : p.deferral_rate > 0.1 ? '#f59e0b' : 'var(--j-success-soft)';
+          const defColor = p.deferral_rate > 0.5 ? 'var(--j-hard)' : p.deferral_rate > 0.1 ? 'var(--j-soft)' : 'var(--j-success-soft)';
           return (
             <tr key={p.vmta}>
               <td style={{ ...tdStyle, paddingLeft: 28, fontFamily: 'monospace', fontSize: 11, color: 'var(--j-violet-soft)' }}>
@@ -454,7 +454,7 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
               <td style={numTd}>{fmt(p.attempted)}</td>
               <td style={numTd}>{fmtPct(p.delivered_rate)}</td>
               <td style={{ ...numTd, color: defColor, fontWeight: 600 }}>{fmtPct(p.deferral_rate)}</td>
-              <td style={{ ...numTd, color: p.hard_bounces > 0 ? '#ef4444' : 'var(--j-text)' }}>{fmt(p.hard_bounces)}</td>
+              <td style={{ ...numTd, color: p.hard_bounces > 0 ? 'var(--j-hard)' : 'var(--j-text)' }}>{fmt(p.hard_bounces)}</td>
             </tr>
           );
         })}
@@ -545,7 +545,7 @@ const SchedulePanel: React.FC<{
     ) : (
       <>
         <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
-          <Stat label="Due now" value={fmt(data.planned_due)} color={data.planned_due > 0 ? '#f59e0b' : 'var(--j-text)'} />
+          <Stat label="Due now" value={fmt(data.planned_due)} color={data.planned_due > 0 ? 'var(--j-soft)' : 'var(--j-text)'} />
           <Stat label="Scheduled" value={fmt(data.planned_future)} color="var(--j-violet-soft)" />
           <Stat label="Preparing" value={fmt(data.enqueuing)} color="var(--j-blue)" />
           <Stat label="Sending" value={fmt(data.sending)} color="var(--j-success-soft)" />
@@ -557,7 +557,7 @@ const SchedulePanel: React.FC<{
           <Stat
             label="Failed 24h"
             value={fmt(data.failed_24h)}
-            color={data.failed_24h > 0 ? '#ef4444' : 'var(--j-text)'}
+            color={data.failed_24h > 0 ? 'var(--j-hard)' : 'var(--j-text)'}
           />
         </div>
         <div style={{ marginTop: 12 }}>
@@ -585,7 +585,7 @@ const SchedulePanel: React.FC<{
                         {renderCampaign ? renderCampaign(u) : (u.campaign_name || u.campaign_id.slice(0, 8))}
                       </td>
                       <td style={numTd}>#{u.wave_number}</td>
-                      <td style={{ ...tdStyle, color: due ? '#f59e0b' : 'var(--j-text)' }}>
+                      <td style={{ ...tdStyle, color: due ? 'var(--j-soft)' : 'var(--j-text)' }}>
                         {new Date(u.scheduled_at).toLocaleString([], {
                           month: 'short',
                           day: 'numeric',
@@ -770,7 +770,7 @@ export const OutboxDashboard: React.FC = () => {
                 width: 9,
                 height: 9,
                 borderRadius: '50%',
-                background: fetchError ? '#ef4444' : 'var(--j-success)',
+                background: fetchError ? 'var(--j-hard)' : 'var(--j-success)',
                 animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
                 display: 'inline-block',
               }}
@@ -865,7 +865,7 @@ export const OutboxDashboard: React.FC = () => {
                 label="Oldest queued"
                 value={data.queue.ok ? fmtDuration(data.queue.oldest_queued_seconds) : '—'}
                 color={
-                  data.queue.ok && data.queue.oldest_queued_seconds > BACKLOG_AGE_THRESHOLD_SEC ? '#f59e0b' : 'var(--j-text)'
+                  data.queue.ok && data.queue.oldest_queued_seconds > BACKLOG_AGE_THRESHOLD_SEC ? 'var(--j-soft)' : 'var(--j-text)'
                 }
               />
               <Stat
@@ -921,7 +921,7 @@ export const OutboxDashboard: React.FC = () => {
                         borderRadius: 999,
                         background:
                           data.throughput.utilization_pct > 90
-                            ? 'linear-gradient(90deg,#f59e0b,#ef4444)'
+                            ? 'linear-gradient(90deg,var(--j-soft),var(--j-hard))'
                             : 'linear-gradient(90deg,var(--j-violet-strong),var(--j-success))',
                         transition: 'width 600ms ease',
                       }}
@@ -941,12 +941,12 @@ export const OutboxDashboard: React.FC = () => {
                     <Stat
                       label="Failed 24h"
                       value={data.queue.ok ? fmt(data.queue.failed_24h) : '—'}
-                      color={data.queue.ok && data.queue.failed_24h > 0 ? '#f59e0b' : 'var(--j-text)'}
+                      color={data.queue.ok && data.queue.failed_24h > 0 ? 'var(--j-soft)' : 'var(--j-text)'}
                     />
                     <Stat
                       label="Failed sends 24h"
                       value={data.queue.ok ? fmt(data.queue.dead_letter_24h) : '—'}
-                      color={data.queue.ok && data.queue.dead_letter_24h > 0 ? '#ef4444' : 'var(--j-text)'}
+                      color={data.queue.ok && data.queue.dead_letter_24h > 0 ? 'var(--j-hard)' : 'var(--j-text)'}
                     />
                   </div>
                 </>
@@ -989,7 +989,7 @@ export const OutboxDashboard: React.FC = () => {
                   <Stat
                     label="Touches due now"
                     value={fmt(data.click_funnels.due_now)}
-                    color={data.click_funnels.due_now > 0 ? '#f59e0b' : 'var(--j-text)'}
+                    color={data.click_funnels.due_now > 0 ? 'var(--j-soft)' : 'var(--j-text)'}
                   />
                   <Stat label="Touches sent 24h" value={fmt(data.click_funnels.sent_24h)} />
                   <Stat
@@ -1040,7 +1040,7 @@ export const OutboxDashboard: React.FC = () => {
                               {o.offer_name || (o.everflow_offer_id ? `Offer ${o.everflow_offer_id}` : 'Unmapped')}
                             </td>
                             <td style={numTd}>{fmt(o.active_enrollments)}</td>
-                            <td style={{ ...numTd, color: o.due_now > 0 ? '#f59e0b' : 'var(--j-text)' }}>{fmt(o.due_now)}</td>
+                            <td style={{ ...numTd, color: o.due_now > 0 ? 'var(--j-soft)' : 'var(--j-text)' }}>{fmt(o.due_now)}</td>
                             <td style={numTd}>{fmt(o.sent_24h)}</td>
                             <td style={{ ...numTd, color: 'var(--j-cyan)' }}>{fmt(o.opens_24h)}</td>
                             <td style={{ ...numTd, color: 'var(--j-violet)' }}>{fmt(o.clicks_24h)}</td>
@@ -1096,7 +1096,7 @@ export const OutboxDashboard: React.FC = () => {
                     />
                     <Legend wrapperStyle={{ fontSize: 12, color: 'var(--j-text-muted)' }} />
                     <Area type="monotone" dataKey="sent" name="Sent /min" stroke="var(--j-violet)" strokeWidth={2} fill="url(#sentFill)" />
-                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -1177,17 +1177,17 @@ export const OutboxDashboard: React.FC = () => {
                               />
                               {titleCase(r.isp)}
                               {r.storm && (
-                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444', marginLeft: 6 }} title="Heavy delays" />
+                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-hard)', marginLeft: 6 }} title="Heavy delays" />
                               )}
                             </td>
                             <td style={numTd}>{fmt(r.queued)}</td>
                             <td style={numTd}>{fmt(r.sent24h)}</td>
                             <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
-                            <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : 'var(--j-success-soft)', fontWeight: 600 }}>
+                            <td style={{ ...numTd, color: r.storm ? 'var(--j-hard)' : r.recentRate > 0.05 ? 'var(--j-soft)' : 'var(--j-success-soft)', fontWeight: 600 }}>
                               {fmtPct(r.recentRate)}
                             </td>
                             <td style={numTd}>{fmtPct(r.baselineRate)}</td>
-                            <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : 'var(--j-text-muted)' }}>
+                            <td style={{ ...numTd, color: r.multiplier >= 2 ? 'var(--j-soft)' : 'var(--j-text-muted)' }}>
                               {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
                             </td>
                           </tr>
@@ -1310,7 +1310,7 @@ export const OutboxDashboard: React.FC = () => {
                 }}
               >
                 {data.workers.workers.map((wkr) => {
-                  const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : 'var(--j-success)';
+                  const color = wkr.stalled ? 'var(--j-hard)' : wkr.last_status === 'error' ? 'var(--j-soft)' : 'var(--j-success)';
                   return (
                     <div
                       key={wkr.name}
@@ -1365,7 +1365,7 @@ export const OutboxDashboard: React.FC = () => {
               }}
             >
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? '#ef4444' : 'var(--j-text-faint)' }} />
+                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? 'var(--j-hard)' : 'var(--j-text-faint)' }} />
                 Failed Sends ({fmt(recentDeadLetter.length)})
               </h2>
               <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
@@ -1393,7 +1393,7 @@ export const OutboxDashboard: React.FC = () => {
                     {recentDeadLetter.map((r) => (
                       <tr key={r.id}>
                         <td style={tdStyle}>{r.email || r.subscriber_id}</td>
-                        <td style={{ ...tdStyle, color: '#ef4444' }}>{r.status}</td>
+                        <td style={{ ...tdStyle, color: 'var(--j-hard)' }}>{r.status}</td>
                         <td style={numTd}>{r.attempts}</td>
                         <td
                           style={{ ...tdStyle, maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}

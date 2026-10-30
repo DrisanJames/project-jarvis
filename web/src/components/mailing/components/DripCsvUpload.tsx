@@ -260,7 +260,7 @@ export const DripCsvUpload: React.FC<{
             ))}
           </select>
         </label>
-        <input
+        <input aria-label="Choose a file to upload"
           ref={fileRef}
           type="file"
           accept=".csv,text/csv"
@@ -358,7 +358,7 @@ export const DripCsvUpload: React.FC<{
                   <span style={{ fontSize: 11, color: target === 'email' ? colors.heading : colors.textMuted, width: 92, flex: '0 0 auto', fontWeight: target === 'email' ? 700 : 400 }}>
                     {target}{target === 'email' ? ' *' : ''}
                   </span>
-                  <select style={{ ...input, flex: 1, padding: '3px 6px', fontSize: 11 }} value={bound}
+                  <select aria-label="Bound" style={{ ...input, flex: 1, padding: '3px 6px', fontSize: 11 }} value={bound}
                     onChange={(e) => setMapping((m) => ({ ...m, [target]: e.target.value }))}>
                     <option value="">(unmapped)</option>
                     {preview.headers.map((h) => <option key={h} value={h}>{h}</option>)}

@@ -471,7 +471,7 @@ export const ListImportPanel: React.FC = () => {
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <div style={{ minWidth: 340, flex: 1 }}>
                   <span style={labelStyle}>Import into</span>
-                  <select value={listId} onChange={e => setListId(e.target.value)} style={inputStyle}>
+                  <select aria-label="Import into" value={listId} onChange={e => setListId(e.target.value)} style={inputStyle}>
                     <option value="">— pick a list —</option>
                     {lists.map(l => (
                       <option key={l.id} value={l.id}>{l.name} ({fmtInt(l.subscriber_count)})</option>
@@ -524,7 +524,7 @@ export const ListImportPanel: React.FC = () => {
               before it is uploaded. Headers and preview come back from the server; nothing about this
               file is parsed in the browser.
             </div>
-            <input
+            <input aria-label="Choose a file to upload"
               type="file"
               accept=".csv,text/csv"
               disabled={inspecting}
@@ -659,7 +659,7 @@ export const ListImportPanel: React.FC = () => {
                               : <span style={{ color: colors.textFaint, fontSize: 11.5 }}>not recognised</span>}
                           </td>
                           <td style={tdStyle}>
-                            <select
+                            <select aria-label="Chosen"
                               value={chosen}
                               onChange={e => setTargets(t => {
                                 const next = [...t];

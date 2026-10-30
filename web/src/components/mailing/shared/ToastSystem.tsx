@@ -99,16 +99,16 @@ const ToastItem: React.FC<{ toast: Toast; onDismiss: (id: string) => void }> = (
           {toast.title}
         </div>
         {toast.message && (
-          <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, lineHeight: 1.4 }}>
+          <div style={{ color: 'var(--j-text-muted)', fontSize: 12, lineHeight: 1.4 }}>
             {toast.message}
           </div>
         )}
       </div>
 
-      <button
+      <button aria-label="Close"
         onClick={() => onDismiss(toast.id)}
         style={{
-          background: 'none', border: 'none', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)',
+          background: 'none', border: 'none', color: 'var(--j-text-muted)',
           cursor: 'pointer', padding: 4, fontSize: 12, flexShrink: 0,
         }}
       >

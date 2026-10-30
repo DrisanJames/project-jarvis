@@ -485,7 +485,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
               onChange={e => setSearchQuery(e.target.value)}
             />
             {searchQuery && (
-              <button className="domain-search-clear" onClick={() => setSearchQuery('')}>
+              <button aria-label="Close" className="domain-search-clear" onClick={() => setSearchQuery('')}>
                 <FontAwesomeIcon icon={faTimes} />
               </button>
             )}

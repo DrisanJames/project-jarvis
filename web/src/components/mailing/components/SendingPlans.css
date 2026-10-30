@@ -21,7 +21,7 @@
 }
 
 .plans-header p {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin: 4px 0 0 0;
 }
 
@@ -162,7 +162,7 @@
 }
 
 .plan-description {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 14px;
   margin: 0 0 20px 0;
   line-height: 1.5;
@@ -189,7 +189,7 @@
 .metric-label {
   display: block;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 4px;
 }
 
@@ -202,7 +202,7 @@
 .metric-range {
   display: block;
   font-size: 11px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-top: 2px;
 }
 
@@ -235,13 +235,13 @@
 
 .plan-recommendations li {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 4px;
 }
 
 .ai-explanation p {
   font-size: 13px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   line-height: 1.6;
   margin: 0;
   padding: 12px;
@@ -278,7 +278,7 @@
 }
 
 .slot-volume {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
 }
 
 .slot-priority {
@@ -328,7 +328,7 @@
 }
 
 .segment-count {
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-size: 13px;
 }
 
@@ -336,7 +336,7 @@
   display: flex;
   gap: 16px;
   font-size: 12px;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-bottom: 4px;
 }
 

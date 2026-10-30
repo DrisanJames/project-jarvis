@@ -135,8 +135,8 @@ const C = {
   indigo:       colors.indigo400,          // var(--j-violet)
   indigoDeep:   colors.indigo500,          // var(--j-violet-strong)
   green:        colors.success,            // var(--j-success)
-  amber:        colors.warning,            // #f59e0b
-  red:          colors.danger,             // #ef4444
+  amber:        colors.warning,            // var(--j-soft)
+  red:          colors.danger,             // var(--j-hard)
 };
 
 const ISP_LABEL: Record<string, string> = {
@@ -655,25 +655,25 @@ export const AudienceCadenceByCell: React.FC = () => {
                             {editingISP === isp ? (
                               <div onClick={(e) => e.stopPropagation()}>
                                 <label style={styles.editLabel}>Title</label>
-                                <input
+                                <input aria-label="Title"
                                   style={styles.editInput}
                                   value={draft.title}
                                   onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                                 />
                                 <label style={styles.editLabel}>Best practices (markdown: **bold**, ## headers, - bullets)</label>
-                                <textarea
+                                <textarea aria-label="Doctrine md"
                                   style={{ ...styles.editArea, minHeight: 160 }}
                                   value={draft.doctrine_md}
                                   onChange={(e) => setDraft({ ...draft, doctrine_md: e.target.value })}
                                 />
                                 <label style={styles.editLabel}>North stars</label>
-                                <textarea
+                                <textarea aria-label="North stars"
                                   style={{ ...styles.editArea, minHeight: 90 }}
                                   value={draft.north_stars}
                                   onChange={(e) => setDraft({ ...draft, north_stars: e.target.value })}
                                 />
                                 <label style={styles.editLabel}>Health bands</label>
-                                <textarea
+                                <textarea aria-label="Health bands"
                                   style={{ ...styles.editArea, minHeight: 70 }}
                                   value={draft.health_bands}
                                   onChange={(e) => setDraft({ ...draft, health_bands: e.target.value })}

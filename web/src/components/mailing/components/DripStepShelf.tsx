@@ -642,7 +642,7 @@ export const DripStepShelf: React.FC<{
                   <span style={{ fontSize: 11, color: colors.textMuted }}>
                     {ds.offer ? <>mails <b>{ds.offer.name || ds.offer.id}</b></> : 'no dataset-level offer'}
                   </span>
-                  <select
+                  <select aria-label="Id"
                     style={{ ...input, maxWidth: 200, opacity: writable ? 1 : 0.5 }}
                     value={swapSel[ds.id] ?? (ds.offer?.id ?? '')}
                     disabled={!writable || !!saving[`swap/${ds.id}`]}
@@ -682,7 +682,7 @@ export const DripStepShelf: React.FC<{
         }}>
           <div style={{ ...label, marginBottom: 4 }}>Make waiting records due immediately</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
+            <input aria-label="Make waiting records due immediately"
               type="number" min={1} max={50000} step={100}
               style={{ ...input, width: 96, opacity: writable ? 1 : 0.5 }}
               value={releaseN}

@@ -366,7 +366,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           <FontAwesomeIcon icon={faMagic} />
           <span>AI Insights</span>
         </div>
-        <button className="close-btn" onClick={onClose}>
+        <button aria-label="Close" className="close-btn" onClick={onClose}>
           <FontAwesomeIcon icon={faTimes} />
         </button>
       </div>
@@ -420,7 +420,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
                       </div>
                     )}
                     {insight.prompt && (
-                      <button 
+                      <button aria-label="Copy" 
                         className="copy-prompt-btn"
                         onClick={() => copyToClipboard(insight.prompt!, insight.id)}
                       >
@@ -472,7 +472,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
                 placeholder="Type a custom question about this A/B test..."
                 rows={4}
               />
-              <button 
+              <button aria-label="Send" 
                 className="generate-btn"
                 onClick={handlePromptSubmit}
                 disabled={!customPrompt.trim() || isGenerating}

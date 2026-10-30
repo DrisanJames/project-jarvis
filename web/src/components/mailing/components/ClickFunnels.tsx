@@ -737,7 +737,7 @@ const NodeCard: React.FC<{
       {picking && (
         <div style={{ marginTop: 10, borderTop: `1px solid ${colors.divider}`, paddingTop: 10 }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input
+            <input aria-label="Studio filter"
               value={studioFilter}
               onChange={e => setStudioFilter(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') loadStudio(); }}
@@ -884,7 +884,7 @@ const UploadPanel: React.FC<{ offerId: string; laneLabel: string; onEnrolled: ()
         (commas, tabs and a header row are fine). Nothing is enrolled until you confirm.
       </div>
 
-      <textarea
+      <textarea aria-label="Raw"
         value={raw}
         onChange={e => { setRaw(e.target.value); reset(); }}
         placeholder={'sub1\n3f6c9d2a-1b44-4c8e-9f21-7a5e2c4d8b90\n8a1e7b33-5c92-4d17-b6e4-1f30a9c2d745'}

@@ -185,7 +185,7 @@ export const SendDayScrubCard: React.FC = () => {
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div>
           <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>Send date</div>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+          <input aria-label="Send date" type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
         </div>
         <button onClick={doExport} disabled={exporting || !summary} style={{
           ...btnStyle, display: 'flex', alignItems: 'center', gap: 8,
@@ -227,7 +227,7 @@ export const SendDayScrubCard: React.FC = () => {
           Optizmo return — paste suppression MD5s (one per line) or pick the file. Any non-MD5 row
           refuses the whole import (fail-closed).
         </div>
-        <textarea
+        <textarea aria-label="Pasted"
           value={pasted}
           onChange={e => setPasted(e.target.value)}
           placeholder={'d41d8cd98f00b204e9800998ecf8427e\n…'}
@@ -242,7 +242,7 @@ export const SendDayScrubCard: React.FC = () => {
             <FontAwesomeIcon icon={importing ? faSpinner : faFileImport} spin={importing} />
             {importing ? 'Importing…' : 'Import suppressions'}
           </button>
-          <input
+          <input aria-label="Choose a file to upload"
             ref={fileRef}
             type="file"
             accept=".csv,.txt"

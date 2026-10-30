@@ -767,14 +767,14 @@ export const JourneyBuilder: React.FC = () => {
                 <div className="node-stat"><span>Clicks</span><strong>{nodeStats[node.id]?.clicks ?? 0}</strong></div>
                 <div
                   className="node-stat"
-                  style={{ color: (nodeStats[node.id]?.hard_bounce ?? 0) > 0 ? '#ef4444' : undefined }}
+                  style={{ color: (nodeStats[node.id]?.hard_bounce ?? 0) > 0 ? 'var(--j-hard)' : undefined }}
                 >
                   <span>Hard Bounce</span>
                   <strong>{nodeStats[node.id]?.hard_bounce ?? 0}</strong>
                 </div>
                 <div
                   className="node-stat"
-                  style={{ color: (nodeStats[node.id]?.soft_bounce ?? 0) > 0 ? '#f59e0b' : undefined }}
+                  style={{ color: (nodeStats[node.id]?.soft_bounce ?? 0) > 0 ? 'var(--j-soft)' : undefined }}
                 >
                   <span>Soft Bounce</span>
                   <strong>{nodeStats[node.id]?.soft_bounce ?? 0}</strong>
@@ -929,7 +929,7 @@ export const JourneyBuilder: React.FC = () => {
                 <>
                   <div className="config-group">
                     <label>Audience Segment *</label>
-                    <select
+                    <select aria-label="Segment id"
                       value={selectedNode.config.segmentId || ''}
                       onChange={(e) => {
                         const id = e.target.value;
@@ -971,7 +971,7 @@ export const JourneyBuilder: React.FC = () => {
               {selectedNode.config.triggerType !== 'segment' && (
                 <div className="config-group">
                   <label>Target List *</label>
-                  <select
+                  <select aria-label="List id"
                     value={selectedNode.config.listId || ''}
                     onChange={(e) => updateNodeConfig({ listId: e.target.value })}
                   >
@@ -989,7 +989,7 @@ export const JourneyBuilder: React.FC = () => {
                 <>
                   <div className="config-group">
                     <label>Schedule Type</label>
-                    <select
+                    <select aria-label="Schedule Type"
                       value={selectedNode.config.scheduleType || 'once'}
                       onChange={(e) => updateNodeConfig({ scheduleType: e.target.value as any })}
                     >
@@ -999,7 +999,7 @@ export const JourneyBuilder: React.FC = () => {
                   </div>
                   <div className="config-group">
                     <label>Start Date & Time</label>
-                    <input
+                    <input aria-label="Start Date & Time"
                       type="datetime-local"
                       value={selectedNode.config.scheduleDate || ''}
                       onChange={(e) => updateNodeConfig({ scheduleDate: e.target.value })}
@@ -1008,7 +1008,7 @@ export const JourneyBuilder: React.FC = () => {
                   {selectedNode.config.scheduleType === 'recurring' && (
                     <div className="config-group">
                       <label>Recurring Pattern</label>
-                      <select
+                      <select aria-label="Recurring Pattern"
                         value={selectedNode.config.recurringPattern || 'daily'}
                         onChange={(e) => updateNodeConfig({ recurringPattern: e.target.value })}
                       >
@@ -1025,7 +1025,7 @@ export const JourneyBuilder: React.FC = () => {
                 <>
                   <div className="config-group">
                     <label>Performance Event</label>
-                    <select
+                    <select aria-label="Performance Event"
                       value={selectedNode.config.performanceEvent || 'open'}
                       onChange={(e) => updateNodeConfig({ performanceEvent: e.target.value as any })}
                     >
@@ -1039,7 +1039,7 @@ export const JourneyBuilder: React.FC = () => {
                   </div>
                   <div className="config-group">
                     <label>Time Window (hours)</label>
-                    <input
+                    <input aria-label="Time Window (hours)"
                       type="number"
                       value={selectedNode.config.performanceWindow || 24}
                       onChange={(e) => updateNodeConfig({ performanceWindow: parseInt(e.target.value) })}
@@ -1058,7 +1058,7 @@ export const JourneyBuilder: React.FC = () => {
             <>
               <div className="config-group">
                 <label>Sending Profile</label>
-                <select
+                <select aria-label="Sending Profile"
                   data-testid="email-sending-profile-select"
                   value={selectedNode.config.sendingProfileId || ''}
                   onChange={(e) => applySendingProfileDefaults(e.target.value)}
@@ -1166,7 +1166,7 @@ export const JourneyBuilder: React.FC = () => {
             <>
               <div className="config-group">
                 <label>Delay Type</label>
-                <select
+                <select aria-label="Delay Type"
                   value={selectedNode.config.delayType || 'fixed'}
                   onChange={(e) => updateNodeConfig({ delayType: e.target.value as any })}
                 >
@@ -1180,7 +1180,7 @@ export const JourneyBuilder: React.FC = () => {
                 <div className="config-row">
                   <div className="config-group">
                     <label>Wait for</label>
-                    <input
+                    <input aria-label="Wait for"
                       type="number"
                       value={selectedNode.config.delayValue || 1}
                       onChange={(e) => updateNodeConfig({ delayValue: parseInt(e.target.value) })}
@@ -1189,7 +1189,7 @@ export const JourneyBuilder: React.FC = () => {
                   </div>
                   <div className="config-group">
                     <label>Unit</label>
-                    <select
+                    <select aria-label="Unit"
                       value={selectedNode.config.delayUnit || 'days'}
                       onChange={(e) => updateNodeConfig({ delayUnit: e.target.value as any })}
                     >
@@ -1206,7 +1206,7 @@ export const JourneyBuilder: React.FC = () => {
                 <div className="config-row">
                   <div className="config-group">
                     <label>Wait until</label>
-                    <input
+                    <input aria-label="Wait until"
                       type="time"
                       data-testid="delay-until-time"
                       value={selectedNode.config.untilTime || '09:00'}
@@ -1215,7 +1215,7 @@ export const JourneyBuilder: React.FC = () => {
                   </div>
                   <div className="config-group">
                     <label>Timezone</label>
-                    <select
+                    <select aria-label="Timezone"
                       data-testid="delay-until-timezone"
                       value={selectedNode.config.untilTimezone || 'America/Denver'}
                       onChange={(e) => updateNodeConfig({ untilTimezone: e.target.value })}
@@ -1231,7 +1231,7 @@ export const JourneyBuilder: React.FC = () => {
               {selectedNode.config.delayType === 'until_day' && (
                 <div className="config-group">
                   <label>Wait until</label>
-                  <select
+                  <select aria-label="Wait until"
                     value={selectedNode.config.untilDay || 'monday'}
                     onChange={(e) => updateNodeConfig({ untilDay: e.target.value })}
                   >
@@ -1253,7 +1253,7 @@ export const JourneyBuilder: React.FC = () => {
             <>
               <div className="config-group">
                 <label>Condition Type</label>
-                <select
+                <select aria-label="Condition Type"
                   value={selectedNode.config.conditionType || 'opened'}
                   onChange={(e) => updateNodeConfig({ conditionType: e.target.value as any })}
                 >
@@ -1279,7 +1279,7 @@ export const JourneyBuilder: React.FC = () => {
                   <div className="config-row">
                     <div className="config-group">
                       <label>Operator</label>
-                      <select
+                      <select aria-label="Operator"
                         value={selectedNode.config.conditionOperator || 'equals'}
                         onChange={(e) => updateNodeConfig({ conditionOperator: e.target.value })}
                       >
@@ -1320,7 +1320,7 @@ export const JourneyBuilder: React.FC = () => {
             <>
               <div className="config-group">
                 <label>Split Type</label>
-                <select
+                <select aria-label="Split Type"
                   value={selectedNode.config.splitType || 'percentage'}
                   onChange={(e) => updateNodeConfig({ splitType: e.target.value as any })}
                 >
@@ -1332,7 +1332,7 @@ export const JourneyBuilder: React.FC = () => {
               {selectedNode.config.splitType === 'percentage' && (
                 <div className="config-group">
                   <label>Variant A Percentage: {selectedNode.config.splitPercentage || 50}%</label>
-                  <input
+                  <input aria-label="Split percentage"
                     type="range"
                     value={selectedNode.config.splitPercentage || 50}
                     onChange={(e) => updateNodeConfig({ splitPercentage: parseInt(e.target.value) })}
@@ -1353,7 +1353,7 @@ export const JourneyBuilder: React.FC = () => {
             <>
               <div className="config-group">
                 <label>Goal Type</label>
-                <select
+                <select aria-label="Goal Type"
                   value={selectedNode.config.goalType || 'conversion'}
                   onChange={(e) => updateNodeConfig({ goalType: e.target.value as any })}
                 >
@@ -1605,7 +1605,7 @@ export const JourneyBuilder: React.FC = () => {
               <p className="hint">
                 Email nodes inherit this when their own profile is left blank.
               </p>
-              <select
+              <select aria-label="Default sending profile"
                 data-testid="journey-default-profile"
                 value={activeJourney.sendingProfileId || ''}
                 onChange={(e) => updateJourneySetting('sendingProfileId', e.target.value)}
@@ -1724,7 +1724,7 @@ export const JourneyBuilder: React.FC = () => {
           </div>
           <div className="jb-drawer-body">
             {templates.length === 0 ? (
-              <p style={{ color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+              <p style={{ color: 'var(--j-text-muted)' }}>
                 No templates found. Create templates from the Mailing → Templates page first.
               </p>
             ) : (

@@ -408,7 +408,7 @@ export const PropertyLedgerView: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.6,
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'var(--j-text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
     padding: '8px 10px', fontSize: 13, color: 'var(--j-text)',
@@ -450,13 +450,13 @@ export const PropertyLedgerView: React.FC = () => {
   const supplyFeedCount = supply.data?.feeds.length ?? 0;
   const renderReadyCell = (isp: string): React.ReactNode => {
     if (supplyWarming) {
-      return <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
+      return <span style={{ color: 'var(--j-text-muted)' }}
         title="Supply view warming up — the covering index is still building (CONCURRENTLY); retries automatically on the next poll.">
         warming up
       </span>;
     }
     if (!supply.data) {
-      return <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
+      return <span style={{ color: 'var(--j-text-muted)' }}
         title={supply.error ? `Supply fetch failed (${supply.error})` : 'Loading live supply…'}>
         {supply.error ? '—' : '…'}
       </span>;
@@ -470,7 +470,7 @@ export const PropertyLedgerView: React.FC = () => {
       + (breakdown ? ` Per feed — ${breakdown}.` : '')
       + ' Supply is dataset-level, shared across the rotation — not owned by this domain.';
     return <span title={tip}
-      style={{ color: total > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+      style={{ color: total > 0 ? 'var(--j-success)' : 'var(--j-text-muted)' }}>
       {num(total)}
     </span>;
   };
@@ -479,7 +479,7 @@ export const PropertyLedgerView: React.FC = () => {
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
         <h2 style={{ margin: 0, fontSize: 18, color: 'var(--j-text)' }}>Property Ledger</h2>
-        <select
+        <select aria-label="Property Ledger"
           value={domain ?? ALL_DOMAINS}
           onChange={e => setDomain(e.target.value)}
           style={{ background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
@@ -488,12 +488,12 @@ export const PropertyLedgerView: React.FC = () => {
           {domains.map(d => <option key={d} value={d}>{d}</option>)}
           <option value={ALL_DOMAINS}>All domains</option>
         </select>
-        <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+        <span style={{ fontSize: 12, color: 'var(--j-text-2)' }}>
           {rows.length} {showAll ? 'cells' : 'lanes'} · day {data?.day ?? '—'}
           {vdmMeta ? ` · VDM day ${vdmMeta.day} (UTC)` : ''}
         </span>
         <button onClick={() => void load()} style={{
-          marginLeft: 'auto', background: 'transparent', color: '#9fd3ff',
+          marginLeft: 'auto', background: 'transparent', color: 'var(--j-blue)',
           border: '1px solid rgba(120,180,255,0.35)', borderRadius: 6,
           padding: '6px 12px', fontSize: 12, cursor: 'pointer',
         }}>{loading ? 'Loading…' : 'Refresh'}</button>
@@ -527,7 +527,7 @@ export const PropertyLedgerView: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 11, color: 'var(--j-text-2)' }}>
         <span>Counter run: {runs?.counter ? `${runs.counter.status} · ${age(runs.counter.finished_at ?? runs.counter.started_at)}` : 'none yet'}</span>
         <span>VDM run: {runs?.vdm ? `${runs.vdm.status} · ${age(runs.vdm.finished_at ?? runs.vdm.started_at)}` : 'none yet'}</span>
         <span>Reconciliation: {runs?.reconciliation ? `${runs.reconciliation.status} · ${age(runs.reconciliation.finished_at ?? runs.reconciliation.started_at)}` : 'none yet (P5)'}</span>
@@ -595,9 +595,9 @@ export const PropertyLedgerView: React.FC = () => {
                 }}>
                   <td style={{ ...td, fontWeight: 600 }}>
                     {r.sending_domain || r.brand}
-                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginLeft: 6, fontWeight: 400 }}>{r.brand}</span>
+                    <span style={{ color: 'var(--j-text-muted)', marginLeft: 6, fontWeight: 400 }}>{r.brand}</span>
                   </td>
-                  <td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
+                  <td style={{ ...td, color: 'var(--j-text-2)' }}>
                     {r.isp}
                     {dead && (
                       <span title={`Dead lane: delivered ${pct(r.vdm?.delivered_pct)} on ${num(r.vdm?.sent)} VDM sends yesterday`}
@@ -607,7 +607,7 @@ export const PropertyLedgerView: React.FC = () => {
                     )}
                   </td>
                   <td style={{ ...td, textAlign: 'right' }}>
-                    <input
+                    <input aria-label="DEAD LANE"
                       type="number" min={0} step={100}
                       value={edit[key] ?? String(r.daily_budget)}
                       disabled={isBusy}
@@ -629,8 +629,8 @@ export const PropertyLedgerView: React.FC = () => {
                   </td>
                   <td style={{ ...td, textAlign: 'right' }}>
                     {r.introduced_today == null
-                      ? <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }} title="No counter row yet for today — the rollup worker materializes cells every 10 minutes.">no counter yet</span>
-                      : <span style={{ color: r.introduced_today > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
+                      ? <span style={{ color: 'var(--j-text-muted)' }} title="No counter row yet for today — the rollup worker materializes cells every 10 minutes.">no counter yet</span>
+                      : <span style={{ color: r.introduced_today > 0 ? 'var(--j-success)' : 'var(--j-text-muted)' }}
                           title={r.introduced_as_of ? `as of ${age(r.introduced_as_of)}` : undefined}>
                           {num(r.introduced_today)}
                         </span>}
@@ -662,7 +662,7 @@ export const PropertyLedgerView: React.FC = () => {
                       {num(r.vdm.sent_7d)}
                     </td>
                   </>) : (
-                    <td style={{ ...tdNum, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} colSpan={5}
+                    <td style={{ ...tdNum, color: 'var(--j-text-muted)' }} colSpan={5}
                       title="No complete VDM rows for this lane (VDM covers gmail/yahoo/aol/microsoft/apple/att/cox)">
                       no VDM data
                     </td>
@@ -680,16 +680,16 @@ export const PropertyLedgerView: React.FC = () => {
                           padding: '2px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
                         }}>Approve</button>
                       </span>
-                    ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontSize: 11 }}>—</span>}
+                    ) : <span style={{ color: 'var(--j-text-muted)', fontSize: 11 }}>—</span>}
                   </td>
-                  <td style={{ ...td, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+                  <td style={{ ...td, fontSize: 11, color: 'var(--j-text-muted)' }}>
                     {r.approved_by ? `${r.approved_by} · ${age(r.approved_at)}` : '—'}
                   </td>
                 </tr>
               );
             })}
             {rows.length === 0 && !loading && (
-              <tr><td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={showAll ? 7 : 13}>
+              <tr><td style={{ ...td, color: 'var(--j-text-muted)' }} colSpan={showAll ? 7 : 13}>
                 {isNonLedgerDomain
                   ? `${domain} is not in the ledger — budgets N/A. The supply strip above is live; ledger enrollment is a separate operator step.`
                   : 'Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.'}
@@ -705,7 +705,7 @@ export const PropertyLedgerView: React.FC = () => {
 
       <IngestionTrendPanel />
 
-      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 14, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 14, lineHeight: 1.6 }}>
         One row per sending domain × ISP. Drip Intro Daily Cap = first-touch introductions the drip
         may absorb per Denver day (edits are approvals and apply from tomorrow — the counter worker
         promotes them at the boundary). Introductions Today comes from the materialized counters,
@@ -772,7 +772,7 @@ const IngestionTrendPanel: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '7px 9px', fontSize: 10.5, letterSpacing: 0.6,
-    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'var(--j-text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
     padding: '7px 9px', fontSize: 12.5, color: 'var(--j-text)',
@@ -795,7 +795,7 @@ const IngestionTrendPanel: React.FC = () => {
         <h3 style={{ margin: 0, fontSize: 15, color: 'var(--j-text)', fontWeight: 600 }}>
           Cold intake by sending domain
         </h3>
-        <span style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
+        <span style={{ fontSize: 11.5, color: 'var(--j-text-muted)' }}>
           {data ? `${data.from} → ${data.to} · Denver days` : ''}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -806,14 +806,14 @@ const IngestionTrendPanel: React.FC = () => {
               style={{
                 background: n === days ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'color-mix(in srgb, var(--j-text) 5%, transparent)',
                 border: `1px solid ${n === days ? 'color-mix(in srgb, var(--j-violet) 60%, transparent)' : 'color-mix(in srgb, var(--j-text) 12%, transparent)'}`,
-                color: n === days ? 'var(--j-violet-soft)' : 'color-mix(in srgb, var(--j-text) 75%, transparent)',
+                color: n === days ? 'var(--j-violet-soft)' : 'var(--j-text-2)',
                 borderRadius: 6, padding: '3px 10px', fontSize: 11.5, cursor: 'pointer',
               }}
             >{n}d</button>
           ))}
         </div>
       </div>
-      <p style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', margin: '0 0 12px', lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11.5, color: 'var(--j-text-muted)', margin: '0 0 12px', lineHeight: 1.6 }}>
         What each lane's feed already delivers on its own. Subtract the standing rate from a growth
         target to get the real clean-ask — a domain taking 10k/day only needs 40k cleaned to reach 50k.
         A domain with no feed needs every record from cleaning.
@@ -826,7 +826,7 @@ const IngestionTrendPanel: React.FC = () => {
         }}>{err}</div>
       )}
       {loading && !data && (
-        <div style={{ fontSize: 12.5, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', padding: '8px 0' }}>Loading…</div>
+        <div style={{ fontSize: 12.5, color: 'var(--j-text-muted)', padding: '8px 0' }}>Loading…</div>
       )}
 
       {data && (
@@ -866,7 +866,7 @@ const IngestionTrendPanel: React.FC = () => {
                     {data.days.map(d => (
                       <td key={d} style={{
                         ...tdNum,
-                        color: r.by_day[d] ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 28%, transparent)',
+                        color: r.by_day[d] ? 'var(--j-text)' : 'var(--j-text-muted)',
                         opacity: d === today ? 0.6 : 1,
                       }}>
                         {r.by_day[d] ? r.by_day[d].toLocaleString() : '–'}
@@ -876,7 +876,7 @@ const IngestionTrendPanel: React.FC = () => {
                 );
               })}
               {rows.length === 0 && !loading && (
-                <tr><td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={3 + data.days.length}>
+                <tr><td style={{ ...td, color: 'var(--j-text-muted)' }} colSpan={3 + data.days.length}>
                   No cold intake recorded in this window.
                 </td></tr>
               )}
@@ -899,7 +899,7 @@ const IngestionTrendPanel: React.FC = () => {
       )}
 
       {data && (
-        <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 12, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 12, lineHeight: 1.6 }}>
           Per day = mean of the last {data.rate_days} completed Denver day{data.rate_days === 1 ? '' : 's'};
           today (*) is excluded because it is still filling and would understate every feed.
           Verticals homed on several domains (consumer → tot/bwp/mrd) split by roster weight, so
@@ -941,14 +941,14 @@ export const SupplyStrip: React.FC<{
   for (const tf of throttle?.feeds ?? []) throttleByDataset.set(tf.dataset_id, tf);
 
   const label: React.CSSProperties = {
-    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)',
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--j-text-muted)',
   };
   const stat = (title: string, value: number, opts?: { color?: string; muted?: boolean; tip?: string }) => (
     <div style={{ minWidth: 84 }} title={opts?.tip}>
       <div style={label}>{title}</div>
       <div style={{
         fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-        color: opts?.color ?? (opts?.muted ? 'color-mix(in srgb, var(--j-text) 45%, transparent)' : 'var(--j-text)'),
+        color: opts?.color ?? (opts?.muted ? 'var(--j-text-muted)' : 'var(--j-text)'),
       }}>{num(value)}</div>
     </div>
   );
@@ -964,14 +964,14 @@ export const SupplyStrip: React.FC<{
           LIVE QUEUE
         </span>
         {data ? (
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}
             title={data.ready_semantics}>
             {data.sending_domain || data.domain} · {data.brand} · Denver day {data.denver_day}
           </span>
         ) : (
-          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{domain}</span>
+          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{domain}</span>
         )}
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--j-text-muted)' }}>
           {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 5m`}
         </span>
       </div>
@@ -999,13 +999,13 @@ export const SupplyStrip: React.FC<{
         </div>
       )}
       {data && (
-        <p style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', margin: '0 0 10px 0' }}>
+        <p style={{ fontSize: 10, color: 'var(--j-text-muted)', margin: '0 0 10px 0' }}>
           {data.ready_semantics}. Release cap is the SUPPLY-side budget (ready-vs-held) — distinct
           from the claim-side per-ISP caps.
         </p>
       )}
       {data && data.feeds.length === 0 && !loading && (
-        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+        <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
           No active feeds serve this domain (partner_drip_vertical_roster → partner_datasets).
         </div>
       )}
@@ -1018,7 +1018,7 @@ export const SupplyStrip: React.FC<{
                 background: 'color-mix(in srgb, var(--j-shade) 37.5%, transparent)', padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text)' }}>{f.name}</span>
-                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{f.vertical}</span>
+                <span style={{ fontSize: 10, color: 'var(--j-text-muted)' }}>{f.vertical}</span>
                 {f.paused_emergency && (
                   <span style={{ fontSize: 9, color: 'var(--j-danger)', fontWeight: 700,
                                  border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', borderRadius: 4, padding: '1px 6px' }}
@@ -1027,17 +1027,17 @@ export const SupplyStrip: React.FC<{
                   </span>
                 )}
                 {f.intake_paused && (
-                  <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700,
+                  <span style={{ fontSize: 9, color: 'var(--j-soft)', fontWeight: 700,
                                  border: '1px solid rgba(245,158,11,0.4)', borderRadius: 4, padding: '1px 6px' }}
                     title="partner_datasets.intake_paused: partner posts / CSV uploads refused, batches not sliced. Toggle on the Data Partners screen.">
                     INTAKE PAUSED
                   </span>
                 )}
-                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
+                <span style={{ fontSize: 10, color: 'var(--j-text-muted)' }}
                   title="Supply-release budget (partner_datasets.daily_cap): the release job keeps at most this many rows 'ready' per day, parking the rest 'held'. NOT the claim-side per-ISP cap.">
                   release cap {f.daily_cap > 0 ? `${num(f.daily_cap)}/day` : 'uncapped'}
                 </span>
-                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}
+                <span style={{ fontSize: 10, color: 'var(--j-text-muted)' }}
                   title="Counts come from a server-side per-dataset cache (TTL 120s) — this is when the queue was actually scanned.">
                   as of {new Date(f.computed_at).toLocaleTimeString()}
                 </span>
@@ -1051,7 +1051,7 @@ export const SupplyStrip: React.FC<{
               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 {stat('Tranche total', f.tranche_total, { tip: 'Every record ever ingested into this feed (all statuses)' })}
                 {stat('Cleaning', f.cleaning, {
-                  color: '#9fd3ff',
+                  color: 'var(--j-blue)',
                   tip: `Actively being cleaned: ${num(f.pending_eo)} pending_eo + ${num(f.eo_in_flight)} eo_in_flight`,
                 })}
                 <div style={{ minWidth: 180, flex: '1 1 180px' }}>
@@ -1062,7 +1062,7 @@ export const SupplyStrip: React.FC<{
                   </div>
                   {f.ready_by_isp.map(e => (
                     <div key={e.isp} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 0' }}>
-                      <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', width: 68 }}>{e.isp}</span>
+                      <span style={{ fontSize: 10, color: 'var(--j-text-2)', width: 68 }}>{e.isp}</span>
                       <div style={{ flex: 1, height: 6, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 3 }}>
                         <div style={{ width: `${Math.max(2, Math.round((e.ready / maxReady) * 100))}%`,
                                       height: 6, background: 'color-mix(in srgb, var(--j-success) 55%, transparent)', borderRadius: 3 }} />
@@ -1072,7 +1072,7 @@ export const SupplyStrip: React.FC<{
                     </div>
                   ))}
                   {f.ready_by_isp.length === 0 && (
-                    <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>none ready</div>
+                    <div style={{ fontSize: 10, color: 'var(--j-text-muted)' }}>none ready</div>
                   )}
                 </div>
                 {(() => {
@@ -1095,14 +1095,14 @@ export const SupplyStrip: React.FC<{
                             {editingFeed === f.dataset_id ? 'Close editor' : 'Edit throttle'}
                           </button>
                         ) : (
-                          <span style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
+                          <span style={{ fontSize: 9, color: 'var(--j-text-muted)' }}
                             title={`Read-only: server env ${throttle.write_flag_env} is not set.`}>
                             read-only
                           </span>
                         )}
                       </div>
                       {tf.overrides.length === 0 ? (
-                        <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 2 }}
+                        <div style={{ fontSize: 10, color: 'var(--j-text-muted)', marginTop: 2 }}
                           title={throttle.enforcement_note}>
                           no overrides — every ISP rides the global defaults
                         </div>
@@ -1110,7 +1110,7 @@ export const SupplyStrip: React.FC<{
                         <div key={ov.isp}
                           style={{ display: 'flex', gap: 6, alignItems: 'baseline', padding: '1px 0' }}
                           title={`Live enforcement row — updated ${age(ov.updated_at)}${ov.updated_by ? ` by ${ov.updated_by}` : ''}. ${throttle.enforcement_note}`}>
-                          <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', width: 68 }}>{ov.isp}</span>
+                          <span style={{ fontSize: 10, color: 'var(--j-text-2)', width: 68 }}>{ov.isp}</span>
                           <span style={{ fontSize: 10, color: 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>
                             {ov.max_per_wave > 0 ? `wave ≤${num(ov.max_per_wave)}` : 'wave default'}
                             {' · '}
@@ -1122,7 +1122,7 @@ export const SupplyStrip: React.FC<{
                         </div>
                       ))}
                       {tf.default_isps.length > 0 && (
-                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginTop: 2 }}
+                        <div style={{ fontSize: 9, color: 'var(--j-text-muted)', marginTop: 2 }}
                           title={`On global defaults (no override row): ${tf.default_isps.join(', ')}`}>
                           {tf.default_isps.length} ISP{tf.default_isps.length === 1 ? '' : 's'} on global defaults
                         </div>
@@ -1258,17 +1258,17 @@ const ThrottleEditor: React.FC<{
       {rows.map((r, i) => (
         <div key={r.isp} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '2px 0', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: 'var(--j-text)', width: 80, fontWeight: 600 }}>{r.isp}</span>
-          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+          <label style={{ fontSize: 9, color: 'var(--j-text-muted)' }}>
             pct (0–1){' '}
             <input style={input} value={r.pct} placeholder="0.4"
               onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, pct: e.target.value } : x))} />
           </label>
-          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+          <label style={{ fontSize: 9, color: 'var(--j-text-muted)' }}>
             per-wave cap{' '}
             <input style={input} value={r.wave} placeholder="default"
               onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, wave: e.target.value } : x))} />
           </label>
-          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}
+          <label style={{ fontSize: 9, color: 'var(--j-text-muted)' }}
             title="Empty = keep this ISP's existing lane daily budget (server preserves it). 0 = hard-suppress the ISP for this lane.">
             daily cap (empty = keep){' '}
             <input style={input} value={r.day} placeholder="keep"
@@ -1283,7 +1283,7 @@ const ThrottleEditor: React.FC<{
         </div>
       ))}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4 }}>
-        <select value={addISP} onChange={e => setAddISP(e.target.value)}
+        <select aria-label="Add isp" value={addISP} onChange={e => setAddISP(e.target.value)}
           style={{ ...input, width: 130 }}>
           <option value="">add ISP…</option>
           {availableISPs.map(g => <option key={g} value={g}>{g}</option>)}
@@ -1307,11 +1307,11 @@ const ThrottleEditor: React.FC<{
       {errors.length === 0 && (
         <div style={{ marginTop: 6 }}>
           <div style={{ fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase',
-                        color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+                        color: 'var(--j-text-muted)' }}>
             Change preview (current → proposed)
           </div>
           {changes.length === 0 && (
-            <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>no changes</div>
+            <div style={{ fontSize: 10, color: 'var(--j-text-muted)' }}>no changes</div>
           )}
           {changes.map(d => (
             <div key={d.isp} style={{ fontSize: 10, color: diffColor[d.kind], padding: '1px 0' }}>
@@ -1327,7 +1327,7 @@ const ThrottleEditor: React.FC<{
           onClick={() => void submit()}>
           {busy ? 'Replacing…' : 'Replace throttle…'}
         </button>
-        <button style={{ ...smallBtn, background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+        <button style={{ ...smallBtn, background: 'transparent', color: 'var(--j-text-muted)',
                          border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)' }}
           disabled={busy} onClick={onClose}>
           Cancel
@@ -1443,7 +1443,7 @@ const LaneContentPanel: React.FC<{
     background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)', padding: '14px 16px',
   };
   const label: React.CSSProperties = {
-    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)',
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--j-text-muted)',
   };
   const input: React.CSSProperties = {
     background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
@@ -1493,7 +1493,7 @@ const LaneContentPanel: React.FC<{
           </button>
         </div>
         {offer.subjects.some(sr => !sr.serving) && (
-          <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginTop: 4 }}>
+          <div style={{ fontSize: 10, color: 'var(--j-text-muted)', marginTop: 4 }}>
             {offer.subjects.filter(sr => !sr.serving).length} archived
           </div>
         )}
@@ -1538,7 +1538,7 @@ const LaneContentPanel: React.FC<{
   const renderCreativeBadge = (offer: LaneOffer) =>
     offer.creative ? (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}
+        <span style={{ fontSize: 11, color: 'var(--j-text-2)' }}
           title={`${num(offer.creative.html_bytes)} bytes · id ${offer.creative.id}`}>
           creative v{offer.creative.version} ({offer.creative.status}) · {age(offer.creative.updated_at)}
         </span>
@@ -1560,7 +1560,7 @@ const LaneContentPanel: React.FC<{
     return (
       <div style={{ marginTop: 8 }}>
         {p.loading && (
-          <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>Loading preview…</div>
+          <div style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Loading preview…</div>
         )}
         {p.err && (
           <div style={{ fontSize: 11, color: 'var(--j-danger)' }}>Preview failed ({p.err})</div>
@@ -1587,7 +1587,7 @@ const LaneContentPanel: React.FC<{
         <span style={{ fontSize: 11, color: 'var(--j-violet)', fontWeight: 700, minWidth: 34 }}>
           T{t.touch}{t.vertical === '' ? ' (global)' : ''}
         </span>
-        <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', minWidth: 110 }}>
+        <span style={{ fontSize: 10, color: 'var(--j-text-muted)', minWidth: 110 }}>
           {t.creative_filename === '' ? "uses the offer's creative" : t.creative_filename}
         </span>
         {e ? (
@@ -1601,7 +1601,7 @@ const LaneContentPanel: React.FC<{
             <button style={smallBtn} disabled={isSaving} onClick={() => void saveTouch(t)}>
               {isSaving ? 'Saving…' : 'Save'}
             </button>
-            <button style={{ ...smallBtn, background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+            <button style={{ ...smallBtn, background: 'transparent', color: 'var(--j-text-muted)',
                              border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)' }}
               onClick={() => setTouchEdit(s => { const n = { ...s }; delete n[key]; return n; })}>
               Cancel
@@ -1610,8 +1610,8 @@ const LaneContentPanel: React.FC<{
         ) : (
           <>
             <span style={{ fontSize: 12, color: 'var(--j-text)', flex: '2 1 220px' }} title="subject">{t.subject_line || '—'}</span>
-            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', flex: '2 1 180px' }} title="preheader">{t.preheader || '—'}</span>
-            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', flex: '1 1 130px' }} title="from name">{t.from_name || '—'}</span>
+            <span style={{ fontSize: 11, color: 'var(--j-text-muted)', flex: '2 1 180px' }} title="preheader">{t.preheader || '—'}</span>
+            <span style={{ fontSize: 11, color: 'var(--j-text-2)', flex: '1 1 130px' }} title="from name">{t.from_name || '—'}</span>
             <button style={smallBtn}
               onClick={() => setTouchEdit(s => ({ ...s, [key]: {
                 subject_line: t.subject_line, preheader: t.preheader, from_name: t.from_name } }))}>
@@ -1627,17 +1627,17 @@ const LaneContentPanel: React.FC<{
     <div style={panel}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <h3 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>What this lane sends</h3>
-        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{domain} · {brand}</span>
-        {loading && <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>Loading…</span>}
+        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{domain} · {brand}</span>
+        {loading && <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>Loading…</span>}
       </div>
       {err && <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       {content && (
-        <p style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', margin: '0 0 10px 0' }}>
+        <p style={{ fontSize: 10, color: 'var(--j-text-muted)', margin: '0 0 10px 0' }}>
           {content.preheader_note}
         </p>
       )}
       {content && content.feeds.length === 0 && !loading && (
-        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+        <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
           No active feeds on this brand (partner_drip_vertical_roster).
         </div>
       )}
@@ -1648,9 +1648,9 @@ const LaneContentPanel: React.FC<{
                                             marginBottom: 10, background: 'color-mix(in srgb, var(--j-shade) 37.5%, transparent)' }}>
             <div onClick={() => setOpen(s => ({ ...s, [feed.vertical]: !expanded }))}
               style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', cursor: 'pointer' }}>
-              <span style={{ fontSize: 12, color: '#9fd3ff' }}>{expanded ? '▾' : '▸'}</span>
+              <span style={{ fontSize: 12, color: 'var(--j-blue)' }}>{expanded ? '▾' : '▸'}</span>
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text)' }}>{feed.vertical}</span>
-              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
+              <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
                 {feed.datasets.length} feed{feed.datasets.length === 1 ? '' : 's'}
                 {(() => {
                   // Summary covers BOTH binding paths: dataset offers and
@@ -1677,13 +1677,13 @@ const LaneContentPanel: React.FC<{
                             offer: <b>{ds.offer.name || ds.offer.id}</b> ({ds.offer.status || '?'})
                           </span>
                         ) : (
-                          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
+                          <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
                             no dataset-level offer — see touch bindings below
                           </span>
                         )}
                         {ds.offer && renderCreativeBadge(ds.offer)}
                         <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-                          <select value={swapSel[ds.id] ?? (ds.offer?.id ?? '')} disabled={isSwapping}
+                          <select aria-label="Id" value={swapSel[ds.id] ?? (ds.offer?.id ?? '')} disabled={isSwapping}
                             onChange={e => setSwapSel(s => ({ ...s, [ds.id]: e.target.value }))}
                             style={{ ...input, maxWidth: 220 }}>
                             {!ds.offer && <option value="">(no offer)</option>}

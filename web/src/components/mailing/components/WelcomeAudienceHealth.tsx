@@ -126,8 +126,8 @@ const COLORS = {
   good:          'var(--j-success)',
   warn:          'var(--j-warn)',
   danger:        'var(--j-danger)',
-  hardBounce:    '#ef4444',
-  softBounce:    '#f59e0b',
+  hardBounce:    'var(--j-hard)',
+  softBounce:    'var(--j-soft)',
 };
 
 const fmt = (n: number) => n.toLocaleString('en-US');

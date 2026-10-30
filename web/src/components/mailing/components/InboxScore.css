@@ -7,7 +7,7 @@
 .inbox-score__controls input { background: var(--j-surface); color: var(--j-text); border: 1px solid var(--j-border-strong); border-radius: 6px; padding: 6px 8px; }
 .inbox-score__controls button { background: var(--j-violet-strong); color: var(--j-on-accent); border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
 .inbox-score__controls button:disabled { opacity: .6; cursor: default; }
-.inbox-score__error { background: #7f1d1d; color: var(--j-danger-soft); padding: 10px 12px; border-radius: 6px; margin: 8px 0; }
+.inbox-score__error { background: color-mix(in srgb, var(--j-hard) 14%, transparent); color: var(--j-danger-soft); padding: 10px 12px; border-radius: 6px; margin: 8px 0; }
 .inbox-score__howto { background: var(--j-surface); border: 1px solid var(--j-surface-2); border-radius: 8px; padding: 12px 16px; margin: 12px 0 16px; max-width: 90ch; }
 .inbox-score__howto h3 { margin: 0 0 6px; font-size: 14px; color: var(--j-violet-soft); }
 .inbox-score__howto ul { margin: 0; padding-left: 18px; color: var(--j-text-2); font-size: 14px; }
@@ -31,11 +31,11 @@
 .band-none .inbox-score__chance { color: var(--j-text-faint); font-weight: 400; }
 .inbox-score__trust { color: var(--j-text-muted); font-size: 12px; min-height: 14px; }
 .inbox-score__seed { margin-top: 6px; font-size: 12px; display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--j-surface-2); color: var(--j-text-2); }
-.inbox-score__seed.seed-inbox { background: #14532d; color: var(--j-success-soft); }
-.inbox-score__seed.seed-promotions { background: #713f12; color: var(--j-warn); }
-.inbox-score__seed.seed-spam { background: #7f1d1d; color: var(--j-danger-soft); }
+.inbox-score__seed.seed-inbox { background: color-mix(in srgb, var(--j-success) 14%, transparent); color: var(--j-success-soft); }
+.inbox-score__seed.seed-promotions { background: color-mix(in srgb, var(--j-soft) 14%, transparent); color: var(--j-warn); }
+.inbox-score__seed.seed-spam { background: color-mix(in srgb, var(--j-hard) 14%, transparent); color: var(--j-danger-soft); }
 .inbox-score__seed.seed-missing { background: #4c1d95; color: var(--j-violet-soft); }
-.inbox-score__detail td { background: #0b1220; }
+.inbox-score__detail td { background: var(--j-surface); }
 .inbox-score__reasons { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .inbox-score__reason-block h4 { margin: 0 0 6px; font-size: 13px; color: var(--j-violet-soft); }
 .inbox-score__reason-block ul { margin: 0; padding-left: 18px; }
@@ -48,10 +48,10 @@
 .inbox-score__findings li { margin: 4px 0; line-height: 1.45; font-size: 13px; }
 
 .inbox-score__defender { margin-top: 4px; font-size: 11px; display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--j-surface-2); color: var(--j-text-2); }
-.inbox-score__defender.defender-ready { background: #14532d; color: var(--j-success-soft); }
-.inbox-score__defender.defender-review { background: #713f12; color: var(--j-warn); }
+.inbox-score__defender.defender-ready { background: color-mix(in srgb, var(--j-success) 14%, transparent); color: var(--j-success-soft); }
+.inbox-score__defender.defender-review { background: color-mix(in srgb, var(--j-soft) 14%, transparent); color: var(--j-warn); }
 .inbox-score__defender.defender-act { background: #7c2d12; color: #fed7aa; }
-.inbox-score__defender.defender-junk { background: #7f1d1d; color: var(--j-danger-soft); }
+.inbox-score__defender.defender-junk { background: color-mix(in srgb, var(--j-hard) 14%, transparent); color: var(--j-danger-soft); }
 
 /* 2026-10-22: offers only, grouped by offer; one verdict per cell */
 .inbox-score__offer { cursor: pointer; background: var(--j-surface); }
@@ -83,9 +83,9 @@
 .isc-card:hover { border-color: var(--j-border-strong); border-left-color: var(--j-border-strong); }
 .isc-card--selected { outline: 2px solid var(--j-violet-strong); }
 .isc-card.band-ready { border-left-color: var(--j-success); }
-.isc-card.band-review { border-left-color: #f59e0b; }
+.isc-card.band-review { border-left-color: var(--j-soft); }
 .isc-card.band-act { border-left-color: var(--j-warn); }
-.isc-card.band-junk { border-left-color: #ef4444; }
+.isc-card.band-junk { border-left-color: var(--j-hard); }
 .isc-card__name { font-weight: 600; font-size: 14px; }
 .isc-card__meta { color: var(--j-text-muted); font-size: 12px; margin-top: 4px; }
 .isc-card__chips { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }

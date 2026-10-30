@@ -130,7 +130,7 @@
 
 .sms-option-count {
   font-size: 0.8rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -154,7 +154,7 @@
 
 .sms-tag-count {
   font-size: 0.75rem;
-  color: color-mix(in srgb, var(--j-text) 65%, transparent);
+  color: var(--j-text-muted);
   margin-left: 2px;
 }
 

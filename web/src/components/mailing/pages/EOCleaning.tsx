@@ -258,7 +258,7 @@ const NewJobForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) => {
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div style={{ minWidth: 130 }}>
           <span style={labelStyle}>Source</span>
-          <select
+          <select aria-label="Source"
             value={sourceType}
             onChange={e => { setSourceType(e.target.value as 'segment' | 'list' | 'upload'); setSourceRef(''); setMessage(null); }}
             style={inputStyle}
@@ -271,7 +271,7 @@ const NewJobForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) => {
         {sourceType !== 'upload' && (
           <div style={{ minWidth: 320, flex: 1 }}>
             <span style={labelStyle}>{sourceType === 'segment' ? 'Segment' : 'List'}</span>
-            <select value={sourceRef} onChange={e => setSourceRef(e.target.value)} style={inputStyle}>
+            <select aria-label="Source ref" value={sourceRef} onChange={e => setSourceRef(e.target.value)} style={inputStyle}>
               <option value="">
                 {(sourceType === 'segment' ? segments : lists) == null ? 'Loading…' : `— pick a ${sourceType} —`}
               </option>
@@ -298,7 +298,7 @@ const NewJobForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) => {
       {sourceType === 'upload' && (
         <div style={{ marginTop: 12 }}>
           <span style={labelStyle}>Emails — one per line (or comma/space separated); {fmtInt(pastedEmails.length)} parsed</span>
-          <textarea
+          <textarea aria-label="Emails raw"
             value={emailsRaw}
             onChange={e => setEmailsRaw(e.target.value)}
             rows={6}
