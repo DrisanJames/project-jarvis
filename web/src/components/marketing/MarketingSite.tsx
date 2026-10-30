@@ -93,7 +93,7 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
         <header className="jv-nav">
           <div className="jv-wrap jv-nav-inner">
             <PageLink to="home" className="jv-nav-logo">
-              <JarvisLockup size={34} />
+              <JarvisLockup size={34} animated />
             </PageLink>
             <nav className={`jv-nav-links${menuOpen ? ' is-open' : ''}`} aria-label="Main">
               {NAV.map((id) => (
@@ -196,7 +196,7 @@ const EarlyAccessModal: React.FC<{ intent: string; onClose: () => void }> = ({ i
           ×
         </button>
         <div className="jv-modal-head">
-          <JarvisMark size={52} mood={sent ? 'wink' : 'idle'} />
+          <JarvisMark size={52} mood={sent ? 'wink' : 'idle'} animated={!sent} />
           <div>
             <h2 id="jv-modal-title">{sent ? 'Noted. I’ll take it from here.' : `${intent}: let’s talk`}</h2>
             <p>

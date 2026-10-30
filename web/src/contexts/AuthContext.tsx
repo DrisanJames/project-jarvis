@@ -181,7 +181,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       let errorMessage = 'Authentication failed';
       switch (errorParam) {
         case 'domain_not_allowed':
-          errorMessage = 'Access denied. Only @jamesventurescorp.com accounts are allowed.';
+          errorMessage = 'That account doesn’t have access. Sign in with your team account.';
           break;
         case 'invalid_state':
           errorMessage = 'Invalid authentication state. Please try again.';

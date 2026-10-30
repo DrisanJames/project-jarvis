@@ -170,6 +170,36 @@ export const BrandPage: React.FC = () => (
       </div>
     </section>
 
+    <section className="jv-section jv-section--tight" id="motion">
+      <div className="jv-wrap">
+        <div className="jv-section-head">
+          <Eyebrow tone="violet">07 · Motion</Eyebrow>
+          <h2>Alive, never busy.</h2>
+          <p className="jv-lede">
+            Jarvis blinks, glances and twinkles — small signs it’s paying attention. One animated loop per page at most,
+            every loop under 12 seconds, and all motion stops for people who ask their device for reduced motion.
+          </p>
+        </div>
+        <div className="jv-motion-grid">
+          <div>
+            <JarvisMark size={96} animated />
+            <h3>Blink + twinkle</h3>
+            <p>The default living mark. Nav, modals, anywhere Jarvis is present.</p>
+          </div>
+          <div>
+            <JarvisMark size={96} animated look />
+            <h3>Glance</h3>
+            <p>Eyes move toward the content Jarvis is talking about. Hero moments only.</p>
+          </div>
+          <div>
+            <JarvisMark size={96} mood="wink" />
+            <h3>Wink</h3>
+            <p>Static, earned. Shown once when Jarvis finished something for you.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section className="jv-section jv-section--cream" id="never">
       <div className="jv-wrap">
         <div className="jv-section-head">

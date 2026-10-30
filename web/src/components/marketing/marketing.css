@@ -1274,3 +1274,222 @@ body.jv-body {
     white-space: normal;
   }
 }
+
+/* ── Logo motion ─────────────────────────────────────────
+   Blink every ~5s, spark twinkles every ~4s, eyes glance on `look`.
+   Hovering a lockup triggers an extra quick blink.            */
+.jv-mark .jv-m-eyes,
+.jv-mark .jv-m-spark,
+.jv-mark .jv-m-look {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.jv-mark--alive .jv-m-eyes {
+  animation: jv-blink 5.2s infinite;
+}
+.jv-mark--alive .jv-m-spark {
+  animation: jv-twinkle 4s ease-in-out infinite;
+}
+.jv-mark--look .jv-m-look {
+  animation: jv-glance 7s ease-in-out infinite;
+}
+.jv-lockup:hover .jv-mark--alive .jv-m-eyes {
+  animation: jv-blink-now 0.35s 1;
+}
+.jv-lockup:hover .jv-mark--alive .jv-m-spark {
+  animation: jv-spin 0.6s ease-out 1;
+}
+@keyframes jv-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.08); }
+}
+@keyframes jv-blink-now {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.08); }
+}
+@keyframes jv-twinkle {
+  0%, 70%, 100% { transform: scale(1) rotate(0deg); }
+  80% { transform: scale(1.35) rotate(45deg); }
+  90% { transform: scale(0.9) rotate(90deg); }
+}
+@keyframes jv-spin {
+  to { transform: rotate(180deg) scale(1.2); }
+}
+@keyframes jv-glance {
+  0%, 18%, 100% { transform: translateX(0); }
+  24%, 40% { transform: translateX(-2.6px); }
+  48%, 64% { transform: translateX(2.6px); }
+  70% { transform: translateX(0); }
+}
+
+/* ── Loops (animated vignettes) ───────────────────────── */
+.jv-loop {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.jv-loop-label {
+  font-family: var(--jv-body);
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--jv-ink);
+}
+.jv-loop-glyph {
+  font-family: var(--jv-display);
+  font-size: 20px;
+  font-weight: 800;
+  fill: var(--jv-ink);
+}
+.jv-env {
+  animation: jv-belt 6s linear infinite;
+}
+.jv-env--bot {
+  animation-name: jv-pluck;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.jv-loop-burst {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: jv-burst 6s linear infinite;
+  animation-delay: -3s;
+}
+@keyframes jv-belt {
+  0% { transform: translate(0, 0); opacity: 0; }
+  6% { opacity: 1; }
+  82% { transform: translate(400px, 0); opacity: 1; }
+  92% { transform: translate(416px, 12px); opacity: 1; }
+  100% { transform: translate(418px, 22px); opacity: 0; }
+}
+@keyframes jv-pluck {
+  0% { transform: translate(0, 0); opacity: 0; }
+  6% { opacity: 1; }
+  40% { transform: translate(222px, 0); }
+  54% { transform: translate(222px, -86px) scale(0.55); opacity: 1; }
+  60%, 100% { transform: translate(222px, -96px) scale(0.2); opacity: 0; }
+}
+@keyframes jv-burst {
+  0%, 52% { transform: scale(0); opacity: 0; }
+  58% { transform: scale(1.6) rotate(45deg); opacity: 1; }
+  68%, 100% { transform: scale(0) rotate(90deg); opacity: 0; }
+}
+
+.jv-night-dawn { animation: jv-dawn 12s ease-in-out infinite; }
+.jv-night-star { animation: jv-star 2.4s ease-in-out infinite; }
+.jv-night-moon { animation: jv-moonset 12s ease-in-out infinite; }
+.jv-night-sun { animation: jv-sunrise 12s ease-in-out infinite; }
+.jv-night-steam { animation: jv-steam 2.2s ease-in-out infinite; }
+.jv-night-report { animation: jv-report 12s ease-in-out infinite; }
+@keyframes jv-dawn {
+  0%, 60% { opacity: 0; }
+  85%, 95% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes jv-star {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+@keyframes jv-moonset {
+  0% { transform: translateY(0); opacity: 1; }
+  70% { transform: translateY(80px); opacity: 0; }
+  95% { transform: translateY(80px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+@keyframes jv-sunrise {
+  0%, 62% { transform: translateY(0); }
+  85%, 95% { transform: translateY(-150px); }
+  100% { transform: translateY(0); }
+}
+@keyframes jv-steam {
+  0%, 100% { opacity: 0; transform: translateY(2px); }
+  50% { opacity: 0.9; transform: translateY(-3px); }
+}
+@keyframes jv-report {
+  0%, 72% { transform: translateX(-130px); opacity: 0; }
+  82%, 95% { transform: translateX(0); opacity: 1; }
+  100% { transform: translateX(0); opacity: 0; }
+}
+
+.jv-loop-card {
+  border-radius: 24px;
+  box-shadow: 8px 8px 0 var(--jv-ink);
+  margin-bottom: 48px;
+  overflow: hidden;
+}
+.jv-loop-caption {
+  font-size: 0.9rem;
+  color: var(--jv-muted);
+  margin-top: 12px !important;
+}
+.jv-section--ink .jv-loop-caption {
+  color: #a7a2c8;
+}
+.jv-night-wrap {
+  max-width: 440px;
+  margin-top: 28px;
+}
+
+/* Chat reveal: messages arrive in order once the demo scrolls into view. */
+.jv-msg {
+  animation: jv-pop 0.35s ease-out both;
+}
+.jv-typing {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 5px;
+  background: #fff;
+  border-radius: 18px;
+  border-bottom-left-radius: 6px;
+  padding: 14px 16px;
+}
+.jv-typing span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jv-violet);
+  animation: jv-typing 1s ease-in-out infinite;
+}
+.jv-typing span:nth-child(2) { animation-delay: 0.15s; }
+.jv-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes jv-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes jv-typing {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Brand page motion specimens */
+.jv-motion-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+.jv-motion-grid > div {
+  background: #fff;
+  border: 2.5px solid var(--jv-ink);
+  border-radius: var(--jv-radius);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.jv-motion-grid p {
+  color: var(--jv-muted);
+  font-size: 0.92rem;
+}
+@media (max-width: 860px) {
+  .jv-motion-grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jv-site *,
+  .jv-site *::before,
+  .jv-site *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

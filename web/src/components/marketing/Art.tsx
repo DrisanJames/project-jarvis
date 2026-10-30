@@ -103,7 +103,7 @@ export const HeroScene: React.FC = () => (
       <path d="M452 360l5 10 10 5-10 5-5 10-5-10-10-5 10-5z" fill="#FFF8EE" />
     </svg>
     <div className="jv-hero-bot">
-      <JarvisMark size={230} title="Jarvis" />
+      <JarvisMark size={230} title="Jarvis" animated look />
     </div>
     <div className="jv-float jv-float--a">
       <span className="jv-float-dot jv-dot-lime" />
@@ -127,4 +127,103 @@ export const HeroScene: React.FC = () => (
       </div>
     </div>
   </div>
+);
+
+// ── Animated vignettes ("loops"). Pure SVG + CSS, a few KB each, frozen on
+// their first frame under prefers-reduced-motion. Use at most one per page.
+
+const Envelope: React.FC<{ fill: string; mark?: string }> = ({ fill, mark }) => (
+  <>
+    <rect x="-10" y="136" width="46" height="32" rx="6" fill={fill} stroke={INK} strokeWidth="2.5" />
+    <path d="M-10 140l23 15 23-15" fill="none" stroke={INK} strokeWidth="2.5" strokeLinejoin="round" />
+    {mark && (
+      <text x="13" y="164" textAnchor="middle" className="jv-loop-glyph">
+        {mark}
+      </text>
+    )}
+  </>
+);
+
+// Mail rides the belt into the inbox; the scanner envelope gets plucked.
+export const InboxSorterLoop: React.FC = () => (
+  <svg className="jv-loop jv-loop--sorter" viewBox="0 0 480 220" role="img" aria-label="Jarvis lets real mail through and plucks out a scanner">
+    <rect x="1" y="1" width="478" height="218" rx="24" fill="#FFFFFF" stroke={INK} strokeWidth="2.5" />
+    <rect x="20" y="170" width="380" height="14" rx="7" fill={INK} />
+    {[40, 110, 180, 250, 320, 380].map((x) => (
+      <circle key={x} cx={x} cy="177" r="3" fill="#FFF8EE" />
+    ))}
+    <g transform="translate(212 18)">
+      <JarvisMark size={64} animated look />
+    </g>
+    <g className="jv-loop-burst">
+      <path d="M244 70l4 8 8 4-8 4-4 8-4-8-8-4 8-4z" fill="#C6F432" stroke={INK} strokeWidth="1.5" />
+    </g>
+    <text x="300" y="56" className="jv-loop-label">scanner? caught.</text>
+    <g className="jv-env">
+      <Envelope fill="#19D3F0" />
+    </g>
+    <g className="jv-env" style={{ animationDelay: '-1.5s' }}>
+      <Envelope fill="#FFE1BD" />
+    </g>
+    <g className="jv-env jv-env--bot" style={{ animationDelay: '-3s' }}>
+      <Envelope fill="#FF2E88" mark="!" />
+    </g>
+    <g className="jv-env" style={{ animationDelay: '-4.5s' }}>
+      <Envelope fill="#E4D8FF" />
+    </g>
+    <path d="M404 140h60v52a8 8 0 0 1-8 8h-44a8 8 0 0 1-8-8z" fill="#C6F432" stroke={INK} strokeWidth="2.5" strokeLinejoin="round" />
+    <text x="434" y="182" textAnchor="middle" className="jv-loop-label">inbox</text>
+  </svg>
+);
+
+// Night falls, Jarvis keeps working, the sun comes up on a finished report.
+export const NightShiftLoop: React.FC = () => (
+  <svg className="jv-loop jv-loop--night" viewBox="0 0 360 240" role="img" aria-label="Jarvis works through the night and delivers the morning report">
+    <defs>
+      <linearGradient id="jv-dawn" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stopColor="#6D28FF" />
+        <stop offset="1" stopColor="#FF8A00" />
+      </linearGradient>
+      <clipPath id="jv-night-clip">
+        <rect x="0" y="0" width="360" height="240" rx="24" />
+      </clipPath>
+    </defs>
+    <g clipPath="url(#jv-night-clip)">
+      <rect width="360" height="240" fill="#14112B" />
+      <rect className="jv-night-dawn" width="360" height="240" fill="url(#jv-dawn)" />
+      {[
+        [40, 40, 0],
+        [92, 76, -1.2],
+        [150, 30, -2.4],
+        [262, 64, -0.6],
+        [318, 34, -1.8],
+      ].map(([x, y, d]) => (
+        <path
+          key={`${x}-${y}`}
+          className="jv-night-star"
+          style={{ animationDelay: `${d}s` }}
+          d={`M${x} ${y - 6}l2 4 4 2-4 2-2 4-2-4-4-2 4-2z`}
+          fill="#FFF8EE"
+        />
+      ))}
+      <circle className="jv-night-moon" cx="290" cy="58" r="20" fill="#FFF8EE" />
+      <circle className="jv-night-sun" cx="306" cy="250" r="26" fill="#C6F432" stroke={INK} strokeWidth="2.5" />
+      <rect x="0" y="196" width="360" height="44" fill="#2A2550" />
+      <g transform="translate(138 104)">
+        <JarvisMark size={92} animated />
+      </g>
+      <g transform="translate(248 166)">
+        <path d="M0 0h22v26a6 6 0 0 1-6 6H6a6 6 0 0 1-6-6z" fill="#FF2E88" stroke={INK} strokeWidth="2.5" />
+        <path d="M22 8h4a5 5 0 0 1 0 10h-4" fill="none" stroke="#FF2E88" strokeWidth="3.5" />
+        <path className="jv-night-steam" d="M7-6q-4-6 0-12M15-6q-4-6 0-12" fill="none" stroke="#FFF8EE" strokeWidth="2" strokeLinecap="round" />
+      </g>
+      <g className="jv-night-report">
+        <rect x="40" y="132" width="62" height="56" rx="8" fill="#FFFFFF" stroke={INK} strokeWidth="2.5" />
+        <path d="M50 146h30M50 156h40M50 166h22" stroke="#6D28FF" strokeWidth="3" strokeLinecap="round" />
+        <circle cx="94" cy="134" r="10" fill="#C6F432" stroke={INK} strokeWidth="2.5" />
+        <path d="m89 134 4 4 6-7" fill="none" stroke={INK} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
+    </g>
+    <rect x="1.25" y="1.25" width="357.5" height="237.5" rx="23" fill="none" stroke={INK} strokeWidth="2.5" />
+  </svg>
 );

@@ -1,5 +1,5 @@
-import React from 'react';
-import { HeroScene, Spot } from '../Art';
+import React, { useEffect, useRef, useState } from 'react';
+import { HeroScene, InboxSorterLoop, Spot } from '../Art';
 import { JarvisMark } from '../JarvisLogo';
 import { CtaBand, EarlyAccessButton, Eyebrow, PageLink, useMarketingNav } from '../parts';
 
@@ -109,24 +109,7 @@ export const HomePage: React.FC = () => {
               Meet the agent
             </PageLink>
           </div>
-          <div className="jv-chat" role="img" aria-label="A conversation with Jarvis">
-            <div className="jv-msg jv-msg--you">Send the Friday promo to everyone at 9am.</div>
-            <div className="jv-msg jv-msg--jarvis">
-              <JarvisMark size={30} />
-              <div>
-                Done — mostly. 18% of that list hasn't opened in 90 days, and Yahoo is cooling on two of your IPs. Engaged
-                readers go at 9:00; everyone else rides gentle waves until 2pm.
-              </div>
-            </div>
-            <div className="jv-msg jv-msg--jarvis">
-              <JarvisMark size={30} mood="wink" />
-              <div>
-                Expect more inboxes and fewer complaints. If you'd rather blast it anyway, say "undo" and I will. I won't
-                even sigh.
-              </div>
-            </div>
-            <div className="jv-msg jv-msg--you">…fine. Keep it.</div>
-          </div>
+          <ChatDemo />
         </div>
       </section>
 
@@ -135,6 +118,9 @@ export const HomePage: React.FC = () => {
           <div className="jv-section-head">
             <Eyebrow tone="cyan">How Jarvis thinks</Eyebrow>
             <h2>A loop that never sleeps, and never goes rogue.</h2>
+          </div>
+          <div className="jv-loop-card">
+            <InboxSorterLoop />
           </div>
           <ol className="jv-steps">
             {STEPS.map((s) => (
@@ -176,5 +162,85 @@ export const HomePage: React.FC = () => {
         body="Join the 2027 design-partner cohort. Bring your goals; Jarvis brings the rest."
       />
     </>
+  );
+};
+
+const CHAT: { who: 'you' | 'jarvis'; text: string; wink?: boolean }[] = [
+  { who: 'you', text: 'Send the Friday promo to everyone at 9am.' },
+  {
+    who: 'jarvis',
+    text: "Done — mostly. 18% of that list hasn't opened in 90 days, and Yahoo is cooling on two of your IPs. Engaged readers go at 9:00; everyone else rides gentle waves until 2pm.",
+  },
+  {
+    who: 'jarvis',
+    wink: true,
+    text: 'Expect more inboxes and fewer complaints. If you\'d rather blast it anyway, say "undo" and I will. I won\'t even sigh.',
+  },
+  { who: 'you', text: '…fine. Keep it.' },
+];
+
+// Plays the conversation once when it scrolls into view; Jarvis "types" first.
+const ChatDemo: React.FC = () => {
+  const ref = useRef<HTMLDivElement>(null);
+  const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const [shown, setShown] = useState(reduced ? CHAT.length : 0);
+  const [typing, setTyping] = useState(false);
+
+  useEffect(() => {
+    if (reduced || !ref.current) return;
+    let timers: number[] = [];
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        io.disconnect();
+        let t = 300;
+        CHAT.forEach((m, i) => {
+          if (m.who === 'jarvis') {
+            timers.push(window.setTimeout(() => setTyping(true), t));
+            t += 1100;
+          }
+          timers.push(
+            window.setTimeout(() => {
+              setTyping(false);
+              setShown(i + 1);
+            }, t),
+          );
+          t += m.who === 'jarvis' ? 1400 : 900;
+        });
+      },
+      { threshold: 0.4 },
+    );
+    io.observe(ref.current);
+    return () => {
+      io.disconnect();
+      timers.forEach(clearTimeout);
+      timers = [];
+    };
+  }, [reduced]);
+
+  return (
+    <div className="jv-chat" ref={ref} aria-label="A conversation with Jarvis">
+      {CHAT.slice(0, shown).map((m) =>
+        m.who === 'you' ? (
+          <div key={m.text} className="jv-msg jv-msg--you">
+            {m.text}
+          </div>
+        ) : (
+          <div key={m.text} className="jv-msg jv-msg--jarvis">
+            <JarvisMark size={30} mood={m.wink ? 'wink' : 'idle'} animated={!m.wink} />
+            <div>{m.text}</div>
+          </div>
+        ),
+      )}
+      {typing && (
+        <div className="jv-typing" aria-label="Jarvis is typing">
+          <span />
+          <span />
+          <span />
+        </div>
+      )}
+      {/* Reserve the final height so the section doesn't jump while it plays. */}
+      {shown < CHAT.length && <div className="jv-chat-spacer" style={{ minHeight: (CHAT.length - shown) * 64 }} />}
+    </div>
   );
 };

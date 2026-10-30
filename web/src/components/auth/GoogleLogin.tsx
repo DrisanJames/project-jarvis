@@ -71,7 +71,7 @@ export const GoogleLogin: React.FC<GoogleLoginProps> = ({ children }) => {
           </button>
 
           <p style={styles.domainNote}>
-            Only <strong>@jamesventurescorp.com</strong> accounts are allowed.
+            Team accounts only.
           </p>
         </div>
       </div>

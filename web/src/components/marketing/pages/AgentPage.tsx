@@ -1,4 +1,5 @@
 import React from 'react';
+import { NightShiftLoop } from '../Art';
 import { JarvisMark } from '../JarvisLogo';
 import { CtaBand, Eyebrow, PageHero } from '../parts';
 
@@ -54,6 +55,9 @@ export const AgentPage: React.FC = () => (
           <Eyebrow tone="lime">A day with Jarvis</Eyebrow>
           <h2>While you sleep, Jarvis runs the night shift.</h2>
           <p className="jv-lede">The same rhythm, every day, with the receipts to prove it.</p>
+          <div className="jv-night-wrap">
+            <NightShiftLoop />
+          </div>
         </div>
         <ol className="jv-timeline">
           {DAY.map((d) => (

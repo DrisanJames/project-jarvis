@@ -102,6 +102,23 @@ func generateSessionID() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// allowedIdentity is the only gate between a Google sign-in and a session.
+// All three must hold: the email is verified, its domain is the allowed one,
+// and Google reports the account as managed by that Workspace (hd). The hd
+// check rejects a personal Google account registered against a company
+// address, which a domain-suffix match alone would admit.
+func allowedIdentity(u *GoogleUserInfo, allowedDomain string) bool {
+	if u == nil || allowedDomain == "" || !u.VerifiedEmail {
+		return false
+	}
+	want := strings.ToLower(strings.TrimSpace(allowedDomain))
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(u.Email)), "@")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != want {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(u.HD)) == want
+}
+
 // HandleLogin initiates the Google OAuth flow
 func (am *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := generateState()
@@ -120,8 +137,12 @@ func (am *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	// Add hd parameter to restrict to the allowed domain
-	url := am.oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOnline) + "&hd=" + am.config.AllowedDomain
+	// Plain Google account chooser. No hd= hint: it only shapes Google's UI,
+	// is trivially stripped by the client, and advertised the Workspace domain
+	// to anyone who clicked Sign in. The allow decision is made server-side in
+	// HandleCallback (allowedIdentity).
+	url := am.oauth2Config.AuthCodeURL(state, oauth2.AccessTypeOnline,
+		oauth2.SetAuthURLParam("prompt", "select_account"))
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
@@ -173,10 +194,8 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify domain
-	emailDomain := strings.Split(userInfo.Email, "@")
-	if len(emailDomain) != 2 || emailDomain[1] != am.config.AllowedDomain {
-		log.Printf("Auth: Domain not allowed: %s (expected %s)", userInfo.Email, am.config.AllowedDomain)
+	if !allowedIdentity(userInfo, am.config.AllowedDomain) {
+		log.Printf("Auth: identity not allowed: %s (hd=%q verified=%v)", userInfo.Email, userInfo.HD, userInfo.VerifiedEmail)
 		http.Redirect(w, r, "/?error=domain_not_allowed", http.StatusTemporaryRedirect)
 		return
 	}
