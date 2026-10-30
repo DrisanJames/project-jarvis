@@ -762,7 +762,7 @@ const ManualRevenuePanel: React.FC<{ lane: string; onSaved: () => void }> = ({ l
             disabled={busy}
             onClick={() => { void submit() }}
             style={{
-              background: colors.indigo400, color: '#0a0e1a', border: 'none', borderRadius: 6,
+              background: colors.indigo400, color: 'var(--j-bg)', border: 'none', borderRadius: 6,
               padding: '8px 16px', fontSize: 12, fontWeight: 700, cursor: busy ? 'wait' : 'pointer', opacity: busy ? 0.6 : 1,
             }}
           >

@@ -459,39 +459,39 @@ interface DashboardProps {
 /** Inline badge palette per category (the portal does not use Tailwind).
  * Mirrors CATEGORY_COLORS in SegmentsCenter.tsx. */
 const DASH_CATEGORY_COLORS: Record<string, { bg: string; fg: string; border: string }> = {
-  engagement_brand: { bg: 'rgba(99,102,241,0.15)', fg: '#a5b4fc', border: 'rgba(129,140,248,0.4)' },
-  engagement_global: { bg: 'rgba(168,85,247,0.15)', fg: '#d8b4fe', border: 'rgba(192,132,252,0.4)' },
-  engagement_isp: { bg: 'rgba(59,130,246,0.15)', fg: '#93c5fd', border: 'rgba(96,165,250,0.4)' },
-  engagement_vertical: { bg: 'rgba(6,182,212,0.15)', fg: '#67e8f9', border: 'rgba(34,211,238,0.4)' },
-  framework: { bg: 'rgba(16,185,129,0.15)', fg: '#6ee7b7', border: 'rgba(52,211,153,0.4)' },
+  engagement_brand: { bg: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', fg: 'var(--j-violet)', border: 'color-mix(in srgb, var(--j-violet) 40%, transparent)' },
+  engagement_global: { bg: 'color-mix(in srgb, var(--j-violet) 15%, transparent)', fg: 'var(--j-violet-soft)', border: 'rgba(192,132,252,0.4)' },
+  engagement_isp: { bg: 'color-mix(in srgb, var(--j-blue) 15%, transparent)', fg: 'var(--j-blue)', border: 'color-mix(in srgb, var(--j-blue) 40%, transparent)' },
+  engagement_vertical: { bg: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', fg: 'var(--j-cyan)', border: 'color-mix(in srgb, var(--j-cyan) 40%, transparent)' },
+  framework: { bg: 'color-mix(in srgb, var(--j-success) 15%, transparent)', fg: 'var(--j-success-soft)', border: 'color-mix(in srgb, var(--j-success) 40%, transparent)' },
   funnel: { bg: 'rgba(20,184,166,0.15)', fg: '#5eead4', border: 'rgba(45,212,191,0.4)' },
-  cohort_static: { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(251,191,36,0.4)' },
-  suppression_exclusion: { bg: 'rgba(244,63,94,0.15)', fg: '#fda4af', border: 'rgba(251,113,133,0.4)' },
-  partner_wave_static: { bg: 'rgba(100,116,139,0.18)', fg: '#94a3b8', border: 'rgba(148,163,184,0.35)' },
-  legacy_snapshot: { bg: 'rgba(113,113,122,0.18)', fg: '#a1a1aa', border: 'rgba(161,161,170,0.35)' },
-  uncategorized: { bg: 'rgba(82,82,91,0.25)', fg: '#a1a1aa', border: 'rgba(113,113,122,0.4)' },
+  cohort_static: { bg: 'rgba(245,158,11,0.15)', fg: 'var(--j-warn)', border: 'color-mix(in srgb, var(--j-warn) 40%, transparent)' },
+  suppression_exclusion: { bg: 'color-mix(in srgb, var(--j-danger) 15%, transparent)', fg: 'var(--j-danger-soft)', border: 'rgba(251,113,133,0.4)' },
+  partner_wave_static: { bg: 'color-mix(in srgb, var(--j-text-muted) 18%, transparent)', fg: 'var(--j-text-muted)', border: 'color-mix(in srgb, var(--j-text-muted) 35%, transparent)' },
+  legacy_snapshot: { bg: 'rgba(113,113,122,0.18)', fg: 'var(--j-text-muted)', border: 'rgba(161,161,170,0.35)' },
+  uncategorized: { bg: 'rgba(82,82,91,0.25)', fg: 'var(--j-text-muted)', border: 'rgba(113,113,122,0.4)' },
 };
 
-const DASH_DEFAULT_CAT_COLOR = { bg: 'rgba(0,200,255,0.08)', fg: 'rgba(180,210,240,0.8)', border: 'rgba(0,200,255,0.25)' };
+const DASH_DEFAULT_CAT_COLOR = { bg: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', fg: 'color-mix(in srgb, var(--j-text) 80%, transparent)', border: 'color-mix(in srgb, var(--j-cyan) 25%, transparent)' };
 
 /** Build ledger status → dot color (matches SegmentsCenter). */
 const DASH_BUILD_STATUS_COLORS: Record<string, string> = {
-  ok: '#10b981',
+  ok: 'var(--j-success)',
   failed: '#ef4444',
-  running: '#3b82f6',
+  running: 'var(--j-blue)',
   blocked_delta: '#f59e0b',
 };
 
 /** Build ledger pipeline → badge tint. */
 const DASH_BUILD_SOURCE_COLORS: Record<string, { fg: string; border: string }> = {
-  'lake-standard': { fg: '#a5b4fc', border: 'rgba(129,140,248,0.4)' },
-  'lake-engaged': { fg: '#d8b4fe', border: 'rgba(192,132,252,0.4)' },
-  'lake-builder': { fg: '#93c5fd', border: 'rgba(96,165,250,0.4)' },
-  materializer: { fg: '#6ee7b7', border: 'rgba(52,211,153,0.4)' },
-  recalculate: { fg: '#67e8f9', border: 'rgba(34,211,238,0.4)' },
-  backfill: { fg: '#fcd34d', border: 'rgba(251,191,36,0.4)' },
+  'lake-standard': { fg: 'var(--j-violet)', border: 'color-mix(in srgb, var(--j-violet) 40%, transparent)' },
+  'lake-engaged': { fg: 'var(--j-violet-soft)', border: 'rgba(192,132,252,0.4)' },
+  'lake-builder': { fg: 'var(--j-blue)', border: 'color-mix(in srgb, var(--j-blue) 40%, transparent)' },
+  materializer: { fg: 'var(--j-success-soft)', border: 'color-mix(in srgb, var(--j-success) 40%, transparent)' },
+  recalculate: { fg: 'var(--j-cyan)', border: 'color-mix(in srgb, var(--j-cyan) 40%, transparent)' },
+  backfill: { fg: 'var(--j-warn)', border: 'color-mix(in srgb, var(--j-warn) 40%, transparent)' },
 };
-const DASH_DEFAULT_SOURCE_COLOR = { fg: '#94a3b8', border: 'rgba(148,163,184,0.35)' };
+const DASH_DEFAULT_SOURCE_COLOR = { fg: 'var(--j-text-muted)', border: 'color-mix(in srgb, var(--j-text-muted) 35%, transparent)' };
 
 /** Category metadata helpers — fall back to the raw id for categories not in
  * the static enum (e.g. 'engaged-model', 'data-partner'). */
@@ -563,7 +563,7 @@ const WORKER_ITEM_LABELS: Record<string, string> = {
 };
 
 const RUN_STATUS_COLORS: Record<string, string> = {
-  ok: '#10b981',
+  ok: 'var(--j-success)',
   partial: '#f59e0b',
   failed: '#ef4444',
 };
@@ -648,7 +648,7 @@ const WorkerCard: React.FC<{ worker: WorkerStatus }> = ({ worker }) => {
               </thead>
               <tbody>
                 {runs.map((r, i) => {
-                  const chip = RUN_STATUS_COLORS[r.status] ?? '#94a3b8';
+                  const chip = RUN_STATUS_COLORS[r.status] ?? 'var(--j-text-muted)';
                   return (
                     <tr key={`${r.started_at}-${i}`}>
                       <td>{formatTimeAgo(r.started_at)}</td>
@@ -662,7 +662,7 @@ const WorkerCard: React.FC<{ worker: WorkerStatus }> = ({ worker }) => {
                       <td>
                         <span
                           className="run-status-chip"
-                          style={{ color: chip, borderColor: `${chip}55`, background: `${chip}1a` }}
+                          style={{ color: chip, borderColor: `color-mix(in srgb, ${chip} 33%, transparent)`, background: `color-mix(in srgb, ${chip} 10%, transparent)` }}
                         >
                           {r.status}
                         </span>
@@ -962,7 +962,7 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetc
                       ? { label: 'failed', color: '#ef4444' }
                       : reason === 'blocked_delta'
                         ? { label: 'blocked Δ', color: '#f59e0b' }
-                        : { label: 'stale', color: '#94a3b8' };
+                        : { label: 'stale', color: 'var(--j-text-muted)' };
                   return (
                     <div key={seg.id} className="segment-item" onClick={() => onNavigate('segments')}>
                       <div className="segment-info">
@@ -983,7 +983,7 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetc
                       </div>
                       <span
                         className="segment-status"
-                        style={{ color: chip.color, border: `1px solid ${chip.color}55`, background: `${chip.color}1a` }}
+                        style={{ color: chip.color, border: `1px solid color-mix(in srgb, ${chip.color} 33%, transparent)`, background: `color-mix(in srgb, ${chip.color} 10%, transparent)` }}
                       >
                         {chip.label}
                       </span>
@@ -1019,7 +1019,7 @@ const ListDashboard: React.FC<DashboardProps> = ({ segments, onNavigate, orgFetc
               </div>
             ) : (
               recentBuilds.map(seg => {
-                const dotColor = DASH_BUILD_STATUS_COLORS[seg.last_build_status || ''] || '#6b7280';
+                const dotColor = DASH_BUILD_STATUS_COLORS[seg.last_build_status || ''] || 'var(--j-text-faint)';
                 const src = seg.build_source || 'unknown';
                 const srcColor = DASH_BUILD_SOURCE_COLORS[src] ?? DASH_DEFAULT_SOURCE_COLOR;
                 return (
@@ -1612,13 +1612,13 @@ const SubscribersView: React.FC<SubscribersViewProps> = ({ list, onBack, orgFetc
 
   const getStatusColor = (status: string) => {
     const colors: Record<string, string> = {
-      confirmed: '#00b894',
-      unconfirmed: '#fdcb6e',
-      unsubscribed: 'rgba(180,210,240,0.65)',
-      bounced: '#e94560',
-      complained: '#e94560',
+      confirmed: 'var(--j-success)',
+      unconfirmed: 'var(--j-warn)',
+      unsubscribed: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+      bounced: 'var(--j-danger)',
+      complained: 'var(--j-danger)',
     };
-    return colors[status] || 'rgba(180,210,240,0.65)';
+    return colors[status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)';
   };
 
   return (
@@ -2727,7 +2727,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
         {step === 'analyze' && analysis && (
           <>
             <div className="form-section analysis-section">
-              <h3><FontAwesomeIcon icon={faCheckCircle} style={{color: '#00b894'}} /> File Analyzed</h3>
+              <h3><FontAwesomeIcon icon={faCheckCircle} style={{color: 'var(--j-success)'}} /> File Analyzed</h3>
               
               <div className="analysis-stats">
                 <div className="stat-card">
@@ -2854,7 +2854,7 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
             {/* Invalid Records */}
             {analysis.invalidRecords.length > 0 && (
               <div className="form-section warning-section">
-                <h4><FontAwesomeIcon icon={faTimesCircle} style={{color: '#fdcb6e'}} /> Invalid Records (showing first 10)</h4>
+                <h4><FontAwesomeIcon icon={faTimesCircle} style={{color: 'var(--j-warn)'}} /> Invalid Records (showing first 10)</h4>
                 <div className="preview-table-wrapper">
                   <table className="preview-table">
                     <thead>
@@ -2997,95 +2997,95 @@ const ImportSubscribers: React.FC<ImportSubscribersProps> = ({ lists, onCancel, 
       </div>
       
       <style>{`
-        .template-section { background: #0a1020; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-        .section-desc { color: rgba(180,210,240,0.65); font-size: 14px; margin-bottom: 16px; }
+        .template-section { background: var(--j-surface); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .section-desc { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; margin-bottom: 16px; }
         .template-buttons { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-        .template-btn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; text-decoration: none; color: #e0e6f0; transition: all 0.2s; flex: 1; min-width: 200px; }
-        .template-btn:hover { border-color: #00e5ff; background: rgba(0,229,255,0.1); }
-        .template-btn > svg:first-child { color: #00e5ff; font-size: 24px; }
+        .template-btn { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--j-surface); border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; text-decoration: none; color: var(--j-text); transition: all 0.2s; flex: 1; min-width: 200px; }
+        .template-btn:hover { border-color: var(--j-cyan); background: color-mix(in srgb, var(--j-cyan) 10%, transparent); }
+        .template-btn > svg:first-child { color: var(--j-cyan); font-size: 24px; }
         .template-info { flex: 1; }
         .template-info strong { display: block; font-size: 14px; margin-bottom: 2px; }
-        .template-info small { color: rgba(180,210,240,0.65); font-size: 12px; }
-        .download-icon { color: rgba(180,210,240,0.65); }
-        .template-btn:hover .download-icon { color: #00e5ff; }
-        .fields-toggle { background: none; border: none; color: #00e5ff; cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
-        .fields-reference { margin-top: 16px; background: #0d1526; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; overflow: hidden; }
+        .template-info small { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
+        .download-icon { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .template-btn:hover .download-icon { color: var(--j-cyan); }
+        .fields-toggle { background: none; border: none; color: var(--j-cyan); cursor: pointer; font-size: 13px; padding: 0; text-decoration: underline; }
+        .fields-reference { margin-top: 16px; background: var(--j-surface); border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; overflow: hidden; }
         .fields-reference table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .fields-reference th, .fields-reference td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(0,200,255,0.08); color: #e0e6f0; }
-        .fields-reference th { background: #0a1628; font-weight: 600; color: rgba(180,210,240,0.65); font-size: 12px; text-transform: uppercase; }
-        .fields-reference code { background: rgba(0,200,255,0.08); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #00e5ff; }
-        .required-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; background: rgba(233,69,96,0.15); color: #e94560; border-radius: 4px; font-size: 10px; font-weight: 600; }
-        .example-cell { color: rgba(180,210,240,0.65); font-family: monospace; font-size: 12px; }
-        .fields-note { padding: 12px; background: rgba(253,203,110,0.1); color: #fdcb6e; font-size: 13px; margin: 0; }
+        .fields-reference th, .fields-reference td { padding: 10px 12px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); color: var(--j-text); }
+        .fields-reference th { background: var(--j-surface); font-weight: 600; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; text-transform: uppercase; }
+        .fields-reference code { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--j-cyan); }
+        .required-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; background: color-mix(in srgb, var(--j-danger) 15%, transparent); color: var(--j-danger); border-radius: 4px; font-size: 10px; font-weight: 600; }
+        .example-cell { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-family: monospace; font-size: 12px; }
+        .fields-note { padding: 12px; background: color-mix(in srgb, var(--j-warn) 10%, transparent); color: var(--j-warn); font-size: 13px; margin: 0; }
 
         /* Analysis */
-        .analysis-section { background: rgba(0,184,148,0.08); border: 1px solid rgba(0,184,148,0.2); border-radius: 8px; padding: 20px; }
+        .analysis-section { background: color-mix(in srgb, var(--j-success) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-success) 20%, transparent); border-radius: 8px; padding: 20px; }
         .analysis-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
-        .stat-card { background: #0d1526; padding: 16px; border-radius: 8px; text-align: center; border: 1px solid rgba(0,200,255,0.08); }
-        .stat-card.success { border-color: rgba(0,184,148,0.3); background: rgba(0,184,148,0.08); }
-        .stat-card.warning { border-color: rgba(253,203,110,0.3); background: rgba(253,203,110,0.08); }
-        .stat-card.info { border-color: rgba(0,229,255,0.3); background: rgba(0,229,255,0.08); }
-        .stat-value { display: block; font-size: 24px; font-weight: 700; color: #e0e6f0; }
-        .stat-card.success .stat-value { color: #00b894; }
-        .stat-card.warning .stat-value { color: #fdcb6e; }
-        .stat-card.info .stat-value { color: #00e5ff; }
-        .stat-label { font-size: 12px; color: rgba(180,210,240,0.65); }
+        .stat-card { background: var(--j-surface); padding: 16px; border-radius: 8px; text-align: center; border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+        .stat-card.success { border-color: color-mix(in srgb, var(--j-success) 30%, transparent); background: color-mix(in srgb, var(--j-success) 8%, transparent); }
+        .stat-card.warning { border-color: color-mix(in srgb, var(--j-warn) 30%, transparent); background: color-mix(in srgb, var(--j-warn) 8%, transparent); }
+        .stat-card.info { border-color: color-mix(in srgb, var(--j-cyan) 30%, transparent); background: color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+        .stat-value { display: block; font-size: 24px; font-weight: 700; color: var(--j-text); }
+        .stat-card.success .stat-value { color: var(--j-success); }
+        .stat-card.warning .stat-value { color: var(--j-warn); }
+        .stat-card.info .stat-value { color: var(--j-cyan); }
+        .stat-label { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
-        .file-info { display: flex; align-items: center; gap: 8px; padding: 12px; background: #0d1526; border-radius: 6px; font-size: 14px; color: #e0e6f0; }
-        .file-info svg { color: #00e5ff; }
-        .file-size { color: rgba(180,210,240,0.65); }
-        .file-info button { margin-left: auto; background: none; border: none; color: #00e5ff; cursor: pointer; font-size: 13px; }
+        .file-info { display: flex; align-items: center; gap: 8px; padding: 12px; background: var(--j-surface); border-radius: 6px; font-size: 14px; color: var(--j-text); }
+        .file-info svg { color: var(--j-cyan); }
+        .file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .file-info button { margin-left: auto; background: none; border: none; color: var(--j-cyan); cursor: pointer; font-size: 13px; }
 
         .detected-columns { display: flex; flex-wrap: wrap; gap: 8px; }
-        .column-tag { padding: 4px 10px; background: rgba(0,229,255,0.12); color: #00e5ff; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .column-tag { padding: 4px 10px; background: color-mix(in srgb, var(--j-cyan) 12%, transparent); color: var(--j-cyan); border-radius: 4px; font-size: 12px; font-weight: 500; }
 
-        .preview-table-wrapper { overflow-x: auto; border: 1px solid rgba(0,200,255,0.08); border-radius: 8px; }
-        .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; color: #e0e6f0; }
-        .preview-table th, .preview-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid rgba(0,200,255,0.08); }
-        .preview-table th { background: #0a1628; font-weight: 600; color: rgba(180,210,240,0.65); }
+        .preview-table-wrapper { overflow-x: auto; border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 8px; }
+        .preview-table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--j-text); }
+        .preview-table th, .preview-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+        .preview-table th { background: var(--j-surface); font-weight: 600; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
-        .warning-section { background: rgba(253,203,110,0.08); border: 1px solid rgba(253,203,110,0.2); border-radius: 8px; padding: 16px; }
-        .warning-note { margin: 12px 0 0; font-size: 13px; color: #fdcb6e; }
-        .error-text { color: #e94560; }
+        .warning-section { background: color-mix(in srgb, var(--j-warn) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-warn) 20%, transparent); border-radius: 8px; padding: 16px; }
+        .warning-note { margin: 12px 0 0; font-size: 13px; color: var(--j-warn); }
+        .error-text { color: var(--j-danger); }
 
-        .options-section { background: #0a1020; border-radius: 8px; padding: 16px; }
+        .options-section { background: var(--j-surface); border-radius: 8px; padding: 16px; }
         .checkbox-option { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
         .checkbox-option input { margin-top: 4px; width: 18px; height: 18px; }
-        .checkbox-option span strong { display: block; margin-bottom: 2px; color: #e0e6f0; }
-        .checkbox-option span small { color: rgba(180,210,240,0.65); font-size: 13px; }
+        .checkbox-option span strong { display: block; margin-bottom: 2px; color: var(--j-text); }
+        .checkbox-option span small { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; }
 
-        .target-list-reminder { padding: 12px; background: rgba(0,229,255,0.08); border-radius: 6px; font-size: 14px; color: #e0e6f0; }
+        .target-list-reminder { padding: 12px; background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 6px; font-size: 14px; color: var(--j-text); }
 
         /* Importing */
         .importing-section { padding: 48px 24px; text-align: center; }
         .progress-container { max-width: 400px; margin: 0 auto; }
-        .progress-icon { color: #00e5ff; margin-bottom: 20px; }
-        .progress-message { color: rgba(180,210,240,0.65); margin: 8px 0 24px; }
-        .progress-bar-container { height: 8px; background: rgba(0,200,255,0.08); border-radius: 4px; overflow: hidden; }
-        .progress-bar { height: 100%; background: linear-gradient(90deg, #00e5ff, #00b0ff); transition: width 0.3s; }
-        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: rgba(180,210,240,0.65); }
+        .progress-icon { color: var(--j-cyan); margin-bottom: 20px; }
+        .progress-message { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 8px 0 24px; }
+        .progress-bar-container { height: 8px; background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 4px; overflow: hidden; }
+        .progress-bar { height: 100%; background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); transition: width 0.3s; }
+        .progress-info { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         /* Complete */
         .complete-section { padding: 32px 24px; text-align: center; }
         .complete-icon { margin-bottom: 16px; }
-        .complete-icon.success { color: #00b894; }
-        .complete-icon.error { color: #e94560; }
+        .complete-icon.success { color: var(--j-success); }
+        .complete-icon.error { color: var(--j-danger); }
         .result-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 24px 0; }
-        .result-stat { padding: 16px 8px; background: #0a1020; border-radius: 8px; }
-        .result-stat.success { background: rgba(0,184,148,0.08); }
-        .result-stat.info { background: rgba(0,229,255,0.08); }
-        .result-stat.warning { background: rgba(253,203,110,0.08); }
-        .result-stat.error { background: rgba(233,69,96,0.08); }
-        .result-value { display: block; font-size: 20px; font-weight: 700; color: #e0e6f0; }
-        .result-stat.success .result-value { color: #00b894; }
-        .result-stat.info .result-value { color: #00e5ff; }
-        .result-stat.warning .result-value { color: #fdcb6e; }
-        .result-stat.error .result-value { color: #e94560; }
-        .result-label { font-size: 11px; color: rgba(180,210,240,0.65); text-transform: uppercase; }
-        .skip-note { color: rgba(180,210,240,0.65); font-size: 13px; margin-top: 16px; }
-        .error-list-container { text-align: left; background: rgba(233,69,96,0.08); border-radius: 8px; padding: 16px; margin-top: 16px; }
-        .error-list-container h4 { margin: 0 0 8px; color: #e94560; }
-        .error-list { margin: 0; padding-left: 20px; color: #e94560; font-size: 13px; }
+        .result-stat { padding: 16px 8px; background: var(--j-surface); border-radius: 8px; }
+        .result-stat.success { background: color-mix(in srgb, var(--j-success) 8%, transparent); }
+        .result-stat.info { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+        .result-stat.warning { background: color-mix(in srgb, var(--j-warn) 8%, transparent); }
+        .result-stat.error { background: color-mix(in srgb, var(--j-danger) 8%, transparent); }
+        .result-value { display: block; font-size: 20px; font-weight: 700; color: var(--j-text); }
+        .result-stat.success .result-value { color: var(--j-success); }
+        .result-stat.info .result-value { color: var(--j-cyan); }
+        .result-stat.warning .result-value { color: var(--j-warn); }
+        .result-stat.error .result-value { color: var(--j-danger); }
+        .result-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 65%, transparent); text-transform: uppercase; }
+        .skip-note { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-top: 16px; }
+        .error-list-container { text-align: left; background: color-mix(in srgb, var(--j-danger) 8%, transparent); border-radius: 8px; padding: 16px; margin-top: 16px; }
+        .error-list-container h4 { margin: 0 0 8px; color: var(--j-danger); }
+        .error-list { margin: 0; padding-left: 20px; color: var(--j-danger); font-size: 13px; }
       `}</style>
     </div>
   );

@@ -53,14 +53,14 @@ interface BulkUploadProgress {
 }
 
 const REASON_COLORS: Record<string, string> = {
-  hard_bounce: '#e94560',
-  soft_bounce: '#f97316',
-  spam_complaint: '#e94560',
-  unsubscribe: '#00b0ff',
-  inactive: 'rgba(180,210,240,0.65)',
-  manual: '#00e5ff',
-  unverified: '#fdcb6e',
-  system: '#6c5ce7',
+  hard_bounce: 'var(--j-danger)',
+  soft_bounce: 'var(--j-warn)',
+  spam_complaint: 'var(--j-danger)',
+  unsubscribe: 'var(--j-blue)',
+  inactive: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  manual: 'var(--j-cyan)',
+  unverified: 'var(--j-warn)',
+  system: 'var(--j-violet-strong)',
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -267,16 +267,16 @@ export const GlobalSuppressionDashboard: React.FC = () => {
   };
 
   const reasonLabel = (reason: string) => REASON_LABELS[reason] || reason;
-  const reasonColor = (reason: string) => REASON_COLORS[reason] || 'rgba(180,210,240,0.65)';
+  const reasonColor = (reason: string) => REASON_COLORS[reason] || 'color-mix(in srgb, var(--j-text) 65%, transparent)';
 
   const s: React.CSSProperties = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     padding: 24,
   };
   const card: React.CSSProperties = {
-    background: '#0d1526',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'var(--j-surface)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
     padding: 20,
     marginBottom: 16,
@@ -288,9 +288,9 @@ export const GlobalSuppressionDashboard: React.FC = () => {
     minWidth: 160,
   };
   const navBtn = (active: boolean): React.CSSProperties => ({
-    background: active ? 'rgba(0,229,255,0.25)' : 'rgba(0,200,255,0.04)',
-    border: `1px solid ${active ? 'rgba(0,229,255,0.5)' : 'rgba(0,200,255,0.08)'}`,
-    color: active ? '#00e5ff' : 'rgba(180,210,240,0.65)',
+    background: active ? 'color-mix(in srgb, var(--j-cyan) 25%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 4%, transparent)',
+    border: `1px solid ${active ? 'color-mix(in srgb, var(--j-cyan) 50%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)'}`,
+    color: active ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     padding: '8px 16px',
     borderRadius: 8,
     cursor: 'pointer',
@@ -306,18 +306,18 @@ export const GlobalSuppressionDashboard: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#e94560' }} />
+            <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-danger)' }} />
             Global Suppression Hub
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
             Single source of truth — all suppression signals converge here. Securely hashed for instant comparison.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={handleExportMD5} style={{ background: 'rgba(0,229,255,0.15)', border: '1px solid rgba(0,229,255,0.3)', color: '#00e5ff', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={handleExportMD5} style={{ background: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 30%, transparent)', color: 'var(--j-cyan)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faFileExport} /> Export
           </button>
-          <button onClick={() => { fetchStats(); fetchEntries(searchQuery); }} style={{ background: 'rgba(0,184,148,0.15)', border: '1px solid rgba(0,184,148,0.3)', color: '#00b894', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => { fetchStats(); fetchEntries(searchQuery); }} style={{ background: 'color-mix(in srgb, var(--j-success) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--j-success) 30%, transparent)', color: 'var(--j-success)', padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
             <FontAwesomeIcon icon={faSync} /> Refresh
           </button>
         </div>
@@ -342,8 +342,8 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             {[1, 2, 3, 4].map(i => (
               <div key={i} style={{ ...statCard, flex: 1, minWidth: 160 }}>
-                <div style={{ height: 28, width: '40%', margin: '0 auto', background: 'rgba(0,200,255,0.06)', borderRadius: 6, marginBottom: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.12}s` }} />
-                <div style={{ height: 12, width: '60%', margin: '0 auto', background: 'rgba(0,200,255,0.04)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+                <div style={{ height: 28, width: '40%', margin: '0 auto', background: 'color-mix(in srgb, var(--j-cyan) 6%, transparent)', borderRadius: 6, marginBottom: 8, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.12}s` }} />
+                <div style={{ height: 12, width: '60%', margin: '0 auto', background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
               </div>
             ))}
           </div>
@@ -368,20 +368,20 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           {/* Top Stats */}
           <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#e94560' }}>{(stats.total_suppressed || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Total Suppressed</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-danger)' }}>{(stats.total_suppressed || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Total Suppressed</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#f97316' }}>{(stats.recent_additions || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Recent Additions</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-warn)' }}>{(stats.recent_additions || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Recent Additions</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#fdcb6e' }}>{(gs?.hard_bounces || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Hard Bounces</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-warn)' }}>{(gs?.hard_bounces || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Hard Bounces</div>
             </div>
             <div style={statCard}>
-              <div style={{ fontSize: 28, fontWeight: 700, color: '#00b0ff' }}>{(gs?.invalid || 0).toLocaleString()}</div>
-              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>Invalid</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--j-blue)' }}>{(gs?.invalid || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>Invalid</div>
             </div>
           </div>
 
@@ -389,39 +389,39 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             {/* By Category */}
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--j-cyan)' }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />By Category
               </h3>
               {Object.entries(gs?.by_category || {}).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
-                <div key={cat} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
+                <div key={cat} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 4%, transparent)' }}>
                   <span style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: reasonColor(cat), display: 'inline-block' }} />
                     {reasonLabel(cat)}
                   </span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{count.toLocaleString()}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{count.toLocaleString()}</span>
                 </div>
               ))}
-              {Object.keys(gs?.by_category || {}).length === 0 && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</div>}
+              {Object.keys(gs?.by_category || {}).length === 0 && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</div>}
             </div>
 
             {/* By Source */}
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--j-cyan)' }}>
                 <FontAwesomeIcon icon={faGlobe} style={{ marginRight: 6 }} />By Source
               </h3>
               {(Array.isArray(stats.by_source) ? stats.by_source : Object.entries(stats.by_source || {}).map(([source, count]) => ({ source, count: count as number }))).sort((a: any, b: any) => b.count - a.count).map((item: any) => (
-                <div key={item.source} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(0,200,255,0.04)' }}>
-                  <span style={{ fontSize: 13, color: '#e0e6f0' }}>{item.source}</span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{(item.count || 0).toLocaleString()}</span>
+                <div key={item.source} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 4%, transparent)' }}>
+                  <span style={{ fontSize: 13, color: 'var(--j-text)' }}>{item.source}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{(item.count || 0).toLocaleString()}</span>
                 </div>
               ))}
-              {(!stats.by_source || (Array.isArray(stats.by_source) && stats.by_source.length === 0)) && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</div>}
+              {(!stats.by_source || (Array.isArray(stats.by_source) && stats.by_source.length === 0)) && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</div>}
             </div>
           </div>
 
           {/* Add Single Suppression */}
           <div style={{ ...card, marginTop: 16 }}>
-            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faPlus} style={{ marginRight: 6 }} />Suppress Email Address
             </h3>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -431,12 +431,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 value={suppressEmail}
                 onChange={e => { setSuppressEmail(e.target.value); setSuppressResult(null); }}
                 onKeyDown={e => e.key === 'Enter' && handleSuppress()}
-                style={{ flex: 1, background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13 }}
+                style={{ flex: 1, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               />
               <select
                 value={suppressReason}
                 onChange={e => setSuppressReason(e.target.value)}
-                style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13 }}
+                style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               >
                 <option value="manual">Manual</option>
                 <option value="hard_bounce">Hard Bounce</option>
@@ -444,12 +444,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 <option value="unsubscribe">Unsubscribe</option>
                 <option value="inactive">Inactive</option>
               </select>
-              <button onClick={handleSuppress} disabled={suppressing || !suppressEmail.trim()} style={{ background: 'rgba(233,69,96,0.2)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', padding: '10px 18px', borderRadius: 8, cursor: suppressing ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, opacity: suppressing ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button onClick={handleSuppress} disabled={suppressing || !suppressEmail.trim()} style={{ background: 'color-mix(in srgb, var(--j-danger) 20%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', color: 'var(--j-danger)', padding: '10px 18px', borderRadius: 8, cursor: suppressing ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, opacity: suppressing ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
                 {suppressing ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faBan} />} Suppress
               </button>
             </div>
             {suppressResult && (
-              <div style={{ marginTop: 8, fontSize: 13, color: suppressResult.ok ? '#00b894' : '#e94560', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ marginTop: 8, fontSize: 13, color: suppressResult.ok ? 'var(--j-success)' : 'var(--j-danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <FontAwesomeIcon icon={suppressResult.ok ? faCheckCircle : faExclamationTriangle} />
                 {suppressResult.msg}
               </div>
@@ -468,37 +468,37 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              style={{ flex: 1, background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 14 }}
+              style={{ flex: 1, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 14 }}
             />
-            <button onClick={handleSearch} style={{ background: 'rgba(0,229,255,0.2)', border: '1px solid rgba(0,229,255,0.4)', color: '#00e5ff', padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
+            <button onClick={handleSearch} style={{ background: 'color-mix(in srgb, var(--j-cyan) 20%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 40%, transparent)', color: 'var(--j-cyan)', padding: '10px 18px', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}>
               <FontAwesomeIcon icon={faSearch} /> Search
             </button>
           </div>
 
-          <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 8 }}>
             {totalEntries.toLocaleString()} results {searchQuery && `for "${searchQuery}"`}
           </div>
 
           <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ background: 'rgba(0,200,255,0.03)' }}>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Email</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Hash</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Reason</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Source</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Date</th>
-                  <th style={{ padding: '10px 14px', textAlign: 'center', color: 'rgba(180,210,240,0.65)', fontWeight: 500 }}>Action</th>
+                <tr style={{ background: 'color-mix(in srgb, var(--j-cyan) 3%, transparent)' }}>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Email</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Hash</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Reason</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Source</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'left', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Date</th>
+                  <th style={{ padding: '10px 14px', textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontWeight: 500 }}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {loading && entries.length === 0 && (
                   <>
                     {[1, 2, 3, 4, 5].map(i => (
-                      <tr key={`skel-${i}`} style={{ borderTop: '1px solid rgba(0,200,255,0.04)' }}>
+                      <tr key={`skel-${i}`} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 4%, transparent)' }}>
                         {[1, 2, 3, 4, 5, 6].map(j => (
                           <td key={j} style={{ padding: '10px 14px' }}>
-                            <div style={{ height: 12, width: `${60 + Math.random() * 30}%`, background: 'rgba(0,200,255,0.06)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${(i + j) * 0.08}s` }} />
+                            <div style={{ height: 12, width: `${60 + Math.random() * 30}%`, background: 'color-mix(in srgb, var(--j-cyan) 6%, transparent)', borderRadius: 3, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${(i + j) * 0.08}s` }} />
                           </td>
                         ))}
                       </tr>
@@ -507,25 +507,25 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                   </>
                 )}
                 {entries.map(entry => (
-                  <tr key={entry.id} style={{ borderTop: '1px solid rgba(0,200,255,0.04)' }}>
-                    <td style={{ padding: '8px 14px', color: '#e0e6f0' }}>{entry.email || '(hash-only)'}</td>
-                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
+                  <tr key={entry.id} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 4%, transparent)' }}>
+                    <td style={{ padding: '8px 14px', color: 'var(--j-text)' }}>{entry.email || '(hash-only)'}</td>
+                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace', fontSize: 11 }}>{entry.md5_hash?.substring(0, 12)}...</td>
                     <td style={{ padding: '8px 14px' }}>
-                      <span style={{ background: `${reasonColor(entry.reason)}22`, color: reasonColor(entry.reason), padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
+                      <span style={{ background: `color-mix(in srgb, ${reasonColor(entry.reason)} 13%, transparent)`, color: reasonColor(entry.reason), padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600 }}>
                         {reasonLabel(entry.reason)}
                       </span>
                     </td>
-                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{entry.source}</td>
-                    <td style={{ padding: '8px 14px', color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
+                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{entry.source}</td>
+                    <td style={{ padding: '8px 14px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{new Date(entry.created_at).toLocaleDateString()}</td>
                     <td style={{ padding: '8px 14px', textAlign: 'center' }}>
-                      <button onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: '#e94560', cursor: 'pointer', fontSize: 13 }}>
+                      <button onClick={() => handleRemove(entry.email)} style={{ background: 'none', border: 'none', color: 'var(--j-danger)', cursor: 'pointer', fontSize: 13 }}>
                         <FontAwesomeIcon icon={faTrash} />
                       </button>
                     </td>
                   </tr>
                 ))}
                 {entries.length === 0 && !loading && (
-                  <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: 'rgba(180,210,240,0.65)' }}>No entries found</td></tr>
+                  <tr><td colSpan={6} style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No entries found</td></tr>
                 )}
               </tbody>
             </table>
@@ -538,7 +538,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
         <div>
           {/* Section 1: Single Email */}
           <div style={card}>
-            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faBan} style={{ marginRight: 6 }} />Single Email
             </h3>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -548,12 +548,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 value={suppressEmail}
                 onChange={e => { setSuppressEmail(e.target.value); setSuppressResult(null); }}
                 onKeyDown={e => e.key === 'Enter' && handleSuppress()}
-                style={{ flex: 1, background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13 }}
+                style={{ flex: 1, background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               />
               <select
                 value={suppressReason}
                 onChange={e => setSuppressReason(e.target.value)}
-                style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13 }}
+                style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               >
                 <option value="manual">Manual</option>
                 <option value="hard_bounce">Hard Bounce</option>
@@ -561,12 +561,12 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 <option value="unsubscribe">Unsubscribe</option>
                 <option value="inactive">Inactive</option>
               </select>
-              <button onClick={handleSuppress} disabled={suppressing || !suppressEmail.trim()} style={{ background: 'rgba(233,69,96,0.2)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', padding: '10px 18px', borderRadius: 8, cursor: suppressing ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, opacity: suppressing ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <button onClick={handleSuppress} disabled={suppressing || !suppressEmail.trim()} style={{ background: 'color-mix(in srgb, var(--j-danger) 20%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', color: 'var(--j-danger)', padding: '10px 18px', borderRadius: 8, cursor: suppressing ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, opacity: suppressing ? 0.6 : 1, display: 'flex', alignItems: 'center', gap: 6 }}>
                 {suppressing ? <FontAwesomeIcon icon={faSpinner} spin /> : <FontAwesomeIcon icon={faBan} />} Suppress
               </button>
             </div>
             {suppressResult && (
-              <div style={{ marginTop: 8, fontSize: 13, color: suppressResult.ok ? '#00b894' : '#e94560', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ marginTop: 8, fontSize: 13, color: suppressResult.ok ? 'var(--j-success)' : 'var(--j-danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <FontAwesomeIcon icon={suppressResult.ok ? faCheckCircle : faExclamationTriangle} />
                 {suppressResult.msg}
               </div>
@@ -575,10 +575,10 @@ export const GlobalSuppressionDashboard: React.FC = () => {
 
           {/* Section 2: Paste Emails */}
           <div style={card}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#00e5ff' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faPaste} style={{ marginRight: 6 }} />Paste Emails
             </h3>
-            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
               Paste one email per line, or separated by commas. Duplicates are removed automatically.
             </p>
             <textarea
@@ -586,13 +586,13 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               value={pasteInput}
               onChange={e => setPasteInput(e.target.value)}
               rows={8}
-              style={{ width: '100%', background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
+              style={{ width: '100%', background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13, fontFamily: 'monospace', resize: 'vertical', boxSizing: 'border-box' }}
             />
             <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
               <select
                 value={pasteReason}
                 onChange={e => setPasteReason(e.target.value)}
-                style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 8, padding: '10px 14px', color: '#e0e6f0', fontSize: 13 }}
+                style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 8, padding: '10px 14px', color: 'var(--j-text)', fontSize: 13 }}
               >
                 <option value="manual">Manual</option>
                 <option value="hard_bounce">Hard Bounce</option>
@@ -603,11 +603,11 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               <button
                 onClick={handlePasteSuppress}
                 disabled={pasteEmailCount === 0 || bulkProgress.status === 'uploading'}
-                style={{ background: 'rgba(233,69,96,0.2)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', padding: '10px 18px', borderRadius: 8, cursor: pasteEmailCount === 0 ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: pasteEmailCount === 0 ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
+                style={{ background: 'color-mix(in srgb, var(--j-danger) 20%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', color: 'var(--j-danger)', padding: '10px 18px', borderRadius: 8, cursor: pasteEmailCount === 0 ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: pasteEmailCount === 0 ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
               >
                 <FontAwesomeIcon icon={faBan} /> Suppress All
               </button>
-              <span style={{ fontSize: 12, color: pasteEmailCount > 0 ? '#00e5ff' : 'rgba(180,210,240,0.5)', fontWeight: pasteEmailCount > 0 ? 600 : 400 }}>
+              <span style={{ fontSize: 12, color: pasteEmailCount > 0 ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: pasteEmailCount > 0 ? 600 : 400 }}>
                 {pasteEmailCount > 0 ? `${pasteEmailCount.toLocaleString()} valid email${pasteEmailCount !== 1 ? 's' : ''} detected` : 'No valid emails yet'}
               </span>
             </div>
@@ -615,10 +615,10 @@ export const GlobalSuppressionDashboard: React.FC = () => {
 
           {/* Section 3: File Upload */}
           <div style={card}>
-            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: '#00e5ff' }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 14, color: 'var(--j-cyan)' }}>
               <FontAwesomeIcon icon={faUpload} style={{ marginRight: 6 }} />Upload File
             </h3>
-            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+            <p style={{ margin: '0 0 12px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
               CSV or TXT file with email addresses. Supports files with an "email" column header, or one email per line.
             </p>
             <input
@@ -633,9 +633,9 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={bulkProgress.status === 'uploading'}
                 style={{
-                  background: 'rgba(233,69,96,0.15)',
-                  border: '2px dashed rgba(233,69,96,0.4)',
-                  color: '#e94560',
+                  background: 'color-mix(in srgb, var(--j-danger) 15%, transparent)',
+                  border: '2px dashed color-mix(in srgb, var(--j-danger) 40%, transparent)',
+                  color: 'var(--j-danger)',
                   padding: '16px 28px',
                   borderRadius: 12,
                   cursor: bulkProgress.status === 'uploading' ? 'wait' : 'pointer',
@@ -652,7 +652,7 @@ export const GlobalSuppressionDashboard: React.FC = () => {
                 }
               </button>
               {bulkProgress.status === 'uploading' && (
-                <button onClick={() => { abortRef.current = true; }} style={{ background: 'rgba(233,69,96,0.1)', border: '1px solid rgba(233,69,96,0.3)', color: '#e94560', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 12 }}>
+                <button onClick={() => { abortRef.current = true; }} style={{ background: 'color-mix(in srgb, var(--j-danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 30%, transparent)', color: 'var(--j-danger)', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 12 }}>
                   Cancel
                 </button>
               )}
@@ -662,14 +662,14 @@ export const GlobalSuppressionDashboard: React.FC = () => {
           {/* Shared Progress Display */}
           {bulkProgress.total > 0 && (
             <div style={card}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: '#00e5ff' }}>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--j-cyan)' }}>
                 <FontAwesomeIcon icon={bulkProgress.status === 'done' ? faCheckCircle : faSpinner} spin={bulkProgress.status === 'uploading'} style={{ marginRight: 6 }} />
                 {bulkProgress.status === 'uploading' ? 'Processing...' : bulkProgress.status === 'done' ? 'Complete' : 'Error'}
               </h3>
 
-              <div style={{ background: 'rgba(0,200,255,0.06)', borderRadius: 8, height: 12, marginBottom: 16, overflow: 'hidden' }}>
+              <div style={{ background: 'color-mix(in srgb, var(--j-cyan) 6%, transparent)', borderRadius: 8, height: 12, marginBottom: 16, overflow: 'hidden' }}>
                 <div style={{
-                  background: bulkProgress.status === 'error' ? '#e94560' : 'linear-gradient(90deg, #00e5ff, #6c5ce7)',
+                  background: bulkProgress.status === 'error' ? 'var(--j-danger)' : 'linear-gradient(90deg, var(--j-cyan), var(--j-violet-strong))',
                   height: '100%',
                   width: `${Math.min((bulkProgress.processed / bulkProgress.total) * 100, 100)}%`,
                   borderRadius: 8,
@@ -678,28 +678,28 @@ export const GlobalSuppressionDashboard: React.FC = () => {
               </div>
 
               <div style={{ display: 'flex', gap: 16 }}>
-                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'rgba(0,200,255,0.04)', borderRadius: 8, border: '1px solid rgba(0,200,255,0.08)' }}>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: '#e0e6f0' }}>{bulkProgress.total.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>Total Emails</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-text)' }}>{bulkProgress.total.toLocaleString()}</div>
+                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Total Emails</div>
                 </div>
-                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'rgba(0,200,255,0.04)', borderRadius: 8, border: '1px solid rgba(0,200,255,0.08)' }}>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: '#00e5ff' }}>{bulkProgress.processed.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>Processed</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-cyan)' }}>{bulkProgress.processed.toLocaleString()}</div>
+                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Processed</div>
                 </div>
-                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'rgba(0,184,148,0.08)', borderRadius: 8, border: '1px solid rgba(0,184,148,0.15)' }}>
-                  <div style={{ fontSize: 24, fontWeight: 700, color: '#00b894' }}>{bulkProgress.succeeded.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>Suppressed</div>
+                <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-success) 8%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-success) 15%, transparent)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-success)' }}>{bulkProgress.succeeded.toLocaleString()}</div>
+                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Suppressed</div>
                 </div>
                 {bulkProgress.failed > 0 && (
-                  <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'rgba(233,69,96,0.08)', borderRadius: 8, border: '1px solid rgba(233,69,96,0.15)' }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: '#e94560' }}>{bulkProgress.failed.toLocaleString()}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>Failed</div>
+                  <div style={{ flex: 1, textAlign: 'center', padding: 14, background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-danger) 15%, transparent)' }}>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--j-danger)' }}>{bulkProgress.failed.toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Failed</div>
                   </div>
                 )}
               </div>
 
               {bulkProgress.errorMessage && (
-                <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(233,69,96,0.1)', border: '1px solid rgba(233,69,96,0.2)', borderRadius: 8, color: '#e94560', fontSize: 13 }}>
+                <div style={{ marginTop: 12, padding: '10px 14px', background: 'color-mix(in srgb, var(--j-danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 20%, transparent)', borderRadius: 8, color: 'var(--j-danger)', fontSize: 13 }}>
                   {bulkProgress.errorMessage}
                 </div>
               )}

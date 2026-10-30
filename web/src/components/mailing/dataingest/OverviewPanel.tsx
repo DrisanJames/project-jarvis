@@ -34,7 +34,7 @@ const POLL_MS = 30_000;
 
 export const AT_REST = colors.warning;
 export const DYNAMIC = colors.success;
-export const TRANSFER = '#a78bfa';
+export const TRANSFER = 'var(--j-violet)';
 
 interface Props {
   date: string;
@@ -68,8 +68,8 @@ const Tile: React.FC<{
 }> = ({ label, hint, children, accent, borderAccent }) => (
   <div
     style={{
-      background: 'rgba(15,23,42,0.55)',
-      border: `1px solid ${borderAccent && accent ? accent + '66' : colors.panelBorder}`,
+      background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)',
+      border: `1px solid ${borderAccent && accent ? `color-mix(in srgb, ${accent} 40%, transparent)` : colors.panelBorder}`,
       borderRadius: 10,
       padding: '12px 14px',
       display: 'flex',
@@ -85,7 +85,7 @@ const Tile: React.FC<{
 );
 
 const chartTooltip = {
-  contentStyle: { background: '#0f1c33', border: '1px solid rgba(120,150,200,0.3)', borderRadius: 6, fontSize: 12 },
+  contentStyle: { background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, fontSize: 12 },
   labelStyle: { color: colors.heading },
 };
 
@@ -229,9 +229,9 @@ export const OverviewPanel: React.FC<Props> = ({
           ) : (
             <ResponsiveContainer width="100%" height={230}>
               <BarChart data={series} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                <XAxis dataKey="day" tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
-                <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
+                <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
+                <XAxis dataKey="day" tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+                <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
                 <Tooltip {...chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="At rest" stackId="a" fill={AT_REST} radius={[0, 0, 0, 0]} />
@@ -261,9 +261,9 @@ export const OverviewPanel: React.FC<Props> = ({
           {!hours.error && hoursMeasured && (
             <ResponsiveContainer width="100%" height={230}>
               <BarChart data={hourRows} margin={{ top: 4, right: 12, left: -14, bottom: 0 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                <XAxis dataKey="hour" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" interval={3} />
-                <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="rgba(120,150,200,0.25)" />
+                <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
+                <XAxis dataKey="hour" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" interval={3} />
+                <YAxis tick={{ fill: colors.textMuted, fontSize: 11 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
                 <Tooltip {...chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
                 <Bar dataKey="Arrived" fill={DYNAMIC} radius={[2, 2, 0, 0]} />
@@ -329,7 +329,7 @@ export const OverviewPanel: React.FC<Props> = ({
                 onChange={(e) => setFeedFilter(e.target.value)}
                 placeholder="feed or lane"
                 style={{
-                  background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`,
+                  background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`,
                   borderRadius: 8, padding: '5px 9px', fontSize: 12, width: 180,
                 }}
               />

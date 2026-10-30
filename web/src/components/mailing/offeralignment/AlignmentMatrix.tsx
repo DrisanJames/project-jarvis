@@ -294,7 +294,7 @@ export const AlignmentMatrix: React.FC<{
                     // only; LOW_VOLUME stays flat grey (no ramp).
                     const t = !low && v != null && grid.maxMetric > 0 ? Math.min(1, v / grid.maxMetric) : 0;
                     const bg = low
-                      ? 'rgba(100,116,139,0.10)'
+                      ? 'color-mix(in srgb, var(--j-text-muted) 10%, transparent)'
                       : `rgba(99,102,241,${(0.05 + 0.5 * t).toFixed(3)})`;
                     const volPct = grid.maxDelivered > 0 ? (r.delivered / grid.maxDelivered) * 100 : 0;
                     return (

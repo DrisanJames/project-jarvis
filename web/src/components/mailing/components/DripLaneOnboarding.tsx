@@ -123,12 +123,12 @@ const verdictColor = (v: string) =>
 // Transport is a routing fact, not a status — but a lane pointed at the wrong
 // transport ships to the wrong estate, so it gets its own color per family.
 const transportColor = (t: string) =>
-  t === 'SES' ? colors.indigo400 : t === 'KUMO' ? '#22d3ee' : colors.indigo200;
+  t === 'SES' ? colors.indigo400 : t === 'KUMO' ? 'var(--j-cyan)' : colors.indigo200;
 
 const num = (n: number) => (n ?? 0).toLocaleString();
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(2,6,23,0.6)',
+  background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
   border: `1px solid ${colors.panelBorder}`,
   borderRadius: 8,
   color: colors.text,

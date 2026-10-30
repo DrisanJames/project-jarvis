@@ -11,16 +11,16 @@ const API = '/api/mailing/offer-center';
 
 const btn: React.CSSProperties = {
   padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
-  fontSize: 12, fontWeight: 600, background: '#6366f1', color: '#fff',
+  fontSize: 12, fontWeight: 600, background: 'var(--j-violet-strong)', color: 'var(--j-on-accent)',
 };
 
 const thStyle: React.CSSProperties = {
   textAlign: 'left', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5,
-  color: 'rgba(255,255,255,0.4)', padding: '6px 10px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+  color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', padding: '6px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
 };
 
 const tdStyle: React.CSSProperties = {
-  fontSize: 12, color: '#e0e6f0', padding: '6px 10px', borderBottom: '1px solid rgba(255,255,255,0.04)',
+  fontSize: 12, color: 'var(--j-text)', padding: '6px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 4%, transparent)',
 };
 
 export interface OfferSuppressionEntry {
@@ -127,14 +127,14 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
   };
 
   return (
-    <div style={{ marginBottom: 20, padding: 16, background: '#0d1526', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+    <div style={{ marginBottom: 20, padding: 16, background: 'var(--j-surface)', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>Manual Address Suppression</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>Manual Address Suppression</div>
         {total !== null && (
-          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>{total.toLocaleString()} total entries on this offer</span>
+          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>{total.toLocaleString()} total entries on this offer</span>
         )}
       </div>
-      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', marginBottom: 10 }}>
         Paste one or more addresses (newline / comma separated) or upload a .csv/.txt file. Addresses are matched
         against the subscriber base and blocked for this offer at planning and send time.
       </div>
@@ -145,7 +145,7 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
         rows={3}
         style={{
           width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: 12, fontFamily: 'monospace',
-          background: '#0a0f1d', color: '#e0e6f0', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 10,
+          background: '#0a0f1d', color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)', borderRadius: 8, padding: 10,
         }}
         disabled={submitting}
       />
@@ -157,18 +157,18 @@ export const ManualOfferSuppressionPanel: React.FC<{ offerId: string }> = ({ off
         >
           {submitting ? 'Suppressing…' : `Suppress ${parseEmails(pasteText).length || ''} Address${parseEmails(pasteText).length === 1 ? '' : 'es'}`}
         </button>
-        <label style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
+        <label style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', cursor: submitting ? 'not-allowed' : 'pointer' }}>
           or upload file:{' '}
-          <input type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: '#e0e6f0' }} />
+          <input type="file" accept=".csv,.txt" onChange={handleFile} disabled={submitting} style={{ fontSize: 12, color: 'var(--j-text)' }} />
         </label>
       </div>
       {resultMsg && (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#22c55e' }}>{resultMsg}</div>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--j-success)' }}>{resultMsg}</div>
       )}
       {entries.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <button
-            style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: '#818cf8', cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--j-violet)', cursor: 'pointer' }}
             onClick={() => setExpanded(x => !x)}
           >
             {expanded ? '▾ Hide' : '▸ Show'} recent entries

@@ -49,7 +49,7 @@
 
 .oa-badge-healthy {
   font-size: 10px;
-  color: #64748b;
+  color: var(--j-text-faint);
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
@@ -63,8 +63,8 @@
   font-weight: 700;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  color: #a5b4fc;
-  background: rgba(129, 140, 248, 0.12);
-  border: 1px solid rgba(129, 140, 248, 0.35);
+  color: var(--j-violet);
+  background: color-mix(in srgb, var(--j-violet) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet) 35%, transparent);
   white-space: nowrap;
 }

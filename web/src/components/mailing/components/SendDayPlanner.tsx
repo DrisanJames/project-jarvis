@@ -189,7 +189,7 @@ export const SendDayPlanner: React.FC<SendDayPlannerProps> = () => {
               flexWrap: 'wrap',
               padding: '10px 12px',
               background: 'rgba(245,158,11,0.08)',
-              border: `1px solid ${colors.warning}55`,
+              border: `1px solid color-mix(in srgb, ${colors.warning} 33%, transparent)`,
               borderRadius: 10,
             }}
           >
@@ -223,6 +223,6 @@ const btnPrimary: React.CSSProperties = {
   color: colors.indigo200, padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
 };
 const attestBtn: React.CSSProperties = {
-  background: `${colors.warning}22`, border: `1px solid ${colors.warning}99`,
+  background: `color-mix(in srgb, ${colors.warning} 13%, transparent)`, border: `1px solid color-mix(in srgb, ${colors.warning} 60%, transparent)`,
   color: colors.warningText, padding: '6px 12px', borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: 'pointer',
 };

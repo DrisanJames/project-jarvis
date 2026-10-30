@@ -288,7 +288,7 @@ const expiredDateInCopy = (text: string): string | null => {
 };
 
 const editInput: React.CSSProperties = {
-  background: 'rgba(10,16,32,0.6)',
+  background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
   color: colors.text,
   border: `1px solid ${colors.panelBorder}`,
   borderRadius: 6,
@@ -298,7 +298,7 @@ const editInput: React.CSSProperties = {
 };
 
 const btnPrimary: React.CSSProperties = {
-  background: colors.indigo500, color: '#fff', border: 'none', borderRadius: 6,
+  background: colors.indigo500, color: 'var(--j-on-accent)', border: 'none', borderRadius: 6,
   padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
 };
 
@@ -891,7 +891,7 @@ const UploadPanel: React.FC<{ offerId: string; laneLabel: string; onEnrolled: ()
         spellCheck={false}
         style={{
           width: '100%', minHeight: 130, resize: 'vertical',
-          background: 'rgba(10,16,32,0.6)', color: colors.text,
+          background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text,
           border: `1px solid ${colors.panelBorder}`, borderRadius: 8,
           padding: 10, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
           fontSize: 12, lineHeight: 1.5,
@@ -903,7 +903,7 @@ const UploadPanel: React.FC<{ offerId: string; laneLabel: string; onEnrolled: ()
           onClick={doPreview}
           disabled={busy || !raw.trim()}
           style={{
-            background: colors.indigo500, color: '#fff', border: 'none', borderRadius: 8,
+            background: colors.indigo500, color: 'var(--j-on-accent)', border: 'none', borderRadius: 8,
             padding: '8px 16px', fontSize: 13, fontWeight: 600,
             cursor: busy || !raw.trim() ? 'not-allowed' : 'pointer', opacity: busy || !raw.trim() ? 0.5 : 1,
           }}
@@ -915,8 +915,8 @@ const UploadPanel: React.FC<{ offerId: string; laneLabel: string; onEnrolled: ()
             onClick={doEnroll}
             disabled={busy || preview.ready === 0}
             style={{
-              background: preview.ready === 0 ? 'rgba(100,116,139,0.3)' : colors.success,
-              color: '#fff', border: 'none', borderRadius: 8,
+              background: preview.ready === 0 ? 'color-mix(in srgb, var(--j-text-muted) 30%, transparent)' : colors.success,
+              color: 'var(--j-text)', border: 'none', borderRadius: 8,
               padding: '8px 16px', fontSize: 13, fontWeight: 700,
               cursor: preview.ready === 0 ? 'not-allowed' : 'pointer',
             }}
@@ -1007,7 +1007,7 @@ const LaneNavigator: React.FC<{
     padding: '4px 10px',
     color: active ? colors.indigo200 : colors.textMuted,
     borderColor: active ? colors.indigo400 : colors.panelBorder,
-    background: active ? 'rgba(99,102,241,0.12)' : 'transparent',
+    background: active ? 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)' : 'transparent',
   });
 
   return (
@@ -1058,7 +1058,7 @@ const LaneNavigator: React.FC<{
                   display: 'grid',
                   gridTemplateColumns: 'minmax(0,2fr) 90px 90px 110px 90px',
                   gap: 10, alignItems: 'center', textAlign: 'left',
-                  background: l.offer_id === selected ? 'rgba(99,102,241,0.14)' : 'transparent',
+                  background: l.offer_id === selected ? 'color-mix(in srgb, var(--j-violet-strong) 14%, transparent)' : 'transparent',
                   opacity: l.enabled ? 1 : 0.55,
                 }}
               >
@@ -1107,7 +1107,7 @@ const HealthStrip: React.FC<{ d: LaneResponse }> = ({ d }) => {
   return (
     <div style={{
       display: 'flex', gap: 24, flexWrap: 'wrap', padding: '10px 12px', marginBottom: 12,
-      borderRadius: 8, background: 'rgba(10,16,32,0.5)', border: `1px solid ${colors.panelBorder}`,
+      borderRadius: 8, background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: `1px solid ${colors.panelBorder}`,
     }}>
       {cell('Active now', n(l.active_now), `${n(l.waiting_now)} waiting at a step`, colors.indigo200,
         'STATE: point-in-time, no window.')}
@@ -1219,7 +1219,7 @@ export const ClickFunnels: React.FC = () => {
         <div
           onClick={() => setEditorFor(null)}
           style={{
-            position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(4,8,18,0.72)',
+            position: 'fixed', inset: 0, zIndex: 1000, background: 'color-mix(in srgb, var(--j-shade) 72%, transparent)',
             display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
             padding: '8vh 16px 16px', overflowY: 'auto',
           }}
@@ -1295,7 +1295,7 @@ export const ClickFunnels: React.FC = () => {
                           ...btnGhost, fontSize: 11, padding: '4px 9px',
                           color: active ? colors.indigo200 : colors.textMuted,
                           borderColor: active ? colors.indigo400 : colors.panelBorder,
-                          background: active ? 'rgba(99,102,241,0.12)' : 'transparent',
+                          background: active ? 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)' : 'transparent',
                         }}
                       >{p.label}</button>
                     );

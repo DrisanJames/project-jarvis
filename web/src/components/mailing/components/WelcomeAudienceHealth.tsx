@@ -112,20 +112,20 @@ interface WelcomeAudienceHealthData {
 // ─── Style tokens (match Deliverability / Analytics dark theme) ──────────
 
 const COLORS = {
-  bgDeep:        '#0a0e1a',
+  bgDeep:        'var(--j-bg)',
   bgPanel:       '#0f1424',
   bgPanelAlt:    '#131a2e',
-  border:        'rgba(255,255,255,0.06)',
-  borderStrong:  'rgba(255,255,255,0.12)',
-  textPrimary:   '#e2e8f0',
-  textSecondary: '#94a3b8',
-  textMuted:     '#64748b',
-  accent:        '#818cf8',  // indigo-400
-  accentAlt:     '#a78bfa',  // violet-400
-  accentPink:    '#f472b6',
-  good:          '#34d399',
-  warn:          '#fbbf24',
-  danger:        '#f87171',
+  border:        'color-mix(in srgb, var(--j-text) 6%, transparent)',
+  borderStrong:  'color-mix(in srgb, var(--j-text) 12%, transparent)',
+  textPrimary:   'var(--j-text)',
+  textSecondary: 'var(--j-text-muted)',
+  textMuted:     'var(--j-text-faint)',
+  accent:        'var(--j-violet)',  // indigo-400
+  accentAlt:     'var(--j-violet)',  // violet-400
+  accentPink:    'var(--j-pink)',
+  good:          'var(--j-success)',
+  warn:          'var(--j-warn)',
+  danger:        'var(--j-danger)',
   hardBounce:    '#ef4444',
   softBounce:    '#f59e0b',
 };
@@ -137,9 +137,9 @@ const fmtPct = (n: number) => `${n.toFixed(1)}%`;
 // to good (long runway) to muted (already retired/exempt).
 const SENDS_BUCKET_COLOR: Record<string, string> = {
   retired:        COLORS.textMuted,
-  exempt_opened:  '#3b82f6',          // blue — they're in engager flow
+  exempt_opened:  'var(--j-blue)',          // blue — they're in engager flow
   '1_send_away':  COLORS.danger,
-  '2_to_3_away':  '#f97316',          // orange
+  '2_to_3_away':  'var(--j-warn)',          // orange
   '4_to_5_away':  COLORS.warn,
   '6_to_8_away':  '#a3e635',          // lime
   never_mailed:   COLORS.good,
@@ -147,7 +147,7 @@ const SENDS_BUCKET_COLOR: Record<string, string> = {
 
 const DAYS_BUCKET_COLOR: Record<string, string> = {
   '0_to_1_days':  COLORS.danger,
-  '2_to_3_days':  '#f97316',
+  '2_to_3_days':  'var(--j-warn)',
   this_week:      COLORS.warn,
   next_week:      '#a3e635',
   this_month:     COLORS.good,
@@ -242,9 +242,9 @@ export const WelcomeAudienceHealth: React.FC = () => {
       </div>
 
       {/* ─── Hero — when do I need to upload? ───────────────────────── */}
-      <div style={{ ...styles.heroCard, borderColor: urgency?.color, boxShadow: `0 0 0 1px ${urgency?.color}33, 0 8px 32px rgba(0,0,0,0.4)` }}>
+      <div style={{ ...styles.heroCard, borderColor: urgency?.color, boxShadow: `0 0 0 1px color-mix(in srgb, ${urgency?.color} 20%, transparent), 0 8px 32px rgba(0,0,0,0.4)` }}>
         <div style={styles.heroLeft}>
-          <div style={{ ...styles.heroBadge, background: `${urgency?.color}22`, color: urgency?.color, borderColor: urgency?.color }}>
+          <div style={{ ...styles.heroBadge, background: `color-mix(in srgb, ${urgency?.color} 13%, transparent)`, color: urgency?.color, borderColor: urgency?.color }}>
             <FontAwesomeIcon icon={urgency?.icon ?? faCheckCircle} /> {urgency?.label}
           </div>
           <div style={styles.heroNumber}>
@@ -317,7 +317,7 @@ export const WelcomeAudienceHealth: React.FC = () => {
           value={fmt(pool.exempt_opened)}
           sub="Not subject to saturation rule — handed off to ongoing engagement"
           icon={faCheckCircle}
-          color="#3b82f6"
+          color="var(--j-blue)"
         />
       </div>
 
@@ -334,7 +334,7 @@ export const WelcomeAudienceHealth: React.FC = () => {
         <div style={{ height: 280 }}>
           <ResponsiveContainer>
             <LineChart data={daily_burn.by_day} margin={{ top: 10, right: 24, bottom: 8, left: 12 }}>
-              <CartesianGrid stroke="rgba(255,255,255,0.04)" />
+              <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 4%, transparent)" />
               <XAxis
                 dataKey="date"
                 stroke={COLORS.textMuted}
@@ -521,7 +521,7 @@ const BucketBar: React.FC<{ buckets: SunsetBucket[]; colorMap: Record<string, st
     <div style={{ height: Math.max(220, data.length * 36) }}>
       <ResponsiveContainer>
         <BarChart data={data} layout="vertical" margin={{ top: 6, right: 32, bottom: 6, left: 8 }}>
-          <CartesianGrid stroke="rgba(255,255,255,0.04)" horizontal={false} />
+          <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 4%, transparent)" horizontal={false} />
           <XAxis type="number" stroke={COLORS.textMuted} tick={{ fill: COLORS.textMuted, fontSize: 11 }} tickFormatter={fmt} />
           <YAxis
             type="category"

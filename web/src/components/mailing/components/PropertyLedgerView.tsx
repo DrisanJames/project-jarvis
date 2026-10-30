@@ -408,11 +408,11 @@ export const PropertyLedgerView: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.6,
-    color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
-    padding: '8px 10px', fontSize: 13, color: '#e6edf5',
-    borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
+    padding: '8px 10px', fontSize: 13, color: 'var(--j-text)',
+    borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
   };
   const thNum: React.CSSProperties = { ...th, textAlign: 'right' };
   const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -450,13 +450,13 @@ export const PropertyLedgerView: React.FC = () => {
   const supplyFeedCount = supply.data?.feeds.length ?? 0;
   const renderReadyCell = (isp: string): React.ReactNode => {
     if (supplyWarming) {
-      return <span style={{ color: 'rgba(180,210,240,0.45)' }}
+      return <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
         title="Supply view warming up — the covering index is still building (CONCURRENTLY); retries automatically on the next poll.">
         warming up
       </span>;
     }
     if (!supply.data) {
-      return <span style={{ color: 'rgba(180,210,240,0.45)' }}
+      return <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
         title={supply.error ? `Supply fetch failed (${supply.error})` : 'Loading live supply…'}>
         {supply.error ? '—' : '…'}
       </span>;
@@ -470,7 +470,7 @@ export const PropertyLedgerView: React.FC = () => {
       + (breakdown ? ` Per feed — ${breakdown}.` : '')
       + ' Supply is dataset-level, shared across the rotation — not owned by this domain.';
     return <span title={tip}
-      style={{ color: total > 0 ? '#00b894' : 'rgba(180,210,240,0.5)' }}>
+      style={{ color: total > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
       {num(total)}
     </span>;
   };
@@ -478,17 +478,17 @@ export const PropertyLedgerView: React.FC = () => {
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: '#e6edf5' }}>Property Ledger</h2>
+        <h2 style={{ margin: 0, fontSize: 18, color: 'var(--j-text)' }}>Property Ledger</h2>
         <select
           value={domain ?? ALL_DOMAINS}
           onChange={e => setDomain(e.target.value)}
-          style={{ background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
-                   border: '1px solid rgba(255,255,255,0.15)', borderRadius: 6,
+          style={{ background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
+                   border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)', borderRadius: 6,
                    padding: '5px 8px', fontSize: 12 }}>
           {domains.map(d => <option key={d} value={d}>{d}</option>)}
           <option value={ALL_DOMAINS}>All domains</option>
         </select>
-        <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+        <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
           {rows.length} {showAll ? 'cells' : 'lanes'} · day {data?.day ?? '—'}
           {vdmMeta ? ` · VDM day ${vdmMeta.day} (UTC)` : ''}
         </span>
@@ -499,43 +499,43 @@ export const PropertyLedgerView: React.FC = () => {
         }}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
 
-      <p style={{ fontSize: 12, color: '#facc15', margin: '0 0 12px 0', fontWeight: 600 }}>
+      <p style={{ fontSize: 12, color: 'var(--j-warn)', margin: '0 0 12px 0', fontWeight: 600 }}>
         Budget edits apply from tomorrow (Denver). Hold is immediate.
       </p>
 
-      {err && <div style={{ color: '#e94560', fontSize: 12, marginBottom: 10 }}>{err}</div>}
-      {notice && <div style={{ color: '#facc15', fontSize: 12, marginBottom: 10 }}>{notice}</div>}
+      {err && <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 10 }}>{err}</div>}
+      {notice && <div style={{ color: 'var(--j-warn)', fontSize: 12, marginBottom: 10 }}>{notice}</div>}
 
       {data && !data.alerts_enabled && (
-        <div style={banner('rgba(99,102,241,0.10)', 'rgba(99,102,241,0.4)', '#a5b4fc')}>
+        <div style={banner('color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', 'color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', 'var(--j-violet)')}>
           SHADOW MODE — reconciliation alerts are not being delivered (P7 activation is operator-gated).
         </div>
       )}
 
       {data?.global_hold.value && (
-        <div style={banner('rgba(233,69,96,0.12)', 'rgba(233,69,96,0.5)', '#e94560')}>
+        <div style={banner('color-mix(in srgb, var(--j-danger) 12%, transparent)', 'color-mix(in srgb, var(--j-danger) 50%, transparent)', 'var(--j-danger)')}>
           GLOBAL HOLD ENGAGED since {age(data.global_hold.since)} — every drip intro cap is ZERO.
           {data.global_hold.reason ? ` Reason: ${data.global_hold.reason}` : ''}
         </div>
       )}
 
       {coverage.length > 0 && (
-        <div style={banner('rgba(233,69,96,0.12)', 'rgba(233,69,96,0.5)', '#e94560')}>
+        <div style={banner('color-mix(in srgb, var(--j-danger) 12%, transparent)', 'color-mix(in srgb, var(--j-danger) 50%, transparent)', 'var(--j-danger)')}>
           COVERAGE WARNING — {coverage.length} cell(s) outside the ledger grid:{' '}
           {coverage.slice(0, 6).map(c => `${c.brand}/${c.isp} (${c.status}, ${num(c.observed_sends)} sends)`).join(', ')}
           {coverage.length > 6 ? ' …' : ''}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
         <span>Counter run: {runs?.counter ? `${runs.counter.status} · ${age(runs.counter.finished_at ?? runs.counter.started_at)}` : 'none yet'}</span>
         <span>VDM run: {runs?.vdm ? `${runs.vdm.status} · ${age(runs.vdm.finished_at ?? runs.vdm.started_at)}` : 'none yet'}</span>
         <span>Reconciliation: {runs?.reconciliation ? `${runs.reconciliation.status} · ${age(runs.reconciliation.finished_at ?? runs.reconciliation.started_at)}` : 'none yet (P5)'}</span>
         <button onClick={() => void toggleGlobalHold()} disabled={ghBusy || !data} style={{
           marginLeft: 'auto',
-          background: data?.global_hold.value ? 'rgba(0,184,148,0.12)' : 'rgba(233,69,96,0.15)',
-          color: data?.global_hold.value ? '#00b894' : '#e94560',
-          border: `1px solid ${data?.global_hold.value ? 'rgba(0,184,148,0.4)' : 'rgba(233,69,96,0.4)'}`,
+          background: data?.global_hold.value ? 'color-mix(in srgb, var(--j-success) 12%, transparent)' : 'color-mix(in srgb, var(--j-danger) 15%, transparent)',
+          color: data?.global_hold.value ? 'var(--j-success)' : 'var(--j-danger)',
+          border: `1px solid ${data?.global_hold.value ? 'color-mix(in srgb, var(--j-success) 40%, transparent)' : 'color-mix(in srgb, var(--j-danger) 40%, transparent)'}`,
           borderRadius: 6, padding: '5px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
         }}>
           {ghBusy ? 'Confirming…' : data?.global_hold.value ? 'RELEASE GLOBAL HOLD' : 'GLOBAL HOLD'}
@@ -544,10 +544,10 @@ export const PropertyLedgerView: React.FC = () => {
 
       {proposalCount > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: '#a5b4fc' }}>{proposalCount} open grader proposal(s)</span>
+          <span style={{ fontSize: 12, color: 'var(--j-violet)' }}>{proposalCount} open grader proposal(s)</span>
           <button onClick={() => void approveAll()} style={{
-            background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-            border: '1px solid rgba(99,102,241,0.4)', borderRadius: 6,
+            background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', color: 'var(--j-violet)',
+            border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 6,
             padding: '4px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
           }}>Approve all</button>
         </div>
@@ -591,17 +591,17 @@ export const PropertyLedgerView: React.FC = () => {
               return (
                 <tr key={key} style={{
                   opacity: r.hold || data?.global_hold.value ? 0.55 : 1,
-                  background: dead ? 'rgba(233,69,96,0.10)' : undefined,
+                  background: dead ? 'color-mix(in srgb, var(--j-danger) 10%, transparent)' : undefined,
                 }}>
                   <td style={{ ...td, fontWeight: 600 }}>
                     {r.sending_domain || r.brand}
-                    <span style={{ color: 'rgba(180,210,240,0.5)', marginLeft: 6, fontWeight: 400 }}>{r.brand}</span>
+                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginLeft: 6, fontWeight: 400 }}>{r.brand}</span>
                   </td>
-                  <td style={{ ...td, color: 'rgba(180,210,240,0.75)' }}>
+                  <td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
                     {r.isp}
                     {dead && (
                       <span title={`Dead lane: delivered ${pct(r.vdm?.delivered_pct)} on ${num(r.vdm?.sent)} VDM sends yesterday`}
-                        style={{ marginLeft: 6, color: '#e94560', fontSize: 10, fontWeight: 700 }}>
+                        style={{ marginLeft: 6, color: 'var(--j-danger)', fontSize: 10, fontWeight: 700 }}>
                         DEAD LANE
                       </span>
                     )}
@@ -617,20 +617,20 @@ export const PropertyLedgerView: React.FC = () => {
                         if (!Number.isNaN(v) && v !== r.daily_budget) void saveBudget(r, v);
                         else setEdit(s => { const n = { ...s }; delete n[key]; return n; });
                       }}
-                      style={{ width: 90, textAlign: 'right', background: 'rgba(255,255,255,0.06)',
-                               color: '#e6edf5', border: '1px solid rgba(255,255,255,0.15)',
+                      style={{ width: 90, textAlign: 'right', background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
+                               color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)',
                                borderRadius: 5, padding: '4px 6px', fontSize: 12 }} />
                     {r.pending_budget != null && (
                       <span title={`Staged edit — promotes at the Denver day boundary (${r.pending_effective_day})`}
-                        style={{ fontSize: 10, color: '#facc15', marginLeft: 6, fontWeight: 700 }}>
+                        style={{ fontSize: 10, color: 'var(--j-warn)', marginLeft: 6, fontWeight: 700 }}>
                         → {num(r.pending_budget)} applies tomorrow
                       </span>
                     )}
                   </td>
                   <td style={{ ...td, textAlign: 'right' }}>
                     {r.introduced_today == null
-                      ? <span style={{ color: 'rgba(180,210,240,0.45)' }} title="No counter row yet for today — the rollup worker materializes cells every 10 minutes.">no counter yet</span>
-                      : <span style={{ color: r.introduced_today > 0 ? '#00b894' : 'rgba(180,210,240,0.6)' }}
+                      ? <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }} title="No counter row yet for today — the rollup worker materializes cells every 10 minutes.">no counter yet</span>
+                      : <span style={{ color: r.introduced_today > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
                           title={r.introduced_as_of ? `as of ${age(r.introduced_as_of)}` : undefined}>
                           {num(r.introduced_today)}
                         </span>}
@@ -643,9 +643,9 @@ export const PropertyLedgerView: React.FC = () => {
                       onClick={() => void toggleHold(r)}
                       disabled={isBusy}
                       title={r.hold_reason ? `Reason: ${r.hold_reason}` : 'Hold is immediate (server-confirmed)'}
-                      style={{ background: r.hold ? 'rgba(233,69,96,0.15)' : 'rgba(0,184,148,0.12)',
-                               color: r.hold ? '#e94560' : '#00b894',
-                               border: `1px solid ${r.hold ? 'rgba(233,69,96,0.4)' : 'rgba(0,184,148,0.4)'}`,
+                      style={{ background: r.hold ? 'color-mix(in srgb, var(--j-danger) 15%, transparent)' : 'color-mix(in srgb, var(--j-success) 12%, transparent)',
+                               color: r.hold ? 'var(--j-danger)' : 'var(--j-success)',
+                               border: `1px solid ${r.hold ? 'color-mix(in srgb, var(--j-danger) 40%, transparent)' : 'color-mix(in srgb, var(--j-success) 40%, transparent)'}`,
                                borderRadius: 999, padding: '3px 10px', fontSize: 11,
                                fontWeight: 700, cursor: 'pointer' }}>
                       {isBusy ? 'Confirming…' : r.hold ? 'HELD' : 'ACTIVE'}
@@ -653,7 +653,7 @@ export const PropertyLedgerView: React.FC = () => {
                   </td>
                   {!showAll && (r.vdm ? (<>
                     <td style={tdNum}>{num(r.vdm.sent)}</td>
-                    <td style={{ ...tdNum, color: dead ? '#e94560' : undefined, fontWeight: dead ? 700 : undefined }}>
+                    <td style={{ ...tdNum, color: dead ? 'var(--j-danger)' : undefined, fontWeight: dead ? 700 : undefined }}>
                       {pct(r.vdm.delivered_pct)}
                     </td>
                     <td style={tdNum} title={`${num(r.vdm.opens)} unique opens`}>{pct(r.vdm.open_rate_vdm)}</td>
@@ -662,7 +662,7 @@ export const PropertyLedgerView: React.FC = () => {
                       {num(r.vdm.sent_7d)}
                     </td>
                   </>) : (
-                    <td style={{ ...tdNum, color: 'rgba(180,210,240,0.4)' }} colSpan={5}
+                    <td style={{ ...tdNum, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }} colSpan={5}
                       title="No complete VDM rows for this lane (VDM covers gmail/yahoo/aol/microsoft/apple/att/cox)">
                       no VDM data
                     </td>
@@ -670,26 +670,26 @@ export const PropertyLedgerView: React.FC = () => {
                   <td style={td}>
                     {r.proposal ? (
                       <span>
-                        <span style={{ fontSize: 11, color: '#a5b4fc' }}
+                        <span style={{ fontSize: 11, color: 'var(--j-violet)' }}
                           title={`${r.proposal.basis} · proposed ${age(r.proposal.created_at)} · expires ${age(r.proposal.expires_at)}`}>
                           {num(r.proposal.base_budget)} → {num(r.proposal.proposed_budget)}
                         </span>
                         <button onClick={() => void approveProposal(r)} disabled={isBusy} style={{
-                          marginLeft: 8, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-                          border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+                          marginLeft: 8, background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', color: 'var(--j-violet)',
+                          border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 5,
                           padding: '2px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
                         }}>Approve</button>
                       </span>
-                    ) : <span style={{ color: 'rgba(180,210,240,0.35)', fontSize: 11 }}>—</span>}
+                    ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontSize: 11 }}>—</span>}
                   </td>
-                  <td style={{ ...td, fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                  <td style={{ ...td, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
                     {r.approved_by ? `${r.approved_by} · ${age(r.approved_at)}` : '—'}
                   </td>
                 </tr>
               );
             })}
             {rows.length === 0 && !loading && (
-              <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={showAll ? 7 : 13}>
+              <tr><td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={showAll ? 7 : 13}>
                 {isNonLedgerDomain
                   ? `${domain} is not in the ledger — budgets N/A. The supply strip above is live; ledger enrollment is a separate operator step.`
                   : 'Ledger empty — the P3 seed (operator-executed) populates the 16-property × 14-ISP grid.'}
@@ -705,7 +705,7 @@ export const PropertyLedgerView: React.FC = () => {
 
       <IngestionTrendPanel />
 
-      <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 14, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 14, lineHeight: 1.6 }}>
         One row per sending domain × ISP. Drip Intro Daily Cap = first-touch introductions the drip
         may absorb per Denver day (edits are approvals and apply from tomorrow — the counter worker
         promotes them at the boundary). Introductions Today comes from the materialized counters,
@@ -772,11 +772,11 @@ const IngestionTrendPanel: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '7px 9px', fontSize: 10.5, letterSpacing: 0.6,
-    color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
-    padding: '7px 9px', fontSize: 12.5, color: '#e6edf5',
-    borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
+    padding: '7px 9px', fontSize: 12.5, color: 'var(--j-text)',
+    borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
   };
   const thNum: React.CSSProperties = { ...th, textAlign: 'right' };
   const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -789,13 +789,13 @@ const IngestionTrendPanel: React.FC = () => {
   return (
     <div style={{
       marginTop: 18, background: 'rgba(10,20,35,0.5)',
-      border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '14px 16px',
+      border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', borderRadius: 10, padding: '14px 16px',
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 15, color: '#e6edf5', fontWeight: 600 }}>
+        <h3 style={{ margin: 0, fontSize: 15, color: 'var(--j-text)', fontWeight: 600 }}>
           Cold intake by sending domain
         </h3>
-        <span style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.6)' }}>
+        <span style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
           {data ? `${data.from} → ${data.to} · Denver days` : ''}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -804,16 +804,16 @@ const IngestionTrendPanel: React.FC = () => {
               key={n}
               onClick={() => setDays(n)}
               style={{
-                background: n === days ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)',
-                border: `1px solid ${n === days ? 'rgba(129,140,248,0.6)' : 'rgba(255,255,255,0.12)'}`,
-                color: n === days ? '#c7d2fe' : 'rgba(180,210,240,0.75)',
+                background: n === days ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'color-mix(in srgb, var(--j-text) 5%, transparent)',
+                border: `1px solid ${n === days ? 'color-mix(in srgb, var(--j-violet) 60%, transparent)' : 'color-mix(in srgb, var(--j-text) 12%, transparent)'}`,
+                color: n === days ? 'var(--j-violet-soft)' : 'color-mix(in srgb, var(--j-text) 75%, transparent)',
                 borderRadius: 6, padding: '3px 10px', fontSize: 11.5, cursor: 'pointer',
               }}
             >{n}d</button>
           ))}
         </div>
       </div>
-      <p style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.55)', margin: '0 0 12px', lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', margin: '0 0 12px', lineHeight: 1.6 }}>
         What each lane's feed already delivers on its own. Subtract the standing rate from a growth
         target to get the real clean-ask — a domain taking 10k/day only needs 40k cleaned to reach 50k.
         A domain with no feed needs every record from cleaning.
@@ -821,12 +821,12 @@ const IngestionTrendPanel: React.FC = () => {
 
       {err && (
         <div style={{
-          background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(248,113,113,0.4)',
-          color: '#fca5a5', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, marginBottom: 10,
+          background: 'rgba(220,38,38,0.12)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)',
+          color: 'var(--j-danger-soft)', borderRadius: 8, padding: '8px 12px', fontSize: 12.5, marginBottom: 10,
         }}>{err}</div>
       )}
       {loading && !data && (
-        <div style={{ fontSize: 12.5, color: 'rgba(180,210,240,0.6)', padding: '8px 0' }}>Loading…</div>
+        <div style={{ fontSize: 12.5, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', padding: '8px 0' }}>Loading…</div>
       )}
 
       {data && (
@@ -850,23 +850,23 @@ const IngestionTrendPanel: React.FC = () => {
                 return (
                   <tr key={r.brand}>
                     <td style={td}>
-                      <span style={{ color: '#e6edf5' }}>{r.sending_domain || r.brand}</span>
+                      <span style={{ color: 'var(--j-text)' }}>{r.sending_domain || r.brand}</span>
                       {dead && (
                         <span style={{
                           marginLeft: 8, fontSize: 10, letterSpacing: 0.5, padding: '1px 6px',
                           borderRadius: 4, background: 'rgba(220,38,38,0.15)',
-                          border: '1px solid rgba(248,113,113,0.35)', color: '#fca5a5',
+                          border: '1px solid color-mix(in srgb, var(--j-danger) 35%, transparent)', color: 'var(--j-danger-soft)',
                         }}>NO FEED</span>
                       )}
                     </td>
-                    <td style={{ ...tdNum, color: dead ? '#fca5a5' : '#86efac', fontWeight: 600 }}>
+                    <td style={{ ...tdNum, color: dead ? 'var(--j-danger-soft)' : 'var(--j-success-soft)', fontWeight: 600 }}>
                       {Math.round(r.per_day).toLocaleString()}
                     </td>
                     <td style={tdNum}>{r.window_total.toLocaleString()}</td>
                     {data.days.map(d => (
                       <td key={d} style={{
                         ...tdNum,
-                        color: r.by_day[d] ? '#e6edf5' : 'rgba(180,210,240,0.28)',
+                        color: r.by_day[d] ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 28%, transparent)',
                         opacity: d === today ? 0.6 : 1,
                       }}>
                         {r.by_day[d] ? r.by_day[d].toLocaleString() : '–'}
@@ -876,7 +876,7 @@ const IngestionTrendPanel: React.FC = () => {
                 );
               })}
               {rows.length === 0 && !loading && (
-                <tr><td style={{ ...td, color: 'rgba(180,210,240,0.5)' }} colSpan={3 + data.days.length}>
+                <tr><td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }} colSpan={3 + data.days.length}>
                   No cold intake recorded in this window.
                 </td></tr>
               )}
@@ -889,7 +889,7 @@ const IngestionTrendPanel: React.FC = () => {
         <div style={{
           marginTop: 12, background: 'rgba(234,179,8,0.08)',
           border: '1px solid rgba(250,204,21,0.35)', borderRadius: 8, padding: '9px 12px',
-          fontSize: 12, color: '#fde68a', lineHeight: 1.6,
+          fontSize: 12, color: 'var(--j-warn)', lineHeight: 1.6,
         }}>
           <strong>Intake with no lane:</strong>{' '}
           {data.unmapped.map(u => `${u.vertical} (${u.records.toLocaleString()})`).join(' · ')}
@@ -899,7 +899,7 @@ const IngestionTrendPanel: React.FC = () => {
       )}
 
       {data && (
-        <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 12, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 12, lineHeight: 1.6 }}>
           Per day = mean of the last {data.rate_days} completed Denver day{data.rate_days === 1 ? '' : 's'};
           today (*) is excluded because it is still filling and would understate every feed.
           Verticals homed on several domains (consumer → tot/bwp/mrd) split by roster weight, so
@@ -941,71 +941,71 @@ export const SupplyStrip: React.FC<{
   for (const tf of throttle?.feeds ?? []) throttleByDataset.set(tf.dataset_id, tf);
 
   const label: React.CSSProperties = {
-    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.55)',
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)',
   };
   const stat = (title: string, value: number, opts?: { color?: string; muted?: boolean; tip?: string }) => (
     <div style={{ minWidth: 84 }} title={opts?.tip}>
       <div style={label}>{title}</div>
       <div style={{
         fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums',
-        color: opts?.color ?? (opts?.muted ? 'rgba(180,210,240,0.45)' : '#e6edf5'),
+        color: opts?.color ?? (opts?.muted ? 'color-mix(in srgb, var(--j-text) 45%, transparent)' : 'var(--j-text)'),
       }}>{num(value)}</div>
     </div>
   );
 
   return (
-    <div style={{ marginBottom: 14, border: '1px solid rgba(0,184,148,0.25)', borderRadius: 10,
-                  background: 'rgba(0,184,148,0.04)', padding: '12px 16px' }}>
+    <div style={{ marginBottom: 14, border: '1px solid color-mix(in srgb, var(--j-success) 25%, transparent)', borderRadius: 10,
+                  background: 'color-mix(in srgb, var(--j-success) 4%, transparent)', padding: '12px 16px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-        <h3 style={{ margin: 0, fontSize: 14, color: '#e6edf5' }}>Supply</h3>
-        <span style={{ fontSize: 10, color: '#00b894', fontWeight: 700, letterSpacing: 0.5,
-                       border: '1px solid rgba(0,184,148,0.4)', borderRadius: 4, padding: '1px 6px' }}
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>Supply</h3>
+        <span style={{ fontSize: 10, color: 'var(--j-success)', fontWeight: 700, letterSpacing: 0.5,
+                       border: '1px solid color-mix(in srgb, var(--j-success) 40%, transparent)', borderRadius: 4, padding: '1px 6px' }}
           title={data?.supply_note ?? 'Live queue facts (point-in-time), not Observatory aggregates.'}>
           LIVE QUEUE
         </span>
         {data ? (
-          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}
+          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
             title={data.ready_semantics}>
             {data.sending_domain || data.domain} · {data.brand} · Denver day {data.denver_day}
           </span>
         ) : (
-          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{domain}</span>
+          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{domain}</span>
         )}
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(180,210,240,0.5)' }}>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
           {loading ? 'Loading…' : `updated ${secondsSinceUpdate}s ago · polls 5m`}
         </span>
       </div>
       {warming && (
-        <div style={{ color: '#facc15', fontSize: 12, marginBottom: 8 }}>
+        <div style={{ color: 'var(--j-warn)', fontSize: 12, marginBottom: 8 }}>
           Supply view warming up — the covering index is still building (CONCURRENTLY, calm-IO
           windows); retries automatically on the next poll.
         </div>
       )}
       {error && !warming && (
-        <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>
+        <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 8 }}>
           Supply refresh failed ({error}){data ? ' — showing last good data' : ''}
         </div>
       )}
       {throttleErr && (
-        <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>
+        <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 8 }}>
           Throttle read failed ({throttleErr}) — claim-cap posture unavailable.
         </div>
       )}
       {throttle && !throttle.write_enabled && (
-        <div style={{ fontSize: 11, color: '#facc15', marginBottom: 8, fontWeight: 600 }}
+        <div style={{ fontSize: 11, color: 'var(--j-warn)', marginBottom: 8, fontWeight: 600 }}
           title={throttle.enforcement_note}>
           Throttle editing is DISABLED — the server env {throttle.write_flag_env} is not set
           (HOLD-CRITICAL write path; the operator enables it server-side). Panel is read-only.
         </div>
       )}
       {data && (
-        <p style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', margin: '0 0 10px 0' }}>
+        <p style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', margin: '0 0 10px 0' }}>
           {data.ready_semantics}. Release cap is the SUPPLY-side budget (ready-vs-held) — distinct
           from the claim-side per-ISP caps.
         </p>
       )}
       {data && data.feeds.length === 0 && !loading && (
-        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
           No active feeds serve this domain (partner_drip_vertical_roster → partner_datasets).
         </div>
       )}
@@ -1014,14 +1014,14 @@ export const SupplyStrip: React.FC<{
           const maxReady = Math.max(1, ...f.ready_by_isp.map(e => e.ready));
           return (
             <div key={f.dataset_id} style={{ flex: '1 1 420px', maxWidth: 640,
-                border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
-                background: 'rgba(0,0,0,0.15)', padding: '10px 12px' }}>
+                border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', borderRadius: 8,
+                background: 'color-mix(in srgb, var(--j-shade) 37.5%, transparent)', padding: '10px 12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#e6edf5' }}>{f.name}</span>
-                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.55)' }}>{f.vertical}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text)' }}>{f.name}</span>
+                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{f.vertical}</span>
                 {f.paused_emergency && (
-                  <span style={{ fontSize: 9, color: '#e94560', fontWeight: 700,
-                                 border: '1px solid rgba(233,69,96,0.4)', borderRadius: 4, padding: '1px 6px' }}
+                  <span style={{ fontSize: 9, color: 'var(--j-danger)', fontWeight: 700,
+                                 border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', borderRadius: 4, padding: '1px 6px' }}
                     title="partner_datasets.paused_emergency: drip/broadcast claims stop. Intake keeps landing.">
                     SENDING PAUSED
                   </span>
@@ -1033,16 +1033,16 @@ export const SupplyStrip: React.FC<{
                     INTAKE PAUSED
                   </span>
                 )}
-                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}
+                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}
                   title="Supply-release budget (partner_datasets.daily_cap): the release job keeps at most this many rows 'ready' per day, parking the rest 'held'. NOT the claim-side per-ISP cap.">
                   release cap {f.daily_cap > 0 ? `${num(f.daily_cap)}/day` : 'uncapped'}
                 </span>
-                <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)' }}
+                <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}
                   title="Counts come from a server-side per-dataset cache (TTL 120s) — this is when the queue was actually scanned.">
                   as of {new Date(f.computed_at).toLocaleTimeString()}
                 </span>
                 {f.shared_brands.length > 1 && (
-                  <span style={{ marginLeft: 'auto', fontSize: 10, color: '#facc15', fontWeight: 700 }}
+                  <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--j-warn)', fontWeight: 700 }}
                     title={`Supply is a DATASET fact — this tranche feeds the whole rotation, not just this domain: ${f.shared_brands.join(', ')}`}>
                     supply shared across {f.shared_brands.length} rotation brands
                   </span>
@@ -1056,23 +1056,23 @@ export const SupplyStrip: React.FC<{
                 })}
                 <div style={{ minWidth: 180, flex: '1 1 180px' }}>
                   <div style={label}>Ready</div>
-                  <div style={{ fontSize: 17, fontWeight: 700, color: '#00b894', fontVariantNumeric: 'tabular-nums' }}
+                  <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--j-success)', fontVariantNumeric: 'tabular-nums' }}
                     title={data.ready_semantics}>
                     {num(f.ready_total)}
                   </div>
                   {f.ready_by_isp.map(e => (
                     <div key={e.isp} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '1px 0' }}>
-                      <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', width: 68 }}>{e.isp}</span>
-                      <div style={{ flex: 1, height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 3 }}>
+                      <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', width: 68 }}>{e.isp}</span>
+                      <div style={{ flex: 1, height: 6, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 3 }}>
                         <div style={{ width: `${Math.max(2, Math.round((e.ready / maxReady) * 100))}%`,
-                                      height: 6, background: 'rgba(0,184,148,0.55)', borderRadius: 3 }} />
+                                      height: 6, background: 'color-mix(in srgb, var(--j-success) 55%, transparent)', borderRadius: 3 }} />
                       </div>
-                      <span style={{ fontSize: 10, color: '#e6edf5', minWidth: 46, textAlign: 'right',
+                      <span style={{ fontSize: 10, color: 'var(--j-text)', minWidth: 46, textAlign: 'right',
                                      fontVariantNumeric: 'tabular-nums' }}>{num(e.ready)}</span>
                     </div>
                   ))}
                   {f.ready_by_isp.length === 0 && (
-                    <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)' }}>none ready</div>
+                    <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)' }}>none ready</div>
                   )}
                 </div>
                 {(() => {
@@ -1089,20 +1089,20 @@ export const SupplyStrip: React.FC<{
                           <button
                             onClick={() => setEditingFeed(editingFeed === f.dataset_id ? null : f.dataset_id)}
                             title={throttle.enforcement_note}
-                            style={{ background: 'rgba(233,69,96,0.12)', color: '#e94560',
-                                     border: '1px solid rgba(233,69,96,0.4)', borderRadius: 5,
+                            style={{ background: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', color: 'var(--j-danger)',
+                                     border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', borderRadius: 5,
                                      padding: '1px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
                             {editingFeed === f.dataset_id ? 'Close editor' : 'Edit throttle'}
                           </button>
                         ) : (
-                          <span style={{ fontSize: 9, color: 'rgba(180,210,240,0.45)' }}
+                          <span style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}
                             title={`Read-only: server env ${throttle.write_flag_env} is not set.`}>
                             read-only
                           </span>
                         )}
                       </div>
                       {tf.overrides.length === 0 ? (
-                        <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}
+                        <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 2 }}
                           title={throttle.enforcement_note}>
                           no overrides — every ISP rides the global defaults
                         </div>
@@ -1110,8 +1110,8 @@ export const SupplyStrip: React.FC<{
                         <div key={ov.isp}
                           style={{ display: 'flex', gap: 6, alignItems: 'baseline', padding: '1px 0' }}
                           title={`Live enforcement row — updated ${age(ov.updated_at)}${ov.updated_by ? ` by ${ov.updated_by}` : ''}. ${throttle.enforcement_note}`}>
-                          <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', width: 68 }}>{ov.isp}</span>
-                          <span style={{ fontSize: 10, color: '#e6edf5', fontVariantNumeric: 'tabular-nums' }}>
+                          <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', width: 68 }}>{ov.isp}</span>
+                          <span style={{ fontSize: 10, color: 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>
                             {ov.max_per_wave > 0 ? `wave ≤${num(ov.max_per_wave)}` : 'wave default'}
                             {' · '}
                             {ov.daily_cap == null ? 'day default'
@@ -1122,7 +1122,7 @@ export const SupplyStrip: React.FC<{
                         </div>
                       ))}
                       {tf.default_isps.length > 0 && (
-                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.4)', marginTop: 2 }}
+                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginTop: 2 }}
                           title={`On global defaults (no override row): ${tf.default_isps.join(', ')}`}>
                           {tf.default_isps.length} ISP{tf.default_isps.length === 1 ? '' : 's'} on global defaults
                         </div>
@@ -1131,7 +1131,7 @@ export const SupplyStrip: React.FC<{
                   );
                 })()}
                 {stat('Held', f.held, {
-                  color: '#facc15',
+                  color: 'var(--j-warn)',
                   tip: "Reservoir parked by the release job (over the day's release cap) — cleaned, waiting for release",
                 })}
                 {stat('Suppressed', f.suppressed, { muted: true, tip: 'suppressed_eo — EO rejected' })}
@@ -1210,17 +1210,17 @@ const ThrottleEditor: React.FC<{
   const availableISPs = feed.default_isps.filter(g => !rows.some(r => r.isp === g));
 
   const input: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
-    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+    background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
+    border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)', borderRadius: 5,
     padding: '3px 6px', fontSize: 11, width: 80,
   };
   const smallBtn: React.CSSProperties = {
-    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-    border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+    background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', color: 'var(--j-violet)',
+    border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 5,
     padding: '2px 8px', fontSize: 10, fontWeight: 700, cursor: 'pointer',
   };
   const diffColor: Record<string, string> = {
-    added: '#00b894', removed: '#e94560', changed: '#facc15', unchanged: 'rgba(180,210,240,0.45)',
+    added: 'var(--j-success)', removed: 'var(--j-danger)', changed: 'var(--j-warn)', unchanged: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
   };
 
   const submit = async () => {
@@ -1251,31 +1251,31 @@ const ThrottleEditor: React.FC<{
   };
 
   return (
-    <div style={{ marginTop: 10, borderTop: '1px solid rgba(233,69,96,0.25)', paddingTop: 8 }}>
-      <div style={{ fontSize: 10, color: '#facc15', fontWeight: 600, marginBottom: 6 }}>
+    <div style={{ marginTop: 10, borderTop: '1px solid color-mix(in srgb, var(--j-danger) 25%, transparent)', paddingTop: 8 }}>
+      <div style={{ fontSize: 10, color: 'var(--j-warn)', fontWeight: 600, marginBottom: 6 }}>
         {note}
       </div>
       {rows.map((r, i) => (
         <div key={r.isp} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '2px 0', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11, color: '#e6edf5', width: 80, fontWeight: 600 }}>{r.isp}</span>
-          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}>
+          <span style={{ fontSize: 11, color: 'var(--j-text)', width: 80, fontWeight: 600 }}>{r.isp}</span>
+          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
             pct (0–1){' '}
             <input style={input} value={r.pct} placeholder="0.4"
               onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, pct: e.target.value } : x))} />
           </label>
-          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}>
+          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
             per-wave cap{' '}
             <input style={input} value={r.wave} placeholder="default"
               onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, wave: e.target.value } : x))} />
           </label>
-          <label style={{ fontSize: 9, color: 'rgba(180,210,240,0.55)' }}
+          <label style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}
             title="Empty = keep this ISP's existing lane daily budget (server preserves it). 0 = hard-suppress the ISP for this lane.">
             daily cap (empty = keep){' '}
             <input style={input} value={r.day} placeholder="keep"
               onChange={e => setRows(s => s.map((x, j) => j === i ? { ...x, day: e.target.value } : x))} />
           </label>
-          <button style={{ ...smallBtn, background: 'rgba(233,69,96,0.12)', color: '#e94560',
-                           border: '1px solid rgba(233,69,96,0.4)' }}
+          <button style={{ ...smallBtn, background: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', color: 'var(--j-danger)',
+                           border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)' }}
             title="Removes this ISP's row entirely — it falls back to the global defaults and its lane daily budget is deleted."
             onClick={() => setRows(s => s.filter((_, j) => j !== i))}>
             Remove
@@ -1300,18 +1300,18 @@ const ThrottleEditor: React.FC<{
       {errors.length > 0 && (
         <div style={{ marginTop: 6 }}>
           {errors.map((e, i) => (
-            <div key={i} style={{ fontSize: 10, color: '#e94560', fontWeight: 600 }}>{e}</div>
+            <div key={i} style={{ fontSize: 10, color: 'var(--j-danger)', fontWeight: 600 }}>{e}</div>
           ))}
         </div>
       )}
       {errors.length === 0 && (
         <div style={{ marginTop: 6 }}>
           <div style={{ fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase',
-                        color: 'rgba(180,210,240,0.55)' }}>
+                        color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
             Change preview (current → proposed)
           </div>
           {changes.length === 0 && (
-            <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.45)' }}>no changes</div>
+            <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>no changes</div>
           )}
           {changes.map(d => (
             <div key={d.isp} style={{ fontSize: 10, color: diffColor[d.kind], padding: '1px 0' }}>
@@ -1321,14 +1321,14 @@ const ThrottleEditor: React.FC<{
         </div>
       )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <button style={{ ...smallBtn, background: 'rgba(233,69,96,0.15)', color: '#e94560',
-                         border: '1px solid rgba(233,69,96,0.4)' }}
+        <button style={{ ...smallBtn, background: 'color-mix(in srgb, var(--j-danger) 15%, transparent)', color: 'var(--j-danger)',
+                         border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)' }}
           disabled={busy || errors.length > 0 || changes.length === 0}
           onClick={() => void submit()}>
           {busy ? 'Replacing…' : 'Replace throttle…'}
         </button>
-        <button style={{ ...smallBtn, background: 'transparent', color: 'rgba(180,210,240,0.6)',
-                         border: '1px solid rgba(255,255,255,0.15)' }}
+        <button style={{ ...smallBtn, background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+                         border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)' }}
           disabled={busy} onClick={onClose}>
           Cancel
         </button>
@@ -1439,20 +1439,20 @@ const LaneContentPanel: React.FC<{
     });
 
   const panel: React.CSSProperties = {
-    marginTop: 18, border: '1px solid rgba(99,102,241,0.25)', borderRadius: 10,
-    background: 'rgba(99,102,241,0.05)', padding: '14px 16px',
+    marginTop: 18, border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', borderRadius: 10,
+    background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)', padding: '14px 16px',
   };
   const label: React.CSSProperties = {
-    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.55)',
+    fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)',
   };
   const input: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
-    border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+    background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
+    border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)', borderRadius: 5,
     padding: '4px 6px', fontSize: 12,
   };
   const smallBtn: React.CSSProperties = {
-    background: 'rgba(99,102,241,0.15)', color: '#a5b4fc',
-    border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+    background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', color: 'var(--j-violet)',
+    border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 5,
     padding: '3px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer',
   };
 
@@ -1463,14 +1463,14 @@ const LaneContentPanel: React.FC<{
       <div style={{ flex: '2 1 340px' }}>
         <div style={label}>Serving subjects (preheader draws from this pool)</div>
         {offer.sharing && offer.sharing.feeds > 1 && (
-          <div style={{ fontSize: 10, color: '#facc15', fontWeight: 700, margin: '2px 0 4px 0' }}
+          <div style={{ fontSize: 10, color: 'var(--j-warn)', fontWeight: 700, margin: '2px 0 4px 0' }}
             title="Subject/from-name pools live on the OFFER — every feed bound to this offer (dataset- or touch-level) rotates through the same pool.">
             Pool shared by {offer.sharing.feeds} feeds across {offer.sharing.brands} brand{offer.sharing.brands === 1 ? '' : 's'} — edits here change live rotation on all of them.
           </div>
         )}
         {offer.subjects.filter(sr => sr.serving).map(sr => (
           <div key={sr.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
-            <span style={{ fontSize: 12, color: '#e6edf5' }}>{sr.text}</span>
+            <span style={{ fontSize: 12, color: 'var(--j-text)' }}>{sr.text}</span>
             <button style={{ ...smallBtn, padding: '1px 7px', fontSize: 9 }}
               disabled={!!saving[`arch/${sr.id}`]}
               onClick={() => void archiveSubject(offer, sr)}>
@@ -1479,7 +1479,7 @@ const LaneContentPanel: React.FC<{
           </div>
         ))}
         {offer.subjects.filter(sr => sr.serving).length === 0 && (
-          <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-danger)', fontWeight: 700 }}>
             EMPTY SUBJECT POOL — the lane fails at send time
           </div>
         )}
@@ -1493,7 +1493,7 @@ const LaneContentPanel: React.FC<{
           </button>
         </div>
         {offer.subjects.some(sr => !sr.serving) && (
-          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.4)', marginTop: 4 }}>
+          <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginTop: 4 }}>
             {offer.subjects.filter(sr => !sr.serving).length} archived
           </div>
         )}
@@ -1501,10 +1501,10 @@ const LaneContentPanel: React.FC<{
       <div style={{ flex: '1 1 200px' }}>
         <div style={label}>Serving from-names</div>
         {offer.from_names.filter(fr => fr.serving).map(fr => (
-          <div key={fr.id} style={{ fontSize: 12, color: '#e6edf5', padding: '2px 0' }}>{fr.text}</div>
+          <div key={fr.id} style={{ fontSize: 12, color: 'var(--j-text)', padding: '2px 0' }}>{fr.text}</div>
         ))}
         {offer.from_names.filter(fr => fr.serving).length === 0 && (
-          <div style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-danger)', fontWeight: 700 }}>
             EMPTY FROM-NAME POOL — the lane fails at send time
           </div>
         )}
@@ -1538,7 +1538,7 @@ const LaneContentPanel: React.FC<{
   const renderCreativeBadge = (offer: LaneOffer) =>
     offer.creative ? (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}
+        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}
           title={`${num(offer.creative.html_bytes)} bytes · id ${offer.creative.id}`}>
           creative v{offer.creative.version} ({offer.creative.status}) · {age(offer.creative.updated_at)}
         </span>
@@ -1549,7 +1549,7 @@ const LaneContentPanel: React.FC<{
         </button>
       </span>
     ) : (
-      <span style={{ fontSize: 11, color: '#e94560', fontWeight: 700 }}>NO SERVING CREATIVE</span>
+      <span style={{ fontSize: 11, color: 'var(--j-danger)', fontWeight: 700 }}>NO SERVING CREATIVE</span>
     );
 
   const renderCreativePreview = (offer: LaneOffer) => {
@@ -1560,17 +1560,17 @@ const LaneContentPanel: React.FC<{
     return (
       <div style={{ marginTop: 8 }}>
         {p.loading && (
-          <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Loading preview…</div>
+          <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>Loading preview…</div>
         )}
         {p.err && (
-          <div style={{ fontSize: 11, color: '#e94560' }}>Preview failed ({p.err})</div>
+          <div style={{ fontSize: 11, color: 'var(--j-danger)' }}>Preview failed ({p.err})</div>
         )}
         {p.html !== undefined && !p.loading && !p.err && (
           <iframe
             title={`Creative preview — ${offer.name || creative.id}`}
             sandbox=""
             srcDoc={p.html}
-            style={{ width: '100%', height: 480, border: '1px solid rgba(255,255,255,0.12)',
+            style={{ width: '100%', height: 480, border: '1px solid color-mix(in srgb, var(--j-text) 12%, transparent)',
                      borderRadius: 8, background: '#ffffff' }} />
         )}
       </div>
@@ -1583,11 +1583,11 @@ const LaneContentPanel: React.FC<{
     const isSaving = !!saving[`touch/${key}`];
     return (
       <div key={key} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
-                              padding: '6px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-        <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 700, minWidth: 34 }}>
+                              padding: '6px 0', borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
+        <span style={{ fontSize: 11, color: 'var(--j-violet)', fontWeight: 700, minWidth: 34 }}>
           T{t.touch}{t.vertical === '' ? ' (global)' : ''}
         </span>
-        <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', minWidth: 110 }}>
+        <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', minWidth: 110 }}>
           {t.creative_filename === '' ? "uses the offer's creative" : t.creative_filename}
         </span>
         {e ? (
@@ -1601,17 +1601,17 @@ const LaneContentPanel: React.FC<{
             <button style={smallBtn} disabled={isSaving} onClick={() => void saveTouch(t)}>
               {isSaving ? 'Saving…' : 'Save'}
             </button>
-            <button style={{ ...smallBtn, background: 'transparent', color: 'rgba(180,210,240,0.6)',
-                             border: '1px solid rgba(255,255,255,0.15)' }}
+            <button style={{ ...smallBtn, background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
+                             border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)' }}
               onClick={() => setTouchEdit(s => { const n = { ...s }; delete n[key]; return n; })}>
               Cancel
             </button>
           </>
         ) : (
           <>
-            <span style={{ fontSize: 12, color: '#e6edf5', flex: '2 1 220px' }} title="subject">{t.subject_line || '—'}</span>
-            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', flex: '2 1 180px' }} title="preheader">{t.preheader || '—'}</span>
-            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.8)', flex: '1 1 130px' }} title="from name">{t.from_name || '—'}</span>
+            <span style={{ fontSize: 12, color: 'var(--j-text)', flex: '2 1 220px' }} title="subject">{t.subject_line || '—'}</span>
+            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', flex: '2 1 180px' }} title="preheader">{t.preheader || '—'}</span>
+            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', flex: '1 1 130px' }} title="from name">{t.from_name || '—'}</span>
             <button style={smallBtn}
               onClick={() => setTouchEdit(s => ({ ...s, [key]: {
                 subject_line: t.subject_line, preheader: t.preheader, from_name: t.from_name } }))}>
@@ -1626,31 +1626,31 @@ const LaneContentPanel: React.FC<{
   return (
     <div style={panel}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 14, color: '#e6edf5' }}>What this lane sends</h3>
-        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{domain} · {brand}</span>
-        {loading && <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>Loading…</span>}
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>What this lane sends</h3>
+        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{domain} · {brand}</span>
+        {loading && <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>Loading…</span>}
       </div>
-      {err && <div style={{ color: '#e94560', fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      {err && <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 8 }}>{err}</div>}
       {content && (
-        <p style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)', margin: '0 0 10px 0' }}>
+        <p style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', margin: '0 0 10px 0' }}>
           {content.preheader_note}
         </p>
       )}
       {content && content.feeds.length === 0 && !loading && (
-        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
           No active feeds on this brand (partner_drip_vertical_roster).
         </div>
       )}
       {content?.feeds.map(feed => {
         const expanded = !!open[feed.vertical];
         return (
-          <div key={feed.vertical} style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
-                                            marginBottom: 10, background: 'rgba(0,0,0,0.15)' }}>
+          <div key={feed.vertical} style={{ border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', borderRadius: 8,
+                                            marginBottom: 10, background: 'color-mix(in srgb, var(--j-shade) 37.5%, transparent)' }}>
             <div onClick={() => setOpen(s => ({ ...s, [feed.vertical]: !expanded }))}
               style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', cursor: 'pointer' }}>
               <span style={{ fontSize: 12, color: '#9fd3ff' }}>{expanded ? '▾' : '▸'}</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#e6edf5' }}>{feed.vertical}</span>
-              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-text)' }}>{feed.vertical}</span>
+              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
                 {feed.datasets.length} feed{feed.datasets.length === 1 ? '' : 's'}
                 {(() => {
                   // Summary covers BOTH binding paths: dataset offers and
@@ -1668,16 +1668,16 @@ const LaneContentPanel: React.FC<{
                 {feed.datasets.map(ds => {
                   const isSwapping = !!saving[`swap/${ds.id}`];
                   return (
-                    <div key={ds.id} style={{ padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div key={ds.id} style={{ padding: '8px 0', borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: '#e6edf5' }}>{ds.name}</span>
-                        {ds.express_dispatch && <span style={{ fontSize: 9, color: '#facc15', fontWeight: 700 }}>EXPRESS</span>}
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>{ds.name}</span>
+                        {ds.express_dispatch && <span style={{ fontSize: 9, color: 'var(--j-warn)', fontWeight: 700 }}>EXPRESS</span>}
                         {ds.offer ? (
-                          <span style={{ fontSize: 11, color: '#a5b4fc' }}>
+                          <span style={{ fontSize: 11, color: 'var(--j-violet)' }}>
                             offer: <b>{ds.offer.name || ds.offer.id}</b> ({ds.offer.status || '?'})
                           </span>
                         ) : (
-                          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+                          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                             no dataset-level offer — see touch bindings below
                           </span>
                         )}
@@ -1704,14 +1704,14 @@ const LaneContentPanel: React.FC<{
                 })}
                 {feed.touch_offers.map(to => to.offer ? (
                   <div key={`${feed.vertical}/to/${to.offer.id}`}
-                    style={{ padding: '8px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                    style={{ padding: '8px 0', borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                       <span title="This offer is set on individual touches of the ladder, not on the feed itself — feeds without a feed-level offer still mail it."
-                        style={{ fontSize: 9, color: '#a5b4fc', fontWeight: 700, letterSpacing: 0.5,
-                                 border: '1px solid rgba(99,102,241,0.4)', borderRadius: 4, padding: '1px 6px' }}>
+                        style={{ fontSize: 9, color: 'var(--j-violet)', fontWeight: 700, letterSpacing: 0.5,
+                                 border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 4, padding: '1px 6px' }}>
                         OFFER SET PER TOUCH · {to.touch_scope.join(', ')}
                       </span>
-                      <span style={{ fontSize: 11, color: '#a5b4fc' }}>
+                      <span style={{ fontSize: 11, color: 'var(--j-violet)' }}>
                         offer: <b>{to.offer.name || to.offer.id}</b> ({to.offer.status || '?'})
                       </span>
                       {renderCreativeBadge(to.offer)}

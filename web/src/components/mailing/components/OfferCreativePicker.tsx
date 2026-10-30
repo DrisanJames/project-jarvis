@@ -258,13 +258,13 @@ export const OfferCreativePicker: React.FC<Props> = ({
     setPreviewOpen(true);
   };
 
-  const label: React.CSSProperties = { display: 'block', fontSize: 11, color: 'rgba(180,210,240,0.6)', marginBottom: 4 };
+  const label: React.CSSProperties = { display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', marginBottom: 4 };
   const field: React.CSSProperties = {
-    width: '100%', background: '#0a0f1a', color: '#e0e6f0',
-    border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 10px', fontSize: 13,
+    width: '100%', background: 'var(--j-bg)', color: 'var(--j-text)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 8, padding: '8px 10px', fontSize: 13,
   };
   const box: React.CSSProperties = {
-    background: '#0d1526', border: '1px solid rgba(0,200,255,0.08)',
+    background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 10, padding: 16, marginBottom: 16,
   };
 
@@ -278,10 +278,10 @@ export const OfferCreativePicker: React.FC<Props> = ({
           offer to attribute. */}
       {isKumoRoute ? (
         <div style={{ ...box, borderColor: 'rgba(56,189,248,0.35)', background: 'rgba(56,189,248,0.06)' }}>
-          <h4 style={{ margin: '0 0 4px', fontSize: 14, color: '#38bdf8' }}>
+          <h4 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--j-blue)' }}>
             KumoMTA warm-up route &mdash; newsletter content
           </h4>
-          <p style={{ margin: 0, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+          <p style={{ margin: 0, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
             This property warms on its own brand newsletters, rebuilt fresh each morning.
             <strong> Offers are banned in warm-up content</strong>, so the offer selector and the
             offers library are not available here. The creative comes from the newsletter library
@@ -290,8 +290,8 @@ export const OfferCreativePicker: React.FC<Props> = ({
         </div>
       ) : (
       <div style={box}>
-        <h4 style={{ margin: '0 0 4px', fontSize: 14, color: '#e0e6f0' }}>Offer</h4>
-        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+        <h4 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--j-text)' }}>Offer</h4>
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
           Stamps the campaign for attribution and fires offer / converted suppression at send time.
         </p>
         {offersError && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 6 }}>{offersError}</div>}
@@ -311,10 +311,10 @@ export const OfferCreativePicker: React.FC<Props> = ({
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <FontAwesomeIcon icon={faShieldAlt} style={{ fontSize: 11, color: '#ef4444' }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>
                 Offer suppression that will fire
               </span>
-              {offerSuppLoading && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
+              {offerSuppLoading && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
             </div>
 
             {offerSuppError && (
@@ -328,16 +328,16 @@ export const OfferCreativePicker: React.FC<Props> = ({
               <>
                 <div style={{
                   display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px', borderRadius: 8,
-                  background: offerSupp.suppression_count > 0 ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.10)',
-                  border: `1px solid ${offerSupp.suppression_count > 0 ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.45)'}`,
+                  background: offerSupp.suppression_count > 0 ? 'color-mix(in srgb, var(--j-success) 8%, transparent)' : 'rgba(239,68,68,0.10)',
+                  border: `1px solid ${offerSupp.suppression_count > 0 ? 'color-mix(in srgb, var(--j-success) 35%, transparent)' : 'rgba(239,68,68,0.45)'}`,
                 }}>
                   <span style={{
                     fontSize: 18, fontWeight: 700,
-                    color: offerSupp.suppression_count > 0 ? '#10b981' : '#ef4444',
+                    color: offerSupp.suppression_count > 0 ? 'var(--j-success)' : '#ef4444',
                   }}>
                     {offerSupp.suppression_count.toLocaleString()}
                   </span>
-                  <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
+                  <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
                     subscribers suppressed for this offer (applied automatically at plan time)
                   </span>
                 </div>
@@ -346,8 +346,8 @@ export const OfferCreativePicker: React.FC<Props> = ({
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                     {offerSupp.reasons.map(rn => (
                       <span key={rn.reason} style={{
-                        fontSize: 10, color: 'rgba(180,210,240,0.65)', background: '#0a0f1a',
-                        border: '1px solid rgba(0,200,255,0.08)', borderRadius: 999, padding: '2px 8px',
+                        fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', background: 'var(--j-bg)',
+                        border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 999, padding: '2px 8px',
                       }}>
                         {rn.reason} · {rn.count.toLocaleString()}
                       </span>
@@ -357,7 +357,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
 
                 {offerSupp.warning && (
                   <div style={{
-                    marginTop: 8, fontSize: 12, lineHeight: 1.5, color: '#fbbf24',
+                    marginTop: 8, fontSize: 12, lineHeight: 1.5, color: 'var(--j-warn)',
                     background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.4)',
                     borderRadius: 8, padding: '8px 12px',
                   }}>
@@ -367,19 +367,19 @@ export const OfferCreativePicker: React.FC<Props> = ({
 
                 {offerSupp.siblings.length > 0 && (
                   <div style={{ marginTop: 8 }}>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginBottom: 4 }}>
                       Other offer rows for what looks like the same advertiser:
                     </div>
                     {offerSupp.siblings.map(sib => (
                       <button key={sib.id} type="button" onClick={() => onOfferChange(sib.id)}
                               style={{
                                 display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-                                background: '#0a0f1a', border: '1px solid rgba(0,200,255,0.12)',
-                                borderRadius: 6, padding: '6px 10px', marginBottom: 4, color: '#e0e6f0', fontSize: 12,
+                                background: 'var(--j-bg)', border: '1px solid color-mix(in srgb, var(--j-cyan) 12%, transparent)',
+                                borderRadius: 6, padding: '6px 10px', marginBottom: 4, color: 'var(--j-text)', fontSize: 12,
                               }}>
-                        {sib.name} <span style={{ color: 'rgba(180,210,240,0.5)' }}>({sib.status})</span>
+                        {sib.name} <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>({sib.status})</span>
                         {' — '}
-                        <strong style={{ color: '#10b981' }}>{sib.suppression_count.toLocaleString()}</strong>
+                        <strong style={{ color: 'var(--j-success)' }}>{sib.suppression_count.toLocaleString()}</strong>
                         {' suppressed · click to use this row instead'}
                       </button>
                     ))}
@@ -387,7 +387,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                 )}
 
                 {offerSupp.suggested_lists.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                  <div style={{ marginTop: 8, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
                     Curated advertiser list(s) that look like this offer&apos;s —{' '}
                     <strong>not applied automatically</strong>, tick them in the audience step:{' '}
                     {offerSupp.suggested_lists
@@ -405,16 +405,16 @@ export const OfferCreativePicker: React.FC<Props> = ({
       {/* ── Approved creative ─────────────────────────────────────────── */}
       <div style={box}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
-          <h4 style={{ margin: 0, fontSize: 14, color: '#e0e6f0' }}>
+          <h4 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>
             {isKumoRoute
               ? 'Creative \u2014 Creative Studio newsletter library'
               : 'Creative \u2014 Creative Studio offers library'}
           </h4>
-          <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>
+          <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
             {isKumoRoute ? newsletters.length : matching.length} approved for {brandRoot || sendingDomain}
           </span>
         </div>
-        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+        <p style={{ margin: '0 0 10px', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
           {isKumoRoute
             ? "Today's approved newsletter for this property. The article payload is rewritten every morning, so the newest row already carries today's editorial."
             : "Approved, active proofs only. Subject, preheader and from-name come from the proof's approved pools \u2014 this wizard has no free-form content path."}
@@ -439,15 +439,15 @@ export const OfferCreativePicker: React.FC<Props> = ({
                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectNewsletter(c); } }}
                        style={{
                          padding: '10px 12px', cursor: 'pointer', borderRadius: 8,
-                         background: selected ? 'rgba(56,189,248,0.12)' : '#0a0f1a',
-                         border: `1.5px solid ${selected ? '#38bdf8' : 'rgba(0,200,255,0.06)'}`,
+                         background: selected ? 'rgba(56,189,248,0.12)' : 'var(--j-bg)',
+                         border: `1.5px solid ${selected ? 'var(--j-blue)' : 'color-mix(in srgb, var(--j-cyan) 6%, transparent)'}`,
                        }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: '#38bdf8', fontSize: 12 }} />}
-                      {loadingProofId === c.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
-                      <span style={{ fontSize: 12, fontWeight: 600, color: '#e0e6f0' }}>{c.subject || '(no subject)'}</span>
+                      {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: 'var(--j-blue)', fontSize: 12 }} />}
+                      {loadingProofId === c.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>{c.subject || '(no subject)'}</span>
                     </div>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 3 }}>
+                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 3 }}>
                       {c.source} \u00b7 {c.html_bytes.toLocaleString()} bytes
                       {c.updated_at ? ` \u00b7 built ${new Date(c.updated_at).toLocaleString()}` : ''}
                     </div>
@@ -459,11 +459,11 @@ export const OfferCreativePicker: React.FC<Props> = ({
         ) : (
         <>
 
-        {loading && <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading approved creatives…</div>}
+        {loading && <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading approved creatives…</div>}
         {error && (
           <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 8 }}>
             <FontAwesomeIcon icon={faExclamationTriangle} /> {error}{' '}
-            <button onClick={load} style={{ marginLeft: 6, background: 'transparent', color: '#00b0ff', border: 'none', cursor: 'pointer', fontSize: 12 }}>retry</button>
+            <button onClick={load} style={{ marginLeft: 6, background: 'transparent', color: 'var(--j-blue)', border: 'none', cursor: 'pointer', fontSize: 12 }}>retry</button>
           </div>
         )}
 
@@ -485,16 +485,16 @@ export const OfferCreativePicker: React.FC<Props> = ({
                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectProof(p); } }}
                    style={{
                      padding: '10px 12px', cursor: 'pointer', borderRadius: 8,
-                     background: selected ? 'rgba(139,92,246,0.12)' : '#0a0f1a',
-                     border: `1.5px solid ${selected ? '#8b5cf6' : 'rgba(0,200,255,0.06)'}`,
+                     background: selected ? 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)' : 'var(--j-bg)',
+                     border: `1.5px solid ${selected ? 'var(--j-violet-strong)' : 'color-mix(in srgb, var(--j-cyan) 6%, transparent)'}`,
                      opacity: cleared ? 1 : 0.6,
                    }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: '#8b5cf6', fontSize: 12 }} />}
-                  {loadingProofId === p.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: '#00b0ff' }} />}
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#e0e6f0' }}>{p.name}</span>
+                  {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: 'var(--j-violet-strong)', fontSize: 12 }} />}
+                  {loadingProofId === p.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{p.name}</span>
                 </div>
-                <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 3 }}>
+                <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 3 }}>
                   {(p.variants || []).length} subject{(p.variants || []).length === 1 ? '' : 's'} ·{' '}
                   {(p.from_names || []).length} from-name{(p.from_names || []).length === 1 ? '' : 's'}
                   {!cleared && <span style={{ color: '#f59e0b' }}> · not cleared for this property</span>}
@@ -507,7 +507,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
         {proofs.length > matching.length && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, cursor: 'pointer' }}>
             <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
-            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
               Show all {proofs.length} approved creatives, including those not cleared for this property
             </span>
           </label>
@@ -523,7 +523,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
           can see exactly what will ship. */}
       {isKumoRoute && proofId && (
         <div style={box}>
-          <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#e0e6f0' }}>Copy that will ship</h4>
+          <h4 style={{ margin: '0 0 10px', fontSize: 14, color: 'var(--j-text)' }}>Copy that will ship</h4>
           <div style={{ display: 'grid', gap: 8 }}>
             <div>
               <label style={label}>Subject (from the newsletter)</label>
@@ -545,7 +545,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
             </div>
           </div>
           <button onClick={openPreview} disabled={!hasHtml}
-                  style={{ marginTop: 10, background: '#0a0f1a', color: hasHtml ? '#00b0ff' : 'rgba(180,210,240,0.3)', border: '1px solid rgba(0,200,255,0.15)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
+                  style={{ marginTop: 10, background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'color-mix(in srgb, var(--j-text) 30%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
             <FontAwesomeIcon icon={faEye} /> Preview
           </button>
         </div>
@@ -555,9 +555,9 @@ export const OfferCreativePicker: React.FC<Props> = ({
       {!isKumoRoute && selectedProof && (
         <div style={box}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-            <h4 style={{ margin: 0, fontSize: 14, color: '#e0e6f0' }}>Approved copy — {selectedProof.name}</h4>
+            <h4 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>Approved copy — {selectedProof.name}</h4>
             <button onClick={openPreview} disabled={!hasHtml}
-                    style={{ background: '#0a0f1a', color: hasHtml ? '#00b0ff' : 'rgba(180,210,240,0.3)', border: '1px solid rgba(0,200,255,0.15)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
+                    style={{ background: 'var(--j-bg)', color: hasHtml ? 'var(--j-blue)' : 'color-mix(in srgb, var(--j-text) 30%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: hasHtml ? 'pointer' : 'default' }}>
               <FontAwesomeIcon icon={faEye} /> Preview
             </button>
           </div>
@@ -583,7 +583,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
               </select>
             )}
             {preheader && (
-              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 5 }}>
+              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 5 }}>
                 Preheader: {preheader}
               </div>
             )}
@@ -612,12 +612,12 @@ export const OfferCreativePicker: React.FC<Props> = ({
 
       {previewOpen && (
         <div onClick={() => setPreviewOpen(false)}
-             style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+             style={{ position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
           <div onClick={e => e.stopPropagation()}
                style={{ background: '#fff', borderRadius: 10, width: 'min(760px, 100%)', height: '85vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ padding: '8px 12px', background: '#0d1526', color: '#e0e6f0', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ padding: '8px 12px', background: 'var(--j-surface)', color: 'var(--j-text)', fontSize: 12, display: 'flex', justifyContent: 'space-between' }}>
               <span>{selectedProof?.name || 'Newsletter preview'}</span>
-              <button onClick={() => setPreviewOpen(false)} style={{ background: 'transparent', border: 'none', color: '#00b0ff', cursor: 'pointer' }}>close</button>
+              <button onClick={() => setPreviewOpen(false)} style={{ background: 'transparent', border: 'none', color: 'var(--j-blue)', cursor: 'pointer' }}>close</button>
             </div>
             {previewHtml
               ? <iframe title="creative preview" srcDoc={previewHtml} sandbox="" style={{ flex: 1, border: 'none', background: '#fff' }} />

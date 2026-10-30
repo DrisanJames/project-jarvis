@@ -197,7 +197,7 @@ const isMiscategorizedExclusion = (s: SegmentRow): boolean =>
   (s.category ?? '') === 'engagement_brand' && EXCLUSION_NAME_RE.test((s.name ?? '').trim());
 
 const BUILD_STATUS_DOT: Record<string, string> = {
-  ok: '#10b981',
+  ok: 'var(--j-success)',
   failed: '#ef4444',
   blocked_delta: '#f59e0b',
 };
@@ -211,20 +211,20 @@ const BUILD_STATUS_TOOLTIP: Record<string, string> = {
 
 /** Inline badge palette per category (the portal does not use Tailwind). */
 const CATEGORY_COLORS: Record<string, { bg: string; fg: string; border: string }> = {
-  engagement_brand: { bg: 'rgba(99,102,241,0.15)', fg: '#a5b4fc', border: 'rgba(129,140,248,0.4)' },
-  engagement_global: { bg: 'rgba(168,85,247,0.15)', fg: '#d8b4fe', border: 'rgba(192,132,252,0.4)' },
-  engagement_isp: { bg: 'rgba(59,130,246,0.15)', fg: '#93c5fd', border: 'rgba(96,165,250,0.4)' },
-  engagement_vertical: { bg: 'rgba(6,182,212,0.15)', fg: '#67e8f9', border: 'rgba(34,211,238,0.4)' },
-  framework: { bg: 'rgba(16,185,129,0.15)', fg: '#6ee7b7', border: 'rgba(52,211,153,0.4)' },
+  engagement_brand: { bg: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', fg: 'var(--j-violet)', border: 'color-mix(in srgb, var(--j-violet) 40%, transparent)' },
+  engagement_global: { bg: 'color-mix(in srgb, var(--j-violet) 15%, transparent)', fg: 'var(--j-violet-soft)', border: 'rgba(192,132,252,0.4)' },
+  engagement_isp: { bg: 'color-mix(in srgb, var(--j-blue) 15%, transparent)', fg: 'var(--j-blue)', border: 'color-mix(in srgb, var(--j-blue) 40%, transparent)' },
+  engagement_vertical: { bg: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', fg: 'var(--j-cyan)', border: 'color-mix(in srgb, var(--j-cyan) 40%, transparent)' },
+  framework: { bg: 'color-mix(in srgb, var(--j-success) 15%, transparent)', fg: 'var(--j-success-soft)', border: 'color-mix(in srgb, var(--j-success) 40%, transparent)' },
   funnel: { bg: 'rgba(20,184,166,0.15)', fg: '#5eead4', border: 'rgba(45,212,191,0.4)' },
-  cohort_static: { bg: 'rgba(245,158,11,0.15)', fg: '#fcd34d', border: 'rgba(251,191,36,0.4)' },
-  suppression_exclusion: { bg: 'rgba(244,63,94,0.15)', fg: '#fda4af', border: 'rgba(251,113,133,0.4)' },
-  partner_wave_static: { bg: 'rgba(100,116,139,0.18)', fg: '#94a3b8', border: 'rgba(148,163,184,0.35)' },
-  legacy_snapshot: { bg: 'rgba(113,113,122,0.18)', fg: '#a1a1aa', border: 'rgba(161,161,170,0.35)' },
-  uncategorized: { bg: 'rgba(82,82,91,0.25)', fg: '#a1a1aa', border: 'rgba(113,113,122,0.4)' },
+  cohort_static: { bg: 'rgba(245,158,11,0.15)', fg: 'var(--j-warn)', border: 'color-mix(in srgb, var(--j-warn) 40%, transparent)' },
+  suppression_exclusion: { bg: 'color-mix(in srgb, var(--j-danger) 15%, transparent)', fg: 'var(--j-danger-soft)', border: 'rgba(251,113,133,0.4)' },
+  partner_wave_static: { bg: 'color-mix(in srgb, var(--j-text-muted) 18%, transparent)', fg: 'var(--j-text-muted)', border: 'color-mix(in srgb, var(--j-text-muted) 35%, transparent)' },
+  legacy_snapshot: { bg: 'rgba(113,113,122,0.18)', fg: 'var(--j-text-muted)', border: 'rgba(161,161,170,0.35)' },
+  uncategorized: { bg: 'rgba(82,82,91,0.25)', fg: 'var(--j-text-muted)', border: 'rgba(113,113,122,0.4)' },
 };
 
-const DEFAULT_CATEGORY_COLOR = { bg: 'rgba(0,200,255,0.08)', fg: 'rgba(180,210,240,0.8)', border: 'rgba(0,200,255,0.25)' };
+const DEFAULT_CATEGORY_COLOR = { bg: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', fg: 'color-mix(in srgb, var(--j-text) 80%, transparent)', border: 'color-mix(in srgb, var(--j-cyan) 25%, transparent)' };
 
 // ============================================================================
 // HELPERS
@@ -606,7 +606,7 @@ const IspBreakdownDrawer: React.FC<{ brand: GrowthBrand; onClose: () => void }> 
   return createPortal(
     <>
       <style>{`@keyframes segDrawerIn{from{transform:translateX(24px);opacity:0}to{transform:translateX(0);opacity:1}}`}</style>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000 }} />
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 1000 }} />
       <aside
         style={{
           position: 'fixed', top: 0, right: 0, bottom: 0, width: 440, maxWidth: '94vw',
@@ -1413,8 +1413,8 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         fontWeight: 600,
         textTransform: 'uppercase',
         letterSpacing: 0.4,
-        background: t === 'dynamic' ? 'rgba(0,176,255,0.12)' : 'rgba(0,229,255,0.1)',
-        color: t === 'dynamic' ? '#00b0ff' : '#00e5ff',
+        background: t === 'dynamic' ? 'color-mix(in srgb, var(--j-blue) 12%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 10%, transparent)',
+        color: t === 'dynamic' ? 'var(--j-blue)' : 'var(--j-cyan)',
       }}
     >
       {t}
@@ -1423,7 +1423,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
   const renderBuildDot = (s: SegmentRow) => {
     const st = effectiveBuildStatus(s);
-    if (st === 'running') return <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#818cf8', fontSize: 11 }} />;
+    if (st === 'running') return <FontAwesomeIcon icon={faSpinner} spin style={{ color: 'var(--j-violet)', fontSize: 11 }} />;
     return (
       <span
         style={{
@@ -1475,7 +1475,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
     fontSize: 12,
     fontWeight: 700,
     letterSpacing: 0.4,
-    background: active ? 'linear-gradient(135deg,#6366f1 0%,#818cf8 100%)' : 'transparent',
+    background: active ? 'linear-gradient(135deg,var(--j-violet-strong) 0%,var(--j-violet) 100%)' : 'transparent',
     color: active ? '#fff' : colors.textMuted,
   });
 
@@ -1770,7 +1770,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
         <>
           <div
             onClick={() => setDrawerId(null)}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000 }}
+            style={{ position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 1000 }}
           />
           <aside
             style={{
@@ -1780,8 +1780,8 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               bottom: 0,
               width: 480,
               maxWidth: '94vw',
-              background: '#0d1526',
-              borderLeft: '1px solid rgba(0,200,255,0.15)',
+              background: 'var(--j-surface)',
+              borderLeft: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
               boxShadow: '-12px 0 40px rgba(0,0,0,0.5)',
               zIndex: 1001,
               display: 'flex',
@@ -1789,9 +1789,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
             }}
           >
             {/* drawer header */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid rgba(0,200,255,0.1)' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)' }}>
               <div style={{ minWidth: 0 }}>
-                <h3 style={{ margin: 0, fontSize: 16, color: '#e0e6f0', wordBreak: 'break-word' }}>{drawerRow.name}</h3>
+                <h3 style={{ margin: 0, fontSize: 16, color: 'var(--j-text)', wordBreak: 'break-word' }}>{drawerRow.name}</h3>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   {renderCategoryBadge(drawerRow.category)}
                   {renderTypeBadge(drawerRow.segment_type)}
@@ -1807,33 +1807,33 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
               {/* metadata grid */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.65)' }}>Metadata</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: '#e0e6f0' }}>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>ID</span>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Metadata</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: 'var(--j-text)' }}>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>ID</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <code style={{ fontSize: 11.5, overflow: 'hidden', textOverflow: 'ellipsis' }}>{drawerRow.id}</code>
                     <button
                       className="action-btn"
-                      style={{ width: 24, height: 24, flexShrink: 0, ...(copiedId === drawerRow.id ? { color: '#10b981' } : {}) }}
+                      style={{ width: 24, height: 24, flexShrink: 0, ...(copiedId === drawerRow.id ? { color: 'var(--j-success)' } : {}) }}
                       onClick={() => copyId(drawerRow.id)}
                       title="Copy ID"
                     >
                       <FontAwesomeIcon icon={copiedId === drawerRow.id ? faCheck : faCopy} style={{ fontSize: 11 }} />
                     </button>
                   </span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Category</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Category</span>
                   <span>{drawerRow.category || 'uncategorized'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Type</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Type</span>
                   <span>{drawerRow.segment_type}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Status</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Status</span>
                   <span>{drawerRow.status}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Created</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Created</span>
                   <span>{fmtAbs(drawerRow.created_at)}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Updated</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Updated</span>
                   <span>{fmtAbs(drawerRow.updated_at)}</span>
                   {drawerRow.description && (
                     <>
-                      <span style={{ color: 'rgba(180,210,240,0.65)' }}>Description</span>
+                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Description</span>
                       <span style={{ whiteSpace: 'pre-wrap' }}>{drawerRow.description}</span>
                     </>
                   )}
@@ -1842,32 +1842,32 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
 
               {/* build block */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.65)' }}>Last Build</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: '#e0e6f0' }}>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Built</span>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Last Build</h4>
+                <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 8, columnGap: 10, fontSize: 13, color: 'var(--j-text)' }}>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Built</span>
                   <span>{drawerRow.last_built_at ? `${fmtAbs(drawerRow.last_built_at)} (${fmtRel(drawerRow.last_built_at)})` : 'never built via ledger'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Source</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Source</span>
                   <span>{drawerRow.build_source || '—'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Status</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Status</span>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                     {renderBuildDot(drawerRow)}
                     {effectiveBuildStatus(drawerRow) || 'no build recorded'}
                   </span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Duration</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Duration</span>
                   <span>{typeof drawerRow.last_build_ms === 'number' ? `${drawerRow.last_build_ms.toLocaleString()} ms` : '—'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Delta</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Delta</span>
                   <span>{typeof drawerRow.last_delta_pct === 'number' ? `${drawerRow.last_delta_pct > 0 ? '+' : ''}${drawerRow.last_delta_pct.toFixed(1)}% vs previous build` : '—'}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)' }}>Members</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Members</span>
                   <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                     {memberCount(drawerRow).toLocaleString()}
-                    <span style={{ marginLeft: 6, fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>({drawerRow.audience_source || 'cached'})</span>
+                    <span style={{ marginLeft: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>({drawerRow.audience_source || 'cached'})</span>
                   </span>
                 </div>
               </div>
 
               {/* member sample */}
               <div>
-                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.65)' }}>
+                <h4 style={{ margin: '0 0 8px', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                   Member Sample
                   {!sample.loading && !sample.error && (
                     <span style={{ marginLeft: 8, textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
@@ -1876,19 +1876,19 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                   )}
                 </h4>
                 {sample.loading ? (
-                  <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+                  <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                     <FontAwesomeIcon icon={faSpinner} spin /> loading sample…
                   </div>
                 ) : sample.error ? (
                   <div style={{ fontSize: 13, color: '#f59e0b' }}>{sample.error}</div>
                 ) : sample.emails.length === 0 ? (
-                  <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+                  <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                     no audience members yet — Refresh the segment, then re-open
                   </div>
                 ) : (
-                  <div style={{ background: '#0a1020', border: '1px solid rgba(0,200,255,0.08)', borderRadius: 8, padding: '8px 12px', maxHeight: 220, overflowY: 'auto' }}>
+                  <div style={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 8, padding: '8px 12px', maxHeight: 220, overflowY: 'auto' }}>
                     {sample.emails.map(email => (
-                      <div key={email} style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: '20px', color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div key={email} style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: '20px', color: 'var(--j-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {email}
                       </div>
                     ))}
@@ -1898,7 +1898,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
             </div>
 
             {/* drawer footer */}
-            <div style={{ display: 'flex', gap: 10, padding: '14px 20px', borderTop: '1px solid rgba(0,200,255,0.1)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 10, padding: '14px 20px', borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', flexWrap: 'wrap' }}>
               {/* Bare <a> navigation can't carry the X-Organization-ID header,
                   and the server now enforces segment ownership (REQ-046) — so
                   the org rides the ?org_id= query param, which
@@ -1921,7 +1921,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
               {drawerRow.category !== MACHINE_CATEGORY && drawerRow.status !== 'archived' && (
                 <button
                   className="btn btn-secondary"
-                  style={{ marginLeft: 'auto', color: '#fda4af', borderColor: 'rgba(251,113,133,0.4)' }}
+                  style={{ marginLeft: 'auto', color: 'var(--j-danger-soft)', borderColor: 'rgba(251,113,133,0.4)' }}
                   disabled={archivingId === drawerRow.id}
                   onClick={() => handleArchive(drawerRow)}
                 >
@@ -1984,9 +1984,9 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                           fontSize: '0.75rem',
                           fontWeight: 600,
                           cursor: 'pointer',
-                          background: selected ? 'rgba(99,102,241,0.35)' : 'rgba(75,85,99,0.25)',
-                          color: selected ? '#c7d2fe' : '#9ca3af',
-                          border: selected ? '1px solid rgba(129,140,248,0.7)' : '1px solid rgba(156,163,175,0.3)',
+                          background: selected ? 'color-mix(in srgb, var(--j-violet-strong) 35%, transparent)' : 'rgba(75,85,99,0.25)',
+                          color: selected ? 'var(--j-violet-soft)' : 'var(--j-text-muted)',
+                          border: selected ? '1px solid color-mix(in srgb, var(--j-violet) 70%, transparent)' : '1px solid rgba(156,163,175,0.3)',
                         }}
                       >
                         {w}d{selected ? ' ✓' : ''}
@@ -2073,7 +2073,7 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                   borderRadius: 8,
                   background: 'rgba(239,68,68,0.12)',
                   border: '1px solid rgba(239,68,68,0.4)',
-                  color: '#fca5a5',
+                  color: 'var(--j-danger-soft)',
                   fontSize: '0.8rem',
                 }}>
                   {reqError}
@@ -2107,14 +2107,14 @@ export const SegmentsCenter: React.FC<SegmentsCenterProps> = ({ onNavigate, orgF
                 borderRadius: 10,
                 fontSize: '0.8rem',
                 fontWeight: 600,
-                color: '#fff',
+                color: 'var(--j-text)',
                 maxWidth: 380,
                 boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
                 background: t.kind === 'ok'
-                  ? 'linear-gradient(135deg, #059669, #10b981)'
+                  ? 'linear-gradient(135deg, var(--j-success), var(--j-success))'
                   : t.kind === 'error'
-                    ? 'linear-gradient(135deg, #dc2626, #ef4444)'
-                    : 'linear-gradient(135deg, #4f46e5, #6366f1)',
+                    ? 'linear-gradient(135deg, var(--j-danger), #ef4444)'
+                    : 'linear-gradient(135deg, var(--j-violet-strong), var(--j-violet-strong))',
               }}
             >
               {t.msg}

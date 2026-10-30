@@ -101,7 +101,7 @@ const LaneRow: React.FC<{ lane: Lane; t0: number; t1: number; last: boolean }> =
             borderRadius: 6, border: `1px solid ${lane.gated ? colors.warning : colors.panelBorder}`,
             borderStyle: lane.gated ? 'dashed' : 'solid', background: colors.panelBgSolid, display: 'flex',
             alignItems: 'center', overflow: 'hidden', minWidth: 60,
-            backgroundImage: ses ? 'repeating-linear-gradient(135deg,transparent,transparent 6px,rgba(255,255,255,0.03) 6px,rgba(255,255,255,0.03) 7px)' : undefined }}>
+            backgroundImage: ses ? 'repeating-linear-gradient(135deg,transparent,transparent 6px,color-mix(in srgb, var(--j-text) 3%, transparent) 6px,color-mix(in srgb, var(--j-text) 3%, transparent) 7px)' : undefined }}>
           <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: lane.gated ? colors.warning : stripe }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px 0 13px', width: '100%', minWidth: 0 }}>
             <span style={{ fontSize: 11, color: colors.text, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
@@ -213,7 +213,7 @@ export const ScheduleView: React.FC = () => {
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 10, fontSize: 10.5 }}>
           <span style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 4, padding: '2px 7px' }}>PMTA solid</span>
           <span style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 4, padding: '2px 7px',
-            backgroundImage: 'repeating-linear-gradient(135deg,transparent,transparent 3px,rgba(255,255,255,0.08) 3px,rgba(255,255,255,0.08) 4px)' }}>SES hatched</span>
+            backgroundImage: 'repeating-linear-gradient(135deg,transparent,transparent 3px,color-mix(in srgb, var(--j-text) 8%, transparent) 3px,color-mix(in srgb, var(--j-text) 8%, transparent) 4px)' }}>SES hatched</span>
         </span>
       </div>
 

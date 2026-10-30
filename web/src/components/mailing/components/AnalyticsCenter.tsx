@@ -140,8 +140,8 @@ const ISP_LABELS: Record<string, string> = {
 
 const ISP_COLORS: Record<string, string> = {
   gmail: '#EA4335', yahoo: '#6001D2', microsoft: '#00A4EF',
-  apple: '#A2AAAD', comcast: '#ED1C24', att: '#009FDB',
-  cox: '#0070C0', charter: '#0078D4', other: '#6B7280',
+  apple: 'var(--j-text-muted)', comcast: '#ED1C24', att: '#009FDB',
+  cox: '#0070C0', charter: '#0078D4', other: 'var(--j-text-faint)',
 };
 
 type TimeRange = 'today' | 'yesterday';
@@ -246,8 +246,8 @@ const INS_METRIC_LABELS: Record<InsMetric, string> = {
 // Deterministic color for a sending domain. The ISP palette is reserved for
 // the global ISP cards, so sending-domain lines use a separate set.
 const SENDING_DOMAIN_COLORS = [
-  '#00e5ff', '#a855f7', '#f59e0b', '#22c55e',
-  '#f472b6', '#60a5fa', '#fbbf24', '#10b981',
+  'var(--j-cyan)', 'var(--j-violet)', '#f59e0b', 'var(--j-success)',
+  'var(--j-pink)', 'var(--j-blue)', 'var(--j-warn)', 'var(--j-success)',
 ];
 function colorForDomain(domain: string): string {
   let hash = 0;
@@ -376,7 +376,7 @@ const LiveSendingBand: React.FC<LiveSendingBandProps> = ({ data, expanded, onTog
           <span className="ac-live-dot" />
           <FontAwesomeIcon icon={faBroadcastTower} />
           Live Sending
-          <span style={{ fontSize: '0.7em', color: '#64748b', fontWeight: 'normal', marginLeft: 8 }}>
+          <span style={{ fontSize: '0.7em', color: 'var(--j-text-faint)', fontWeight: 'normal', marginLeft: 8 }}>
             {data.campaigns.length} active · as of {new Date(data.as_of).toLocaleTimeString()}
           </span>
         </h3>
@@ -461,9 +461,9 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
   const clicks = card.clicks || 0;
   const base = Math.max(sent, 1);
   const steps = [
-    { label: 'Sent', value: sent, color: '#a5b4fc' },
-    { label: 'Delivered', value: delivered, color: '#22c55e' },
-    { label: 'Opens', value: opens, color: '#3b82f6' },
+    { label: 'Sent', value: sent, color: 'var(--j-violet)' },
+    { label: 'Delivered', value: delivered, color: 'var(--j-success)' },
+    { label: 'Opens', value: opens, color: 'var(--j-blue)' },
     { label: 'Clicks', value: clicks, color: '#f59e0b' },
   ];
   return (
@@ -484,12 +484,12 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
       <div className="ac-isp-tile-grid">
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Delivery</span>
-          <span className="ac-isp-tile-value" style={{ color: '#22c55e' }}>{pct(card.delivery_rate || 0)}</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-success)' }}>{pct(card.delivery_rate || 0)}</span>
           <span className="ac-isp-tile-sub">{fmt(delivered)}</span>
         </div>
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Deferred</span>
-          <span className="ac-isp-tile-value" style={{ color: '#3b82f6' }}>{pct(card.deferral_rate || 0)}</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-blue)' }}>{pct(card.deferral_rate || 0)}</span>
           <span className="ac-isp-tile-sub">{fmt(card.deferred || 0)}</span>
         </div>
         <div className="ac-isp-tile">
@@ -504,12 +504,12 @@ const ISPFunnelAndTiles: React.FC<{ card: ISPData | null }> = ({ card }) => {
         </div>
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Unsubscribes</span>
-          <span className="ac-isp-tile-value" style={{ color: '#a855f7' }}>{pct(card.unsubscribe_rate || 0)}</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-violet)' }}>{pct(card.unsubscribe_rate || 0)}</span>
           <span className="ac-isp-tile-sub">{fmt(card.unsubscribes || 0)}</span>
         </div>
         <div className="ac-isp-tile">
           <span className="ac-isp-tile-label">Complaints</span>
-          <span className="ac-isp-tile-value" style={{ color: '#dc2626' }}>{(card.complaint_rate || 0).toFixed(2)}%</span>
+          <span className="ac-isp-tile-value" style={{ color: 'var(--j-danger)' }}>{(card.complaint_rate || 0).toFixed(2)}%</span>
           <span className="ac-isp-tile-sub">{fmt(card.complaints)}</span>
         </div>
       </div>
@@ -646,10 +646,10 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
           <h3 style={{ margin: 0 }}>
             <FontAwesomeIcon icon={faFilter} /> Mailbox Provider Insights &mdash; {ispLabel}
           </h3>
-          <div style={{ fontSize: '0.72em', color: '#64748b', marginTop: 4 }}>
+          <div style={{ fontSize: '0.72em', color: 'var(--j-text-faint)', marginTop: 4 }}>
             Deliverability and engagement by sending domain at the selected mailbox provider &middot; dates in MST
             {windowMst && (
-              <span style={{ marginLeft: 8, color: '#475569' }}>
+              <span style={{ marginLeft: 8, color: 'var(--j-text-faint)' }}>
                 ({windowMst.start_mst} &rarr; {windowMst.end_mst})
               </span>
             )}
@@ -667,9 +667,9 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
             value={isp}
             onChange={(e) => setIsp(e.target.value)}
             style={{
-              background: '#0d1526',
-              color: '#e0e6f0',
-              border: '1px solid rgba(0,200,255,0.15)',
+              background: 'var(--j-surface)',
+              color: 'var(--j-text)',
+              border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
               borderRadius: 10,
               padding: '8px 12px',
               fontSize: 13,
@@ -703,8 +703,8 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
                   <th>Open %</th>
                   <th>Clicks</th>
                   <th>Click %</th>
-                  <th>Hard B <FontAwesomeIcon icon={faInfoCircle} title="Hard bounces indicate invalid addresses and degrade sender reputation. Treat as list hygiene signal." style={{ fontSize: 10, color: '#475569' }} /></th>
-                  <th>Soft B <FontAwesomeIcon icon={faInfoCircle} title="Soft bounces are temporary and retry automatically. Not a list-quality signal." style={{ fontSize: 10, color: '#475569' }} /></th>
+                  <th>Hard B <FontAwesomeIcon icon={faInfoCircle} title="Hard bounces indicate invalid addresses and degrade sender reputation. Treat as list hygiene signal." style={{ fontSize: 10, color: 'var(--j-text-faint)' }} /></th>
+                  <th>Soft B <FontAwesomeIcon icon={faInfoCircle} title="Soft bounces are temporary and retry automatically. Not a list-quality signal." style={{ fontSize: 10, color: 'var(--j-text-faint)' }} /></th>
                 </tr>
               </thead>
               <tbody>
@@ -722,10 +722,10 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
                     <td>{fmt(s.totals.clicks)}</td>
                     <td className={s.totals.click_rate > 3 ? 'ac-good' : s.totals.click_rate > 1 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.click_rate)}</td>
                     <td className={s.totals.hard_bounce_rate < 2 ? 'ac-good' : s.totals.hard_bounce_rate < 5 ? 'ac-ok' : 'ac-bad'}>{pct(s.totals.hard_bounce_rate)}</td>
-                    <td style={{ color: '#94a3b8' }}>{pct(s.totals.soft_bounce_rate)}</td>
+                    <td style={{ color: 'var(--j-text-muted)' }}>{pct(s.totals.soft_bounce_rate)}</td>
                   </tr>
                 ))}
-                <tr style={{ borderTop: '2px solid rgba(0,200,255,0.15)', fontWeight: 600, color: '#c0c4d0' }}>
+                <tr style={{ borderTop: '2px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', fontWeight: 600, color: 'var(--j-text-2)' }}>
                   <td>All domains</td>
                   <td>{fmt(totalsRow.sent)}</td>
                   <td>{fmt(totalsRow.delivered)}</td>
@@ -735,7 +735,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
                   <td>{fmt(totalsRow.clicks)}</td>
                   <td>{pct(totalsRow.click_rate)}</td>
                   <td>{pct(totalsRow.hard_bounce_rate)}</td>
-                  <td style={{ color: '#94a3b8' }}>{pct(totalsRow.soft_bounce_rate)}</td>
+                  <td style={{ color: 'var(--j-text-muted)' }}>{pct(totalsRow.soft_bounce_rate)}</td>
                 </tr>
               </tbody>
             </table>
@@ -743,7 +743,7 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
 
           {/* Metric selector + daily trend chart */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: '0.8em', color: '#94a3b8' }}>
+            <div style={{ fontSize: '0.8em', color: 'var(--j-text-muted)' }}>
               Daily trend ({days}d, {ispLabel})
             </div>
             <div className="ac-range-selector">
@@ -757,32 +757,32 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
           <div className="ac-trend-chart" style={{ marginBottom: 16 }}>
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={mergedDaily} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--j-surface-2)" vertical={false} />
                 <XAxis
                   dataKey="date"
-                  stroke="#334155"
-                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  stroke="var(--j-border)"
+                  tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                   tickLine={false}
-                  axisLine={{ stroke: '#1e293b' }}
+                  axisLine={{ stroke: 'var(--j-surface-2)' }}
                   tickFormatter={(v: string) => v.slice(5)}
                 />
                 <YAxis
-                  stroke="#334155"
-                  tick={{ fill: '#64748b', fontSize: 11 }}
+                  stroke="var(--j-border)"
+                  tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                   tickLine={false}
                   axisLine={false}
                   tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
                 />
                 <RechartsTooltip
-                  contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }}
-                  labelStyle={{ color: '#94a3b8' }}
+                  contentStyle={{ background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: 'var(--j-text-muted)' }}
                   formatter={(value: number) => fmt(value)}
                   labelFormatter={(label: string, payload: Array<{ payload?: { isToday?: number } }>) => {
                     const isToday = payload && payload[0]?.payload?.isToday === 1;
                     return isToday ? `${label} (today — partial)` : label;
                   }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
+                <Legend wrapperStyle={{ fontSize: 11, color: 'var(--j-text-muted)' }} />
                 {series.map(s => (
                   <Line
                     key={s.sending_domain}
@@ -799,8 +799,8 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
           </div>
 
           {/* Top campaigns leaderboard */}
-          <div style={{ marginBottom: 4, fontSize: '0.8em', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <FontAwesomeIcon icon={faTrophy} style={{ color: '#fbbf24' }} />
+          <div style={{ marginBottom: 4, fontSize: '0.8em', color: 'var(--j-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <FontAwesomeIcon icon={faTrophy} style={{ color: 'var(--j-warn)' }} />
             Top campaigns at {ispLabel} ({days}d window, sorted by clicks)
           </div>
           {topCampaigns.length === 0 ? (
@@ -825,9 +825,9 @@ const ISPInsightsPanel: React.FC<ISPInsightsPanelProps> = ({ orgId, onApiVersion
                 <tbody>
                   {topCampaigns.map((c, i) => (
                     <tr key={c.campaign_id}>
-                      <td style={{ color: i < 3 ? '#fbbf24' : '#475569', fontWeight: 600 }}>{i + 1}</td>
+                      <td style={{ color: i < 3 ? 'var(--j-warn)' : 'var(--j-border-strong)', fontWeight: 600 }}>{i + 1}</td>
                       <td style={{ fontWeight: 500 }}>{c.name}</td>
-                      <td style={{ color: '#94a3b8' }}>
+                      <td style={{ color: 'var(--j-text-muted)' }}>
                         <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colorForDomain(c.sending_domain), marginRight: 6 }} />
                         {c.sending_domain || '—'}
                       </td>
@@ -1200,7 +1200,7 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-kpi deferred ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faClock} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value" style={{ color: '#3b82f6' }}><AnimatedCounter value={rates.deferral_rate || 0} decimals={2} suffix="%" /></span>
+                <span className="ac-kpi-value" style={{ color: 'var(--j-blue)' }}><AnimatedCounter value={rates.deferral_rate || 0} decimals={2} suffix="%" /></span>
                 <span className="ac-kpi-label">Deferral Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.deferred || 0)} deferred</span>
               </div>
@@ -1208,7 +1208,7 @@ export const AnalyticsCenter: React.FC = () => {
             <div className="ac-kpi unsubs ig-card-hover ig-shimmer">
               <div className="ac-kpi-icon"><FontAwesomeIcon icon={faUserSlash} /></div>
               <div className="ac-kpi-body">
-                <span className="ac-kpi-value" style={{ color: '#a855f7' }}><AnimatedCounter value={rates.unsubscribe_rate || 0} decimals={2} suffix="%" /></span>
+                <span className="ac-kpi-value" style={{ color: 'var(--j-violet)' }}><AnimatedCounter value={rates.unsubscribe_rate || 0} decimals={2} suffix="%" /></span>
                 <span className="ac-kpi-label">Unsubscribe Rate</span>
                 <span className="ac-kpi-sub">{fmt(totals.unsubscribes || 0)} unsubscribes</span>
               </div>
@@ -1230,17 +1230,17 @@ export const AnalyticsCenter: React.FC = () => {
                 <div className="ac-isp-grid">
                   {ispCards.filter(c => c.isp !== 'other').map(card => {
                     const score = Math.max(0, Math.min(100, Math.round((card.open_rate || 0) - ((card.hard_bounce_rate || 0) + (card.soft_bounce_rate || 0)) * 2 - (card.complaint_rate || 0) * 10)));
-                    const scoreColor = score >= 60 ? '#22c55e' : score >= 30 ? '#f59e0b' : '#ef4444';
+                    const scoreColor = score >= 60 ? 'var(--j-success)' : score >= 30 ? '#f59e0b' : '#ef4444';
                     const isSelected = selectedISP === card.isp;
                     return (
                       <div
                         key={card.isp}
                         className={`ac-isp-card${isSelected ? ' selected' : ''}`}
                         onClick={() => setSelectedISP(isSelected ? null : card.isp)}
-                        style={{ borderColor: isSelected ? ISP_COLORS[card.isp] || '#6366f1' : undefined }}
+                        style={{ borderColor: isSelected ? ISP_COLORS[card.isp] || 'var(--j-violet-strong)' : undefined }}
                       >
                         <div className="ac-isp-card-header">
-                          <span className="ac-isp-dot" style={{ background: ISP_COLORS[card.isp] || '#6B7280' }} />
+                          <span className="ac-isp-dot" style={{ background: ISP_COLORS[card.isp] || 'var(--j-text-faint)' }} />
                           <span className="ac-isp-name">{ISP_LABELS[card.isp] || card.label}</span>
                           <span className="ac-isp-score" style={{ color: scoreColor }}>{score}</span>
                         </div>
@@ -1250,11 +1250,11 @@ export const AnalyticsCenter: React.FC = () => {
                             <span className="ac-isp-metric-lbl">Sent</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#22c55e' }}>{card.open_rate}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: 'var(--j-success)' }}>{card.open_rate}%</span>
                             <span className="ac-isp-metric-lbl">Opens</span>
                           </div>
                           <div className="ac-isp-metric">
-                            <span className="ac-isp-metric-val" style={{ color: '#3b82f6' }}>{card.click_rate}%</span>
+                            <span className="ac-isp-metric-val" style={{ color: 'var(--j-blue)' }}>{card.click_rate}%</span>
                             <span className="ac-isp-metric-lbl">Clicks</span>
                           </div>
                           <div className="ac-isp-metric">
@@ -1278,7 +1278,7 @@ export const AnalyticsCenter: React.FC = () => {
                 {selectedISP && (
                   <div className="ac-isp-detail">
                     <div className="ac-isp-detail-header">
-                      <h4 style={{ color: ISP_COLORS[selectedISP] || '#a5b4fc' }}>
+                      <h4 style={{ color: ISP_COLORS[selectedISP] || 'var(--j-violet)' }}>
                         {ISP_LABELS[selectedISP] || selectedISP} — Detailed Metrics
                       </h4>
                       <button className="ac-isp-close" onClick={() => setSelectedISP(null)}>&times;</button>
@@ -1296,13 +1296,13 @@ export const AnalyticsCenter: React.FC = () => {
                       <div className="ac-trend-chart">
                         <ResponsiveContainer width="100%" height={300}>
                           <LineChart data={ispTrend} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--j-surface-2)" vertical={false} />
                             <XAxis
                               dataKey="date"
-                              stroke="#334155"
-                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              stroke="var(--j-border)"
+                              tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                               tickLine={false}
-                              axisLine={{ stroke: '#1e293b' }}
+                              axisLine={{ stroke: 'var(--j-surface-2)' }}
                               minTickGap={30}
                               tickFormatter={(value: string) => {
                                 if (ispGranularity === '10min' || ispGranularity === 'hour') {
@@ -1316,8 +1316,8 @@ export const AnalyticsCenter: React.FC = () => {
                             />
                             <YAxis
                               yAxisId="left"
-                              stroke="#334155"
-                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              stroke="var(--j-border)"
+                              tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                               tickLine={false}
                               axisLine={false}
                               tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
@@ -1325,24 +1325,24 @@ export const AnalyticsCenter: React.FC = () => {
                             <YAxis
                               yAxisId="right"
                               orientation="right"
-                              stroke="#334155"
-                              tick={{ fill: '#64748b', fontSize: 11 }}
+                              stroke="var(--j-border)"
+                              tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                               tickLine={false}
                               axisLine={false}
                               tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)}
                             />
                             <RechartsTooltip
-                              contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
-                              labelStyle={{ color: '#94a3b8' }}
+                              contentStyle={{ background: 'var(--j-surface-2)', border: '1px solid var(--j-border)', borderRadius: 8, fontSize: 12 }}
+                              labelStyle={{ color: 'var(--j-text-muted)' }}
                               formatter={(value: number, name: string) => [fmt(value), name.charAt(0).toUpperCase() + name.slice(1)]}
                             />
-                            <Legend wrapperStyle={{ fontSize: 11, color: '#94a3b8' }} />
-                            <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || '#a5b4fc'} strokeWidth={2} dot={false} name="Sent" />
-                            <Line yAxisId="right" type="monotone" dataKey="opens" stroke="#22c55e" strokeWidth={1.5} dot={false} name="Opens" />
-                            <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="#3b82f6" strokeWidth={1.5} dot={false} name="Clicks" />
+                            <Legend wrapperStyle={{ fontSize: 11, color: 'var(--j-text-muted)' }} />
+                            <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || 'var(--j-violet)'} strokeWidth={2} dot={false} name="Sent" />
+                            <Line yAxisId="right" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={1.5} dot={false} name="Opens" />
+                            <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="var(--j-blue)" strokeWidth={1.5} dot={false} name="Clicks" />
                             <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" />
                             <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" />
-                            <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Complaints" />
+                            <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
@@ -1372,13 +1372,13 @@ export const AnalyticsCenter: React.FC = () => {
                   <div className="ac-trend-chart">
                     <ResponsiveContainer width="100%" height={300}>
                       <LineChart data={trend} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--j-surface-2)" vertical={false} />
                         <XAxis
                           dataKey="date"
-                          stroke="#334155"
-                          tick={{ fill: '#64748b', fontSize: 11 }}
+                          stroke="var(--j-border)"
+                          tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                           tickLine={false}
-                          axisLine={{ stroke: '#1e293b' }}
+                          axisLine={{ stroke: 'var(--j-surface-2)' }}
                           minTickGap={30}
                           tickFormatter={(value: string) => {
                             if (granularity === '10min' || granularity === 'hour') {
@@ -1392,8 +1392,8 @@ export const AnalyticsCenter: React.FC = () => {
                         />
                         <YAxis
                           yAxisId="sent"
-                          stroke="#334155"
-                          tick={{ fill: '#64748b', fontSize: 11 }}
+                          stroke="var(--j-border)"
+                          tick={{ fill: 'var(--j-text-faint)', fontSize: 11 }}
                           tickLine={false}
                           axisLine={false}
                           width={55}
@@ -1406,8 +1406,8 @@ export const AnalyticsCenter: React.FC = () => {
                         <YAxis
                           yAxisId="engagement"
                           orientation="right"
-                          stroke="#334155"
-                          tick={{ fill: '#475569', fontSize: 10 }}
+                          stroke="var(--j-border)"
+                          tick={{ fill: 'var(--j-border-strong)', fontSize: 10 }}
                           tickLine={false}
                           axisLine={false}
                           width={45}
@@ -1418,8 +1418,8 @@ export const AnalyticsCenter: React.FC = () => {
                           }}
                         />
                         <RechartsTooltip
-                          contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }}
-                          labelStyle={{ color: '#94a3b8', marginBottom: 4 }}
+                          contentStyle={{ background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 8, fontSize: 12 }}
+                          labelStyle={{ color: 'var(--j-text-muted)', marginBottom: 4 }}
                           itemStyle={{ padding: '1px 0' }}
                           labelFormatter={(label: string) => {
                             if (granularity === '10min' || granularity === 'hour') {
@@ -1433,14 +1433,14 @@ export const AnalyticsCenter: React.FC = () => {
                         <Legend
                           verticalAlign="top"
                           height={30}
-                          wrapperStyle={{ fontSize: 11, color: '#94a3b8' }}
+                          wrapperStyle={{ fontSize: 11, color: 'var(--j-text-muted)' }}
                         />
-                        <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="#00e5ff" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="#10b981" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
+                        <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="var(--j-cyan)" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="#f59e0b" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="#ef4444" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="#f59e0b" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="#a855f7" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -1483,7 +1483,7 @@ export const AnalyticsCenter: React.FC = () => {
                             <td>
                               <button
                                 className="ig-btn-glow"
-                                style={{ padding: '2px 8px', fontSize: '0.75em', cursor: 'pointer', background: 'transparent', border: '1px solid rgba(255,255,255,0.2)' }}
+                                style={{ padding: '2px 8px', fontSize: '0.75em', cursor: 'pointer', background: 'transparent', border: '1px solid color-mix(in srgb, var(--j-text) 20%, transparent)' }}
                                 onClick={() => {
                                   setSelectedCampaign({ id: c.id, name: c.name });
                                   setSelectedDomain(null);
@@ -1506,12 +1506,12 @@ export const AnalyticsCenter: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
                   <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <FontAwesomeIcon icon={faDatabase} /> Audience Health by Sending Domain
-                    <span style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400 }}>
+                    <span style={{ color: 'var(--j-text-muted)', fontSize: '0.75em', fontWeight: 400 }}>
                       {fmt(sdsTotal)} total subscribers
                     </span>
                   </h3>
                   <span
-                    style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400, maxWidth: 520, textAlign: 'right' }}
+                    style={{ color: 'var(--j-text-muted)', fontSize: '0.75em', fontWeight: 400, maxWidth: 520, textAlign: 'right' }}
                     title="These columns count distinct subscribers per sending domain — NOT message volume. 'Subs Mailed 7d' = subscribers who received at least one send in the last 7 days; 'Subs Opened 7d' = subscribers who opened at least once in the last 7 days. For send volume see Analytics Overview / Campaign Performance."
                   >
                     <FontAwesomeIcon icon={faInfoCircle} /> Distinct subscribers per domain (last 7d) — not send volume.
@@ -1544,15 +1544,15 @@ export const AnalyticsCenter: React.FC = () => {
                           <tr key={r.sending_domain}>
                             <td style={{ fontWeight: 500 }}>{r.sending_domain}</td>
                             <td>{fmt(r.total)}</td>
-                            <td style={{ color: '#94a3b8' }}>{fmt(r.cold)}</td>
+                            <td style={{ color: 'var(--j-text-muted)' }}>{fmt(r.cold)}</td>
                             <td style={{ color: '#f59e0b' }}>{fmt(r.warming)}</td>
-                            <td style={{ color: '#10b981' }}>{fmt(r.engaged)}</td>
-                            <td style={{ color: '#6b7280' }}>{fmt(r.dormant)}</td>
+                            <td style={{ color: 'var(--j-success)' }}>{fmt(r.engaged)}</td>
+                            <td style={{ color: 'var(--j-text-faint)' }}>{fmt(r.dormant)}</td>
                             <td>{fmt(r.unsubscribed)}</td>
-                            <td style={{ color: r.hard_bounced > 0 ? '#ef4444' : '#475569' }}>{fmt(r.hard_bounced)}</td>
-                            <td style={{ color: r.complained > 0 ? '#ef4444' : '#475569' }}>{fmt(r.complained)}</td>
+                            <td style={{ color: r.hard_bounced > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.hard_bounced)}</td>
+                            <td style={{ color: r.complained > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.complained)}</td>
                             <td>{fmt(r.recently_mailed_7d)}</td>
-                            <td style={{ color: '#60a5fa' }}>{fmt(r.recently_opened_7d)}</td>
+                            <td style={{ color: 'var(--j-blue)' }}>{fmt(r.recently_opened_7d)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1567,12 +1567,12 @@ export const AnalyticsCenter: React.FC = () => {
                   <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <FontAwesomeIcon icon={faDatabase} /> Infrastructure Breakdown
                     {selectedCampaign && (
-                      <span style={{ background: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75em', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                      <span style={{ background: 'color-mix(in srgb, var(--j-blue) 20%, transparent)', color: 'var(--j-blue)', padding: '2px 8px', borderRadius: '12px', fontSize: '0.75em', border: '1px solid color-mix(in srgb, var(--j-blue) 30%, transparent)' }}>
                         Campaign: {selectedCampaign.name}
                       </span>
                     )}
                     {selectedDomain && (
-                      <span style={{ color: '#94a3b8', fontSize: '0.85em' }}>
+                      <span style={{ color: 'var(--j-text-muted)', fontSize: '0.85em' }}>
                         / Domain: {selectedDomain}
                       </span>
                     )}
@@ -1583,12 +1583,12 @@ export const AnalyticsCenter: React.FC = () => {
                       <>
                         <button className={drilldownType === 'ip' ? 'active' : ''} onClick={() => setDrilldownType('ip')}>By Sending IP</button>
                         <button className={drilldownType === 'isp' ? 'active' : ''} onClick={() => setDrilldownType('isp')}>By Mailbox Provider</button>
-                        <button style={{ marginLeft: '10px', background: '#334155' }} onClick={() => { setSelectedDomain(null); setDrilldownType('ip'); }}>&larr; Back to Domains</button>
+                        <button style={{ marginLeft: '10px', background: 'var(--j-border)' }} onClick={() => { setSelectedDomain(null); setDrilldownType('ip'); }}>&larr; Back to Domains</button>
                       </>
                     )}
                     {selectedCampaign && (
                       <button
-                        style={{ marginLeft: selectedDomain ? '10px' : '0', background: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)' }}
+                        style={{ marginLeft: selectedDomain ? '10px' : '0', background: 'rgba(239, 68, 68, 0.2)', color: 'var(--j-danger)', border: '1px solid rgba(239, 68, 68, 0.3)' }}
                         onClick={() => { setSelectedCampaign(null); setSelectedDomain(null); }}
                       >
                         Clear Campaign Filter &times;
@@ -1604,9 +1604,9 @@ export const AnalyticsCenter: React.FC = () => {
                 ) : (
                   <div className="ac-table-wrap">
                     {selectedDomain && infraData[0]?.parent_sent != null && (
-                      <div style={{ display: 'flex', gap: '20px', padding: '8px 12px', marginBottom: '10px', background: 'rgba(99,102,241,0.1)', borderRadius: '8px', fontSize: '0.85em', color: '#a5b4fc' }}>
-                        <span>Domain Total Delivered: <strong style={{ color: '#e0e7ff' }}>{fmt(infraData[0].parent_delivered ?? 0)}</strong></span>
-                        <span style={{ color: '#94a3b8' }}>Rates below are calculated against domain totals</span>
+                      <div style={{ display: 'flex', gap: '20px', padding: '8px 12px', marginBottom: '10px', background: 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)', borderRadius: '8px', fontSize: '0.85em', color: 'var(--j-violet)' }}>
+                        <span>Domain Total Delivered: <strong style={{ color: 'var(--j-violet-soft)' }}>{fmt(infraData[0].parent_delivered ?? 0)}</strong></span>
+                        <span style={{ color: 'var(--j-text-muted)' }}>Rates below are calculated against domain totals</span>
                       </div>
                     )}
                     <table className="ac-table">
@@ -1644,7 +1644,7 @@ export const AnalyticsCenter: React.FC = () => {
                               <td>
                                 <button
                                   className="ig-btn-glow"
-                                  style={{ padding: '4px 12px', fontSize: '0.85em', cursor: 'pointer', background: 'transparent', border: '1px solid #ffffff', color: '#ffffff' }}
+                                  style={{ padding: '4px 12px', fontSize: '0.85em', cursor: 'pointer', background: 'transparent', border: '1px solid #ffffff', color: 'var(--j-on-accent)' }}
                                   onClick={() => setSelectedDomain(row.entity)}
                                 >
                                   Drilldown
@@ -1665,8 +1665,8 @@ export const AnalyticsCenter: React.FC = () => {
       {/* Deployment verification footer */}
       <div style={{
         marginTop: 32, padding: '8px 16px',
-        fontSize: '0.7em', color: '#475569',
-        borderTop: '1px solid rgba(255,255,255,0.05)',
+        fontSize: '0.7em', color: 'var(--j-text-faint)',
+        borderTop: '1px solid color-mix(in srgb, var(--j-text) 5%, transparent)',
         display: 'flex', gap: 16, flexWrap: 'wrap',
       }}>
         <span>Page: Analytics Center v{PAGE_VERSION} · Tabs v{PAGE_VERSION_ANALYTICS_TABS}</span>

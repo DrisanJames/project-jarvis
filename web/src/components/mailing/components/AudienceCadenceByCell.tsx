@@ -128,13 +128,13 @@ const C = {
   bgTable:      colors.panelBg,            // translucent slate-blue surface
   border:       colors.divider,            // indigo-tinted hairline
   borderStrong: colors.panelBorderStrong,  // stronger indigo border
-  heading:      colors.heading,            // #dbeafe
+  heading:      colors.heading,            // var(--j-text)
   text:         colors.text,
   textSec:      colors.textMuted,
   textMuted:    colors.textFaint,
-  indigo:       colors.indigo400,          // #818cf8
-  indigoDeep:   colors.indigo500,          // #6366f1
-  green:        colors.success,            // #22c55e
+  indigo:       colors.indigo400,          // var(--j-violet)
+  indigoDeep:   colors.indigo500,          // var(--j-violet-strong)
+  green:        colors.success,            // var(--j-success)
   amber:        colors.warning,            // #f59e0b
   red:          colors.danger,             // #ef4444
 };
@@ -203,10 +203,10 @@ const RangeBar: React.FC<{ p25: number; p50: number; p75: number; max: number; c
   const scale = max > 0 ? max : 1;
   const pct = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
   return (
-    <div style={{ position: 'relative', height: 8, background: 'rgba(255,255,255,0.05)', borderRadius: 4, minWidth: 90 }}>
+    <div style={{ position: 'relative', height: 8, background: 'color-mix(in srgb, var(--j-text) 5%, transparent)', borderRadius: 4, minWidth: 90 }}>
       <div style={{
         position: 'absolute', left: pct(p25), width: `calc(${pct(p75)} - ${pct(p25)})`,
-        top: 0, bottom: 0, background: `${color}44`, borderRadius: 4,
+        top: 0, bottom: 0, background: `color-mix(in srgb, ${color} 27%, transparent)`, borderRadius: 4,
       }} />
       <div style={{
         position: 'absolute', left: pct(p50), top: -2, bottom: -2, width: 3,
@@ -422,7 +422,7 @@ export const AudienceCadenceByCell: React.FC = () => {
               key={d}
               style={{
                 ...styles.btn,
-                ...(days === d ? { borderColor: C.indigo, color: C.indigo, background: `${C.indigoDeep}22` } : {}),
+                ...(days === d ? { borderColor: C.indigo, color: C.indigo, background: `color-mix(in srgb, ${C.indigoDeep} 13%, transparent)` } : {}),
               }}
               onClick={() => setDays(d)}
               disabled={loading}
@@ -484,7 +484,7 @@ export const AudienceCadenceByCell: React.FC = () => {
               return (
                 <React.Fragment key={isp}>
                   <tr
-                    style={{ cursor: 'pointer', background: isOpen ? `${C.indigoDeep}14` : 'transparent' }}
+                    style={{ cursor: 'pointer', background: isOpen ? `color-mix(in srgb, ${C.indigoDeep} 8%, transparent)` : 'transparent' }}
                     onClick={() => setExpanded(isOpen ? null : isp)}
                   >
                     <td style={styles.td}>
@@ -860,8 +860,8 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
   },
   headlineStrip: {
-    background: `${C.green}11`,
-    border: `1px solid ${C.green}44`,
+    background: `color-mix(in srgb, ${C.green} 7%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${C.green} 27%, transparent)`,
     borderRadius: 8,
     padding: '10px 14px',
     fontSize: 13,
@@ -870,8 +870,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
   },
   computingStrip: {
-    background: `${C.indigoDeep}14`,
-    border: `1px solid ${C.indigoDeep}44`,
+    background: `color-mix(in srgb, ${C.indigoDeep} 8%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${C.indigoDeep} 27%, transparent)`,
     borderRadius: 8,
     padding: '10px 14px',
     fontSize: 12.5,
@@ -924,7 +924,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'grid',
     gridTemplateColumns: 'minmax(320px, 5fr) minmax(360px, 7fr)',
     gap: 0,
-    background: 'rgba(15,30,60,0.5)',
+    background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
   },
   expandCol: { padding: 18 },
   expandTitle: { fontSize: 14, fontWeight: 700, color: C.heading, margin: '0 0 12px' },

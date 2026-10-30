@@ -121,7 +121,7 @@ const smallBtn: React.CSSProperties = {
   cursor: 'pointer',
 };
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)',
+  background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
   color: colors.text,
   border: `1px solid ${colors.panelBorderStrong}`,
   borderRadius: 5,
@@ -356,7 +356,7 @@ export const DripOverviewPanel: React.FC<{
                     <div key={r.isp} style={{ display: 'flex', alignItems: 'center', gap: 8 }}
                       title={`${r.isp}: ${num(r.ready)} ready (${pctOf(r.ready, ispReadyTotal)} of ready) · ${num(r.mailed_today)} mailed today`}>
                       <span style={{ fontSize: 11, color: colors.text, width: 76, flex: '0 0 auto' }}>{r.isp}</span>
-                      <div style={{ flex: 1, height: 7, background: 'rgba(255,255,255,0.06)', borderRadius: 4 }}>
+                      <div style={{ flex: 1, height: 7, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 4 }}>
                         <div style={{
                           width: `${Math.max(share > 0 ? 2 : 0, Math.round(share * 100))}%`,
                           height: 7, background: alpha(colors.indigo400, '66'), borderRadius: 4,

@@ -10,6 +10,16 @@
     <meta property="og:description" content="Email marketing with an AI right hand. Early access in 2027." />
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#6D28FF" />
+    <script>
+      // Light/dark before first paint: saved choice, else the OS preference.
+      try {
+        var m = localStorage.getItem('jarvis_mode');
+        if (m === 'light' || m === 'dark') document.documentElement.setAttribute('data-theme', m);
+      } catch (e) {}
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" />
     <style>
       * {
         margin: 0;
@@ -17,9 +27,16 @@
         box-sizing: border-box;
       }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-        background-color: #0f172a;
-        color: #e2e8f0;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background-color: #14112b;
+        color: #fff8ee;
+      }
+      @media (prefers-color-scheme: light) {
+        html:not([data-theme='dark']) body { background-color: #fff8ee; color: #14112b; }
+      }
+      html[data-theme='light'] body {
+        background-color: #fff8ee;
+        color: #14112b;
       }
     </style>
   </head>

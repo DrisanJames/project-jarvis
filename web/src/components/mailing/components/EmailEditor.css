@@ -6,8 +6,8 @@
 .email-editor {
   display: flex;
   flex-direction: column;
-  background: #0d1526;
-  border: 1px solid rgba(0,200,255,0.08);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 12px;
   overflow: hidden;
   transition: all 0.3s ease;
@@ -32,8 +32,8 @@
   align-items: center;
   gap: 4px;
   padding: 8px 12px;
-  background: linear-gradient(to bottom, #0d1526, #0a0f1a);
-  border-bottom: 1px solid rgba(0,200,255,0.08);
+  background: linear-gradient(to bottom, var(--j-surface), var(--j-bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   flex-wrap: wrap;
 }
 
@@ -46,7 +46,7 @@
 .ee-toolbar-divider {
   width: 1px;
   height: 24px;
-  background: rgba(0,200,255,0.08);
+  background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
   margin: 0 8px;
 }
 
@@ -63,19 +63,19 @@
   border: none;
   background: transparent;
   border-radius: 6px;
-  color: #c0c8d8;
+  color: var(--j-text-2);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .ee-toolbar-btn:hover:not(:disabled) {
-  background: rgba(0,200,255,0.08);
-  color: #e0e6f0;
+  background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text);
 }
 
 .ee-toolbar-btn.active {
-  background: #00e5ff;
-  color: #fff;
+  background: var(--j-cyan);
+  color: var(--j-on-accent);
 }
 
 .ee-toolbar-btn:disabled {
@@ -86,28 +86,28 @@
 .ee-heading-select {
   height: 32px;
   padding: 0 10px;
-  border: 1px solid rgba(0,200,255,0.08);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 6px;
-  background: #0d1526;
-  color: #c0c8d8;
+  background: var(--j-surface);
+  color: var(--j-text-2);
   font-size: 0.85rem;
   cursor: pointer;
   outline: none;
 }
 
 .ee-heading-select:hover {
-  border-color: #00e5ff;
+  border-color: var(--j-cyan);
 }
 
 .ee-heading-select:focus {
-  border-color: #00e5ff;
-  box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.15);
+  border-color: var(--j-cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--j-cyan) 15%, transparent);
 }
 
 /* View Toggle */
 .ee-view-toggle {
   display: flex;
-  background: rgba(0,200,255,0.08);
+  background: color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 8px;
   padding: 2px;
 }
@@ -120,7 +120,7 @@
   border: none;
   background: transparent;
   border-radius: 6px;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
@@ -128,12 +128,12 @@
 }
 
 .ee-view-btn:hover {
-  color: #c0c8d8;
+  color: var(--j-text-2);
 }
 
 .ee-view-btn.active {
-  background: #0d1526;
-  color: #00e5ff;
+  background: var(--j-surface);
+  color: var(--j-cyan);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
@@ -153,7 +153,7 @@
   align-items: center;
   justify-content: center;
   padding: 40px;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
 }
 
 /* Editor Area */
@@ -173,7 +173,7 @@
 }
 
 .ee-editor-content .ProseMirror p.is-editor-empty:first-child::before {
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   content: attr(data-placeholder);
   float: left;
   height: 0;
@@ -185,27 +185,27 @@
   font-size: 2rem;
   font-weight: 700;
   margin: 0 0 16px;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .ee-editor-content h2 {
   font-size: 1.5rem;
   font-weight: 600;
   margin: 0 0 12px;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .ee-editor-content h3 {
   font-size: 1.25rem;
   font-weight: 600;
   margin: 0 0 10px;
-  color: #c0c8d8;
+  color: var(--j-text-2);
 }
 
 .ee-editor-content p {
   margin: 0 0 12px;
   line-height: 1.7;
-  color: #c0c8d8;
+  color: var(--j-text-2);
 }
 
 .ee-editor-content ul,
@@ -219,15 +219,15 @@
 }
 
 .ee-editor-content blockquote {
-  border-left: 4px solid #00e5ff;
+  border-left: 4px solid var(--j-cyan);
   padding-left: 16px;
   margin: 16px 0;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   font-style: italic;
 }
 
 .ee-editor-content a.email-link {
-  color: #00e5ff;
+  color: var(--j-cyan);
   text-decoration: underline;
 }
 
@@ -243,22 +243,22 @@
   display: flex;
   gap: 2px;
   padding: 4px;
-  background: #2d3748;
+  background: var(--j-border);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .ee-bubble-menu .ee-toolbar-btn {
-  color: rgba(0,200,255,0.08);
+  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
 
 .ee-bubble-menu .ee-toolbar-btn:hover {
-  background: rgba(0,200,255,0.15);
-  color: #fff;
+  background: color-mix(in srgb, var(--j-cyan) 15%, transparent);
+  color: var(--j-on-accent);
 }
 
 .ee-bubble-menu .ee-toolbar-btn.active {
-  background: #00e5ff;
+  background: var(--j-cyan);
 }
 
 /* =============================================================================
@@ -270,7 +270,7 @@
   display: flex;
   justify-content: center;
   padding: 20px;
-  background: #0d1526;
+  background: var(--j-surface);
   overflow: auto;
 }
 
@@ -281,9 +281,9 @@
 
 .ee-preview-area.mobile .ee-preview-frame {
   width: 375px;
-  border: 8px solid #2d3748;
+  border: 8px solid var(--j-border);
   border-radius: 32px;
-  background: #0d1526;
+  background: var(--j-surface);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
 }
 
@@ -291,12 +291,12 @@
   content: '';
   display: block;
   height: 24px;
-  background: #2d3748;
+  background: var(--j-border);
   border-radius: 24px 24px 0 0;
 }
 
 .ee-preview-frame {
-  background: #0d1526;
+  background: var(--j-surface);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   overflow: hidden;
@@ -318,7 +318,7 @@
 }
 
 .ee-preview-content a {
-  color: #00e5ff;
+  color: var(--j-cyan);
 }
 
 .ee-preview-content img {
@@ -344,9 +344,9 @@
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-size: 13px;
   line-height: 1.6;
-  color: #e0e6f0;
+  color: var(--j-text);
   background: #1a202c;
-  color: rgba(0,200,255,0.08);
+  color: color-mix(in srgb, var(--j-cyan) 8%, transparent);
   resize: none;
 }
 
@@ -360,7 +360,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -369,7 +369,7 @@
 }
 
 .ee-modal {
-  background: #0d1526;
+  background: var(--j-surface);
   border-radius: 12px;
   padding: 24px;
   width: 100%;
@@ -381,13 +381,13 @@
 .ee-modal h3 {
   margin: 0 0 16px;
   font-size: 1.1rem;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .ee-modal input {
   width: 100%;
   padding: 12px 14px;
-  border: 1px solid rgba(0,200,255,0.08);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 8px;
   font-size: 0.95rem;
   outline: none;
@@ -395,8 +395,8 @@
 }
 
 .ee-modal input:focus {
-  border-color: #00e5ff;
-  box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.15);
+  border-color: var(--j-cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--j-cyan) 15%, transparent);
 }
 
 .ee-modal-actions {
@@ -417,23 +417,23 @@
 }
 
 .ee-modal-cancel {
-  background: #0d1526;
-  border: 1px solid rgba(0,200,255,0.08);
-  color: #c0c8d8;
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  color: var(--j-text-2);
 }
 
 .ee-modal-cancel:hover {
-  background: rgba(0,200,255,0.06);
+  background: color-mix(in srgb, var(--j-cyan) 6%, transparent);
 }
 
 .ee-modal-confirm {
-  background: #00e5ff;
+  background: var(--j-cyan);
   border: none;
-  color: #fff;
+  color: var(--j-on-accent);
 }
 
 .ee-modal-confirm:hover:not(:disabled) {
-  background: #00b0ff;
+  background: var(--j-blue);
 }
 
 .ee-modal-confirm:disabled {
@@ -453,7 +453,7 @@
   display: flex;
   gap: 4px;
   margin-bottom: 16px;
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--j-text) 4%, transparent);
   border-radius: 8px;
   padding: 4px;
 }
@@ -463,7 +463,7 @@
   padding: 8px 14px;
   border: none;
   background: transparent;
-  color: rgba(255, 255, 255, 0.5);
+  color: color-mix(in srgb, var(--j-text) 50%, transparent);
   cursor: pointer;
   border-radius: 6px;
   font-size: 13px;
@@ -476,17 +476,17 @@
 }
 
 .ee-image-tab:hover {
-  color: rgba(255, 255, 255, 0.8);
-  background: rgba(255, 255, 255, 0.06);
+  color: color-mix(in srgb, var(--j-text) 80%, transparent);
+  background: color-mix(in srgb, var(--j-text) 6%, transparent);
 }
 
 .ee-image-tab.active {
-  background: rgba(0, 200, 255, 0.2);
-  color: #00e5ff;
+  background: color-mix(in srgb, var(--j-cyan) 20%, transparent);
+  color: var(--j-cyan);
 }
 
 .ee-upload-zone {
-  border: 2px dashed rgba(255, 255, 255, 0.15);
+  border: 2px dashed color-mix(in srgb, var(--j-text) 15%, transparent);
   border-radius: 10px;
   padding: 36px 20px;
   text-align: center;
@@ -499,31 +499,31 @@
 }
 
 .ee-upload-zone:hover {
-  border-color: rgba(0, 200, 255, 0.4);
-  background: rgba(0, 200, 255, 0.05);
+  border-color: color-mix(in srgb, var(--j-cyan) 40%, transparent);
+  background: color-mix(in srgb, var(--j-cyan) 5%, transparent);
 }
 
 .ee-upload-zone.uploading {
-  border-color: rgba(0, 200, 255, 0.3);
-  background: rgba(0, 200, 255, 0.05);
+  border-color: color-mix(in srgb, var(--j-cyan) 30%, transparent);
+  background: color-mix(in srgb, var(--j-cyan) 5%, transparent);
   cursor: wait;
 }
 
 .ee-upload-icon {
   font-size: 28px;
-  color: rgba(255, 255, 255, 0.3);
+  color: color-mix(in srgb, var(--j-text) 30%, transparent);
 }
 
 .ee-upload-zone p {
   margin: 0;
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.7);
+  color: color-mix(in srgb, var(--j-text) 70%, transparent);
   font-weight: 500;
 }
 
 .ee-upload-hint {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.35);
+  color: color-mix(in srgb, var(--j-text) 35%, transparent);
 }
 
 .ee-upload-status {
@@ -531,11 +531,11 @@
   align-items: center;
   gap: 10px;
   font-size: 14px;
-  color: #00e5ff;
+  color: var(--j-cyan);
 }
 
 .ee-upload-status.ee-upload-success {
-  color: #00b894;
+  color: var(--j-success);
 }
 
 .ee-upload-error {
@@ -544,7 +544,7 @@
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.25);
   border-radius: 6px;
-  color: #f87171;
+  color: var(--j-danger);
   font-size: 13px;
   display: flex;
   align-items: center;

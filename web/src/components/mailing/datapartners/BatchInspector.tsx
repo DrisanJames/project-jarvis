@@ -84,15 +84,15 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
   return (
     <div style={modalBackdrop}>
       <div style={modalBody}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 12, marginBottom: 16 }}>
-          <h3 style={{ margin: 0, color: '#dbeafe' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', paddingBottom: 12, marginBottom: 16 }}>
+          <h3 style={{ margin: 0, color: 'var(--j-text)' }}>
             Batch Inspector — <code style={{ fontSize: 12, color: '#a5f3fc' }}>{batchId.slice(0, 8)}…</code>
           </h3>
           <button onClick={onClose} style={iconBtn}><FontAwesomeIcon icon={faTimes} /></button>
         </div>
 
         {loading && (
-          <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>
+          <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
             <FontAwesomeIcon icon={faSpinner} spin /> Loading…
           </div>
         )}
@@ -114,13 +114,13 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
             </div>
             {detail.counters && (
               <div style={{ marginTop: 16 }}>
-                <h4 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>List processing counters</h4>
+                <h4 style={{ color: 'var(--j-text-2)', margin: '0 0 8px 0' }}>List processing counters</h4>
                 <div style={grid}>
                   <Stat label="Processed" value={detail.counters.sliced.toLocaleString()} />
                   <Stat label="Suppressed (global)" value={detail.counters.suppressed_global.toLocaleString()} accent="#f59e0b" />
                   <Stat label="Suppressed (verification)" value={detail.counters.suppressed_eo.toLocaleString()} accent="#f59e0b" />
-                  <Stat label="Ready" value={detail.counters.ready.toLocaleString()} accent="#10b981" />
-                  <Stat label="Mailed" value={detail.counters.mailed.toLocaleString()} accent="#6366f1" />
+                  <Stat label="Ready" value={detail.counters.ready.toLocaleString()} accent="var(--j-success)" />
+                  <Stat label="Mailed" value={detail.counters.mailed.toLocaleString()} accent="var(--j-violet-strong)" />
                 </div>
               </div>
             )}
@@ -137,9 +137,9 @@ export const BatchInspector: React.FC<Props> = ({ batchId, onClose }) => {
 };
 
 const Stat: React.FC<{ label: string; value: string; accent?: string }> = ({ label, value, accent }) => (
-  <div style={{ background: 'rgba(15,30,60,0.5)', padding: 12, borderRadius: 6 }}>
-    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, color: accent ?? '#dbeafe' }}>{value}</div>
+  <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 12, borderRadius: 6 }}>
+    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 18, fontWeight: 600, marginTop: 4, color: accent ?? 'var(--j-text)' }}>{value}</div>
   </div>
 );
 
@@ -148,20 +148,20 @@ const grid: React.CSSProperties = {
 };
 const modalBackdrop: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center',
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', display: 'flex', alignItems: 'center',
   justifyContent: 'center', zIndex: 1000, padding: 24,
 };
 const modalBody: React.CSSProperties = {
-  background: '#0f1c33', border: '1px solid rgba(120,150,200,0.25)',
+  background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 720,
   maxHeight: '90vh', overflowY: 'auto',
-  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'rgba(220,235,250,0.92)',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
 };
 const iconBtn: React.CSSProperties = {
-  background: 'transparent', color: 'rgba(220,235,250,0.85)',
+  background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
   border: 'none', padding: '4px 8px', cursor: 'pointer', fontSize: 16,
 };
 const errorBox: React.CSSProperties = {
   background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',
-  padding: 12, borderRadius: 4, fontSize: 13, color: '#fca5a5',
+  padding: 12, borderRadius: 4, fontSize: 13, color: 'var(--j-danger-soft)',
 };

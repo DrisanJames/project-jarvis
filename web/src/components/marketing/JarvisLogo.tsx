@@ -1,10 +1,11 @@
 import React, { useId } from 'react';
+import './JarvisLogo.css';
 
 // The Jarvis mark: a chat-bubble head (Jarvis talks to you), an ink face plate,
 // cyan eyes, and a lime spark antenna (the idea Jarvis had before you asked).
 // Deliberately round and friendly — no helmets, slits, armour or red/gold.
 //
-// Motion (marketing.css, "Logo motion"): `animated` blinks the eyes and
+// Motion (JarvisLogo.css): `animated` blinks the eyes and
 // twinkles the spark; `look` also lets the eyes glance side to side. Both are
 // off under prefers-reduced-motion.
 

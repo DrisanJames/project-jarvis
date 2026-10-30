@@ -80,7 +80,7 @@ const ISP_COLORS: Record<string, string> = {
   yahoo: '#7b1fa2',
   microsoft: '#0078d4',
   aol: '#ff6600',
-  apple: '#a2aaad',
+  apple: 'var(--j-text-muted)',
   comcast: '#e60000',
   att: '#009fdb',
   cox: '#f26522',
@@ -101,13 +101,13 @@ const ISP_DISPLAY: Record<string, string> = {
 
 const ACTION_META: Record<string, { label: string; color: string; icon: typeof faArrowDown }> = {
   reduce_rate: { label: 'Rate Reduced', color: '#ef4444', icon: faArrowDown },
-  backoff_mode: { label: 'Backoff Mode', color: '#dc2626', icon: faExclamationTriangle },
-  increase_rate: { label: 'Rate Increased', color: '#10b981', icon: faArrowUp },
-  snap_to_stable_rate: { label: 'Snap to Stable', color: '#3b82f6', icon: faExchangeAlt },
+  backoff_mode: { label: 'Backoff Mode', color: 'var(--j-danger)', icon: faExclamationTriangle },
+  increase_rate: { label: 'Rate Increased', color: 'var(--j-success)', icon: faArrowUp },
+  snap_to_stable_rate: { label: 'Snap to Stable', color: 'var(--j-blue)', icon: faExchangeAlt },
 };
 
 function getBarColor(pct: number): string {
-  if (pct >= 80) return '#10b981';
+  if (pct >= 80) return 'var(--j-success)';
   if (pct >= 40) return '#f59e0b';
   return '#ef4444';
 }
@@ -253,7 +253,7 @@ export const ThrottleAnalytics: React.FC = () => {
       {/* Live Rate Gauges */}
       <div className="ta-gauges-grid">
         {sortedRates.map(rate => {
-          const color = ISP_COLORS[rate.isp] || '#64748b';
+          const color = ISP_COLORS[rate.isp] || 'var(--j-text-faint)';
           const barColor = getBarColor(rate.rate_pct);
           const displayName = rate.display_name || ISP_DISPLAY[rate.isp] || rate.isp;
           return (
@@ -310,7 +310,7 @@ export const ThrottleAnalytics: React.FC = () => {
             </thead>
             <tbody>
               {audienceData.isps.map(row => {
-                const color = ISP_COLORS[row.isp] || '#64748b';
+                const color = ISP_COLORS[row.isp] || 'var(--j-text-faint)';
                 return (
                   <tr key={row.isp}>
                     <td style={{ color, fontWeight: 600 }}>{row.display_name}</td>
@@ -361,18 +361,18 @@ export const ThrottleAnalytics: React.FC = () => {
       ) : (
         <div className="ta-timeline">
           {recentDecisions.map((d, i) => {
-            const meta = ACTION_META[d.action] || { label: d.action, color: '#6b7280', icon: faHistory };
-            const ispColor = ISP_COLORS[d.isp] || '#64748b';
+            const meta = ACTION_META[d.action] || { label: d.action, color: 'var(--j-text-faint)', icon: faHistory };
+            const ispColor = ISP_COLORS[d.isp] || 'var(--j-text-faint)';
             const displayName = ISP_DISPLAY[d.isp] || d.isp;
             return (
               <div key={i} className="ta-timeline-entry">
                 <div className="ta-timeline-dot" style={{ background: meta.color }} />
                 <div className="ta-timeline-content">
                   <div className="ta-timeline-row-top">
-                    <span className="ta-isp-pill" style={{ background: `${ispColor}22`, color: ispColor, borderColor: `${ispColor}44` }}>
+                    <span className="ta-isp-pill" style={{ background: `color-mix(in srgb, ${ispColor} 13%, transparent)`, color: ispColor, borderColor: `color-mix(in srgb, ${ispColor} 27%, transparent)` }}>
                       {displayName}
                     </span>
-                    <span className="ta-action-badge" style={{ background: `${meta.color}22`, color: meta.color, borderColor: `${meta.color}44` }}>
+                    <span className="ta-action-badge" style={{ background: `color-mix(in srgb, ${meta.color} 13%, transparent)`, color: meta.color, borderColor: `color-mix(in srgb, ${meta.color} 27%, transparent)` }}>
                       <FontAwesomeIcon icon={meta.icon} /> {meta.label}
                     </span>
                     <span className="ta-timeline-time">{formatTimestamp(d.created_at)}</span>
@@ -406,7 +406,7 @@ export const ThrottleAnalytics: React.FC = () => {
         <div className="ta-convictions">
           {Object.entries(convictionsByISP).sort(([a], [b]) => a.localeCompare(b)).map(([isp, convictions]) => {
             const expanded = expandedISPs.has(isp);
-            const ispColor = ISP_COLORS[isp] || '#64748b';
+            const ispColor = ISP_COLORS[isp] || 'var(--j-text-faint)';
             const displayName = ISP_DISPLAY[isp] || isp;
             const willCount = convictions.filter(c => c.verdict === 'will').length;
             const wontCount = convictions.filter(c => c.verdict === 'wont').length;

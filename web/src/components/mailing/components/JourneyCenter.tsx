@@ -256,12 +256,12 @@ const FunnelNode: React.FC<{
   };
 
   const nodeTypeColors: Record<string, string> = {
-    trigger: '#00b894',
-    email: '#00e5ff',
-    delay: '#fdcb6e',
-    condition: '#00b0ff',
-    split: '#00b0ff',
-    goal: '#00b894',
+    trigger: 'var(--j-success)',
+    email: 'var(--j-cyan)',
+    delay: 'var(--j-warn)',
+    condition: 'var(--j-blue)',
+    split: 'var(--j-blue)',
+    goal: 'var(--j-success)',
   };
 
   const widthPercentage = maxEntered > 0 ? (node.entered / maxEntered) * 100 : 100;
@@ -273,7 +273,7 @@ const FunnelNode: React.FC<{
         className="jc-funnel-bar"
         style={{ 
           width: `${Math.max(widthPercentage, 20)}%`,
-          background: `linear-gradient(135deg, ${nodeTypeColors[node.type]}dd, ${nodeTypeColors[node.type]})`
+          background: `linear-gradient(135deg, color-mix(in srgb, ${nodeTypeColors[node.type]} 87%, transparent), ${nodeTypeColors[node.type]})`
         }}
       >
         <div className="jc-funnel-node-content">

@@ -59,37 +59,37 @@ function rehostToast(rh: RehostSummary): { type: 'success' | 'warning'; title: s
 
 const badge = (fg: string): React.CSSProperties => ({
   display: 'inline-block', padding: '2px 8px', borderRadius: 999, fontSize: 11,
-  fontWeight: 600, color: fg, background: `${fg}1f`, border: `1px solid ${fg}55`,
+  fontWeight: 600, color: fg, background: `color-mix(in srgb, ${fg} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${fg} 33%, transparent)`,
   whiteSpace: 'nowrap',
 });
 const statusColor = (s: OfferProof['approval_status']) =>
-  s === 'approved' ? '#22c55e' : s === 'rejected' ? '#ef4444' : '#f59e0b';
+  s === 'approved' ? 'var(--j-success)' : s === 'rejected' ? '#ef4444' : '#f59e0b';
 
 const btn = (bg: string, border: string): React.CSSProperties => ({
-  background: bg, border: `1px solid ${border}`, borderRadius: 6, color: '#e5e7eb',
+  background: bg, border: `1px solid ${border}`, borderRadius: 6, color: 'var(--j-text)',
   padding: '7px 12px', fontSize: 13, cursor: 'pointer', display: 'inline-flex',
   alignItems: 'center', gap: 6, fontWeight: 600,
 });
 const input: React.CSSProperties = {
-  background: '#0f172a', border: '1px solid #334155', borderRadius: 6,
-  color: '#e5e7eb', padding: '7px 10px', fontSize: 13, width: '100%', boxSizing: 'border-box',
+  background: 'var(--j-bg)', border: '1px solid var(--j-border)', borderRadius: 6,
+  color: 'var(--j-text)', padding: '7px 10px', fontSize: 13, width: '100%', boxSizing: 'border-box',
 };
 const label: React.CSSProperties = {
-  fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5,
+  fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5,
   marginBottom: 4, display: 'block',
 };
 const card: React.CSSProperties = {
-  background: '#0f172a', border: '1px solid #1f2937', borderRadius: 10, padding: 14,
+  background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 10, padding: 14,
 };
 const chip = (active: boolean): React.CSSProperties => ({
-  background: active ? '#312e81' : '#1e293b',
-  border: `1px solid ${active ? '#6366f1' : '#334155'}`,
-  borderRadius: 999, color: active ? '#e0e7ff' : '#94a3b8',
+  background: active ? 'var(--j-surface-3)' : 'var(--j-surface-2)',
+  border: `1px solid ${active ? 'var(--j-violet-strong)' : 'var(--j-border)'}`,
+  borderRadius: 999, color: active ? 'var(--j-violet-soft)' : 'var(--j-text-muted)',
   padding: '4px 11px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
 });
 // Small text-link control for the per-category Select all / Clear actions.
 const bulkLink: React.CSSProperties = {
-  background: 'none', border: 'none', color: '#818cf8', fontSize: 11,
+  background: 'none', border: 'none', color: 'var(--j-violet)', fontSize: 11,
   fontWeight: 600, cursor: 'pointer', padding: 0, textTransform: 'uppercase',
   letterSpacing: 0.4,
 };
@@ -397,7 +397,7 @@ export const OfferProofs: React.FC = () => {
         {/* upload */}
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-            <FontAwesomeIcon icon={faUpload} style={{ color: '#a78bfa' }} /> Upload network creative
+            <FontAwesomeIcon icon={faUpload} style={{ color: 'var(--j-violet)' }} /> Upload network creative
           </div>
           <label style={label}>Proof name</label>
           <input style={input} value={upName} onChange={(e) => setUpName(e.target.value)} placeholder="e.g. Empire Loans — Jun spot" />
@@ -407,16 +407,16 @@ export const OfferProofs: React.FC = () => {
           <textarea style={{ ...input, minHeight: 90, fontFamily: 'monospace', fontSize: 11 }}
             value={upHtml} onChange={(e) => setUpHtml(e.target.value)} placeholder="<html>…network approved creative…</html>" />
           <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
-            <label style={{ ...btn('#1e293b', '#334155'), cursor: 'pointer' }}>
+            <label style={{ ...btn('var(--j-surface-2)', 'var(--j-border)'), cursor: 'pointer' }}>
               <FontAwesomeIcon icon={faUpload} /> Choose .html
               <input type="file" accept=".html,.htm,text/html" style={{ display: 'none' }}
                 onChange={(e) => onFile(e.target.files?.[0])} />
             </label>
-            <button style={btn('#312e81', '#4338ca')} disabled={busy} onClick={createProof}>
+            <button style={btn('var(--j-surface-3)', 'var(--j-violet-strong)')} disabled={busy} onClick={createProof}>
               <FontAwesomeIcon icon={faCircleCheck} /> Create proof
             </button>
           </div>
-          <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-text-faint)', marginTop: 6 }}>
             Images are rehosted to our CDN and our footer/unsubscribe is injected automatically.
           </div>
         </div>
@@ -424,21 +424,21 @@ export const OfferProofs: React.FC = () => {
         {/* account managers */}
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-            <FontAwesomeIcon icon={faUserPlus} style={{ color: '#a78bfa' }} /> Account managers
+            <FontAwesomeIcon icon={faUserPlus} style={{ color: 'var(--j-violet)' }} /> Account managers
           </div>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
             <input style={{ ...input, flex: 1 }} value={amName} onChange={(e) => setAmName(e.target.value)} placeholder="Name" />
             <input style={{ ...input, flex: 1.4 }} value={amEmail} onChange={(e) => setAmEmail(e.target.value)} placeholder="email@network.com" />
-            <button style={btn('#1e293b', '#334155')} onClick={addRecipient}><FontAwesomeIcon icon={faUserPlus} /></button>
+            <button style={btn('var(--j-surface-2)', 'var(--j-border)')} onClick={addRecipient}><FontAwesomeIcon icon={faUserPlus} /></button>
           </div>
-          {recipients.length === 0 && <div style={{ fontSize: 12, color: '#64748b' }}>No account managers yet.</div>}
+          {recipients.length === 0 && <div style={{ fontSize: 12, color: 'var(--j-text-faint)' }}>No account managers yet.</div>}
           {recipients.map((rc) => (
-            <div key={rc.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: '1px solid #1f2937' }}>
-              <span style={{ flex: 1, fontSize: 13, color: rc.is_active ? '#e5e7eb' : '#64748b' }}>
-                {rc.name} <span style={{ color: '#64748b', fontSize: 11 }}>· {rc.email}</span>
+            <div key={rc.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderTop: '1px solid var(--j-surface-2)' }}>
+              <span style={{ flex: 1, fontSize: 13, color: rc.is_active ? 'var(--j-text)' : 'var(--j-text-faint)' }}>
+                {rc.name} <span style={{ color: 'var(--j-text-faint)', fontSize: 11 }}>· {rc.email}</span>
               </span>
               <button title={rc.is_active ? 'active' : 'inactive'} style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => toggleRecipient(rc)}>
-                <FontAwesomeIcon icon={rc.is_active ? faToggleOn : faToggleOff} style={{ color: rc.is_active ? '#22c55e' : '#64748b' }} />
+                <FontAwesomeIcon icon={rc.is_active ? faToggleOn : faToggleOff} style={{ color: rc.is_active ? 'var(--j-success)' : 'var(--j-text-faint)' }} />
               </button>
               <button title="delete" style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => deleteRecipient(rc)}>
                 <FontAwesomeIcon icon={faTrash} style={{ color: '#ef4444' }} />
@@ -451,33 +451,33 @@ export const OfferProofs: React.FC = () => {
         <div style={{ ...card, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Proofs ({proofs.length})</div>
-            <button style={{ ...btn('#1e293b', '#334155'), padding: 4 }} onClick={fetchProofs} title="refresh">
+            <button style={{ ...btn('var(--j-surface-2)', 'var(--j-border)'), padding: 4 }} onClick={fetchProofs} title="refresh">
               <FontAwesomeIcon icon={faRotate} spin={loading} />
             </button>
           </div>
           {checkedCount > 0 && (
             <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              <span style={{ fontSize: 12, color: '#94a3b8', alignSelf: 'center' }}>{checkedCount} selected:</span>
-              <button style={btn('#1e293b', '#334155')} onClick={() => bulk('activate')}>Activate</button>
-              <button style={btn('#1e293b', '#334155')} onClick={() => bulk('deactivate')}>Deactivate</button>
+              <span style={{ fontSize: 12, color: 'var(--j-text-muted)', alignSelf: 'center' }}>{checkedCount} selected:</span>
+              <button style={btn('var(--j-surface-2)', 'var(--j-border)')} onClick={() => bulk('activate')}>Activate</button>
+              <button style={btn('var(--j-surface-2)', 'var(--j-border)')} onClick={() => bulk('deactivate')}>Deactivate</button>
               <button style={btn('#3f1d1d', '#7f1d1d')} onClick={() => bulk('delete')}>Delete</button>
             </div>
           )}
-          {proofs.length === 0 && <div style={{ fontSize: 12, color: '#64748b' }}>No proofs uploaded yet.</div>}
+          {proofs.length === 0 && <div style={{ fontSize: 12, color: 'var(--j-text-faint)' }}>No proofs uploaded yet.</div>}
           {proofs.map((p) => (
             <div key={p.id} onClick={() => openProof(p.id)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 8, padding: '7px 6px', cursor: 'pointer',
-                borderTop: '1px solid #1f2937',
+                borderTop: '1px solid var(--j-surface-2)',
                 background: selected?.id === p.id ? '#1e1b4b' : 'transparent', borderRadius: 6,
               }}>
               <input type="checkbox" checked={!!checked[p.id]} onClick={(e) => e.stopPropagation()}
                 onChange={(e) => setChecked((c) => ({ ...c, [p.id]: e.target.checked }))} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: p.is_active ? '#e5e7eb' : '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                {p.offer_key && <div style={{ fontSize: 11, color: '#64748b' }}>{p.offer_key}</div>}
+                <div style={{ fontSize: 13, fontWeight: 600, color: p.is_active ? 'var(--j-text)' : 'var(--j-text-faint)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                {p.offer_key && <div style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>{p.offer_key}</div>}
               </div>
-              {!p.is_active && <span style={badge('#64748b')}>inactive</span>}
+              {!p.is_active && <span style={badge('var(--j-text-faint)')}>inactive</span>}
               <span style={badge(statusColor(p.approval_status))}>{p.approval_status}</span>
             </div>
           ))}
@@ -487,26 +487,26 @@ export const OfferProofs: React.FC = () => {
       {/* ───────── right column: detail ───────── */}
       <div style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
         {!selected ? (
-          <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>Select or upload a proof to manage it.</div>
+          <div style={{ color: 'var(--j-text-faint)', fontSize: 13, padding: 24 }}>Select or upload a proof to manage it.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {/* header */}
             <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{selected.name}</div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>
+                <div style={{ fontSize: 12, color: 'var(--j-text-faint)' }}>
                   {selected.offer_key || 'no offer key'} · {selected.images_rehosted} image(s) rehosted
                   {selected.approved_at ? ` · approved ${new Date(selected.approved_at).toLocaleString()}` : ''}
                 </div>
               </div>
               <span style={badge(statusColor(selected.approval_status))}>{selected.approval_status}</span>
-              <button style={btn('#1e293b', '#334155')} disabled={busy} onClick={rehostProof}
+              <button style={btn('var(--j-surface-2)', 'var(--j-border)')} disabled={busy} onClick={rehostProof}
                 title="Re-run image rehosting + footer on the stored creative">
                 <FontAwesomeIcon icon={faRotate} /> Re-rehost images
               </button>
-              <button style={btn('#1e293b', '#334155')} onClick={() => toggleActive(selected)}>
+              <button style={btn('var(--j-surface-2)', 'var(--j-border)')} onClick={() => toggleActive(selected)}>
                 <FontAwesomeIcon icon={selected.is_active ? faToggleOn : faToggleOff}
-                  style={{ color: selected.is_active ? '#22c55e' : '#64748b' }} /> {selected.is_active ? 'Active' : 'Inactive'}
+                  style={{ color: selected.is_active ? 'var(--j-success)' : 'var(--j-text-faint)' }} /> {selected.is_active ? 'Active' : 'Inactive'}
               </button>
             </div>
 
@@ -515,7 +515,7 @@ export const OfferProofs: React.FC = () => {
               <div style={{ ...card, flex: '1 1 340px', minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Preview</div>
                 <iframe title="proof-preview" srcDoc={previewHtml || selected.html_content || ''}
-                  style={{ width: '100%', height: 360, border: '1px solid #1f2937', borderRadius: 6, background: '#fff' }} />
+                  style={{ width: '100%', height: 360, border: '1px solid var(--j-surface-2)', borderRadius: 6, background: '#fff' }} />
               </div>
 
               {/* variants + from names */}
@@ -526,7 +526,7 @@ export const OfferProofs: React.FC = () => {
                     <div style={{ flex: 1 }}>
                       <input style={input} value={v.subject} placeholder="Subject line"
                         onChange={(e) => setVariant(i, { subject: e.target.value })} />
-                      <input style={{ ...input, marginTop: 4, fontSize: 12, color: '#94a3b8' }} value={v.preheader} placeholder="Preheader"
+                      <input style={{ ...input, marginTop: 4, fontSize: 12, color: 'var(--j-text-muted)' }} value={v.preheader} placeholder="Preheader"
                         onChange={(e) => setVariant(i, { preheader: e.target.value })} />
                     </div>
                     <button style={{ ...btn('transparent', 'transparent'), padding: 4 }} onClick={() => delVariant(i)}>
@@ -534,7 +534,7 @@ export const OfferProofs: React.FC = () => {
                     </button>
                   </div>
                 ))}
-                <button style={{ ...btn('#1e293b', '#334155'), marginTop: 2 }} onClick={addVariant}>+ Add variant</button>
+                <button style={{ ...btn('var(--j-surface-2)', 'var(--j-border)'), marginTop: 2 }} onClick={addVariant}>+ Add variant</button>
 
                 <div style={{ fontSize: 13, fontWeight: 600, margin: '14px 0 8px' }}>From names</div>
                 {selected.from_names.map((fn, i) => (
@@ -546,9 +546,9 @@ export const OfferProofs: React.FC = () => {
                     </button>
                   </div>
                 ))}
-                <button style={{ ...btn('#1e293b', '#334155'), marginTop: 2 }} onClick={addFromName}>+ Add from name</button>
+                <button style={{ ...btn('var(--j-surface-2)', 'var(--j-border)'), marginTop: 2 }} onClick={addFromName}>+ Add from name</button>
                 <div style={{ marginTop: 10 }}>
-                  <button style={btn('#1e293b', '#334155')} onClick={saveVariants}>Save variants</button>
+                  <button style={btn('var(--j-surface-2)', 'var(--j-border)')} onClick={saveVariants}>Save variants</button>
                 </div>
               </div>
             </div>
@@ -556,7 +556,7 @@ export const OfferProofs: React.FC = () => {
             {/* send panel */}
             <div style={card}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                <FontAwesomeIcon icon={faPaperPlane} style={{ color: '#a78bfa' }} /> Send proof to account managers
+                <FontAwesomeIcon icon={faPaperPlane} style={{ color: 'var(--j-violet)' }} /> Send proof to account managers
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
                 <div style={{ flex: '1 1 200px' }}>
@@ -591,7 +591,7 @@ export const OfferProofs: React.FC = () => {
               </div>
               <label style={label}>Recipients</label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-                {recipients.filter((r) => r.is_active).length === 0 && <span style={{ fontSize: 12, color: '#64748b' }}>Add active account managers above.</span>}
+                {recipients.filter((r) => r.is_active).length === 0 && <span style={{ fontSize: 12, color: 'var(--j-text-faint)' }}>Add active account managers above.</span>}
                 {recipients.filter((r) => r.is_active).map((r) => (
                   <button key={r.id} style={chip(!!sendRcpts[r.id])}
                     onClick={() => setSendRcpts((c) => ({ ...c, [r.id]: !c[r.id] }))}>
@@ -599,7 +599,7 @@ export const OfferProofs: React.FC = () => {
                   </button>
                 ))}
               </div>
-              <button style={btn('#312e81', '#4338ca')} disabled={busy} onClick={sendProof}>
+              <button style={btn('var(--j-surface-3)', 'var(--j-violet-strong)')} disabled={busy} onClick={sendProof}>
                 <FontAwesomeIcon icon={faPaperPlane} /> Send proof
               </button>
             </div>
@@ -607,11 +607,11 @@ export const OfferProofs: React.FC = () => {
             {/* approval panel */}
             <div style={card}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
-                <FontAwesomeIcon icon={faCircleCheck} style={{ color: '#22c55e' }} /> Approve — where this proof may mail
+                <FontAwesomeIcon icon={faCircleCheck} style={{ color: 'var(--j-success)' }} /> Approve — where this proof may mail
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
                 <label style={{ ...label, marginBottom: 0 }}>Approved sending domains</label>
-                <span style={{ fontSize: 11, color: '#64748b' }}>{selected.approved_domains.length}/{domains.length}</span>
+                <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>{selected.approved_domains.length}/{domains.length}</span>
                 <button style={bulkLink} disabled={domains.length === 0 || selected.approved_domains.length === domains.length}
                   onClick={() => setAllDomains(true)}>Select all</button>
                 <button style={bulkLink} disabled={selected.approved_domains.length === 0}
@@ -625,7 +625,7 @@ export const OfferProofs: React.FC = () => {
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
                 <label style={{ ...label, marginBottom: 0 }}>Approved ISPs</label>
-                <span style={{ fontSize: 11, color: '#64748b' }}>{selected.approved_isps.length}/{isps.length}</span>
+                <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>{selected.approved_isps.length}/{isps.length}</span>
                 <button style={bulkLink} disabled={isps.length === 0 || selected.approved_isps.length === isps.length}
                   onClick={() => setAllISPs(true)}>Select all</button>
                 <button style={bulkLink} disabled={selected.approved_isps.length === 0}
@@ -638,7 +638,7 @@ export const OfferProofs: React.FC = () => {
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button style={btn('#14532d', '#16a34a')} disabled={busy} onClick={approveProof}>
+                <button style={btn('#14532d', 'var(--j-success)')} disabled={busy} onClick={approveProof}>
                   <FontAwesomeIcon icon={faCircleCheck} /> Approve
                 </button>
                 <button style={btn('#3f1d1d', '#7f1d1d')} disabled={busy} onClick={rejectProof}>

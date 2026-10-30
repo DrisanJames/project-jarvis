@@ -51,14 +51,14 @@ type PayoutType = 'CPM' | 'eCPM' | 'CPA' | 'CPL' | 'CPC' | 'IO' | 'PRV' | 'UNKNO
 const PAYOUT_TYPES: PayoutType[] = ['CPM', 'eCPM', 'CPA', 'CPL', 'CPC', 'IO', 'PRV', 'UNKNOWN'];
 
 const PAYOUT_COLORS: Record<PayoutType, { bg: string; border: string; text: string }> = {
-  CPM:     { bg: 'rgba(99, 102, 241, 0.15)',  border: 'rgba(99, 102, 241, 0.5)',  text: '#a5b4fc' },
-  eCPM:    { bg: 'rgba(168, 85, 247, 0.15)',  border: 'rgba(168, 85, 247, 0.5)',  text: '#d8b4fe' },
-  CPA:     { bg: 'rgba(34, 197, 94, 0.15)',   border: 'rgba(34, 197, 94, 0.5)',   text: '#86efac' },
-  CPL:     { bg: 'rgba(6, 182, 212, 0.15)',   border: 'rgba(6, 182, 212, 0.5)',   text: '#67e8f9' },
-  CPC:     { bg: 'rgba(239, 68, 68, 0.15)',   border: 'rgba(239, 68, 68, 0.5)',   text: '#fca5a5' },
-  IO:      { bg: 'rgba(245, 158, 11, 0.15)',  border: 'rgba(245, 158, 11, 0.5)',  text: '#fcd34d' },
-  PRV:     { bg: 'rgba(100, 116, 139, 0.15)', border: 'rgba(100, 116, 139, 0.5)', text: '#cbd5e1' },
-  UNKNOWN: { bg: 'rgba(75, 85, 99, 0.15)',    border: 'rgba(75, 85, 99, 0.5)',    text: '#9ca3af' },
+  CPM:     { bg: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',  border: 'color-mix(in srgb, var(--j-violet-strong) 50%, transparent)',  text: 'var(--j-violet)' },
+  eCPM:    { bg: 'color-mix(in srgb, var(--j-violet) 15%, transparent)',  border: 'color-mix(in srgb, var(--j-violet) 50%, transparent)',  text: 'var(--j-violet-soft)' },
+  CPA:     { bg: 'color-mix(in srgb, var(--j-success) 15%, transparent)',   border: 'color-mix(in srgb, var(--j-success) 50%, transparent)',   text: 'var(--j-success-soft)' },
+  CPL:     { bg: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)',   border: 'color-mix(in srgb, var(--j-cyan) 50%, transparent)',   text: 'var(--j-cyan)' },
+  CPC:     { bg: 'rgba(239, 68, 68, 0.15)',   border: 'rgba(239, 68, 68, 0.5)',   text: 'var(--j-danger-soft)' },
+  IO:      { bg: 'rgba(245, 158, 11, 0.15)',  border: 'rgba(245, 158, 11, 0.5)',  text: 'var(--j-warn)' },
+  PRV:     { bg: 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)', border: 'color-mix(in srgb, var(--j-text-muted) 50%, transparent)', text: 'var(--j-text-2)' },
+  UNKNOWN: { bg: 'rgba(75, 85, 99, 0.15)',    border: 'rgba(75, 85, 99, 0.5)',    text: 'var(--j-text-muted)' },
 };
 
 // ============================================================================
@@ -206,7 +206,7 @@ const ToggleSwitch: React.FC<{
       border: 'none',
       cursor: pending || disabled ? 'not-allowed' : 'pointer',
       padding: 0,
-      color: value ? '#00b894' : 'rgba(180,210,240,0.4)',
+      color: value ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 40%, transparent)',
       fontSize: 22,
       lineHeight: 1,
       opacity: pending ? 0.6 : 1,
@@ -301,10 +301,10 @@ const BlurInput: React.FC<{
         style={{
           width: '100%',
           padding: '6px 28px 6px 10px',
-          background: 'rgba(15,15,30,0.5)',
-          border: `1px solid ${error ? 'rgba(239,68,68,0.6)' : 'rgba(99,102,241,0.25)'}`,
+          background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
+          border: `1px solid ${error ? 'rgba(239,68,68,0.6)' : 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)'}`,
           borderRadius: 6,
-          color: '#e0e6f0',
+          color: 'var(--j-text)',
           fontSize: 13,
           outline: 'none',
         }}
@@ -318,7 +318,7 @@ const BlurInput: React.FC<{
             right: 10,
             top: '50%',
             transform: 'translateY(-50%)',
-            color: 'rgba(180,210,240,0.5)',
+            color: 'color-mix(in srgb, var(--j-text) 50%, transparent)',
             fontSize: 11,
           }}
         />
@@ -331,7 +331,7 @@ const BlurInput: React.FC<{
             left: 0,
             marginTop: 2,
             fontSize: 11,
-            color: '#fca5a5',
+            color: 'var(--j-danger-soft)',
             display: 'flex',
             alignItems: 'center',
             gap: 4,
@@ -353,7 +353,7 @@ const SkeletonRow: React.FC<{ cols: number }> = ({ cols }) => (
         <div
           style={{
             height: 14,
-            background: 'linear-gradient(90deg, rgba(99,102,241,0.06), rgba(99,102,241,0.18), rgba(99,102,241,0.06))',
+            background: 'linear-gradient(90deg, color-mix(in srgb, var(--j-violet-strong) 6%, transparent), color-mix(in srgb, var(--j-violet-strong) 18%, transparent), color-mix(in srgb, var(--j-violet-strong) 6%, transparent))',
             backgroundSize: '200% 100%',
             borderRadius: 4,
             animation: 'cd-skeleton 1.4s ease-in-out infinite',
@@ -406,15 +406,15 @@ const OfferJourneyEditModal: React.FC<{
     <div
       onClick={onClose}
       style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 9999,
+        position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 9999,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: 'linear-gradient(180deg, rgba(20,20,40,0.98), rgba(15,15,30,0.98))',
-          border: '1px solid rgba(99,102,241,0.4)',
+          background: 'linear-gradient(180deg, color-mix(in srgb, var(--j-shade) 98%, transparent), color-mix(in srgb, var(--j-shade) 98%, transparent))',
+          border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
           borderRadius: 12,
           padding: 24,
           width: 520,
@@ -423,12 +423,12 @@ const OfferJourneyEditModal: React.FC<{
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h3 style={{ margin: 0, color: '#e0e6f0', fontSize: 16, fontWeight: 600 }}>
+          <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16, fontWeight: 600 }}>
             Edit offer follow-up mapping
           </h3>
           <button
             onClick={onClose}
-            style={{ background: 'none', border: 'none', color: 'rgba(180,210,240,0.6)', cursor: 'pointer', fontSize: 14 }}
+            style={{ background: 'none', border: 'none', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', cursor: 'pointer', fontSize: 14 }}
           >
             <FontAwesomeIcon icon={faTimes} />
           </button>
@@ -436,16 +436,16 @@ const OfferJourneyEditModal: React.FC<{
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Offer ID
             </label>
-            <div style={{ marginTop: 4, padding: '8px 12px', background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 6, color: 'rgba(180,210,240,0.6)', fontSize: 13, fontFamily: 'monospace' }}>
+            <div style={{ marginTop: 4, padding: '8px 12px', background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', borderRadius: 6, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13, fontFamily: 'monospace' }}>
               {initial.everflow_offer_id}
             </div>
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Follow-Up Sequence ID *
             </label>
             <input
@@ -455,14 +455,14 @@ const OfferJourneyEditModal: React.FC<{
               placeholder="sequence-xxx"
               style={{
                 marginTop: 4, width: '100%', padding: '8px 12px',
-                background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.25)',
-                borderRadius: 6, color: '#e0e6f0', fontSize: 13, outline: 'none',
+                background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
+                borderRadius: 6, color: 'var(--j-text)', fontSize: 13, outline: 'none',
               }}
             />
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Payout Type
             </label>
             <select
@@ -470,8 +470,8 @@ const OfferJourneyEditModal: React.FC<{
               onChange={(e) => setPayoutType(e.target.value as PayoutType)}
               style={{
                 marginTop: 4, width: '100%', padding: '8px 12px',
-                background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.25)',
-                borderRadius: 6, color: '#e0e6f0', fontSize: 13, outline: 'none',
+                background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
+                borderRadius: 6, color: 'var(--j-text)', fontSize: 13, outline: 'none',
               }}
             >
               {PAYOUT_TYPES.map((p) => (
@@ -481,7 +481,7 @@ const OfferJourneyEditModal: React.FC<{
           </div>
 
           <div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: '#e0e6f0', fontSize: 13 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', color: 'var(--j-text)', fontSize: 13 }}>
               <input
                 type="checkbox"
                 checked={enabled}
@@ -493,7 +493,7 @@ const OfferJourneyEditModal: React.FC<{
           </div>
 
           <div>
-            <label style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <label style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Notes
             </label>
             <textarea
@@ -503,15 +503,15 @@ const OfferJourneyEditModal: React.FC<{
               placeholder="Optional internal notes"
               style={{
                 marginTop: 4, width: '100%', padding: '8px 12px',
-                background: 'rgba(15,15,30,0.5)', border: '1px solid rgba(99,102,241,0.25)',
-                borderRadius: 6, color: '#e0e6f0', fontSize: 13, outline: 'none',
+                background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
+                borderRadius: 6, color: 'var(--j-text)', fontSize: 13, outline: 'none',
                 resize: 'vertical', fontFamily: 'inherit',
               }}
             />
           </div>
 
           {error && (
-            <div style={{ color: '#fca5a5', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ color: 'var(--j-danger-soft)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
               <FontAwesomeIcon icon={faExclamationTriangle} />
               {error}
             </div>
@@ -524,8 +524,8 @@ const OfferJourneyEditModal: React.FC<{
             disabled={saving}
             style={{
               padding: '8px 16px', background: 'transparent',
-              border: '1px solid rgba(180,210,240,0.2)', borderRadius: 6,
-              color: 'rgba(180,210,240,0.8)', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
+              border: '1px solid color-mix(in srgb, var(--j-text) 20%, transparent)', borderRadius: 6,
+              color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer',
             }}
           >
             Cancel
@@ -535,8 +535,8 @@ const OfferJourneyEditModal: React.FC<{
             disabled={saving}
             style={{
               padding: '8px 16px',
-              background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-              border: 'none', borderRadius: 6, color: '#fff',
+              background: 'linear-gradient(135deg, var(--j-violet-strong), var(--j-violet))',
+              border: 'none', borderRadius: 6, color: 'var(--j-text)',
               fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', gap: 6,
             }}
@@ -856,7 +856,7 @@ export const ClickDripAdmin: React.FC = () => {
 
   // ────────────────────────────────────────────────────────────────────────────
   return (
-    <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto', color: '#e0e6f0' }}>
+    <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto', color: 'var(--j-text)' }}>
       <style>{`
         @keyframes cd-skeleton {
           0% { background-position: 200% 0; }
@@ -868,36 +868,36 @@ export const ClickDripAdmin: React.FC = () => {
         <h2 style={{
           margin: 0, fontSize: 20, fontWeight: 700,
           display: 'flex', alignItems: 'center', gap: 10,
-          background: 'linear-gradient(135deg, #a5b4fc, #d8b4fe, #f9a8d4)',
+          background: 'linear-gradient(135deg, var(--j-violet), var(--j-violet-soft), #f9a8d4)',
           WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
         }}>
-          <FontAwesomeIcon icon={faHandPointer} style={{ color: '#a5b4fc' }} />
+          <FontAwesomeIcon icon={faHandPointer} style={{ color: 'var(--j-violet)' }} />
           Automated Follow-Ups Admin
         </h2>
-        <p style={{ margin: '6px 0 0', color: 'rgba(180,210,240,0.6)', fontSize: 13 }}>
+        <p style={{ margin: '6px 0 0', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13 }}>
           Wire offers to click-triggered follow-up sequences. Toggling{' '}
-          <strong style={{ color: '#86efac' }}>Enabled</strong> stops new enrollments immediately.{' '}
-          <span style={{ color: 'rgba(180,210,240,0.45)' }}>v{CLICK_DRIP_ADMIN_VERSION}</span>
+          <strong style={{ color: 'var(--j-success-soft)' }}>Enabled</strong> stops new enrollments immediately.{' '}
+          <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>v{CLICK_DRIP_ADMIN_VERSION}</span>
         </p>
       </div>
 
       {/* ── TOP: OFFER-JOURNEY MAP ─────────────────────────────────────────── */}
       <section
         style={{
-          background: 'rgba(15,15,30,0.4)',
-          border: '1px solid rgba(99,102,241,0.2)',
+          background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)',
           borderRadius: 12, padding: 18, marginBottom: 24,
         }}
       >
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#e0e6f0', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--j-text)', display: 'flex', alignItems: 'center', gap: 8 }}>
               Offer Follow-Up Map
-              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', fontWeight: 400 }}>
+              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 400 }}>
                 {journeyMap.length} {journeyMap.length === 1 ? 'mapping' : 'mappings'}
               </span>
             </h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
               Click an offer row to load its reminder subjects below.
             </p>
           </div>
@@ -905,9 +905,9 @@ export const ClickDripAdmin: React.FC = () => {
             onClick={() => fetchJourneyMap()}
             disabled={journeyMapLoading}
             style={{
-              padding: '6px 12px', background: 'rgba(99,102,241,0.15)',
-              border: '1px solid rgba(99,102,241,0.35)', borderRadius: 6,
-              color: '#a5b4fc', fontSize: 12, cursor: journeyMapLoading ? 'not-allowed' : 'pointer',
+              padding: '6px 12px', background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--j-violet-strong) 35%, transparent)', borderRadius: 6,
+              color: 'var(--j-violet)', fontSize: 12, cursor: journeyMapLoading ? 'not-allowed' : 'pointer',
               display: 'flex', alignItems: 'center', gap: 6,
             }}
           >
@@ -919,7 +919,7 @@ export const ClickDripAdmin: React.FC = () => {
           <div style={{
             padding: 10, marginBottom: 12, background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.4)', borderRadius: 6,
-            color: '#fca5a5', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
+            color: 'var(--j-danger-soft)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
           }}>
             <FontAwesomeIcon icon={faExclamationTriangle} />
             {journeyMapError}
@@ -929,7 +929,7 @@ export const ClickDripAdmin: React.FC = () => {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(99,102,241,0.2)' }}>
+              <tr style={{ borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)' }}>
                 <th style={thStyle}>Offer ID</th>
                 <th style={thStyle}>Follow-Up Sequence ID</th>
                 <th style={thStyle}>Payout</th>
@@ -948,7 +948,7 @@ export const ClickDripAdmin: React.FC = () => {
                 </>
               ) : journeyMap.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'rgba(180,210,240,0.45)' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 30, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
                     No offer follow-up mappings yet.
                   </td>
                 </tr>
@@ -960,23 +960,23 @@ export const ClickDripAdmin: React.FC = () => {
                       key={row.everflow_offer_id}
                       onClick={() => setSelectedOfferId(row.everflow_offer_id)}
                       style={{
-                        borderBottom: '1px solid rgba(99,102,241,0.08)',
-                        background: isSelected ? 'rgba(99,102,241,0.10)' : 'transparent',
+                        borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
+                        background: isSelected ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)' : 'transparent',
                         cursor: 'pointer',
                         transition: 'background 0.15s',
                       }}
                     >
                       <td style={tdStyle}>
-                        <code style={{ color: isSelected ? '#a5b4fc' : '#e0e6f0', fontSize: 12 }}>
+                        <code style={{ color: isSelected ? 'var(--j-violet)' : 'var(--j-text)', fontSize: 12 }}>
                           {row.everflow_offer_id}
                         </code>
                       </td>
                       <td style={tdStyle}>
                         <code style={{
                           padding: '2px 8px',
-                          background: 'rgba(99,102,241,0.1)',
-                          border: '1px solid rgba(99,102,241,0.3)',
-                          borderRadius: 4, fontSize: 11, color: '#c7d2fe',
+                          background: 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)',
+                          border: '1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent)',
+                          borderRadius: 4, fontSize: 11, color: 'var(--j-violet-soft)',
                         }}>
                           {row.click_journey_id || '—'}
                         </code>
@@ -997,13 +997,13 @@ export const ClickDripAdmin: React.FC = () => {
                           title={row.notes || ''}
                           style={{
                             display: 'block', whiteSpace: 'nowrap', overflow: 'hidden',
-                            textOverflow: 'ellipsis', color: 'rgba(180,210,240,0.7)', fontSize: 12,
+                            textOverflow: 'ellipsis', color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 12,
                           }}
                         >
                           {row.notes || '—'}
                         </span>
                       </td>
-                      <td style={{ ...tdStyle, color: 'rgba(180,210,240,0.6)', fontSize: 11 }}>
+                      <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }}>
                         <FontAwesomeIcon icon={faClock} style={{ marginRight: 4, fontSize: 9 }} />
                         {relativeTime(row.updated_at)}
                       </td>
@@ -1012,9 +1012,9 @@ export const ClickDripAdmin: React.FC = () => {
                           onClick={() => setEditingRow(row)}
                           style={{
                             padding: '4px 10px',
-                            background: 'rgba(99,102,241,0.15)',
-                            border: '1px solid rgba(99,102,241,0.3)',
-                            borderRadius: 4, color: '#a5b4fc', fontSize: 11,
+                            background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+                            border: '1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent)',
+                            borderRadius: 4, color: 'var(--j-violet)', fontSize: 11,
                             cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
                           }}
                         >
@@ -1033,8 +1033,8 @@ export const ClickDripAdmin: React.FC = () => {
       {/* ── BOTTOM: REMINDER SUBJECTS ───────────────────────────────────────── */}
       <section
         style={{
-          background: 'rgba(15,15,30,0.4)',
-          border: '1px solid rgba(168,85,247,0.2)',
+          background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--j-violet) 20%, transparent)',
           borderRadius: 12, padding: 18,
           opacity: selectedOfferId ? 1 : 0.45,
           pointerEvents: selectedOfferId ? 'auto' : 'none',
@@ -1043,15 +1043,15 @@ export const ClickDripAdmin: React.FC = () => {
       >
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#e0e6f0' }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--j-text)' }}>
               Reminder Subjects
               {selectedOfferId && (
-                <span style={{ marginLeft: 8, fontSize: 11, color: 'rgba(180,210,240,0.5)', fontWeight: 400 }}>
-                  for offer <code style={{ color: '#a5b4fc' }}>{selectedOfferId}</code>
+                <span style={{ marginLeft: 8, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 400 }}>
+                  for offer <code style={{ color: 'var(--j-violet)' }}>{selectedOfferId}</code>
                 </span>
               )}
             </h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
               {selectedOfferId
                 ? 'Edits persist on blur. Subject is required. Reset deletes the row so the system default takes over.'
                 : 'Select an offer above to manage its reminder subjects.'}
@@ -1062,9 +1062,9 @@ export const ClickDripAdmin: React.FC = () => {
               onClick={() => fetchSubjects(selectedOfferId)}
               disabled={subjectsLoading}
               style={{
-                padding: '6px 12px', background: 'rgba(168,85,247,0.15)',
-                border: '1px solid rgba(168,85,247,0.35)', borderRadius: 6,
-                color: '#d8b4fe', fontSize: 12, cursor: subjectsLoading ? 'not-allowed' : 'pointer',
+                padding: '6px 12px', background: 'color-mix(in srgb, var(--j-violet) 15%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--j-violet) 35%, transparent)', borderRadius: 6,
+                color: 'var(--j-violet-soft)', fontSize: 12, cursor: subjectsLoading ? 'not-allowed' : 'pointer',
                 display: 'flex', alignItems: 'center', gap: 6,
               }}
             >
@@ -1077,7 +1077,7 @@ export const ClickDripAdmin: React.FC = () => {
           <div style={{
             padding: 10, marginBottom: 12, background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.4)', borderRadius: 6,
-            color: '#fca5a5', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
+            color: 'var(--j-danger-soft)', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
           }}>
             <FontAwesomeIcon icon={faExclamationTriangle} />
             {subjectsError}
@@ -1087,7 +1087,7 @@ export const ClickDripAdmin: React.FC = () => {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(168,85,247,0.2)' }}>
+              <tr style={{ borderBottom: '1px solid color-mix(in srgb, var(--j-violet) 20%, transparent)' }}>
                 <th style={{ ...thStyle, width: 70 }}>Step</th>
                 <th style={thStyle}>Subject *</th>
                 <th style={thStyle}>Preheader</th>
@@ -1112,15 +1112,15 @@ export const ClickDripAdmin: React.FC = () => {
                   return (
                     <tr
                       key={seq}
-                      style={{ borderBottom: '1px solid rgba(168,85,247,0.08)' }}
+                      style={{ borderBottom: '1px solid color-mix(in srgb, var(--j-violet) 8%, transparent)' }}
                     >
                       <td style={tdStyle}>
                         <span
                           style={{
                             display: 'inline-block', padding: '3px 10px',
-                            background: 'rgba(168,85,247,0.15)',
-                            border: '1px solid rgba(168,85,247,0.4)',
-                            borderRadius: 4, fontSize: 11, color: '#d8b4fe', fontWeight: 600,
+                            background: 'color-mix(in srgb, var(--j-violet) 15%, transparent)',
+                            border: '1px solid color-mix(in srgb, var(--j-violet) 40%, transparent)',
+                            borderRadius: 4, fontSize: 11, color: 'var(--j-violet-soft)', fontWeight: 600,
                           }}
                         >
                           {sequenceLabel(seq)}
@@ -1165,7 +1165,7 @@ export const ClickDripAdmin: React.FC = () => {
                               title={row.enabled ? 'Disable this reminder' : 'Enable this reminder'}
                             />
                           </td>
-                          <td style={{ ...tdStyle, color: 'rgba(180,210,240,0.6)', fontSize: 11 }}>
+                          <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 11 }}>
                             <FontAwesomeIcon icon={faClock} style={{ marginRight: 4, fontSize: 9 }} />
                             {relativeTime(row.updated_at)}
                           </td>
@@ -1176,7 +1176,7 @@ export const ClickDripAdmin: React.FC = () => {
                                 padding: '4px 10px',
                                 background: 'rgba(239,68,68,0.1)',
                                 border: '1px solid rgba(239,68,68,0.3)',
-                                borderRadius: 4, color: '#fca5a5', fontSize: 11,
+                                borderRadius: 4, color: 'var(--j-danger-soft)', fontSize: 11,
                                 cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
                               }}
                             >
@@ -1185,16 +1185,16 @@ export const ClickDripAdmin: React.FC = () => {
                           </td>
                         </>
                       ) : (
-                        <td colSpan={6} style={{ ...tdStyle, color: 'rgba(180,210,240,0.5)' }}>
+                        <td colSpan={6} style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                           <span style={{ marginRight: 12 }}>No custom subject — system default in use.</span>
                           <button
                             onClick={() => handleAddReminder(seq)}
                             disabled={!selectedOfferId}
                             style={{
                               padding: '4px 10px',
-                              background: 'rgba(34,197,94,0.1)',
-                              border: '1px solid rgba(34,197,94,0.35)',
-                              borderRadius: 4, color: '#86efac', fontSize: 11,
+                              background: 'color-mix(in srgb, var(--j-success) 10%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--j-success) 35%, transparent)',
+                              borderRadius: 4, color: 'var(--j-success-soft)', fontSize: 11,
                               cursor: selectedOfferId ? 'pointer' : 'not-allowed',
                               display: 'inline-flex', alignItems: 'center', gap: 4,
                             }}
@@ -1215,13 +1215,13 @@ export const ClickDripAdmin: React.FC = () => {
           <div
             style={{
               marginTop: 14, padding: '8px 12px',
-              background: 'rgba(34,197,94,0.08)',
-              border: '1px solid rgba(34,197,94,0.2)',
-              borderRadius: 6, fontSize: 11, color: 'rgba(180,210,240,0.7)',
+              background: 'color-mix(in srgb, var(--j-success) 8%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--j-success) 20%, transparent)',
+              borderRadius: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)',
               display: 'flex', alignItems: 'center', gap: 8,
             }}
           >
-            <FontAwesomeIcon icon={faCheck} style={{ color: '#86efac' }} />
+            <FontAwesomeIcon icon={faCheck} style={{ color: 'var(--j-success-soft)' }} />
             {subjects.filter((s) => s.enabled).length} of {subjects.length}{' '}
             reminder{subjects.length === 1 ? '' : 's'} enabled.
           </div>
@@ -1246,7 +1246,7 @@ const thStyle: React.CSSProperties = {
   fontWeight: 600,
   textTransform: 'uppercase',
   letterSpacing: 0.5,
-  color: 'rgba(180,210,240,0.6)',
+  color: 'color-mix(in srgb, var(--j-text) 60%, transparent)',
 };
 
 const tdStyle: React.CSSProperties = {

@@ -5,30 +5,30 @@
 
 :root {
   /* Background Colors - Dark Theme */
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --bg-tertiary: #334155;
-  --bg-elevated: #3d4f66;
+  --bg-primary: var(--j-bg);
+  --bg-secondary: var(--j-surface);
+  --bg-tertiary: var(--j-surface-2);
+  --bg-elevated: var(--j-surface-3);
   
   /* Text Colors - IMPROVED CONTRAST */
-  --text-primary: #f8fafc;      /* Brighter white for headings */
-  --text-secondary: #cbd5e1;    /* Improved from #94a3b8 - better readability */
-  --text-muted: #94a3b8;        /* Improved from #64748b */
-  --text-placeholder: #64748b;
+  --text-primary: var(--j-text);      /* Brighter white for headings */
+  --text-secondary: var(--j-text-2);    /* Improved from var(--j-text-muted) - better readability */
+  --text-muted: var(--j-text-muted);        /* Improved from var(--j-text-faint) */
+  --text-placeholder: var(--j-text-faint);
   
   /* Border Colors */
-  --border-color: #3d4f66;      /* Slightly lighter for better visibility */
-  --border-subtle: #2d3e50;
+  --border-color: var(--j-border);      /* Slightly lighter for better visibility */
+  --border-subtle: var(--j-border-subtle);
   
   /* Accent Colors - Slightly adjusted for dark theme contrast */
-  --accent-blue: #60a5fa;       /* Brighter blue for dark bg */
-  --accent-blue-hover: #3b82f6;
-  --accent-green: #4ade80;      /* Brighter green */
-  --accent-green-dim: #22c55e;
-  --accent-yellow: #fbbf24;     /* Brighter yellow */
-  --accent-red: #f87171;        /* Brighter red */
-  --accent-purple: #c084fc;     /* Brighter purple */
-  --accent-orange: #fb923c;
+  --accent-blue: var(--j-blue);       /* Brighter blue for dark bg */
+  --accent-blue-hover: var(--j-blue);
+  --accent-green: var(--j-success);      /* Brighter green */
+  --accent-green-dim: var(--j-success);
+  --accent-yellow: var(--j-warn);     /* Brighter yellow */
+  --accent-red: var(--j-danger);        /* Brighter red */
+  --accent-purple: var(--j-violet);     /* Brighter purple */
+  --accent-orange: var(--j-warn);
   
   /* Spacing Scale - 4px base */
   --space-1: 4px;
@@ -64,7 +64,7 @@
   --radius-2xl: 16px;
   
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-sm: var(--j-shadow);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
   
@@ -81,7 +81,8 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--j-font-body);
+  background: var(--j-bg-grad) fixed;
   background-color: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.5;
@@ -98,7 +99,7 @@ body {
 
 /* Improved selection */
 ::selection {
-  background: rgba(96, 165, 250, 0.3);
+  background: color-mix(in srgb, var(--j-blue) 30%, transparent);
   color: var(--text-primary);
 }
 
@@ -189,7 +190,7 @@ body {
    ================================================================ */
 .sidebar {
   width: 220px;
-  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+  background: linear-gradient(180deg, var(--j-surface-2) 0%, var(--j-bg) 100%);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -200,7 +201,7 @@ body {
   flex-shrink: 0;
   border-right: 1px solid var(--border-color);
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,0.1) transparent;
+  scrollbar-color: color-mix(in srgb, var(--j-text) 10%, transparent) transparent;
 }
 
 .sidebar::-webkit-scrollbar {
@@ -212,7 +213,7 @@ body {
 }
 
 .sidebar::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
+  background: color-mix(in srgb, var(--j-text) 10%, transparent);
   border-radius: 4px;
 }
 
@@ -230,7 +231,7 @@ body {
   padding: 9px 14px;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.7);
+  color: color-mix(in srgb, var(--j-text) 70%, transparent);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -244,13 +245,13 @@ body {
 }
 
 .sidebar-nav-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.95);
+  background: color-mix(in srgb, var(--j-text) 8%, transparent);
+  color: color-mix(in srgb, var(--j-text) 95%, transparent);
 }
 
 .sidebar-nav-item.active {
-  background: rgba(96, 165, 250, 0.2);
-  color: #ffffff;
+  background: color-mix(in srgb, var(--j-blue) 20%, transparent);
+  color: var(--j-on-accent);
   border-left: 3px solid var(--accent-blue);
   padding-left: 11px;
 }
@@ -445,25 +446,25 @@ body {
 .status-badge.healthy,
 .status-badge.active,
 .status-badge.success {
-  background-color: rgba(74, 222, 128, 0.15);
+  background-color: color-mix(in srgb, var(--j-success) 15%, transparent);
   color: var(--accent-green);
 }
 
 .status-badge.warning,
 .status-badge.pending {
-  background-color: rgba(251, 191, 36, 0.15);
+  background-color: color-mix(in srgb, var(--j-warn) 15%, transparent);
   color: var(--accent-yellow);
 }
 
 .status-badge.critical,
 .status-badge.error,
 .status-badge.failed {
-  background-color: rgba(248, 113, 113, 0.15);
+  background-color: color-mix(in srgb, var(--j-danger) 15%, transparent);
   color: var(--accent-red);
 }
 
 .status-badge.info {
-  background-color: rgba(96, 165, 250, 0.15);
+  background-color: color-mix(in srgb, var(--j-blue) 15%, transparent);
   color: var(--accent-blue);
 }
 
@@ -508,7 +509,7 @@ body {
 }
 
 .table tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: color-mix(in srgb, var(--j-text) 3%, transparent);
 }
 
 .table tbody tr:hover td {
@@ -543,7 +544,7 @@ body {
 .chat-message.user {
   align-self: flex-end;
   background-color: var(--accent-blue);
-  color: white;
+  color: var(--j-on-accent);
 }
 
 .chat-message.agent {
@@ -552,7 +553,7 @@ body {
 }
 
 .chat-message pre {
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: color-mix(in srgb, var(--j-shade) 50%, transparent);
   padding: 0.5rem;
   border-radius: 0.25rem;
   overflow-x: auto;
@@ -586,14 +587,14 @@ body {
   border-radius: 0.5rem;
   border: none;
   background-color: var(--accent-blue);
-  color: white;
+  color: var(--j-on-accent);
   font-weight: 500;
   cursor: pointer;
   transition: background-color 0.2s;
 }
 
 .chat-submit:hover {
-  background-color: #2563eb;
+  background-color: var(--j-blue);
 }
 
 .chat-submit:disabled {
@@ -786,12 +787,12 @@ body {
 }
 
 .breakdown-bar-cpm {
-  background: linear-gradient(90deg, var(--accent-blue), #60a5fa);
+  background: linear-gradient(90deg, var(--accent-blue), var(--j-blue));
   transition: width 0.3s ease;
 }
 
 .breakdown-bar-non-cpm {
-  background: linear-gradient(90deg, var(--accent-purple), #c084fc);
+  background: linear-gradient(90deg, var(--accent-purple), var(--j-violet));
   transition: width 0.3s ease;
 }
 
@@ -808,7 +809,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -934,7 +935,7 @@ body {
 }
 
 .status-linked {
-  background: rgba(34, 197, 94, 0.2);
+  background: color-mix(in srgb, var(--j-success) 20%, transparent);
   color: var(--accent-green);
 }
 
@@ -981,7 +982,7 @@ body {
 
 .metric-item.highlight {
   border: 1px solid var(--accent-blue);
-  background: rgba(59, 130, 246, 0.1);
+  background: color-mix(in srgb, var(--j-blue) 10%, transparent);
 }
 
 .metric-label {
@@ -1060,7 +1061,7 @@ body {
 }
 
 .segment-item.sending {
-  background: rgba(34, 197, 94, 0.15);
+  background: color-mix(in srgb, var(--j-success) 15%, transparent);
   color: var(--accent-green);
 }
 
@@ -1156,7 +1157,7 @@ body {
   margin-left: 0.75rem;
   padding: 0.25rem 0.5rem;
   background: var(--accent-blue);
-  color: white;
+  color: var(--j-on-accent);
   font-size: 0.65rem;
   font-weight: 500;
   border-radius: 0.25rem;
@@ -1343,7 +1344,7 @@ body {
 }
 
 .kanban-badge.ai {
-  background: rgba(59, 130, 246, 0.2);
+  background: color-mix(in srgb, var(--j-blue) 20%, transparent);
   color: var(--accent-blue);
 }
 
@@ -1435,7 +1436,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1589,12 +1590,12 @@ body {
 
 .btn-primary {
   background: var(--accent-blue);
-  color: white;
+  color: var(--j-on-accent);
 }
 
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-blue-hover);
-  box-shadow: 0 2px 8px rgba(96, 165, 250, 0.3);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--j-blue) 30%, transparent);
 }
 
 .btn-primary:disabled {
@@ -1615,21 +1616,21 @@ body {
 
 .btn-success {
   background: var(--accent-green-dim);
-  color: white;
+  color: var(--j-on-accent);
 }
 
 .btn-success:hover {
-  background: #16a34a;
-  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
+  background: var(--j-success);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--j-success) 30%, transparent);
 }
 
 .btn-danger {
   background: #ef4444;
-  color: white;
+  color: var(--j-on-accent);
 }
 
 .btn-danger:hover {
-  background: #dc2626;
+  background: var(--j-danger);
   box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
 }
 
@@ -1640,7 +1641,7 @@ body {
 }
 
 .btn-danger-outline:hover {
-  background: rgba(248, 113, 113, 0.1);
+  background: color-mix(in srgb, var(--j-danger) 10%, transparent);
 }
 
 .btn-ghost {
@@ -1649,7 +1650,7 @@ body {
 }
 
 .btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--j-text) 5%, transparent);
   color: var(--text-primary);
 }
 
@@ -2123,4 +2124,12 @@ body {
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   border: 0;
+}
+
+/* Brand type: headings in Bricolage Grotesque, like the marketing site. */
+h1, h2, h3,
+.content-header h2,
+.panel-title {
+  font-family: var(--j-font-display);
+  letter-spacing: -0.01em;
 }

@@ -81,12 +81,12 @@ interface JarvisCampaign {
 }
 
 const levelColors: Record<string, string> = {
-  milestone: '#fdcb6e',
-  action: '#00e5ff',
-  decision: '#00b0ff',
-  info: 'rgba(180,210,240,0.65)',
-  warning: '#f97316',
-  error: '#e94560',
+  milestone: 'var(--j-warn)',
+  action: 'var(--j-cyan)',
+  decision: 'var(--j-blue)',
+  info: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  warning: 'var(--j-warn)',
+  error: 'var(--j-danger)',
 };
 
 const levelIcons: Record<string, string> = {
@@ -99,15 +99,15 @@ const levelIcons: Record<string, string> = {
 };
 
 const statusColors: Record<string, string> = {
-  pending: 'rgba(180,210,240,0.65)',
-  sent: '#00e5ff',
-  delivered: '#00b894',
-  opened: '#fdcb6e',
-  clicked: '#00b0ff',
-  converted: '#00b894',
-  bounced: '#e94560',
-  failed: '#e94560',
-  suppressed: 'rgba(180,210,240,0.65)',
+  pending: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  sent: 'var(--j-cyan)',
+  delivered: 'var(--j-success)',
+  opened: 'var(--j-warn)',
+  clicked: 'var(--j-blue)',
+  converted: 'var(--j-success)',
+  bounced: 'var(--j-danger)',
+  failed: 'var(--j-danger)',
+  suppressed: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
 };
 
 export const JarvisDashboard: React.FC = () => {
@@ -160,8 +160,8 @@ export const JarvisDashboard: React.FC = () => {
         </div>
         <div style={styles.idleCard}>
           <p style={{ fontSize: 48, margin: 0 }}>🔋</p>
-          <h3 style={{ color: '#e0e6f0', margin: '10px 0' }}>Jarvis is Standing By</h3>
-          <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 14 }}>
+          <h3 style={{ color: 'var(--j-text)', margin: '10px 0' }}>Jarvis is Standing By</h3>
+          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 14 }}>
             Launch an autonomous campaign via the API to start AI-driven sending.
           </p>
           <code style={styles.codeBlock}>
@@ -202,11 +202,11 @@ export const JarvisDashboard: React.FC = () => {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{
             ...styles.statusBadge,
-            background: campaign.status === 'running' ? '#00b894' : campaign.status === 'completed' ? '#00e5ff' : '#fdcb6e',
+            background: campaign.status === 'running' ? 'var(--j-success)' : campaign.status === 'completed' ? 'var(--j-cyan)' : 'var(--j-warn)',
           }}>
             {campaign.status === 'running' ? '● LIVE' : campaign.status.toUpperCase()}
           </span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'rgba(180,210,240,0.65)', fontSize: 12, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)} />
             Auto-refresh
           </label>
@@ -215,36 +215,36 @@ export const JarvisDashboard: React.FC = () => {
 
       {/* Metrics Bar */}
       <div style={styles.metricsBar}>
-        <MetricCard label="Total Sent" value={campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0} color="#00e5ff" />
-        <MetricCard label="Delivered" value={campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0} sub={(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? `${(((campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1)}%` : '–'} color="#00e5ff" />
-        <MetricCard label="Opens" value={campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0} sub={`${(campaign.metrics.open_rate ?? 0).toFixed(1)}%`} color="#fdcb6e" />
-        <MetricCard label="Clicks" value={campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0} sub={`${(campaign.metrics.click_rate ?? 0).toFixed(1)}%`} color="#00b0ff" />
-        <MetricCard label="Conversions" value={campaign.metrics.total_conversions ?? 0} sub={`${(campaign.metrics.conversion_rate ?? 0).toFixed(1)}%`} color="#00b894" />
+        <MetricCard label="Total Sent" value={campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0} color="var(--j-cyan)" />
+        <MetricCard label="Delivered" value={campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0} sub={(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? `${(((campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1)}%` : '–'} color="var(--j-cyan)" />
+        <MetricCard label="Opens" value={campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0} sub={`${(campaign.metrics.open_rate ?? 0).toFixed(1)}%`} color="var(--j-warn)" />
+        <MetricCard label="Clicks" value={campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0} sub={`${(campaign.metrics.click_rate ?? 0).toFixed(1)}%`} color="var(--j-blue)" />
+        <MetricCard label="Conversions" value={campaign.metrics.total_conversions ?? 0} sub={`${(campaign.metrics.conversion_rate ?? 0).toFixed(1)}%`} color="var(--j-success)" />
         {(campaign.metrics.total_revenue ?? 0) > 0 && (
-          <MetricCard label="Revenue" value={`$${(campaign.metrics.total_revenue ?? 0).toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send ?? 0).toFixed(4)}/send`} color="#00b894" />
+          <MetricCard label="Revenue" value={`$${(campaign.metrics.total_revenue ?? 0).toFixed(2)}`} sub={`$${(campaign.metrics.revenue_per_send ?? 0).toFixed(4)}/send`} color="var(--j-success)" />
         )}
-        <MetricCard label="Elapsed" value={`${elapsed}m`} sub={`${remaining}m left`} color="rgba(180,210,240,0.65)" />
+        <MetricCard label="Elapsed" value={`${elapsed}m`} sub={`${remaining}m left`} color="color-mix(in srgb, var(--j-text) 65%, transparent)" />
       </div>
 
       {/* Funnel Visualization */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: '#0a0f1a', borderRadius: 10, overflow: 'hidden', border: '1px solid #0d1526' }}>
+      <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: 'var(--j-bg)', borderRadius: 10, overflow: 'hidden', border: '1px solid var(--j-surface)' }}>
         {[
-          { label: 'SENT', val: campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0, color: '#00e5ff' },
-          { label: 'DELIVERED', val: campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0, color: '#00e5ff' },
-          { label: 'OPENED', val: campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0, color: '#fdcb6e' },
-          { label: 'CLICKED', val: campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0, color: '#00b0ff' },
-          { label: 'CONVERTED', val: campaign.metrics.total_conversions ?? 0, color: '#00b894' },
+          { label: 'SENT', val: campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0, color: 'var(--j-cyan)' },
+          { label: 'DELIVERED', val: campaign.metrics.total_delivered ?? campaign.metrics.delivered ?? 0, color: 'var(--j-cyan)' },
+          { label: 'OPENED', val: campaign.metrics.total_opens ?? campaign.metrics.opens ?? 0, color: 'var(--j-warn)' },
+          { label: 'CLICKED', val: campaign.metrics.total_clicks ?? campaign.metrics.clicks ?? 0, color: 'var(--j-blue)' },
+          { label: 'CONVERTED', val: campaign.metrics.total_conversions ?? 0, color: 'var(--j-success)' },
         ].map((step, idx, arr) => {
           const prevVal = idx > 0 ? arr[idx - 1].val : step.val;
           const rate = prevVal > 0 ? (step.val / prevVal) * 100 : 0;
           const totalSent = campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0;
           const widthPct = totalSent > 0 ? Math.max(8, (step.val / totalSent) * 100) : 20;
           return (
-            <div key={step.label} style={{ flex: `0 0 ${widthPct}%`, minWidth: 60, padding: '8px 10px', borderRight: '1px solid #0d152622', transition: 'flex 0.5s ease' }}>
+            <div key={step.label} style={{ flex: `0 0 ${widthPct}%`, minWidth: 60, padding: '8px 10px', borderRight: '1px solid color-mix(in srgb, var(--j-surface) 13.3%, transparent)', transition: 'flex 0.5s ease' }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: step.color, opacity: 0.8 }}>{step.label}</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#e0e6f0', fontFamily: 'monospace' }}>{step.val}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--j-text)', fontFamily: 'monospace' }}>{step.val}</div>
               {idx > 0 && (
-                <div style={{ fontSize: 9, color: rate >= 50 ? '#00b894' : rate >= 20 ? '#fdcb6e' : '#e94560', fontFamily: 'monospace', fontWeight: 600 }}>
+                <div style={{ fontSize: 9, color: rate >= 50 ? 'var(--j-success)' : rate >= 20 ? 'var(--j-warn)' : 'var(--j-danger)', fontFamily: 'monospace', fontWeight: 600 }}>
                   {rate.toFixed(1)}% {rate >= 50 ? '▲' : rate >= 20 ? '●' : '▼'}
                 </div>
               )}
@@ -252,14 +252,14 @@ export const JarvisDashboard: React.FC = () => {
           );
         })}
         {((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) + (campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0)) > 0 && (
-          <div style={{ flex: '0 0 auto', minWidth: 80, padding: '8px 10px', borderLeft: '2px solid #e9456044' }}>
-            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: '#e94560', opacity: 0.8 }}>BOUNCED</div>
+          <div style={{ flex: '0 0 auto', minWidth: 80, padding: '8px 10px', borderLeft: '2px solid color-mix(in srgb, var(--j-danger) 26.7%, transparent)' }}>
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', color: 'var(--j-danger)', opacity: 0.8 }}>BOUNCED</div>
             <div style={{ fontSize: 18, fontWeight: 700, fontFamily: 'monospace' }}>
               <span style={{ color: '#ef4444' }}>{campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0}</span> hard / <span style={{ color: '#f59e0b' }}>{campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0}</span> soft
             </div>
             <div style={{ fontSize: 9, fontFamily: 'monospace', fontWeight: 600 }}>
               <span style={{ color: '#ef4444' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_hard_bounces ?? campaign.metrics.hard_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
-              <span style={{ color: 'rgba(180,210,240,0.65)', margin: '0 4px' }}>/</span>
+              <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', margin: '0 4px' }}>/</span>
               <span style={{ color: '#f59e0b' }}>{(campaign.metrics.total_sent ?? campaign.metrics.sent ?? 0) > 0 ? (((campaign.metrics.total_soft_bounces ?? campaign.metrics.soft_bounces ?? 0) / (campaign.metrics.total_sent ?? campaign.metrics.sent ?? 1)) * 100).toFixed(1) : 0}%</span>
             </div>
           </div>
@@ -275,13 +275,13 @@ export const JarvisDashboard: React.FC = () => {
       {/* Controls */}
       <div style={styles.controls}>
         {campaign.status === 'running' && (
-          <button style={{ ...styles.btn, background: '#fdcb6e' }} onClick={() => handleAction('pause')}>⏸ Pause</button>
+          <button style={{ ...styles.btn, background: 'var(--j-warn)' }} onClick={() => handleAction('pause')}>⏸ Pause</button>
         )}
         {campaign.status === 'paused' && (
-          <button style={{ ...styles.btn, background: '#00b894' }} onClick={() => handleAction('resume')}>▶ Resume</button>
+          <button style={{ ...styles.btn, background: 'var(--j-success)' }} onClick={() => handleAction('resume')}>▶ Resume</button>
         )}
-        <button style={{ ...styles.btn, background: '#e94560' }} onClick={() => handleAction('stop')}>⏹ Stop Campaign</button>
-        <button style={{ ...styles.btn, background: '#0d1526' }} onClick={fetchStatus}>🔄 Refresh</button>
+        <button style={{ ...styles.btn, background: 'var(--j-danger)' }} onClick={() => handleAction('stop')}>⏹ Stop Campaign</button>
+        <button style={{ ...styles.btn, background: 'var(--j-surface)' }} onClick={fetchStatus}>🔄 Refresh</button>
       </div>
 
       {/* Recipients Grid */}
@@ -291,20 +291,20 @@ export const JarvisDashboard: React.FC = () => {
           {(campaign.recipients || []).map(r => (
             <div key={r.email} style={styles.recipientCard}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 13 }}>{r.email}</span>
+                <span style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 13 }}>{r.email}</span>
                 <span style={{
                   ...styles.recipientStatus,
-                  background: (statusColors[r.status] || 'rgba(180,210,240,0.65)') + '22',
-                  color: statusColors[r.status] || 'rgba(180,210,240,0.65)',
+                  background: (statusColors[r.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)') + '22',
+                  color: statusColors[r.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                 }}>{r.status.toUpperCase()}</span>
               </div>
-              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: 'rgba(180,210,240,0.65)' }}>
+              <div style={{ display: 'flex', gap: 16, marginTop: 6, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                 <span>ISP: <strong>{r.isp}</strong></span>
                 <span>ESP: <strong>{r.esp || '—'}</strong></span>
                 <span>Sends: <strong>{r.send_count}</strong></span>
               </div>
               {r.subject && (
-                <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4, fontStyle: 'italic' }}>
+                <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4, fontStyle: 'italic' }}>
                   Subject: &quot;{r.subject}&quot;
                 </div>
               )}
@@ -319,8 +319,8 @@ export const JarvisDashboard: React.FC = () => {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {(campaign.creatives || []).map(c => (
             <div key={c.id} style={styles.creativeCard}>
-              <div style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
-              <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
+              <div style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12 }}>{c.name}</div>
+              <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>
                 ID: {c.id} | Sends: {c.sends} | Opens: {c.opens} | Clicks: {c.clicks}
               </div>
             </div>
@@ -338,8 +338,8 @@ export const JarvisDashboard: React.FC = () => {
                 key={f}
                 style={{
                   ...styles.filterBtn,
-                  background: logFilter === f ? 'rgba(0,200,255,0.08)' : 'transparent',
-                  color: logFilter === f ? '#e0e6f0' : 'rgba(180,210,240,0.65)',
+                  background: logFilter === f ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'transparent',
+                  color: logFilter === f ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                 }}
                 onClick={() => setLogFilter(f)}
               >
@@ -354,7 +354,7 @@ export const JarvisDashboard: React.FC = () => {
               <span style={styles.logTime}>
                 {new Date(entry.timestamp).toLocaleTimeString()}
               </span>
-              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || 'rgba(180,210,240,0.65)' }}>
+              <span style={{ ...styles.logLevel, color: levelColors[entry.level] || 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                 {levelIcons[entry.level] || '●'} {entry.level}
               </span>
               <span style={styles.logComponent}>[{entry.component}]</span>
@@ -376,8 +376,8 @@ const MetricCard: React.FC<{
 }> = ({ label, value, sub, color }) => (
   <div style={styles.metricCard}>
     <div style={{ color, fontSize: 28, fontWeight: 700, lineHeight: 1 }}>{value}</div>
-    <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{label}</div>
-    {sub && <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 10 }}>{sub}</div>}
+    <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{label}</div>
+    {sub && <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 10 }}>{sub}</div>}
   </div>
 );
 
@@ -396,13 +396,13 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 20,
   },
   title: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 20,
     fontWeight: 700,
     margin: 0,
   },
   subtitle: {
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 13,
     margin: '4px 0 0',
   },
@@ -411,7 +411,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 12,
     fontSize: 11,
     fontWeight: 700,
-    color: '#fff',
+    color: 'var(--j-text)',
   },
   metricsBar: {
     display: 'flex',
@@ -420,14 +420,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   metricCard: {
     flex: 1,
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 10,
     padding: '14px 16px',
     textAlign: 'center' as const,
   },
   progressContainer: {
     height: 24,
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 12,
     position: 'relative' as const,
     overflow: 'hidden',
@@ -435,7 +435,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   progressBar: {
     height: '100%',
-    background: 'linear-gradient(90deg, #00e5ff, #00b0ff)',
+    background: 'linear-gradient(90deg, var(--j-cyan), var(--j-blue))',
     borderRadius: 12,
     transition: 'width 0.5s ease',
   },
@@ -444,7 +444,7 @@ const styles: Record<string, React.CSSProperties> = {
     top: '50%',
     left: '50%',
     transform: 'translate(-50%, -50%)',
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 11,
     fontWeight: 600,
   },
@@ -457,7 +457,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     borderRadius: 8,
     border: 'none',
-    color: '#fff',
+    color: 'var(--j-text)',
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
@@ -466,7 +466,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 24,
   },
   sectionTitle: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 15,
     fontWeight: 600,
     margin: '0 0 12px',
@@ -477,10 +477,10 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
   },
   recipientCard: {
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 10,
     padding: '12px 16px',
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
   },
   recipientStatus: {
     padding: '2px 8px',
@@ -489,19 +489,19 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 700,
   },
   creativeCard: {
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 8,
     padding: '10px 14px',
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     minWidth: 200,
   },
   logContainer: {
-    background: '#0a0f1a',
+    background: 'var(--j-bg)',
     borderRadius: 10,
     padding: 12,
     maxHeight: 400,
     overflowY: 'auto' as const,
-    border: '1px solid #0d1526',
+    border: '1px solid var(--j-surface)',
     fontFamily: '"JetBrains Mono", "Fira Code", monospace',
   },
   logEntry: {
@@ -510,10 +510,10 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'baseline',
     padding: '3px 0',
     fontSize: 11,
-    borderBottom: '1px solid #0d152622',
+    borderBottom: '1px solid color-mix(in srgb, var(--j-surface) 13.3%, transparent)',
   },
   logTime: {
-    color: 'rgba(180,210,240,0.45)',
+    color: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
     minWidth: 70,
     flexShrink: 0,
   },
@@ -523,23 +523,23 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   logComponent: {
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     minWidth: 100,
     flexShrink: 0,
   },
   logMessage: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     wordBreak: 'break-word' as const,
   },
   filterBtn: {
     padding: '3px 10px',
     borderRadius: 6,
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     fontSize: 11,
     cursor: 'pointer',
   },
   idleCard: {
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 12,
     padding: 40,
     textAlign: 'center' as const,
@@ -547,10 +547,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   codeBlock: {
     display: 'inline-block',
-    background: '#0a0f1a',
+    background: 'var(--j-bg)',
     padding: '8px 16px',
     borderRadius: 8,
-    color: '#00b894',
+    color: 'var(--j-success)',
     fontSize: 13,
     marginTop: 12,
     fontFamily: '"JetBrains Mono", monospace',

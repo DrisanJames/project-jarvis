@@ -175,12 +175,12 @@ export const ProgressBar: React.FC<{ pct: number; height?: number }> = ({ pct, h
   const clamped = Math.max(0, Math.min(1, pct))
   const hot = clamped > 0.9
   return (
-    <div style={{ background: "rgba(99,102,241,0.12)", borderRadius: 999, height, overflow: "hidden" }}>
+    <div style={{ background: "color-mix(in srgb, var(--j-violet-strong) 12%, transparent)", borderRadius: 999, height, overflow: "hidden" }}>
       <div
         style={{
           width: `${clamped * 100}%`,
           height: "100%",
-          background: hot ? "linear-gradient(90deg,#f59e0b,#ef4444)" : "linear-gradient(90deg,#6366f1,#22c55e)",
+          background: hot ? "linear-gradient(90deg,#f59e0b,#ef4444)" : "linear-gradient(90deg,var(--j-violet-strong),var(--j-success))",
           transition: "width 600ms ease",
         }}
       />
@@ -190,5 +190,5 @@ export const ProgressBar: React.FC<{ pct: number; height?: number }> = ({ pct, h
 
 // One keyframe stylesheet, injected once per screen that uses LivePill.
 export const PortalKeyframes: React.FC = () => (
-  <style>{`@keyframes portalPulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,0.5)}70%{box-shadow:0 0 0 6px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}`}</style>
+  <style>{`@keyframes portalPulse{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--j-success) 50%, transparent)}70%{box-shadow:0 0 0 6px color-mix(in srgb, var(--j-success) 0%, transparent)}100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--j-success) 0%, transparent)}}`}</style>
 )

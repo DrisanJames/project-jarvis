@@ -1,0 +1,117 @@
+/* Jarvis portal tokens — the marketing brand, in light and dark.
+ *
+ * Every portal colour resolves through a --j-* variable. Mode is chosen by
+ * <html data-theme="light|dark">, set before first paint by the inline script
+ * in index.html from localStorage('jarvis_mode'), falling back to the OS
+ * preference. Spec: docs/PORTAL_DESIGN_SYSTEM.md §2.
+ *
+ * Accents have a separate value per mode so the same token is readable as
+ * text on both a cream page and an ink page.
+ */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --j-bg: #14112b;
+  --j-bg-grad: linear-gradient(180deg, #19153a 0%, #120f27 55%, #14112b 100%);
+  --j-surface: #1c1838;
+  --j-surface-2: #242046;
+  --j-surface-3: #302a5c;
+  --j-shade: #0d0b20;
+  --j-border: #3d3770;
+  --j-border-subtle: #2b2650;
+  --j-border-strong: #4f4888;
+
+  --j-text: #fff8ee;
+  --j-text-2: #ddd8f2;
+  --j-text-muted: #a9a4cb;
+  --j-text-faint: #7d77a3;
+  --j-on-accent: #ffffff;
+
+  --j-violet: #a48bff;
+  --j-violet-strong: #6d28ff;
+  --j-violet-soft: #cbbcff;
+  --j-pink: #ff5ca8;
+  --j-cyan: #19d3f0;
+  --j-blue: #5ab0ff;
+  --j-success: #c6f432;
+  --j-success-soft: #ddf98a;
+  --j-warn: #ffb547;
+  --j-danger: #ff5c7a;
+  --j-danger-soft: #ffa3b5;
+
+  --j-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+  --j-shadow-pop: 4px 4px 0 #0a0818;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --j-bg: #fff8ee;
+  --j-bg-grad: linear-gradient(180deg, #fffaf3 0%, #fff8ee 55%, #fff3e2 100%);
+  --j-surface: #ffffff;
+  --j-surface-2: #fbf6ee;
+  --j-surface-3: #f1e9ff;
+  --j-shade: #ede5f7;
+  --j-border: #ddd3ee;
+  --j-border-subtle: #ece5f5;
+  --j-border-strong: #b9afd2;
+
+  --j-text: #14112b;
+  --j-text-2: #34305a;
+  --j-text-muted: #5b5675;
+  --j-text-faint: #7e7899;
+  --j-on-accent: #ffffff;
+
+  --j-violet: #6d28ff;
+  --j-violet-strong: #6d28ff;
+  --j-violet-soft: #5420d0;
+  --j-pink: #d1136a;
+  --j-cyan: #0a8ca3;
+  --j-blue: #1f6fd1;
+  --j-success: #3e7c0a;
+  --j-success-soft: #2f6108;
+  --j-warn: #b25600;
+  --j-danger: #d0103a;
+  --j-danger-soft: #a50e30;
+
+  --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
+  --j-shadow-pop: 4px 4px 0 #14112b;
+}
+
+/* No explicit choice yet: follow the OS. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --j-bg: #fff8ee;
+    --j-bg-grad: linear-gradient(180deg, #fffaf3 0%, #fff8ee 55%, #fff3e2 100%);
+    --j-surface: #ffffff;
+    --j-surface-2: #fbf6ee;
+    --j-surface-3: #f1e9ff;
+    --j-shade: #ede5f7;
+    --j-border: #ddd3ee;
+    --j-border-subtle: #ece5f5;
+    --j-border-strong: #b9afd2;
+    --j-text: #14112b;
+    --j-text-2: #34305a;
+    --j-text-muted: #5b5675;
+    --j-text-faint: #7e7899;
+    --j-violet: #6d28ff;
+    --j-violet-soft: #5420d0;
+    --j-pink: #d1136a;
+    --j-cyan: #0a8ca3;
+    --j-blue: #1f6fd1;
+    --j-success: #3e7c0a;
+    --j-success-soft: #2f6108;
+    --j-warn: #b25600;
+    --j-danger: #d0103a;
+    --j-danger-soft: #a50e30;
+    --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
+    --j-shadow-pop: 4px 4px 0 #14112b;
+  }
+}
+
+/* Brand type: Bricolage Grotesque for headings, Inter for everything else. */
+:root {
+  --j-font-display: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif;
+  --j-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}

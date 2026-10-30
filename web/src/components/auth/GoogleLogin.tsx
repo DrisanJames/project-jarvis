@@ -1,7 +1,8 @@
 import React, { Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBolt, faExclamationCircle, faSpinner } from '@fortawesome/free-solid-svg-icons';
+import { faExclamationCircle, faSpinner } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '../../contexts/AuthContext';
+import { JarvisMark } from '../marketing/JarvisLogo';
 
 // Signed-out visitors get the public marketing site; /login (and any OAuth
 // error redirect, e.g. ?error=domain_not_allowed) keeps the sign-in box below.
@@ -19,7 +20,7 @@ export const GoogleLogin: React.FC<GoogleLoginProps> = ({ children }) => {
     return (
       <div style={styles.container}>
         <div style={styles.loadingBox}>
-          <FontAwesomeIcon icon={faSpinner} spin style={{ ...styles.spinner, color: 'var(--accent-blue, #3b82f6)', fontSize: '48px' }} />
+          <FontAwesomeIcon icon={faSpinner} spin style={{ ...styles.spinner, color: 'var(--accent-blue, var(--j-blue))', fontSize: '48px' }} />
           <p style={styles.loadingText}>Checking authentication...</p>
         </div>
       </div>
@@ -41,12 +42,12 @@ export const GoogleLogin: React.FC<GoogleLoginProps> = ({ children }) => {
         <div style={styles.loginBox}>
           {/* Logo */}
           <div style={styles.logoContainer}>
-            <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--accent-yellow, #facc15)', fontSize: '48px' }} />
+            <JarvisMark size={64} animated look />
           </div>
           
-          <h1 style={styles.title}>Jarvis Mailing Platform</h1>
+          <h1 style={styles.title}>jarvis</h1>
           <p style={styles.subtitle}>
-            Sign in with your Google Workspace account to access the monitoring portal.
+            Sign in with your team Google account.
           </p>
 
           {/* Error message */}
@@ -99,18 +100,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   loadingText: {
     marginTop: '1rem',
-    color: 'var(--text-muted, #888)',
+    color: 'var(--text-muted, var(--j-text-muted))',
     fontSize: '0.875rem',
   },
   loginBox: {
-    backgroundColor: 'var(--bg-secondary, #1e1e2e)',
-    border: '1px solid var(--border-color, #333)',
-    borderRadius: '16px',
+    backgroundColor: 'var(--j-surface)',
+    border: '1px solid var(--border-color, var(--j-border))',
+    borderRadius: '20px',
     padding: '3rem',
     maxWidth: '420px',
     width: '100%',
     textAlign: 'center' as const,
-    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+    boxShadow: 'var(--j-shadow-pop)',
   },
   logoContainer: {
     display: 'flex',
@@ -119,19 +120,21 @@ const styles: Record<string, React.CSSProperties> = {
     width: '80px',
     height: '80px',
     margin: '0 auto 1.5rem',
-    backgroundColor: 'rgba(250, 204, 21, 0.1)',
+    backgroundColor: 'color-mix(in srgb, var(--j-violet) 14%, transparent)',
     borderRadius: '50%',
   },
   title: {
     margin: '0 0 0.5rem 0',
-    fontSize: '1.75rem',
-    fontWeight: 700,
-    color: 'var(--text-primary, #fff)',
+    fontFamily: 'var(--j-font-display)',
+    fontSize: '2.25rem',
+    fontWeight: 800,
+    letterSpacing: '-0.02em',
+    color: 'var(--j-text)',
   },
   subtitle: {
     margin: '0 0 2rem 0',
     fontSize: '0.9375rem',
-    color: 'var(--text-muted, #888)',
+    color: 'var(--text-muted, var(--j-text-muted))',
     lineHeight: 1.6,
   },
   errorBox: {
@@ -157,9 +160,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '1rem',
     fontWeight: 500,
     backgroundColor: '#fff',
-    color: '#333',
-    border: 'none',
-    borderRadius: '8px',
+    color: '#1f1f1f', // Google sign-in button spec: dark text on white in both modes
+    border: '1px solid var(--j-border)',
+    borderRadius: '999px',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
     boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
@@ -167,7 +170,7 @@ const styles: Record<string, React.CSSProperties> = {
   domainNote: {
     marginTop: '1.5rem',
     fontSize: '0.75rem',
-    color: 'var(--text-muted, #888)',
+    color: 'var(--text-muted, var(--j-text-muted))',
   },
 };
 

@@ -40,18 +40,46 @@ A screen answers ONE question at the top and lets the user drill down. Concretel
 7. **Long text truncates with full value in `title=`**; UUIDs render monospace-truncated with the
    full id in the tooltip; prefer names over ids everywhere the name is known.
 
-## 2. Color & typography
+## 2. Color, type & mode — the Jarvis brand (2026-10-29)
 
-- Tokens come from `shared/theme.ts` ONLY: indigo accent family, slate-blue panels, semantic
-  success/warning/danger. Append-alpha idiom: `alpha(color,'22')` bg / `'66'` border.
-- **HARD RULES (never violate):** hard bounce `#ef4444` red, soft bounce `#f59e0b` amber, never
-  combined into one number. State keywords color via `stateColor()` so pass/fail/storm/sending
-  are identical across screens.
-- Numbers: `fontVariantNumeric: 'tabular-nums'` always. Section titles: uppercase 13px
-  (`panelTitleStyle`). Explanatory subtext: 11-12px `textMuted`, complete sentences.
-- Charts: recharts, dark grid `rgba(255,255,255,0.06)`, series colors from the shared palette
-  (opens cyan `#22d3ee`, clicks violet `#a78bfa`, complaints rose `#fb7185`, info blue `#60a5fa`),
-  compact tick formatting, custom dark tooltip. Series toggles as chips.
+The portal wears the marketing site's brand (`web/src/components/marketing/`), in **light and dark**.
+
+- **Every colour is a `--j-*` token** from `web/src/styles/jarvis-tokens.css`. In TSX import
+  `colors` / `alpha()` / `gradients` from `shared/theme.ts` (they resolve to `var(--j-*)`); in CSS
+  write `var(--j-*)`. **No hex or rgba literals in new code** — a literal is one mode's colour and
+  breaks the other.
+- **Mode** = `<html data-theme="light|dark">`. `index.html` sets it before first paint from
+  `localStorage('jarvis_mode')`; no saved choice → OS preference. Toggle: sun/moon button in the
+  sidebar header (`shared/colorMode.ts` → `useColorMode()`).
+
+| Token | Dark | Light | Use |
+|---|---|---|---|
+| `bg` / `bg-grad` | `#14112b` ink | `#fff8ee` cream | page |
+| `surface` · `surface-2` · `surface-3` | `#1c1838` · `#242046` · `#302a5c` | `#fff` · `#fbf6ee` · `#f1e9ff` | panels · inputs/rows · selected |
+| `shade` | `#0d0b20` | `#ede5f7` | wells, insets (always via `color-mix`) |
+| `border` · `border-subtle` · `border-strong` | `#3d3770` · `#2b2650` · `#4f4888` | `#ddd3ee` · `#ece5f5` · `#b9afd2` | lines only — never text |
+| `text` · `text-2` · `text-muted` · `text-faint` | `#fff8ee` → `#7d77a3` | `#14112b` → `#7e7899` | headings/numbers → captions |
+| `on-accent` | `#fff` | `#fff` | text on a filled accent (buttons, active pills) |
+| `violet` · `violet-strong` · `violet-soft` | `#a48bff` · `#6d28ff` · `#cbbcff` | `#6d28ff` · `#6d28ff` · `#5420d0` | primary accent, active nav, links |
+| `pink` · `cyan` · `blue` | `#ff5ca8` · `#19d3f0` · `#5ab0ff` | `#d1136a` · `#0a8ca3` · `#1f6fd1` | secondary accents, chart series |
+| `success` · `warn` · `danger` (+ `-soft` text) | lime `#c6f432` · `#ffb547` · `#ff5c7a` | `#3e7c0a` · `#b25600` · `#d0103a` | semantic |
+
+- Accents carry a **per-mode value** so the same token reads as text on cream and on ink.
+- Translucent fills: `alpha(c,'22')` bg / `'66'` border → `color-mix(in srgb, c N%, transparent)`.
+  Hex-suffix concatenation (`c + '22'`, `` `${c}22` ``) does **not** work on tokens — never use it.
+- **HARD RULES (never violate, mode-independent literals):** hard bounce `#ef4444` red, soft bounce
+  `#f59e0b` amber, never combined into one number. State keywords colour via `stateColor()` so
+  pass/fail/storm/sending are identical across screens.
+- **Type:** headings Bricolage Grotesque (`--j-font-display`, 700–800, tight tracking); everything
+  else Inter (`--j-font-body`). Numbers `fontVariantNumeric: 'tabular-nums'` always. Section titles
+  uppercase 13px (`panelTitleStyle`). Explanatory subtext 11–12px `textMuted`, complete sentences.
+- **Shape:** panels 14px radius + `--j-shadow`; buttons, nav items and sub-nav tabs are pills
+  (`999px`); the active nav item is a violet-tint pill with violet text and a pink icon.
+- **Logo:** `JarvisMark` (`components/marketing/JarvisLogo.tsx`, motion in `JarvisLogo.css`) in the
+  sidebar header and on the sign-in card — never a generic robot icon.
+- **Charts:** recharts; grid `color-mix(var(--j-text) 6%)`; series opens `cyan`, clicks `violet`,
+  complaints `danger`, info `blue` (all tokens, so they adapt per mode); compact ticks; tooltip on
+  `surface` with `border`. Series toggles as chips.
 
 ## 3. THE UNIFIED FILTER STANDARD — no one-off filters
 
@@ -141,3 +169,4 @@ mediator's own records rather than raw event counts.
   never recomputed; drill-down instead of a bespoke second filter, with the shared FilterChip showing
   the active narrowing; single-day screens use the shared range bar's `To` day and warn when a wider
   range was applied.
+- 2026-10-29: §2 rewritten: portal restyled to the Jarvis marketing brand with light/dark mode. All portal colour literals codemodded to `--j-*` tokens (`styles/jarvis-tokens.css`); `theme.ts` resolves to tokens and `alpha()` is `color-mix`; legacy `index.css` vars alias the tokens; sidebar + sign-in carry `JarvisMark`. Supersedes the indigo/slate palette.

@@ -1,12 +1,12 @@
-// theme.ts — the canonical indigo design system for the Mailing Portal.
+// theme.ts — the canonical design system for the Mailing Portal.
 //
-// This is extracted from the Delivery Queue ("Sending Engine") screen
-// (OutboxDashboard.tsx), which is the gold standard every other screen is now
-// modeled after. Import these tokens / style objects instead of re-deriving
-// inline colors so the whole portal stays visually consistent.
+// Every value resolves through a --j-* CSS variable (styles/jarvis-tokens.css),
+// so the whole portal follows the light/dark mode set on <html data-theme>.
+// Palette: the Jarvis brand — violet / pink / cyan / lime over ink (dark) or
+// cream (light). Spec: docs/PORTAL_DESIGN_SYSTEM.md §2.
 //
-// Palette: indigo (#6366f1 / #818cf8 / #c7d2fe) over translucent slate-blue
-// panels (rgba(15,30,60,0.35)) on a deep slate-blue page background.
+// Hard rules stay literal and mode-independent: hard bounce #ef4444, soft
+// bounce #f59e0b (METRIC_CONTRACT).
 
 import type React from "react"
 
@@ -14,54 +14,61 @@ import type React from "react"
 // Color tokens
 // ---------------------------------------------------------------------------
 
+const v = (t: string) => `var(--j-${t})`
+const mix = (c: string, pct: number) => `color-mix(in srgb, ${c} ${pct}%, transparent)`
+
 export const colors = {
   // Page / app chrome
-  appBg: "linear-gradient(180deg, #0b1226 0%, #070a16 50%, #0a0e1c 100%)",
-  appBgSolid: "#0a0e1c",
+  appBg: v("bg-grad"),
+  appBgSolid: v("bg"),
 
   // Panels / surfaces
-  panelBg: "rgba(15,30,60,0.35)",
-  panelBgSolid: "#0f1629",
-  panelBorder: "rgba(99,102,241,0.18)",
-  panelBorderStrong: "rgba(99,102,241,0.30)",
-  divider: "rgba(99,102,241,0.08)",
-  hairline: "rgba(99,102,241,0.15)",
-  hover: "rgba(99,102,241,0.10)",
+  panelBg: v("surface"),
+  panelBgSolid: v("surface"),
+  panelBorder: v("border"),
+  panelBorderStrong: v("border-strong"),
+  divider: v("border-subtle"),
+  hairline: v("border"),
+  hover: mix(v("violet"), 10),
 
   // Text
-  heading: "#dbeafe",
-  text: "#e5e7eb",
-  textMuted: "#94a3b8",
-  textFaint: "#64748b",
+  heading: v("text"),
+  text: v("text"),
+  textMuted: v("text-muted"),
+  textFaint: v("text-faint"),
 
-  // Indigo accent family
-  indigo500: "#6366f1",
-  indigo400: "#818cf8",
-  indigo300: "#a5b4fc",
-  indigo200: "#c7d2fe",
+  // Accent family (names kept for existing call sites)
+  indigo500: v("violet-strong"),
+  indigo400: v("violet"),
+  indigo300: v("violet"),
+  indigo200: v("violet-soft"),
+  pink: v("pink"),
+  cyan: v("cyan"),
 
   // Semantic
-  success: "#22c55e",
-  successText: "#86efac",
+  success: v("success"),
+  successText: v("success-soft"),
   warning: "#f59e0b",
-  warningText: "#fcd34d",
+  warningText: v("warn"),
   danger: "#ef4444",
-  dangerText: "#fca5a5",
-  dangerFaint: "#fecaca",
-  idle: "#94a3b8",
-  info: "#818cf8",
+  dangerText: v("danger-soft"),
+  dangerFaint: v("danger-soft"),
+  idle: v("text-muted"),
+  info: v("violet"),
 } as const
 
-// Translucent fills for status chips / badges (color + alpha suffix trick from
-// OutboxDashboard: `color + '22'` for bg, `color + '66'` for border).
-export const alpha = (hex: string, a: "0d" | "14" | "22" | "33" | "44" | "66") => `${hex}${a}`
+// Translucent fills for chips / badges: `alpha(c, '22')` for bg, `'66'` for
+// border. Works on var() tokens and hex alike (hex-suffix concatenation does
+// not, which is why this is color-mix).
+const ALPHA_PCT = { "0d": 5, "14": 8, "22": 13, "33": 20, "44": 27, "66": 40 } as const
+export const alpha = (c: string, a: keyof typeof ALPHA_PCT) => mix(c, ALPHA_PCT[a])
 
 export const gradients = {
   // Utilization / progress bar fills
-  progressOk: "linear-gradient(90deg,#6366f1,#22c55e)",
+  progressOk: `linear-gradient(90deg,${v("violet-strong")},${v("success")})`,
   progressHot: "linear-gradient(90deg,#f59e0b,#ef4444)",
-  // Brand button / accent
-  accent: "linear-gradient(135deg,#6366f1 0%,#818cf8 100%)",
+  // Brand button / accent — the marketing site's violet → pink
+  accent: `linear-gradient(135deg,${v("violet-strong")} 0%,${v("pink")} 100%)`,
 } as const
 
 // ---------------------------------------------------------------------------
@@ -71,14 +78,16 @@ export const gradients = {
 export const panelStyle: React.CSSProperties = {
   background: colors.panelBg,
   border: `1px solid ${colors.panelBorder}`,
-  borderRadius: 10,
+  borderRadius: 14,
   padding: "14px 16px",
+  boxShadow: v("shadow"),
 }
 
 export const panelTitleStyle: React.CSSProperties = {
   margin: 0,
+  fontFamily: v("font-display"),
   fontSize: 13,
-  fontWeight: 600,
+  fontWeight: 700,
   color: colors.heading,
   textTransform: "uppercase",
   letterSpacing: 0.6,
@@ -123,7 +132,7 @@ export const btnStyle: React.CSSProperties = {
   background: alpha(colors.indigo500, "22"),
   border: `1px solid ${alpha(colors.indigo500, "66")}`,
   color: colors.indigo200,
-  borderRadius: 8,
+  borderRadius: 999,
   padding: "7px 12px",
   fontSize: 12,
   fontWeight: 600,

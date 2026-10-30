@@ -302,18 +302,18 @@ interface SortState { col: string; dir: SortDir }
 // ═══════════════════════════════════════════════════════════════════════════
 
 const COLORS = {
-  bgDeep:        theme.appBgSolid,          // #0a0e1c
-  bgPanel:       theme.panelBgSolid,        // #0f1629
+  bgDeep:        theme.appBgSolid,          // var(--j-bg)
+  bgPanel:       theme.panelBgSolid,        // var(--j-surface)
   bgPanelAlt:    '#131a2e',                 // slightly lifted indigo-slate surface
-  border:        theme.hairline,            // rgba(99,102,241,0.15)
-  borderStrong:  theme.panelBorderStrong,   // rgba(99,102,241,0.30)
-  textPrimary:   theme.text,                // #e5e7eb
-  textSecondary: theme.textMuted,           // #94a3b8
-  textMuted:     theme.textFaint,           // #64748b
-  accent:        theme.indigo400,           // #818cf8
-  accentAlt:     theme.indigo300,           // #a5b4fc
-  accentPink:    theme.indigo200,           // #c7d2fe (was pink → indigo light)
-  good:          theme.success,             // #22c55e
+  border:        theme.hairline,            // color-mix(in srgb, var(--j-violet-strong) 15%, transparent)
+  borderStrong:  theme.panelBorderStrong,   // color-mix(in srgb, var(--j-violet-strong) 30%, transparent)
+  textPrimary:   theme.text,                // var(--j-text)
+  textSecondary: theme.textMuted,           // var(--j-text-muted)
+  textMuted:     theme.textFaint,           // var(--j-text-faint)
+  accent:        theme.indigo400,           // var(--j-violet)
+  accentAlt:     theme.indigo300,           // var(--j-violet)
+  accentPink:    theme.indigo200,           // var(--j-violet-soft) (was pink → indigo light)
+  good:          theme.success,             // var(--j-success)
   warn:          theme.warning,             // #f59e0b
   danger:        theme.danger,              // #ef4444
 };
@@ -321,10 +321,10 @@ const COLORS = {
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber. Always.
 const HARD_RED = '#ef4444';
 const SOFT_AMBER = '#f59e0b';
-const INFO_BLUE = '#60a5fa';
-const OPEN_CYAN = '#22d3ee';
-const CLICK_VIOLET = '#a78bfa';
-const COMPLAINT_ROSE = '#fb7185';
+const INFO_BLUE = 'var(--j-blue)';
+const OPEN_CYAN = 'var(--j-cyan)';
+const CLICK_VIOLET = 'var(--j-violet)';
+const COMPLAINT_ROSE = 'var(--j-danger)';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API LAYER — module-level cache + abortable fetch helpers
@@ -831,8 +831,8 @@ const EnableBadge: React.FC<{ label: string; enabled: boolean }> = ({ label, ena
   <div style={{
     ...styles.badge,
     color: enabled ? COLORS.good : COLORS.textMuted,
-    borderColor: enabled ? COLORS.good + '55' : COLORS.borderStrong,
-    background: enabled ? COLORS.good + '12' : 'transparent',
+    borderColor: enabled ? `color-mix(in srgb, ${COLORS.good} 33%, transparent)` : COLORS.borderStrong,
+    background: enabled ? `color-mix(in srgb, ${COLORS.good} 7%, transparent)` : 'transparent',
   }}>
     <FontAwesomeIcon icon={faCircle} style={{ fontSize: 8 }} />
     {label}: {enabled ? 'on' : 'off'}
@@ -978,11 +978,11 @@ const TrendChart: React.FC<{
           </linearGradient>
         ))}
       </defs>
-      <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+      <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
       <XAxis
         dataKey="day"
         tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
-        tick={{ fill: '#94a3b8', fontSize: 11 }}
+        tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }}
         interval="preserveStartEnd"
         minTickGap={40}
         axisLine={{ stroke: COLORS.borderStrong }}
@@ -991,7 +991,7 @@ const TrendChart: React.FC<{
       <YAxis
         yAxisId="left"
         tickFormatter={(v: number) => fmtCompact(v)}
-        tick={{ fill: '#94a3b8', fontSize: 11 }}
+        tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }}
         axisLine={false}
         tickLine={false}
         width={52}
@@ -1000,12 +1000,12 @@ const TrendChart: React.FC<{
         yAxisId="right"
         orientation="right"
         tickFormatter={(v: number) => `${v}%`}
-        tick={{ fill: '#94a3b8', fontSize: 11 }}
+        tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }}
         axisLine={false}
         tickLine={false}
         width={44}
       />
-      <Tooltip content={<ChartTip />} cursor={{ stroke: 'rgba(148,163,184,0.3)', strokeWidth: 1 }} />
+      <Tooltip content={<ChartTip />} cursor={{ stroke: 'color-mix(in srgb, var(--j-text-muted) 30%, transparent)', strokeWidth: 1 }} />
       {volSeries.map((s) => (
         <Area key={s.id} yAxisId="left" dataKey={s.id} name={s.label} type="monotone"
           stroke={s.color} strokeWidth={2} fill={`url(#lakeTrendFill-${s.id})`}
@@ -1049,8 +1049,8 @@ const SeriesToggles: React.FC<{
           style={{
             ...styles.seriesToggle,
             color: on ? s.color : COLORS.textMuted,
-            borderColor: on ? s.color + '66' : COLORS.borderStrong,
-            background: on ? s.color + '14' : 'transparent',
+            borderColor: on ? `color-mix(in srgb, ${s.color} 40%, transparent)` : COLORS.borderStrong,
+            background: on ? `color-mix(in srgb, ${s.color} 8%, transparent)` : 'transparent',
           }}
         >
           <FontAwesomeIcon icon={faCircle} style={{ fontSize: 7 }} />
@@ -1210,7 +1210,7 @@ const MetricsTable: React.FC<{
             return (
               <React.Fragment key={r.key || '(empty)'}>
                 <tr
-                  style={{ ...styles.tr, cursor: canExpand ? 'pointer' : 'default', background: isOpen ? 'rgba(129,140,248,0.07)' : undefined }}
+                  style={{ ...styles.tr, cursor: canExpand ? 'pointer' : 'default', background: isOpen ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : undefined }}
                   onClick={canExpand ? () => onToggleExpand(r.key) : undefined}
                   title={expandable && r.key === '' ? 'Cannot expand an empty dimension value (no equality filter possible)' : undefined}
                 >
@@ -1491,7 +1491,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
 
   // ISP table cell styling — mirrors RouteFunnelPanel's tabular-nums idiom.
   const ispCell: React.CSSProperties = { padding: '6px 14px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
-  const ispHead: React.CSSProperties = { ...ispCell, color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 };
+  const ispHead: React.CSSProperties = { ...ispCell, color: 'var(--j-text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 };
   const ispRowLabel: React.CSSProperties = { ...ispCell, textAlign: 'left', fontWeight: 600 };
 
   return (
@@ -1591,7 +1591,7 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                         style={{
                           ...styles.segmentedBtn,
                           color: active ? COLORS.accent : COLORS.textSecondary,
-                          background: active ? COLORS.accent + '1f' : 'transparent',
+                          background: active ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)` : 'transparent',
                           fontWeight: active ? 600 : 400,
                         }}
                       >
@@ -1662,17 +1662,17 @@ const OverviewTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
                       </tr>
                     ))}
                     <tr>
-                      <td style={{ ...ispRowLabel, borderTop: '1px solid #374151' }}>TOTAL</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.rates.denom)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delivered)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151', background: heatDel(ispMetrics.totals.rates.delivery) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.delivery)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151', color: HARD_RED, background: heatHard(ispMetrics.totals.rates.hard) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.hard)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
+                      <td style={{ ...ispRowLabel, borderTop: '1px solid var(--j-border-strong)' }}>TOTAL</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)' }}>{fmt(ispMetrics.totals.rates.denom)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)' }}>{fmt(ispMetrics.totals.counts.delivered)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)', background: heatDel(ispMetrics.totals.rates.delivery) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.delivery)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)', color: HARD_RED, background: heatHard(ispMetrics.totals.rates.hard) }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.hard)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)', color: SOFT_AMBER }} title={denomTitle(ispMetrics.totals.rates)}>{fmtPct(ispMetrics.totals.rates.soft)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)' }}>{fmt(ispMetrics.totals.counts.delays)}</td>
                       {/* funnelScope, not funnel.total: with an isp_group filter
                           the rows above are one ISP — an all-ISP TOTAL wouldn't foot. */}
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }}>{fmt(funnelScope?.deferred ?? 0)}</td>
-                      <td style={{ ...ispCell, borderTop: '1px solid #374151' }} title="recovered / (recovered + bounced) — resolved deferrals only">
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)' }}>{fmt(funnelScope?.deferred ?? 0)}</td>
+                      <td style={{ ...ispCell, borderTop: '1px solid var(--j-border-strong)' }} title="recovered / (recovered + bounced) — resolved deferrals only">
                         {funnelScope && (funnelScope.recovered + funnelScope.bounced) > 0
                           ? `${fmt(funnelScope.recovered)} (${fmtPct((funnelScope.recovered / (funnelScope.recovered + funnelScope.bounced)) * 100)})`
                           : '—'}
@@ -1963,8 +1963,8 @@ const DimensionsTab: React.FC<{ applied: AppliedFilters }> = ({ applied }) => {
               style={{
                 ...styles.presetBtn,
                 color: active ? COLORS.accent : COLORS.textSecondary,
-                borderColor: active ? COLORS.accent + '66' : COLORS.borderStrong,
-                background: active ? COLORS.accent + '14' : 'transparent',
+                borderColor: active ? `color-mix(in srgb, ${COLORS.accent} 40%, transparent)` : COLORS.borderStrong,
+                background: active ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)` : 'transparent',
               }}
               onClick={() => setDim(d.id)}
             >
@@ -2327,7 +2327,7 @@ const CampaignTab: React.FC<{
                         <span style={{
                           ...styles.typeChip, fontSize: 10, padding: '1px 6px',
                           color: STATUS_CHIP_COLORS[c.status] || COLORS.accent,
-                          borderColor: (STATUS_CHIP_COLORS[c.status] || COLORS.accent) + '55',
+                          borderColor: `color-mix(in srgb, ${(STATUS_CHIP_COLORS[c.status] || COLORS.accent)} 33%, transparent)`,
                         }}>{c.status}</span>
                       </div>
                       <div style={{ display: 'flex', gap: 10, fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
@@ -2398,11 +2398,11 @@ const CampaignTab: React.FC<{
                   <span style={{
                     ...styles.typeChip,
                     color: STATUS_CHIP_COLORS[cc.status] || COLORS.accent,
-                    borderColor: (STATUS_CHIP_COLORS[cc.status] || COLORS.accent) + '55',
+                    borderColor: `color-mix(in srgb, ${(STATUS_CHIP_COLORS[cc.status] || COLORS.accent)} 33%, transparent)`,
                   }}>
                     {cc.status}
                   </span>
-                  <span style={{ ...styles.typeChip, color: INFO_BLUE, borderColor: INFO_BLUE + '55' }}>{cc.route_type}</span>
+                  <span style={{ ...styles.typeChip, color: INFO_BLUE, borderColor: `color-mix(in srgb, ${INFO_BLUE} 33%, transparent)` }}>{cc.route_type}</span>
                 </div>
                 <div style={styles.metaGrid}>
                   <MetaItem label="subject" value={cc.subject} />
@@ -2575,7 +2575,7 @@ const CampaignTab: React.FC<{
                       <tr key={e.event_uid || String(i)} style={styles.tr}>
                         <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{fmtEventAt(e)}</td>
                         <td style={styles.td}>
-                          <span style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: eventTypeColor(e.event_type) + '55' }}>
+                          <span style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: `color-mix(in srgb, ${eventTypeColor(e.event_type)} 33%, transparent)` }}>
                             {e.event_type || '—'}
                           </span>
                         </td>
@@ -2749,7 +2749,7 @@ const RawEventsTab: React.FC<{
                 return (
                   <React.Fragment key={uid}>
                     <tr
-                      style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'rgba(129,140,248,0.07)' : undefined }}
+                      style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : undefined }}
                       onClick={() => setExpandedUid((cur) => (cur === uid ? null : uid))}
                     >
                       <td style={{ ...styles.td, color: COLORS.textMuted }}>
@@ -2758,7 +2758,7 @@ const RawEventsTab: React.FC<{
                       <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{fmtEventAt(e)}</td>
                       <td style={styles.td}>
                         <button
-                          style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: eventTypeColor(e.event_type) + '55', background: 'transparent', cursor: 'pointer' }}
+                          style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: `color-mix(in srgb, ${eventTypeColor(e.event_type)} 33%, transparent)`, background: 'transparent', cursor: 'pointer' }}
                           title="Filter this tab by this event type"
                           onClick={(ev) => { ev.stopPropagation(); setEventType(e.event_type); }}
                         >
@@ -2991,7 +2991,7 @@ export const EventLakeExplorer: React.FC = () => {
                   ...styles.tabBtn,
                   color: active ? COLORS.textPrimary : COLORS.textSecondary,
                   borderBottomColor: active ? COLORS.accent : 'transparent',
-                  background: active ? 'rgba(129,140,248,0.07)' : 'transparent',
+                  background: active ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : 'transparent',
                 }}
                 onClick={() => selectTab(t.id)}
               >
@@ -3077,11 +3077,11 @@ const styles: Record<string, React.CSSProperties> = {
   errorShell: {
     margin: '0 0 20px', padding: 16, background: COLORS.bgPanel, borderRadius: 8,
     color: COLORS.danger, display: 'flex', alignItems: 'center', gap: 8,
-    border: `1px solid ${COLORS.danger}33`,
+    border: `1px solid color-mix(in srgb, ${COLORS.danger} 20%, transparent)`,
   },
   inlineRetry: {
     marginLeft: 'auto', background: 'transparent', color: COLORS.danger,
-    border: `1px solid ${COLORS.danger}55`, padding: '4px 12px',
+    border: `1px solid color-mix(in srgb, ${COLORS.danger} 33%, transparent)`, padding: '4px 12px',
     borderRadius: 6, fontSize: 12, cursor: 'pointer',
   },
   header: {
@@ -3097,7 +3097,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   code: {
     fontFamily: 'monospace', fontSize: 12, color: COLORS.accentAlt,
-    background: 'rgba(167,139,250,0.1)', padding: '1px 6px', borderRadius: 4,
+    background: 'color-mix(in srgb, var(--j-violet) 10%, transparent)', padding: '1px 6px', borderRadius: 4,
   },
   refreshBtn: {
     background: COLORS.bgPanel, color: COLORS.textPrimary,
@@ -3202,7 +3202,7 @@ const styles: Record<string, React.CSSProperties> = {
   timingNote: { fontSize: 11, color: COLORS.textMuted, fontVariantNumeric: 'tabular-nums' },
   truncBanner: {
     padding: '10px 14px', marginBottom: 14, borderRadius: 8,
-    background: 'rgba(245,158,11,0.10)', border: `1px solid ${SOFT_AMBER}44`,
+    background: 'rgba(245,158,11,0.10)', border: `1px solid color-mix(in srgb, ${SOFT_AMBER} 27%, transparent)`,
     color: SOFT_AMBER, fontSize: 12, display: 'flex', alignItems: 'center',
   },
   eventFilterBar: {
@@ -3232,7 +3232,7 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none', whiteSpace: 'nowrap',
   },
   primaryBtn: {
-    background: COLORS.accent, color: '#0a0e1a',
+    background: COLORS.accent, color: 'var(--j-bg)',
     border: 'none', padding: '8px 16px', borderRadius: 6,
     fontSize: 13, fontWeight: 600, cursor: 'pointer',
     display: 'flex', alignItems: 'center', gap: 8, height: 34,
@@ -3297,11 +3297,11 @@ const styles: Record<string, React.CSSProperties> = {
   cellLinkBtn: {
     background: 'transparent', border: 'none', color: COLORS.accent,
     cursor: 'pointer', fontSize: 13, padding: 0, textDecoration: 'underline',
-    textDecorationColor: COLORS.accent + '44', textUnderlineOffset: 3,
+    textDecorationColor: `color-mix(in srgb, ${COLORS.accent} 27%, transparent)`, textUnderlineOffset: 3,
   },
   tableFooterNote: { padding: '10px 4px 0', fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 },
   expandCell: {
-    padding: '14px 16px', background: 'rgba(255,255,255,0.02)',
+    padding: '14px 16px', background: 'color-mix(in srgb, var(--j-text) 2%, transparent)',
   },
   expandHeader: {
     display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
@@ -3324,7 +3324,7 @@ const styles: Record<string, React.CSSProperties> = {
   metaValue: { fontSize: 13, color: COLORS.textPrimary, lineHeight: 1.4, wordBreak: 'break-word' },
   lakeOnlyNotice: {
     padding: '12px 14px', borderRadius: 8,
-    background: 'rgba(251,191,36,0.08)', border: `1px solid ${COLORS.warn}33`,
+    background: 'color-mix(in srgb, var(--j-warn) 8%, transparent)', border: `1px solid color-mix(in srgb, ${COLORS.warn} 20%, transparent)`,
     color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.6,
   },
 

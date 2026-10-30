@@ -121,15 +121,15 @@ export const FeedFunnelBoard: React.FC = () => {
   return (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
-        <h3 style={{ margin: 0, color: '#dbeafe', fontSize: 16 }}>
-          <FontAwesomeIcon icon={faArrowRightArrowLeft} style={{ marginRight: 8, color: '#6366f1' }} />
+        <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16 }}>
+          <FontAwesomeIcon icon={faArrowRightArrowLeft} style={{ marginRight: 8, color: 'var(--j-violet-strong)' }} />
           Feeds → Funnels
         </h3>
-        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>
+        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
           {funnels.length} funnels · {feeds.length} feed streams · ranked by engagement (most valuable first)
         </span>
       </div>
-      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginBottom: 12 }}>
+      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginBottom: 12 }}>
         Which data partner streams route into which funnel and how each performs. <b>Value = engagement</b> (engaged / mailed).
         <FontAwesomeIcon icon={faTriangleExclamation} style={{ margin: '0 4px 0 8px', color: '#f59e0b' }} /> flags a stream to
         investigate or move. Click a funnel for its touch ladder + contributing feeds.
@@ -140,16 +140,16 @@ export const FeedFunnelBoard: React.FC = () => {
           {/* Funnel header row: the roll-up + click-to-drill */}
           <button type="button" onClick={() => setOpenFunnel(g.vertical)} style={funnelHeader} title="View touch ladder + feeds">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <FontAwesomeIcon icon={faRoute} style={{ color: '#6366f1' }} />
-              <span style={{ fontWeight: 700, color: '#dbeafe', fontSize: 14 }}>{labelForVertical(g.vertical)}</span>
+              <FontAwesomeIcon icon={faRoute} style={{ color: 'var(--j-violet-strong)' }} />
+              <span style={{ fontWeight: 700, color: 'var(--j-text)', fontSize: 14 }}>{labelForVertical(g.vertical)}</span>
               <span style={badge}>{g.feeds.length} feed{g.feeds.length === 1 ? '' : 's'}</span>
             </div>
             <div style={{ display: 'flex', gap: 18, alignItems: 'baseline' }}>
               <Metric label="records" value={fmt(g.records)} />
               <Metric label="mailed" value={fmt(g.mailed)} />
-              <Metric label="engaged" value={fmt(g.engaged)} accent="#10b981" />
-              <Metric label="eng rate" value={pct(g.engRate)} accent={g.engRate >= 2 ? '#10b981' : g.engRate >= 1 ? '#f59e0b' : '#ef4444'} />
-              <span style={{ fontSize: 10, color: 'rgba(180,210,240,0.5)' }}>
+              <Metric label="engaged" value={fmt(g.engaged)} accent="var(--j-success)" />
+              <Metric label="eng rate" value={pct(g.engRate)} accent={g.engRate >= 2 ? 'var(--j-success)' : g.engRate >= 1 ? '#f59e0b' : '#ef4444'} />
+              <span style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                 {grandEngaged > 0 ? `${((g.engaged / grandEngaged) * 100).toFixed(0)}% of value` : ''}
               </span>
             </div>
@@ -173,12 +173,12 @@ export const FeedFunnelBoard: React.FC = () => {
                 return (
                   <tr key={`${f.partner_id}|${f.dataset_id}`} style={flag ? { background: flag.kind === 'dead' ? 'rgba(239,68,68,0.06)' : 'rgba(245,158,11,0.06)' } : undefined}>
                     <td style={ftd}>
-                      <div style={{ fontWeight: 600, color: '#cbd5f5' }}>{f.partner_name}</div>
-                      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>{f.dataset_name}</div>
+                      <div style={{ fontWeight: 600, color: 'var(--j-text-2)' }}>{f.partner_name}</div>
+                      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{f.dataset_name}</div>
                     </td>
                     <td style={ftdNum}>{fmt(f.records)}</td>
                     <td style={ftdNum}>{fmt(f.mailed)}</td>
-                    <td style={{ ...ftdNum, color: '#10b981' }}>{fmt(f.engaged)}</td>
+                    <td style={{ ...ftdNum, color: 'var(--j-success)' }}>{fmt(f.engaged)}</td>
                     <td style={ftdNum}>
                       <EngBar pct={f.eng_rate_pct} best={g.bestEng} />
                     </td>
@@ -204,14 +204,14 @@ export const FeedFunnelBoard: React.FC = () => {
           <div style={scrim} onClick={() => setOpenFunnel(null)} />
           <div style={drawer}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h3 style={{ margin: 0, color: '#dbeafe', fontSize: 16 }}>
-                <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 8, color: '#6366f1' }} />
+              <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16 }}>
+                <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 8, color: 'var(--j-violet-strong)' }} />
                 {labelForVertical(openFunnel)}
               </h3>
               <button type="button" onClick={() => setOpenFunnel(null)} style={closeBtn}><FontAwesomeIcon icon={faXmark} /></button>
             </div>
 
-            <div style={sectionLabel}>Touch ladder <span style={{ fontWeight: 400, color: 'rgba(180,210,240,0.45)' }}>· db lane (representative)</span></div>
+            <div style={sectionLabel}>Touch ladder <span style={{ fontWeight: 400, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>· db lane (representative)</span></div>
             {openLadder.length === 0 ? (
               <div style={{ ...msg, fontSize: 12, color: '#f59e0b' }}>No touch ladder configured for this funnel — the follow-up sequence is missing (touch-1 only).</div>
             ) : (
@@ -220,8 +220,8 @@ export const FeedFunnelBoard: React.FC = () => {
                   <div key={t.touch_number} style={touchRow}>
                     <div style={touchNum}>T{t.touch_number}</div>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: '#cbd5f5', fontWeight: 600, overflowWrap: 'anywhere' }}>{t.subject_line || '(no subject)'}</div>
-                      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', overflowWrap: 'anywhere' }}>
+                      <div style={{ fontSize: 13, color: 'var(--j-text-2)', fontWeight: 600, overflowWrap: 'anywhere' }}>{t.subject_line || '(no subject)'}</div>
+                      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', overflowWrap: 'anywhere' }}>
                         {t.creative_filename || '—'}{t.from_name ? ` · from: ${t.from_name}` : ''}
                       </div>
                     </div>
@@ -243,8 +243,8 @@ export const FeedFunnelBoard: React.FC = () => {
                 {(openGroup?.feeds ?? []).map(f => (
                   <tr key={`${f.partner_id}|${f.dataset_id}`}>
                     <td style={ftd}>
-                      <div style={{ fontWeight: 600, color: '#cbd5f5' }}>{f.partner_name}</div>
-                      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)' }}>{f.dataset_name}</div>
+                      <div style={{ fontWeight: 600, color: 'var(--j-text-2)' }}>{f.partner_name}</div>
+                      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{f.dataset_name}</div>
                     </td>
                     <td style={ftdNum}>{fmt(f.mailed)}</td>
                     <td style={ftdNum}>{pct(f.eng_rate_pct)}</td>
@@ -261,37 +261,37 @@ export const FeedFunnelBoard: React.FC = () => {
 
 const Metric: React.FC<{ label: string; value: string; accent?: string }> = ({ label, value, accent }) => (
   <div style={{ textAlign: 'right' }}>
-    <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 14, fontWeight: 700, color: accent ?? '#dbeafe', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 14, fontWeight: 700, color: accent ?? 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
   </div>
 );
 
 // Engagement bar scaled to the funnel's best feed, so the relative gap is visible.
 const EngBar: React.FC<{ pct: number; best: number }> = ({ pct: p, best }) => {
   const w = best > 0 ? Math.min(100, (p / best) * 100) : (p > 0 ? 100 : 0);
-  const color = best > 0 && p < best * REROUTE_RATIO ? '#ef4444' : p >= 2 ? '#10b981' : '#f59e0b';
+  const color = best > 0 && p < best * REROUTE_RATIO ? '#ef4444' : p >= 2 ? 'var(--j-success)' : '#f59e0b';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
       <span style={{ fontVariantNumeric: 'tabular-nums', color, minWidth: 46, textAlign: 'right' }}>{pct(p)}</span>
-      <div style={{ width: 44, height: 5, background: 'rgba(120,150,200,0.15)', borderRadius: 3, overflow: 'hidden' }}>
+      <div style={{ width: 44, height: 5, background: 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)', borderRadius: 3, overflow: 'hidden' }}>
         <div style={{ width: `${w}%`, height: '100%', background: color }} />
       </div>
     </div>
   );
 };
 
-const msg: React.CSSProperties = { padding: 20, color: 'rgba(180,210,240,0.7)', fontSize: 13 };
-const funnelCard: React.CSSProperties = { border: '1px solid rgba(120,150,200,0.16)', borderRadius: 10, marginBottom: 12, overflow: 'hidden', background: 'rgba(13,21,38,0.4)' };
-const funnelHeader: React.CSSProperties = { all: 'unset', boxSizing: 'border-box', cursor: 'pointer', display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 14px', background: 'rgba(99,102,241,0.06)', flexWrap: 'wrap' };
-const badge: React.CSSProperties = { fontSize: 10, padding: '2px 8px', borderRadius: 12, background: 'rgba(99,102,241,0.18)', color: '#a5b4fc', whiteSpace: 'nowrap' };
+const msg: React.CSSProperties = { padding: 20, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 13 };
+const funnelCard: React.CSSProperties = { border: '1px solid color-mix(in srgb, var(--j-text-muted) 16%, transparent)', borderRadius: 10, marginBottom: 12, overflow: 'hidden', background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)' };
+const funnelHeader: React.CSSProperties = { all: 'unset', boxSizing: 'border-box', cursor: 'pointer', display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 14px', background: 'color-mix(in srgb, var(--j-violet-strong) 6%, transparent)', flexWrap: 'wrap' };
+const badge: React.CSSProperties = { fontSize: 10, padding: '2px 8px', borderRadius: 12, background: 'color-mix(in srgb, var(--j-violet-strong) 18%, transparent)', color: 'var(--j-violet)', whiteSpace: 'nowrap' };
 const feedTable: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 };
-const fth: React.CSSProperties = { textAlign: 'left', padding: '6px 14px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'rgba(180,210,240,0.5)', borderBottom: '1px solid rgba(120,150,200,0.1)' };
+const fth: React.CSSProperties = { textAlign: 'left', padding: '6px 14px', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };
 const fthNum: React.CSSProperties = { ...fth, textAlign: 'right' };
-const ftd: React.CSSProperties = { padding: '8px 14px', borderBottom: '1px solid rgba(120,150,200,0.06)', color: 'rgba(220,235,250,0.85)' };
+const ftd: React.CSSProperties = { padding: '8px 14px', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 6%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)' };
 const ftdNum: React.CSSProperties = { ...ftd, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
-const scrim: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 };
-const drawer: React.CSSProperties = { position: 'fixed', top: 0, right: 0, height: '100vh', width: 'min(520px, 94vw)', background: '#0b1120', borderLeft: '1px solid rgba(120,150,200,0.25)', boxShadow: '-8px 0 30px rgba(0,0,0,0.5)', padding: 20, overflowY: 'auto', zIndex: 999 };
-const closeBtn: React.CSSProperties = { all: 'unset', cursor: 'pointer', color: 'rgba(180,210,240,0.7)', fontSize: 18, padding: 4 };
-const sectionLabel: React.CSSProperties = { fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.6)', fontWeight: 700, marginBottom: 8, marginTop: 6 };
-const touchRow: React.CSSProperties = { display: 'flex', gap: 12, alignItems: 'flex-start', padding: '8px 10px', background: 'rgba(15,30,60,0.4)', borderRadius: 8, border: '1px solid rgba(120,150,200,0.12)' };
-const touchNum: React.CSSProperties = { flexShrink: 0, width: 30, height: 30, borderRadius: 8, background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 12 };
+const scrim: React.CSSProperties = { position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 998 };
+const drawer: React.CSSProperties = { position: 'fixed', top: 0, right: 0, height: '100vh', width: 'min(520px, 94vw)', background: '#0b1120', borderLeft: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', boxShadow: '-8px 0 30px rgba(0,0,0,0.5)', padding: 20, overflowY: 'auto', zIndex: 999 };
+const closeBtn: React.CSSProperties = { all: 'unset', cursor: 'pointer', color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 18, padding: 4 };
+const sectionLabel: React.CSSProperties = { fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontWeight: 700, marginBottom: 8, marginTop: 6 };
+const touchRow: React.CSSProperties = { display: 'flex', gap: 12, alignItems: 'flex-start', padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-text-muted) 12%, transparent)' };
+const touchNum: React.CSSProperties = { flexShrink: 0, width: 30, height: 30, borderRadius: 8, background: 'color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', color: 'var(--j-violet)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 12 };

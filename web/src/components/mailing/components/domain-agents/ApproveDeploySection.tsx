@@ -166,8 +166,8 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
           {confirmOpen && canApprove && (
             <div
               style={{
-                background: 'rgba(233,69,96,0.08)',
-                border: '1px solid rgba(233,69,96,0.4)',
+                background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)',
                 borderRadius: 8,
                 padding: '14px 16px',
               }}
@@ -193,7 +193,7 @@ export const ApproveDeploySection: React.FC<Props> = ({ plan, onPlanChange }) =>
                   style={
                     !confirmEnabled || approving
                       ? btnDisabledStyle
-                      : { ...btnStyle, background: 'rgba(233,69,96,0.25)', border: '1px solid rgba(233,69,96,0.7)', color: '#ffd7de' }
+                      : { ...btnStyle, background: 'color-mix(in srgb, var(--j-danger) 25%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 70%, transparent)', color: '#ffd7de' }
                   }
                 >
                   <FontAwesomeIcon icon={approving ? faSpinner : faRocket} spin={approving} style={{ marginRight: 8 }} />

@@ -113,7 +113,7 @@ const TERMINAL_JOB_STATUSES = ['completed', 'failed', 'cancelled'];
 // ── Local style objects (same inline idiom as EOCleaning.tsx:149-158) ────────
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(15,23,42,0.6)', border: `1px solid ${colors.hairline}`,
+  background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: `1px solid ${colors.hairline}`,
   color: colors.text, borderRadius: 8, padding: '8px 10px', fontSize: 12.5,
   outline: 'none', width: '100%', boxSizing: 'border-box',
 };

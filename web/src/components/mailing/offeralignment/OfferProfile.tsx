@@ -272,7 +272,7 @@ export const OfferProfile: React.FC<{
             sub={`of ${fmtNum(kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered)} sent (PG-scoped)`}
             title={rateWithDenom(kpis.clickerRate, kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered, 'sent (PG)')}
           />
-          <Stat label="Conversions" value={fmtNum(kpis.conversions)} color="#22c55e" sub="last-click attributed" />
+          <Stat label="Conversions" value={fmtNum(kpis.conversions)} color="var(--j-success)" sub="last-click attributed" />
           <Stat label="Revenue" value={fmtMoney(kpis.revenue)} />
           <Stat label="RPM" value={kpis.rpm == null ? '—' : fmtMoney(kpis.rpm)} sub={`revenue / ${fmtNum(kpis.delivered)} delivered × 1,000`} />
           <Stat label="EPC" value={kpis.epc == null ? '—' : fmtMoney(kpis.epc)} sub={`revenue / ${fmtNum(kpis.humanClicks)} human clicks`} />

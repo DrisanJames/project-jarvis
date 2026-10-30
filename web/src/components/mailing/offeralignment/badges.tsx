@@ -38,21 +38,21 @@ export const BADGE_META: Record<string, BadgeMeta> = {
     clickable: true,
   },
   LIST_QUALITY: {
-    color: '#fb923c',
+    color: 'var(--j-warn)',
     short: 'LQ',
     label: 'List quality',
     blurb: 'Hard-bounce (invalid mailbox) rate is elevated for this cell.',
     clickable: false,
   },
   LOW_VOLUME: {
-    color: '#64748b',
+    color: 'var(--j-text-faint)',
     short: 'LV',
     label: 'Low volume',
     blurb: 'Under the sample floor — metrics here are not rankable.',
     clickable: false,
   },
   NO_LAKE: {
-    color: '#64748b',
+    color: 'var(--j-text-faint)',
     short: 'NL',
     label: 'No delivery data',
     blurb: 'Delivery lake read is off — engagement-only numbers for this cell.',
@@ -65,7 +65,7 @@ export function badgeMeta(badge: string | null | undefined): BadgeMeta | null {
   if (!badge || badge === 'HEALTHY') return null;
   return (
     BADGE_META[badge] ?? {
-      color: '#64748b',
+      color: 'var(--j-text-faint)',
       short: '?',
       label: badge,
       blurb: '',
@@ -85,8 +85,8 @@ export const CornerBadge: React.FC<{
   const title = `${meta.label}${reason ? ` — ${reason}` : ''}${meta.blurb ? `. ${meta.blurb}` : ''}`;
   const style: React.CSSProperties = {
     color: meta.color,
-    background: `${meta.color}22`,
-    border: `1px solid ${meta.color}66`,
+    background: `color-mix(in srgb, ${meta.color} 13%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${meta.color} 40%, transparent)`,
   };
   if (meta.clickable && onClick) {
     return (
@@ -122,8 +122,8 @@ export const BadgePill: React.FC<{
   const title = `${meta.label}${reason ? ` — ${reason}` : ''}${meta.blurb ? `. ${meta.blurb}` : ''}`;
   const style: React.CSSProperties = {
     color: meta.color,
-    background: `${meta.color}22`,
-    border: `1px solid ${meta.color}66`,
+    background: `color-mix(in srgb, ${meta.color} 13%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${meta.color} 40%, transparent)`,
   };
   if (meta.clickable && onClick) {
     return (

@@ -16,9 +16,9 @@
 }
 
 .oa-op-back {
-  background: #0f1629;
-  color: #94a3b8;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-surface);
+  color: var(--j-text-muted);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   border-radius: 6px;
   padding: 7px 12px;
   font-size: 12px;
@@ -30,7 +30,7 @@
 }
 
 .oa-op-back:hover {
-  color: #e5e7eb;
+  color: var(--j-text);
 }
 
 .oa-op-titleblock {
@@ -41,13 +41,13 @@
 .oa-op-title {
   font-size: 18px;
   font-weight: 700;
-  color: #e5e7eb;
+  color: var(--j-text);
   letter-spacing: -0.2px;
 }
 
 .oa-op-offerkey {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-family: monospace;
   margin-top: 2px;
 }
@@ -60,9 +60,9 @@
 }
 
 .oa-op-refresh {
-  background: rgba(99, 102, 241, 0.13);
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  color: #c7d2fe;
+  background: color-mix(in srgb, var(--j-violet-strong) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent);
+  color: var(--j-violet-soft);
   border-radius: 6px;
   padding: 7px 14px;
   font-size: 12px;
@@ -86,33 +86,33 @@
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
   padding: 14px 16px;
-  background: #0f1629;
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent);
   border-radius: 10px;
 }
 
 .oa-op-statusline {
   font-size: 14px;
   font-weight: 600;
-  color: #e5e7eb;
+  color: var(--j-text);
   padding: 10px 14px;
-  background: rgba(99, 102, 241, 0.07);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-left: 4px solid #818cf8;
+  background: color-mix(in srgb, var(--j-violet-strong) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent);
+  border-left: 4px solid var(--j-violet);
   border-radius: 8px;
   line-height: 1.5;
 }
 
 .oa-op-attribution {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
 }
 
 /* ── Sections & tables ── */
 
 .oa-op-section {
-  background: #0f1629;
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent);
   border-radius: 10px;
   padding: 14px 16px;
 }
@@ -120,7 +120,7 @@
 .oa-op-sectiontitle {
   font-size: 12px;
   font-weight: 700;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   margin-bottom: 10px;
@@ -138,11 +138,11 @@
 
 .oa-op-th {
   padding: 7px 10px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+  border-bottom: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   font-weight: 600;
   white-space: nowrap;
   text-align: right;
@@ -154,20 +154,20 @@
 }
 
 .oa-op-tr {
-  border-bottom: 1px solid rgba(99, 102, 241, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent);
 }
 
 .oa-op-tr:hover {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--j-violet-strong) 6%, transparent);
 }
 
 .oa-op-tr--focus {
-  background: rgba(129, 140, 248, 0.1);
-  outline: 1px solid rgba(129, 140, 248, 0.4);
+  background: color-mix(in srgb, var(--j-violet) 10%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--j-violet) 40%, transparent);
 }
 
 .oa-op-tr--total {
-  border-top: 2px solid rgba(99, 102, 241, 0.3);
+  border-top: 2px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   font-weight: 700;
 }
 
@@ -177,7 +177,7 @@
 
 .oa-op-td {
   padding: 8px 10px;
-  color: #e5e7eb;
+  color: var(--j-text);
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -189,7 +189,7 @@
 
 .oa-op-denom {
   font-size: 10px;
-  color: #64748b;
+  color: var(--j-text-faint);
 }
 
 .oa-op-focuschip {
@@ -198,15 +198,15 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: #a5b4fc;
-  background: rgba(129, 140, 248, 0.12);
-  border: 1px solid rgba(129, 140, 248, 0.35);
+  color: var(--j-violet);
+  background: color-mix(in srgb, var(--j-violet) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet) 35%, transparent);
   border-radius: 999px;
   padding: 1px 7px;
 }
 
 .oa-op-action {
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-size: 11px;
   max-width: 180px;
   white-space: normal;
@@ -215,12 +215,12 @@
 .oa-op-footnote {
   padding: 10px 4px 0;
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   line-height: 1.5;
 }
 
 .oa-op-unattributed {
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-style: italic;
 }
 
@@ -235,8 +235,8 @@
 
 .oa-op-chip {
   background: transparent;
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  color: #94a3b8;
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
+  color: var(--j-text-muted);
   border-radius: 999px;
   padding: 4px 12px;
   font-size: 11px;
@@ -246,9 +246,9 @@
 }
 
 .oa-op-chip.is-active {
-  color: #818cf8;
-  background: rgba(129, 140, 248, 0.1);
-  border-color: rgba(129, 140, 248, 0.6);
+  color: var(--j-violet);
+  background: color-mix(in srgb, var(--j-violet) 10%, transparent);
+  border-color: color-mix(in srgb, var(--j-violet) 60%, transparent);
 }
 
 .oa-op-creativecell {
@@ -261,14 +261,14 @@
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  color: #e5e7eb;
+  color: var(--j-text);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .oa-op-creative-from {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   margin-top: 2px;
 }
 
@@ -277,9 +277,9 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: #64748b;
-  background: rgba(100, 116, 139, 0.13);
-  border: 1px solid rgba(100, 116, 139, 0.4);
+  color: var(--j-text-faint);
+  background: color-mix(in srgb, var(--j-text-muted) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-text-muted) 40%, transparent);
   border-radius: 999px;
   padding: 1px 7px;
   white-space: nowrap;
@@ -291,7 +291,7 @@
   padding: 0;
   margin-top: 3px;
   cursor: pointer;
-  color: #818cf8;
+  color: var(--j-violet);
   font-size: 11px;
   text-align: left;
   display: inline-flex;
@@ -310,7 +310,7 @@
   background: none;
   border: none;
   padding: 0;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
@@ -322,7 +322,7 @@
 }
 
 .oa-op-diagtoggle:hover {
-  color: #e5e7eb;
+  color: var(--j-text);
 }
 
 .oa-op-diagactive {
@@ -330,7 +330,7 @@
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0;
-  color: #fcd34d;
+  color: var(--j-warn);
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: 999px;
@@ -344,7 +344,7 @@
 
 .oa-op-diagnote {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   line-height: 1.5;
   max-width: 640px;
   margin-bottom: 10px;
@@ -362,15 +362,15 @@
   flex-direction: column;
   gap: 4px;
   font-size: 10px;
-  color: #64748b;
+  color: var(--j-text-faint);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .oa-op-diaginput {
-  background: #0a0e1c;
-  color: #e5e7eb;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-bg);
+  color: var(--j-text);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   border-radius: 6px;
   padding: 6px 10px;
   font-size: 12px;
@@ -380,14 +380,14 @@
 }
 
 .oa-op-diaginput:focus {
-  border-color: rgba(129, 140, 248, 0.7);
+  border-color: color-mix(in srgb, var(--j-violet) 70%, transparent);
 }
 
 .oa-op-diagapply,
 .oa-op-diagclear {
-  background: rgba(99, 102, 241, 0.13);
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  color: #c7d2fe;
+  background: color-mix(in srgb, var(--j-violet-strong) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent);
+  color: var(--j-violet-soft);
   border-radius: 6px;
   padding: 6px 14px;
   font-size: 12px;
@@ -403,7 +403,7 @@
 
 .oa-op-diagclear {
   background: transparent;
-  color: #94a3b8;
+  color: var(--j-text-muted);
 }
 
 /* ── Loading / inline states ── */
@@ -414,17 +414,17 @@
   gap: 10px;
   justify-content: center;
   padding: 48px 0;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-size: 13px;
-  background: #0f1629;
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent);
   border-radius: 10px;
 }
 
 .oa-op-inlineretry {
   background: transparent;
-  color: #818cf8;
-  border: 1px solid rgba(129, 140, 248, 0.5);
+  color: var(--j-violet);
+  border: 1px solid color-mix(in srgb, var(--j-violet) 50%, transparent);
   border-radius: 6px;
   padding: 4px 12px;
   font-size: 12px;
@@ -433,7 +433,7 @@
 
 .oa-op-timing {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-variant-numeric: tabular-nums;
 }
 
@@ -442,7 +442,7 @@
 .oa-op-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -451,8 +451,8 @@
 }
 
 .oa-op-modal {
-  background: #0a0e1c;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-bg);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   border-radius: 10px;
   width: min(760px, 95vw);
   max-height: 92vh;
@@ -463,7 +463,7 @@
 
 .oa-op-modal-head {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.3);
+  border-bottom: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -475,20 +475,20 @@
 
 .oa-op-modal-subject {
   font-weight: 700;
-  color: #e5e7eb;
+  color: var(--j-text);
   font-size: 14px;
 }
 
 .oa-op-modal-from {
   font-size: 12px;
-  color: #64748b;
+  color: var(--j-text-faint);
   margin-top: 2px;
 }
 
 .oa-op-modal-close {
   background: none;
   border: none;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   cursor: pointer;
   font-size: 20px;
   line-height: 1;
@@ -504,7 +504,7 @@
 .oa-op-modal-loading {
   padding: 40px;
   text-align: center;
-  color: #666;
+  color: var(--j-text-faint);
 }
 
 .oa-op-modal-error {
@@ -514,7 +514,7 @@
 
 .oa-op-modal-note {
   padding: 24px;
-  color: #444;
+  color: var(--j-text-faint);
   font-size: 13px;
 }
 

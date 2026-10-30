@@ -312,9 +312,9 @@ export const SmartLinkManager: React.FC = () => {
         <button
           onClick={() => setShowCreate(true)}
           style={{
-            background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+            background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
             border: 'none',
-            color: 'white',
+            color: 'var(--j-text)',
             padding: '0.5rem 1rem',
             borderRadius: '0.5rem',
             cursor: 'pointer',
@@ -328,16 +328,16 @@ export const SmartLinkManager: React.FC = () => {
       </header>
 
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem', alignItems: 'center' }}>
-        <label style={{ fontSize: '0.875rem', color: '#cbd5e1' }}>
+        <label style={{ fontSize: '0.875rem', color: 'var(--j-text-2)' }}>
           Brand:
           <select
             value={brandFilter}
             onChange={(e) => setBrandFilter(e.target.value)}
             style={{
               marginLeft: '0.5rem',
-              background: '#1e293b',
+              background: 'var(--j-surface-2)',
               color: colors.text,
-              border: '1px solid #334155',
+              border: '1px solid var(--j-border)',
               borderRadius: '0.375rem',
               padding: '0.375rem 0.5rem',
             }}
@@ -350,7 +350,7 @@ export const SmartLinkManager: React.FC = () => {
             ))}
           </select>
         </label>
-        <label style={{ fontSize: '0.875rem', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+        <label style={{ fontSize: '0.875rem', color: 'var(--j-text-2)', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
           <input
             type="checkbox"
             checked={includeDeleted}
@@ -361,9 +361,9 @@ export const SmartLinkManager: React.FC = () => {
         <button
           onClick={fetchLinks}
           style={{
-            background: '#1e293b',
+            background: 'var(--j-surface-2)',
             color: colors.text,
-            border: '1px solid #334155',
+            border: '1px solid var(--j-border)',
             borderRadius: '0.375rem',
             padding: '0.375rem 0.75rem',
             cursor: 'pointer',
@@ -386,7 +386,7 @@ export const SmartLinkManager: React.FC = () => {
           Loading smart links…
         </div>
       ) : error ? null : grouped.length === 0 ? (
-        <div style={{ background: '#1e293b', borderRadius: '0.5rem', paddingBottom: '1rem' }}>
+        <div style={{ background: 'var(--j-surface-2)', borderRadius: '0.5rem', paddingBottom: '1rem' }}>
           <EmptyState
             icon={faLink}
             title="No smart links configured."
@@ -395,7 +395,7 @@ export const SmartLinkManager: React.FC = () => {
           <div style={{ textAlign: 'center' }}>
             <button
               onClick={() => setShowCreate(true)}
-              style={{ background: 'none', border: 'none', color: '#8b5cf6', cursor: 'pointer', textDecoration: 'underline', fontSize: '0.875rem' }}
+              style={{ background: 'none', border: 'none', color: 'var(--j-violet-strong)', cursor: 'pointer', textDecoration: 'underline', fontSize: '0.875rem' }}
             >
               Create one
             </button>
@@ -406,7 +406,7 @@ export const SmartLinkManager: React.FC = () => {
           <section key={brand} style={{ marginBottom: '1.5rem' }}>
             <h3
               style={{
-                color: '#cbd5e1',
+                color: 'var(--j-text-2)',
                 fontSize: '1rem',
                 marginBottom: '0.5rem',
                 fontWeight: 600,
@@ -419,14 +419,14 @@ export const SmartLinkManager: React.FC = () => {
             </h3>
             <div
               style={{
-                background: '#0f172a',
-                border: '1px solid #1e293b',
+                background: 'var(--j-bg)',
+                border: '1px solid var(--j-surface-2)',
                 borderRadius: '0.5rem',
                 overflow: 'hidden',
               }}
             >
               <table style={{ ...tableStyle, fontSize: '0.875rem' }}>
-                <thead style={{ background: '#1e293b' }}>
+                <thead style={{ background: 'var(--j-surface-2)' }}>
                   <tr>
                     <th style={thStyle}>Slug</th>
                     <th style={thStyle}>Hash</th>
@@ -440,7 +440,7 @@ export const SmartLinkManager: React.FC = () => {
                 </thead>
                 <tbody>
                   {rows.map((link) => (
-                    <tr key={link.id} style={{ borderTop: '1px solid #1e293b' }}>
+                    <tr key={link.id} style={{ borderTop: '1px solid var(--j-surface-2)' }}>
                       <td style={tdStyle}>
                         <a
                           href={`https://${link.brand_root}/${link.slug}`}
@@ -454,7 +454,7 @@ export const SmartLinkManager: React.FC = () => {
                       </td>
                       <td style={tdStyle}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                          <code style={{ fontSize: '0.75rem', color: '#cbd5e1', userSelect: 'all' }}>
+                          <code style={{ fontSize: '0.75rem', color: 'var(--j-text-2)', userSelect: 'all' }}>
                             {link.hash || '—'}
                           </code>
                           {link.hash && <CopyButton text={link.hash} title="Copy hash" />}
@@ -488,7 +488,7 @@ export const SmartLinkManager: React.FC = () => {
                         </a>
                       </td>
                       <td style={{ ...tdStyle, maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        <code style={{ fontSize: '0.75rem', color: '#cbd5e1' }} title={link.offer_url_template}>
+                        <code style={{ fontSize: '0.75rem', color: 'var(--j-text-2)' }} title={link.offer_url_template}>
                           {link.offer_url_template}
                         </code>
                       </td>
@@ -502,9 +502,9 @@ export const SmartLinkManager: React.FC = () => {
                           disabled={link.status === 'deleted'}
                           title="low = direct redirect handoff · high = bridge page on brand site"
                           style={{
-                            background: '#1e293b',
+                            background: 'var(--j-surface-2)',
                             color: riskColor(link.risk_profile),
-                            border: '1px solid #334155',
+                            border: '1px solid var(--j-border)',
                             borderRadius: '0.25rem',
                             padding: '0.125rem 0.25rem',
                             fontSize: '0.75rem',
@@ -573,8 +573,8 @@ export const SmartLinkManager: React.FC = () => {
 
 const actionBtn: React.CSSProperties = {
   background: 'none',
-  border: '1px solid #334155',
-  color: '#cbd5e1',
+  border: '1px solid var(--j-border)',
+  color: 'var(--j-text-2)',
   padding: '0.25rem 0.5rem',
   borderRadius: '0.25rem',
   cursor: 'pointer',
@@ -617,7 +617,7 @@ const CreateDialog: React.FC<CreateDialogProps> = ({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.7)',
+        background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -628,8 +628,8 @@ const CreateDialog: React.FC<CreateDialogProps> = ({
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: '#0f172a',
-          border: '1px solid #1e293b',
+          background: 'var(--j-bg)',
+          border: '1px solid var(--j-surface-2)',
           borderRadius: '0.75rem',
           padding: '1.5rem',
           width: '100%',
@@ -756,12 +756,12 @@ const labelStyle: React.CSSProperties = {
   flexDirection: 'column',
   gap: '0.25rem',
   fontSize: '0.8125rem',
-  color: '#cbd5e1',
+  color: 'var(--j-text-2)',
 };
 
 const inputStyle: React.CSSProperties = {
-  background: '#1e293b',
-  border: '1px solid #334155',
+  background: 'var(--j-surface-2)',
+  border: '1px solid var(--j-border)',
   borderRadius: '0.375rem',
   padding: '0.5rem 0.75rem',
   color: colors.text,
@@ -769,9 +769,9 @@ const inputStyle: React.CSSProperties = {
 };
 
 const primaryBtn: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
   border: 'none',
-  color: 'white',
+  color: 'var(--j-text)',
   padding: '0.5rem 1rem',
   borderRadius: '0.375rem',
   cursor: 'pointer',
@@ -781,9 +781,9 @@ const primaryBtn: React.CSSProperties = {
 };
 
 const secondaryBtn: React.CSSProperties = {
-  background: '#1e293b',
-  border: '1px solid #334155',
-  color: '#cbd5e1',
+  background: 'var(--j-surface-2)',
+  border: '1px solid var(--j-border)',
+  color: 'var(--j-text-2)',
   padding: '0.5rem 1rem',
   borderRadius: '0.375rem',
   cursor: 'pointer',

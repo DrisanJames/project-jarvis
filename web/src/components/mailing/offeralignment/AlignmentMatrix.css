@@ -1,6 +1,6 @@
 /* AlignmentMatrix.css — Offer Alignment Level 0 (dark portal theme).
    Palette: indigo accents over slate-blue panels; text stays in ink tokens
-   (#e5e7eb / #94a3b8 / #64748b) — the color ramp lives on cell backgrounds. */
+   (var(--j-text) / var(--j-text-muted) / var(--j-text-faint)) — the color ramp lives on cell backgrounds. */
 
 .oa-mx-root {
   display: flex;
@@ -19,17 +19,17 @@
 
 .oa-mx-seg {
   display: inline-flex;
-  background: #0a0e1c;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-bg);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .oa-mx-seg-btn {
   border: none;
-  border-right: 1px solid rgba(99, 102, 241, 0.15);
+  border-right: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent);
   background: transparent;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   padding: 7px 12px;
   font-size: 12px;
   font-weight: 500;
@@ -42,23 +42,23 @@
 }
 
 .oa-mx-seg-btn.is-active {
-  color: #818cf8;
-  background: rgba(129, 140, 248, 0.08);
+  color: var(--j-violet);
+  background: color-mix(in srgb, var(--j-violet) 8%, transparent);
   font-weight: 700;
 }
 
 .oa-mx-metricnote {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   max-width: 420px;
   line-height: 1.4;
 }
 
 .oa-mx-refresh {
   margin-left: auto;
-  background: #0f1629;
-  color: #e5e7eb;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-surface);
+  color: var(--j-text);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   padding: 7px 14px;
   border-radius: 6px;
   font-size: 12px;
@@ -81,38 +81,38 @@
   gap: 16px;
   align-items: flex-start;
   padding: 24px;
-  background: #0f1629;
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
   border-radius: 12px;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-size: 13px;
 }
 
 .oa-mx-statecard-icon {
   font-size: 24px;
-  color: #a5b4fc;
+  color: var(--j-violet);
   margin-top: 2px;
 }
 
 .oa-mx-statecard-title {
   font-size: 15px;
   font-weight: 700;
-  color: #e5e7eb;
+  color: var(--j-text);
   margin-bottom: 6px;
 }
 
 .oa-mx-statecard-body {
   font-size: 13px;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   line-height: 1.6;
   max-width: 640px;
 }
 
 .oa-mx-retry {
   margin-top: 12px;
-  background: rgba(99, 102, 241, 0.13);
-  border: 1px solid rgba(99, 102, 241, 0.4);
-  color: #c7d2fe;
+  background: color-mix(in srgb, var(--j-violet-strong) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent);
+  color: var(--j-violet-soft);
   border-radius: 6px;
   padding: 6px 14px;
   font-size: 12px;
@@ -145,7 +145,7 @@
 
 .oa-mx-th {
   padding: 6px 8px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -169,7 +169,7 @@
   background: none;
   border: none;
   padding: 0;
-  color: #e5e7eb;
+  color: var(--j-text);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -182,14 +182,14 @@
 }
 
 .oa-mx-offerlink:hover {
-  color: #a5b4fc;
+  color: var(--j-violet);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
 
 .oa-mx-offersub {
   font-size: 10px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-variant-numeric: tabular-nums;
   margin-top: 1px;
 }
@@ -214,12 +214,12 @@
 }
 
 .oa-mx-cell--empty {
-  color: #475569;
+  color: var(--j-text-faint);
   text-align: center;
   cursor: default;
   padding: 10px 8px;
   font-size: 11px;
-  background: rgba(100, 116, 139, 0.04);
+  background: color-mix(in srgb, var(--j-text-muted) 4%, transparent);
 }
 
 .oa-mx-cell--empty:hover {
@@ -236,13 +236,13 @@
 .oa-mx-cell-value {
   font-size: 13px;
   font-weight: 700;
-  color: #e5e7eb;
+  color: var(--j-text);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .oa-mx-cell--low .oa-mx-cell-value {
-  color: #64748b;
+  color: var(--j-text-faint);
   font-weight: 500;
 }
 
@@ -250,25 +250,25 @@
   margin-top: 5px;
   height: 3px;
   border-radius: 999px;
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--j-violet-strong) 12%, transparent);
   overflow: hidden;
 }
 
 .oa-mx-volbar-fill {
   height: 100%;
   border-radius: 999px;
-  background: #818cf8;
+  background: var(--j-violet);
   opacity: 0.85;
 }
 
 .oa-mx-cell--low .oa-mx-volbar-fill {
-  background: #64748b;
+  background: var(--j-text-faint);
 }
 
 .oa-mx-footnote {
   padding: 10px 4px 0;
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   line-height: 1.5;
   max-width: 900px;
 }
@@ -278,8 +278,8 @@
 .oa-mx-rail {
   width: 270px;
   flex-shrink: 0;
-  background: #0f1629;
-  border: 1px solid rgba(99, 102, 241, 0.15);
+  background: var(--j-surface);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent);
   border-radius: 10px;
   padding: 12px;
   display: flex;
@@ -292,7 +292,7 @@
 .oa-mx-rail-title {
   font-size: 11px;
   font-weight: 700;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
   display: flex;
@@ -315,14 +315,14 @@
 }
 
 .oa-mx-leader:hover {
-  background: rgba(99, 102, 241, 0.1);
-  border-color: rgba(99, 102, 241, 0.3);
+  background: color-mix(in srgb, var(--j-violet-strong) 10%, transparent);
+  border-color: color-mix(in srgb, var(--j-violet-strong) 30%, transparent);
 }
 
 .oa-mx-leader-rank {
   font-size: 11px;
   font-weight: 700;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-variant-numeric: tabular-nums;
   min-width: 16px;
   padding-top: 1px;
@@ -338,7 +338,7 @@
 .oa-mx-leader-name {
   font-size: 12px;
   font-weight: 600;
-  color: #e5e7eb;
+  color: var(--j-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -346,7 +346,7 @@
 
 .oa-mx-leader-sub {
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--j-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -361,7 +361,7 @@
 
 .oa-mx-timing {
   font-size: 11px;
-  color: #64748b;
+  color: var(--j-text-faint);
   font-variant-numeric: tabular-nums;
 }
 

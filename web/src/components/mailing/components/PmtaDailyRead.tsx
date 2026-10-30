@@ -69,7 +69,7 @@ const DeliveryTable: React.FC<{ rows: LaneRow[] }> = ({ rows }) => (
           const t = sumLanes(rs);
           return (
             <React.Fragment key={g}>
-              <tr style={{ background: 'rgba(99,102,241,0.08)' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' }}>
                 <td style={{ ...tdStyle, fontWeight: 700 }}>{GROUP_LABEL[g]}</td>
                 <td style={{ ...numTd, fontWeight: 700 }}>{fmt(t.messages)}</td><td style={{ ...numTd, fontWeight: 700 }}>{fmt(t.delivered)}</td>
                 <td style={{ ...numTd, fontWeight: 700 }}>{pctS(t.acc)}</td><td style={numTd}>{pctS(t.first)}</td><td style={numTd}>{pctS(t.dfr)}</td>
@@ -107,7 +107,7 @@ const CellsTable: React.FC<{ rows: CellRow[]; empty: string }> = ({ rows, empty 
           const t = sumCells(rs);
           return (
             <React.Fragment key={g}>
-              <tr style={{ background: 'rgba(99,102,241,0.08)' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' }}>
                 <td style={{ ...tdStyle, fontWeight: 700 }}>{GROUP_LABEL[g]}</td><td style={{ ...numTd, fontWeight: 700 }}>{fmt(t.cells)}</td>
                 <td style={{ ...numTd, fontWeight: 700 }}>{fmt(t.planned)}</td><td style={{ ...numTd, fontWeight: 700 }}>{fmt(t.sent)}</td>
                 <td style={numTd}>{pctS(pct(t.sent, t.planned))}</td><td style={tdStyle} />

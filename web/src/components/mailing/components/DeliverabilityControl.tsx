@@ -140,36 +140,36 @@ const ISP_COLORS: Record<string, string> = {
   gmail: '#ea4335',
   yahoo: '#6001d2',
   microsoft: '#00a4ef',
-  apple: '#a2aaad',
+  apple: 'var(--j-text-muted)',
   comcast: '#ed1c24',
   att: '#00a8e0',
   cox: '#0072ce',
   charter: '#0070c0',
   aol: '#31459b',
   sbcglobal: '#1e6091',
-  other: '#64748b',
-  unknown: '#475569',
+  other: 'var(--j-text-faint)',
+  unknown: 'var(--j-border-strong)',
 };
 
 const SENDING_DOMAIN_COLORS: Record<string, string> = {
   'em.discountblog.com': '#f59e0b',
-  'em.quizfiesta.com': '#10b981',
-  'em.historythinking.com': '#8b5cf6',
-  'em.myownhealth.net': '#ec4899',
-  'm.discountblog.com': '#f97316',
-  unknown: '#475569',
+  'em.quizfiesta.com': 'var(--j-success)',
+  'em.historythinking.com': 'var(--j-violet-strong)',
+  'em.myownhealth.net': 'var(--j-pink)',
+  'm.discountblog.com': 'var(--j-warn)',
+  unknown: 'var(--j-border-strong)',
 };
 
 const ISP_ORDER = ['gmail', 'microsoft', 'yahoo', 'apple', 'comcast', 'att', 'cox', 'charter'];
 
 const METRIC_LABELS: Record<Metric, { label: string; color: string }> = {
-  attempted: { label: 'Attempted', color: '#3b82f6' },
-  delivered: { label: 'Delivered', color: '#10b981' },
+  attempted: { label: 'Attempted', color: 'var(--j-blue)' },
+  delivered: { label: 'Delivered', color: 'var(--j-success)' },
   hard_bounce: { label: 'Hard Bounce', color: '#ef4444' },
   soft_bounce: { label: 'Soft Bounce', color: '#f59e0b' },
-  deferred: { label: 'Deferred', color: '#fbbf24' },
-  complaint: { label: 'Complaint', color: '#a855f7' },
-  reputation_blocked: { label: 'Reputation Block', color: '#dc2626' },
+  deferred: { label: 'Deferred', color: 'var(--j-warn)' },
+  complaint: { label: 'Complaint', color: 'var(--j-violet)' },
+  reputation_blocked: { label: 'Reputation Block', color: 'var(--j-danger)' },
 };
 
 // Polling cadence per window — user said "10s is fine or even a minute"
@@ -302,7 +302,7 @@ export const DeliverabilityControl: React.FC = () => {
   return (
     <div style={styles.container}>
       {toast && (
-        <div style={{ ...styles.toast, background: toast.type === 'success' ? '#059669' : '#dc2626' }}>
+        <div style={{ ...styles.toast, background: toast.type === 'success' ? 'var(--j-success)' : 'var(--j-danger)' }}>
           {toast.msg}
         </div>
       )}
@@ -376,7 +376,7 @@ export const DeliverabilityControl: React.FC = () => {
           <span style={styles.calcResult}>
             Required: <strong>{fmtNum(requiredRate)}/hr</strong>
           </span>
-          <span style={{ ...styles.calcResult, color: capacityPct >= 100 ? '#10b981' : '#ef4444' }}>
+          <span style={{ ...styles.calcResult, color: capacityPct >= 100 ? 'var(--j-success)' : '#ef4444' }}>
             Capacity: <strong>{capacityPct}%</strong>
           </span>
           <span style={styles.calcResult}>
@@ -391,11 +391,11 @@ export const DeliverabilityControl: React.FC = () => {
       {/* 7. Existing ISP rate cards — unchanged */}
       <div style={styles.grid}>
         {data.configs.map(cfg => {
-          const color = ISP_COLORS[cfg.isp] || '#6b7280';
+          const color = ISP_COLORS[cfg.isp] || 'var(--j-text-faint)';
           const isYahoo = cfg.isp === 'yahoo';
           const isEditing = cfg.isp in editingRates;
           const isSaving = saving[cfg.isp];
-          const adjColor = cfg.rate_adjustment >= 1.0 ? '#10b981' : cfg.rate_adjustment >= 0.7 ? '#f59e0b' : '#ef4444';
+          const adjColor = cfg.rate_adjustment >= 1.0 ? 'var(--j-success)' : cfg.rate_adjustment >= 0.7 ? '#f59e0b' : '#ef4444';
           const deliveryRate = cfg.sent_1h > 0 ? Math.round((cfg.delivered_1h / cfg.sent_1h) * 100) : 0;
 
           return (
@@ -454,7 +454,7 @@ export const DeliverabilityControl: React.FC = () => {
 
               <div style={styles.statsGrid}>
                 <MiniStat label="Sent" value={cfg.sent_1h} />
-                <MiniStat label="Delivered" value={cfg.delivered_1h} color="#10b981" />
+                <MiniStat label="Delivered" value={cfg.delivered_1h} color="var(--j-success)" />
                 <MiniStat label="Hard Bounce" value={cfg.hard_bounce_1h} color={cfg.hard_bounce_1h > 0 ? '#ef4444' : undefined} />
                 <MiniStat label="Soft Bounce" value={cfg.soft_bounce_1h} color={cfg.soft_bounce_1h > 0 ? '#f59e0b' : undefined} />
                 <MiniStat label="Deferred" value={cfg.deferred_1h} color={cfg.deferred_1h > 0 ? '#f59e0b' : undefined} />
@@ -535,12 +535,12 @@ const KPIStrip: React.FC<{ windowKey: WindowKey }> = ({ windowKey }) => {
   return (
     <div style={{ ...styles.kpiStrip, opacity: stale ? 0.6 : 1 }}>
       <KPI label="Attempted" value={fmtNum(totals.attempted)} sub={`${windowKey} window`} />
-      <KPI label="Delivered" value={fmtNum(totals.delivered)} sub={`${totals.accept_pct.toFixed(2)}%`} color="#10b981" />
-      <KPI label="Hard Bounce" value={fmtNum(totals.hard_bounce)} sub={`${totals.hard_pct.toFixed(2)}%`} color={totals.hard_bounce > 0 ? '#ef4444' : '#475569'} />
-      <KPI label="Soft Bounce" value={fmtNum(totals.soft_bounce)} sub={`${totals.soft_pct.toFixed(2)}%`} color={totals.soft_bounce > 0 ? '#f59e0b' : '#475569'} />
-      <KPI label="Deferred" value={fmtNum(totals.deferred)} sub={`${totals.defer_pct.toFixed(2)}%`} color={totals.defer_pct > 20 ? '#f59e0b' : '#94a3b8'} />
-      <KPI label="Complaint" value={fmtNum(totals.complaint)} sub={`${totals.complaint_pct.toFixed(3)}%`} color={totals.complaint > 0 ? '#a855f7' : '#475569'} />
-      <KPI label="Reputation Block" value={fmtNum(totals.reputation_blocked)} sub="spam/policy" color={totals.reputation_blocked > 0 ? '#dc2626' : '#475569'} />
+      <KPI label="Delivered" value={fmtNum(totals.delivered)} sub={`${totals.accept_pct.toFixed(2)}%`} color="var(--j-success)" />
+      <KPI label="Hard Bounce" value={fmtNum(totals.hard_bounce)} sub={`${totals.hard_pct.toFixed(2)}%`} color={totals.hard_bounce > 0 ? '#ef4444' : 'var(--j-border-strong)'} />
+      <KPI label="Soft Bounce" value={fmtNum(totals.soft_bounce)} sub={`${totals.soft_pct.toFixed(2)}%`} color={totals.soft_bounce > 0 ? '#f59e0b' : 'var(--j-border-strong)'} />
+      <KPI label="Deferred" value={fmtNum(totals.deferred)} sub={`${totals.defer_pct.toFixed(2)}%`} color={totals.defer_pct > 20 ? '#f59e0b' : 'var(--j-text-muted)'} />
+      <KPI label="Complaint" value={fmtNum(totals.complaint)} sub={`${totals.complaint_pct.toFixed(3)}%`} color={totals.complaint > 0 ? 'var(--j-violet)' : 'var(--j-border-strong)'} />
+      <KPI label="Reputation Block" value={fmtNum(totals.reputation_blocked)} sub="spam/policy" color={totals.reputation_blocked > 0 ? 'var(--j-danger)' : 'var(--j-border-strong)'} />
     </div>
   );
 };
@@ -548,7 +548,7 @@ const KPIStrip: React.FC<{ windowKey: WindowKey }> = ({ windowKey }) => {
 const KPI: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({ label, value, sub, color }) => (
   <div style={styles.kpiCard}>
     <div style={styles.kpiLabel}>{label}</div>
-    <div style={{ ...styles.kpiValue, color: color || '#e2e8f0' }}>{value}</div>
+    <div style={{ ...styles.kpiValue, color: color || 'var(--j-text)' }}>{value}</div>
     {sub && <div style={styles.kpiSub}>{sub}</div>}
   </div>
 );
@@ -635,18 +635,18 @@ const HealthCenterChart: React.FC<{
               <defs>
                 {keys.map(k => (
                   <linearGradient key={k} id={`grad-${k}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={palette[k] || '#64748b'} stopOpacity={0.6} />
-                    <stop offset="100%" stopColor={palette[k] || '#64748b'} stopOpacity={0.05} />
+                    <stop offset="0%" stopColor={palette[k] || 'var(--j-text-faint)'} stopOpacity={0.6} />
+                    <stop offset="100%" stopColor={palette[k] || 'var(--j-text-faint)'} stopOpacity={0.05} />
                   </linearGradient>
                 ))}
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" />
-              <XAxis dataKey="ts" tick={{ fontSize: 10, fill: '#64748b' }} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={fmtNum} />
+              <CartesianGrid strokeDasharray="3 3" stroke="color-mix(in srgb, var(--j-text-muted) 15%, transparent)" />
+              <XAxis dataKey="ts" tick={{ fontSize: 10, fill: 'var(--j-text-faint)' }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 10, fill: 'var(--j-text-faint)' }} tickFormatter={fmtNum} />
               <RechartsTooltip
-                contentStyle={{ background: '#0f172a', border: '1px solid rgba(100,116,139,0.3)', borderRadius: 6, fontSize: 11 }}
-                labelStyle={{ color: '#94a3b8' }}
-                itemStyle={{ color: '#e2e8f0' }}
+                contentStyle={{ background: 'var(--j-bg)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, fontSize: 11 }}
+                labelStyle={{ color: 'var(--j-text-muted)' }}
+                itemStyle={{ color: 'var(--j-text)' }}
                 formatter={(v: number) => fmtNum(v)}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} iconType="square" />
@@ -656,7 +656,7 @@ const HealthCenterChart: React.FC<{
                   type="monotone"
                   dataKey={k}
                   stackId="1"
-                  stroke={palette[k] || '#64748b'}
+                  stroke={palette[k] || 'var(--j-text-faint)'}
                   fill={`url(#grad-${k})`}
                   strokeWidth={1.5}
                   isAnimationActive={false}
@@ -751,7 +751,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
               <th style={styles.matrixIspHead}>Provider</th>
               {pivot.domains.map(d => (
                 <th key={d} style={styles.matrixDomainHead}>
-                  <span style={{ color: SENDING_DOMAIN_COLORS[d] || '#94a3b8' }}>●</span>{' '}{d}
+                  <span style={{ color: SENDING_DOMAIN_COLORS[d] || 'var(--j-text-muted)' }}>●</span>{' '}{d}
                 </th>
               ))}
             </tr>
@@ -759,7 +759,7 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
           <tbody>
             {pivot.isps.map(isp => (
               <tr key={isp}>
-                <td style={{ ...styles.matrixIspCell, color: ISP_COLORS[isp] || '#94a3b8' }}>{isp}</td>
+                <td style={{ ...styles.matrixIspCell, color: ISP_COLORS[isp] || 'var(--j-text-muted)' }}>{isp}</td>
                 {pivot.domains.map(d => {
                   const cell = pivot.grid[isp]?.[d];
                   return (
@@ -801,9 +801,9 @@ const MatrixTable: React.FC<{ windowKey: WindowKey; bounceActionPct: number; com
 };
 
 const CellContent: React.FC<{ c: MatrixCell; bounceActionPct: number; complaintActionPct: number }> = ({ c, bounceActionPct, complaintActionPct }) => {
-  const acceptColor = c.accept_pct >= 99 ? '#10b981' : c.accept_pct >= 95 ? '#f59e0b' : '#ef4444';
-  const hardColor = c.hard_pct >= bounceActionPct ? '#ef4444' : c.hard_pct >= bounceActionPct / 2 ? '#f59e0b' : '#475569';
-  const compColor = c.complaint_pct >= complaintActionPct ? '#dc2626' : c.complaint_pct >= complaintActionPct / 2 ? '#a855f7' : '#475569';
+  const acceptColor = c.accept_pct >= 99 ? 'var(--j-success)' : c.accept_pct >= 95 ? '#f59e0b' : '#ef4444';
+  const hardColor = c.hard_pct >= bounceActionPct ? '#ef4444' : c.hard_pct >= bounceActionPct / 2 ? '#f59e0b' : 'var(--j-border-strong)';
+  const compColor = c.complaint_pct >= complaintActionPct ? 'var(--j-danger)' : c.complaint_pct >= complaintActionPct / 2 ? 'var(--j-violet)' : 'var(--j-border-strong)';
   return (
     <>
       <div style={{ ...styles.matrixAccept, color: acceptColor }}>{c.accept_pct.toFixed(2)}%</div>
@@ -908,10 +908,10 @@ const DrilldownPanel: React.FC<{
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={`${r.isp}-${r.sending_domain}-${r.dsn_status}-${i}`}>
-                    <td style={{ ...styles.drilldownTd, color: ISP_COLORS[r.isp] || '#94a3b8' }}>{r.isp}</td>
-                    <td style={{ ...styles.drilldownTd, color: SENDING_DOMAIN_COLORS[r.sending_domain] || '#94a3b8' }}>{r.sending_domain}</td>
+                    <td style={{ ...styles.drilldownTd, color: ISP_COLORS[r.isp] || 'var(--j-text-muted)' }}>{r.isp}</td>
+                    <td style={{ ...styles.drilldownTd, color: SENDING_DOMAIN_COLORS[r.sending_domain] || 'var(--j-text-muted)' }}>{r.sending_domain}</td>
                     <td style={styles.drilldownTd}>{r.dsn_status || '—'}</td>
-                    <td style={{ ...styles.drilldownTd, color: '#64748b', maxWidth: 360, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.dsn_sample}>
+                    <td style={{ ...styles.drilldownTd, color: 'var(--j-text-faint)', maxWidth: 360, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.dsn_sample}>
                       {r.dsn_sample || '—'}
                     </td>
                     <td style={{ ...styles.drilldownTd, textAlign: 'right', fontWeight: 600 }}>{fmtNum(r.count)}</td>
@@ -967,8 +967,8 @@ const IPActivityPanel: React.FC = () => {
         </h3>
       </div>
       <div style={styles.ipColumns}>
-        <IPColumn title="Active" color="#10b981" rows={data.active} emptyMsg="No active IPs in 24h." />
-        <IPColumn title="Cold" color="#94a3b8" rows={data.cold} emptyMsg="No cold IPs (everything sent in 24h)." />
+        <IPColumn title="Active" color="var(--j-success)" rows={data.active} emptyMsg="No active IPs in 24h." />
+        <IPColumn title="Cold" color="var(--j-text-muted)" rows={data.cold} emptyMsg="No cold IPs (everything sent in 24h)." />
         <IPColumn title="Paused / Quarantined" color="#ef4444" rows={data.paused} emptyMsg="No paused IPs." />
       </div>
     </div>
@@ -997,13 +997,13 @@ const IPColumn: React.FC<{ title: string; color: string; rows: IPActivityRow[]; 
             {ip.sent > 0 ? (
               <div style={styles.ipRowMetrics}>
                 <span>sent <strong>{fmtNum(ip.sent)}</strong></span>
-                <span style={{ color: ip.accept_pct >= 99 ? '#10b981' : ip.accept_pct >= 95 ? '#f59e0b' : '#ef4444' }}>
+                <span style={{ color: ip.accept_pct >= 99 ? 'var(--j-success)' : ip.accept_pct >= 95 ? '#f59e0b' : '#ef4444' }}>
                   {ip.accept_pct.toFixed(2)}%
                 </span>
                 {ip.hard_bounce > 0 && <span style={{ color: '#ef4444' }}>h {fmtNum(ip.hard_bounce)}</span>}
                 {ip.soft_bounce > 0 && <span style={{ color: '#f59e0b' }}>s {fmtNum(ip.soft_bounce)}</span>}
                 {ip.deferred > 0 && <span>d {fmtNum(ip.deferred)}</span>}
-                {ip.complaint > 0 && <span style={{ color: '#a855f7' }}>c {fmtNum(ip.complaint)}</span>}
+                {ip.complaint > 0 && <span style={{ color: 'var(--j-violet)' }}>c {fmtNum(ip.complaint)}</span>}
               </div>
             ) : (
               <div style={styles.ipRowMetricsCold}>
@@ -1019,19 +1019,19 @@ const IPColumn: React.FC<{ title: string; color: string; rows: IPActivityRow[]; 
 
 function ipStatusColor(status: string): string {
   switch (status) {
-    case 'active': return '#10b981';
+    case 'active': return 'var(--j-success)';
     case 'warmup': return '#f59e0b';
-    case 'cold': return '#94a3b8';
+    case 'cold': return 'var(--j-text-muted)';
     case 'paused': return '#ef4444';
-    case 'quarantined': return '#dc2626';
-    default: return '#64748b';
+    case 'quarantined': return 'var(--j-danger)';
+    default: return 'var(--j-text-faint)';
   }
 }
 
 const StatBoxUnused: React.FC<{ label: string; value: string; color?: string }> = ({ label, value, color }) => (
   <div style={styles.statBox}>
     <div style={styles.statLabel}>{label}</div>
-    <div style={{ ...styles.statValue, color: color || '#e2e8f0' }}>{value}</div>
+    <div style={{ ...styles.statValue, color: color || 'var(--j-text)' }}>{value}</div>
   </div>
 );
 // Suppress unused warning for backwards-compat helper kept for potential future use.
@@ -1040,7 +1040,7 @@ void StatBoxUnused;
 const MiniStat: React.FC<{ label: string; value: number; color?: string }> = ({ label, value, color }) => (
   <div style={styles.miniStat}>
     <span style={styles.miniLabel}>{label}</span>
-    <span style={{ ...styles.miniValue, color: color || '#94a3b8' }}>{fmtNum(value)}</span>
+    <span style={{ ...styles.miniValue, color: color || 'var(--j-text-muted)' }}>{fmtNum(value)}</span>
   </div>
 );
 
@@ -1052,120 +1052,120 @@ function fmtNum(n: number): string {
 
 const styles: Record<string, React.CSSProperties> = {
   container: { padding: '24px 32px', maxWidth: 1400, margin: '0 auto', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
-  loading: { textAlign: 'center', padding: 80, color: '#94a3b8', fontSize: 14 },
+  loading: { textAlign: 'center', padding: 80, color: 'var(--j-text-muted)', fontSize: 14 },
   error: { textAlign: 'center', padding: 80, color: '#ef4444', fontSize: 14 },
-  toast: { position: 'fixed', top: 20, right: 20, padding: '10px 20px', borderRadius: 8, color: '#fff', fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' },
+  toast: { position: 'fixed', top: 20, right: 20, padding: '10px 20px', borderRadius: 8, color: 'var(--j-text)', fontSize: 13, fontWeight: 600, zIndex: 9999, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' as const, gap: 12 },
   headerLeft: { display: 'flex', alignItems: 'baseline', gap: 12 },
-  title: { margin: 0, fontSize: 22, fontWeight: 700, color: '#e2e8f0' },
-  version: { fontSize: 11, color: '#64748b' },
+  title: { margin: 0, fontSize: 22, fontWeight: 700, color: 'var(--j-text)' },
+  version: { fontSize: 11, color: 'var(--j-text-faint)' },
   headerStats: { display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' as const },
-  windowSelector: { display: 'inline-flex', background: 'rgba(15,23,42,0.7)', borderRadius: 8, padding: 3, gap: 2 },
-  windowBtn: { background: 'transparent', border: 'none', color: '#94a3b8', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 },
-  windowBtnActive: { background: 'rgba(59,130,246,0.2)', border: 'none', color: '#3b82f6', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 },
+  windowSelector: { display: 'inline-flex', background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', borderRadius: 8, padding: 3, gap: 2 },
+  windowBtn: { background: 'transparent', border: 'none', color: 'var(--j-text-muted)', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 },
+  windowBtnActive: { background: 'color-mix(in srgb, var(--j-blue) 20%, transparent)', border: 'none', color: 'var(--j-blue)', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700 },
   refreshToggle: { marginLeft: 8 },
-  refreshLabel: { fontSize: 12, color: '#94a3b8', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 },
+  refreshLabel: { fontSize: 12, color: 'var(--j-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 },
 
   kpiStrip: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20, transition: 'opacity 0.3s' },
-  kpiStripLoading: { padding: 24, textAlign: 'center' as const, color: '#64748b', background: 'rgba(15,23,42,0.4)', borderRadius: 10, marginBottom: 20, fontSize: 12 },
-  kpiCard: { background: 'rgba(15,23,42,0.7)', borderRadius: 10, padding: '12px 16px', border: '1px solid rgba(100,116,139,0.15)' },
-  kpiLabel: { fontSize: 10, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginBottom: 4 },
+  kpiStripLoading: { padding: 24, textAlign: 'center' as const, color: 'var(--j-text-faint)', background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', borderRadius: 10, marginBottom: 20, fontSize: 12 },
+  kpiCard: { background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', borderRadius: 10, padding: '12px 16px', border: '1px solid color-mix(in srgb, var(--j-text-muted) 15%, transparent)' },
+  kpiLabel: { fontSize: 10, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5, marginBottom: 4 },
   kpiValue: { fontSize: 20, fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
-  kpiSub: { fontSize: 10, color: '#94a3b8', marginTop: 2 },
+  kpiSub: { fontSize: 10, color: 'var(--j-text-muted)', marginTop: 2 },
 
-  chartCard: { background: 'rgba(15,23,42,0.5)', borderRadius: 12, padding: '16px 20px', marginBottom: 20, border: '1px solid rgba(100,116,139,0.15)' },
+  chartCard: { background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 12, padding: '16px 20px', marginBottom: 20, border: '1px solid color-mix(in srgb, var(--j-text-muted) 15%, transparent)' },
   chartHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, flexWrap: 'wrap' as const, gap: 12 },
-  chartTitle: { margin: 0, fontSize: 15, fontWeight: 700, color: '#e2e8f0', display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' as const },
-  chartSub: { fontSize: 11, fontWeight: 400, color: '#64748b' },
+  chartTitle: { margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--j-text)', display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' as const },
+  chartSub: { fontSize: 11, fontWeight: 400, color: 'var(--j-text-faint)' },
   chartControls: { display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' as const },
   chartBody: { transition: 'opacity 0.3s' },
-  chartEmpty: { padding: 60, textAlign: 'center' as const, color: '#475569', fontSize: 12 },
-  select: { background: 'rgba(15,23,42,0.7)', border: '1px solid rgba(100,116,139,0.3)', color: '#e2e8f0', padding: '6px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600 },
-  toggleGroup: { display: 'inline-flex', background: 'rgba(15,23,42,0.7)', borderRadius: 6, padding: 2, gap: 2 },
-  toggleBtn: { background: 'transparent', border: 'none', color: '#94a3b8', padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 },
-  toggleBtnActive: { background: 'rgba(59,130,246,0.2)', border: 'none', color: '#3b82f6', padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700 },
+  chartEmpty: { padding: 60, textAlign: 'center' as const, color: 'var(--j-text-faint)', fontSize: 12 },
+  select: { background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', color: 'var(--j-text)', padding: '6px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600 },
+  toggleGroup: { display: 'inline-flex', background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', borderRadius: 6, padding: 2, gap: 2 },
+  toggleBtn: { background: 'transparent', border: 'none', color: 'var(--j-text-muted)', padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600 },
+  toggleBtnActive: { background: 'color-mix(in srgb, var(--j-blue) 20%, transparent)', border: 'none', color: 'var(--j-blue)', padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 700 },
 
   matrixWrap: { overflowX: 'auto' as const },
-  matrixLoading: { padding: 40, textAlign: 'center' as const, color: '#64748b', fontSize: 12 },
+  matrixLoading: { padding: 40, textAlign: 'center' as const, color: 'var(--j-text-faint)', fontSize: 12 },
   matrixTable: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 11 },
-  matrixIspHead: { textAlign: 'left' as const, padding: '8px 10px', color: '#64748b', fontWeight: 700, textTransform: 'uppercase' as const, fontSize: 10, letterSpacing: 0.5, borderBottom: '1px solid rgba(100,116,139,0.2)' },
-  matrixDomainHead: { textAlign: 'left' as const, padding: '8px 10px', color: '#94a3b8', fontWeight: 600, fontSize: 11, borderBottom: '1px solid rgba(100,116,139,0.2)' },
-  matrixIspCell: { padding: '8px 10px', fontWeight: 700, fontSize: 12, borderBottom: '1px solid rgba(100,116,139,0.08)' },
-  matrixCell: { padding: '8px 10px', borderBottom: '1px solid rgba(100,116,139,0.08)', verticalAlign: 'top' as const },
+  matrixIspHead: { textAlign: 'left' as const, padding: '8px 10px', color: 'var(--j-text-faint)', fontWeight: 700, textTransform: 'uppercase' as const, fontSize: 10, letterSpacing: 0.5, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)' },
+  matrixDomainHead: { textAlign: 'left' as const, padding: '8px 10px', color: 'var(--j-text-muted)', fontWeight: 600, fontSize: 11, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)' },
+  matrixIspCell: { padding: '8px 10px', fontWeight: 700, fontSize: 12, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)' },
+  matrixCell: { padding: '8px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)', verticalAlign: 'top' as const },
   matrixAccept: { fontSize: 14, fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
-  matrixSecondary: { fontSize: 10, color: '#64748b', marginTop: 2, fontVariantNumeric: 'tabular-nums' },
-  matrixDash: { color: '#475569' },
-  matrixTotalsRow: { background: 'rgba(15,23,42,0.5)', borderTop: '2px solid rgba(100,116,139,0.3)' },
+  matrixSecondary: { fontSize: 10, color: 'var(--j-text-faint)', marginTop: 2, fontVariantNumeric: 'tabular-nums' },
+  matrixDash: { color: 'var(--j-text-faint)' },
+  matrixTotalsRow: { background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderTop: '2px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)' },
 
-  drilldownCard: { background: 'rgba(15,23,42,0.5)', borderRadius: 10, marginBottom: 12, border: '1px solid rgba(100,116,139,0.1)' },
-  drilldownToggle: { width: '100%', background: 'transparent', border: 'none', color: '#cbd5e1', padding: '12px 18px', textAlign: 'left' as const, cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  drilldownWindow: { fontSize: 11, color: '#64748b', fontWeight: 500 },
+  drilldownCard: { background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 10, marginBottom: 12, border: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },
+  drilldownToggle: { width: '100%', background: 'transparent', border: 'none', color: 'var(--j-text-2)', padding: '12px 18px', textAlign: 'left' as const, cursor: 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  drilldownWindow: { fontSize: 11, color: 'var(--j-text-faint)', fontWeight: 500 },
   drilldownBody: { padding: '0 18px 16px 18px' },
-  drilldownEmpty: { padding: 30, textAlign: 'center' as const, color: '#64748b', fontSize: 12 },
+  drilldownEmpty: { padding: 30, textAlign: 'center' as const, color: 'var(--j-text-faint)', fontSize: 12 },
   drilldownTable: { width: '100%', borderCollapse: 'collapse' as const, fontSize: 11 },
-  drilldownTh: { textAlign: 'left' as const, padding: '6px 8px', color: '#64748b', fontWeight: 700, fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0.5, borderBottom: '1px solid rgba(100,116,139,0.2)' },
-  drilldownTd: { padding: '6px 8px', color: '#cbd5e1', fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid rgba(100,116,139,0.06)' },
+  drilldownTh: { textAlign: 'left' as const, padding: '6px 8px', color: 'var(--j-text-faint)', fontWeight: 700, fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: 0.5, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)' },
+  drilldownTd: { padding: '6px 8px', color: 'var(--j-text-2)', fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 6%, transparent)' },
   filterChips: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' as const, paddingTop: 6, paddingBottom: 12 },
-  chipLabel: { fontSize: 10, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-  chip: { background: 'rgba(30,41,59,0.6)', border: '1px solid rgba(100,116,139,0.2)', color: '#94a3b8', padding: '3px 10px', borderRadius: 12, fontSize: 11, cursor: 'pointer' },
-  chipActive: { background: 'rgba(59,130,246,0.2)', border: '1px solid rgba(59,130,246,0.4)', color: '#3b82f6', padding: '3px 10px', borderRadius: 12, fontSize: 11, cursor: 'pointer', fontWeight: 700 },
-  refreshBtn: { marginLeft: 'auto', background: 'rgba(30,41,59,0.6)', border: '1px solid rgba(100,116,139,0.2)', color: '#94a3b8', padding: '3px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer' },
+  chipLabel: { fontSize: 10, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  chip: { background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)', color: 'var(--j-text-muted)', padding: '3px 10px', borderRadius: 12, fontSize: 11, cursor: 'pointer' },
+  chipActive: { background: 'color-mix(in srgb, var(--j-blue) 20%, transparent)', border: '1px solid color-mix(in srgb, var(--j-blue) 40%, transparent)', color: 'var(--j-blue)', padding: '3px 10px', borderRadius: 12, fontSize: 11, cursor: 'pointer', fontWeight: 700 },
+  refreshBtn: { marginLeft: 'auto', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)', color: 'var(--j-text-muted)', padding: '3px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer' },
 
   ipColumns: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 },
-  ipColumn: { background: 'rgba(15,23,42,0.6)', borderRadius: 10, border: '1px solid rgba(100,116,139,0.1)', overflow: 'hidden' },
+  ipColumn: { background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)', overflow: 'hidden' },
   ipColumnHeader: { padding: '10px 14px', borderTop: '3px solid', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, fontWeight: 700 },
-  ipColumnCount: { color: '#64748b', fontSize: 11 },
+  ipColumnCount: { color: 'var(--j-text-faint)', fontSize: 11 },
   ipList: { maxHeight: 340, overflowY: 'auto' as const, padding: '0 12px 8px 12px' },
-  ipRow: { padding: '8px 0', borderBottom: '1px solid rgba(100,116,139,0.08)' },
+  ipRow: { padding: '8px 0', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)' },
   ipRowHead: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' },
-  ipAddr: { fontSize: 12, fontWeight: 700, color: '#e2e8f0', fontFamily: '"SF Mono", "Fira Code", monospace' },
+  ipAddr: { fontSize: 12, fontWeight: 700, color: 'var(--j-text)', fontFamily: '"SF Mono", "Fira Code", monospace' },
   ipStatus: { fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-  ipRowMeta: { fontSize: 10, color: '#64748b', marginTop: 2 },
-  ipRowMetrics: { fontSize: 10, color: '#94a3b8', marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' as const, fontVariantNumeric: 'tabular-nums' },
-  ipRowMetricsCold: { fontSize: 10, color: '#475569', fontStyle: 'italic' as const, marginTop: 4 },
-  ipEmpty: { padding: 20, textAlign: 'center' as const, color: '#475569', fontSize: 11 },
+  ipRowMeta: { fontSize: 10, color: 'var(--j-text-faint)', marginTop: 2 },
+  ipRowMetrics: { fontSize: 10, color: 'var(--j-text-muted)', marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' as const, fontVariantNumeric: 'tabular-nums' },
+  ipRowMetricsCold: { fontSize: 10, color: 'var(--j-text-faint)', fontStyle: 'italic' as const, marginTop: 4 },
+  ipEmpty: { padding: 20, textAlign: 'center' as const, color: 'var(--j-text-faint)', fontSize: 11 },
 
   sectionDivider: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 24, marginBottom: 12 },
-  sectionLabel: { fontSize: 11, fontWeight: 700, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: 1 },
+  sectionLabel: { fontSize: 11, fontWeight: 700, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 1 },
 
-  statBox: { background: 'rgba(30,41,59,0.7)', borderRadius: 8, padding: '8px 16px', textAlign: 'center' as const },
-  statLabel: { fontSize: 10, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  statBox: { background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', borderRadius: 8, padding: '8px 16px', textAlign: 'center' as const },
+  statLabel: { fontSize: 10, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
   statValue: { fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
 
-  calculator: { background: 'rgba(30,41,59,0.5)', borderRadius: 10, padding: '12px 20px', marginBottom: 20, border: '1px solid rgba(100,116,139,0.2)' },
+  calculator: { background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 10, padding: '12px 20px', marginBottom: 20, border: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)' },
   calcRow: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' as const },
-  calcLabel: { fontSize: 12, color: '#94a3b8', fontWeight: 600 },
-  calcInput: { background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(100,116,139,0.3)', borderRadius: 6, padding: '6px 10px', color: '#e2e8f0', fontSize: 14, width: 120, fontVariantNumeric: 'tabular-nums' },
-  calcResult: { fontSize: 13, color: '#94a3b8' },
+  calcLabel: { fontSize: 12, color: 'var(--j-text-muted)', fontWeight: 600 },
+  calcInput: { background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, padding: '6px 10px', color: 'var(--j-text)', fontSize: 14, width: 120, fontVariantNumeric: 'tabular-nums' },
+  calcResult: { fontSize: 13, color: 'var(--j-text-muted)' },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, marginBottom: 24 },
-  card: { background: 'rgba(15,23,42,0.7)', borderRadius: 10, padding: 16, border: '1px solid rgba(100,116,139,0.15)', transition: 'border-color 0.2s' },
+  card: { background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', borderRadius: 10, padding: 16, border: '1px solid color-mix(in srgb, var(--j-text-muted) 15%, transparent)', transition: 'border-color 0.2s' },
   yahooCard: { boxShadow: '0 0 0 1px rgba(96,1,210,0.3), 0 0 20px rgba(96,1,210,0.08)' },
-  yahooBadge: { fontSize: 9, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.1)', padding: '2px 8px', borderRadius: 4, marginBottom: 8, display: 'inline-block', letterSpacing: 1 },
+  yahooBadge: { fontSize: 9, fontWeight: 700, color: 'var(--j-warn)', background: 'color-mix(in srgb, var(--j-warn) 10%, transparent)', padding: '2px 8px', borderRadius: 4, marginBottom: 8, display: 'inline-block', letterSpacing: 1 },
   cardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   ispName: { fontSize: 16, fontWeight: 700 },
-  enabledBadge: { fontSize: 10, padding: '2px 8px', borderRadius: 10, color: '#fff', fontWeight: 600 },
-  rateSection: { marginBottom: 12, padding: '8px 0', borderTop: '1px solid rgba(100,116,139,0.1)', borderBottom: '1px solid rgba(100,116,139,0.1)' },
+  enabledBadge: { fontSize: 10, padding: '2px 8px', borderRadius: 10, color: 'var(--j-text)', fontWeight: 600 },
+  rateSection: { marginBottom: 12, padding: '8px 0', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },
   rateRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0' },
-  rateLabel: { fontSize: 11, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  rateLabel: { fontSize: 11, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
   rateInput: { display: 'flex', alignItems: 'center', gap: 6 },
-  numberInput: { background: 'rgba(30,41,59,0.8)', border: '1px solid rgba(100,116,139,0.3)', borderRadius: 4, padding: '4px 8px', color: '#e2e8f0', fontSize: 14, width: 80, textAlign: 'right' as const, fontVariantNumeric: 'tabular-nums' },
-  rateUnit: { fontSize: 11, color: '#64748b' },
+  numberInput: { background: 'color-mix(in srgb, var(--j-shade) 80%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 4, padding: '4px 8px', color: 'var(--j-text)', fontSize: 14, width: 80, textAlign: 'right' as const, fontVariantNumeric: 'tabular-nums' },
+  rateUnit: { fontSize: 11, color: 'var(--j-text-faint)' },
   rateValue: { fontSize: 14, fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
-  saveBtn: { background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' },
+  saveBtn: { background: 'var(--j-blue)', color: 'var(--j-on-accent)', border: 'none', borderRadius: 4, padding: '4px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' },
   statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginBottom: 10 },
   miniStat: { display: 'flex', flexDirection: 'column' as const, alignItems: 'center', padding: '4px 0' },
-  miniLabel: { fontSize: 9, color: '#475569', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  miniLabel: { fontSize: 9, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
   miniValue: { fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' },
-  cardFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTop: '1px solid rgba(100,116,139,0.1)' },
-  footerInfo: { fontSize: 10, color: '#475569' },
+  cardFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8, borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },
+  footerInfo: { fontSize: 10, color: 'var(--j-text-faint)' },
   resetBtn: { background: 'rgba(239,68,68,0.15)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, padding: '4px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer' },
-  variablesSection: { marginTop: 8, borderTop: '1px solid rgba(100,116,139,0.1)', paddingTop: 12 },
-  variablesToggle: { background: 'none', border: 'none', color: '#94a3b8', fontSize: 13, cursor: 'pointer', fontWeight: 600, padding: '4px 0' },
-  variablesTable: { marginTop: 8, background: 'rgba(15,23,42,0.5)', borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(100,116,139,0.1)' },
-  varHeader: { display: 'grid', gridTemplateColumns: '180px 120px 1fr', padding: '8px 12px', background: 'rgba(30,41,59,0.6)', fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
-  varRow: { display: 'grid', gridTemplateColumns: '180px 120px 1fr', padding: '6px 12px', borderTop: '1px solid rgba(100,116,139,0.08)', fontSize: 12, color: '#94a3b8' },
-  varColName: { fontWeight: 600, color: '#cbd5e1' },
-  varColScope: { color: '#64748b' },
+  variablesSection: { marginTop: 8, borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)', paddingTop: 12 },
+  variablesToggle: { background: 'none', border: 'none', color: 'var(--j-text-muted)', fontSize: 13, cursor: 'pointer', fontWeight: 600, padding: '4px 0' },
+  variablesTable: { marginTop: 8, background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 8, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' },
+  varHeader: { display: 'grid', gridTemplateColumns: '180px 120px 1fr', padding: '8px 12px', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', fontSize: 10, fontWeight: 700, color: 'var(--j-text-faint)', textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  varRow: { display: 'grid', gridTemplateColumns: '180px 120px 1fr', padding: '6px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 8%, transparent)', fontSize: 12, color: 'var(--j-text-muted)' },
+  varColName: { fontWeight: 600, color: 'var(--j-text-2)' },
+  varColScope: { color: 'var(--j-text-faint)' },
   varColDesc: {},
-  code: { background: 'rgba(100,116,139,0.15)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: '"SF Mono", "Fira Code", monospace' },
+  code: { background: 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)', padding: '1px 4px', borderRadius: 3, fontSize: 11, fontFamily: '"SF Mono", "Fira Code", monospace' },
 };

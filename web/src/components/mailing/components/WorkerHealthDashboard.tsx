@@ -65,7 +65,7 @@ const rowState = (r: WorkerRow): 'stalled' | 'error' | 'late' | 'ok' => {
 };
 
 const stateMeta: Record<string, { color: string; label: string; icon: typeof faCircleCheck }> = {
-  ok: { color: '#22c55e', label: 'Healthy', icon: faCircleCheck },
+  ok: { color: 'var(--j-success)', label: 'Healthy', icon: faCircleCheck },
   late: { color: '#f59e0b', label: 'Late', icon: faTriangleExclamation },
   error: { color: '#f59e0b', label: 'Error', icon: faTriangleExclamation },
   stalled: { color: '#ef4444', label: 'Stalled', icon: faSkull },
@@ -102,14 +102,14 @@ export const WorkerHealthDashboard: React.FC = () => {
   const stalledCount = data?.stalled_count ?? 0;
 
   return (
-    <div style={{ padding: '24px', color: '#e5e7eb', minHeight: '100vh' }}>
+    <div style={{ padding: '24px', color: 'var(--j-text)', minHeight: '100vh' }}>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faHeartPulse} style={{ color: stalledCount > 0 ? '#ef4444' : '#22c55e' }} />
+            <FontAwesomeIcon icon={faHeartPulse} style={{ color: stalledCount > 0 ? '#ef4444' : 'var(--j-success)' }} />
             Worker Health
           </h1>
-          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
             Live status of background processing — refreshes every 15s.
             {' '}Page v{PAGE_VERSION}
             {data && <> · API v{data.api_version}</>}
@@ -120,7 +120,7 @@ export const WorkerHealthDashboard: React.FC = () => {
           onClick={fetchHealth}
           disabled={loading}
           style={{
-            background: '#1e293b', color: '#e5e7eb', border: '1px solid #334155',
+            background: 'var(--j-surface-2)', color: 'var(--j-text)', border: '1px solid var(--j-border)',
             padding: '6px 14px', borderRadius: 6, cursor: loading ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', gap: 6, fontSize: 13,
           }}
@@ -131,32 +131,32 @@ export const WorkerHealthDashboard: React.FC = () => {
       </header>
 
       {error && (
-        <div style={{ background: '#3f1d1d', color: '#fecaca', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ background: '#3f1d1d', color: 'var(--j-danger-soft)', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faTriangleExclamation} />
           Error loading background processing status: {error}
         </div>
       )}
 
       {stalledCount > 0 && (
-        <div style={{ background: '#3f1d1d', color: '#fecaca', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #ef444455' }}>
+        <div style={{ background: '#3f1d1d', color: 'var(--j-danger-soft)', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #ef444455' }}>
           <FontAwesomeIcon icon={faSkull} style={{ color: '#ef4444' }} />
           <strong>{stalledCount}</strong> background process{stalledCount === 1 ? '' : 'es'} stalled — the team has been alerted.
         </div>
       )}
 
       {loading && !data ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>
+        <div style={{ textAlign: 'center', padding: 60, color: 'var(--j-text-muted)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading background processing status…
         </div>
       ) : workers.length === 0 ? (
-        <div style={{ padding: 40, textAlign: 'center', color: '#64748b', fontSize: 13, background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6 }}>
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--j-text-faint)', fontSize: 13, background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 6 }}>
           No activity recorded yet. Background processing reports its status after its first cycle completes.
         </div>
       ) : (
-        <section style={{ background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6, overflowX: 'auto' }}>
+        <section style={{ background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 6, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ background: '#1e293b', color: '#94a3b8' }}>
+              <tr style={{ background: 'var(--j-surface-2)', color: 'var(--j-text-muted)' }}>
                 <th style={thStyle}>Process</th>
                 <th style={thStyle}>State</th>
                 <th style={thStyle}>Last run</th>
@@ -170,7 +170,7 @@ export const WorkerHealthDashboard: React.FC = () => {
                 const st = rowState(r);
                 const meta = stateMeta[st];
                 return (
-                  <tr key={r.worker_name} style={{ borderTop: '1px solid #1f2937' }}>
+                  <tr key={r.worker_name} style={{ borderTop: '1px solid var(--j-surface-2)' }}>
                     <td style={{ ...tdStyle, fontFamily: 'monospace' }}>{r.worker_name}</td>
                     <td style={tdStyle}>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: meta.color, fontWeight: 600 }}>
@@ -178,7 +178,7 @@ export const WorkerHealthDashboard: React.FC = () => {
                         {meta.label}
                       </span>
                     </td>
-                    <td style={{ ...tdStyle, color: st === 'stalled' ? '#ef4444' : '#e5e7eb' }}>
+                    <td style={{ ...tdStyle, color: st === 'stalled' ? '#ef4444' : 'var(--j-text)' }}>
                       {fmtSeconds(r.seconds_since_beat)} ago
                     </td>
                     <td style={tdStyle}>{fmtInterval(r.expected_interval_seconds)}</td>
@@ -205,7 +205,7 @@ const thStyle: React.CSSProperties = {
 };
 
 const tdStyle: React.CSSProperties = {
-  padding: '10px 14px', fontSize: 13, color: '#e5e7eb',
+  padding: '10px 14px', fontSize: 13, color: 'var(--j-text)',
 };
 
 // WorkerHealthWidget — the compact dashboard card that replaced the dedicated
@@ -214,7 +214,7 @@ const tdStyle: React.CSSProperties = {
 // a single summary line: stalled/error workers sort first, the rest by name.
 // Dot colors: green ok / amber late / red stalled-or-error.
 const widgetDotColor: Record<ReturnType<typeof rowState>, string> = {
-  ok: '#22c55e',
+  ok: 'var(--j-success)',
   late: '#f59e0b',
   error: '#ef4444',
   stalled: '#ef4444',
@@ -253,7 +253,7 @@ export const WorkerHealthWidget: React.FC = () => {
   return (
     <div className="system-card ig-card-hover" style={{ borderColor: healthy ? undefined : 'rgba(239,68,68,0.5)' }}>
       <div className="system-header">
-        <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? '#22c55e' : '#ef4444' }} /></span>
+        <span className="system-icon"><FontAwesomeIcon icon={faHeartPulse} style={{ color: healthy ? 'var(--j-success)' : '#ef4444' }} /></span>
         <h3>Background Processing</h3>
         <span className={`status-badge ${healthy ? 'active' : 'inactive'}`}>
           {error ? 'unknown' : healthy ? `${total} healthy` : `${stalled.length} stalled`}
@@ -284,11 +284,11 @@ export const WorkerHealthWidget: React.FC = () => {
                   <span style={{
                     fontFamily: 'monospace', flex: 1, minWidth: 0,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    color: st === 'stalled' || st === 'error' ? '#fca5a5' : '#cbd5e1',
+                    color: st === 'stalled' || st === 'error' ? 'var(--j-danger-soft)' : 'var(--j-text-2)',
                   }}>
                     {w.worker_name}
                   </span>
-                  <span style={{ color: st === 'ok' ? '#64748b' : widgetDotColor[st], flexShrink: 0 }}>
+                  <span style={{ color: st === 'ok' ? 'var(--j-text-faint)' : widgetDotColor[st], flexShrink: 0 }}>
                     last run {fmtSeconds(w.seconds_since_beat)} ago
                   </span>
                 </div>

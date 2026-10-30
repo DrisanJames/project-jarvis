@@ -206,8 +206,8 @@ const input: React.CSSProperties = {
   border: `1px solid ${colors.panelBorder}`, borderRadius: 6, padding: '6px 8px', fontSize: 12,
 }
 const smallBtn: React.CSSProperties = {
-  background: 'rgba(99,102,241,0.20)', color: colors.text,
-  border: '1px solid rgba(99,102,241,0.45)', borderRadius: 6,
+  background: 'color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', color: colors.text,
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 45%, transparent)', borderRadius: 6,
   padding: '5px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
 }
 const dangerBtn: React.CSSProperties = {
@@ -609,7 +609,7 @@ export const BoardCellShelf: React.FC<{
                 onClick={() => onSelectEntry(e.idx)}
                 style={{
                   ...smallBtn, display: 'block', width: '100%', textAlign: 'left', marginTop: 4,
-                  background: e.idx === entry.idx ? 'rgba(99,102,241,0.28)' : 'transparent',
+                  background: e.idx === entry.idx ? 'color-mix(in srgb, var(--j-violet-strong) 28%, transparent)' : 'transparent',
                   fontWeight: e.idx === entry.idx ? 700 : 400,
                 }}>
                 {e.cell.name}
@@ -880,7 +880,7 @@ export const BoardCellShelf: React.FC<{
                   {audSel.map(s => (
                     <span key={s.id} title={s.id} style={{
                       display: 'inline-flex', alignItems: 'center', gap: 6,
-                      background: 'rgba(99,102,241,0.14)', border: `1px solid ${colors.panelBorder}`,
+                      background: 'color-mix(in srgb, var(--j-violet-strong) 14%, transparent)', border: `1px solid ${colors.panelBorder}`,
                       borderRadius: 6, padding: '2px 8px', fontSize: 11, color: colors.text,
                     }}>
                       {s.name}
@@ -905,7 +905,7 @@ export const BoardCellShelf: React.FC<{
                             : [...prev, { id: sg.id, name: sg.name }])}
                           style={{
                             ...smallBtn, padding: '3px 9px', fontSize: 11,
-                            background: on ? 'rgba(99,102,241,0.30)' : 'transparent',
+                            background: on ? 'color-mix(in srgb, var(--j-violet-strong) 30%, transparent)' : 'transparent',
                             fontWeight: on ? 700 : 400,
                           }}>
                           {sg.name.replace(/^\S+ /, '')}

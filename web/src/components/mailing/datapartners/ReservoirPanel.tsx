@@ -42,31 +42,31 @@ interface ReservoirResponse {
 }
 
 const card: React.CSSProperties = {
-  background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(99,102,241,0.25)',
+  background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
   borderRadius: 8, padding: '14px 16px',
 };
 const th: React.CSSProperties = {
   textAlign: 'left', padding: '7px 10px', fontSize: 10, letterSpacing: 0.6,
-  textTransform: 'uppercase', color: 'rgba(180,210,240,0.65)',
-  borderBottom: '1px solid rgba(99,102,241,0.25)', whiteSpace: 'nowrap',
+  textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', whiteSpace: 'nowrap',
 };
 const td: React.CSSProperties = {
-  padding: '7px 10px', fontSize: 13, color: 'rgba(220,235,250,0.92)',
-  borderBottom: '1px solid rgba(99,102,241,0.12)',
+  padding: '7px 10px', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
 };
 const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 const btn: React.CSSProperties = {
-  background: 'rgba(99,102,241,0.13)', color: '#c7d2fe',
-  border: '1px solid rgba(99,102,241,0.4)', borderRadius: 5,
+  background: 'color-mix(in srgb, var(--j-violet-strong) 13%, transparent)', color: 'var(--j-violet-soft)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', borderRadius: 5,
   padding: '6px 13px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
 };
 
 const BigNumber: React.FC<{ label: string; value: number; tone: string; hint: string }> =
   ({ label, value, tone, hint }) => (
     <div style={{ ...card, flex: '1 1 180px' }}>
-      <div style={{ fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase', color: 'rgba(180,210,240,0.65)' }}>{label}</div>
+      <div style={{ fontSize: 10, letterSpacing: 0.7, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{label}</div>
       <div style={{ fontSize: 28, fontWeight: 700, color: tone, fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>{num(value)}</div>
-      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>{hint}</div>
+      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{hint}</div>
     </div>
   );
 
@@ -143,11 +143,11 @@ export const ReservoirPanel: React.FC = () => {
   return (
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
-        <h3 style={{ margin: 0, color: '#dbeafe', fontSize: 16 }}>
+        <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16 }}>
           <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 8, opacity: 0.8 }} />
           Reservoir
         </h3>
-        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>
+        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
           {data
             ? `${data.cached ? `cached ${data.age_seconds}s` : 'fresh'} · scan ${num(data.query_ms)}ms · ${new Date(data.generated_at).toLocaleTimeString()}`
             : 'loading…'}
@@ -165,11 +165,11 @@ export const ReservoirPanel: React.FC = () => {
       </div>
 
       {notice && (
-        <div style={{ ...card, borderColor: 'rgba(16,185,129,0.4)', marginBottom: 12, fontSize: 13 }}>{notice}</div>
+        <div style={{ ...card, borderColor: 'color-mix(in srgb, var(--j-success) 40%, transparent)', marginBottom: 12, fontSize: 13 }}>{notice}</div>
       )}
 
       {uploadOpen && feedsErr && (
-        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.45)', color: '#fecaca', marginBottom: 12 }}>
+        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.45)', color: 'var(--j-danger-soft)', marginBottom: 12 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
           The dataset list could not be loaded, so there is nothing to upload into: {feedsErr}
         </div>
@@ -187,7 +187,7 @@ export const ReservoirPanel: React.FC = () => {
       )}
 
       {err && (
-        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.45)', color: '#fecaca', marginBottom: 12 }}>
+        <div style={{ ...card, borderColor: 'rgba(239,68,68,0.45)', color: 'var(--j-danger-soft)', marginBottom: 12 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
           Reservoir totals unavailable: {err}. Nothing below is a real zero.
         </div>
@@ -196,9 +196,9 @@ export const ReservoirPanel: React.FC = () => {
       {data && (
         <>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-            <BigNumber label="Mailable now" value={data.mailable_total} tone="#6ee7b7" hint="status ready" />
-            <BigNumber label="Reserve" value={reserveTotal} tone="#fcd34d" hint="held or awaiting verification" />
-            <BigNumber label="Total records" value={data.total} tone="#c7d2fe" hint="every row in the queue" />
+            <BigNumber label="Mailable now" value={data.mailable_total} tone="var(--j-success-soft)" hint="status ready" />
+            <BigNumber label="Reserve" value={reserveTotal} tone="var(--j-warn)" hint="held or awaiting verification" />
+            <BigNumber label="Total records" value={data.total} tone="var(--j-violet-soft)" hint="every row in the queue" />
           </div>
 
           <div style={{ ...card, padding: 0, overflowX: 'auto', marginBottom: 14 }}>
@@ -217,9 +217,9 @@ export const ReservoirPanel: React.FC = () => {
                 {data.by_vertical.map((v) => (
                   <tr key={v.vertical}>
                     <td style={td}>{labelForVertical(v.vertical)}</td>
-                    <td style={{ ...tdNum, color: v.mailable > 0 ? '#6ee7b7' : 'rgba(220,235,250,0.5)' }}>{num(v.mailable)}</td>
+                    <td style={{ ...tdNum, color: v.mailable > 0 ? 'var(--j-success-soft)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{num(v.mailable)}</td>
                     <td style={tdNum}>{num(v.reserve)}</td>
-                    <td style={{ ...tdNum, color: 'rgba(220,235,250,0.55)' }}>{num(v.exhausted)}</td>
+                    <td style={{ ...tdNum, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{num(v.exhausted)}</td>
                     <td style={tdNum}>{num(v.total)}</td>
                     <td style={td}>
                       <button
@@ -237,13 +237,13 @@ export const ReservoirPanel: React.FC = () => {
 
           {expanded && (
             <div style={{ ...card, marginBottom: 14 }}>
-              <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)', marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)', marginBottom: 8 }}>
                 {labelForVertical(expanded)} — every record by ISP (all statuses)
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {ispRows.map(([isp, n]) => (
                   <div key={isp} style={{ ...card, padding: '8px 12px', minWidth: 120 }}>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>{isp}</div>
+                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{isp}</div>
                     <div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{num(n)}</div>
                   </div>
                 ))}
@@ -252,11 +252,11 @@ export const ReservoirPanel: React.FC = () => {
           )}
 
           <div style={{ ...card }}>
-            <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.75)', marginBottom: 8 }}>Every status</div>
+            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)', marginBottom: 8 }}>Every status</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {data.by_status.map((s) => (
                 <div key={s.status} style={{ ...card, padding: '8px 12px', minWidth: 130 }}>
-                  <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>{s.status}</div>
+                  <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{s.status}</div>
                   <div style={{ fontSize: 17, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{num(s.count)}</div>
                 </div>
               ))}

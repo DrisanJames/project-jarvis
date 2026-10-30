@@ -45,12 +45,12 @@ interface AIPreheaderSuggestionsProps {
 // ============================================
 
 const CATEGORY_CONFIG: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: '#e94560' },
-  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: '#00b0ff' },
-  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: '#00b894' },
-  personalized: { icon: <FontAwesomeIcon icon={faMagic} />, label: 'Personal', color: '#00e5ff' },
-  call_to_action: { icon: <FontAwesomeIcon icon={faArrowRight} />, label: 'CTA', color: '#fdcb6e' },
-  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: '#00b0ff' },
+  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: 'var(--j-danger)' },
+  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: 'var(--j-blue)' },
+  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: 'var(--j-success)' },
+  personalized: { icon: <FontAwesomeIcon icon={faMagic} />, label: 'Personal', color: 'var(--j-cyan)' },
+  call_to_action: { icon: <FontAwesomeIcon icon={faArrowRight} />, label: 'CTA', color: 'var(--j-warn)' },
+  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: 'var(--j-blue)' },
 };
 
 // ============================================
@@ -254,7 +254,7 @@ export const AIPreheaderSuggestions: React.FC<AIPreheaderSuggestionsProps> = ({
                     <div className="suggestion-header">
                       <span
                         className="suggestion-category"
-                        style={{ backgroundColor: config.color + '20', color: config.color }}
+                        style={{ backgroundColor: `color-mix(in srgb, ${config.color} 13%, transparent)`, color: config.color }}
                       >
                         {config.icon}
                         {config.label}

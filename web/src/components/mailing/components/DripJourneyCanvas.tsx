@@ -701,7 +701,7 @@ const AsyncPanel: React.FC<{
 };
 
 const selectStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)',
+  background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
   color: colors.text,
   border: `1px solid ${colors.panelBorderStrong}`,
   borderRadius: 6,
@@ -710,7 +710,7 @@ const selectStyle: React.CSSProperties = {
 };
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)',
+  background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
   color: colors.text,
   border: `1px solid ${colors.panelBorderStrong}`,
   borderRadius: 5,
@@ -952,7 +952,7 @@ const TouchNode: React.FC<{
         position: 'absolute', left: x, top: y, width: NODE_W, height: NODE_H,
         boxSizing: 'border-box',
         cursor: onOpen ? 'pointer' : undefined,
-        background: configured ? colors.panelBg : 'rgba(15,30,60,0.16)',
+        background: configured ? colors.panelBg : 'color-mix(in srgb, var(--j-shade) 16%, transparent)',
         border: broken
           ? `1px solid ${alpha(colors.danger, '66')}`
           : configured
@@ -3325,7 +3325,7 @@ export const DripJourneyCanvas: React.FC<{
                           ? 'EXPRESS — this feed skips the multi-day drain spread. Click to return it to paced dispatch (plain confirm).'
                           : 'PACED — this feed spreads each ISP over its drain horizon. Click to enable express (typed-name confirm): express removes the multi-day SPREAD only; daily caps, brand budgets and throttle safety still bind.')}
                       style={{
-                        background: expKnown && exp ? alpha(colors.success, '14') : 'rgba(255,255,255,0.05)',
+                        background: expKnown && exp ? alpha(colors.success, '14') : 'color-mix(in srgb, var(--j-text) 5%, transparent)',
                         color: expKnown ? (exp ? colors.successText : colors.textMuted) : colors.textFaint,
                         border: `1px solid ${expKnown && exp ? alpha(colors.success, '44') : colors.hairline}`,
                         borderRadius: 999, padding: '3px 10px', fontSize: 10, fontWeight: 700,

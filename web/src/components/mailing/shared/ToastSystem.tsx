@@ -31,11 +31,11 @@ const ToastContext = createContext<ToastContextValue>({
 export const useToast = () => useContext(ToastContext);
 
 const TOAST_COLORS: Record<ToastType, { bg: string; border: string; icon: string; glow: string }> = {
-  success:  { bg: 'rgba(0, 184, 148, 0.12)', border: 'rgba(0, 184, 148, 0.4)', icon: '#00b894', glow: 'rgba(0, 184, 148, 0.2)' },
-  error:    { bg: 'rgba(233, 69, 96, 0.12)', border: 'rgba(233, 69, 96, 0.4)', icon: '#e94560', glow: 'rgba(233, 69, 96, 0.2)' },
-  warning:  { bg: 'rgba(253, 203, 110, 0.12)', border: 'rgba(253, 203, 110, 0.4)', icon: '#fdcb6e', glow: 'rgba(253, 203, 110, 0.2)' },
-  info:     { bg: 'rgba(0, 229, 255, 0.08)', border: 'rgba(0, 229, 255, 0.3)', icon: '#00e5ff', glow: 'rgba(0, 229, 255, 0.15)' },
-  campaign: { bg: 'rgba(0, 229, 255, 0.1)', border: 'rgba(0, 229, 255, 0.5)', icon: '#00e5ff', glow: 'rgba(0, 229, 255, 0.25)' },
+  success:  { bg: 'color-mix(in srgb, var(--j-success) 12%, transparent)', border: 'color-mix(in srgb, var(--j-success) 40%, transparent)', icon: 'var(--j-success)', glow: 'color-mix(in srgb, var(--j-success) 20%, transparent)' },
+  error:    { bg: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', border: 'color-mix(in srgb, var(--j-danger) 40%, transparent)', icon: 'var(--j-danger)', glow: 'color-mix(in srgb, var(--j-danger) 20%, transparent)' },
+  warning:  { bg: 'color-mix(in srgb, var(--j-warn) 12%, transparent)', border: 'color-mix(in srgb, var(--j-warn) 40%, transparent)', icon: 'var(--j-warn)', glow: 'color-mix(in srgb, var(--j-warn) 20%, transparent)' },
+  info:     { bg: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', border: 'color-mix(in srgb, var(--j-cyan) 30%, transparent)', icon: 'var(--j-cyan)', glow: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)' },
+  campaign: { bg: 'color-mix(in srgb, var(--j-cyan) 10%, transparent)', border: 'color-mix(in srgb, var(--j-cyan) 50%, transparent)', icon: 'var(--j-cyan)', glow: 'color-mix(in srgb, var(--j-cyan) 25%, transparent)' },
 };
 
 const TOAST_ICONS = {
@@ -85,21 +85,21 @@ const ToastItem: React.FC<{ toast: Toast; onDismiss: (id: string) => void }> = (
     >
       <div style={{
         width: 32, height: 32, borderRadius: 8,
-        background: `${colors.icon}15`, display: 'flex',
+        background: `color-mix(in srgb, ${colors.icon} 8%, transparent)`, display: 'flex',
         alignItems: 'center', justifyContent: 'center', flexShrink: 0,
       }}>
         <FontAwesomeIcon icon={TOAST_ICONS[toast.type]} style={{ color: colors.icon, fontSize: 14 }} />
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ color: '#e0e6f0', fontSize: 13, fontWeight: 600, marginBottom: toast.message ? 2 : 0 }}>
+        <div style={{ color: 'var(--j-text)', fontSize: 13, fontWeight: 600, marginBottom: toast.message ? 2 : 0 }}>
           {toast.type === 'campaign' && (
-            <FontAwesomeIcon icon={faBolt} style={{ color: '#00e5ff', marginRight: 6, fontSize: 10 }} />
+            <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--j-cyan)', marginRight: 6, fontSize: 10 }} />
           )}
           {toast.title}
         </div>
         {toast.message && (
-          <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, lineHeight: 1.4 }}>
+          <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, lineHeight: 1.4 }}>
             {toast.message}
           </div>
         )}
@@ -108,7 +108,7 @@ const ToastItem: React.FC<{ toast: Toast; onDismiss: (id: string) => void }> = (
       <button
         onClick={() => onDismiss(toast.id)}
         style={{
-          background: 'none', border: 'none', color: 'rgba(180,210,240,0.4)',
+          background: 'none', border: 'none', color: 'color-mix(in srgb, var(--j-text) 40%, transparent)',
           cursor: 'pointer', padding: 4, fontSize: 12, flexShrink: 0,
         }}
       >

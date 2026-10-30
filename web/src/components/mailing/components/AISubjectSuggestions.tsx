@@ -47,13 +47,13 @@ interface AISubjectSuggestionsProps {
 // ============================================
 
 const CATEGORY_CONFIG: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: '#e94560' },
-  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: '#00b0ff' },
-  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: '#00b894' },
-  personalized: { icon: <FontAwesomeIcon icon={faUsers} />, label: 'Personal', color: '#00e5ff' },
-  question: { icon: <FontAwesomeIcon icon={faComment} />, label: 'Question', color: '#fdcb6e' },
-  social_proof: { icon: <FontAwesomeIcon icon={faUsers} />, label: 'Social Proof', color: '#ec4899' },
-  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: '#00b0ff' },
+  urgency: { icon: <FontAwesomeIcon icon={faClock} />, label: 'Urgency', color: 'var(--j-danger)' },
+  curiosity: { icon: <FontAwesomeIcon icon={faQuestionCircle} />, label: 'Curiosity', color: 'var(--j-blue)' },
+  benefit: { icon: <FontAwesomeIcon icon={faGift} />, label: 'Benefit', color: 'var(--j-success)' },
+  personalized: { icon: <FontAwesomeIcon icon={faUsers} />, label: 'Personal', color: 'var(--j-cyan)' },
+  question: { icon: <FontAwesomeIcon icon={faComment} />, label: 'Question', color: 'var(--j-warn)' },
+  social_proof: { icon: <FontAwesomeIcon icon={faUsers} />, label: 'Social Proof', color: 'var(--j-pink)' },
+  exclusive: { icon: <FontAwesomeIcon icon={faCrosshairs} />, label: 'Exclusive', color: 'var(--j-blue)' },
 };
 
 // ============================================
@@ -249,7 +249,7 @@ export const AISubjectSuggestions: React.FC<AISubjectSuggestionsProps> = ({
                     <div className="suggestion-header">
                       <span
                         className="suggestion-category"
-                        style={{ backgroundColor: config.color + '20', color: config.color }}
+                        style={{ backgroundColor: `color-mix(in srgb, ${config.color} 13%, transparent)`, color: config.color }}
                       >
                         {config.icon}
                         {config.label}

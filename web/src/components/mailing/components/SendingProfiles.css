@@ -16,18 +16,18 @@
 .profiles-header h1 {
   margin: 0 0 8px 0;
   font-size: 22px;
-  color: #e0e0e0;
+  color: var(--j-text);
 }
 
 .profiles-header .subtitle {
-  color: #888;
+  color: var(--j-text-muted);
   margin: 0;
   font-size: 13px;
 }
 
 .add-button {
-  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%);
+  color: var(--j-on-accent);
   border: none;
   padding: 10px 20px;
   border-radius: 8px;
@@ -39,7 +39,7 @@
 
 .add-button:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(0, 200, 255, 0.35);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--j-cyan) 35%, transparent);
 }
 
 /* Profiles Grid */
@@ -50,23 +50,23 @@
 }
 
 .profile-card {
-  background: #1a1a2e;
+  background: var(--j-surface-2);
   border-radius: 12px;
   padding: 20px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid color-mix(in srgb, var(--j-text) 6%, transparent);
   transition: border-color 0.25s, box-shadow 0.25s, transform 0.25s;
 }
 
 .profile-card:hover {
-  border-color: rgba(116,185,255,0.2);
+  border-color: color-mix(in srgb, var(--j-blue) 20%, transparent);
   transform: translateY(-2px);
   box-shadow: 0 4px 20px rgba(0,0,0,0.2);
 }
 
 .profile-card.default {
-  border-color: rgba(0,200,255,0.4);
+  border-color: color-mix(in srgb, var(--j-cyan) 40%, transparent);
   border-width: 2px;
-  background: linear-gradient(135deg, rgba(0,200,255,0.08) 0%, rgba(0,176,255,0.06) 100%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--j-cyan) 8%, transparent) 0%, color-mix(in srgb, var(--j-blue) 6%, transparent) 100%);
 }
 
 .profile-header {
@@ -81,7 +81,7 @@
   line-height: 1;
   width: 44px;
   height: 44px;
-  background: rgba(255,255,255,0.04);
+  background: color-mix(in srgb, var(--j-text) 4%, transparent);
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -96,13 +96,13 @@
   margin: 0 0 6px 0;
   font-size: 15px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: var(--j-text);
 }
 
 .vendor-badge {
   display: inline-block;
-  background: rgba(116,185,255,0.12);
-  color: #74b9ff;
+  background: color-mix(in srgb, var(--j-blue) 12%, transparent);
+  color: var(--j-blue);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 10px;
@@ -114,8 +114,8 @@
 
 .default-badge {
   display: inline-block;
-  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%);
+  color: var(--j-on-accent);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 10px;
@@ -132,24 +132,24 @@
 }
 
 .status-badge.active {
-  background: rgba(0,184,148,0.12);
-  color: #00b894;
+  background: color-mix(in srgb, var(--j-success) 12%, transparent);
+  color: var(--j-success);
 }
 
 .status-badge.draft {
-  background: rgba(253,203,110,0.12);
-  color: #fdcb6e;
+  background: color-mix(in srgb, var(--j-warn) 12%, transparent);
+  color: var(--j-warn);
 }
 
 .status-badge.inactive {
-  background: rgba(233,69,96,0.12);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 12%, transparent);
+  color: var(--j-danger);
 }
 
 /* Profile Details */
 .profile-details {
   margin-bottom: 14px;
-  background: rgba(255,255,255,0.02);
+  background: color-mix(in srgb, var(--j-text) 2%, transparent);
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -158,8 +158,8 @@
   display: flex;
   font-size: 12px;
   padding: 4px 0;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  color: #ccc;
+  border-bottom: 1px solid color-mix(in srgb, var(--j-text) 4%, transparent);
+  color: var(--j-text-2);
 }
 
 .detail-row:last-child {
@@ -167,7 +167,7 @@
 }
 
 .detail-row .label {
-  color: #888;
+  color: var(--j-text-muted);
   width: 60px;
   flex-shrink: 0;
   font-weight: 500;
@@ -190,13 +190,13 @@
 }
 
 .verify-badge.verified {
-  background: rgba(0,184,148,0.12);
-  color: #00b894;
+  background: color-mix(in srgb, var(--j-success) 12%, transparent);
+  color: var(--j-success);
 }
 
 .verify-badge.unverified {
-  background: rgba(253,203,110,0.12);
-  color: #fdcb6e;
+  background: color-mix(in srgb, var(--j-warn) 12%, transparent);
+  color: var(--j-warn);
 }
 
 /* Profile Actions */
@@ -217,39 +217,39 @@
 }
 
 .action-btn.verify {
-  background: rgba(116,185,255,0.1);
-  color: #74b9ff;
+  background: color-mix(in srgb, var(--j-blue) 10%, transparent);
+  color: var(--j-blue);
 }
 
 .action-btn.verify:hover {
-  background: rgba(116,185,255,0.2);
+  background: color-mix(in srgb, var(--j-blue) 20%, transparent);
 }
 
 .action-btn.default {
-  background: rgba(253,203,110,0.1);
-  color: #fdcb6e;
+  background: color-mix(in srgb, var(--j-warn) 10%, transparent);
+  color: var(--j-warn);
 }
 
 .action-btn.default:hover {
-  background: rgba(253,203,110,0.2);
+  background: color-mix(in srgb, var(--j-warn) 20%, transparent);
 }
 
 .action-btn.edit {
-  background: rgba(255,255,255,0.06);
-  color: #ccc;
+  background: color-mix(in srgb, var(--j-text) 6%, transparent);
+  color: var(--j-text-2);
 }
 
 .action-btn.edit:hover {
-  background: rgba(255,255,255,0.1);
+  background: color-mix(in srgb, var(--j-text) 10%, transparent);
 }
 
 .action-btn.delete {
-  background: rgba(233,69,96,0.1);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 10%, transparent);
+  color: var(--j-danger);
 }
 
 .action-btn.delete:hover {
-  background: rgba(233,69,96,0.2);
+  background: color-mix(in srgb, var(--j-danger) 20%, transparent);
 }
 
 /* Modal */
@@ -260,7 +260,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -270,20 +270,20 @@
 
 .sending-profiles .modal-content,
 .modal-content {
-  background: #1a1a2e;
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--j-surface-2);
+  border: 1px solid color-mix(in srgb, var(--j-text) 8%, transparent);
   border-radius: 16px;
   padding: 24px;
   max-width: 600px;
   width: 90%;
   max-height: 90vh;
   overflow-y: auto;
-  color: #e0e0e0;
+  color: var(--j-text);
 }
 
 .modal-content h2 {
   margin: 0 0 20px 0;
-  color: #e0e0e0;
+  color: var(--j-text);
   font-size: 18px;
 }
 
@@ -301,7 +301,7 @@
   display: block;
   font-size: 12px;
   font-weight: 600;
-  color: #aaa;
+  color: var(--j-text-2);
   margin-bottom: 6px;
 }
 
@@ -309,24 +309,24 @@
 .modal-content .form-group select {
   width: 100%;
   padding: 9px 12px;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid color-mix(in srgb, var(--j-text) 10%, transparent);
   border-radius: 8px;
   font-size: 13px;
-  background: rgba(255,255,255,0.04);
-  color: #e0e0e0;
+  background: color-mix(in srgb, var(--j-text) 4%, transparent);
+  color: var(--j-text);
   transition: border-color 0.2s;
 }
 
 .modal-content .form-group input:focus,
 .modal-content .form-group select:focus {
   outline: none;
-  border-color: #00e5ff;
-  box-shadow: 0 0 0 3px rgba(0, 200, 255, 0.15);
+  border-color: var(--j-cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--j-cyan) 15%, transparent);
 }
 
 .modal-content .form-group select option {
-  background: #1a1a2e;
-  color: #e0e0e0;
+  background: var(--j-surface-2);
+  color: var(--j-text);
 }
 
 .form-actions {
@@ -335,15 +335,15 @@
   gap: 12px;
   margin-top: 20px;
   padding-top: 20px;
-  border-top: 1px solid rgba(255,255,255,0.06);
+  border-top: 1px solid color-mix(in srgb, var(--j-text) 6%, transparent);
 }
 
 .cancel-button {
   padding: 9px 18px;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid color-mix(in srgb, var(--j-text) 10%, transparent);
   border-radius: 8px;
   background: transparent;
-  color: #ccc;
+  color: var(--j-text-2);
   font-weight: 500;
   font-size: 13px;
   cursor: pointer;
@@ -351,15 +351,15 @@
 }
 
 .cancel-button:hover {
-  background: rgba(255,255,255,0.06);
+  background: color-mix(in srgb, var(--j-text) 6%, transparent);
 }
 
 .submit-button {
   padding: 9px 18px;
   border: none;
   border-radius: 8px;
-  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%);
+  color: var(--j-on-accent);
   font-weight: 600;
   font-size: 13px;
   cursor: pointer;
@@ -374,13 +374,13 @@
 .ses-section {
   margin-bottom: 16px;
   padding: 12px 14px;
-  background: rgba(116, 185, 255, 0.04);
-  border: 1px solid rgba(116, 185, 255, 0.12);
+  background: color-mix(in srgb, var(--j-blue) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-blue) 12%, transparent);
   border-radius: 10px;
 }
 
 .ses-section.open {
-  border-color: rgba(116, 185, 255, 0.3);
+  border-color: color-mix(in srgb, var(--j-blue) 30%, transparent);
 }
 
 .ses-toggle {
@@ -390,12 +390,12 @@
   flex-wrap: wrap;
   cursor: pointer;
   font-size: 13px;
-  color: #e0e0e0;
+  color: var(--j-text);
 }
 
 .ses-toggle input[type='checkbox'] {
   width: auto;
-  accent-color: #00b0ff;
+  accent-color: var(--j-blue);
   cursor: pointer;
 }
 
@@ -406,7 +406,7 @@
 .ses-toggle-hint {
   flex-basis: 100%;
   font-size: 11px;
-  color: #888;
+  color: var(--j-text-muted);
   margin-left: 24px;
 }
 
@@ -423,37 +423,37 @@
   display: block;
   margin-top: 4px;
   font-size: 11px;
-  color: #888;
+  color: var(--j-text-muted);
 }
 
 .field-error {
   display: block;
   margin-top: 4px;
   font-size: 11px;
-  color: #e94560;
+  color: var(--j-danger);
 }
 
 .modal-content .form-group input.input-error {
-  border-color: rgba(233, 69, 96, 0.6);
+  border-color: color-mix(in srgb, var(--j-danger) 60%, transparent);
 }
 
 /* Save/list error banner */
 .form-error-banner {
   padding: 10px 12px;
   font-size: 12px;
-  color: #e94560;
-  background: rgba(233, 69, 96, 0.08);
-  border: 1px solid rgba(233, 69, 96, 0.25);
+  color: var(--j-danger);
+  background: color-mix(in srgb, var(--j-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-danger) 25%, transparent);
   border-radius: 8px;
 }
 
 .list-error-state {
   text-align: center;
   padding: 60px 20px;
-  background: rgba(233, 69, 96, 0.04);
-  border: 1px solid rgba(233, 69, 96, 0.2);
+  background: color-mix(in srgb, var(--j-danger) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-danger) 20%, transparent);
   border-radius: 12px;
-  color: #e94560;
+  color: var(--j-danger);
   font-size: 13px;
 }
 
@@ -464,8 +464,8 @@
 /* SES-routed pill on profile cards */
 .ses-badge {
   display: inline-block;
-  background: rgba(0, 176, 255, 0.12);
-  color: #00b0ff;
+  background: color-mix(in srgb, var(--j-blue) 12%, transparent);
+  color: var(--j-blue);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 10px;
@@ -477,26 +477,26 @@
 
 /* Per-field DNS verification chips: verified green, failed red, unchecked muted */
 .verify-badge.failed {
-  background: rgba(233, 69, 96, 0.12);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 12%, transparent);
+  color: var(--j-danger);
 }
 
 .verify-badge.unchecked {
-  background: rgba(255, 255, 255, 0.04);
-  color: #777;
+  background: color-mix(in srgb, var(--j-text) 4%, transparent);
+  color: var(--j-text-faint);
 }
 
 .verify-checked-at {
   font-size: 10px;
-  color: #888;
+  color: var(--j-text-muted);
   align-self: center;
 }
 
 .profile-details code {
   padding: 1px 5px;
   font-size: 11px;
-  background: #0a0f1a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--j-bg);
+  border: 1px solid color-mix(in srgb, var(--j-text) 8%, transparent);
   border-radius: 4px;
 }
 
@@ -510,10 +510,10 @@
   grid-column: 1 / -1;
   text-align: center;
   padding: 60px 20px;
-  background: rgba(255,255,255,0.02);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: color-mix(in srgb, var(--j-text) 2%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-text) 6%, transparent);
   border-radius: 12px;
-  color: #888;
+  color: var(--j-text-muted);
 }
 
 .empty-state p {
@@ -524,5 +524,5 @@
 .loading-state {
   text-align: center;
   padding: 60px;
-  color: #888;
+  color: var(--j-text-muted);
 }

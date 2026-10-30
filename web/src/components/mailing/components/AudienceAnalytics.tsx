@@ -271,23 +271,23 @@ interface SortState { col: string; dir: SortDir }
 // are kept (the styles object + per-tab code reference COLORS.*), but every
 // value now resolves to a canonical indigo token. accent/accentAlt/good/warn/
 // danger stay 6-digit hex because some call sites append a hex-alpha suffix
-// (e.g. COLORS.accent + '66'); border/borderStrong are full rgba values used
+// (e.g. `color-mix(in srgb, ${COLORS.accent} 40%, transparent)`); border/borderStrong are full rgba values used
 // directly. HARD_RED / SOFT_AMBER below remain separate per the hard rule.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const COLORS = {
-  bgDeep:        theme.appBgSolid,          // #0a0e1c
-  bgPanel:       theme.panelBgSolid,        // #0f1629
+  bgDeep:        theme.appBgSolid,          // var(--j-bg)
+  bgPanel:       theme.panelBgSolid,        // var(--j-surface)
   bgPanelAlt:    '#131a2e',                 // slightly lifted indigo-slate surface
-  border:        theme.hairline,            // rgba(99,102,241,0.15)
-  borderStrong:  theme.panelBorderStrong,   // rgba(99,102,241,0.30)
-  textPrimary:   theme.text,                // #e5e7eb
-  textSecondary: theme.textMuted,           // #94a3b8
-  textMuted:     theme.textFaint,           // #64748b
-  accent:        theme.indigo400,           // #818cf8
-  accentAlt:     theme.indigo300,           // #a5b4fc
-  accentPink:    theme.indigo200,           // #c7d2fe (was pink → indigo light)
-  good:          theme.success,             // #22c55e
+  border:        theme.hairline,            // color-mix(in srgb, var(--j-violet-strong) 15%, transparent)
+  borderStrong:  theme.panelBorderStrong,   // color-mix(in srgb, var(--j-violet-strong) 30%, transparent)
+  textPrimary:   theme.text,                // var(--j-text)
+  textSecondary: theme.textMuted,           // var(--j-text-muted)
+  textMuted:     theme.textFaint,           // var(--j-text-faint)
+  accent:        theme.indigo400,           // var(--j-violet)
+  accentAlt:     theme.indigo300,           // var(--j-violet)
+  accentPink:    theme.indigo200,           // var(--j-violet-soft) (was pink → indigo light)
+  good:          theme.success,             // var(--j-success)
   warn:          theme.warning,             // #f59e0b
   danger:        theme.danger,              // #ef4444
 };
@@ -295,15 +295,15 @@ const COLORS = {
 // HARD RULE colors (repo CLAUDE.md): hard bounce red, soft bounce amber. Always.
 const HARD_RED = '#ef4444';
 const SOFT_AMBER = '#f59e0b';
-const INFO_BLUE = '#60a5fa';
-const OPEN_CYAN = '#22d3ee';
-const CLICK_VIOLET = '#a78bfa';
-const COMPLAINT_ROSE = '#fb7185';
-const COLD_SLATE = '#64748b';
+const INFO_BLUE = 'var(--j-blue)';
+const OPEN_CYAN = 'var(--j-cyan)';
+const CLICK_VIOLET = 'var(--j-violet)';
+const COMPLAINT_ROSE = 'var(--j-danger)';
+const COLD_SLATE = 'var(--j-text-faint)';
 
 // Stacked-series palette for acquisition by data_source (top 6 + other).
-const STACK_PALETTE = ['#818cf8', '#22d3ee', '#f472b6', '#34d399', '#fbbf24', '#a78bfa'];
-const OTHER_GRAY = '#64748b';
+const STACK_PALETTE = ['var(--j-violet)', 'var(--j-cyan)', 'var(--j-pink)', 'var(--j-success)', 'var(--j-warn)', 'var(--j-violet)'];
+const OTHER_GRAY = 'var(--j-text-faint)';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API LAYER — module-level capped cache + abortable fetch helpers
@@ -819,7 +819,7 @@ const StackLegend: React.FC<{ keys: string[] }> = ({ keys }) => (
     {keys.map((k, i) => {
       const color = stackColor(i, k);
       return (
-        <span key={k} style={{ ...styles.legendChip, color, borderColor: color + '66', background: color + '14' }}>
+        <span key={k} style={{ ...styles.legendChip, color, borderColor: `color-mix(in srgb, ${color} 40%, transparent)`, background: `color-mix(in srgb, ${color} 8%, transparent)` }}>
           <FontAwesomeIcon icon={faCircle} style={{ fontSize: 7 }} />
           {k || '(empty)'}
         </span>
@@ -837,7 +837,7 @@ const StackedBars: React.FC<{
 }> = ({ data, keys, colorFor, height }) => (
   <ResponsiveContainer width="100%" height={height}>
     <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-      <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+      <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
       <XAxis
         dataKey="dt"
         tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
@@ -852,7 +852,7 @@ const StackedBars: React.FC<{
         tickLine={false}
         width={48}
       />
-      <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+      <Tooltip content={<ChartTip />} cursor={{ fill: 'color-mix(in srgb, var(--j-text) 4%, transparent)' }} />
       {keys.map((k, i) => (
         <Bar key={k} stackId="stack" dataKey={k} name={k || '(empty)'} fill={colorFor(i, k)}
           fillOpacity={0.8} maxBarSize={28} />
@@ -1086,8 +1086,8 @@ const AcquisitionPanel: React.FC = () => {
                 style={{
                   ...styles.presetBtn,
                   color: rangeDays === d ? COLORS.accent : COLORS.textSecondary,
-                  borderColor: rangeDays === d ? COLORS.accent + '66' : COLORS.borderStrong,
-                  background: rangeDays === d ? COLORS.accent + '14' : 'transparent',
+                  borderColor: rangeDays === d ? `color-mix(in srgb, ${COLORS.accent} 40%, transparent)` : COLORS.borderStrong,
+                  background: rangeDays === d ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)` : 'transparent',
                 }}
                 onClick={() => setRangeDays(d)}
               >
@@ -1485,8 +1485,8 @@ const SourcesTab: React.FC = () => {
               style={{
                 ...styles.presetBtn,
                 color: active ? COLORS.accent : COLORS.textSecondary,
-                borderColor: active ? COLORS.accent + '66' : COLORS.borderStrong,
-                background: active ? COLORS.accent + '14' : 'transparent',
+                borderColor: active ? `color-mix(in srgb, ${COLORS.accent} 40%, transparent)` : COLORS.borderStrong,
+                background: active ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)` : 'transparent',
               }}
               onClick={() => setDim(d.id)}
             >
@@ -1506,8 +1506,8 @@ const SourcesTab: React.FC = () => {
                 style={{
                   ...styles.presetBtn,
                   color: active ? COLORS.accent : COLORS.textSecondary,
-                  borderColor: active ? COLORS.accent + '66' : COLORS.borderStrong,
-                  background: active ? COLORS.accent + '14' : 'transparent',
+                  borderColor: active ? `color-mix(in srgb, ${COLORS.accent} 40%, transparent)` : COLORS.borderStrong,
+                  background: active ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)` : 'transparent',
                 }}
                 onClick={() => { setFrom(daysAgoUTC(p.days - 1)); setTo(todayUTC()); }}
               >
@@ -1565,7 +1565,7 @@ const SourcesTab: React.FC = () => {
                   return (
                     <React.Fragment key={r.key || '(empty)'}>
                       <tr
-                        style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'rgba(129,140,248,0.07)' : undefined }}
+                        style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : undefined }}
                         onClick={() => setExpandedKey((cur) => (cur === r.key ? null : r.key))}
                       >
                         <td style={{ ...styles.td, whiteSpace: 'nowrap', color: COLORS.textPrimary, fontWeight: 500 }}>
@@ -1837,8 +1837,8 @@ const GrowthTab: React.FC = () => {
                 style={{
                   ...styles.presetBtn,
                   color: rangeDays === d ? COLORS.accent : COLORS.textSecondary,
-                  borderColor: rangeDays === d ? COLORS.accent + '66' : COLORS.borderStrong,
-                  background: rangeDays === d ? COLORS.accent + '14' : 'transparent',
+                  borderColor: rangeDays === d ? `color-mix(in srgb, ${COLORS.accent} 40%, transparent)` : COLORS.borderStrong,
+                  background: rangeDays === d ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)` : 'transparent',
                 }}
                 onClick={() => setRangeDays(d)}
               >
@@ -1896,8 +1896,8 @@ const GrowthTab: React.FC = () => {
                     style={{
                       ...styles.presetBtn,
                       color: on ? s.color : COLORS.textMuted,
-                      borderColor: on ? s.color + '66' : COLORS.borderStrong,
-                      background: on ? s.color + '14' : 'transparent',
+                      borderColor: on ? `color-mix(in srgb, ${s.color} 40%, transparent)` : COLORS.borderStrong,
+                      background: on ? `color-mix(in srgb, ${s.color} 8%, transparent)` : 'transparent',
                     }}
                     onClick={() => setSeriesOn((m) => ({ ...m, [s.key]: !m[s.key] }))}>
                     {s.kind === 'line' ? '〜 ' : '▮ '}{s.key}
@@ -1913,7 +1913,7 @@ const GrowthTab: React.FC = () => {
                 where churn% settles is the acquisition quality of the mix. */}
             <ResponsiveContainer width="100%" height={280}>
               <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
                 <XAxis dataKey="dt"
                   tickFormatter={(v: string) => (typeof v === 'string' ? v.slice(5) : String(v))}
                   tick={{ fill: COLORS.textMuted, fontSize: 10 }}
@@ -1922,7 +1922,7 @@ const GrowthTab: React.FC = () => {
                   tick={{ fill: COLORS.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={48} />
                 <YAxis yAxisId="rate" orientation="right" tickFormatter={(v: number) => `${v}%`}
                   tick={{ fill: COLORS.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} width={44} />
-                <Tooltip content={<ChartTip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+                <Tooltip content={<ChartTip />} cursor={{ fill: 'color-mix(in srgb, var(--j-text) 4%, transparent)' }} />
                 {GROWTH_SERIES.filter((s) => s.kind === 'bar' && seriesOn[s.key]).map((s) => (
                   <Bar key={s.key} yAxisId="vol" dataKey={s.key} fill={s.color} fillOpacity={0.8} maxBarSize={22} />
                 ))}
@@ -2025,18 +2025,18 @@ const ProfileCard: React.FC<{ profile: AudienceProfile; index: number; total: nu
         <span style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
           {total > 1 ? `List membership ${index + 1} of ${total}` : 'Audience profile'}
         </span>
-        <span style={{ ...styles.typeChip, color: sColor, borderColor: sColor + '55' }}>{p.status || 'unknown'}</span>
-        <span style={{ ...styles.typeChip, color: bColor, borderColor: bColor + '55' }}>
+        <span style={{ ...styles.typeChip, color: sColor, borderColor: `color-mix(in srgb, ${sColor} 33%, transparent)` }}>{p.status || 'unknown'}</span>
+        <span style={{ ...styles.typeChip, color: bColor, borderColor: `color-mix(in srgb, ${bColor} 33%, transparent)` }}>
           {p.engagement_band || 'no band'}
         </span>
-        <span style={{ ...styles.typeChip, color: COLORS.accentAlt, borderColor: COLORS.accentAlt + '55' }}>
+        <span style={{ ...styles.typeChip, color: COLORS.accentAlt, borderColor: `color-mix(in srgb, ${COLORS.accentAlt} 33%, transparent)` }}>
           engagement {p.engagement_score == null ? '—' : p.engagement_score.toFixed(1)}
         </span>
         {p.is_bot && (
-          <span style={{ ...styles.typeChip, color: HARD_RED, borderColor: HARD_RED + '55' }}>BOT</span>
+          <span style={{ ...styles.typeChip, color: HARD_RED, borderColor: `color-mix(in srgb, ${HARD_RED} 33%, transparent)` }}>BOT</span>
         )}
         {p.churn_reason && (
-          <span style={{ ...styles.typeChip, color: churnReasonColor(p.churn_reason), borderColor: churnReasonColor(p.churn_reason) + '55' }}>
+          <span style={{ ...styles.typeChip, color: churnReasonColor(p.churn_reason), borderColor: `color-mix(in srgb, ${churnReasonColor(p.churn_reason)} 33%, transparent)` }}>
             churn: {p.churn_reason}
           </span>
         )}
@@ -2240,7 +2240,7 @@ const MemberTab: React.FC = () => {
                       return (
                         <React.Fragment key={uid}>
                           <tr
-                            style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'rgba(129,140,248,0.07)' : undefined }}
+                            style={{ ...styles.tr, cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : undefined }}
                             onClick={() => setExpandedUid((cur) => (cur === uid ? null : uid))}
                           >
                             <td style={{ ...styles.td, color: COLORS.textMuted }}>
@@ -2248,7 +2248,7 @@ const MemberTab: React.FC = () => {
                             </td>
                             <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{fmtEventAt(e)}</td>
                             <td style={styles.td}>
-                              <span style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: eventTypeColor(e.event_type) + '55' }}>
+                              <span style={{ ...styles.typeChip, color: eventTypeColor(e.event_type), borderColor: `color-mix(in srgb, ${eventTypeColor(e.event_type)} 33%, transparent)` }}>
                                 {e.event_type || '—'}
                               </span>
                             </td>
@@ -2402,8 +2402,8 @@ export const AudienceAnalytics: React.FC = () => {
           <div style={{
             ...styles.badge,
             color: readEnabled ? COLORS.good : COLORS.textMuted,
-            borderColor: readEnabled ? COLORS.good + '55' : COLORS.borderStrong,
-            background: readEnabled ? COLORS.good + '12' : 'transparent',
+            borderColor: readEnabled ? `color-mix(in srgb, ${COLORS.good} 33%, transparent)` : COLORS.borderStrong,
+            background: readEnabled ? `color-mix(in srgb, ${COLORS.good} 7%, transparent)` : 'transparent',
           }}>
             <FontAwesomeIcon icon={faCircle} style={{ fontSize: 8 }} />
             Read: {readEnabled ? 'on' : 'off'}
@@ -2489,7 +2489,7 @@ export const AudienceAnalytics: React.FC = () => {
                     ...styles.tabBtn,
                     color: active ? COLORS.textPrimary : COLORS.textSecondary,
                     borderBottomColor: active ? COLORS.accent : 'transparent',
-                    background: active ? 'rgba(129,140,248,0.07)' : 'transparent',
+                    background: active ? 'color-mix(in srgb, var(--j-violet) 7%, transparent)' : 'transparent',
                   }}
                   onClick={() => selectTab(t.id)}
                 >
@@ -2555,11 +2555,11 @@ const styles: Record<string, React.CSSProperties> = {
   errorShell: {
     margin: '0 0 20px', padding: 16, background: COLORS.bgPanel, borderRadius: 8,
     color: COLORS.danger, display: 'flex', alignItems: 'center', gap: 8,
-    border: `1px solid ${COLORS.danger}33`,
+    border: `1px solid color-mix(in srgb, ${COLORS.danger} 20%, transparent)`,
   },
   inlineRetry: {
     marginLeft: 'auto', background: 'transparent', color: COLORS.danger,
-    border: `1px solid ${COLORS.danger}55`, padding: '4px 12px',
+    border: `1px solid color-mix(in srgb, ${COLORS.danger} 33%, transparent)`, padding: '4px 12px',
     borderRadius: 6, fontSize: 12, cursor: 'pointer',
   },
   header: {
@@ -2609,15 +2609,15 @@ const styles: Record<string, React.CSSProperties> = {
   darkHint: { fontSize: 12, color: COLORS.textMuted, marginTop: 12 },
   pgFallbackCard: {
     display: 'flex', gap: 14, alignItems: 'flex-start',
-    padding: '14px 18px', background: COLORS.accent + '12',
-    border: `1px solid ${COLORS.accent}44`, borderRadius: 10,
+    padding: '14px 18px', background: `color-mix(in srgb, ${COLORS.accent} 7%, transparent)`,
+    border: `1px solid color-mix(in srgb, ${COLORS.accent} 27%, transparent)`, borderRadius: 10,
     marginBottom: 20,
   },
   pgFallbackTitle: { fontSize: 14, fontWeight: 700, color: COLORS.accentAlt, marginBottom: 4 },
   pgFallbackBody: { fontSize: 12.5, color: COLORS.textSecondary, lineHeight: 1.6, maxWidth: 880 },
   pgCode: {
     fontFamily: 'monospace', fontSize: 11.5, color: COLORS.accentAlt,
-    background: COLORS.accent + '14', padding: '1px 5px', borderRadius: 4,
+    background: `color-mix(in srgb, ${COLORS.accent} 8%, transparent)`, padding: '1px 5px', borderRadius: 4,
   },
 
   // ── Tab nav ──
@@ -2647,7 +2647,7 @@ const styles: Record<string, React.CSSProperties> = {
   timingNote: { fontSize: 11, color: COLORS.textMuted, fontVariantNumeric: 'tabular-nums' },
   truncBanner: {
     padding: '10px 14px', marginBottom: 14, borderRadius: 8,
-    background: 'rgba(245,158,11,0.10)', border: `1px solid ${SOFT_AMBER}44`,
+    background: 'rgba(245,158,11,0.10)', border: `1px solid color-mix(in srgb, ${SOFT_AMBER} 27%, transparent)`,
     color: SOFT_AMBER, fontSize: 12, display: 'flex', alignItems: 'center',
   },
   eventFilterBar: {
@@ -2674,7 +2674,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '7px 10px', fontSize: 13, outline: 'none',
   },
   primaryBtn: {
-    background: COLORS.accent, color: '#0a0e1a',
+    background: COLORS.accent, color: 'var(--j-bg)',
     border: 'none', padding: '8px 16px', borderRadius: 6,
     fontSize: 13, fontWeight: 600, cursor: 'pointer',
     display: 'flex', alignItems: 'center', gap: 8, height: 34,
@@ -2741,7 +2741,7 @@ const styles: Record<string, React.CSSProperties> = {
   mixRow: { display: 'flex', alignItems: 'center', gap: 12 },
   mixType: { width: 160, fontFamily: 'monospace', fontSize: 12, textAlign: 'right', flexShrink: 0 },
   mixBarTrack: {
-    flex: 1, height: 16, background: 'rgba(255,255,255,0.04)',
+    flex: 1, height: 16, background: 'color-mix(in srgb, var(--j-text) 4%, transparent)',
     borderRadius: 4, overflow: 'hidden',
   },
   mixBarFill: { height: '100%', borderRadius: 4, opacity: 0.8, minWidth: 2 },
@@ -2769,7 +2769,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tableFooterNote: { padding: '10px 4px 0', fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 },
   expandCell: {
-    padding: '14px 16px', background: 'rgba(255,255,255,0.02)',
+    padding: '14px 16px', background: 'color-mix(in srgb, var(--j-text) 2%, transparent)',
   },
   expandHeader: {
     display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
@@ -2800,7 +2800,7 @@ const styles: Record<string, React.CSSProperties> = {
   metaValue: { fontSize: 13, color: COLORS.textPrimary, lineHeight: 1.4, wordBreak: 'break-word' },
   lakeOnlyNotice: {
     padding: '12px 14px', borderRadius: 8,
-    background: 'rgba(251,191,36,0.08)', border: `1px solid ${COLORS.warn}33`,
+    background: 'color-mix(in srgb, var(--j-warn) 8%, transparent)', border: `1px solid color-mix(in srgb, ${COLORS.warn} 20%, transparent)`,
     color: COLORS.textSecondary, fontSize: 13, lineHeight: 1.6,
   },
 

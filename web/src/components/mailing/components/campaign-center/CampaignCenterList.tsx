@@ -46,9 +46,9 @@ const matchesStatus = (status: string, f: ListStatusFilter): boolean => {
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  draft: '#94a3b8', scheduled: '#60a5fa', preparing: '#22d3ee', sending: '#22d3ee',
-  paused: '#f59e0b', sent: '#22c55e', completed: '#22c55e',
-  completed_with_errors: '#f59e0b', cancelled: '#64748b', failed: '#ef4444',
+  draft: 'var(--j-text-muted)', scheduled: 'var(--j-blue)', preparing: 'var(--j-cyan)', sending: 'var(--j-cyan)',
+  paused: '#f59e0b', sent: 'var(--j-success)', completed: 'var(--j-success)',
+  completed_with_errors: '#f59e0b', cancelled: 'var(--j-text-faint)', failed: '#ef4444',
 };
 
 // Status priority for the DEFAULT "live" ordering — lower rank = higher in the
@@ -70,18 +70,18 @@ const STATUS_RANK: Record<string, number> = {
 const statusRank = (status: string): number => STATUS_RANK[status] ?? 3;
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(15,22,41,0.9)', border: '1px solid rgba(99,102,241,0.2)',
-  borderRadius: 7, color: '#e0e6f0', padding: '6px 10px', fontSize: 12.5,
+  background: 'color-mix(in srgb, var(--j-shade) 90%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)',
+  borderRadius: 7, color: 'var(--j-text)', padding: '6px 10px', fontSize: 12.5,
 };
 
 const thStyle: React.CSSProperties = {
   padding: '7px 8px', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4,
-  color: 'rgba(180,210,240,0.5)', fontWeight: 700, whiteSpace: 'nowrap',
+  color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 700, whiteSpace: 'nowrap',
   cursor: 'pointer', userSelect: 'none', textAlign: 'right',
 };
 
 const tdNum: React.CSSProperties = {
-  padding: '6px 8px', fontSize: 12.5, color: '#cbd5e1', textAlign: 'right', whiteSpace: 'nowrap',
+  padding: '6px 8px', fontSize: 12.5, color: 'var(--j-text-2)', textAlign: 'right', whiteSpace: 'nowrap',
 };
 
 interface DisplayRow {
@@ -101,11 +101,11 @@ interface DisplayRow {
 }
 
 const StatusPill: React.FC<{ status: string }> = ({ status }) => {
-  const color = STATUS_COLORS[status] || '#94a3b8';
+  const color = STATUS_COLORS[status] || 'var(--j-text-muted)';
   return (
     <span style={{
       fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3, padding: '2px 8px',
-      borderRadius: 10, border: `1px solid ${color}55`, background: `${color}1a`, color,
+      borderRadius: 10, border: `1px solid color-mix(in srgb, ${color} 33%, transparent)`, background: `color-mix(in srgb, ${color} 10%, transparent)`, color,
       whiteSpace: 'nowrap',
     }}>
       {status.replace(/_/g, ' ')}
@@ -430,16 +430,16 @@ export const CampaignCenterList: React.FC<{
     const m = r.metrics;
     const dim = !r.enriched;
     const cell = (v: number, color?: string, tip?: string): React.ReactNode => (
-      <span title={tip} style={{ color: dim ? 'rgba(148,163,184,0.35)' : color, fontVariantNumeric: 'tabular-nums' }}>
+      <span title={tip} style={{ color: dim ? 'color-mix(in srgb, var(--j-text-muted) 35%, transparent)' : color, fontVariantNumeric: 'tabular-nums' }}>
         {dim ? '…' : numFmt(v)}
       </span>
     );
     return (
       <>
         <td style={tdNum}>{cell(m.attempted, undefined, 'Attempted (sent events)')}</td>
-        <td style={tdNum}>{cell(m.delivered, '#22c55e', `Delivered (${pctStr(m.delivered, Math.max(m.attempted, m.delivered + m.hard_bounces + m.soft_bounces))} of attempted)`)}</td>
-        <td style={tdNum}>{cell(m.human_opens, '#38bdf8', `Human opens, unique (${pctStr(m.human_opens, m.delivered)} of delivered)`)}</td>
-        <td style={tdNum}>{cell(m.human_clicks, '#c084fc', `Human clicks, unique (${pctStr(m.human_clicks, m.delivered)} of delivered)`)}</td>
+        <td style={tdNum}>{cell(m.delivered, 'var(--j-success)', `Delivered (${pctStr(m.delivered, Math.max(m.attempted, m.delivered + m.hard_bounces + m.soft_bounces))} of attempted)`)}</td>
+        <td style={tdNum}>{cell(m.human_opens, 'var(--j-blue)', `Human opens, unique (${pctStr(m.human_opens, m.delivered)} of delivered)`)}</td>
+        <td style={tdNum}>{cell(m.human_clicks, 'var(--j-violet)', `Human clicks, unique (${pctStr(m.human_clicks, m.delivered)} of delivered)`)}</td>
         <td style={tdNum}>{cell(m.unsubscribes)}</td>
         <td style={tdNum}>{cell(m.hard_bounces, m.hard_bounces > 0 ? '#ef4444' : undefined, 'Hard bounces (list hygiene) — always split from soft')}</td>
         <td style={tdNum}>{cell(m.soft_bounces, m.soft_bounces > 0 ? '#f59e0b' : undefined, 'Soft bounces (transient)')}</td>
@@ -458,14 +458,14 @@ export const CampaignCenterList: React.FC<{
         <tr
           onClick={() => toggleExpand(r.key, expandable)}
           style={{
-            borderTop: '1px solid rgba(99,102,241,0.08)',
+            borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
             cursor: expandable ? 'pointer' : 'default',
-            background: isOpen ? 'rgba(99,102,241,0.07)' : undefined,
+            background: isOpen ? 'color-mix(in srgb, var(--j-violet-strong) 7%, transparent)' : undefined,
           }}
         >
           <td style={{ padding: '6px 4px 6px 8px', width: 18 }}>
             {expandable ? (
-              <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: '#6366f1' }} />
+              <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet-strong)' }} />
             ) : (
               <FontAwesomeIcon icon={faLayerGroup} title="Automated follow-ups grouped — individual sends aggregated; no inline expand" style={{ fontSize: 10, color: '#f59e0b' }} />
             )}
@@ -474,7 +474,7 @@ export const CampaignCenterList: React.FC<{
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span
                 title={r.identity.name}
-                style={{ fontSize: 12.5, fontWeight: 600, color: '#e0e6f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--j-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
               >
                 {r.identity.name}
               </span>
@@ -488,10 +488,10 @@ export const CampaignCenterList: React.FC<{
               )}
             </div>
           </td>
-          <td style={{ padding: '6px 8px', fontSize: 12, color: '#a5b4fc', whiteSpace: 'nowrap', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.offer}>
+          <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--j-violet)', whiteSpace: 'nowrap', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.offer}>
             {r.offer}
           </td>
-          <td style={{ padding: '6px 8px', fontSize: 12, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+          <td style={{ padding: '6px 8px', fontSize: 12, color: 'var(--j-text-muted)', whiteSpace: 'nowrap' }}>
             {r.enriched || r.isRollup ? (r.domain || '—') : '…'}
           </td>
           <td style={{ padding: '6px 8px' }}><StatusPill status={r.identity.status} /></td>
@@ -501,7 +501,7 @@ export const CampaignCenterList: React.FC<{
           {metricCells(r)}
         </tr>
         {isOpen && (
-          <tr style={{ background: 'rgba(10,15,30,0.6)' }}>
+          <tr style={{ background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)' }}>
             <td colSpan={COL_COUNT} style={{ padding: '0 10px' }}>
               <CampaignExpand campaignId={r.key} onOpenModal={onOpenModal} />
             </td>
@@ -531,7 +531,7 @@ export const CampaignCenterList: React.FC<{
           {domainOptions.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
         <div style={{ position: 'relative' }}>
-          <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 9, top: 9, fontSize: 11, color: '#475569' }} />
+          <FontAwesomeIcon icon={faSearch} style={{ position: 'absolute', left: 9, top: 9, fontSize: 11, color: 'var(--j-text-faint)' }} />
           <input
             value={offerText}
             onChange={e => setOfferText(e.target.value)}
@@ -539,15 +539,15 @@ export const CampaignCenterList: React.FC<{
             style={{ ...inputStyle, paddingLeft: 26, width: 170 }}
           />
         </div>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: showDrips ? '#fbbf24' : '#94a3b8', cursor: 'pointer' }} title="Show automated follow-up programs grouped by category (never individual sends)">
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: showDrips ? 'var(--j-warn)' : 'var(--j-text-muted)', cursor: 'pointer' }} title="Show automated follow-up programs grouped by category (never individual sends)">
           <input type="checkbox" checked={showDrips} onChange={e => setShowDrips(e.target.checked)} />
           <FontAwesomeIcon icon={faLayerGroup} /> Follow-ups
         </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: groupByOffer ? '#a5b4fc' : '#94a3b8', cursor: 'pointer' }} title="Group rows by offer with rollup totals + top subjects by click-through rate">
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: groupByOffer ? 'var(--j-violet)' : 'var(--j-text-muted)', cursor: 'pointer' }} title="Group rows by offer with rollup totals + top subjects by click-through rate">
           <input type="checkbox" checked={groupByOffer} onChange={e => setGroupByOffer(e.target.checked)} />
           <FontAwesomeIcon icon={faTags} /> Group by offer
         </label>
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11.5, color: '#64748b' }}>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11.5, color: 'var(--j-text-faint)' }}>
           {enriching && <span><FontAwesomeIcon icon={faSpinner} spin /> metrics…</span>}
           {dataAsOf && (
             <span title={`Campaign data as of ${new Date(dataAsOf).toLocaleString()}`}>
@@ -569,7 +569,7 @@ export const CampaignCenterList: React.FC<{
       {error && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 8,
-          borderRadius: 8, border: '1px solid #ef444455', background: '#ef44441a', color: '#fca5a5', fontSize: 12.5,
+          borderRadius: 8, border: '1px solid #ef444455', background: '#ef44441a', color: 'var(--j-danger-soft)', fontSize: 12.5,
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#ef4444' }} />
           Failed to load campaigns: {error}
@@ -578,7 +578,7 @@ export const CampaignCenterList: React.FC<{
       {enrichNote && (
         <div style={{
           padding: '8px 12px', marginBottom: 8, borderRadius: 8, fontSize: 12,
-          border: '1px solid #f59e0b55', background: '#f59e0b14', color: '#fbbf24',
+          border: '1px solid #f59e0b55', background: '#f59e0b14', color: 'var(--j-warn)',
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
           Row metrics unavailable: {enrichNote} (campaign details still shown)
@@ -587,20 +587,20 @@ export const CampaignCenterList: React.FC<{
 
       {/* table */}
       {loading && rows.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--j-text-faint)' }}>
           <FontAwesomeIcon icon={faSpinner} spin size="2x" />
           <p style={{ marginTop: 10 }}>Loading campaigns…</p>
         </div>
       ) : sorted.length === 0 && !groupByOffer ? (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#64748b' }}>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--j-text-faint)' }}>
           <FontAwesomeIcon icon={faEnvelope} size="2x" />
           <p style={{ marginTop: 10 }}>No campaigns match the current filters.</p>
         </div>
       ) : (
-        <div style={{ overflowX: 'auto', border: '1px solid rgba(99,102,241,0.12)', borderRadius: 10 }}>
+        <div style={{ overflowX: 'auto', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)', borderRadius: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1240 }}>
             <thead>
-              <tr style={{ background: 'rgba(15,22,41,0.9)' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--j-shade) 90%, transparent)' }}>
                 <th style={{ ...thStyle, cursor: 'default', width: 18 }} />
                 <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('name')}>Campaign<SortIcon k="name" /></th>
                 <th style={{ ...thStyle, textAlign: 'left' }} onClick={() => toggleSort('offer')}>Offer<SortIcon k="offer" /></th>
@@ -631,14 +631,14 @@ export const CampaignCenterList: React.FC<{
                           if (next.has(g.offer)) next.delete(g.offer); else next.add(g.offer);
                           return next;
                         })}
-                        style={{ borderTop: '1px solid rgba(99,102,241,0.15)', cursor: 'pointer', background: 'rgba(99,102,241,0.05)' }}
+                        style={{ borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', cursor: 'pointer', background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)' }}
                       >
                         <td style={{ padding: '7px 4px 7px 8px' }}>
-                          <FontAwesomeIcon icon={gOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: '#6366f1' }} />
+                          <FontAwesomeIcon icon={gOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet-strong)' }} />
                         </td>
                         <td style={{ padding: '7px 8px' }} colSpan={4}>
-                          <span style={{ fontSize: 13, fontWeight: 700, color: '#c7d2fe' }}>{g.offer}</span>
-                          <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>{g.members.length} campaign{g.members.length === 1 ? '' : 's'}</span>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-violet-soft)' }}>{g.offer}</span>
+                          <span style={{ fontSize: 11, color: 'var(--j-text-faint)', marginLeft: 8 }}>{g.members.length} campaign{g.members.length === 1 ? '' : 's'}</span>
                         </td>
                         <td style={{ ...tdNum, textAlign: 'left' }} colSpan={2} />
                         <td style={tdNum}>{numFmt(g.planned)}</td>
@@ -647,16 +647,16 @@ export const CampaignCenterList: React.FC<{
                       {gOpen && (
                         <>
                           {g.subjects.length > 0 && (
-                            <tr style={{ background: 'rgba(10,15,30,0.6)' }}>
+                            <tr style={{ background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)' }}>
                               <td colSpan={COL_COUNT} style={{ padding: '8px 16px' }}>
-                                <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5, color: 'rgba(180,210,240,0.45)', fontWeight: 700, marginBottom: 4 }}>
+                                <div style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.5, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontWeight: 700, marginBottom: 4 }}>
                                   Top subject lines by click-through rate (clicks / delivered)
                                 </div>
                                 {g.subjects.map(s => (
-                                  <div key={s.subject} style={{ display: 'flex', gap: 10, fontSize: 12, color: '#cbd5e1', padding: '2px 0' }}>
+                                  <div key={s.subject} style={{ display: 'flex', gap: 10, fontSize: 12, color: 'var(--j-text-2)', padding: '2px 0' }}>
                                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.subject}>{s.subject}</span>
-                                    <span style={{ color: '#c084fc', fontWeight: 700 }}>{s.ctr.toFixed(2)}%</span>
-                                    <span style={{ color: '#64748b' }}>{numFmt(s.clicks)} clicks / {numFmt(s.delivered)} delivered</span>
+                                    <span style={{ color: 'var(--j-violet)', fontWeight: 700 }}>{s.ctr.toFixed(2)}%</span>
+                                    <span style={{ color: 'var(--j-text-faint)' }}>{numFmt(s.clicks)} clicks / {numFmt(s.delivered)} delivered</span>
                                   </div>
                                 ))}
                               </td>
@@ -678,7 +678,7 @@ export const CampaignCenterList: React.FC<{
 
       {/* pagination */}
       {!groupByOffer && sorted.length > PAGE_SIZE && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, fontSize: 12, color: 'var(--j-text-muted)' }}>
           <button
             disabled={safePage === 0}
             onClick={() => setPage(p => Math.max(0, p - 1))}
@@ -699,7 +699,7 @@ export const CampaignCenterList: React.FC<{
         </div>
       )}
 
-      <div style={{ marginTop: 8, fontSize: 10.5, color: 'rgba(100,116,139,0.8)' }}>
+      <div style={{ marginTop: 8, fontSize: 10.5, color: 'color-mix(in srgb, var(--j-text-muted) 80%, transparent)' }}>
         Opens shown are human (Apple Mail privacy & automated opens excluded), clicks unique.
         Relayed sends may under-report here (Reporting follow-up). Follow-ups {showDrips ? 'shown grouped by category' : 'hidden'}.
       </div>

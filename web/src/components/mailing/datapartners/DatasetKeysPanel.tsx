@@ -31,20 +31,20 @@ const fmt = (iso: string | null | undefined): string => {
 };
 
 const panel: React.CSSProperties = {
-  marginTop: 14, background: 'rgba(15,30,60,0.35)',
-  border: '1px solid rgba(99,102,241,0.25)', borderRadius: 10, padding: '14px 16px',
-  color: 'rgba(220,235,250,0.92)',
+  marginTop: 14, background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', borderRadius: 10, padding: '14px 16px',
+  color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
 };
 const th: React.CSSProperties = {
   textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.5,
-  color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+  color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
 };
 const td: React.CSSProperties = {
-  padding: '8px 10px', fontSize: 13, borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
+  padding: '8px 10px', fontSize: 13, borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: '#6366f1',
-  border: '1px solid rgba(99,102,241,0.4)', padding: '4px 10px', borderRadius: 4,
+  background: 'transparent', color: 'var(--j-violet-strong)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };
 const dangerBtn: React.CSSProperties = {
@@ -54,7 +54,7 @@ const dangerBtn: React.CSSProperties = {
 };
 const errBox: React.CSSProperties = {
   background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',
-  padding: 10, borderRadius: 6, marginBottom: 10, fontSize: 12, color: '#fca5a5',
+  padding: 10, borderRadius: 6, marginBottom: 10, fontSize: 12, color: 'var(--j-danger-soft)',
 };
 
 export const DatasetKeysPanel: React.FC<{
@@ -142,8 +142,8 @@ export const DatasetKeysPanel: React.FC<{
   return (
     <div style={panel}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-        <h3 style={{ margin: 0, fontSize: 14, color: '#dbeafe' }}>
-          <FontAwesomeIcon icon={faKey} style={{ marginRight: 8, color: '#818cf8' }} />
+        <h3 style={{ margin: 0, fontSize: 14, color: 'var(--j-text)' }}>
+          <FontAwesomeIcon icon={faKey} style={{ marginRight: 8, color: 'var(--j-violet)' }} />
           API keys — {datasetName}
         </h3>
         <button onClick={() => void rotate()} disabled={busy} style={{ ...dangerBtn, marginLeft: 'auto' }}>
@@ -166,14 +166,14 @@ export const DatasetKeysPanel: React.FC<{
           background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.35)',
           padding: 12, borderRadius: 6, marginBottom: 12,
         }}>
-          <div style={{ marginBottom: 8, fontSize: 12, color: '#fcd34d', fontWeight: 600 }}>
+          <div style={{ marginBottom: 8, fontSize: 12, color: 'var(--j-warn)', fontWeight: 600 }}>
             <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
             {rotated.warning}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <code style={{
               flex: 1, fontFamily: 'ui-monospace, monospace', fontSize: 13,
-              background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.12)',
+              background: 'color-mix(in srgb, var(--j-shade) 87.5%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text) 12%, transparent)',
               borderRadius: 4, padding: '8px 10px', wordBreak: 'break-all', whiteSpace: 'normal',
             }}>
               {rotated.api_key}
@@ -185,10 +185,10 @@ export const DatasetKeysPanel: React.FC<{
         </div>
       )}
 
-      {loading && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading keys…</div>}
+      {loading && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading keys…</div>}
 
       {!loading && keys && keys.length === 0 && (
-        <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>
+        <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
           No keys recorded for this dataset.
         </div>
       )}
@@ -211,7 +211,7 @@ export const DatasetKeysPanel: React.FC<{
               return (
                 <tr key={k.id} style={{ opacity: revoked ? 0.55 : 1 }}>
                   <td style={{ ...td, fontFamily: 'ui-monospace, monospace' }}>{k.key_prefix}…</td>
-                  <td style={{ ...td, color: revoked ? '#f59e0b' : '#10b981', fontWeight: 600 }}>{k.status}</td>
+                  <td style={{ ...td, color: revoked ? '#f59e0b' : 'var(--j-success)', fontWeight: 600 }}>{k.status}</td>
                   <td style={td}>{fmt(k.created_at)}</td>
                   <td style={td} title="Last time the partner authenticated with this key.">{fmt(k.last_used_at)}</td>
                   <td style={td}>{fmt(k.revoked_at)}</td>
@@ -229,7 +229,7 @@ export const DatasetKeysPanel: React.FC<{
         </table>
       )}
 
-      <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 10, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 10, lineHeight: 1.6 }}>
         Only the key prefix is stored — a full key is shown exactly once, at rotation. Revoking is
         immediate and irreversible; rotate first, hand the partner the new key, then revoke the old
         one when they have switched.

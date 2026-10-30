@@ -79,7 +79,7 @@ export const FONT_OPTIONS: { label: string; value: string; googleFont?: string }
   { label: 'JetBrains Mono', value: "'JetBrains Mono', monospace", googleFont: 'JetBrains+Mono:wght@400;500;600;700' },
 ];
 
-const STORAGE_KEY = 'ignite_theme';
+const STORAGE_KEY = 'jarvis_theme_v2';
 
 interface ThemeSave {
   overrides: Record<string, string>;

@@ -5,16 +5,16 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faTriangleExclamation, faRotateRight } from '@fortawesome/free-solid-svg-icons';
 
 export const C = {
-  bg: '#0a0f1a',
-  panel: 'rgba(13,21,38,0.6)',
-  panelBorder: 'rgba(0,200,255,0.12)',
-  text: '#e0e6f0',
-  muted: 'rgba(180,210,240,0.65)',
-  accent: '#00e5ff',
-  accent2: '#00b0ff',
-  success: '#00b894',
-  warning: '#fdcb6e',
-  danger: '#e94560',
+  bg: 'var(--j-bg)',
+  panel: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+  panelBorder: 'color-mix(in srgb, var(--j-cyan) 12%, transparent)',
+  text: 'var(--j-text)',
+  muted: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  accent: 'var(--j-cyan)',
+  accent2: 'var(--j-blue)',
+  success: 'var(--j-success)',
+  warning: 'var(--j-warn)',
+  danger: 'var(--j-danger)',
 } as const;
 
 export const panelStyle: React.CSSProperties = {
@@ -48,13 +48,13 @@ export const tdStyle: React.CSSProperties = {
   padding: '6px 10px',
   fontSize: 13,
   color: C.text,
-  borderBottom: '1px solid rgba(0,200,255,0.06)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
   whiteSpace: 'nowrap',
 };
 
 export const btnStyle: React.CSSProperties = {
-  background: 'rgba(0,176,255,0.15)',
-  border: '1px solid rgba(0,176,255,0.5)',
+  background: 'color-mix(in srgb, var(--j-blue) 15%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-blue) 50%, transparent)',
   color: C.text,
   borderRadius: 6,
   padding: '7px 14px',
@@ -72,7 +72,7 @@ export const btnDisabledStyle: React.CSSProperties = {
 };
 
 export const inputStyle: React.CSSProperties = {
-  background: 'rgba(10,15,26,0.8)',
+  background: 'color-mix(in srgb, var(--j-shade) 80%, transparent)',
   border: `1px solid ${C.panelBorder}`,
   color: C.text,
   borderRadius: 6,
@@ -96,8 +96,8 @@ export const ErrorState: React.FC<{ message: string; onRetry: () => void }> = ({
       gap: 10,
       padding: '10px 14px',
       borderRadius: 8,
-      background: 'rgba(233,69,96,0.10)',
-      border: '1px solid rgba(233,69,96,0.4)',
+      background: 'color-mix(in srgb, var(--j-danger) 10%, transparent)',
+      border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)',
       color: C.danger,
       fontSize: 13,
     }}

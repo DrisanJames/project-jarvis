@@ -148,9 +148,9 @@ const fmtTime = (s?: string): string => {
 };
 
 const tierColor = (tier: string): string => {
-  if (tier === 'tight') return '#22c55e';
+  if (tier === 'tight') return 'var(--j-success)';
   if (tier === 'fallback') return '#f59e0b';
-  return '#64748b';
+  return 'var(--j-text-faint)';
 };
 
 export const AttributionMatchDashboard: React.FC = () => {
@@ -227,15 +227,15 @@ export const AttributionMatchDashboard: React.FC = () => {
     <div style={pageStyle}>
       <header style={headerStyle}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 22, color: '#e2e8f0', fontWeight: 600 }}>
-            <FontAwesomeIcon icon={faCrosshairs} style={{ marginRight: 10, color: '#818cf8' }} />
+          <h1 style={{ margin: 0, fontSize: 22, color: 'var(--j-text)', fontWeight: 600 }}>
+            <FontAwesomeIcon icon={faCrosshairs} style={{ marginRight: 10, color: 'var(--j-violet)' }} />
             Attribution Match
           </h1>
-          <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, marginTop: 4 }}>
+          <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, marginTop: 4 }}>
             Resolve offer tracking click and conversion CSVs back to subscriber profiles
           </div>
         </div>
-        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.45)' }}>v{PAGE_VERSION}</div>
+        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>v{PAGE_VERSION}</div>
       </header>
 
       <section style={cardStyle}>
@@ -256,7 +256,7 @@ export const AttributionMatchDashboard: React.FC = () => {
 
         <div style={{ display: 'flex', gap: 12, marginTop: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 280px' }}>
-            <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>
+            <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
               Offer link pattern (match)
             </span>
             <input
@@ -312,19 +312,19 @@ export const AttributionMatchDashboard: React.FC = () => {
                 label="Clicks matched"
                 value={`${totals.clicksMatched} / ${totals.clicksTotal}`}
                 pct={fmtPct(totals.clicksMatched, totals.clicksTotal)}
-                color="#22c55e"
+                color="var(--j-success)"
               />
               <Counter
                 label="Conversions matched"
                 value={`${totals.conversionsMatched} / ${totals.conversionsTotal}`}
                 pct={fmtPct(totals.conversionsMatched, totals.conversionsTotal)}
-                color="#22c55e"
+                color="var(--j-success)"
               />
               <Counter
                 label="Tight window"
                 value={`±${result.window_seconds}s`}
                 pct={`fallback ±${result.fallback_window_hours}h`}
-                color="#818cf8"
+                color="var(--j-violet)"
               />
               <Counter
                 label="Offer pattern"
@@ -339,7 +339,7 @@ export const AttributionMatchDashboard: React.FC = () => {
                 {Object.entries(result.unmatched_reasons).map(([k, v]) => (
                   <span key={k} style={chipStyle} title={REASON_HINTS[k] || ''}>
                     <strong style={{ color: '#f59e0b' }}>{v}</strong>{' '}
-                    <span style={{ color: 'rgba(180,210,240,0.65)' }}>
+                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                       {REASON_LABELS[k] || k}
                     </span>
                   </span>
@@ -369,7 +369,7 @@ export const AttributionMatchDashboard: React.FC = () => {
                 onClick={() => setActiveTab('matched')}
                 count={totals.clicksMatched + totals.conversionsMatched}
                 label="Matched"
-                color="#22c55e"
+                color="var(--j-success)"
               />
               <TabButton
                 active={activeTab === 'unmatched'}
@@ -392,8 +392,8 @@ export const AttributionMatchDashboard: React.FC = () => {
       )}
 
       {!result && !loading && (
-        <section style={{ ...cardStyle, marginTop: 16, color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>
-          <FontAwesomeIcon icon={faRobot} style={{ marginRight: 8, color: '#818cf8' }} />
+        <section style={{ ...cardStyle, marginTop: 16, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>
+          <FontAwesomeIcon icon={faRobot} style={{ marginRight: 8, color: 'var(--j-violet)' }} />
           Drop the offer tracking click and conversion exports above. We correlate each row's IP and
           timestamp against your recorded email clicks, look for a matching click on a link that
           fits the offer pattern, then pull the matching subscriber profile. Rows that do not
@@ -428,15 +428,15 @@ const FileSlot: React.FC<FileSlotProps> = ({ label, placeholder, file, onChange 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <FontAwesomeIcon
           icon={file ? faFileCsv : faUpload}
-          style={{ fontSize: 22, color: file ? '#22c55e' : '#818cf8' }}
+          style={{ fontSize: 22, color: file ? 'var(--j-success)' : 'var(--j-violet)' }}
         />
         <div>
-          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>{label}</div>
-          <div style={{ fontSize: 14, color: '#e2e8f0', marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{label}</div>
+          <div style={{ fontSize: 14, color: 'var(--j-text)', marginTop: 2 }}>
             {file ? file.name : <span style={{ opacity: 0.5 }}>{placeholder}</span>}
           </div>
           {file && (
-            <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.5)', marginTop: 2 }}>
+            <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginTop: 2 }}>
               {(file.size / 1024).toFixed(1)} KB
             </div>
           )}
@@ -453,10 +453,10 @@ const Counter: React.FC<{ label: string; value: string; pct: string; color: stri
   color,
 }) => (
   <div style={counterStyle}>
-    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
       {label}
     </div>
-    <div style={{ fontSize: 20, color: '#e2e8f0', fontWeight: 600, marginTop: 4 }}>
+    <div style={{ fontSize: 20, color: 'var(--j-text)', fontWeight: 600, marginTop: 4 }}>
       {value}
     </div>
     {pct && (
@@ -477,7 +477,7 @@ const TabButton: React.FC<{
     style={{
       ...tabButtonStyle,
       borderBottomColor: active ? color : 'transparent',
-      color: active ? '#e2e8f0' : 'rgba(180,210,240,0.6)',
+      color: active ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 60%, transparent)',
     }}
   >
     <FontAwesomeIcon
@@ -509,7 +509,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
         }}
       >
         <h3 style={{ ...tableTitleStyle, margin: 0 }}>Clicks by sending domain</h3>
-        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
           {counts.length} domain{counts.length === 1 ? '' : 's'} · {totalClicks} click
           {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
         </div>
@@ -544,7 +544,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                       style={{
                         flex: 1,
                         height: 8,
-                        background: 'rgba(99, 102, 241, 0.12)',
+                        background: 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
                         borderRadius: 4,
                         overflow: 'hidden',
                       }}
@@ -554,7 +554,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                           width: `${barPct}%`,
                           height: '100%',
                           background:
-                            'linear-gradient(90deg, #6366f1 0%, #818cf8 100%)',
+                            'linear-gradient(90deg, var(--j-violet-strong) 0%, var(--j-violet) 100%)',
                         }}
                       />
                     </div>
@@ -576,7 +576,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                     textAlign: 'right',
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    color: c.conversions > 0 ? '#22c55e' : 'rgba(180,210,240,0.5)',
+                    color: c.conversions > 0 ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)',
                   }}
                 >
                   {c.conversions}
@@ -587,7 +587,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
                     textAlign: 'right',
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    color: 'rgba(180,210,240,0.65)',
+                    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                   }}
                 >
                   {share.toFixed(1)}%
@@ -597,7 +597,7 @@ const SendingDomainBreakdown: React.FC<{ counts: ApiSendingDomainCount[] }> = ({
           })}
           {counts.length > top.length && (
             <tr style={trBodyStyle}>
-              <td colSpan={4} style={{ ...tdStyle, color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>
+              <td colSpan={4} style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>
                 +{counts.length - top.length} more domain
                 {counts.length - top.length === 1 ? '' : 's'} hidden — full list in the JSON
                 download.
@@ -671,7 +671,7 @@ const UploadListBreakdown: React.FC<{
         }}
       >
         <h3 style={{ ...tableTitleStyle, margin: 0 }}>Matched subscribers by upload list</h3>
-        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
           {tally.length} list{tally.length === 1 ? '' : 's'} · {totalClicks} click
           {totalClicks === 1 ? '' : 's'} · {totalConv} conversion{totalConv === 1 ? '' : 's'}
         </div>
@@ -693,11 +693,11 @@ const UploadListBreakdown: React.FC<{
               <tr key={b.key} style={trBodyStyle}>
                 <td style={{ ...tdStyle, fontSize: 12 }}>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ color: '#e2e8f0' }}>{b.listName}</span>
+                    <span style={{ color: 'var(--j-text)' }}>{b.listName}</span>
                     {b.listID && (
                       <span
                         style={{
-                          color: 'rgba(180,210,240,0.4)',
+                          color: 'color-mix(in srgb, var(--j-text) 40%, transparent)',
                           fontFamily: 'monospace',
                           fontSize: 10,
                         }}
@@ -722,17 +722,17 @@ const UploadListBreakdown: React.FC<{
                         style={{
                           width: `${barPct}%`,
                           height: '100%',
-                          background: '#22d3ee',
+                          background: 'var(--j-cyan)',
                         }}
                       />
                     </div>
                     <strong style={{ minWidth: 36, textAlign: 'right' }}>{b.clicks}</strong>
                   </div>
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: '#22c55e' }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-success)' }}>
                   {b.conversions}
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: 'rgba(180,210,240,0.7)' }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
                   {share.toFixed(1)}%
                 </td>
               </tr>
@@ -829,7 +829,7 @@ const MatchedTable: React.FC<{
                 <td style={tdStyle}>
                   <span
                     style={{
-                      background: `${tierColor(m.confidence_tier)}22`,
+                      background: `color-mix(in srgb, ${tierColor(m.confidence_tier)} 13%, transparent)`,
                       color: tierColor(m.confidence_tier),
                       padding: '2px 8px',
                       borderRadius: 4,
@@ -853,12 +853,12 @@ const MatchedTable: React.FC<{
                   {listName}
                 </td>
                 <td style={tdStyle}>{m.subscriber?.email || '—'}</td>
-                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
                   {subId ? subId.slice(0, 8) : '—'}
                 </td>
                 <td style={tdStyle}>{m.campaign_name || (m.campaign_id ? m.campaign_id.slice(0, 8) : '—')}</td>
                 {kind === 'conversion' && (
-                  <td style={{ ...tdStyle, textAlign: 'right', color: '#22c55e' }}>
+                  <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-success)' }}>
                     ${(m.row.revenue ?? 0).toFixed(2)}
                   </td>
                 )}
@@ -904,7 +904,7 @@ const UnmatchedTable: React.FC<{
                     {REASON_LABELS[u.reason] || u.reason}
                   </span>
                 </td>
-                <td style={{ ...tdStyle, color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>
+                <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
                   {u.detail || '—'}
                 </td>
                 {kind === 'conversion' && (
@@ -922,7 +922,7 @@ const UnmatchedTable: React.FC<{
 );
 
 const EmptyState: React.FC<{ text: string }> = ({ text }) => (
-  <div style={{ padding: 32, textAlign: 'center', color: 'rgba(180,210,240,0.6)', fontSize: 13 }}>
+  <div style={{ padding: 32, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', fontSize: 13 }}>
     {text}
   </div>
 );
@@ -931,9 +931,9 @@ const EmptyState: React.FC<{ text: string }> = ({ text }) => (
 
 const pageStyle: React.CSSProperties = {
   padding: 24,
-  background: 'linear-gradient(180deg, #0a0e1a 0%, #0f1424 100%)',
+  background: 'linear-gradient(180deg, var(--j-bg) 0%, #0f1424 100%)',
   minHeight: '100%',
-  color: '#e2e8f0',
+  color: 'var(--j-text)',
 };
 
 const headerStyle: React.CSSProperties = {
@@ -944,8 +944,8 @@ const headerStyle: React.CSSProperties = {
 };
 
 const cardStyle: React.CSSProperties = {
-  background: 'rgba(15, 23, 42, 0.6)',
-  border: '1px solid rgba(99, 102, 241, 0.18)',
+  background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 18%, transparent)',
   borderRadius: 8,
   padding: 16,
 };
@@ -953,16 +953,16 @@ const cardStyle: React.CSSProperties = {
 const fileSlotStyle: React.CSSProperties = {
   display: 'block',
   padding: 14,
-  background: 'rgba(30, 41, 59, 0.5)',
-  border: '1px dashed rgba(99, 102, 241, 0.3)',
+  background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
+  border: '1px dashed color-mix(in srgb, var(--j-violet-strong) 30%, transparent)',
   borderRadius: 6,
   cursor: 'pointer',
 };
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(15, 23, 42, 0.7)',
-  border: '1px solid rgba(99, 102, 241, 0.25)',
-  color: '#e2e8f0',
+  background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
+  color: 'var(--j-text)',
   padding: '8px 10px',
   borderRadius: 4,
   fontSize: 13,
@@ -970,8 +970,8 @@ const inputStyle: React.CSSProperties = {
 };
 
 const primaryButton: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #818cf8 100%)',
-  color: '#fff',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet) 100%)',
+  color: 'var(--j-text)',
   border: 'none',
   padding: '10px 18px',
   borderRadius: 6,
@@ -980,9 +980,9 @@ const primaryButton: React.CSSProperties = {
 };
 
 const secondaryButton: React.CSSProperties = {
-  background: 'rgba(99, 102, 241, 0.15)',
-  color: '#a5b4fc',
-  border: '1px solid rgba(99, 102, 241, 0.3)',
+  background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+  color: 'var(--j-violet)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent)',
   padding: '8px 14px',
   borderRadius: 6,
   fontSize: 12,
@@ -995,13 +995,13 @@ const errorBanner: React.CSSProperties = {
   background: 'rgba(239, 68, 68, 0.1)',
   border: '1px solid rgba(239, 68, 68, 0.3)',
   borderRadius: 4,
-  color: '#fca5a5',
+  color: 'var(--j-danger-soft)',
   fontSize: 13,
 };
 
 const counterStyle: React.CSSProperties = {
-  background: 'rgba(15, 23, 42, 0.7)',
-  border: '1px solid rgba(99, 102, 241, 0.15)',
+  background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
   borderRadius: 6,
   padding: 12,
 };
@@ -1016,7 +1016,7 @@ const chipStyle: React.CSSProperties = {
 
 const tabBarStyle: React.CSSProperties = {
   display: 'flex',
-  borderBottom: '1px solid rgba(99, 102, 241, 0.15)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
   background: 'rgba(10, 14, 26, 0.5)',
 };
 
@@ -1034,7 +1034,7 @@ const tabButtonStyle: React.CSSProperties = {
 const tableTitleStyle: React.CSSProperties = {
   margin: '0 0 12px 0',
   fontSize: 13,
-  color: '#e2e8f0',
+  color: 'var(--j-text)',
   fontWeight: 600,
   textTransform: 'uppercase',
   letterSpacing: 0.5,
@@ -1047,11 +1047,11 @@ const tableStyle: React.CSSProperties = {
 };
 
 const trHeaderStyle: React.CSSProperties = {
-  background: 'rgba(99, 102, 241, 0.08)',
+  background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
 };
 
 const trBodyStyle: React.CSSProperties = {
-  borderBottom: '1px solid rgba(99, 102, 241, 0.08)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
 };
 
 const thStyle: React.CSSProperties = {
@@ -1060,25 +1060,25 @@ const thStyle: React.CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
   letterSpacing: 0.5,
-  color: 'rgba(180,210,240,0.7)',
+  color: 'color-mix(in srgb, var(--j-text) 70%, transparent)',
   fontWeight: 600,
 };
 
 const tdStyle: React.CSSProperties = {
   padding: '10px 12px',
-  color: '#e2e8f0',
+  color: 'var(--j-text)',
 };
 
 function reasonChip(reason: string): React.CSSProperties {
   const palette: Record<string, [string, string]> = {
-    bot_scanner_ip: ['rgba(168, 85, 247, 0.12)', '#c4b5fd'],
-    no_event_in_window: ['rgba(245, 158, 11, 0.1)', '#fcd34d'],
-    invalid_ip: ['rgba(239, 68, 68, 0.1)', '#fca5a5'],
-    db_error: ['rgba(239, 68, 68, 0.18)', '#fca5a5'],
-    subscriber_missing: ['rgba(100, 116, 139, 0.15)', '#cbd5e1'],
-    outside_retention: ['rgba(100, 116, 139, 0.15)', '#cbd5e1'],
+    bot_scanner_ip: ['color-mix(in srgb, var(--j-violet) 12%, transparent)', '#c4b5fd'],
+    no_event_in_window: ['rgba(245, 158, 11, 0.1)', 'var(--j-warn)'],
+    invalid_ip: ['rgba(239, 68, 68, 0.1)', 'var(--j-danger-soft)'],
+    db_error: ['rgba(239, 68, 68, 0.18)', 'var(--j-danger-soft)'],
+    subscriber_missing: ['color-mix(in srgb, var(--j-text-muted) 15%, transparent)', 'var(--j-text-2)'],
+    outside_retention: ['color-mix(in srgb, var(--j-text-muted) 15%, transparent)', 'var(--j-text-2)'],
   };
-  const [bg, fg] = palette[reason] || ['rgba(100, 116, 139, 0.15)', '#cbd5e1'];
+  const [bg, fg] = palette[reason] || ['color-mix(in srgb, var(--j-text-muted) 15%, transparent)', 'var(--j-text-2)'];
   return {
     background: bg,
     color: fg,

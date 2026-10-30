@@ -53,9 +53,9 @@ const dayLabel = (date: string): string =>
   date === 'planning' ? 'Audience planning in progress' : date;
 
 const statusColor = (status: string): string => {
-  if (status === 'sending') return '#34d399';
-  if (status === 'scheduled') return '#a5b4fc';
-  return '#fbbf24'; // preparing / finalizing_audience — still planning
+  if (status === 'sending') return 'var(--j-success)';
+  if (status === 'scheduled') return 'var(--j-violet)';
+  return 'var(--j-warn)'; // preparing / finalizing_audience — still planning
 };
 
 export const UpcomingSendsSection: React.FC<{ domain: string }> = ({ domain }) => {

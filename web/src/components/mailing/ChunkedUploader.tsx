@@ -785,27 +785,27 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           justify-content: space-between;
           align-items: center;
           padding: 20px 24px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
         }
 
-        .cu-header h2 { margin: 0; font-size: 20px; color: #e0e6f0; }
-        .cu-header p { margin: 4px 0 0; color: rgba(180,210,240,0.65); font-size: 14px; }
+        .cu-header h2 { margin: 0; font-size: 20px; color: var(--j-text); }
+        .cu-header p { margin: 4px 0 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
         .cu-close { 
           background: none; 
           border: none; 
           cursor: pointer; 
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           padding: 8px;
           border-radius: 6px;
         }
-        .cu-close:hover { background: #f3f4f6; color: rgba(180,210,240,0.65); }
+        .cu-close:hover { background: var(--j-surface-2); color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         .cu-steps {
           display: flex;
           justify-content: center;
           gap: 24px;
           padding: 20px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           flex-wrap: wrap;
         }
 
@@ -813,18 +813,18 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           display: flex;
           align-items: center;
           gap: 8px;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           font-size: 13px;
         }
 
-        .cu-step.current { color: #00e5ff; font-weight: 500; }
-        .cu-step.complete { color: #00b894; }
+        .cu-step.current { color: var(--j-cyan); font-weight: 500; }
+        .cu-step.complete { color: var(--j-success); }
 
         .cu-step-indicator {
           width: 24px;
           height: 24px;
           border-radius: 50%;
-          background: #e5e7eb;
+          background: var(--j-surface-2);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -832,8 +832,8 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           font-weight: 600;
         }
 
-        .cu-step.current .cu-step-indicator { background: #00e5ff; color: white; }
-        .cu-step.complete .cu-step-indicator { background: #00b894; color: white; }
+        .cu-step.current .cu-step-indicator { background: var(--j-cyan); color: white; }
+        .cu-step.complete .cu-step-indicator { background: var(--j-success); color: white; }
 
         .cu-error {
           display: flex;
@@ -841,8 +841,8 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           gap: 10px;
           padding: 12px 24px;
           background: #fef2f2;
-          border-bottom: 1px solid #fecaca;
-          color: #e94560;
+          border-bottom: 1px solid var(--j-danger-soft);
+          color: var(--j-danger);
           font-size: 14px;
         }
 
@@ -851,7 +851,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           background: none;
           border: none;
           cursor: pointer;
-          color: #e94560;
+          color: var(--j-danger);
           padding: 4px 8px;
         }
 
@@ -859,8 +859,8 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           padding: 24px 24px 16px;
         }
 
-        .cu-section-header h3 { margin: 0 0 4px; font-size: 18px; color: #e0e6f0; }
-        .cu-section-header p { margin: 0; color: rgba(180,210,240,0.65); font-size: 14px; }
+        .cu-section-header h3 { margin: 0 0 4px; font-size: 18px; color: var(--j-text); }
+        .cu-section-header p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
 
         /* File Selection */
         .cu-select { padding: 0 24px 24px; }
@@ -871,22 +871,22 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           align-items: center;
           justify-content: center;
           padding: 48px;
-          border: 2px dashed #d1d5db;
+          border: 2px dashed var(--j-text-2);
           border-radius: 12px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           text-align: center;
           transition: all 0.2s;
         }
 
         .cu-dropzone.dragging {
-          border-color: #00e5ff;
-          background: #eff6ff;
+          border-color: var(--j-cyan);
+          background: var(--j-surface-2);
         }
 
-        .cu-dropzone-icon { color: rgba(180,210,240,0.65); margin-bottom: 16px; }
-        .cu-dropzone h4 { margin: 0 0 8px; color: #374151; }
-        .cu-dropzone > p { margin: 0 0 16px; color: rgba(180,210,240,0.65); }
-        .cu-file-hint { font-size: 12px; color: rgba(180,210,240,0.65); margin-top: 16px !important; }
+        .cu-dropzone-icon { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin-bottom: 16px; }
+        .cu-dropzone h4 { margin: 0 0 8px; color: var(--j-text-faint); }
+        .cu-dropzone > p { margin: 0 0 16px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .cu-file-hint { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); margin-top: 16px !important; }
 
         .cu-file-input input { display: none; }
         .cu-file-input span {
@@ -894,7 +894,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           align-items: center;
           gap: 8px;
           padding: 10px 20px;
-          background: #00e5ff;
+          background: var(--j-cyan);
           color: white;
           border-radius: 6px;
           cursor: pointer;
@@ -902,7 +902,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           transition: background 0.2s;
         }
 
-        .cu-file-input span:hover { background: #00b0ff; }
+        .cu-file-input span:hover { background: var(--j-blue); }
 
         .cu-requirements {
           margin-top: 24px;
@@ -936,10 +936,10 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           text-align: center;
         }
 
-        .cu-spinner { color: #00e5ff; margin-bottom: 16px; }
-        .cu-loading-container h3 { margin: 0 0 8px; color: #e0e6f0; }
-        .cu-loading-container p { margin: 0; color: rgba(180,210,240,0.65); }
-        .cu-file-name { color: rgba(180,210,240,0.65); font-size: 13px; margin-top: 16px; }
+        .cu-spinner { color: var(--j-cyan); margin-bottom: 16px; }
+        .cu-loading-container h3 { margin: 0 0 8px; color: var(--j-text); }
+        .cu-loading-container p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .cu-file-name { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-top: 16px; }
 
         /* Mapping */
         .cu-mapping { padding: 0 24px 24px; }
@@ -955,19 +955,19 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           color: #1e40af;
         }
 
-        .cu-file-size { color: rgba(180,210,240,0.65); }
+        .cu-file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
         .cu-file-info button {
           margin-left: auto;
           background: none;
           border: none;
-          color: #00e5ff;
+          color: var(--j-cyan);
           cursor: pointer;
           font-size: 13px;
         }
 
         .cu-mapping-table-wrapper {
           margin-top: 20px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
           overflow: hidden;
         }
@@ -981,23 +981,23 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         .cu-mapping-table td {
           padding: 12px;
           text-align: left;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
         }
 
         .cu-mapping-table th {
-          background: #f9fafb;
+          background: var(--j-surface-2);
           font-size: 11px;
           font-weight: 600;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           text-transform: uppercase;
         }
 
-        .cu-mapping-table td { font-size: 14px; color: #374151; }
+        .cu-mapping-table td { font-size: 14px; color: var(--j-text-faint); }
 
         .cu-mapping-table select {
           width: 100%;
           padding: 8px;
-          border: 1px solid #d1d5db;
+          border: 1px solid var(--j-text-2);
           border-radius: 6px;
           font-size: 14px;
           background: white;
@@ -1005,23 +1005,23 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
 
         .cu-email-row { background: #f0fdf4; }
 
-        .cu-confidence-high { color: #00b894; margin-left: 8px; }
+        .cu-confidence-high { color: var(--j-success); margin-left: 8px; }
 
         .cu-preview-cell {
           max-width: 150px;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           font-size: 13px;
         }
 
         .cu-data-preview { margin-top: 20px; }
-        .cu-data-preview h4 { margin: 0 0 12px; font-size: 14px; color: #374151; }
+        .cu-data-preview h4 { margin: 0 0 12px; font-size: 14px; color: var(--j-text-faint); }
 
         .cu-preview-scroll {
           overflow-x: auto;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
         }
 
@@ -1034,15 +1034,15 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
         .cu-preview-scroll th,
         .cu-preview-scroll td {
           padding: 8px 12px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
           white-space: nowrap;
         }
 
-        .cu-preview-scroll th { background: #f9fafb; font-weight: 500; color: #374151; }
+        .cu-preview-scroll th { background: var(--j-surface-2); font-weight: 500; color: var(--j-text-faint); }
 
         .cu-mapping-warning {
           text-align: center;
-          color: #fdcb6e;
+          color: var(--j-warn);
           font-size: 13px;
           margin-top: 12px;
         }
@@ -1054,14 +1054,14 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           text-align: center;
         }
 
-        .cu-progress-container h3 { margin: 20px 0 8px; color: #e0e6f0; }
-        .cu-progress-container p { color: rgba(180,210,240,0.65); margin: 0; }
+        .cu-progress-container h3 { margin: 20px 0 8px; color: var(--j-text); }
+        .cu-progress-container p { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 0; }
 
         .cu-progress-bar-container {
           width: 100%;
           max-width: 400px;
           height: 8px;
-          background: #e5e7eb;
+          background: var(--j-surface-2);
           border-radius: 4px;
           margin: 24px auto;
           overflow: hidden;
@@ -1069,11 +1069,11 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
 
         .cu-progress-bar {
           height: 100%;
-          background: linear-gradient(90deg, #00e5ff, #60a5fa);
+          background: linear-gradient(90deg, var(--j-cyan), var(--j-blue));
           transition: width 0.3s;
         }
 
-        .cu-progress-text { color: rgba(180,210,240,0.65); font-size: 14px; margin-top: 8px; }
+        .cu-progress-text { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; margin-top: 8px; }
 
         /* Complete */
         .cu-complete { padding: 48px 24px; text-align: center; }
@@ -1087,15 +1087,15 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #00b894;
+          color: var(--j-success);
         }
 
         .cu-complete-icon.error {
           background: #fee2e2;
-          color: #e94560;
+          color: var(--j-danger);
         }
 
-        .cu-complete h3 { margin: 0 0 24px; color: #e0e6f0; }
+        .cu-complete h3 { margin: 0 0 24px; color: var(--j-text); }
 
         .cu-stats-grid {
           display: grid;
@@ -1107,17 +1107,17 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
 
         .cu-stat {
           padding: 16px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           border-radius: 8px;
         }
 
-        .cu-stat-value { display: block; font-size: 24px; font-weight: 700; color: #e0e6f0; }
-        .cu-stat-label { font-size: 11px; color: rgba(180,210,240,0.65); text-transform: uppercase; }
-        .cu-stat.success .cu-stat-value { color: #00b894; }
-        .cu-stat.warning .cu-stat-value { color: #fdcb6e; }
-        .cu-stat.error .cu-stat-value { color: #e94560; }
+        .cu-stat-value { display: block; font-size: 24px; font-weight: 700; color: var(--j-text); }
+        .cu-stat-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 65%, transparent); text-transform: uppercase; }
+        .cu-stat.success .cu-stat-value { color: var(--j-success); }
+        .cu-stat.warning .cu-stat-value { color: var(--j-warn); }
+        .cu-stat.error .cu-stat-value { color: var(--j-danger); }
 
-        .cu-duration { color: rgba(180,210,240,0.65); font-size: 13px; margin-bottom: 16px; }
+        .cu-duration { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; margin-bottom: 16px; }
 
         .cu-error-list {
           max-width: 500px;
@@ -1128,7 +1128,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           border-radius: 8px;
         }
 
-        .cu-error-list h4 { margin: 0 0 8px; color: #e94560; font-size: 14px; }
+        .cu-error-list h4 { margin: 0 0 8px; color: var(--j-danger); font-size: 14px; }
         .cu-error-list ul { margin: 0; padding-left: 20px; font-size: 13px; color: #991b1b; }
 
         /* Actions */
@@ -1137,7 +1137,7 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           justify-content: center;
           gap: 12px;
           padding-top: 20px;
-          border-top: 1px solid #e5e7eb;
+          border-top: 1px solid var(--j-text);
           margin-top: 20px;
         }
 
@@ -1146,32 +1146,32 @@ export const ChunkedUploader: React.FC<ChunkedUploaderProps> = ({
           align-items: center;
           gap: 8px;
           padding: 10px 20px;
-          border: 1px solid #d1d5db;
+          border: 1px solid var(--j-text-2);
           border-radius: 6px;
           background: white;
           font-size: 14px;
           font-weight: 500;
           cursor: pointer;
           transition: all 0.2s;
-          color: #374151;
+          color: var(--j-text-faint);
         }
 
-        .cu-btn:hover { background: #f9fafb; }
+        .cu-btn:hover { background: var(--j-surface-2); }
         .cu-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .cu-btn-primary {
-          background: #00e5ff;
-          border-color: #00e5ff;
+          background: var(--j-cyan);
+          border-color: var(--j-cyan);
           color: white;
         }
 
-        .cu-btn-primary:hover { background: #00b0ff; }
-        .cu-btn-primary:disabled { background: #93c5fd; border-color: #93c5fd; }
+        .cu-btn-primary:hover { background: var(--j-blue); }
+        .cu-btn-primary:disabled { background: var(--j-blue); border-color: var(--j-blue); }
 
         .cu-btn-danger {
           background: white;
-          border-color: #fca5a5;
-          color: #e94560;
+          border-color: var(--j-danger-soft);
+          color: var(--j-danger);
         }
 
         .cu-btn-danger:hover { background: #fef2f2; }

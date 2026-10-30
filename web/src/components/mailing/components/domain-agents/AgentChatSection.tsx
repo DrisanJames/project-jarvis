@@ -27,7 +27,7 @@ function renderMarkdown(text: string): string {
     .replace(/^### (.*)$/gm, '<div style="font-weight:700;margin:6px 0 2px">$1</div>')
     .replace(/^## (.*)$/gm, '<div style="font-weight:700;font-size:14px;margin:8px 0 2px">$1</div>')
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.35);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>')
+    .replace(/`([^`]+)`/g, '<code style="background:color-mix(in srgb, var(--j-shade) 87.5%, transparent);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>')
     .replace(/^[-•] (.*)$/gm, '<div style="padding-left:14px;text-indent:-10px">• $1</div>')
     .replace(/\n/g, '<br/>');
 }
@@ -168,33 +168,33 @@ export const AgentChatSection: React.FC<{ domain: string | null }> = ({ domain }
 };
 
 const userBubble: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
-  color: 'white', padding: '9px 13px', borderRadius: '12px 12px 2px 12px',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
+  color: 'var(--j-text)', padding: '9px 13px', borderRadius: '12px 12px 2px 12px',
   maxWidth: '78%', fontSize: 13.5, lineHeight: 1.5, whiteSpace: 'pre-wrap',
 };
 const agentBubble: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.3)', border: `1px solid ${C.panelBorder}`,
+  background: 'color-mix(in srgb, var(--j-shade) 75%, transparent)', border: `1px solid ${C.panelBorder}`,
   color: C.text, padding: '9px 13px', borderRadius: '12px 12px 12px 2px',
   maxWidth: '88%', fontSize: 13.5, lineHeight: 1.55,
 };
 const actionBadge: React.CSSProperties = {
-  fontSize: 11, background: 'rgba(0,229,255,0.10)', color: C.accent,
-  border: '1px solid rgba(0,229,255,0.25)', borderRadius: 10, padding: '2px 8px',
+  fontSize: 11, background: 'color-mix(in srgb, var(--j-cyan) 10%, transparent)', color: C.accent,
+  border: '1px solid color-mix(in srgb, var(--j-cyan) 25%, transparent)', borderRadius: 10, padding: '2px 8px',
 };
 const chipStyle: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.25)', color: C.text, border: `1px solid ${C.panelBorder}`,
+  background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: C.text, border: `1px solid ${C.panelBorder}`,
   borderRadius: 14, padding: '6px 12px', fontSize: 12.5, cursor: 'pointer',
 };
 const inputStyle: React.CSSProperties = {
-  flex: 1, background: 'rgba(0,0,0,0.3)', color: C.text,
+  flex: 1, background: 'color-mix(in srgb, var(--j-shade) 75%, transparent)', color: C.text,
   border: `1px solid ${C.panelBorder}`, borderRadius: 8, padding: '10px 12px',
   fontSize: 13.5, resize: 'none', outline: 'none', fontFamily: 'inherit', lineHeight: 1.4,
 };
 const sendBtn: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', color: 'white',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)', color: 'var(--j-on-accent)',
   border: 'none', borderRadius: 8, padding: '10px 16px', cursor: 'pointer', fontSize: 14,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: C.accent, border: `1px solid rgba(0,229,255,0.3)`,
+  background: 'transparent', color: C.accent, border: `1px solid color-mix(in srgb, var(--j-cyan) 30%, transparent)`,
   borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontSize: 12,
 };

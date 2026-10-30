@@ -74,7 +74,7 @@ const label: React.CSSProperties = {
   fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase', color: colors.textMuted,
 };
 const input: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)', color: colors.text,
+  background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: colors.text,
   border: `1px solid ${colors.panelBorderStrong}`, borderRadius: 5,
   padding: '4px 6px', fontSize: 12,
 };

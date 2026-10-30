@@ -162,9 +162,9 @@ const verdictColors: Record<Verdict, string> = {
 };
 
 const verdictBg: Record<Verdict, string> = {
-  INCREASE: 'rgba(0,184,148,0.15)',
-  MAINTAIN: 'rgba(180,210,240,0.10)',
-  DECREASE: 'rgba(233,69,96,0.15)',
+  INCREASE: 'color-mix(in srgb, var(--j-success) 15%, transparent)',
+  MAINTAIN: 'color-mix(in srgb, var(--j-text) 10%, transparent)',
+  DECREASE: 'color-mix(in srgb, var(--j-danger) 15%, transparent)',
 };
 
 export const VerdictChip: React.FC<{ verdict: Verdict; compact?: boolean }> = ({ verdict, compact }) => (
@@ -173,7 +173,7 @@ export const VerdictChip: React.FC<{ verdict: Verdict; compact?: boolean }> = ({
     style={{
       color: verdictColors[verdict],
       background: verdictBg[verdict],
-      border: `1px solid ${verdictColors[verdict]}55`,
+      border: `1px solid color-mix(in srgb, ${verdictColors[verdict]} 33%, transparent)`,
       borderRadius: 999,
       padding: compact ? '1px 7px' : '2px 10px',
       fontSize: compact ? 9.5 : 11,
@@ -228,8 +228,8 @@ export const BaselineVerdictBanner: React.FC<BannerProps> = ({ domain, data, loa
   return (
     <div style={{
       ...panelStyle,
-      border: `1px solid ${verdictColors[overall]}55`,
-      background: overall === 'DECREASE' ? 'rgba(233,69,96,0.07)' : C.panel,
+      border: `1px solid color-mix(in srgb, ${verdictColors[overall]} 33%, transparent)`,
+      background: overall === 'DECREASE' ? 'color-mix(in srgb, var(--j-danger) 7%, transparent)' : C.panel,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
         <div style={{ ...sectionTitleStyle, marginBottom: 0 }}>Volume recommendation</div>
@@ -337,7 +337,7 @@ export const TodayPaceSection: React.FC<{ domain: string }> = ({ domain }) => {
         )}
         {alerts.length > 0 && (
           <span style={{
-            color: C.danger, background: 'rgba(233,69,96,0.12)', border: `1px solid ${C.danger}66`,
+            color: C.danger, background: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', border: `1px solid color-mix(in srgb, ${C.danger} 40%, transparent)`,
             borderRadius: 6, padding: '3px 10px', fontSize: 11.5, fontWeight: 700,
           }}>
             {alerts.length} mailbox provider{alerts.length === 1 ? '' : 's'} sending above the recommended volume
@@ -375,14 +375,14 @@ export const TodayPaceSection: React.FC<{ domain: string }> = ({ domain }) => {
                   <tr
                     key={r.isp}
                     title={r.routes.length > 1 ? `Merged routes: ${r.routes.join(', ')}` : r.routes[0]}
-                    style={r.alert ? { background: 'rgba(233,69,96,0.08)', outline: `1px solid ${C.danger}40` } : undefined}
+                    style={r.alert ? { background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)', outline: `1px solid color-mix(in srgb, ${C.danger} 25%, transparent)` } : undefined}
                   >
                     <td style={{ ...tdStyle, fontWeight: 600 }}>{r.isp}</td>
                     <td style={{ ...tdStyle, textAlign: 'right' }}>{fmtInt(r.today_sends)}</td>
                     <td style={{ ...tdStyle, textAlign: 'right', color: C.muted }}>{fmtInt(Math.round(r.baseline_daily_sends))}</td>
                     <td style={tdStyle}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ flex: 1, height: 8, background: 'rgba(10,15,26,0.8)', borderRadius: 4, overflow: 'hidden', minWidth: 100 }}>
+                        <div style={{ flex: 1, height: 8, background: 'color-mix(in srgb, var(--j-shade) 80%, transparent)', borderRadius: 4, overflow: 'hidden', minWidth: 100 }}>
                           <div style={{ width: `${(barWidth / 150) * 100}%`, height: '100%', background: barColor, borderRadius: 4 }} />
                         </div>
                         <span style={{ fontSize: 12, color: barColor, fontWeight: 600, minWidth: 48, textAlign: 'right' }}>
@@ -475,8 +475,8 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
               ...btnStyle,
               padding: '4px 10px',
               fontSize: 12,
-              background: days === d ? 'rgba(0,229,255,0.2)' : 'rgba(0,176,255,0.08)',
-              border: days === d ? `1px solid ${C.accent}` : '1px solid rgba(0,176,255,0.25)',
+              background: days === d ? 'color-mix(in srgb, var(--j-cyan) 20%, transparent)' : 'color-mix(in srgb, var(--j-blue) 8%, transparent)',
+              border: days === d ? `1px solid ${C.accent}` : '1px solid color-mix(in srgb, var(--j-blue) 25%, transparent)',
               color: days === d ? C.accent : C.muted,
             }}
           >
@@ -510,12 +510,12 @@ export const DomainScorecardHistory: React.FC<{ domain: string }> = ({ domain })
           <div style={{ height: 260, marginBottom: 14 }}>
             <ResponsiveContainer width="100%" height={250}>
               <ComposedChart data={chartData}>
-                <CartesianGrid stroke="rgba(0,200,255,0.10)" strokeDasharray="3 3" />
+                <CartesianGrid stroke="color-mix(in srgb, var(--j-cyan) 10%, transparent)" strokeDasharray="3 3" />
                 <XAxis dataKey="day" stroke={C.muted} fontSize={11} />
                 <YAxis yAxisId="left" stroke={C.muted} fontSize={11} />
                 <YAxis yAxisId="right" orientation="right" stroke={C.muted} fontSize={11} />
                 <Tooltip
-                  contentStyle={{ background: 'rgba(10,15,26,0.95)', border: `1px solid ${C.panelBorder}`, borderRadius: 8, color: C.text }}
+                  contentStyle={{ background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', border: `1px solid ${C.panelBorder}`, borderRadius: 8, color: C.text }}
                   labelStyle={{ color: C.accent }}
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />

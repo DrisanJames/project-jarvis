@@ -34,9 +34,9 @@ interface SchedulerCommand {
 
 const COMMAND_STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   queued: { bg: '#3b2f14', fg: '#f59e0b' },
-  running: { bg: '#14243b', fg: '#60a5fa' },
-  completed: { bg: '#12301f', fg: '#22c55e' },
-  done: { bg: '#12301f', fg: '#22c55e' },
+  running: { bg: '#14243b', fg: 'var(--j-blue)' },
+  completed: { bg: '#12301f', fg: 'var(--j-success)' },
+  done: { bg: '#12301f', fg: 'var(--j-success)' },
   failed: { bg: '#3a1518', fg: '#ef4444' },
   error: { bg: '#3a1518', fg: '#ef4444' },
 };
@@ -167,7 +167,7 @@ export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClos
     : styles.overlay;
   const panelStyle: React.CSSProperties = inline
     ? { ...styles.panel, width: '100%', maxWidth: 900, height: 'calc(100vh - 210px)', minHeight: 480,
-        border: '1px solid #1e293b', borderRadius: 12, boxShadow: 'none', margin: '0 auto' }
+        border: '1px solid var(--j-surface-2)', borderRadius: 12, boxShadow: 'none', margin: '0 auto' }
     : styles.panel;
 
   return (
@@ -199,7 +199,7 @@ export const CampaignCopilot: React.FC<CampaignCopilotProps> = ({ isOpen, onClos
         {commands.length > 0 && (
           <div style={styles.commandStrip}>
             {commands.slice(0, 5).map(cmd => {
-              const chip = COMMAND_STATUS_COLORS[cmd.status] || { bg: '#1e293b', fg: '#94a3b8' };
+              const chip = COMMAND_STATUS_COLORS[cmd.status] || { bg: 'var(--j-surface-2)', fg: 'var(--j-text-muted)' };
               return (
                 <details key={cmd.id} style={styles.commandRow}>
                   <summary style={styles.commandSummary}>
@@ -285,12 +285,12 @@ function simpleMarkdown(text: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  out = out.replace(/```([\s\S]*?)```/g, '<pre style="background:#0d1117;padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0"><code>$1</code></pre>');
+  out = out.replace(/```([\s\S]*?)```/g, '<pre style="background:var(--j-surface);padding:8px 10px;border-radius:6px;overflow-x:auto;font-size:12px;margin:6px 0"><code>$1</code></pre>');
   out = out.replace(/`([^`]+)`/g, '<code style="background:#1a2233;padding:1px 5px;border-radius:3px;font-size:12px">$1</code>');
   out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  out = out.replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:14px;color:#a5b4fc">$1</h4>');
-  out = out.replace(/^## (.+)$/gm, '<h3 style="margin:10px 0 4px;font-size:15px;color:#a5b4fc">$1</h3>');
+  out = out.replace(/^### (.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:14px;color:var(--j-violet)">$1</h4>');
+  out = out.replace(/^## (.+)$/gm, '<h3 style="margin:10px 0 4px;font-size:15px;color:var(--j-violet)">$1</h3>');
 
   out = out.replace(/^\|(.+)\|$/gm, (match) => {
     const cells = match.split('|').filter(c => c.trim());
@@ -314,7 +314,7 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
     inset: 0,
-    background: 'rgba(0,0,0,0.4)',
+    background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)',
     zIndex: 9999,
     display: 'flex',
     justifyContent: 'flex-end',
@@ -326,7 +326,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#0f1729',
     display: 'flex',
     flexDirection: 'column',
-    borderLeft: '1px solid #1e293b',
+    borderLeft: '1px solid var(--j-surface-2)',
     boxShadow: '-8px 0 32px rgba(0,0,0,0.5)',
   },
   header: {
@@ -334,23 +334,23 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '14px 16px',
-    borderBottom: '1px solid #1e293b',
-    background: '#0a1020',
+    borderBottom: '1px solid var(--j-surface-2)',
+    background: 'var(--j-surface)',
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   headerRight: { display: 'flex', alignItems: 'center', gap: 8 },
   modelSelect: {
-    background: '#1a2236',
+    background: 'var(--j-surface-2)',
     border: '1px solid #2a3550',
     borderRadius: 6,
-    color: '#a5b4fc',
+    color: 'var(--j-violet)',
     fontSize: 12,
     padding: '5px 8px',
     outline: 'none',
     cursor: 'pointer',
   },
   commandStrip: {
-    borderBottom: '1px solid #1e293b',
+    borderBottom: '1px solid var(--j-surface-2)',
     background: '#0b1322',
     padding: '6px 14px',
     display: 'flex',
@@ -361,7 +361,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   commandRow: {
     fontSize: 12,
-    color: '#cbd5e1',
+    color: 'var(--j-text-2)',
   },
   commandSummary: {
     display: 'flex',
@@ -373,7 +373,7 @@ const styles: Record<string, React.CSSProperties> = {
   commandName: {
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 12,
-    color: '#e2e8f0',
+    color: 'var(--j-text)',
   },
   commandChip: {
     fontSize: 10,
@@ -386,18 +386,18 @@ const styles: Record<string, React.CSSProperties> = {
   commandTime: {
     marginLeft: 'auto',
     fontSize: 10,
-    color: '#64748b',
+    color: 'var(--j-text-faint)',
   },
   commandOutput: {
     margin: '4px 0 6px',
     padding: '6px 8px',
-    background: '#0d1117',
-    border: '1px solid #1e293b',
+    background: 'var(--j-surface)',
+    border: '1px solid var(--j-surface-2)',
     borderRadius: 6,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 11,
     lineHeight: 1.45,
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
     whiteSpace: 'pre-wrap' as const,
     overflowX: 'auto',
     maxHeight: 120,
@@ -407,20 +407,20 @@ const styles: Record<string, React.CSSProperties> = {
     width: 34,
     height: 34,
     borderRadius: 8,
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+    background: 'linear-gradient(135deg, var(--j-violet-strong), var(--j-violet-strong))',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     fontSize: 12,
     fontWeight: 700,
-    color: '#fff',
+    color: 'var(--j-text)',
   },
-  headerTitle: { fontSize: 15, fontWeight: 600, color: '#e2e8f0' },
-  headerSub: { fontSize: 11, color: '#64748b' },
+  headerTitle: { fontSize: 15, fontWeight: 600, color: 'var(--j-text)' },
+  headerSub: { fontSize: 11, color: 'var(--j-text-faint)' },
   closeBtn: {
     background: 'none',
     border: 'none',
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
     fontSize: 22,
     cursor: 'pointer',
     padding: '4px 8px',
@@ -439,8 +439,8 @@ const styles: Record<string, React.CSSProperties> = {
   assistantRow: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start' },
   userBubble: {
     maxWidth: '85%',
-    background: '#312e81',
-    color: '#e0e7ff',
+    background: 'var(--j-surface-3)',
+    color: 'var(--j-violet-soft)',
     padding: '8px 12px',
     borderRadius: '12px 12px 2px 12px',
     fontSize: 13,
@@ -448,11 +448,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   assistantBubble: {
     maxWidth: '92%',
-    background: '#1a2236',
-    color: '#cbd5e1',
+    background: 'var(--j-surface-2)',
+    color: 'var(--j-text-2)',
     padding: '10px 14px',
     borderRadius: '12px 12px 12px 2px',
-    border: '1px solid #1e293b',
+    border: '1px solid var(--j-surface-2)',
   },
   actionsBar: {
     marginTop: 8,
@@ -465,7 +465,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 8px',
     borderRadius: 10,
     background: '#1e3a5f',
-    color: '#7dd3fc',
+    color: 'var(--j-cyan)',
     fontWeight: 500,
   },
   suggestions: {
@@ -478,9 +478,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     padding: '5px 10px',
     borderRadius: 14,
-    border: '1px solid #334155',
-    background: '#0f172a',
-    color: '#a5b4fc',
+    border: '1px solid var(--j-border)',
+    background: 'var(--j-bg)',
+    color: 'var(--j-violet)',
     cursor: 'pointer',
     transition: 'all 0.15s',
   },
@@ -488,17 +488,17 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     padding: '10px 14px',
-    borderTop: '1px solid #1e293b',
-    background: '#0a1020',
+    borderTop: '1px solid var(--j-surface-2)',
+    background: 'var(--j-surface)',
     gap: 8,
   },
   input: {
     flex: 1,
-    background: '#1a2236',
+    background: 'var(--j-surface-2)',
     border: '1px solid #2a3550',
     borderRadius: 8,
     padding: '10px 12px',
-    color: '#e2e8f0',
+    color: 'var(--j-text)',
     fontSize: 13,
     outline: 'none',
   },
@@ -506,9 +506,9 @@ const styles: Record<string, React.CSSProperties> = {
     width: 38,
     height: 38,
     borderRadius: 8,
-    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+    background: 'linear-gradient(135deg, var(--j-violet-strong), var(--j-violet-strong))',
     border: 'none',
-    color: '#fff',
+    color: 'var(--j-text)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
@@ -524,7 +524,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: '#6366f1',
+    background: 'var(--j-violet-strong)',
     animation: 'copilotPulse 1.2s ease-in-out infinite',
   },
 };
@@ -536,8 +536,8 @@ styleSheet.textContent = `
   50% { opacity: 1; transform: scale(1.2); }
 }
 .copilot-suggestion:hover {
-  background: #1e293b !important;
-  border-color: #6366f1 !important;
+  background: var(--j-surface-2) !important;
+  border-color: var(--j-violet-strong) !important;
 }
 `;
 if (!document.getElementById('copilot-styles')) {

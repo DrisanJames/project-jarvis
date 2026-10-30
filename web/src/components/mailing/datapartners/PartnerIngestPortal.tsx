@@ -236,11 +236,11 @@ export const PartnerIngestPortal: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24, color: 'rgba(220,235,250,0.92)' }}>
+    <div style={{ padding: 24, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
         <div>
-          <h2 style={{ margin: 0, color: '#dbeafe' }}>Data Partner Imports</h2>
-          <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
+          <h2 style={{ margin: 0, color: 'var(--j-text)' }}>Data Partner Imports</h2>
+          <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>
             Secure inbound API → list storage → suppression and email verification → 15-min round-robin automated follow-ups across 4 mature brands. v{PAGE_VERSION}
           </div>
         </div>
@@ -267,15 +267,15 @@ export const PartnerIngestPortal: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid rgba(120,150,200,0.18)', marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', marginBottom: 16 }}>
         {tabs.map(t => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
             style={{
               ...tabBtn,
-              borderBottom: activeTab === t.id ? '2px solid #6366f1' : '2px solid transparent',
-              color: activeTab === t.id ? '#cbd5f5' : 'rgba(180,210,240,0.65)',
+              borderBottom: activeTab === t.id ? '2px solid var(--j-violet-strong)' : '2px solid transparent',
+              color: activeTab === t.id ? 'var(--j-text-2)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)',
             }}
           >
             <FontAwesomeIcon icon={t.icon} /> {t.label}
@@ -284,7 +284,7 @@ export const PartnerIngestPortal: React.FC = () => {
       </div>
 
       {loading && !dashboard && (
-        <div style={{ textAlign: 'center', padding: 60, color: 'rgba(180,210,240,0.65)' }}>
+        <div style={{ textAlign: 'center', padding: 60, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading…
         </div>
       )}
@@ -297,7 +297,7 @@ export const PartnerIngestPortal: React.FC = () => {
           {/* Operational queue state per funnel (ready / pending / rotation).
               Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
               below content min-width so a long label can't distort the row. */}
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'rgba(180,210,240,0.5)', fontWeight: 700, margin: '4px 0 10px' }}>
+          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontWeight: 700, margin: '4px 0 10px' }}>
             Funnel queue state
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16, marginBottom: 24 }}>
@@ -320,7 +320,7 @@ export const PartnerIngestPortal: React.FC = () => {
 
           <DripPerformancePanel />
 
-          <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.5)' }}>
+          <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
             Per-submission batch detail (one row per partner API call) lives in the <b>Inbound Batches</b> tab.
           </div>
         </div>
@@ -353,7 +353,7 @@ export const PartnerIngestPortal: React.FC = () => {
         <div>
           <table style={tableStyle}>
             <thead>
-              <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
                 <th style={th}>Partner / Dataset</th>
                 <th style={th}>Vertical</th>
                 <th style={th}>Flush Window</th>
@@ -368,7 +368,7 @@ export const PartnerIngestPortal: React.FC = () => {
                 <tr key={d.id} style={tr}>
                   <td style={td}>
                     <div style={{ fontWeight: 600 }}>{d.partner_name}</div>
-                    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>{d.name}</div>
+                    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>{d.name}</div>
                   </td>
                   <td style={td}>{labelForVertical(d.vertical)}</td>
                   <td style={tdNum}>{d.flush_window_hours}h</td>
@@ -382,11 +382,11 @@ export const PartnerIngestPortal: React.FC = () => {
                         </span>
                       )}
                       {d.intake_paused && (
-                        <span style={{ color: '#e94560', fontSize: 11, fontWeight: 700 }} title={d.intake_paused_reason || 'intake paused'}>
+                        <span style={{ color: 'var(--j-danger)', fontSize: 11, fontWeight: 700 }} title={d.intake_paused_reason || 'intake paused'}>
                           <FontAwesomeIcon icon={faPause} /> INTAKE PAUSED
                         </span>
                       )}
-                      {!d.paused_emergency && !d.intake_paused && <span style={{ color: '#10b981' }}>active</span>}
+                      {!d.paused_emergency && !d.intake_paused && <span style={{ color: 'var(--j-success)' }}>active</span>}
                     </div>
                   </td>
                   <td style={td}>
@@ -444,7 +444,7 @@ export const PartnerIngestPortal: React.FC = () => {
         <div>
           {/* Feed picker → quality report (the partner-reportable view) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-            <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)' }}>Feed:</span>
+            <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Feed:</span>
             <select
               value={reportDatasetId || (datasets[0]?.id ?? '')}
               onChange={e => setReportDatasetId(e.target.value)}
@@ -459,7 +459,7 @@ export const PartnerIngestPortal: React.FC = () => {
           {(reportDatasetId || datasets[0]?.id) ? (
             <PartnerQualityReport datasetId={reportDatasetId || datasets[0].id} />
           ) : (
-            <div style={{ color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>No datasets onboarded yet.</div>
+            <div style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 13 }}>No datasets onboarded yet.</div>
           )}
 
           {/* Raw per-POST stream, collapsed by default — debugging only */}
@@ -470,7 +470,7 @@ export const PartnerIngestPortal: React.FC = () => {
             {showRawPosts && dashboard && (
               <table style={{ ...tableStyle, marginTop: 10 }}>
                 <thead>
-                  <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+                  <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
                     <th style={th}>Batch ID</th>
                     <th style={th}>Partner / Dataset</th>
                     <th style={th}>Vertical</th>
@@ -566,19 +566,19 @@ const CreativesPanel: React.FC = () => {
     grid[c.vertical].push(c);
   });
 
-  if (loading) return <div style={{ color: 'rgba(180,210,240,0.65)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading creatives…</div>;
+  if (loading) return <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading creatives…</div>;
 
   return (
     <div>
-      <div style={{ marginBottom: 12, fontSize: 13, color: 'rgba(180,210,240,0.7)' }}>
+      <div style={{ marginBottom: 12, fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
         Hot-swappable creatives for the partner follow-up sequences. One row per (vertical × brand). Updates take effect on the <b>next send batch</b>.
       </div>
       {Object.entries(grid).map(([vertical, rows]) => (
         <div key={vertical} style={{ marginBottom: 24 }}>
-          <h3 style={{ color: '#cbd5f5', margin: '0 0 8px 0' }}>{labelForVertical(vertical)}</h3>
+          <h3 style={{ color: 'var(--j-text-2)', margin: '0 0 8px 0' }}>{labelForVertical(vertical)}</h3>
           <table style={tableStyle}>
             <thead>
-              <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+              <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
                 <th style={th}>Brand</th>
                 <th style={th}>Creative</th>
                 <th style={th}>Subject</th>
@@ -661,7 +661,7 @@ const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, 
   return (
     <div style={modalBackdrop}>
       <div style={modalBody}>
-        <h3 style={{ marginTop: 0, color: '#dbeafe' }}>Edit creative — {labelForVertical(vertical)} / {brand.toUpperCase()}</h3>
+        <h3 style={{ marginTop: 0, color: 'var(--j-text)' }}>Edit creative — {labelForVertical(vertical)} / {brand.toUpperCase()}</h3>
         <label style={fieldLabel}>Creative filename (must exist in the creative library)</label>
         <input value={filename} onChange={e => setFilename(e.target.value)} style={input} />
         <label style={fieldLabel}>Subject line</label>
@@ -689,31 +689,31 @@ const StatusBadge: React.FC<{ status: string; emergencyStopped: boolean }> = ({ 
     return <span style={{ color: '#f59e0b', fontWeight: 600 }}>Paused</span>;
   }
   const colors: Record<string, string> = {
-    received: '#60a5fa',
-    slicing: '#a78bfa',
-    slicing_complete: '#10b981',
-    validating: '#a78bfa',
-    completed: '#10b981',
+    received: 'var(--j-blue)',
+    slicing: 'var(--j-violet)',
+    slicing_complete: 'var(--j-success)',
+    validating: 'var(--j-violet)',
+    completed: 'var(--j-success)',
     failed: '#ef4444',
   };
-  return <span style={{ color: colors[status] ?? '#cbd5f5', fontWeight: 500 }}>{status}</span>;
+  return <span style={{ color: colors[status] ?? 'var(--j-text-2)', fontWeight: 500 }}>{status}</span>;
 };
 
 // ============ Styles ============
 
 const primaryBtn: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-  color: 'white', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
+  color: 'var(--j-text)', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
   fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const iconBtn: React.CSSProperties = {
-  background: 'rgba(120,150,200,0.08)', color: 'rgba(220,235,250,0.85)',
-  border: '1px solid rgba(120,150,200,0.18)', padding: '8px 14px', borderRadius: 6,
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: '#6366f1',
-  border: '1px solid rgba(99,102,241,0.4)', padding: '4px 10px', borderRadius: 4,
+  background: 'transparent', color: 'var(--j-violet-strong)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };
 const dangerBtn: React.CSSProperties = {
@@ -726,38 +726,38 @@ const tabBtn: React.CSSProperties = {
   cursor: 'pointer', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const selectInput: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.25)', color: 'rgba(220,235,250,0.9)',
-  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
+  background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: 'color-mix(in srgb, var(--j-text) 90%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
   minWidth: 320,
 };
 const tableStyle: React.CSSProperties = {
-  width: '100%', borderCollapse: 'collapse', background: 'rgba(15,30,60,0.35)',
+  width: '100%', borderCollapse: 'collapse', background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
   borderRadius: 8, overflow: 'hidden', fontSize: 13,
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '10px 12px', color: 'rgba(180,210,240,0.65)',
+  textAlign: 'left', padding: '10px 12px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
-const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid rgba(120,150,200,0.1)' };
+const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };
 const tdNum: React.CSSProperties = { ...td, fontVariantNumeric: 'tabular-nums', textAlign: 'right' };
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'ui-monospace, monospace', fontSize: 12 };
 const tr: React.CSSProperties = {};
 const modalBackdrop: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center',
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', display: 'flex', alignItems: 'center',
   justifyContent: 'center', zIndex: 1000, padding: 24,
 };
 const modalBody: React.CSSProperties = {
-  background: '#0f1c33', border: '1px solid rgba(120,150,200,0.25)',
+  background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 540,
   boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
 };
 const fieldLabel: React.CSSProperties = {
-  display: 'block', fontSize: 12, color: 'rgba(180,210,240,0.7)', margin: '12px 0 4px 0',
+  display: 'block', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', margin: '12px 0 4px 0',
 };
 const input: React.CSSProperties = {
-  width: '100%', padding: '8px 10px', background: 'rgba(0,0,0,0.25)',
-  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 4, color: 'white', fontSize: 13,
+  width: '100%', padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 4, color: 'var(--j-text)', fontSize: 13,
 };
 const errorBox: React.CSSProperties = {
   background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',

@@ -15,12 +15,12 @@ interface AuditEvent {
 }
 
 const ACTION_COLORS: Record<string, string> = {
-  create_partner: '#10b981',
-  create_dataset: '#10b981',
+  create_partner: 'var(--j-success)',
+  create_dataset: 'var(--j-success)',
   emergency_stop_dataset: '#ef4444',
-  resume_dataset: '#10b981',
-  update_isp_distribution: '#a78bfa',
-  update_creative: '#60a5fa',
+  resume_dataset: 'var(--j-success)',
+  update_isp_distribution: 'var(--j-violet)',
+  update_creative: 'var(--j-blue)',
 };
 
 export const AuditLogPanel: React.FC = () => {
@@ -62,7 +62,7 @@ export const AuditLogPanel: React.FC = () => {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.7)' }}>
+        <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
           <FontAwesomeIcon icon={faClipboardList} /> Every admin action — partner creation, dataset changes, pause / resume, mailbox provider overrides, creative swaps — is recorded here with before/after state.
         </div>
         <button onClick={fetchEvents} style={iconBtn}>
@@ -88,14 +88,14 @@ export const AuditLogPanel: React.FC = () => {
       )}
 
       {loading && events.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>
+        <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading…
         </div>
       )}
 
       <table style={tableStyle}>
         <thead>
-          <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+          <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
             <th style={th}>When</th>
             <th style={th}>Actor</th>
             <th style={th}>Action</th>
@@ -110,11 +110,11 @@ export const AuditLogPanel: React.FC = () => {
                 <td style={td}>{new Date(ev.created_at).toLocaleString()}</td>
                 <td style={td}>{ev.actor}</td>
                 <td style={td}>
-                  <span style={{ color: ACTION_COLORS[ev.action] ?? '#cbd5f5', fontWeight: 600 }}>{ev.action}</span>
+                  <span style={{ color: ACTION_COLORS[ev.action] ?? 'var(--j-text-2)', fontWeight: 600 }}>{ev.action}</span>
                 </td>
                 <td style={tdMono}>
                   {ev.target_type}
-                  {ev.target_id ? <span style={{ color: 'rgba(180,210,240,0.55)' }}>: {ev.target_id.slice(0, 8)}…</span> : null}
+                  {ev.target_id ? <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>: {ev.target_id.slice(0, 8)}…</span> : null}
                 </td>
                 <td style={td}>
                   {(ev.before_state != null || ev.after_state != null) ? (
@@ -126,14 +126,14 @@ export const AuditLogPanel: React.FC = () => {
               </tr>
               {expanded.has(ev.id) && (
                 <tr>
-                  <td colSpan={5} style={{ ...td, background: 'rgba(0,0,0,0.25)' }}>
+                  <td colSpan={5} style={{ ...td, background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)' }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
                       <div>
                         <div style={{ fontSize: 11, color: '#ef4444', textTransform: 'uppercase', marginBottom: 4 }}>Before</div>
                         <pre style={preStyle}>{String(JSON.stringify(ev.before_state ?? null, null, 2))}</pre>
                       </div>
                       <div>
-                        <div style={{ fontSize: 11, color: '#10b981', textTransform: 'uppercase', marginBottom: 4 }}>After</div>
+                        <div style={{ fontSize: 11, color: 'var(--j-success)', textTransform: 'uppercase', marginBottom: 4 }}>After</div>
                         <pre style={preStyle}>{String(JSON.stringify(ev.after_state ?? null, null, 2))}</pre>
                       </div>
                     </div>
@@ -144,7 +144,7 @@ export const AuditLogPanel: React.FC = () => {
           ))}
           {!loading && events.length === 0 && (
             <tr>
-              <td colSpan={5} style={{ ...td, textAlign: 'center', color: 'rgba(180,210,240,0.55)', padding: 32 }}>
+              <td colSpan={5} style={{ ...td, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', padding: 32 }}>
                 No audit events yet.
               </td>
             </tr>
@@ -156,33 +156,33 @@ export const AuditLogPanel: React.FC = () => {
 };
 
 const tableStyle: React.CSSProperties = {
-  width: '100%', borderCollapse: 'collapse', background: 'rgba(15,30,60,0.35)',
+  width: '100%', borderCollapse: 'collapse', background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
   borderRadius: 8, overflow: 'hidden', fontSize: 13,
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '10px 12px', color: 'rgba(180,210,240,0.65)',
+  textAlign: 'left', padding: '10px 12px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
-const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid rgba(120,150,200,0.1)' };
+const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'ui-monospace, monospace', fontSize: 12 };
 const tr: React.CSSProperties = {};
 const iconBtn: React.CSSProperties = {
-  background: 'rgba(120,150,200,0.08)', color: 'rgba(220,235,250,0.85)',
-  border: '1px solid rgba(120,150,200,0.18)', padding: '6px 12px', borderRadius: 6,
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '6px 12px', borderRadius: 6,
   cursor: 'pointer', fontSize: 12,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: '#6366f1',
-  border: '1px solid rgba(99,102,241,0.4)', padding: '4px 10px', borderRadius: 4,
+  background: 'transparent', color: 'var(--j-violet-strong)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };
 const selectStyle: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.25)', color: 'white',
-  border: '1px solid rgba(120,150,200,0.25)', padding: '6px 10px', borderRadius: 4, fontSize: 13,
+  background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: 'var(--j-on-accent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', padding: '6px 10px', borderRadius: 4, fontSize: 13,
 };
 const preStyle: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.4)', padding: 12, borderRadius: 4,
-  color: 'rgba(220,235,250,0.85)', fontSize: 11, fontFamily: 'ui-monospace, monospace',
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', padding: 12, borderRadius: 4,
+  color: 'color-mix(in srgb, var(--j-text) 85%, transparent)', fontSize: 11, fontFamily: 'ui-monospace, monospace',
   margin: 0, overflow: 'auto', maxHeight: 240,
 };
 const errorBox: React.CSSProperties = {

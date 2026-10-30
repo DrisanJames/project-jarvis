@@ -44,17 +44,17 @@ interface DomainBreakdown {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: '#00b894',
-  processing: '#fdcb6e',
-  failed: '#e94560',
-  pending: 'rgba(180,210,240,0.65)',
-  skipped: '#00b0ff',
+  completed: 'var(--j-success)',
+  processing: 'var(--j-warn)',
+  failed: 'var(--j-danger)',
+  pending: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  skipped: 'var(--j-blue)',
 };
 
 const CLASSIFICATION_COLORS: Record<string, string> = {
-  mailable: '#00e5ff',
-  suppression: '#e94560',
-  warmup: '#fdcb6e',
+  mailable: 'var(--j-cyan)',
+  suppression: 'var(--j-danger)',
+  warmup: 'var(--j-warn)',
 };
 
 function formatBytes(bytes: number): string {
@@ -175,22 +175,22 @@ export const DataNormalizerPanel: React.FC = () => {
 
   if (initialLoading) {
     return (
-      <div style={{ padding: '24px', color: '#e0e6f0', maxWidth: 1200 }}>
+      <div style={{ padding: '24px', color: 'var(--j-text)', maxWidth: 1200 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-          <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#00e5ff', fontSize: 18 }} />
-          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading list import data...</span>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ color: 'var(--j-cyan)', fontSize: 18 }} />
+          <span style={{ fontSize: 14, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Loading list import data...</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
           {[1, 2, 3, 4, 5, 6].map(i => (
-            <div key={i} style={{ background: '#0d1526', borderRadius: 12, padding: '16px 18px', border: '1px solid rgba(0,200,255,0.08)', height: 70 }}>
-              <div style={{ height: 12, width: '50%', background: 'rgba(0,200,255,0.06)', borderRadius: 4, marginBottom: 10, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.1}s` }} />
-              <div style={{ height: 20, width: '60%', background: 'rgba(0,200,255,0.04)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
+            <div key={i} style={{ background: 'var(--j-surface)', borderRadius: 12, padding: '16px 18px', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', height: 70 }}>
+              <div style={{ height: 12, width: '50%', background: 'color-mix(in srgb, var(--j-cyan) 6%, transparent)', borderRadius: 4, marginBottom: 10, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.1}s` }} />
+              <div style={{ height: 20, width: '60%', background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)', borderRadius: 4, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.15}s` }} />
             </div>
           ))}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           {[1, 2].map(i => (
-            <div key={i} style={{ background: '#0d1526', borderRadius: 12, padding: 20, border: '1px solid rgba(0,200,255,0.08)', height: 150, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.2}s` }} />
+            <div key={i} style={{ background: 'var(--j-surface)', borderRadius: 12, padding: 20, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)', height: 150, animation: 'igShimmer 1.5s ease infinite', animationDelay: `${i * 0.2}s` }} />
           ))}
         </div>
       </div>
@@ -198,15 +198,15 @@ export const DataNormalizerPanel: React.FC = () => {
   }
 
   return (
-    <div style={{ padding: '24px', color: '#e0e6f0', maxWidth: 1200 }}>
+    <div style={{ padding: '24px', color: 'var(--j-text)', maxWidth: 1200 }}>
       <style>{`@keyframes pulse-count { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } } @keyframes igShimmer { 0% { opacity: 0.4; } 50% { opacity: 0.7; } 100% { opacity: 0.4; } }`}</style>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-            <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: '#00e5ff' }} />
+            <FontAwesomeIcon icon={faDatabase} style={{ marginRight: 10, color: 'var(--j-cyan)' }} />
             List Import
           </h2>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
             Imports and cleans CSV data from your list storage
           </p>
         </div>
@@ -214,8 +214,8 @@ export const DataNormalizerPanel: React.FC = () => {
           onClick={handleTrigger}
           disabled={triggering || status?.running}
           style={{
-            background: status?.running ? 'rgba(0,200,255,0.08)' : 'linear-gradient(135deg, #00e5ff, #00b0ff)',
-            color: '#fff',
+            background: status?.running ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'linear-gradient(135deg, var(--j-cyan), var(--j-blue))',
+            color: 'var(--j-text)',
             border: 'none',
             borderRadius: 8,
             padding: '10px 20px',
@@ -234,29 +234,29 @@ export const DataNormalizerPanel: React.FC = () => {
 
       {/* Status Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 24 }}>
-        <StatCard icon={faFileImport} label="Total Files" value={status?.files.total ?? 0} color="#00e5ff" />
-        <StatCard icon={faHourglass} label="Pending" value={pendingCount} color="#00b0ff" />
-        <StatCard icon={faSpinner} label="Processing" value={status?.files.processing ?? 0} color="#fdcb6e" />
-        <StatCard icon={faCheckCircle} label="Completed" value={status?.files.completed ?? 0} color="#00b894" />
-        <StatCard icon={faTimesCircle} label="Failed" value={status?.files.failed ?? 0} color="#e94560" />
-        <StatCard icon={faFileAlt} label="Records Imported" value={formatNumber(status?.records.imported ?? 0)} color="#00e5ff" />
-        <StatCard icon={faExclamationTriangle} label="Record Errors" value={formatNumber(status?.records.errors ?? 0)} color={status?.records.errors ? '#e94560' : 'rgba(180,210,240,0.65)'} />
-        <StatCard icon={faServer} label="Subscribers" value={formatNumber(subscriberCount)} color="#00b0ff" />
-        <StatCard icon={faClock} label="Last Run" value={status?.last_run_at ? new Date(status.last_run_at).toLocaleTimeString() : '—'} color="rgba(180,210,240,0.65)" small />
+        <StatCard icon={faFileImport} label="Total Files" value={status?.files.total ?? 0} color="var(--j-cyan)" />
+        <StatCard icon={faHourglass} label="Pending" value={pendingCount} color="var(--j-blue)" />
+        <StatCard icon={faSpinner} label="Processing" value={status?.files.processing ?? 0} color="var(--j-warn)" />
+        <StatCard icon={faCheckCircle} label="Completed" value={status?.files.completed ?? 0} color="var(--j-success)" />
+        <StatCard icon={faTimesCircle} label="Failed" value={status?.files.failed ?? 0} color="var(--j-danger)" />
+        <StatCard icon={faFileAlt} label="Records Imported" value={formatNumber(status?.records.imported ?? 0)} color="var(--j-cyan)" />
+        <StatCard icon={faExclamationTriangle} label="Record Errors" value={formatNumber(status?.records.errors ?? 0)} color={status?.records.errors ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)'} />
+        <StatCard icon={faServer} label="Subscribers" value={formatNumber(subscriberCount)} color="var(--j-blue)" />
+        <StatCard icon={faClock} label="Last Run" value={status?.last_run_at ? new Date(status.last_run_at).toLocaleTimeString() : '—'} color="color-mix(in srgb, var(--j-text) 65%, transparent)" small />
       </div>
 
       {/* Progress Bar */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: 'rgba(180,210,240,0.65)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
           <span>Import Progress</span>
           <span>{progressPct}% ({(status?.files.completed ?? 0) + (status?.files.failed ?? 0)} / {status?.files.total ?? 0} files)</span>
         </div>
-        <div style={{ height: 10, borderRadius: 5, background: '#0d1526', overflow: 'hidden' }}>
+        <div style={{ height: 10, borderRadius: 5, background: 'var(--j-surface)', overflow: 'hidden' }}>
           <div style={{
             height: '100%',
             width: `${progressPct}%`,
             borderRadius: 5,
-            background: 'linear-gradient(90deg, #00e5ff, #00b894)',
+            background: 'linear-gradient(90deg, var(--j-cyan), var(--j-success))',
             transition: 'width 0.5s ease',
           }} />
         </div>
@@ -265,30 +265,30 @@ export const DataNormalizerPanel: React.FC = () => {
       {/* Charts Row */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
         {/* Quality Breakdown */}
-        <div style={{ background: '#0d1526', borderRadius: 12, padding: 20, border: '1px solid rgba(0,200,255,0.08)' }}>
-          <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600, color: '#00b0ff' }}>
+        <div style={{ background: 'var(--j-surface)', borderRadius: 12, padding: 20, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600, color: 'var(--j-blue)' }}>
             <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8 }} />
             Verification Quality
           </h3>
           {qualityData.length === 0 ? (
-            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</p>
+            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</p>
           ) : (
             qualityData.map(q => {
               const maxQ = Math.max(...qualityData.map(x => x.count), 1);
               const pct = (q.count / maxQ) * 100;
-              const color = q.verification_status === 'verified' ? '#00b894'
-                : q.verification_status === 'risky' ? '#fdcb6e'
-                : q.verification_status === 'invalid' ? '#e94560'
-                : 'rgba(180,210,240,0.65)';
+              const color = q.verification_status === 'verified' ? 'var(--j-success)'
+                : q.verification_status === 'risky' ? 'var(--j-warn)'
+                : q.verification_status === 'invalid' ? 'var(--j-danger)'
+                : 'color-mix(in srgb, var(--j-text) 65%, transparent)';
               return (
                 <div key={q.verification_status || 'null'} style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3 }}>
                     <span style={{ color, fontWeight: 600, textTransform: 'capitalize' }}>
                       {q.verification_status || 'unverified'}
                     </span>
-                    <span style={{ color: 'rgba(180,210,240,0.65)' }}>{formatNumber(q.count)} (avg {q.avg_quality})</span>
+                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{formatNumber(q.count)} (avg {q.avg_quality})</span>
                   </div>
-                  <div style={{ height: 6, borderRadius: 3, background: 'rgba(0,200,255,0.08)' }}>
+                  <div style={{ height: 6, borderRadius: 3, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                     <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, background: color, transition: 'width 0.5s' }} />
                   </div>
                 </div>
@@ -298,24 +298,24 @@ export const DataNormalizerPanel: React.FC = () => {
         </div>
 
         {/* Domain Group Breakdown */}
-        <div style={{ background: '#0d1526', borderRadius: 12, padding: 20, border: '1px solid rgba(0,200,255,0.08)' }}>
-          <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600, color: '#00b0ff' }}>
+        <div style={{ background: 'var(--j-surface)', borderRadius: 12, padding: 20, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600, color: 'var(--j-blue)' }}>
             <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8 }} />
             Domain Groups
           </h3>
           {domainData.length === 0 ? (
-            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No data yet</p>
+            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No data yet</p>
           ) : (
             domainData.slice(0, 10).map(d => {
               const pct = (d.count / maxDomain) * 100;
               return (
                 <div key={d.domain_group} style={{ marginBottom: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3 }}>
-                    <span style={{ color: '#e0e6f0', fontWeight: 600, textTransform: 'capitalize' }}>{d.domain_group}</span>
-                    <span style={{ color: 'rgba(180,210,240,0.65)' }}>{formatNumber(d.count)}</span>
+                    <span style={{ color: 'var(--j-text)', fontWeight: 600, textTransform: 'capitalize' }}>{d.domain_group}</span>
+                    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>{formatNumber(d.count)}</span>
                   </div>
-                  <div style={{ height: 6, borderRadius: 3, background: 'rgba(0,200,255,0.08)' }}>
-                    <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, background: '#00e5ff', transition: 'width 0.5s' }} />
+                  <div style={{ height: 6, borderRadius: 3, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
+                    <div style={{ height: '100%', width: `${pct}%`, borderRadius: 3, background: 'var(--j-cyan)', transition: 'width 0.5s' }} />
                   </div>
                 </div>
               );
@@ -325,15 +325,15 @@ export const DataNormalizerPanel: React.FC = () => {
       </div>
 
       {/* Import Log Table */}
-      <div style={{ background: '#0d1526', borderRadius: 12, padding: 20, border: '1px solid rgba(0,200,255,0.08)' }}>
+      <div style={{ background: 'var(--j-surface)', borderRadius: 12, padding: 20, border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#00b0ff' }}>
+          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--j-blue)' }}>
             <FontAwesomeIcon icon={faFileImport} style={{ marginRight: 8 }} />
             Import Log
           </h3>
           <button
             onClick={() => { fetchLogs(); fetchStatus(); }}
-            style={{ background: 'none', border: '1px solid rgba(0,200,255,0.1)', borderRadius: 6, color: 'rgba(180,210,240,0.65)', padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}
+            style={{ background: 'none', border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)', borderRadius: 6, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', padding: '6px 12px', cursor: 'pointer', fontSize: 12 }}
           >
             <FontAwesomeIcon icon={faSync} style={{ marginRight: 6 }} /> Refresh
           </button>
@@ -342,7 +342,7 @@ export const DataNormalizerPanel: React.FC = () => {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid rgba(0,200,255,0.08)' }}>
+              <tr style={{ borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
                 <th style={thStyle}>File</th>
                 <th style={thStyle}>Type</th>
                 <th style={thStyle}>Status</th>
@@ -355,13 +355,13 @@ export const DataNormalizerPanel: React.FC = () => {
             </thead>
             <tbody>
               {logs.length === 0 ? (
-                <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'rgba(180,210,240,0.65)' }}>No import records yet</td></tr>
+                <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No import records yet</td></tr>
               ) : (
                 logs.map(log => {
                   const est = estimateTotal(log);
                   const pct = est > 0 ? Math.min(Math.round((log.record_count / est) * 100), 100) : 0;
                   return (
-                    <tr key={log.id} style={{ borderBottom: '1px solid #0d1526' }}>
+                    <tr key={log.id} style={{ borderBottom: '1px solid var(--j-surface)' }}>
                       <td style={tdStyle} title={log.original_key}>
                         <span style={{ maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>
                           {log.original_key.split('/').pop()}
@@ -370,8 +370,8 @@ export const DataNormalizerPanel: React.FC = () => {
                       <td style={tdStyle}>
                         {log.classification ? (
                           <span style={{
-                            background: (CLASSIFICATION_COLORS[log.classification] || 'rgba(180,210,240,0.65)') + '22',
-                            color: CLASSIFICATION_COLORS[log.classification] || 'rgba(180,210,240,0.65)',
+                            background: (CLASSIFICATION_COLORS[log.classification] || 'color-mix(in srgb, var(--j-text) 65%, transparent)') + '22',
+                            color: CLASSIFICATION_COLORS[log.classification] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                             padding: '2px 8px',
                             borderRadius: 4,
                             fontSize: 11,
@@ -381,7 +381,7 @@ export const DataNormalizerPanel: React.FC = () => {
                             {log.classification}
                           </span>
                         ) : (
-                          <span style={{ color: 'rgba(180,210,240,0.35)', fontSize: 11 }}>—</span>
+                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fontSize: 11 }}>—</span>
                         )}
                       </td>
                       <td style={tdStyle}>
@@ -389,7 +389,7 @@ export const DataNormalizerPanel: React.FC = () => {
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: 5,
-                          color: STATUS_COLORS[log.status] || 'rgba(180,210,240,0.65)',
+                          color: STATUS_COLORS[log.status] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                           fontWeight: 600,
                           fontSize: 12,
                         }}>
@@ -401,17 +401,17 @@ export const DataNormalizerPanel: React.FC = () => {
                           {log.status}
                         </span>
                         {log.error_message && (
-                          <div style={{ fontSize: 11, color: '#e94560', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message}>
+                          <div style={{ fontSize: 11, color: 'var(--j-danger)', marginTop: 2, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message}>
                             {log.error_message}
                           </div>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, textAlign: 'right', color: 'rgba(180,210,240,0.65)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
                         {formatBytes(log.file_size)}
                       </td>
                       <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                         {log.status === 'pending' ? (
-                          <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>
+                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>
                         ) : log.status === 'processing' ? (
                           <div style={{ minWidth: 120 }}>
                             <div style={{
@@ -419,14 +419,14 @@ export const DataNormalizerPanel: React.FC = () => {
                               animation: 'pulse-count 2s ease-in-out infinite',
                             }}>
                               {formatNumber(log.record_count)} / ~{formatNumber(est)}
-                              <span style={{ color: '#fdcb6e', fontSize: 10, marginLeft: 4 }}>LIVE</span>
+                              <span style={{ color: 'var(--j-warn)', fontSize: 10, marginLeft: 4 }}>LIVE</span>
                             </div>
-                            <div style={{ height: 4, borderRadius: 2, background: 'rgba(0,200,255,0.08)', marginTop: 3 }}>
+                            <div style={{ height: 4, borderRadius: 2, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', marginTop: 3 }}>
                               <div style={{
                                 height: '100%',
                                 width: `${pct}%`,
                                 borderRadius: 2,
-                                background: 'linear-gradient(90deg, #00e5ff, #00b894)',
+                                background: 'linear-gradient(90deg, var(--j-cyan), var(--j-success))',
                                 transition: 'width 0.5s',
                               }} />
                             </div>
@@ -435,17 +435,17 @@ export const DataNormalizerPanel: React.FC = () => {
                           <span>{formatNumber(log.record_count)}</span>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? '#e94560' : 'rgba(180,210,240,0.65)', fontVariantNumeric: 'tabular-nums' }}>
+                      <td style={{ ...tdStyle, textAlign: 'right', color: log.error_count > 0 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontVariantNumeric: 'tabular-nums' }}>
                         {formatNumber(log.error_count)}
                       </td>
                       <td style={{ ...tdStyle, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
                         {log.status === 'processing' ? (
-                          <span style={{ color: '#fdcb6e' }}>{computeEta(log)}</span>
+                          <span style={{ color: 'var(--j-warn)' }}>{computeEta(log)}</span>
                         ) : (
-                          <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>
+                          <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>
                         )}
                       </td>
-                      <td style={{ ...tdStyle, color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>
+                      <td style={{ ...tdStyle, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
                         {formatTime(log.processed_at)}
                       </td>
                     </tr>
@@ -466,7 +466,7 @@ export const DataNormalizerPanel: React.FC = () => {
             >
               Previous
             </button>
-            <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13, padding: '6px 12px' }}>Page {page + 1}</span>
+            <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13, padding: '6px 12px' }}>Page {page + 1}</span>
             <button
               onClick={() => setPage(page + 1)}
               disabled={logs.length < 20}
@@ -483,25 +483,25 @@ export const DataNormalizerPanel: React.FC = () => {
 
 const StatCard: React.FC<{ icon: any; label: string; value: string | number; color: string; small?: boolean }> = ({ icon, label, value, color, small }) => (
   <div style={{
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 12,
     padding: '16px 18px',
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     display: 'flex',
     alignItems: 'center',
     gap: 14,
   }}>
     <div style={{
       width: 40, height: 40, borderRadius: 10,
-      background: color + '18',
+      background: `color-mix(in srgb, ${color} 9%, transparent)`,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       color, fontSize: 16,
     }}>
       <FontAwesomeIcon icon={icon} />
     </div>
     <div>
-      <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.65)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
-      <div style={{ fontSize: small ? 13 : 20, fontWeight: 700, color: '#e0e6f0', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginBottom: 2, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
+      <div style={{ fontSize: small ? 13 : 20, fontWeight: 700, color: 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   </div>
 );
@@ -509,7 +509,7 @@ const StatCard: React.FC<{ icon: any; label: string; value: string | number; col
 const thStyle: React.CSSProperties = {
   textAlign: 'left',
   padding: '10px 12px',
-  color: 'rgba(180,210,240,0.65)',
+  color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   fontSize: 11,
   fontWeight: 600,
   textTransform: 'uppercase',
@@ -518,13 +518,13 @@ const thStyle: React.CSSProperties = {
 
 const tdStyle: React.CSSProperties = {
   padding: '10px 12px',
-  color: '#e0e6f0',
+  color: 'var(--j-text)',
 };
 
 const pageBtnStyle = (enabled: boolean): React.CSSProperties => ({
-  background: enabled ? 'rgba(0,200,255,0.08)' : '#0d1526',
-  color: enabled ? '#e0e6f0' : 'rgba(180,210,240,0.35)',
-  border: '1px solid rgba(0,200,255,0.1)',
+  background: enabled ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'var(--j-surface)',
+  color: enabled ? 'var(--j-text)' : 'color-mix(in srgb, var(--j-text) 35%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-cyan) 10%, transparent)',
   borderRadius: 6,
   padding: '6px 14px',
   fontSize: 12,

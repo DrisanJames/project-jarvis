@@ -143,11 +143,11 @@ const hour24To12 = (h: number): string => {
 //   Complaint:    <0.1 good, <0.3 ok, else bad
 //   Open rate:    >20 good, >10 ok, else bad
 //   Click rate:   >3 good, >1 ok, else bad
-const hardColor   = (r: number) => r < 1   ? '#10b981' : r < 2   ? '#f59e0b' : '#ef4444';
-const softColor   = (r: number) => r < 5   ? '#10b981' : r < 10  ? '#f59e0b' : '#ef4444';
-const cmpColor    = (r: number) => r < 0.1 ? '#10b981' : r < 0.3 ? '#f59e0b' : '#ef4444';
-const openColor   = (r: number) => r > 20  ? '#10b981' : r > 10  ? '#f59e0b' : '#94a3b8';
-const clickColor  = (r: number) => r > 3   ? '#10b981' : r > 1   ? '#f59e0b' : '#94a3b8';
+const hardColor   = (r: number) => r < 1   ? 'var(--j-success)' : r < 2   ? '#f59e0b' : '#ef4444';
+const softColor   = (r: number) => r < 5   ? 'var(--j-success)' : r < 10  ? '#f59e0b' : '#ef4444';
+const cmpColor    = (r: number) => r < 0.1 ? 'var(--j-success)' : r < 0.3 ? '#f59e0b' : '#ef4444';
+const openColor   = (r: number) => r > 20  ? 'var(--j-success)' : r > 10  ? '#f59e0b' : 'var(--j-text-muted)';
+const clickColor  = (r: number) => r > 3   ? 'var(--j-success)' : r > 1   ? '#f59e0b' : 'var(--j-text-muted)';
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -310,12 +310,12 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
         <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
           <FontAwesomeIcon icon={faBroadcastTower} /> Harvest Stream
           {data?.campaign_prefix && (
-            <span style={{ color: '#94a3b8', fontSize: '0.75em', fontWeight: 400 }}>
+            <span style={{ color: 'var(--j-text-muted)', fontSize: '0.75em', fontWeight: 400 }}>
               filter: {data.campaign_prefix}*
             </span>
           )}
           {data?.api_version && (
-            <span style={{ color: '#64748b', fontSize: '0.7em', fontWeight: 400 }}>
+            <span style={{ color: 'var(--j-text-faint)', fontSize: '0.7em', fontWeight: 400 }}>
               backend v{data.api_version}
             </span>
           )}
@@ -352,7 +352,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
       </div>
 
       {error && (
-        <div className="ac-empty-mini" style={{ color: '#f87171' }}>
+        <div className="ac-empty-mini" style={{ color: 'var(--j-danger)' }}>
           Error loading harvest analytics: {error}
         </div>
       )}
@@ -375,12 +375,12 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '20px' }}>
-            <div style={{ padding: '12px', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '8px', background: 'rgba(16,185,129,0.05)' }}>
-              <div style={{ fontSize: '0.75em', color: '#10b981', fontWeight: 600, marginBottom: '4px' }}>
+            <div style={{ padding: '12px', border: '1px solid color-mix(in srgb, var(--j-success) 30%, transparent)', borderRadius: '8px', background: 'color-mix(in srgb, var(--j-success) 5%, transparent)' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-success)', fontWeight: 600, marginBottom: '4px' }}>
                 <FontAwesomeIcon icon={faHeart} /> ENGAGEMENT
               </div>
               <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.engagement_vs_damage.engagement)}</div>
-              <div style={{ fontSize: '0.75em', color: '#94a3b8' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-text-muted)' }}>
                 {fmt(data.engagement_vs_damage.unique_opens)} uniq opens + {fmt(data.engagement_vs_damage.unique_clicks)} uniq clicks
               </div>
             </div>
@@ -389,22 +389,22 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                 <FontAwesomeIcon icon={faSkullCrossbones} /> DAMAGE
               </div>
               <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.engagement_vs_damage.damage)}</div>
-              <div style={{ fontSize: '0.75em', color: '#94a3b8' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-text-muted)' }}>
                 {fmt(data.engagement_vs_damage.hard_bounces)} hard bounces + {fmt(data.engagement_vs_damage.complaints)} complaints
               </div>
-              <div style={{ fontSize: '0.8em', marginTop: '6px', color: '#f87171' }}>
+              <div style={{ fontSize: '0.8em', marginTop: '6px', color: 'var(--j-danger)' }}>
                 ratio engagement : damage = {data.engagement_vs_damage.ratio === -1 ? '∞' : data.engagement_vs_damage.ratio.toFixed(2)} : 1
               </div>
             </div>
             <div
-              style={{ padding: '12px', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px', background: 'rgba(99,102,241,0.05)' }}
+              style={{ padding: '12px', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent)', borderRadius: '8px', background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)' }}
               title="Newly added subscribers whose sign-up falls inside the selected window. Confirmed = active or confirmed at query time."
             >
-              <div style={{ fontSize: '0.75em', color: '#818cf8', fontWeight: 600, marginBottom: '4px' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-violet)', fontWeight: 600, marginBottom: '4px' }}>
                 <FontAwesomeIcon icon={faUserPlus} /> ACQUISITION
               </div>
               <div style={{ fontSize: '1.8em', fontWeight: 700 }}>{fmt(data.acquisition?.total_new ?? 0)}</div>
-              <div style={{ fontSize: '0.75em', color: '#94a3b8' }}>
+              <div style={{ fontSize: '0.75em', color: 'var(--j-text-muted)' }}>
                 {fmt(data.acquisition?.total_confirmed ?? 0)} confirmed · across {data.acquisition?.by_isp?.length ?? 0} mailbox providers
               </div>
             </div>
@@ -413,7 +413,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
           {/* ─── Acquisition by ISP ──────────────────────────────────── */}
           {data.acquisition && data.acquisition.by_isp.length > 0 && (
             <div className="ac-table-wrap" style={{ marginBottom: '20px' }}>
-              <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+              <div style={{ fontSize: '0.85em', color: 'var(--j-text-muted)', marginBottom: '6px' }}>
                 <FontAwesomeIcon icon={faUserPlus} /> Newly introduced audience (last {hours}h, by mailbox provider)
               </div>
               <table className="ac-table">
@@ -436,7 +436,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                         </td>
                         <td>{fmt(r.new_count)}</td>
                         <td>{fmt(r.confirmed_new)}</td>
-                        <td style={{ color: rate >= 90 ? '#10b981' : rate >= 70 ? '#f59e0b' : '#94a3b8' }}>{pct(rate)}</td>
+                        <td style={{ color: rate >= 90 ? 'var(--j-success)' : rate >= 70 ? '#f59e0b' : 'var(--j-text-muted)' }}>{pct(rate)}</td>
                       </tr>
                     );
                   })}
@@ -467,7 +467,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </thead>
               <tbody>
                 {data.by_isp.length === 0 ? (
-                  <tr><td colSpan={13} style={{ textAlign: 'center', color: '#94a3b8' }}>No mailbox provider activity in this window.</td></tr>
+                  <tr><td colSpan={13} style={{ textAlign: 'center', color: 'var(--j-text-muted)' }}>No mailbox provider activity in this window.</td></tr>
                 ) : data.by_isp.map(r => (
                   <tr key={r.isp}>
                     <td style={{ fontWeight: 500 }}>
@@ -481,10 +481,10 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                     <td style={{ color: openColor(r.metrics.open_rate) }}>{pct(r.metrics.open_rate)}</td>
                     <td>{fmt(r.metrics.unique_clicks)}</td>
                     <td style={{ color: clickColor(r.metrics.click_rate) }}>{pct(r.metrics.click_rate)}</td>
-                    <td style={{ color: r.metrics.hard_bounces > 0 ? '#ef4444' : '#475569' }}>{fmt(r.metrics.hard_bounces)}</td>
+                    <td style={{ color: r.metrics.hard_bounces > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.metrics.hard_bounces)}</td>
                     <td style={{ color: hardColor(r.metrics.hard_bounce_rate) }}>{pct(r.metrics.hard_bounce_rate)}</td>
                     <td style={{ color: softColor(r.metrics.soft_bounce_rate) }}>{pct(r.metrics.soft_bounce_rate)}</td>
-                    <td style={{ color: r.metrics.complaints > 0 ? '#ef4444' : '#475569' }}>{fmt(r.metrics.complaints)}</td>
+                    <td style={{ color: r.metrics.complaints > 0 ? '#ef4444' : 'var(--j-border-strong)' }}>{fmt(r.metrics.complaints)}</td>
                     <td style={{ color: cmpColor(r.metrics.complaint_rate) }}>{pct(r.metrics.complaint_rate)}</td>
                   </tr>
                 ))}
@@ -494,17 +494,17 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
 
           {/* ─── Time-series chart ────────────────────────────────────── */}
           <div style={{ marginBottom: '20px' }}>
-            <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+            <div style={{ fontSize: '0.85em', color: 'var(--j-text-muted)', marginBottom: '6px' }}>
               <FontAwesomeIcon icon={faChartArea} /> Sent over time · bucket {bucket} · last {hours}h · MST (12-hr)
             </div>
             <ResponsiveContainer width="100%" height={280}>
               <LineChart data={chartData as Array<Record<string, number | string>>}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="label" stroke="#94a3b8" fontSize={11} />
-                <YAxis stroke="#94a3b8" fontSize={11} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--j-surface-2)" />
+                <XAxis dataKey="label" stroke="var(--j-text-muted)" fontSize={11} />
+                <YAxis stroke="var(--j-text-muted)" fontSize={11} />
                 <RechartsTooltip
-                  contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '6px', fontSize: '12px' }}
-                  labelStyle={{ color: '#e2e8f0' }}
+                  contentStyle={{ background: 'var(--j-bg)', border: '1px solid var(--j-border)', borderRadius: '6px', fontSize: '12px' }}
+                  labelStyle={{ color: 'var(--j-text)' }}
                 />
                 <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Line type="monotone" dataKey="__overall_sent" name="Overall" stroke="#fff" strokeWidth={2} dot={false} />
@@ -514,7 +514,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                   type="monotone"
                   dataKey="__new_subscribers"
                   name="New subscribers"
-                  stroke="#818cf8"
+                  stroke="var(--j-violet)"
                   strokeWidth={1.5}
                   strokeDasharray="4 3"
                   dot={false}
@@ -536,7 +536,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
 
           {/* ─── Hour-of-day heatmap ──────────────────────────────────── */}
           <div style={{ marginBottom: '20px' }}>
-            <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+            <div style={{ fontSize: '0.85em', color: 'var(--j-text-muted)', marginBottom: '6px' }}>
               <FontAwesomeIcon icon={faClock} /> Hour-of-day sent volume (MST, 12-hr) · aggregated over {hours}h
             </div>
             <div style={{ overflowX: 'auto' }}>
@@ -545,13 +545,13 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                   <tr>
                     <th style={{ width: '90px' }}>Mailbox Provider</th>
                     {Array.from({ length: 24 }).map((_, h) => (
-                      <th key={h} style={{ textAlign: 'center', padding: '3px', color: h >= 3 && h <= 19 ? '#e2e8f0' : '#64748b' }}>{hour24To12(h)}</th>
+                      <th key={h} style={{ textAlign: 'center', padding: '3px', color: h >= 3 && h <= 19 ? 'var(--j-text)' : 'var(--j-text-faint)' }}>{hour24To12(h)}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {heatmap.ispsList.length === 0 ? (
-                    <tr><td colSpan={25} style={{ textAlign: 'center', color: '#94a3b8' }}>No hourly data yet.</td></tr>
+                    <tr><td colSpan={25} style={{ textAlign: 'center', color: 'var(--j-text-muted)' }}>No hourly data yet.</td></tr>
                   ) : heatmap.ispsList.map(isp => (
                     <tr key={isp}>
                       <td style={{ fontWeight: 500 }}>{isp}</td>
@@ -571,8 +571,8 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                               background: v > 0 ? color : 'transparent',
                               textAlign: 'center',
                               padding: '4px 2px',
-                              color: intensity > 0.5 ? '#fff' : '#94a3b8',
-                              borderRight: '1px solid rgba(255,255,255,0.03)',
+                              color: intensity > 0.5 ? '#fff' : 'var(--j-text-muted)',
+                              borderRight: '1px solid color-mix(in srgb, var(--j-text) 3%, transparent)',
                             }}
                           >
                             {v > 0 ? fmt(v) : ''}
@@ -584,14 +584,14 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
                 </tbody>
               </table>
             </div>
-            <div style={{ fontSize: '0.7em', color: '#64748b', marginTop: '4px' }}>
+            <div style={{ fontSize: '0.7em', color: 'var(--j-text-faint)', marginTop: '4px' }}>
               Cell intensity is relative to the max per mailbox provider. Hover for exact counts and rates.
             </div>
           </div>
 
           {/* ─── Per-sending-domain table ─────────────────────────────── */}
           <div className="ac-table-wrap" style={{ marginBottom: '20px' }}>
-            <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+            <div style={{ fontSize: '0.85em', color: 'var(--j-text-muted)', marginBottom: '6px' }}>
               Per sending domain
             </div>
             <table className="ac-table">
@@ -609,7 +609,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </thead>
               <tbody>
                 {data.by_sending_domain.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94a3b8' }}>No sending-domain activity in this window.</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--j-text-muted)' }}>No sending-domain activity in this window.</td></tr>
                 ) : data.by_sending_domain.map(r => (
                   <tr key={r.sending_domain}>
                     <td style={{ fontWeight: 500 }}>{r.sending_domain}</td>
@@ -628,7 +628,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
 
           {/* ─── Per-campaign table ──────────────────────────────────── */}
           <div className="ac-table-wrap">
-            <div style={{ fontSize: '0.85em', color: '#94a3b8', marginBottom: '6px' }}>
+            <div style={{ fontSize: '0.85em', color: 'var(--j-text-muted)', marginBottom: '6px' }}>
               Top {data.by_campaign.length} harvest campaigns by send volume
             </div>
             <table className="ac-table">
@@ -646,7 +646,7 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
               </thead>
               <tbody>
                 {data.by_campaign.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94a3b8' }}>No harvest campaigns found.</td></tr>
+                  <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--j-text-muted)' }}>No harvest campaigns found.</td></tr>
                 ) : data.by_campaign.map(c => (
                   <tr key={c.campaign_id}>
                     <td>{c.name}</td>
@@ -673,13 +673,13 @@ export const HarvestStreamDashboard: React.FC<Props> = ({ orgId, campaignPrefixO
 const KPI: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({ label, value, sub, color }) => (
   <div style={{
     padding: '10px 12px',
-    border: '1px solid rgba(255,255,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
     borderRadius: '6px',
-    background: 'rgba(255,255,255,0.02)',
+    background: 'color-mix(in srgb, var(--j-text) 2%, transparent)',
   }}>
-    <div style={{ fontSize: '0.7em', textTransform: 'uppercase', color: '#94a3b8', letterSpacing: '0.5px', marginBottom: '2px' }}>{label}</div>
-    <div style={{ fontSize: '1.4em', fontWeight: 700, color: color || '#e2e8f0' }}>{value}</div>
-    {sub && <div style={{ fontSize: '0.7em', color: '#64748b', marginTop: '2px' }}>{sub}</div>}
+    <div style={{ fontSize: '0.7em', textTransform: 'uppercase', color: 'var(--j-text-muted)', letterSpacing: '0.5px', marginBottom: '2px' }}>{label}</div>
+    <div style={{ fontSize: '1.4em', fontWeight: 700, color: color || 'var(--j-text)' }}>{value}</div>
+    {sub && <div style={{ fontSize: '0.7em', color: 'var(--j-text-faint)', marginTop: '2px' }}>{sub}</div>}
   </div>
 );
 

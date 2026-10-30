@@ -5,16 +5,16 @@
 
 /* ── Design Tokens ───────────────────────────────────────────────── */
 :root {
-  --ig-cyan: #00e5ff;
-  --ig-blue: #00b0ff;
-  --ig-success: #00b894;
-  --ig-warning: #fdcb6e;
-  --ig-error: #e94560;
-  --ig-bg-dark: #0a0f1a;
-  --ig-card: #0d1526;
-  --ig-border: rgba(0, 200, 255, 0.08);
-  --ig-glow-cyan: rgba(0, 229, 255, 0.35);
-  --ig-glow-blue: rgba(0, 176, 255, 0.25);
+  --ig-cyan: var(--j-cyan);
+  --ig-blue: var(--j-blue);
+  --ig-success: var(--j-success);
+  --ig-warning: var(--j-warn);
+  --ig-error: var(--j-danger);
+  --ig-bg-dark: var(--j-bg);
+  --ig-card: var(--j-surface);
+  --ig-border: color-mix(in srgb, var(--j-cyan) 8%, transparent);
+  --ig-glow-cyan: color-mix(in srgb, var(--j-cyan) 35%, transparent);
+  --ig-glow-blue: color-mix(in srgb, var(--j-blue) 25%, transparent);
   --ig-transition: cubic-bezier(0.4, 0, 0.2, 1);
   --ig-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -37,7 +37,7 @@
 
 .ig-btn-glow:hover {
   transform: translateY(-1px);
-  box-shadow: 0 0 20px rgba(0, 229, 255, 0.15), 0 0 40px rgba(0, 229, 255, 0.05);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--j-cyan) 15%, transparent), 0 0 40px color-mix(in srgb, var(--j-cyan) 5%, transparent);
 }
 
 .ig-btn-glow:active {
@@ -59,7 +59,7 @@
   top: 0;
   left: 0;
   pointer-events: none;
-  background-image: radial-gradient(circle, rgba(0, 229, 255, 0.25) 10%, transparent 10%);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--j-cyan) 25%, transparent) 10%, transparent 10%);
   background-repeat: no-repeat;
   background-position: 50%;
   transform: scale(10, 10);
@@ -103,8 +103,8 @@
 }
 
 @keyframes ig-pulse-glow {
-  0%, 100% { box-shadow: 0 0 5px rgba(0, 229, 255, 0.1); }
-  50% { box-shadow: 0 0 20px rgba(0, 229, 255, 0.2), 0 0 40px rgba(0, 229, 255, 0.05); }
+  0%, 100% { box-shadow: 0 0 5px color-mix(in srgb, var(--j-cyan) 10%, transparent); }
+  50% { box-shadow: 0 0 20px color-mix(in srgb, var(--j-cyan) 20%, transparent), 0 0 40px color-mix(in srgb, var(--j-cyan) 5%, transparent); }
 }
 
 .ig-pulse-dot {
@@ -122,8 +122,8 @@
 }
 
 @keyframes ig-breathe {
-  0%, 100% { border-color: rgba(0, 200, 255, 0.08); }
-  50% { border-color: rgba(0, 229, 255, 0.25); }
+  0%, 100% { border-color: color-mix(in srgb, var(--j-cyan) 8%, transparent); }
+  50% { border-color: color-mix(in srgb, var(--j-cyan) 25%, transparent); }
 }
 
 /* Live indicator pulse */
@@ -145,8 +145,8 @@
 }
 
 @keyframes ig-live-ping {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 229, 255, 0.5); }
-  50% { box-shadow: 0 0 0 8px rgba(0, 229, 255, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--j-cyan) 50%, transparent); }
+  50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--j-cyan) 0%, transparent); }
 }
 
 /* ── 3. SCAN LINE / DATA STREAM ──────────────────────────────────── */
@@ -165,9 +165,9 @@
   height: 1px;
   background: linear-gradient(90deg,
     transparent 0%,
-    rgba(0, 229, 255, 0.3) 20%,
-    rgba(0, 229, 255, 0.6) 50%,
-    rgba(0, 229, 255, 0.3) 80%,
+    color-mix(in srgb, var(--j-cyan) 30%, transparent) 20%,
+    color-mix(in srgb, var(--j-cyan) 60%, transparent) 50%,
+    color-mix(in srgb, var(--j-cyan) 30%, transparent) 80%,
     transparent 100%
   );
   animation: ig-scan 4s linear infinite;
@@ -193,7 +193,7 @@
   height: 100%;
   background: linear-gradient(90deg,
     transparent,
-    rgba(0, 229, 255, 0.06),
+    color-mix(in srgb, var(--j-cyan) 6%, transparent),
     transparent
   );
   animation: ig-stream 3s ease-in-out infinite;
@@ -220,7 +220,7 @@
   height: 100%;
   background: linear-gradient(90deg,
     transparent,
-    rgba(0, 229, 255, 0.04),
+    color-mix(in srgb, var(--j-cyan) 4%, transparent),
     transparent
   );
   animation: ig-shimmer-sweep 2.5s ease-in-out infinite;
@@ -235,12 +235,12 @@
 
 .ig-card-hover {
   transition: all 0.3s var(--ig-transition);
-  border: 1px solid rgba(0, 200, 255, 0.08);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
 
 .ig-card-hover:hover {
-  border-color: rgba(0, 229, 255, 0.2);
-  box-shadow: 0 4px 24px rgba(0, 229, 255, 0.06);
+  border-color: color-mix(in srgb, var(--j-cyan) 20%, transparent);
+  box-shadow: 0 4px 24px color-mix(in srgb, var(--j-cyan) 6%, transparent);
   transform: translateY(-2px);
 }
 
@@ -371,7 +371,7 @@
   height: 100%;
   background: linear-gradient(90deg,
     transparent,
-    rgba(255, 255, 255, 0.15),
+    color-mix(in srgb, var(--j-text) 15%, transparent),
     transparent
   );
   animation: ig-progress-shine 2s ease-in-out infinite;
@@ -414,8 +414,8 @@
 }
 
 @keyframes ig-glow-success {
-  0%, 100% { box-shadow: 0 0 8px rgba(0, 184, 148, 0.2); }
-  50% { box-shadow: 0 0 20px rgba(0, 184, 148, 0.4); }
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--j-success) 20%, transparent); }
+  50% { box-shadow: 0 0 20px color-mix(in srgb, var(--j-success) 40%, transparent); }
 }
 
 .ig-alert-glow-error {
@@ -423,8 +423,8 @@
 }
 
 @keyframes ig-glow-error {
-  0%, 100% { box-shadow: 0 0 8px rgba(233, 69, 96, 0.2); }
-  50% { box-shadow: 0 0 20px rgba(233, 69, 96, 0.4); }
+  0%, 100% { box-shadow: 0 0 8px color-mix(in srgb, var(--j-danger) 20%, transparent); }
+  50% { box-shadow: 0 0 20px color-mix(in srgb, var(--j-danger) 40%, transparent); }
 }
 
 /* ── 10. MODAL / OVERLAY ANIMATIONS ──────────────────────────────── */
@@ -522,8 +522,8 @@
 }
 
 @keyframes ig-bg-cycle {
-  0%, 100% { background-color: rgba(0, 229, 255, 0.06); }
-  50% { background-color: rgba(0, 176, 255, 0.08); }
+  0%, 100% { background-color: color-mix(in srgb, var(--j-cyan) 6%, transparent); }
+  50% { background-color: color-mix(in srgb, var(--j-blue) 8%, transparent); }
 }
 
 /* ── 13. STATUS INDICATOR ANIMATIONS ─────────────────────────────── */
@@ -572,7 +572,7 @@
 }
 
 .ig-tooltip-glow:hover {
-  filter: drop-shadow(0 0 6px rgba(0, 229, 255, 0.3));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--j-cyan) 30%, transparent));
 }
 
 /* ── 16. SKELETON / SHIMMER / SLIDE ANIMATIONS ──────────────────── */

@@ -30,12 +30,12 @@ const ISP_FAMILIES = ['gmail', 'yahoo', 'aol', 'microsoft', 'comcast', 'att', 'o
 
 const ISP_COLORS: Record<string, string> = {
   gmail: '#ef4444',
-  yahoo: '#a855f7',
-  aol: '#06b6d4',
-  microsoft: '#3b82f6',
+  yahoo: 'var(--j-violet)',
+  aol: 'var(--j-cyan)',
+  microsoft: 'var(--j-blue)',
   comcast: '#84cc16',
   att: '#f59e0b',
-  other: '#94a3b8',
+  other: 'var(--j-text-muted)',
 };
 
 interface OverrideEdit {
@@ -118,10 +118,10 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
       <div style={modalBody}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 16 }}>
           <div>
-            <h3 style={{ margin: 0, color: '#dbeafe' }}>
+            <h3 style={{ margin: 0, color: 'var(--j-text)' }}>
               <FontAwesomeIcon icon={faChartBar} /> Mailbox Provider Distribution — {datasetName}
             </h3>
-            <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.65)', marginTop: 4 }}>
+            <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 4 }}>
               Override mailbox provider percentages and per-batch caps. Empty = use natural distribution from queue.
             </div>
           </div>
@@ -135,7 +135,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
         )}
 
         {loading && !data && (
-          <div style={{ textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.65)' }}>
+          <div style={{ textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
             <FontAwesomeIcon icon={faSpinner} spin /> Loading…
           </div>
         )}
@@ -149,8 +149,8 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
               <Metric label="Recommended batch size" value={data.recommended_wave_size.toLocaleString()} />
             </div>
 
-            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Live mailbox provider breakdown (ready queue)</h4>
-            <div style={{ marginBottom: 16, display: 'flex', height: 24, borderRadius: 4, overflow: 'hidden', border: '1px solid rgba(120,150,200,0.2)' }}>
+            <h4 style={{ color: 'var(--j-text-2)', marginBottom: 8 }}>Live mailbox provider breakdown (ready queue)</h4>
+            <div style={{ marginBottom: 16, display: 'flex', height: 24, borderRadius: 4, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--j-text-muted) 20%, transparent)' }}>
               {ISP_FAMILIES.map(isp => {
                 const count = data.isp_breakdown[isp] ?? 0;
                 const pct = totalQueue > 0 ? (count / totalQueue) * 100 : 0;
@@ -159,7 +159,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
                   <div
                     key={isp}
                     title={`${isp}: ${count.toLocaleString()} (${pct.toFixed(1)}%)`}
-                    style={{ width: `${pct}%`, background: ISP_COLORS[isp] ?? '#94a3b8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'white', fontWeight: 600 }}
+                    style={{ width: `${pct}%`, background: ISP_COLORS[isp] ?? 'var(--j-text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: 'var(--j-on-accent)', fontWeight: 600 }}
                   >
                     {pct >= 8 ? `${isp} ${pct.toFixed(0)}%` : ''}
                   </div>
@@ -167,10 +167,10 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
               })}
             </div>
 
-            <h4 style={{ color: '#cbd5f5', marginBottom: 8 }}>Overrides (per-batch)</h4>
+            <h4 style={{ color: 'var(--j-text-2)', marginBottom: 8 }}>Overrides (per-batch)</h4>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ background: 'rgba(120,150,200,0.06)' }}>
+                <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
                   <th style={th}>Mailbox provider</th>
                   <th style={th}>Live %</th>
                   <th style={th}>Override %</th>
@@ -185,11 +185,11 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
                   return (
                     <tr key={isp} style={tr}>
                       <td style={td}>
-                        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: ISP_COLORS[isp] ?? '#94a3b8', marginRight: 8 }} />
+                        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: ISP_COLORS[isp] ?? 'var(--j-text-muted)', marginRight: 8 }} />
                         <b>{isp}</b>
                       </td>
                       <td style={tdNum}>
-                        {count.toLocaleString()} <span style={{ color: 'rgba(180,210,240,0.55)' }}>({livePct.toFixed(1)}%)</span>
+                        {count.toLocaleString()} <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>({livePct.toFixed(1)}%)</span>
                       </td>
                       <td style={td}>
                         <input
@@ -201,7 +201,7 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
                           onChange={ev => updateEdit(isp, 'pct', ev.target.value)}
                           style={inputSmall}
                         />
-                        <span style={{ marginLeft: 4, color: 'rgba(180,210,240,0.55)' }}>%</span>
+                        <span style={{ marginLeft: 4, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>%</span>
                       </td>
                       <td style={td}>
                         <input
@@ -234,18 +234,18 @@ export const ISPDistributionPanel: React.FC<DistributionPanelProps> = ({ dataset
 
 const Metric: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div style={metricCard}>
-    <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 22, color: '#dbeafe', fontWeight: 600, marginTop: 4 }}>{value}</div>
+    <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 22, color: 'var(--j-text)', fontWeight: 600, marginTop: 4 }}>{value}</div>
   </div>
 );
 
 const modalBackdrop: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center',
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', display: 'flex', alignItems: 'center',
   justifyContent: 'center', zIndex: 1000, padding: 24,
 };
 const modalBody: React.CSSProperties = {
-  background: '#0f1c33', border: '1px solid rgba(120,150,200,0.25)',
+  background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 720,
   boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
   maxHeight: '90vh', overflow: 'auto',
@@ -255,34 +255,34 @@ const metricsGrid: React.CSSProperties = {
   gap: 12, marginBottom: 20,
 };
 const metricCard: React.CSSProperties = {
-  background: 'rgba(120,150,200,0.06)', border: '1px solid rgba(120,150,200,0.15)',
+  background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 15%, transparent)',
   padding: '10px 14px', borderRadius: 6,
 };
 const primaryBtn: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-  color: 'white', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
+  color: 'var(--j-text)', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
   fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const iconBtn: React.CSSProperties = {
-  background: 'rgba(120,150,200,0.08)', color: 'rgba(220,235,250,0.85)',
-  border: '1px solid rgba(120,150,200,0.18)', padding: '6px 12px', borderRadius: 6,
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '6px 12px', borderRadius: 6,
   cursor: 'pointer', fontSize: 12,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: '#cbd5f5',
-  border: '1px solid rgba(120,150,200,0.3)', padding: '8px 14px', borderRadius: 6,
+  background: 'transparent', color: 'var(--j-text-2)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer',
 };
 const th: React.CSSProperties = {
-  textAlign: 'left', padding: '8px 12px', color: 'rgba(180,210,240,0.65)',
+  textAlign: 'left', padding: '8px 12px', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   fontWeight: 500, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5,
 };
-const td: React.CSSProperties = { padding: '8px 12px', borderTop: '1px solid rgba(120,150,200,0.1)' };
+const td: React.CSSProperties = { padding: '8px 12px', borderTop: '1px solid color-mix(in srgb, var(--j-text-muted) 10%, transparent)' };
 const tdNum: React.CSSProperties = { ...td, fontVariantNumeric: 'tabular-nums', textAlign: 'right' };
 const tr: React.CSSProperties = {};
 const inputSmall: React.CSSProperties = {
-  width: 80, padding: '4px 8px', background: 'rgba(0,0,0,0.25)',
-  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 4, color: 'white', fontSize: 13,
+  width: 80, padding: '4px 8px', background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 4, color: 'var(--j-text)', fontSize: 13,
 };
 const errorBox: React.CSSProperties = {
   background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',

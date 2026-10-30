@@ -17,11 +17,11 @@ import {
 } from './ui';
 
 const STATUS_CHIP_COLORS: Record<PlanStatus, { bg: string; border: string; fg: string }> = {
-  draft:     { bg: 'rgba(180,210,240,0.10)', border: 'rgba(180,210,240,0.35)', fg: 'rgba(180,210,240,0.85)' },
-  compiled:  { bg: 'rgba(0,229,255,0.10)',   border: 'rgba(0,229,255,0.45)',   fg: C.accent },
-  approved:  { bg: 'rgba(0,176,255,0.12)',   border: 'rgba(0,176,255,0.5)',    fg: C.accent2 },
-  deployed:  { bg: 'rgba(0,184,148,0.12)',   border: 'rgba(0,184,148,0.5)',    fg: C.success },
-  failed:    { bg: 'rgba(233,69,96,0.12)',   border: 'rgba(233,69,96,0.5)',    fg: C.danger },
+  draft:     { bg: 'color-mix(in srgb, var(--j-text) 10%, transparent)', border: 'color-mix(in srgb, var(--j-text) 35%, transparent)', fg: 'color-mix(in srgb, var(--j-text) 85%, transparent)' },
+  compiled:  { bg: 'color-mix(in srgb, var(--j-cyan) 10%, transparent)',   border: 'color-mix(in srgb, var(--j-cyan) 45%, transparent)',   fg: C.accent },
+  approved:  { bg: 'color-mix(in srgb, var(--j-blue) 12%, transparent)',   border: 'color-mix(in srgb, var(--j-blue) 50%, transparent)',    fg: C.accent2 },
+  deployed:  { bg: 'color-mix(in srgb, var(--j-success) 12%, transparent)',   border: 'color-mix(in srgb, var(--j-success) 50%, transparent)',    fg: C.success },
+  failed:    { bg: 'color-mix(in srgb, var(--j-danger) 12%, transparent)',   border: 'color-mix(in srgb, var(--j-danger) 50%, transparent)',    fg: C.danger },
   cancelled: { bg: 'rgba(120,120,120,0.15)', border: 'rgba(120,120,120,0.4)',  fg: C.muted },
 };
 
@@ -191,8 +191,8 @@ export const BriefingPlanSection: React.FC<Props> = ({
           {plan.briefing?.flags && plan.briefing.flags.length > 0 && (
             <div
               style={{
-                background: 'rgba(253,203,110,0.08)',
-                border: '1px solid rgba(253,203,110,0.35)',
+                background: 'color-mix(in srgb, var(--j-warn) 8%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--j-warn) 35%, transparent)',
                 borderRadius: 8,
                 padding: '10px 14px',
                 marginBottom: 12,
@@ -214,7 +214,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
                 <div
                   key={p.isp}
                   style={{
-                    background: 'rgba(10,15,26,0.7)',
+                    background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
                     border: `1px solid ${C.panelBorder}`,
                     borderRadius: 8,
                     padding: '10px 12px',
@@ -249,7 +249,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
                 fontFamily: typeof plan.briefing?.volume_guidance === 'string' ? 'inherit' : undefined,
                 fontSize: 12.5,
                 color: C.text,
-                background: 'rgba(10,15,26,0.7)',
+                background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
                 border: `1px solid ${C.panelBorder}`,
                 borderRadius: 8,
                 padding: '8px 12px',
@@ -263,8 +263,8 @@ export const BriefingPlanSection: React.FC<Props> = ({
           {plan.status === 'draft' && (
             <div
               style={{
-                background: 'rgba(0,229,255,0.06)',
-                border: '1px solid rgba(0,229,255,0.25)',
+                background: 'color-mix(in srgb, var(--j-cyan) 6%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--j-cyan) 25%, transparent)',
                 borderRadius: 8,
                 padding: '8px 12px',
                 marginBottom: 14,
@@ -286,7 +286,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
           {(!plan.slots || plan.slots.length === 0) && (
             <div
               style={{
-                background: 'rgba(10,15,26,0.7)',
+                background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
                 border: `1px dashed ${C.panelBorder}`,
                 borderRadius: 8,
                 padding: '14px 16px',
@@ -312,7 +312,7 @@ export const BriefingPlanSection: React.FC<Props> = ({
               <div
                 key={`${s.name}-${i}`}
                 style={{
-                  background: 'rgba(10,15,26,0.7)',
+                  background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
                   border: `1px solid ${C.panelBorder}`,
                   borderRadius: 8,
                   padding: '12px 14px',

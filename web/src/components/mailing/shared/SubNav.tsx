@@ -14,15 +14,15 @@ import React from 'react';
 // appearance matches the portal's other section sub-navs.
 const subNavStyle: React.CSSProperties = {
   display: 'flex', gap: 4, marginBottom: 20, padding: '4px',
-  background: 'rgba(0,200,255,0.04)', borderRadius: 10, border: '1px solid rgba(0,200,255,0.08)',
+  background: 'var(--j-surface)', borderRadius: 999, border: '1px solid var(--j-border)',
   width: 'fit-content',
 };
 
 const subNavBtnStyle = (active: boolean): React.CSSProperties => ({
-  padding: '8px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
+  padding: '8px 18px', borderRadius: 999, border: 'none', cursor: 'pointer',
   fontSize: 13, fontWeight: active ? 700 : 500, transition: 'all 0.15s',
-  background: active ? '#00b0ff' : 'transparent',
-  color: active ? '#0a0f1a' : 'rgba(180,210,240,0.75)',
+  background: active ? 'var(--j-violet-strong)' : 'transparent',
+  color: active ? 'var(--j-on-accent)' : 'var(--j-text-2)',
 });
 
 export interface SubNavItem {

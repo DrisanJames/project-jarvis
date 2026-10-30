@@ -49,7 +49,7 @@ const SwitchRow: React.FC<{ label: string; state: boolean | null; onLabel: strin
   <div
     style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '8px 10px', background: 'rgba(15,23,42,0.55)',
+      padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)',
       border: `1px solid ${colors.panelBorder}`, borderRadius: 8, fontSize: 12,
     }}
   >
@@ -211,7 +211,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
             {status?.sending_paused ? (
-              <button type="button" disabled={busy} onClick={resumeSending} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
+              <button type="button" disabled={busy} onClick={resumeSending} style={{ ...btnStyle, color: colors.successText, borderColor: 'color-mix(in srgb, var(--j-success) 45%, transparent)', background: 'color-mix(in srgb, var(--j-success) 10%, transparent)' }}>
                 <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume sending
               </button>
             ) : (
@@ -225,7 +225,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
               </button>
             )}
             {status?.intake_paused ? (
-              <button type="button" disabled={busy} onClick={resumeIntake} style={{ ...btnStyle, color: colors.successText, borderColor: 'rgba(34,197,94,0.45)', background: 'rgba(34,197,94,0.10)' }}>
+              <button type="button" disabled={busy} onClick={resumeIntake} style={{ ...btnStyle, color: colors.successText, borderColor: 'color-mix(in srgb, var(--j-success) 45%, transparent)', background: 'color-mix(in srgb, var(--j-success) 10%, transparent)' }}>
                 <FontAwesomeIcon icon={faPlay} style={{ marginRight: 6 }} /> Resume intake
               </button>
             ) : (
@@ -259,7 +259,7 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
               ['mailed', 'Mailed', d?.funnel.mailed, colors.successText],
               ['engaged', 'Engaged', d?.funnel.engaged, colors.warningText],
             ] as const).map(([key, label, value, color]) => (
-              <div key={key} style={{ background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '10px 12px' }}>
+              <div key={key} style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '10px 12px' }}>
                 <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.6 }}>{label}</div>
                 <div style={{ fontSize: 18, fontWeight: 700 }}>
                   <Measured fields={f} name={key} value={value ?? null} color={color} />
@@ -273,10 +273,10 @@ export const FeedPanel: React.FC<Props> = ({ datasetId, date, listRow, onBack })
             ) : (
               <ResponsiveContainer width="100%" height={160}>
                 <BarChart data={series} margin={{ top: 4, right: 12, left: -18, bottom: 0 }}>
-                  <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" interval="preserveStartEnd" />
-                  <YAxis tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="rgba(120,150,200,0.25)" />
-                  <Tooltip contentStyle={{ background: '#0f1c33', border: '1px solid rgba(120,150,200,0.3)', borderRadius: 6, fontSize: 12 }} labelStyle={{ color: colors.heading }} />
+                  <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" interval="preserveStartEnd" />
+                  <YAxis tick={{ fill: colors.textMuted, fontSize: 10 }} stroke="color-mix(in srgb, var(--j-text-muted) 25%, transparent)" />
+                  <Tooltip contentStyle={{ background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 30%, transparent)', borderRadius: 6, fontSize: 12 }} labelStyle={{ color: colors.heading }} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   <Bar dataKey="At rest" stackId="a" fill={AT_REST} />
                   <Bar dataKey="Dynamic" stackId="a" fill={DYNAMIC} />

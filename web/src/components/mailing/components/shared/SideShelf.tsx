@@ -38,7 +38,7 @@ export const SideShelf: React.FC<SideShelfProps> = ({ title, onClose, width = 56
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0,0,0,0.25)',
+          background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
           zIndex: 199,
         }}
       />
@@ -49,8 +49,8 @@ export const SideShelf: React.FC<SideShelfProps> = ({ title, onClose, width = 56
           right: 0,
           width,
           height: '100vh',
-          background: '#0f1629',
-          borderLeft: '1px solid rgba(99,102,241,0.15)',
+          background: 'var(--j-surface)',
+          borderLeft: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
           boxShadow: '-10px 0 40px rgba(0,0,0,0.5)',
           zIndex: 200,
           display: 'flex',
@@ -60,7 +60,7 @@ export const SideShelf: React.FC<SideShelfProps> = ({ title, onClose, width = 56
         <div
           style={{
             padding: '16px 20px',
-            borderBottom: '1px solid rgba(99,102,241,0.1)',
+            borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -68,7 +68,7 @@ export const SideShelf: React.FC<SideShelfProps> = ({ title, onClose, width = 56
             flexShrink: 0,
           }}
         >
-          <div style={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700, color: '#e2e8f0' }}>
+          <div style={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700, color: 'var(--j-text)' }}>
             {title}
           </div>
           <button
@@ -77,7 +77,7 @@ export const SideShelf: React.FC<SideShelfProps> = ({ title, onClose, width = 56
             style={{
               background: 'none',
               border: 'none',
-              color: '#64748b',
+              color: 'var(--j-text-faint)',
               cursor: 'pointer',
               fontSize: 16,
               flexShrink: 0,

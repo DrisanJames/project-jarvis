@@ -52,7 +52,7 @@ const num = (n: number | null | undefined): string =>
   typeof n === 'number' && Number.isFinite(n) ? Math.round(n).toLocaleString() : UNKNOWN;
 
 const input: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)', color: colors.text,
+  background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: colors.text,
   border: `1px solid ${colors.panelBorderStrong}`, borderRadius: 5,
   padding: '5px 8px', fontSize: 12,
 };
@@ -335,7 +335,7 @@ export const DripCsvUpload: React.FC<{
                   <div key={r.isp} style={{ display: 'flex', alignItems: 'center', gap: 8 }}
                     title={`${r.isp}: ${num(r.count)} of ${num(ispTotal)} (${(r.pct ?? 0).toFixed(1)}%)`}>
                     <span style={{ fontSize: 11, color: colors.text, width: 76, flex: '0 0 auto' }}>{r.isp}</span>
-                    <div style={{ flex: 1, height: 7, background: 'rgba(255,255,255,0.06)', borderRadius: 4 }}>
+                    <div style={{ flex: 1, height: 7, background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', borderRadius: 4 }}>
                       <div style={{ width: `${Math.max(r.count > 0 ? 2 : 0, Math.round(r.pct ?? 0))}%`, height: 7, background: alpha(colors.indigo400, '66'), borderRadius: 4 }} />
                     </div>
                     <span style={{ fontSize: 10, color: colors.textMuted, minWidth: 92, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>

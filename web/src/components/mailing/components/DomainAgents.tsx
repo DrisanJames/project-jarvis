@@ -192,8 +192,8 @@ export const DomainAgents: React.FC = () => {
               borderRadius: 8,
               cursor: 'pointer',
               marginBottom: 6,
-              background: selected === null ? 'rgba(0,229,255,0.08)' : 'transparent',
-              border: selected === null ? '1px solid rgba(0,229,255,0.35)' : '1px solid transparent',
+              background: selected === null ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'transparent',
+              border: selected === null ? '1px solid color-mix(in srgb, var(--j-cyan) 35%, transparent)' : '1px solid transparent',
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600, color: selected === null ? C.accent : C.text }}>
@@ -214,8 +214,8 @@ export const DomainAgents: React.FC = () => {
                 borderRadius: 8,
                 cursor: 'pointer',
                 marginBottom: 6,
-                background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
-                border: active ? '1px solid rgba(0,229,255,0.35)' : '1px solid transparent',
+                background: active ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' : 'transparent',
+                border: active ? '1px solid color-mix(in srgb, var(--j-cyan) 35%, transparent)' : '1px solid transparent',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>

@@ -151,8 +151,8 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
   return (
     <div style={modalBackdrop}>
       <div style={modalBody}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(120,150,200,0.18)', paddingBottom: 12, marginBottom: 20 }}>
-          <h3 style={{ margin: 0, color: '#dbeafe' }}>Onboard Data Partner — Step {step} of 4</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', paddingBottom: 12, marginBottom: 20 }}>
+          <h3 style={{ margin: 0, color: 'var(--j-text)' }}>Onboard Data Partner — Step {step} of 4</h3>
           <Stepper step={step} />
         </div>
 
@@ -178,7 +178,7 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
         {step === 2 && (
           <>
             <h4 style={sectionTitle}>Add First Dataset</h4>
-            <div style={{ marginBottom: 12, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+            <div style={{ marginBottom: 12, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
               Each dataset is bound to one vertical. A partner can have multiple datasets (e.g. Attribits HOME → remodel, Attribits PERSONAL LOAN → personal_loans).
             </div>
             <label style={fieldLabel}>Dataset name</label>
@@ -228,15 +228,15 @@ export const PartnerOnboardingWizard: React.FC<Props> = ({ onClose }) => {
         {step === 4 && (
           <>
             <h4 style={sectionTitle}>Done</h4>
-            <div style={{ textAlign: 'center', padding: 24, color: '#10b981' }}>
+            <div style={{ textAlign: 'center', padding: 24, color: 'var(--j-success)' }}>
               <FontAwesomeIcon icon={faCheckCircle} size="3x" />
-              <div style={{ marginTop: 12, fontSize: 16, color: '#dbeafe' }}>{partnerName} is live.</div>
-              <div style={{ marginTop: 8, color: 'rgba(180,210,240,0.7)', fontSize: 13 }}>
+              <div style={{ marginTop: 12, fontSize: 16, color: 'var(--j-text)' }}>{partnerName} is live.</div>
+              <div style={{ marginTop: 8, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', fontSize: 13 }}>
                 Dataset <b>{datasetName}</b> ({vertical}) is ready to receive records.
                 Records will start list processing within 30s of submission.
               </div>
             </div>
-            <div style={{ background: 'rgba(15,30,60,0.5)', padding: 16, borderRadius: 6, fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+            <div style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', padding: 16, borderRadius: 6, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
               <b>What happens next:</b><br />
               1. Partner POSTs records to <code>/api/partner-ingest/v1/records</code> with their X-Partner-Key.<br />
               2. Records are saved to list storage and queued for list processing.<br />
@@ -259,7 +259,7 @@ const Stepper: React.FC<{ step: Step }> = ({ step }) => (
     {[1, 2, 3, 4].map(n => (
       <div key={n} style={{
         width: 24, height: 4, borderRadius: 2,
-        background: n <= step ? '#6366f1' : 'rgba(120,150,200,0.2)',
+        background: n <= step ? 'var(--j-violet-strong)' : 'color-mix(in srgb, var(--j-text-muted) 20%, transparent)',
       }} />
     ))}
   </div>
@@ -267,45 +267,45 @@ const Stepper: React.FC<{ step: Step }> = ({ step }) => (
 
 const modalBackdrop: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center',
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', display: 'flex', alignItems: 'center',
   justifyContent: 'center', zIndex: 1000, padding: 24,
 };
 const modalBody: React.CSSProperties = {
-  background: '#0f1c33', border: '1px solid rgba(120,150,200,0.25)',
+  background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
   borderRadius: 10, padding: 24, width: '100%', maxWidth: 640,
   maxHeight: '90vh', overflowY: 'auto',
-  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'rgba(220,235,250,0.92)',
+  boxShadow: '0 20px 60px rgba(0,0,0,0.6)', color: 'color-mix(in srgb, var(--j-text) 92%, transparent)',
 };
-const sectionTitle: React.CSSProperties = { margin: '0 0 12px 0', color: '#cbd5f5', fontSize: 14 };
+const sectionTitle: React.CSSProperties = { margin: '0 0 12px 0', color: 'var(--j-text-2)', fontSize: 14 };
 const fieldLabel: React.CSSProperties = {
-  display: 'block', fontSize: 12, color: 'rgba(180,210,240,0.7)', margin: '12px 0 4px 0',
+  display: 'block', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', margin: '12px 0 4px 0',
 };
 const input: React.CSSProperties = {
-  width: '100%', padding: '8px 10px', background: 'rgba(0,0,0,0.25)',
-  border: '1px solid rgba(120,150,200,0.25)', borderRadius: 4, color: 'white', fontSize: 13,
+  width: '100%', padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 4, color: 'var(--j-text)', fontSize: 13,
   boxSizing: 'border-box',
 };
 const codeBox: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.45)', padding: 12, borderRadius: 4, fontSize: 12,
+  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', padding: 12, borderRadius: 4, fontSize: 12,
   fontFamily: 'ui-monospace, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
   color: '#a5f3fc',
 };
 const errorBox: React.CSSProperties = {
   background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',
-  padding: 8, borderRadius: 4, marginTop: 12, fontSize: 12, color: '#fca5a5',
+  padding: 8, borderRadius: 4, marginTop: 12, fontSize: 12, color: 'var(--j-danger-soft)',
 };
 const primaryBtn: React.CSSProperties = {
-  background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-  color: 'white', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
+  background: 'linear-gradient(135deg, var(--j-violet-strong) 0%, var(--j-violet-strong) 100%)',
+  color: 'var(--j-text)', border: 'none', padding: '8px 14px', borderRadius: 6, cursor: 'pointer',
   fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: 'rgba(220,235,250,0.85)',
-  border: '1px solid rgba(120,150,200,0.25)', padding: '8px 14px', borderRadius: 6,
+  background: 'transparent', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer',
 };
 const iconBtn: React.CSSProperties = {
-  background: 'rgba(120,150,200,0.08)', color: 'rgba(220,235,250,0.85)',
-  border: '1px solid rgba(120,150,200,0.18)', padding: '8px 14px', borderRadius: 6,
+  background: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)', color: 'color-mix(in srgb, var(--j-text) 85%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', padding: '8px 14px', borderRadius: 6,
   cursor: 'pointer',
 };

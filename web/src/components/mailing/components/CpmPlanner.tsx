@@ -42,12 +42,12 @@ const nextMonthKeys = (fromYM: string, n: number): string[] => {
 
 // ─── Theme ───────────────────────────────────────────────────────────────────
 const C = {
-  panel: 'rgba(15,30,60,0.35)',
-  border: 'rgba(99,102,241,0.25)',
-  heading: '#dbeafe',
-  muted: 'rgba(180,210,240,0.65)',
-  indigo: '#6366f1',
-  green: '#10b981',
+  panel: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
+  border: 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)',
+  heading: 'var(--j-text)',
+  muted: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  indigo: 'var(--j-violet-strong)',
+  green: 'var(--j-success)',
   red: '#ef4444',
   amber: '#f59e0b',
 };
@@ -520,7 +520,7 @@ const statusColor = (s: string): string =>
 const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '8px 10px',
-  background: 'rgba(10,20,45,0.7)',
+  background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
   border: `1px solid ${C.border}`,
   borderRadius: 6,
   color: C.heading,
@@ -552,7 +552,7 @@ const tdStyle: React.CSSProperties = {
   padding: '10px 12px',
   fontSize: 13,
   color: C.heading,
-  borderBottom: '1px solid rgba(99,102,241,0.12)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
   whiteSpace: 'nowrap',
 };
 
@@ -1515,7 +1515,7 @@ export const CpmPlanner: React.FC = () => {
         <span style={{
           marginLeft: 'auto', padding: '4px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700,
           color: riskColor(capacity.risk), border: `1px solid ${riskColor(capacity.risk)}`,
-          background: 'rgba(10,20,45,0.5)',
+          background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
         }}>
           CAPACITY RISK: {capacity.risk}
         </span>
@@ -1569,7 +1569,7 @@ export const CpmPlanner: React.FC = () => {
         </div>
         {attrGapError && <div style={{ color: C.red, fontSize: 12, marginTop: 8 }}>{attrGapError}</div>}
         {attrGapOpen && g && g.top_unattributed.length > 0 && (
-          <div style={{ marginTop: 10, overflowX: 'auto', border: `1px solid ${C.border}`, borderRadius: 8, background: 'rgba(10,20,45,0.4)' }}>
+          <div style={{ marginTop: 10, overflowX: 'auto', border: `1px solid ${C.border}`, borderRadius: 8, background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
                 <th style={thStyle}>Campaign (not counted by any deal)</th>
@@ -1609,7 +1609,7 @@ export const CpmPlanner: React.FC = () => {
     const daysLeft = pacing ? pacing.days_in_month - pacing.day_of_month + 1 : 0;
     const daysAfterToday = Math.max(0, daysLeft - 1);
     const numInput: React.CSSProperties = {
-      width: 96, padding: '5px 7px', background: 'rgba(10,20,45,0.7)',
+      width: 96, padding: '5px 7px', background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
       border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
     };
     const fmtEcpm = (n: number) => (n > 0 ? fmtMoney(n) : '—');
@@ -1682,7 +1682,7 @@ export const CpmPlanner: React.FC = () => {
       ].filter(Boolean).join(' · ');
 
       const readRow = (
-        <tr key={p.deal_id} style={open ? { background: 'rgba(99,102,241,0.05)' } : undefined}>
+        <tr key={p.deal_id} style={open ? { background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)' } : undefined}>
           <td style={tdStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ color: C.heading }}>{p.name}</span>
@@ -1709,7 +1709,7 @@ export const CpmPlanner: React.FC = () => {
           <td style={num} title="budget ÷ eCPM goal × 1,000">{target > 0 ? fmtInt(target) : '—'}</td>
           <td style={{ ...tdStyle, minWidth: 150 }}>
             {target > 0 && (
-              <div style={{ height: 6, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
+              <div style={{ height: 6, background: 'color-mix(in srgb, var(--j-shade) 80%, transparent)', borderRadius: 4, overflow: 'hidden', marginBottom: 3 }}>
                 <div style={{ width: `${Math.min(pctSent * 100, 100)}%`, height: '100%', borderRadius: 4, background: band }} />
               </div>
             )}
@@ -1764,7 +1764,7 @@ export const CpmPlanner: React.FC = () => {
       );
 
       const editorRow = open ? (
-        <tr key={`${p.deal_id}:edit`} style={{ background: 'rgba(99,102,241,0.08)' }}>
+        <tr key={`${p.deal_id}:edit`} style={{ background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' }}>
           <td colSpan={12} style={{ ...tdStyle, padding: '10px 16px' }}>
             <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', fontSize: 12, color: C.muted }}>
               <div style={{ color: C.heading, fontWeight: 700 }}>{p.name} · {monthName}</div>
@@ -1783,7 +1783,7 @@ export const CpmPlanner: React.FC = () => {
               <button onClick={() => saveTarget(p.deal_id, month)} disabled={!dirty || busy}
                 style={{
                   padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.indigo}`, fontSize: 12, fontWeight: 700,
-                  cursor: dirty ? 'pointer' : 'default', background: dirty ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  cursor: dirty ? 'pointer' : 'default', background: dirty ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
                   color: C.heading, opacity: dirty ? 1 : 0.5,
                 }}>
                 {busy ? <FontAwesomeIcon icon={faSpinner} spin /> : `Save ${monthName}`}
@@ -1844,7 +1844,7 @@ export const CpmPlanner: React.FC = () => {
           </div>
         ) : (
           <>
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12, padding: '10px 14px', background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 8 }}>
               <Stat label="Month target" value={pf.target_volume > 0 ? fmtInt(pf.target_volume) : '—'}
                 sub={`${pacing.deals.length} deal${pacing.deals.length === 1 ? '' : 's'} · ${fmtUsd0(pf.target_budget)} budget`} />
               <Stat label="MTD sent" value={fmtInt(pf.mtd_sent)} color={pfBand}
@@ -1890,7 +1890,7 @@ export const CpmPlanner: React.FC = () => {
     const pct = Math.min(d.progress.pct_volume_delivered * 100, 100);
     return (
       <div style={{ minWidth: 140 }}>
-        <div style={{ height: 8, background: 'rgba(10,20,45,0.8)', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ height: 8, background: 'color-mix(in srgb, var(--j-shade) 80%, transparent)', borderRadius: 4, overflow: 'hidden' }}>
           <div style={{
             width: `${pct}%`, height: '100%', borderRadius: 4,
             background: d.progress.on_pace ? C.green : C.amber,
@@ -1939,7 +1939,7 @@ export const CpmPlanner: React.FC = () => {
       // Bounce split is ALWAYS hard vs soft — never a combined number.
       { label: 'Hard Bounces', value: fmtInt(t.hard_bounces), sub: 'provider deliverability risk', color: C.red },
       { label: 'Soft Bounces', value: fmtInt(t.soft_bounces), sub: 'usually transient', color: C.amber },
-      { label: 'Conversions', value: fmtInt(t.conversions), sub: `conv / ${p.days}d`, color: '#3b82f6' },
+      { label: 'Conversions', value: fmtInt(t.conversions), sub: `conv / ${p.days}d`, color: 'var(--j-blue)' },
       {
         label: 'Suppressed', value: fmtInt(t.suppression_total),
         sub: p.dnm_list_size > 0 ? `Suppression list ${fmtInt(p.dnm_list_size)}` : 'all time, all reasons',
@@ -1959,7 +1959,7 @@ export const CpmPlanner: React.FC = () => {
         {/* Stat tiles */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
           {tiles.map(m => (
-            <div key={m.label} style={{ background: 'rgba(10,20,45,0.5)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px' }}>
+            <div key={m.label} style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px' }}>
               <div style={{ fontSize: 17, fontWeight: 700, color: m.color }}>{m.value}</div>
               <div style={{ fontSize: 11, color: C.heading, marginTop: 2 }}>{m.label}</div>
               <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{m.sub}</div>
@@ -1971,7 +1971,7 @@ export const CpmPlanner: React.FC = () => {
         {suppressedShare !== null ? (
           <div style={{
             padding: '8px 14px', borderRadius: 8, fontSize: 12,
-            background: suppressedShare > 50 ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.08)',
+            background: suppressedShare > 50 ? 'rgba(239,68,68,0.08)' : 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
             border: `1px solid ${suppressedShare > 50 ? 'rgba(239,68,68,0.4)' : C.border}`,
             color: suppressedShare > 50 ? C.red : C.heading,
           }}>
@@ -1989,20 +1989,20 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Daily sent &amp; conversions
             </div>
-            <div style={{ height: 200, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
+            <div style={{ height: 200, background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', borderRadius: 8, padding: '12px 8px' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={dailyData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="color-mix(in srgb, var(--j-violet-strong) 15%, transparent)" />
                   <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} interval="preserveStartEnd" />
                   <YAxis yAxisId="vol" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
                   <YAxis yAxisId="conv" orientation="right" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} allowDecimals={false} />
                   <RechartsTooltip
-                    contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
+                    contentStyle={{ background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
                     formatter={(v: number | string) => (typeof v === 'number' ? fmtInt(v) : v)}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="rgba(99,102,241,0.55)" radius={[2, 2, 0, 0]} />
-                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                  <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="color-mix(in srgb, var(--j-violet-strong) 55%, transparent)" radius={[2, 2, 0, 0]} />
+                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2015,14 +2015,14 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Suppressed per week (last 8 weeks, all reasons)
             </div>
-            <div style={{ height: 140, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
+            <div style={{ height: 140, background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', borderRadius: 8, padding: '12px 8px' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={weeklyData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="color-mix(in srgb, var(--j-violet-strong) 15%, transparent)" />
                   <XAxis dataKey="week" tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} />
                   <YAxis tick={{ fill: C.muted, fontSize: 10 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
                   <RechartsTooltip
-                    contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
+                    contentStyle={{ background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
                     formatter={(v: number) => [fmtInt(v), 'Suppressed']}
                   />
                   <Bar dataKey="count" fill="rgba(239,68,68,0.55)" radius={[3, 3, 0, 0]} />
@@ -2038,7 +2038,7 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Recent campaigns {p.campaign_count > p.campaigns.length ? `(${p.campaigns.length} of ${p.campaign_count})` : ''}
             </div>
-            <div style={{ background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto' }}>
+            <div style={{ background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr>
@@ -2087,14 +2087,14 @@ export const CpmPlanner: React.FC = () => {
     const chip = (label: string, value: number, color: string) => (
       <span key={label} style={{
         padding: '4px 12px', borderRadius: 999, fontSize: 12, fontWeight: 700,
-        color, border: `1px solid ${color}`, background: 'rgba(10,20,45,0.5)',
+        color, border: `1px solid ${color}`, background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
       }}>
         {label}: {fmtInt(value)}
       </span>
     );
     const smallBtn: React.CSSProperties = {
       padding: '8px 14px', borderRadius: 6, border: `1px solid ${C.border}`,
-      background: 'rgba(99,102,241,0.15)', color: C.heading, cursor: convBusy ? 'wait' : 'pointer',
+      background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', color: C.heading, cursor: convBusy ? 'wait' : 'pointer',
       fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
     };
     return (
@@ -2117,7 +2117,7 @@ export const CpmPlanner: React.FC = () => {
         {/* Quick-add + CSV upload */}
         <div style={{
           display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end',
-          background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px',
+          background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px',
         }}>
           <div>
             <label style={labelStyle}>Date</label>
@@ -2169,8 +2169,8 @@ export const CpmPlanner: React.FC = () => {
           <div style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
             padding: '8px 12px', borderRadius: 8, fontSize: 12,
-            background: msg.ok ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-            border: `1px solid ${msg.ok ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}`,
+            background: msg.ok ? 'color-mix(in srgb, var(--j-success) 10%, transparent)' : 'rgba(239,68,68,0.1)',
+            border: `1px solid ${msg.ok ? 'color-mix(in srgb, var(--j-success) 40%, transparent)' : 'rgba(239,68,68,0.4)'}`,
             color: msg.ok ? C.green : C.red,
           }}>
             <span>{msg.text}</span>
@@ -2208,7 +2208,7 @@ export const CpmPlanner: React.FC = () => {
                 No manual conversions yet — quick-add a count or upload an offer-tracking CSV.
               </div>
             ) : (
-              <div style={{ marginTop: 8, background: 'rgba(10,20,45,0.4)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
+              <div style={{ marginTop: 8, background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', border: `1px solid ${C.border}`, borderRadius: 8, overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr>
@@ -2292,7 +2292,7 @@ export const CpmPlanner: React.FC = () => {
           <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* Volume-to-goal rollup */}
             {v && (
-              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', background: 'rgba(10,20,45,0.4)',
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)',
                 border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 14px' }}>
                 {[
                   ['Planned volume', fmtInt(v.planned_volume)],
@@ -2318,7 +2318,7 @@ export const CpmPlanner: React.FC = () => {
                   setCampQuery(prev => ({ ...prev, [d.id]: q }));
                   searchCandidates(d.id, q);
                 }}
-                style={{ flex: 1, padding: '6px 10px', background: 'rgba(10,20,45,0.6)',
+                style={{ flex: 1, padding: '6px 10px', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
                   border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 13 }}
               />
             </div>
@@ -2329,7 +2329,7 @@ export const CpmPlanner: React.FC = () => {
                     padding: '5px 10px', borderBottom: `1px solid ${C.border}`, fontSize: 12 }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.heading }} title={c.name}>{c.name}</span>
                     <button disabled={campBusy} onClick={() => associateCampaign(d.id, c.id)}
-                      style={{ background: C.indigo, border: 'none', color: '#fff', borderRadius: 5,
+                      style={{ background: C.indigo, border: 'none', color: 'var(--j-on-accent)', borderRadius: 5,
                         padding: '3px 10px', cursor: 'pointer', fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
                       + Link
                     </button>
@@ -2425,15 +2425,15 @@ export const CpmPlanner: React.FC = () => {
             <div style={{ fontSize: 12, fontWeight: 700, color: C.heading, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Daily sent vs required pace ({fmtInt(d.progress.required_daily)}/day) &amp; conversions
             </div>
-            <div style={{ height: 220, background: 'rgba(10,20,45,0.4)', borderRadius: 8, padding: '12px 8px' }}>
+            <div style={{ height: 220, background: 'color-mix(in srgb, var(--j-shade) 40%, transparent)', borderRadius: 8, padding: '12px 8px' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,102,241,0.15)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="color-mix(in srgb, var(--j-violet-strong) 15%, transparent)" />
                   <XAxis dataKey="date" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} />
                   <YAxis yAxisId="vol" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} tickFormatter={(v: number) => fmtInt(v)} />
                   <YAxis yAxisId="conv" orientation="right" tick={{ fill: C.muted, fontSize: 11 }} stroke={C.border} allowDecimals={false} />
                   <RechartsTooltip
-                    contentStyle={{ background: 'rgba(10,20,45,0.95)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
+                    contentStyle={{ background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading }}
                     formatter={(v: number | string) => (typeof v === 'number' ? fmtInt(v) : v)}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -2445,7 +2445,7 @@ export const CpmPlanner: React.FC = () => {
                     label={{ value: 'required/day', fill: C.amber, fontSize: 11, position: 'insideTopRight' }}
                   />
                   <Bar yAxisId="vol" dataKey="sent" name="Sent" fill={C.indigo} radius={[3, 3, 0, 0]} />
-                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                  <Line yAxisId="conv" type="monotone" dataKey="conversions" name="Conversions" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2462,7 +2462,7 @@ export const CpmPlanner: React.FC = () => {
               {ins.top_domains.map(td => (
                 <span key={td.domain} style={{
                   padding: '4px 12px', borderRadius: 999, fontSize: 12,
-                  background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.4)', color: C.green,
+                  background: 'color-mix(in srgb, var(--j-success) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--j-success) 40%, transparent)', color: C.green,
                 }}>
                   {td.domain} · {td.conversions}
                 </span>
@@ -2492,7 +2492,7 @@ export const CpmPlanner: React.FC = () => {
         style={{
           padding: '4px 12px', borderRadius: 14, fontSize: 11, cursor: 'pointer',
           border: `1px solid ${view === v ? C.indigo : C.border}`,
-          background: view === v ? 'rgba(99,102,241,0.25)' : 'transparent',
+          background: view === v ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
           color: view === v ? C.heading : C.muted,
         }}>
         {label}
@@ -2561,7 +2561,7 @@ export const CpmPlanner: React.FC = () => {
     return (
       <div
         style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 1000,
+          position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 1000,
           display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
         }}
         onClick={() => !saving && setShowModal(false)}
@@ -2712,7 +2712,7 @@ export const CpmPlanner: React.FC = () => {
           {/* Live spreadsheet math */}
           <div style={{
             marginTop: 16, padding: '14px 16px', borderRadius: 8,
-            background: 'rgba(99,102,241,0.08)', border: `1px solid ${C.border}`,
+            background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)', border: `1px solid ${C.border}`,
             display: 'flex', gap: 28, flexWrap: 'wrap',
           }}>
             <div>
@@ -2755,7 +2755,7 @@ export const CpmPlanner: React.FC = () => {
               disabled={saving}
               style={{
                 padding: '8px 18px', borderRadius: 6, border: 'none',
-                background: C.indigo, color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                background: C.indigo, color: 'var(--j-on-accent)', cursor: 'pointer', fontSize: 13, fontWeight: 600,
               }}
             >
               {saving ? <FontAwesomeIcon icon={faSpinner} spin /> : editingId ? 'Save changes' : 'Create deal'}
@@ -2777,7 +2777,7 @@ export const CpmPlanner: React.FC = () => {
 
   // Shared bits for the planner/history month grids.
   const monthNumInput: React.CSSProperties = {
-    width: 96, padding: '6px 8px', background: 'rgba(10,20,45,0.7)',
+    width: 96, padding: '6px 8px', background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
     border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
   };
   const synthMonthDeal = (deal: Deal): MonthDeal => ({
@@ -2833,7 +2833,7 @@ export const CpmPlanner: React.FC = () => {
                 style={{
                   padding: '5px 12px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
                   cursor: dirty ? 'pointer' : 'default',
-                  background: dirty ? C.indigo : 'rgba(99,102,241,0.2)', color: '#fff', opacity: dirty ? 1 : 0.5,
+                  background: dirty ? C.indigo : 'color-mix(in srgb, var(--j-violet-strong) 20%, transparent)', color: 'var(--j-on-accent)', opacity: dirty ? 1 : 0.5,
                 }}>
                 {targetSaving === d.deal_id ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
               </button>
@@ -2867,7 +2867,7 @@ export const CpmPlanner: React.FC = () => {
                 style={{
                   padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
                   border: `1px solid ${k === selKey ? C.indigo : C.border}`,
-                  background: k === selKey ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  background: k === selKey ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
                   color: k === selKey ? C.heading : C.muted,
                 }}>
                 {monthLabel(k)}
@@ -2919,7 +2919,7 @@ export const CpmPlanner: React.FC = () => {
     }
     return (
       <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 12, padding: 18 }}>
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: 'rgba(10,20,45,0.5)', borderRadius: 8 }}>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 14, padding: '10px 14px', background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderRadius: 8 }}>
           <Stat label="Closed month" value={monthLabel(sel.month)} />
           <Stat label="Delivered" value={fmtInt(sel.portfolio.delivered)} />
           <Stat label="Revenue" value={fmtMoney(sel.portfolio.revenue)} color={C.green} />
@@ -3127,7 +3127,7 @@ export const CpmPlanner: React.FC = () => {
     };
 
     const revInput: React.CSSProperties = {
-      width: 96, padding: '5px 7px', background: 'rgba(10,20,45,0.7)',
+      width: 96, padding: '5px 7px', background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)',
       border: `1px solid ${C.border}`, borderRadius: 6, color: C.heading, fontSize: 12, boxSizing: 'border-box',
     };
     const revEditor = (g: NonCpmGroup) => {
@@ -3138,7 +3138,7 @@ export const CpmPlanner: React.FC = () => {
         set({ rates: b.rates.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
       const month = nonCpm?.month || '';
       return (
-        <tr style={{ background: 'rgba(99,102,241,0.08)' }}>
+        <tr style={{ background: 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' }}>
           <td colSpan={11} style={{ ...tdStyle, padding: '12px 16px' }}>
             <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', fontSize: 12, color: C.muted }}>
               <div style={{ color: C.heading, fontWeight: 700 }}>{g.group_name} · {month}</div>
@@ -3174,7 +3174,7 @@ export const CpmPlanner: React.FC = () => {
                 </button>
               </div>
               <button disabled={revSaving} onClick={() => saveRevenueConfig(b, month)}
-                style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.indigo}`, background: 'rgba(99,102,241,0.25)', color: C.heading, cursor: revSaving ? 'default' : 'pointer', fontSize: 12, fontWeight: 700 }}>
+                style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.indigo}`, background: 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', color: C.heading, cursor: revSaving ? 'default' : 'pointer', fontSize: 12, fontWeight: 700 }}>
                 {revSaving ? <FontAwesomeIcon icon={faSpinner} spin /> : 'Save'}
               </button>
               <button onClick={() => setRevEdit(null)}
@@ -3206,7 +3206,7 @@ export const CpmPlanner: React.FC = () => {
                 style={{
                   padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
                   border: `1px solid ${nonCpmMonth === m.value ? C.indigo : C.border}`,
-                  background: nonCpmMonth === m.value ? 'rgba(99,102,241,0.25)' : 'transparent',
+                  background: nonCpmMonth === m.value ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
                   color: nonCpmMonth === m.value ? C.heading : C.muted,
                   fontWeight: nonCpmMonth === m.value ? 700 : 400,
                 }}>
@@ -3217,7 +3217,7 @@ export const CpmPlanner: React.FC = () => {
               style={{
                 padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer',
                 border: `1px solid ${nonCpmShowAll ? C.indigo : C.border}`,
-                background: nonCpmShowAll ? 'rgba(99,102,241,0.25)' : 'transparent',
+                background: nonCpmShowAll ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
                 color: nonCpmShowAll ? C.heading : C.muted,
               }}>
               {nonCpmShowAll ? 'Non-CPM only' : 'Show CPM too'}
@@ -3325,7 +3325,7 @@ export const CpmPlanner: React.FC = () => {
                     </tr>
                     {revEditor(g)}
                     {open && g.offers.map(o => (
-                      <tr key={`${g.group_name}:${o.offer_key}`} style={{ background: 'rgba(10,20,45,0.35)' }}>
+                      <tr key={`${g.group_name}:${o.offer_key}`} style={{ background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)' }}>
                         <td style={{ ...tdStyle, paddingLeft: 30, color: C.muted, fontSize: 12 }}>
                           {o.offer_key}
                         </td>
@@ -3380,7 +3380,7 @@ export const CpmPlanner: React.FC = () => {
           {recalcFlash && (
             <span style={{
               padding: '5px 12px', borderRadius: 999, fontSize: 12, fontWeight: 700,
-              color: C.green, border: `1px solid ${C.green}`, background: 'rgba(16,185,129,0.1)',
+              color: C.green, border: `1px solid ${C.green}`, background: 'color-mix(in srgb, var(--j-success) 10%, transparent)',
               whiteSpace: 'nowrap',
             }}>
               Recalculated
@@ -3390,8 +3390,8 @@ export const CpmPlanner: React.FC = () => {
             onClick={openCreate}
             style={{
               padding: '9px 18px', borderRadius: 8, border: 'none',
-              background: `linear-gradient(135deg, ${C.indigo}, #8b5cf6)`,
-              color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+              background: `linear-gradient(135deg, ${C.indigo}, var(--j-violet-strong))`,
+              color: 'var(--j-text)', fontWeight: 600, fontSize: 13, cursor: 'pointer',
               display: 'flex', alignItems: 'center', gap: 8,
             }}
           >
@@ -3445,7 +3445,7 @@ export const CpmPlanner: React.FC = () => {
             style={{
               padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
               border: `1px solid ${historyMonth === '' ? C.indigo : C.border}`,
-              background: historyMonth === '' ? 'rgba(99,102,241,0.25)' : 'transparent',
+              background: historyMonth === '' ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
               color: historyMonth === '' ? C.heading : C.muted, fontWeight: 700,
             }}>
             Lifetime
@@ -3455,7 +3455,7 @@ export const CpmPlanner: React.FC = () => {
               style={{
                 padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
                 border: `1px solid ${m.month === historyMonth ? C.indigo : C.border}`,
-                background: m.month === historyMonth ? 'rgba(99,102,241,0.25)' : 'transparent',
+                background: m.month === historyMonth ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
                 color: m.month === historyMonth ? C.heading : C.muted,
               }}>
               {monthLabel(m.month)}
@@ -3491,7 +3491,7 @@ export const CpmPlanner: React.FC = () => {
             onClick={openCreate}
             style={{
               padding: '9px 20px', borderRadius: 8, border: 'none', background: C.indigo,
-              color: '#fff', fontWeight: 600, fontSize: 13, cursor: 'pointer',
+              color: 'var(--j-text)', fontWeight: 600, fontSize: 13, cursor: 'pointer',
             }}
           >
             <FontAwesomeIcon icon={faPlus} /> Create your first deal
@@ -3532,7 +3532,7 @@ export const CpmPlanner: React.FC = () => {
                   <React.Fragment key={d.id}>
                     <tr
                       onClick={() => toggleExpand(d)}
-                      style={{ cursor: 'pointer', background: expanded ? 'rgba(99,102,241,0.08)' : 'transparent' }}
+                      style={{ cursor: 'pointer', background: expanded ? 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)' : 'transparent' }}
                     >
                       <td style={{ ...tdStyle, width: 28, color: C.muted }}>
                         <FontAwesomeIcon icon={expanded ? faChevronDown : faChevronRight} style={{ fontSize: 11 }} />
@@ -3597,7 +3597,7 @@ export const CpmPlanner: React.FC = () => {
                     </tr>
                     {expanded && (
                       <tr>
-                        <td colSpan={13} style={{ ...tdStyle, padding: 0, background: 'rgba(10,20,45,0.35)', whiteSpace: 'normal' }}>
+                        <td colSpan={13} style={{ ...tdStyle, padding: 0, background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)', whiteSpace: 'normal' }}>
                           {renderInsights(d)}
                         </td>
                       </tr>

@@ -272,15 +272,15 @@ interface RecommendationsResp {
 }
 
 const postureColor: Record<string, string> = {
-  healthy: '#10b981',
-  watch: '#fdcb6e',
-  degraded: '#f97316',
+  healthy: 'var(--j-success)',
+  watch: 'var(--j-warn)',
+  degraded: 'var(--j-warn)',
   critical: '#ef4444',
-  idle: 'rgba(180,210,240,0.45)',
+  idle: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
 };
 
 const recSeverityColor: Record<string, string> = {
-  info: '#00b0ff',
+  info: 'var(--j-blue)',
   warn: '#f59e0b',
   critical: '#ef4444',
 };
@@ -324,24 +324,24 @@ const moodEmoji: Record<string, string> = {
 };
 
 const sentimentColor: Record<string, string> = {
-  positive: '#00b894',
-  cautious: '#fdcb6e',
-  neutral: 'rgba(180,210,240,0.65)',
-  negative: '#e94560',
+  positive: 'var(--j-success)',
+  cautious: 'var(--j-warn)',
+  neutral: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  negative: 'var(--j-danger)',
 };
 
 const severityColor: Record<string, string> = {
-  info: '#00b0ff',
-  caution: '#fdcb6e',
-  warning: '#f97316',
-  critical: '#e94560',
+  info: 'var(--j-blue)',
+  caution: 'var(--j-warn)',
+  warning: 'var(--j-warn)',
+  critical: 'var(--j-danger)',
 };
 
 const toneColor: Record<Suggestion['tone'], string> = {
-  good: '#10b981',
+  good: 'var(--j-success)',
   warn: '#f59e0b',
   bad: '#ef4444',
-  info: '#93c5fd',
+  info: 'var(--j-blue)',
 };
 
 const thoughtTypeIcon: Record<string, any> = {
@@ -446,12 +446,12 @@ function buildSuggestions(row: ISPRow, cfg: ISPConfigEntry | undefined, engineTh
 }
 
 function posture(cfg: ISPConfigEntry | undefined): { label: string; color: string } {
-  if (!cfg) return { label: 'no agent', color: 'rgba(180,210,240,0.45)' };
-  if (!cfg.enabled) return { label: 'disabled', color: 'rgba(180,210,240,0.45)' };
+  if (!cfg) return { label: 'no agent', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' };
+  if (!cfg.enabled) return { label: 'disabled', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' };
   if (cfg.in_recovery) return { label: 'recovering', color: '#f59e0b' };
   if (cfg.backoff_count > 0) return { label: `backoff ×${cfg.backoff_count}`, color: '#f59e0b' };
   if (cfg.rate_adjustment < 0.95) return { label: `throttled ${Math.round(cfg.rate_adjustment * 100)}%`, color: '#f59e0b' };
-  return { label: 'full rate', color: '#10b981' };
+  return { label: 'full rate', color: 'var(--j-success)' };
 }
 
 // ----------------------------------------------------------------------------
@@ -669,8 +669,8 @@ export const ConsciousnessDashboard: React.FC = () => {
   if (loading) {
     return (
       <div style={styles.loadingContainer}>
-        <FontAwesomeIcon icon={faBrain} spin style={{ fontSize: 48, color: '#00b0ff' }} />
-        <p style={{ color: 'rgba(180,210,240,0.65)', marginTop: 16 }}>Initializing consciousness...</p>
+        <FontAwesomeIcon icon={faBrain} spin style={{ fontSize: 48, color: 'var(--j-blue)' }} />
+        <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', marginTop: 16 }}>Initializing consciousness...</p>
       </div>
     );
   }
@@ -685,7 +685,7 @@ export const ConsciousnessDashboard: React.FC = () => {
       <div style={styles.header}>
         <div style={styles.headerLeft}>
           <div style={styles.consciousnessIcon}>
-            <FontAwesomeIcon icon={faBrain} style={{ fontSize: 28, color: '#00b0ff' }} />
+            <FontAwesomeIcon icon={faBrain} style={{ fontSize: 28, color: 'var(--j-blue)' }} />
             <div style={styles.iconPulse} />
           </div>
           <div>
@@ -698,8 +698,8 @@ export const ConsciousnessDashboard: React.FC = () => {
         <div style={styles.headerRight}>
           <div style={styles.liveBadge}>
             <span style={styles.liveDot} />
-            <span style={{ color: '#10b981', fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>LIVE</span>
-            <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11 }}>
+            <span style={{ color: 'var(--j-success)', fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>LIVE</span>
+            <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11 }}>
               {lastUpdated ? `updated ${lastUpdated.toLocaleTimeString()}` : 'loading…'}
             </span>
           </div>
@@ -811,12 +811,12 @@ function scopeLabel(scope: string): string {
 }
 
 const PostureChip: React.FC<{ posture: string }> = ({ posture }) => {
-  const color = postureColor[posture] || 'rgba(180,210,240,0.45)';
+  const color = postureColor[posture] || 'color-mix(in srgb, var(--j-text) 45%, transparent)';
   return (
     <span style={{
       padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 700,
       textTransform: 'uppercase', letterSpacing: 0.5,
-      background: color + '22', color, whiteSpace: 'nowrap',
+      background: `color-mix(in srgb, ${color} 13%, transparent)`, color, whiteSpace: 'nowrap',
     }}>{posture || 'unknown'}</span>
   );
 };
@@ -866,17 +866,17 @@ const AssessmentsPanel: React.FC = () => {
   return (
     <div className="ig-card-hover" style={{ ...styles.card, marginBottom: 20 }}>
       <h3 style={styles.cardTitle}>
-        <FontAwesomeIcon icon={faBrain} style={{ marginRight: 8, color: '#00b0ff' }} />
+        <FontAwesomeIcon icon={faBrain} style={{ marginRight: 8, color: 'var(--j-blue)' }} />
         Hourly Assessments
-        <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+        <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
           one per scope per hour · latest + history
         </span>
       </h3>
 
-      {error && <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>{error}</p>}
+      {error && <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>{error}</p>}
 
       {!error && latest.length === 0 && (
-        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>
+        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>
           No hourly assessments persisted yet — the engine writes one per scope each hour
           (first one lands a few minutes after boot).
         </p>
@@ -901,7 +901,7 @@ const AssessmentsPanel: React.FC = () => {
                 >
                   <span style={{
                     width: 7, height: 7, borderRadius: '50%',
-                    background: postureColor[a.posture] || 'rgba(180,210,240,0.45)',
+                    background: postureColor[a.posture] || 'color-mix(in srgb, var(--j-text) 45%, transparent)',
                   }} />
                   {scopeLabel(scope)}
                 </button>
@@ -912,9 +912,9 @@ const AssessmentsPanel: React.FC = () => {
           {current && (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-                <span style={{ color: '#dbeafe', fontSize: 14, fontWeight: 700 }}>{scopeLabel(current.scope)}</span>
+                <span style={{ color: 'var(--j-text)', fontSize: 14, fontWeight: 700 }}>{scopeLabel(current.scope)}</span>
                 <PostureChip posture={current.posture} />
-                <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
                   assessed {new Date(current.created_at).toLocaleString()} · {current.body.window_minutes}m window
                   · {current.body.recommendations.length} recommendation{current.body.recommendations.length === 1 ? '' : 's'}
                 </span>
@@ -922,15 +922,15 @@ const AssessmentsPanel: React.FC = () => {
 
               {/* Totals strip */}
               <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10, fontFamily: 'monospace', fontSize: 12 }}>
-                <span style={{ color: '#818cf8' }}>{(current.body.totals?.attempted || 0).toLocaleString()} attempted</span>
-                <span style={{ color: '#10b981' }}>{(current.body.totals?.delivered_pct || 0).toFixed(1)}% delivered</span>
+                <span style={{ color: 'var(--j-violet)' }}>{(current.body.totals?.attempted || 0).toLocaleString()} attempted</span>
+                <span style={{ color: 'var(--j-success)' }}>{(current.body.totals?.delivered_pct || 0).toFixed(1)}% delivered</span>
                 <span style={{ color: deferralColor(current.body.totals?.deferral_pct || 0) }}>
                   {(current.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
                 </span>
-                <span style={{ color: (current.body.totals?.hard_pct || 0) > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>
+                <span style={{ color: (current.body.totals?.hard_pct || 0) > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
                   {(current.body.totals?.hard_pct || 0).toFixed(1)}% hard
                 </span>
-                <span style={{ color: 'rgba(180,210,240,0.65)' }}>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>
                   {current.body.signals?.total || 0} engine signals
                 </span>
               </div>
@@ -940,8 +940,8 @@ const AssessmentsPanel: React.FC = () => {
                 <div style={{ marginBottom: 10 }}>
                   {(current.body.notable_events || []).slice(0, 6).map((ev, i) => (
                     <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginBottom: 3 }}>
-                      <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e', fontSize: 10, marginTop: 3, flexShrink: 0 }} />
-                      <span style={{ color: 'rgba(180,210,240,0.8)', fontSize: 12, lineHeight: 1.35 }}>{ev}</span>
+                      <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-warn)', fontSize: 10, marginTop: 3, flexShrink: 0 }} />
+                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 12, lineHeight: 1.35 }}>{ev}</span>
                     </div>
                   ))}
                 </div>
@@ -961,15 +961,15 @@ const AssessmentsPanel: React.FC = () => {
                     <tbody>
                       {(current.body.pipes || []).map((p, i) => (
                         <tr key={`${p.isp}-${p.vmta}-${i}`} style={styles.opsTr}>
-                          <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>{ispLabel(p.isp)}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0', whiteSpace: 'nowrap' }}>{p.vmta}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'rgba(180,210,240,0.8)', whiteSpace: 'nowrap' }}>{p.pool || '—'}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{p.attempted.toLocaleString()}</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? '#10b981' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                          <td style={{ ...styles.opsTd, fontWeight: 700, color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{ispLabel(p.isp)}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{p.vmta}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', whiteSpace: 'nowrap' }}>{p.pool || '—'}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{p.attempted.toLocaleString()}</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
                             {p.delivered_pct.toFixed(1)}%
                           </td>
                           <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>{p.deferral_pct.toFixed(1)}%</td>
-                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.hard_pct > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>{p.hard_pct.toFixed(1)}%</td>
+                          <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.hard_pct > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>{p.hard_pct.toFixed(1)}%</td>
                         </tr>
                       ))}
                     </tbody>
@@ -980,24 +980,24 @@ const AssessmentsPanel: React.FC = () => {
               {/* History scroll for this scope */}
               {history.length > 0 && (
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                  <div style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
                     History — last {data?.hours || 24}h
                   </div>
                   <div style={{ maxHeight: 160, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {history.map(a => (
                       <div key={a.id} style={{
                         display: 'flex', alignItems: 'center', gap: 10,
-                        padding: '6px 10px', borderRadius: 6, background: 'rgba(0,200,255,0.04)',
+                        padding: '6px 10px', borderRadius: 6, background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)',
                         fontSize: 12,
                       }}>
-                        <span style={{ color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                           {new Date(a.created_at).toLocaleString()}
                         </span>
                         <PostureChip posture={a.posture} />
-                        <span style={{ color: 'rgba(180,210,240,0.65)', fontFamily: 'monospace' }}>
+                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontFamily: 'monospace' }}>
                           {(a.body.totals?.attempted || 0).toLocaleString()} attempted · {(a.body.totals?.deferral_pct || 0).toFixed(1)}% deferred
                         </span>
-                        <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.45)' }}>
+                        <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
                           {a.body.recommendations.length} rec{a.body.recommendations.length === 1 ? '' : 's'}
                         </span>
                       </div>
@@ -1031,7 +1031,7 @@ function recommendationAsText(rec: AssessmentRecommendation, hour?: string): str
 
 const RecommendationCard: React.FC<{ rec: AssessmentRecommendation; hour?: string; muted?: boolean }> = ({ rec, hour, muted }) => {
   const [copied, setCopied] = useState(false);
-  const color = recSeverityColor[rec.severity] || '#00b0ff';
+  const color = recSeverityColor[rec.severity] || 'var(--j-blue)';
 
   const copy = async () => {
     try {
@@ -1046,37 +1046,37 @@ const RecommendationCard: React.FC<{ rec: AssessmentRecommendation; hour?: strin
   return (
     <div style={{
       padding: '10px 12px', borderRadius: 8,
-      background: muted ? 'rgba(13,21,38,0.5)' : color + '10',
-      border: `1px solid ${muted ? 'rgba(99,102,241,0.1)' : color + '33'}`,
+      background: muted ? 'color-mix(in srgb, var(--j-shade) 50%, transparent)' : `color-mix(in srgb, ${color} 6%, transparent)`,
+      border: `1px solid ${muted ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)' : `color-mix(in srgb, ${color} 20%, transparent)`}`,
       borderLeft: `3px solid ${color}`,
       opacity: muted ? 0.75 : 1,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
         <span style={{
           padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
-          textTransform: 'uppercase', letterSpacing: 0.5, background: color + '22', color,
+          textTransform: 'uppercase', letterSpacing: 0.5, background: `color-mix(in srgb, ${color} 13%, transparent)`, color,
         }}>{rec.severity}</span>
         <span style={{
           padding: '1px 7px', borderRadius: 4, fontSize: 10, fontWeight: 700,
           textTransform: 'uppercase', letterSpacing: 0.5,
-          background: 'rgba(0,200,255,0.1)', color: '#00b0ff',
+          background: 'color-mix(in srgb, var(--j-cyan) 10%, transparent)', color: 'var(--j-blue)',
         }}>{rec.type}</span>
-        <span style={{ color: 'rgba(180,210,240,0.55)', fontSize: 10, fontFamily: 'monospace' }}>{rec.scope}</span>
+        <span style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 10, fontFamily: 'monospace' }}>{rec.scope}</span>
         <button
           onClick={copy}
           title="Copy as text"
           style={{
-            marginLeft: 'auto', background: 'none', border: '1px solid rgba(0,200,255,0.15)',
-            color: copied ? '#10b981' : 'rgba(180,210,240,0.65)', borderRadius: 5,
+            marginLeft: 'auto', background: 'none', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
+            color: copied ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 65%, transparent)', borderRadius: 5,
             padding: '2px 7px', fontSize: 10, cursor: 'pointer', flexShrink: 0,
           }}
         >
           <FontAwesomeIcon icon={copied ? faCheck : faCopy} />
         </button>
       </div>
-      <p style={{ color: '#e0e6f0', fontSize: 12, margin: '0 0 4px', lineHeight: 1.45 }}>{rec.action}</p>
-      <p style={{ color: 'rgba(180,210,240,0.55)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>{rec.evidence}</p>
-      <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10, display: 'block', marginTop: 5 }}>
+      <p style={{ color: 'var(--j-text)', fontSize: 12, margin: '0 0 4px', lineHeight: 1.45 }}>{rec.action}</p>
+      <p style={{ color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 11, margin: 0, lineHeight: 1.4 }}>{rec.evidence}</p>
+      <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10, display: 'block', marginTop: 5 }}>
         {new Date(rec.created_at).toLocaleString()}
       </span>
     </div>
@@ -1134,18 +1134,18 @@ const RecommendationsRail: React.FC = () => {
   return (
     <div style={styles.recRail}>
       <h3 style={{ ...styles.cardTitle, marginBottom: 4 }}>
-        <FontAwesomeIcon icon={faClipboardList} style={{ marginRight: 8, color: '#fdcb6e' }} />
+        <FontAwesomeIcon icon={faClipboardList} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
         Recommendations
       </h3>
-      <p style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10, margin: '0 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      <p style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, margin: '0 0 12px', textTransform: 'uppercase', letterSpacing: 0.5 }}>
         Advisory only — nothing is auto-applied
         {current?.assessment_hour && ` · assessed ${new Date(current.assessment_hour).toLocaleTimeString()}`}
       </p>
 
-      {error && <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>{error}</p>}
+      {error && <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>{error}</p>}
 
       {!error && currentRecs.length === 0 && (
-        <p style={{ color: '#10b981', fontSize: 12, margin: 0 }}>
+        <p style={{ color: 'var(--j-success)', fontSize: 12, margin: 0 }}>
           No active recommendations — all pipes within band on the latest assessment.
         </p>
       )}
@@ -1159,9 +1159,9 @@ const RecommendationsRail: React.FC = () => {
       {historyRecs.length > 0 && (
         <>
           <div style={{
-            color: 'rgba(180,210,240,0.45)', fontSize: 10, fontWeight: 700,
+            color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: 0.5, margin: '16px 0 8px',
-            borderTop: '1px solid rgba(99,102,241,0.12)', paddingTop: 12,
+            borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)', paddingTop: 12,
           }}>
             Earlier — last 24h
           </div>
@@ -1186,7 +1186,7 @@ const HOURLY_ASSESS_POLL_MS = 10 * 60 * 1000;
 function deferralColor(pct: number): string {
   if (pct > 50) return '#ef4444';
   if (pct > 10) return '#f59e0b';
-  return 'rgba(180,210,240,0.8)';
+  return 'color-mix(in srgb, var(--j-text) 80%, transparent)';
 }
 
 const HourlyAssessmentPanel: React.FC = () => {
@@ -1222,27 +1222,27 @@ const HourlyAssessmentPanel: React.FC = () => {
   return (
     <div className="ig-card-hover" style={{ ...styles.card, marginBottom: 20 }}>
       <h3 style={styles.cardTitle}>
-        <FontAwesomeIcon icon={faBolt} style={{ marginRight: 8, color: '#fdcb6e' }} />
+        <FontAwesomeIcon icon={faBolt} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
         Hourly Assessment
-        <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
+        <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11, fontWeight: 500, marginLeft: 10 }}>
           last 60 min · per-pipe routing read
           {assessment && ` · generated ${new Date(assessment.generated_at).toLocaleTimeString()}`}
         </span>
       </h3>
 
       {error && (
-        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>{error}</p>
+        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>{error}</p>
       )}
 
       {!error && !assessment && (
-        <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>Assessing the last hour…</p>
+        <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>Assessing the last hour…</p>
       )}
 
       {assessment && (
         <>
           {/* Headline routing recommendations */}
           {recommendations.length === 0 ? (
-            <p style={{ color: '#10b981', fontSize: 12, margin: '0 0 12px' }}>
+            <p style={{ color: 'var(--j-success)', fontSize: 12, margin: '0 0 12px' }}>
               No routing imbalances detected — all pipes within band for the last hour.
             </p>
           ) : (
@@ -1253,13 +1253,13 @@ const HourlyAssessmentPanel: React.FC = () => {
                   <div key={i} style={{
                     display: 'flex', alignItems: 'flex-start', gap: 8,
                     padding: '8px 12px', borderRadius: 8,
-                    background: color + '14', borderLeft: `3px solid ${color}`,
+                    background: `color-mix(in srgb, ${color} 8%, transparent)`, borderLeft: `3px solid ${color}`,
                   }}>
                     <FontAwesomeIcon icon={faExclamationTriangle} style={{ color, fontSize: 12, marginTop: 2, flexShrink: 0 }} />
                     <div style={{ minWidth: 0 }}>
-                      <span style={{ color: '#e0e6f0', fontSize: 13, lineHeight: 1.4 }}>{rec.message}</span>
+                      <span style={{ color: 'var(--j-text)', fontSize: 13, lineHeight: 1.4 }}>{rec.message}</span>
                       {rec.type === 'reroute' && (
-                        <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 11, display: 'block', fontFamily: 'monospace' }}>
+                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 11, display: 'block', fontFamily: 'monospace' }}>
                           {rec.bad_vmta}: {rec.bad_deferral_pct?.toFixed(1)}% deferral vs {rec.good_vmta}: {rec.good_deferral_pct?.toFixed(1)}%
                         </span>
                       )}
@@ -1272,7 +1272,7 @@ const HourlyAssessmentPanel: React.FC = () => {
 
           {/* Per-ISP → VMTA pipes table */}
           {pipes.length === 0 ? (
-            <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, margin: 0 }}>
+            <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, margin: 0 }}>
               No PMTA traffic in the last 60 minutes.
             </p>
           ) : (
@@ -1290,18 +1290,18 @@ const HourlyAssessmentPanel: React.FC = () => {
                     const firstOfISP = i === 0 || pipes[i - 1].isp !== p.isp;
                     return (
                       <tr key={`${p.isp}-${p.vmta}`} style={styles.opsTr}>
-                        <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>
+                        <td style={{ ...styles.opsTd, fontWeight: 700, color: 'var(--j-text)', whiteSpace: 'nowrap' }}>
                           {firstOfISP ? ispLabel(p.isp) : ''}
                         </td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0', whiteSpace: 'nowrap' }}>{p.vmta}</td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{p.attempted.toLocaleString()}</td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? '#10b981' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)', whiteSpace: 'nowrap' }}>{p.vmta}</td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{p.attempted.toLocaleString()}</td>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.delivered_pct >= 92 ? 'var(--j-success)' : p.delivered_pct >= 80 ? '#f59e0b' : '#ef4444' }}>
                           {p.delivered_pct.toFixed(1)}%
                         </td>
                         <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: deferralColor(p.deferral_pct) }}>
                           {p.deferral_pct.toFixed(1)}%
                         </td>
-                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.bounce_pct > 2 ? '#ef4444' : 'rgba(180,210,240,0.8)' }}>
+                        <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: p.bounce_pct > 2 ? '#ef4444' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
                           {p.bounce_pct.toFixed(2)}%
                         </td>
                       </tr>
@@ -1392,17 +1392,17 @@ const OperationsBoard: React.FC<{
       {/* 24h KPI strip */}
       <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
-          { label: 'Sent 24h', value: totals.attempted, color: '#818cf8', fmt: (v: number) => v.toLocaleString() },
-          { label: 'Delivered %', value: pctOf(totals.delivered, totals.attempted), color: '#10b981', fmt: (v: number) => `${v.toFixed(1)}%` },
+          { label: 'Sent 24h', value: totals.attempted, color: 'var(--j-violet)', fmt: (v: number) => v.toLocaleString() },
+          { label: 'Delivered %', value: pctOf(totals.delivered, totals.attempted), color: 'var(--j-success)', fmt: (v: number) => `${v.toFixed(1)}%` },
           { label: 'Deferred %', value: pctOf(totals.deferred, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(1)}%` },
           { label: 'Hard %', value: pctOf(totals.hard, totals.attempted), color: '#ef4444', fmt: (v: number) => `${v.toFixed(2)}%` },
           { label: 'Soft %', value: pctOf(totals.soft, totals.attempted), color: '#f59e0b', fmt: (v: number) => `${v.toFixed(2)}%` },
-          { label: 'Rep. Blocked', value: totals.repBlocked, color: '#e94560', fmt: (v: number) => v.toLocaleString() },
-          { label: 'Complaints', value: totals.complaint, color: '#e94560', fmt: (v: number) => v.toLocaleString() },
+          { label: 'Rep. Blocked', value: totals.repBlocked, color: 'var(--j-danger)', fmt: (v: number) => v.toLocaleString() },
+          { label: 'Complaints', value: totals.complaint, color: 'var(--j-danger)', fmt: (v: number) => v.toLocaleString() },
         ].map(m => (
           <div key={m.label} className="ig-card-hover" style={styles.kpiCard}>
             <div style={{ color: m.color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>{m.fmt(m.value)}</div>
-            <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+            <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
       </div>
@@ -1420,7 +1420,7 @@ const OperationsBoard: React.FC<{
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} style={{ ...styles.opsTd, textAlign: 'center', padding: 40, color: 'rgba(180,210,240,0.5)' }}>
+                <td colSpan={10} style={{ ...styles.opsTd, textAlign: 'center', padding: 40, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                   No delivery events in the last 24h.
                 </td>
               </tr>
@@ -1437,42 +1437,42 @@ const OperationsBoard: React.FC<{
                   onClick={() => onSelect(r.isp)}
                   style={{
                     ...styles.opsTr,
-                    background: isSelected ? 'rgba(99,102,241,0.12)' : 'transparent',
+                    background: isSelected ? 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)' : 'transparent',
                     cursor: 'pointer',
                   }}
                 >
-                  <td style={{ ...styles.opsTd, fontWeight: 700, color: '#dbeafe', whiteSpace: 'nowrap' }}>
+                  <td style={{ ...styles.opsTd, fontWeight: 700, color: 'var(--j-text)', whiteSpace: 'nowrap' }}>
                     {ispLabel(r.isp)}
                   </td>
                   <td style={styles.opsTd}>
                     <AreaChart width={110} height={28} data={sparkDataFor(r.isp)} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
-                      <Area type="monotone" dataKey="v" stroke="#818cf8" fill="rgba(129,140,248,0.18)" strokeWidth={1.5} isAnimationActive={false} dot={false} />
+                      <Area type="monotone" dataKey="v" stroke="var(--j-violet)" fill="color-mix(in srgb, var(--j-violet) 18%, transparent)" strokeWidth={1.5} isAnimationActive={false} dot={false} />
                     </AreaChart>
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: '#e0e6f0' }}>{r.attempted.toLocaleString()}</td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deliveredPct >= 92 ? '#10b981' : r.deliveredPct >= 80 ? '#f59e0b' : '#ef4444' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: 'var(--j-text)' }}>{r.attempted.toLocaleString()}</td>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deliveredPct >= 92 ? 'var(--j-success)' : r.deliveredPct >= 80 ? '#f59e0b' : '#ef4444' }}>
                     {r.attempted > 0 ? `${r.deliveredPct.toFixed(1)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deferPct > 10 ? '#ef4444' : r.deferPct > 5 ? '#f59e0b' : 'rgba(180,210,240,0.8)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.deferPct > 10 ? '#ef4444' : r.deferPct > 5 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
                     {r.attempted > 0 ? `${r.deferPct.toFixed(1)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.hardPct > 2 ? '#ef4444' : r.hardPct > 1 ? '#f87171' : 'rgba(180,210,240,0.8)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.hardPct > 2 ? '#ef4444' : r.hardPct > 1 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
                     {r.attempted > 0 ? `${r.hardPct.toFixed(2)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.softPct > 5 ? '#f59e0b' : 'rgba(180,210,240,0.8)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.softPct > 5 ? '#f59e0b' : 'color-mix(in srgb, var(--j-text) 80%, transparent)' }}>
                     {r.attempted > 0 ? `${r.softPct.toFixed(2)}%` : '—'}
                   </td>
-                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.complaint > 0 ? '#e94560' : 'rgba(180,210,240,0.5)' }}>
+                  <td style={{ ...styles.opsTd, fontFamily: 'monospace', color: r.complaint > 0 ? 'var(--j-danger)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                     {r.complaint.toLocaleString()}
                   </td>
                   <td style={styles.opsTd}>
                     <span style={{
                       padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700,
                       textTransform: 'uppercase', letterSpacing: 0.5,
-                      background: post.color + '22', color: post.color, whiteSpace: 'nowrap',
+                      background: `color-mix(in srgb, ${post.color} 13%, transparent)`, color: post.color, whiteSpace: 'nowrap',
                     }}>{post.label}</span>
                     {cfg && (
-                      <div style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}>
+                      <div style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}>
                         {Math.round(cfg.current_rate)}/{cfg.max_msg_rate} msg/hr · {cfg.ip_count} IPs
                       </div>
                     )}
@@ -1495,10 +1495,10 @@ const OperationsBoard: React.FC<{
       {/* Selected ISP — 24h trend + engine context */}
       {selected && (
         <div style={{ marginTop: 20 }}>
-          <h3 style={{ color: '#dbeafe', fontSize: 15, fontWeight: 700, margin: '0 0 12px' }}>
+          <h3 style={{ color: 'var(--j-text)', fontSize: 15, fontWeight: 700, margin: '0 0 12px' }}>
             {ispLabel(selected)} — last 24h
             {selectedCfg && (
-              <span style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12, fontWeight: 500, marginLeft: 10 }}>
+              <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12, fontWeight: 500, marginLeft: 10 }}>
                 pool {selectedCfg.pool_name} · {selectedCfg.ip_count} IPs · rate {Math.round(selectedCfg.current_rate)}/{selectedCfg.max_msg_rate}
               </span>
             )}
@@ -1506,22 +1506,22 @@ const OperationsBoard: React.FC<{
           <div style={styles.detailGrid}>
             <div className="ig-card-hover" style={{ ...styles.card, gridColumn: 'span 2' }}>
               {detailData.length === 0 ? (
-                <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 13 }}>No timeseries data for this ISP in the last 24h.</p>
+                <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 13 }}>No timeseries data for this ISP in the last 24h.</p>
               ) : (
                 <ResponsiveContainer width="100%" height={260}>
                   <LineChart data={detailData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-                    <CartesianGrid stroke="rgba(148,163,184,0.08)" />
-                    <XAxis dataKey="time" stroke="#64748b" fontSize={11} tickLine={false} />
-                    <YAxis stroke="#64748b" fontSize={11} tickLine={false} width={50} />
+                    <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 8%, transparent)" />
+                    <XAxis dataKey="time" stroke="var(--j-text-faint)" fontSize={11} tickLine={false} />
+                    <YAxis stroke="var(--j-text-faint)" fontSize={11} tickLine={false} width={50} />
                     <Tooltip
-                      contentStyle={{ background: '#0b1220', border: '1px solid rgba(99,102,241,0.35)', borderRadius: 8, fontSize: 12 }}
-                      labelStyle={{ color: '#dbeafe' }}
+                      contentStyle={{ background: '#0b1220', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 35%, transparent)', borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: 'var(--j-text)' }}
                     />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Line type="monotone" dataKey="delivered" name="Delivered" stroke="#10b981" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="delivered" name="Delivered" stroke="var(--j-success)" strokeWidth={2} dot={false} isAnimationActive={false} />
                     <Line type="monotone" dataKey="deferred" name="Deferred" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
                     <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="soft_bounce" name="Soft Bounce" stroke="#fbbf24" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 3" />
+                    <Line type="monotone" dataKey="soft_bounce" name="Soft Bounce" stroke="var(--j-warn)" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 3" />
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -1529,21 +1529,21 @@ const OperationsBoard: React.FC<{
 
             <div className="ig-card-hover" style={styles.card}>
               <h4 style={styles.cardTitle}>
-                <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
+                <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: 'var(--j-blue)' }} />
                 Engine Signals
               </h4>
               {selectedThoughts.length === 0 ? (
-                <p style={{ color: 'rgba(180,210,240,0.5)', fontSize: 12 }}>No recent engine signals for this ISP.</p>
+                <p style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', fontSize: 12 }}>No recent engine signals for this ISP.</p>
               ) : (
                 selectedThoughts.map(t => (
                   <div key={t.id} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
                     <FontAwesomeIcon
                       icon={thoughtTypeIcon[t.type] || faCommentDots}
-                      style={{ color: severityColor[t.severity || 'info'] || '#00b0ff', flexShrink: 0, marginTop: 2, fontSize: 12 }}
+                      style={{ color: severityColor[t.severity || 'info'] || 'var(--j-blue)', flexShrink: 0, marginTop: 2, fontSize: 12 }}
                     />
                     <div style={{ minWidth: 0 }}>
-                      <p style={{ color: '#e0e6f0', fontSize: 12, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
-                      <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10 }}>
+                      <p style={{ color: 'var(--j-text)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
+                      <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10 }}>
                         {new Date(t.timestamp).toLocaleTimeString()} · {t.type}
                       </span>
                     </div>
@@ -1553,15 +1553,15 @@ const OperationsBoard: React.FC<{
               {selectedBeliefs.length > 0 && (
                 <>
                   <h4 style={{ ...styles.cardTitle, marginTop: 16 }}>
-                    <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
+                    <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
                     Beliefs
                   </h4>
                   {selectedBeliefs.map(p => (
                     <div key={p.id} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: sentimentColor[p.sentiment] || 'rgba(180,210,240,0.65)', flexShrink: 0, marginTop: 5 }} />
-                      <p style={{ color: 'rgba(180,210,240,0.8)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: '50%', background: sentimentColor[p.sentiment] || 'color-mix(in srgb, var(--j-text) 65%, transparent)', flexShrink: 0, marginTop: 5 }} />
+                      <p style={{ color: 'color-mix(in srgb, var(--j-text) 80%, transparent)', fontSize: 12, margin: 0, lineHeight: 1.4 }}>
                         {p.belief}
-                        <span style={{ color: 'rgba(180,210,240,0.4)', fontSize: 10 }}> · {Math.round(p.confidence * 100)}% conf</span>
+                        <span style={{ color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', fontSize: 10 }}> · {Math.round(p.confidence * 100)}% conf</span>
                       </p>
                     </div>
                   ))}
@@ -1594,28 +1594,28 @@ function renderOverview(
       {/* Belief Distribution */}
       <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: '#00b0ff' }} />
+          <FontAwesomeIcon icon={faShieldAlt} style={{ marginRight: 8, color: 'var(--j-blue)' }} />
           Insight Distribution
         </h3>
         <div style={styles.beliefBars}>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#00b894' }}>Positive</span>
+            <span style={{ color: 'var(--j-success)' }}>Positive</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${positivePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#00b894' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${positivePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: 'var(--j-success)' }} />
             </div>
             <span style={styles.beliefCount}>{positivePhils}</span>
           </div>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#fdcb6e' }}>Cautious</span>
+            <span style={{ color: 'var(--j-warn)' }}>Cautious</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${cautiousPhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#fdcb6e' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${cautiousPhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: 'var(--j-warn)' }} />
             </div>
             <span style={styles.beliefCount}>{cautiousPhils}</span>
           </div>
           <div style={styles.beliefRow}>
-            <span style={{ color: '#e94560' }}>Negative</span>
+            <span style={{ color: 'var(--j-danger)' }}>Negative</span>
             <div style={styles.beliefBarTrack}>
-              <div style={{ ...styles.beliefBarFill, width: `${negativePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: '#e94560' }} />
+              <div style={{ ...styles.beliefBarFill, width: `${negativePhils / Math.max(1, (state?.total_beliefs || 1)) * 100}%`, background: 'var(--j-danger)' }} />
             </div>
             <span style={styles.beliefCount}>{negativePhils}</span>
           </div>
@@ -1625,7 +1625,7 @@ function renderOverview(
       {/* Strongest Beliefs */}
       <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: '#fdcb6e' }} />
+          <FontAwesomeIcon icon={faLightbulb} style={{ marginRight: 8, color: 'var(--j-warn)' }} />
           Strongest Insights
         </h3>
         <div style={styles.beliefsList}>
@@ -1634,16 +1634,16 @@ function renderOverview(
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%',
-                  background: sentimentColor[p.sentiment] || 'rgba(180,210,240,0.65)',
+                  background: sentimentColor[p.sentiment] || 'color-mix(in srgb, var(--j-text) 65%, transparent)',
                 }} />
-                <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12, textTransform: 'uppercase' }}>
+                <span style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12, textTransform: 'uppercase' }}>
                   {p.isp} / {p.domain}
                 </span>
-                <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>
                   {Math.round(p.strength * 100)}% strength
                 </span>
               </div>
-              <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
+              <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{p.belief}</p>
             </div>
           ))}
         </div>
@@ -1652,11 +1652,11 @@ function renderOverview(
       {/* Active Campaigns */}
       <div className="ig-card-hover" style={styles.card}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: '#00e5ff' }} />
+          <FontAwesomeIcon icon={faChartBar} style={{ marginRight: 8, color: 'var(--j-cyan)' }} />
           Active Campaigns
         </h3>
         {campaigns.length === 0 ? (
-          <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>No active campaigns</p>
+          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>No active campaigns</p>
         ) : (
           <div style={styles.campaignMiniList}>
             {campaigns.slice(0, 4).map(c => (
@@ -1664,17 +1664,17 @@ function renderOverview(
                 <span
                   title={c.campaign_name || c.campaign_id}
                   style={{
-                    color: '#e0e6f0', fontWeight: 600, fontSize: 13,
+                    color: 'var(--j-text)', fontWeight: 600, fontSize: 13,
                     display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}
                 >
                   {campaignLabel(c)}
                 </span>
                 <div style={styles.miniStats}>
-                  <span style={{ color: '#00b894' }}>{c.delivered} dlvd</span>
-                  <span style={{ color: '#00e5ff' }}>{c.unique_opens} opens</span>
-                  <span style={{ color: '#fdcb6e' }}>{c.unique_clicks} clicks</span>
-                  {c.complaints > 0 && <span style={{ color: '#e94560' }}>{c.complaints} complaints</span>}
+                  <span style={{ color: 'var(--j-success)' }}>{c.delivered} dlvd</span>
+                  <span style={{ color: 'var(--j-cyan)' }}>{c.unique_opens} opens</span>
+                  <span style={{ color: 'var(--j-warn)' }}>{c.unique_clicks} clicks</span>
+                  {c.complaints > 0 && <span style={{ color: 'var(--j-danger)' }}>{c.complaints} complaints</span>}
                 </div>
               </div>
             ))}
@@ -1685,23 +1685,23 @@ function renderOverview(
       {/* Live Thought Feed */}
       <div className="ig-data-stream ig-card-hover" style={{ ...styles.card, gridColumn: '1 / -1' }}>
         <h3 style={styles.cardTitle}>
-          <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: '#00b0ff' }} />
+          <FontAwesomeIcon icon={faStream} style={{ marginRight: 8, color: 'var(--j-blue)' }} />
           Live Activity Stream
           <span style={styles.liveDot} />
         </h3>
         <div style={styles.thoughtFeed}>
           {recentThoughts.length === 0 ? (
-            <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 13 }}>Awaiting observations...</p>
+            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 13 }}>Awaiting observations...</p>
           ) : (
             recentThoughts.map(t => (
               <div key={t.id} style={styles.thoughtItem}>
                 <FontAwesomeIcon
                   icon={thoughtTypeIcon[t.type] || faCommentDots}
-                  style={{ color: severityColor[t.severity || 'info'] || '#00b0ff', flexShrink: 0, marginTop: 2 }}
+                  style={{ color: severityColor[t.severity || 'info'] || 'var(--j-blue)', flexShrink: 0, marginTop: 2 }}
                 />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ color: '#e0e6f0', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
-                  <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
+                  <p style={{ color: 'var(--j-text)', fontSize: 13, margin: 0, lineHeight: 1.4 }}>{t.content}</p>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
                     {new Date(t.timestamp).toLocaleTimeString()}
                     {t.isp && ` · ${t.isp}`}
                     {t.agent_type && ` · ${t.agent_type}`}
@@ -1745,8 +1745,8 @@ function renderPhilosophies(
       <div style={styles.philosophyGrid}>
         {philosophies.length === 0 ? (
           <div style={styles.emptyState}>
-            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
-            <p style={{ color: 'rgba(180,210,240,0.65)' }}>No insights yet. The system needs more data.</p>
+            <FontAwesomeIcon icon={faLightbulb} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
+            <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No insights yet. The system needs more data.</p>
           </div>
         ) : (
           philosophies.map(p => (
@@ -1756,12 +1756,12 @@ function renderPhilosophies(
                   <span style={{
                     padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700,
                     textTransform: 'uppercase', letterSpacing: 0.5,
-                    background: sentimentColor[p.sentiment] + '22',
+                    background: `color-mix(in srgb, ${sentimentColor[p.sentiment]} 13%, transparent)`,
                     color: sentimentColor[p.sentiment],
                   }}>{p.sentiment}</span>
-                  <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>{p.isp} / {p.domain}</span>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>{p.isp} / {p.domain}</span>
                 </div>
-                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{p.evidence_count} observations</span>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{p.evidence_count} observations</span>
               </div>
 
               <p style={styles.philosophyBelief}>{p.belief}</p>
@@ -1771,7 +1771,7 @@ function renderPhilosophies(
                 <div style={styles.strengthBar}>
                   <div style={{ ...styles.strengthFill, width: `${p.strength * 100}%` }} />
                 </div>
-                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>
                   {Math.round(p.confidence * 100)}% confidence · {Math.round(p.strength * 100)}% strength
                   {p.challenges > 0 && ` · ${p.challenges} challenges`}
                 </span>
@@ -1802,16 +1802,16 @@ function renderThoughts(
     <div>
       {/* Default is paused/snapshot — the firehose only runs when toggled on */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12 }}>
+        <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12 }}>
           {live ? 'Streaming thoughts live' : 'Snapshot view (stream paused)'}
         </span>
         <button
           onClick={() => setLive(!live)}
           style={{
             padding: '5px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            background: live ? 'rgba(16,185,129,0.12)' : 'rgba(0,200,255,0.07)',
-            border: live ? '1px solid rgba(16,185,129,0.4)' : '1px solid rgba(0,200,255,0.15)',
-            color: live ? '#10b981' : 'rgba(180,210,240,0.8)',
+            background: live ? 'color-mix(in srgb, var(--j-success) 12%, transparent)' : 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
+            border: live ? '1px solid color-mix(in srgb, var(--j-success) 40%, transparent)' : '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)',
+            color: live ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 80%, transparent)',
             display: 'flex', alignItems: 'center',
           }}
         >
@@ -1823,38 +1823,38 @@ function renderThoughts(
       <div className="ig-data-stream" style={styles.thoughtsContainer}>
       {thoughts.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
-          <p style={{ color: 'rgba(180,210,240,0.65)' }}>No thoughts yet. The system is still forming its initial observations.</p>
+          <FontAwesomeIcon icon={faCommentDots} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
+          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No thoughts yet. The system is still forming its initial observations.</p>
         </div>
       ) : (
         <>
           {thoughts.map(t => (
             <div key={t.id} style={{
               ...styles.thoughtCard,
-              borderLeft: `3px solid ${severityColor[t.severity || 'info'] || '#00b0ff'}`,
+              borderLeft: `3px solid ${severityColor[t.severity || 'info'] || 'var(--j-blue)'}`,
             }}>
               <div style={styles.thoughtCardHeader}>
                 <FontAwesomeIcon
                   icon={thoughtTypeIcon[t.type] || faCommentDots}
                   style={{ color: severityColor[t.severity || 'info'], marginRight: 8 }}
                 />
-                <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, textTransform: 'uppercase', fontWeight: 600 }}>
                   {t.type}
                 </span>
                 {t.isp && <span style={styles.thoughtTag}>{t.isp}</span>}
                 {t.agent_type && <span style={styles.thoughtTag}>{t.agent_type}</span>}
-                <span style={{ marginLeft: 'auto', color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
+                <span style={{ marginLeft: 'auto', color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
                   {new Date(t.timestamp).toLocaleString()}
                 </span>
               </div>
-              <p style={{ color: '#e0e6f0', fontSize: 14, margin: '8px 0', lineHeight: 1.5 }}>{t.content}</p>
+              <p style={{ color: 'var(--j-text)', fontSize: 14, margin: '8px 0', lineHeight: 1.5 }}>{t.content}</p>
               {t.reasoning && (
-                <p style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
+                <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, margin: '4px 0 0', fontStyle: 'italic' }}>
                   Reasoning: {t.reasoning}
                 </p>
               )}
               {t.confidence != null && t.confidence > 0 && (
-                <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
+                <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>Confidence: {Math.round(t.confidence * 100)}%</span>
               )}
             </div>
           ))}
@@ -1882,25 +1882,25 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
       {/* PMTA Throughput Summary */}
       <div className="ig-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 12, marginBottom: 20 }}>
         {[
-          { label: 'Total Sent', value: totals.sent, color: '#00b0ff' },
-          { label: 'Delivered', value: totals.delivered, color: '#00b894' },
-          { label: 'Opens', value: totals.opens, color: '#00e5ff' },
-          { label: 'Clicks', value: totals.clicks, color: '#00e5ff' },
+          { label: 'Total Sent', value: totals.sent, color: 'var(--j-blue)' },
+          { label: 'Delivered', value: totals.delivered, color: 'var(--j-success)' },
+          { label: 'Opens', value: totals.opens, color: 'var(--j-cyan)' },
+          { label: 'Clicks', value: totals.clicks, color: 'var(--j-cyan)' },
           { label: 'Hard Bounces', value: totals.hard_bounces, color: '#ef4444' },
           { label: 'Soft Bounces', value: totals.soft_bounces, color: '#f59e0b' },
-          { label: 'Complaints', value: totals.complaints, color: '#e94560' },
+          { label: 'Complaints', value: totals.complaints, color: 'var(--j-danger)' },
         ].map(m => (
-          <div key={m.label} className="ig-card-hover" style={{ background: '#0d1526', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid rgba(0,200,255,0.08)' }}>
+          <div key={m.label} className="ig-card-hover" style={{ background: 'var(--j-surface)', borderRadius: 10, padding: '16px 12px', textAlign: 'center', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
             <AnimatedCounter value={m.value} style={{ color: m.color, fontSize: 28, fontWeight: 700, fontFamily: 'monospace' }} />
-            <div style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
+            <div style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11, marginTop: 4 }}>{m.label}</div>
           </div>
         ))}
       </div>
 
       {campaigns.length === 0 ? (
         <div style={styles.emptyState}>
-          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: 'rgba(0,229,255,0.15)', marginBottom: 16 }} />
-          <p style={{ color: 'rgba(180,210,240,0.65)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
+          <FontAwesomeIcon icon={faChartBar} style={{ fontSize: 48, color: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)', marginBottom: 16 }} />
+          <p style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>No campaigns tracked yet. Send a campaign via PMTA to see live metrics here.</p>
         </div>
       ) : (
         <div className="ig-stagger" style={styles.campaignGrid}>
@@ -1915,48 +1915,48 @@ function renderCampaigns(campaigns: CampaignMetrics[]) {
                   <h3
                     title={c.campaign_name || c.campaign_id}
                     style={{
-                      color: '#e0e6f0', fontSize: 16, margin: 0, fontWeight: 700,
+                      color: 'var(--j-text)', fontSize: 16, margin: 0, fontWeight: 700,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
                     }}
                   >
                     {campaignLabel(c)}
                   </h3>
-                  <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 11 }}>
+                  <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 11 }}>
                     Started {new Date(c.started_at).toLocaleDateString()}
                   </span>
                 </div>
 
                 <div style={styles.metricsGrid}>
-                  <MetricBox label="Sent" value={c.sent} color="#00b0ff" />
-                  <MetricBox label="Delivered" value={c.delivered} color="#00b894" sub={`${deliveryRate.toFixed(1)}%`} />
-                  <MetricBox label="Opens" value={c.opens} color="#00e5ff" sub={`${c.unique_opens} unique`} />
-                  <MetricBox label="Clicks" value={c.clicks} color="#00e5ff" sub={`${c.unique_clicks} unique`} />
-                  <MetricBox label="Soft Bounce" value={c.soft_bounce} color="#fdcb6e" />
-                  <MetricBox label="Hard Bounce" value={c.hard_bounce} color="#e94560" />
-                  <MetricBox label="Complaints" value={c.complaints} color="#e94560" />
-                  <MetricBox label="Unsubscribes" value={c.unsubscribes} color="#f97316" />
-                  <MetricBox label="Inactive" value={c.inactive} color="rgba(180,210,240,0.65)" sub="4+ sends, 0 engagement" />
+                  <MetricBox label="Sent" value={c.sent} color="var(--j-blue)" />
+                  <MetricBox label="Delivered" value={c.delivered} color="var(--j-success)" sub={`${deliveryRate.toFixed(1)}%`} />
+                  <MetricBox label="Opens" value={c.opens} color="var(--j-cyan)" sub={`${c.unique_opens} unique`} />
+                  <MetricBox label="Clicks" value={c.clicks} color="var(--j-cyan)" sub={`${c.unique_clicks} unique`} />
+                  <MetricBox label="Soft Bounce" value={c.soft_bounce} color="var(--j-warn)" />
+                  <MetricBox label="Hard Bounce" value={c.hard_bounce} color="var(--j-danger)" />
+                  <MetricBox label="Complaints" value={c.complaints} color="var(--j-danger)" />
+                  <MetricBox label="Unsubscribes" value={c.unsubscribes} color="var(--j-warn)" />
+                  <MetricBox label="Inactive" value={c.inactive} color="color-mix(in srgb, var(--j-text) 65%, transparent)" sub="4+ sends, 0 engagement" />
                 </div>
 
                 <div style={styles.rateRow}>
-                  <RateBar label="Delivery" value={deliveryRate} color="#00b894" />
-                  <RateBar label="Open Rate" value={openRate} color="#00e5ff" />
-                  <RateBar label="Click Rate" value={clickRate} color="#00e5ff" />
+                  <RateBar label="Delivery" value={deliveryRate} color="var(--j-success)" />
+                  <RateBar label="Open Rate" value={openRate} color="var(--j-cyan)" />
+                  <RateBar label="Click Rate" value={clickRate} color="var(--j-cyan)" />
                 </div>
 
                 {c.isp_metrics && Object.keys(c.isp_metrics).length > 0 && (
                   <div style={styles.ispBreakdown}>
-                    <h4 style={{ color: 'rgba(180,210,240,0.65)', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
+                    <h4 style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 12, margin: '12px 0 8px', textTransform: 'uppercase' }}>ISP Breakdown</h4>
                     {Object.entries(c.isp_metrics).map(([isp, m]: [string, any]) => (
                       <div key={isp} style={styles.ispRow}>
-                        <span style={{ color: '#e0e6f0', fontWeight: 600, fontSize: 12, width: 80 }}>{isp}</span>
-                        <span style={{ color: '#00b894', fontSize: 11 }}>{m.delivered} dlvd</span>
-                        <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_opens} opens</span>
-                        <span style={{ color: '#00e5ff', fontSize: 11 }}>{m.unique_clicks} clicks</span>
+                        <span style={{ color: 'var(--j-text)', fontWeight: 600, fontSize: 12, width: 80 }}>{isp}</span>
+                        <span style={{ color: 'var(--j-success)', fontSize: 11 }}>{m.delivered} dlvd</span>
+                        <span style={{ color: 'var(--j-cyan)', fontSize: 11 }}>{m.unique_opens} opens</span>
+                        <span style={{ color: 'var(--j-cyan)', fontSize: 11 }}>{m.unique_clicks} clicks</span>
                         {(m.hard_bounce > 0 || m.soft_bounce > 0) && (
                           <span style={{ fontSize: 11 }}>
                             <span style={{ color: '#ef4444' }}>{m.hard_bounce} hard</span>
-                            <span style={{ color: 'rgba(180,210,240,0.5)' }}> / </span>
+                            <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}> / </span>
                             <span style={{ color: '#f59e0b' }}>{m.soft_bounce} soft</span>
                           </span>
                         )}
@@ -1978,18 +1978,18 @@ const MetricBox: React.FC<{ label: string; value: number; color: string; sub?: s
     <span style={{ color, fontSize: 24, fontWeight: 700, fontFamily: 'monospace' }}>
       {value.toLocaleString()}
     </span>
-    <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{label}</span>
-    {sub && <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10 }}>{sub}</span>}
+    <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{label}</span>
+    {sub && <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10 }}>{sub}</span>}
   </div>
 );
 
 const RateBar: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
   <div style={{ flex: 1 }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-      <span style={{ color: 'rgba(180,210,240,0.65)', fontSize: 11 }}>{label}</span>
+      <span style={{ color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', fontSize: 11 }}>{label}</span>
       <span style={{ color, fontSize: 11, fontWeight: 600 }}>{value.toFixed(1)}%</span>
     </div>
-    <div style={{ height: 4, background: '#0d1526', borderRadius: 2 }}>
+    <div style={{ height: 4, background: 'var(--j-surface)', borderRadius: 2 }}>
       <div style={{ height: 4, borderRadius: 2, background: color, width: `${Math.min(value, 100)}%`, transition: 'width 0.5s ease' }} />
     </div>
   </div>
@@ -2014,8 +2014,8 @@ const styles: Record<string, React.CSSProperties> = {
   recRail: {
     width: 300,
     flexShrink: 0,
-    background: 'rgba(13,21,38,0.6)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
     padding: 16,
     position: 'sticky' as const,
@@ -2050,26 +2050,26 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: 'linear-gradient(135deg, rgba(0,229,255,0.15), rgba(0,229,255,0.15))',
+    background: 'linear-gradient(135deg, color-mix(in srgb, var(--j-cyan) 15%, transparent), color-mix(in srgb, var(--j-cyan) 15%, transparent))',
     borderRadius: 16,
-    border: '1px solid rgba(0,229,255,0.3)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 30%, transparent)',
   },
   iconPulse: {
     position: 'absolute',
     inset: -4,
     borderRadius: 20,
-    border: '1px solid rgba(0,229,255,0.2)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 20%, transparent)',
     animation: 'pulse 2s ease-in-out infinite',
   },
   title: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 28,
     fontWeight: 800,
     margin: 0,
     letterSpacing: -0.5,
   },
   subtitle: {
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 14,
     margin: '4px 0 0',
   },
@@ -2083,21 +2083,21 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 8,
     padding: '8px 14px',
-    background: 'rgba(16,185,129,0.08)',
+    background: 'color-mix(in srgb, var(--j-success) 8%, transparent)',
     borderRadius: 12,
-    border: '1px solid rgba(16,185,129,0.25)',
+    border: '1px solid color-mix(in srgb, var(--j-success) 25%, transparent)',
   },
   moodBadge: {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
     padding: '8px 16px',
-    background: 'rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
   },
   moodLabel: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 13,
     fontWeight: 600,
     textTransform: 'capitalize' as const,
@@ -2107,25 +2107,25 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '6px 14px',
-    background: 'rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
   },
   healthValue: {
-    color: '#00b894',
+    color: 'var(--j-success)',
     fontSize: 20,
     fontWeight: 800,
     fontFamily: 'monospace',
   },
   healthLabel: {
-    color: 'rgba(180,210,240,0.45)',
+    color: 'color-mix(in srgb, var(--j-text) 45%, transparent)',
     fontSize: 10,
     textTransform: 'uppercase' as const,
   },
   refreshBtn: {
     background: 'none',
-    border: '1px solid rgba(0,200,255,0.08)',
-    color: 'rgba(180,210,240,0.65)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     padding: '8px 12px',
     borderRadius: 8,
     cursor: 'pointer',
@@ -2135,17 +2135,17 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 4,
     marginBottom: 24,
-    background: 'rgba(13,21,38,0.5)',
+    background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
     padding: 4,
     borderRadius: 12,
-    border: '1px solid rgba(0,200,255,0.06)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
   },
   sectionTab: {
     flex: 1,
     padding: '10px 16px',
     background: 'transparent',
     border: 'none',
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
@@ -2157,30 +2157,30 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative' as const,
   },
   sectionTabActive: {
-    background: 'rgba(0,229,255,0.15)',
-    color: '#00b0ff',
-    border: '1px solid rgba(0,229,255,0.3)',
+    background: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)',
+    color: 'var(--j-blue)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 30%, transparent)',
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: '#00b894',
+    background: 'var(--j-success)',
     marginLeft: 6,
     animation: 'pulse 1.5s ease-in-out infinite',
   },
   content: {},
   // ---- ISP operations styles ----
   kpiCard: {
-    background: 'rgba(15,30,60,0.35)',
+    background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
     borderRadius: 10,
     padding: '14px 12px',
     textAlign: 'center' as const,
-    border: '1px solid rgba(99,102,241,0.12)',
+    border: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
   },
   opsTableWrap: {
-    background: 'rgba(15,30,60,0.35)',
-    border: '1px solid rgba(99,102,241,0.15)',
+    background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
     borderRadius: 12,
     overflow: 'auto' as const,
   },
@@ -2192,17 +2192,17 @@ const styles: Record<string, React.CSSProperties> = {
   opsTh: {
     textAlign: 'left' as const,
     padding: '10px 12px',
-    color: '#dbeafe',
+    color: 'var(--j-text)',
     fontSize: 11,
     fontWeight: 700,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.5,
-    borderBottom: '1px solid rgba(99,102,241,0.2)',
+    borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 20%, transparent)',
     whiteSpace: 'nowrap' as const,
-    background: 'rgba(15,30,60,0.5)',
+    background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)',
   },
   opsTr: {
-    borderBottom: '1px solid rgba(99,102,241,0.08)',
+    borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
     transition: 'background 0.15s',
   },
   opsTd: {
@@ -2221,13 +2221,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 16,
   },
   card: {
-    background: 'rgba(13,21,38,0.6)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
     padding: 20,
   },
   cardTitle: {
-    color: '#dbeafe',
+    color: 'var(--j-text)',
     fontSize: 14,
     fontWeight: 700,
     margin: '0 0 16px',
@@ -2248,7 +2248,7 @@ const styles: Record<string, React.CSSProperties> = {
   beliefBarTrack: {
     flex: 1,
     height: 6,
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 3,
     overflow: 'hidden' as const,
   },
@@ -2258,7 +2258,7 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'width 0.5s ease',
   },
   beliefCount: {
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 13,
     fontWeight: 600,
     width: 20,
@@ -2271,7 +2271,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   miniPhilosophy: {
     padding: '10px 12px',
-    background: 'rgba(0,200,255,0.05)',
+    background: 'color-mix(in srgb, var(--j-cyan) 5%, transparent)',
     borderRadius: 8,
   },
   campaignMiniList: {
@@ -2281,7 +2281,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   campaignMiniItem: {
     padding: '8px 12px',
-    background: 'rgba(0,200,255,0.05)',
+    background: 'color-mix(in srgb, var(--j-cyan) 5%, transparent)',
     borderRadius: 8,
   },
   miniStats: {
@@ -2301,7 +2301,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 10,
     padding: '8px 12px',
-    background: 'rgba(0,200,255,0.04)',
+    background: 'color-mix(in srgb, var(--j-cyan) 4%, transparent)',
     borderRadius: 8,
   },
   ispFilter: {
@@ -2312,9 +2312,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   ispFilterBtn: {
     padding: '6px 14px',
-    background: 'rgba(0,200,255,0.07)',
-    border: '1px solid rgba(0,200,255,0.08)',
-    color: 'rgba(180,210,240,0.65)',
+    background: 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     borderRadius: 8,
     fontSize: 12,
     fontWeight: 600,
@@ -2322,9 +2322,9 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.2s',
   },
   ispFilterBtnActive: {
-    background: 'rgba(0,229,255,0.2)',
-    borderColor: 'rgba(0,229,255,0.5)',
-    color: '#00b0ff',
+    background: 'color-mix(in srgb, var(--j-cyan) 20%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--j-cyan) 50%, transparent)',
+    color: 'var(--j-blue)',
   },
   philosophyGrid: {
     display: 'grid',
@@ -2337,8 +2337,8 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 60,
   },
   philosophyCard: {
-    background: 'rgba(13,21,38,0.6)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
     padding: 20,
   },
@@ -2349,14 +2349,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 12,
   },
   philosophyBelief: {
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
     fontSize: 15,
     lineHeight: 1.5,
     margin: '0 0 8px',
     fontWeight: 500,
   },
   philosophyExplanation: {
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 13,
     lineHeight: 1.5,
     margin: '0 0 12px',
@@ -2368,13 +2368,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   strengthBar: {
     height: 4,
-    background: '#0d1526',
+    background: 'var(--j-surface)',
     borderRadius: 2,
     overflow: 'hidden' as const,
   },
   strengthFill: {
     height: '100%',
-    background: 'linear-gradient(90deg, #00b0ff, #00e5ff)',
+    background: 'linear-gradient(90deg, var(--j-blue), var(--j-cyan))',
     borderRadius: 2,
     transition: 'width 0.5s ease',
   },
@@ -2385,10 +2385,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tag: {
     padding: '2px 8px',
-    background: 'rgba(0,200,255,0.07)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-cyan) 7%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 4,
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     fontSize: 11,
   },
   thoughtsContainer: {
@@ -2399,8 +2399,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   thoughtCard: {
-    background: 'rgba(13,21,38,0.6)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 8,
     padding: 16,
   },
@@ -2413,9 +2413,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   thoughtTag: {
     padding: '1px 6px',
-    background: 'rgba(0,229,255,0.15)',
+    background: 'color-mix(in srgb, var(--j-cyan) 15%, transparent)',
     borderRadius: 4,
-    color: '#00b0ff',
+    color: 'var(--j-blue)',
     fontSize: 10,
     fontWeight: 600,
   },
@@ -2425,8 +2425,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 16,
   },
   campaignCard: {
-    background: 'rgba(13,21,38,0.6)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: 12,
     padding: 20,
   },
@@ -2447,7 +2447,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '12px 8px',
-    background: 'rgba(0,200,255,0.05)',
+    background: 'color-mix(in srgb, var(--j-cyan) 5%, transparent)',
     borderRadius: 8,
     gap: 2,
   },
@@ -2455,14 +2455,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     gap: 20,
     padding: '12px 0',
-    borderTop: '1px solid rgba(0,200,255,0.08)',
+    borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
   },
   ispBreakdown: {},
   ispRow: {
     display: 'flex',
     gap: 16,
     padding: '6px 0',
-    borderBottom: '1px solid rgba(0,200,255,0.05)',
+    borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 5%, transparent)',
     alignItems: 'center',
   },
 };

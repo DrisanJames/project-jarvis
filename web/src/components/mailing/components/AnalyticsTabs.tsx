@@ -90,11 +90,11 @@ const Panel: React.FC<PanelProps> = ({
       <div>
         <h3 style={{ margin: 0 }}>{title}</h3>
         {description && (
-          <p style={{ margin: '4px 0 0 0', color: '#94a3b8', fontSize: 12 }}>{description}</p>
+          <p style={{ margin: '4px 0 0 0', color: 'var(--j-text-muted)', fontSize: 12 }}>{description}</p>
         )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        {apiVersion && <span style={{ fontSize: 11, color: '#64748b' }}>v{apiVersion}</span>}
+        {apiVersion && <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>v{apiVersion}</span>}
         {onRefresh && (
           <button
             className="ac-refresh-btn"
@@ -118,7 +118,7 @@ const Panel: React.FC<PanelProps> = ({
       </div>
     )}
     {!loading && !error && empty && (
-      <div className="ac-empty-mini" style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+      <div className="ac-empty-mini" style={{ padding: 24, textAlign: 'center', color: 'var(--j-text-faint)' }}>
         {emptyMessage || 'No data for this window.'}
       </div>
     )}
@@ -233,7 +233,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                       <td style={{ color: '#ef4444' }}>{fmt(c.hard_bounce)}</td>
                       <td style={{ color: '#f59e0b' }}>{fmt(c.soft_bounce_final)}</td>
                       <td>{fmt(c.deferred_open)}</td>
-                      <td style={{ color: '#64748b' }}>{fmt(c.sent_only)}</td>
+                      <td style={{ color: 'var(--j-text-faint)' }}>{fmt(c.sent_only)}</td>
                       <td>{fmt(c.soft_bounce_events)}</td>
                       <td>{fmt(c.deferral_events)}</td>
                     </tr>
@@ -264,7 +264,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                   <th>Sent</th>
                   <th>Delivered</th>
                   <th>Del%</th>
-                  <th style={{ color: '#8b5cf6' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
+                  <th style={{ color: 'var(--j-violet-strong)' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
                   <th style={{ color: '#ef4444' }}>Hard%</th>
                   <th style={{ color: '#f59e0b' }}>Soft%</th>
                   <th>Complaints</th>
@@ -279,7 +279,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                     <td>{fmt(c.sent)}</td>
                     <td>{fmt(c.delivered)}</td>
                     <td>{c.delivery_rate.toFixed(1)}%</td>
-                    <td style={{ color: '#8b5cf6' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
+                    <td style={{ color: 'var(--j-violet-strong)' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
                     <td style={{ color: '#ef4444' }}>{c.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: '#f59e0b' }}>{c.soft_bounce_rate.toFixed(2)}%</td>
                     <td>{fmt(c.complaints)}</td>
@@ -340,8 +340,8 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
         <>
           <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(grand.total)}</span><span className="ac-kpi-label">Total Opens</span></div></div>
-            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#22c55e' }}>{fmt(grand.human)}</span><span className="ac-kpi-label">Human ({ratio(grand.human, grand.total)})</span></div></div>
-            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#3b82f6' }}>{fmt(grand.mpp)}</span><span className="ac-kpi-label">Apple Mail Privacy ({ratio(grand.mpp, grand.total)})</span></div></div>
+            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-success)' }}>{fmt(grand.human)}</span><span className="ac-kpi-label">Human ({ratio(grand.human, grand.total)})</span></div></div>
+            <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-blue)' }}>{fmt(grand.mpp)}</span><span className="ac-kpi-label">Apple Mail Privacy ({ratio(grand.mpp, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{fmt(grand.scanner)}</span><span className="ac-kpi-label">Scanner ({ratio(grand.scanner, grand.total)})</span></div></div>
             <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#a3a3a3' }}>{fmt(grand.no_send)}</span><span className="ac-kpi-label">Orphan / No-Send</span></div></div>
           </div>
@@ -350,8 +350,8 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
               <thead><tr>
                 <th style={{ textAlign: 'left' }}>Mailbox Provider</th>
                 <th>Total</th>
-                <th style={{ color: '#22c55e' }}>Human</th>
-                <th style={{ color: '#3b82f6' }}>Apple Mail Privacy</th>
+                <th style={{ color: 'var(--j-success)' }}>Human</th>
+                <th style={{ color: 'var(--j-blue)' }}>Apple Mail Privacy</th>
                 <th style={{ color: '#f59e0b' }}>Scanner</th>
                 <th>Orphan</th>
                 <th>Human %</th>
@@ -361,8 +361,8 @@ const EngagementTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | nu
                   <tr key={r.isp}>
                     <td style={{ textTransform: 'capitalize' }}>{r.isp}</td>
                     <td>{fmt(r.total)}</td>
-                    <td style={{ color: '#22c55e' }}>{fmt(r.human)}</td>
-                    <td style={{ color: '#3b82f6' }}>{fmt(r.mpp)}</td>
+                    <td style={{ color: 'var(--j-success)' }}>{fmt(r.human)}</td>
+                    <td style={{ color: 'var(--j-blue)' }}>{fmt(r.mpp)}</td>
                     <td style={{ color: '#f59e0b' }}>{fmt(r.scanner)}</td>
                     <td>{fmt(r.no_send)}</td>
                     <td>{ratio(r.human, r.total)}</td>
@@ -512,7 +512,7 @@ const OffersTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null }
                 <tr key={c.campaign_id}>
                   <td>{c.name}</td>
                   <td>{(c.detected_slugs || []).map(s => <code key={s} style={{ marginRight: 6, fontSize: 11 }}>{s}</code>)}</td>
-                  <td>{c.has_tracking_suffix ? <span style={{ color: '#22c55e' }}>YES</span> : <span style={{ color: '#ef4444' }}>NO</span>}</td>
+                  <td>{c.has_tracking_suffix ? <span style={{ color: 'var(--j-success)' }}>YES</span> : <span style={{ color: '#ef4444' }}>NO</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -633,7 +633,7 @@ const AudienceTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string | null
                   <td>{s.segment_name}</td>
                   <td>{fmt(s.member_count)}</td>
                   <td style={{ color: s.stale_hours > 24 ? '#f59e0b' : undefined }}>{s.stale_hours.toFixed(1)}</td>
-                  <td style={{ fontSize: 11, color: '#94a3b8' }}>{new Date(s.updated_at).toLocaleString()}</td>
+                  <td style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{new Date(s.updated_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -717,12 +717,12 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
         {waves && (
           <>
             {waves.action_required && (
-              <div style={{ background: '#7f1d1d', color: '#fecaca', padding: 8, borderRadius: 4, marginBottom: 12 }}>
+              <div style={{ background: '#7f1d1d', color: 'var(--j-danger-soft)', padding: 8, borderRadius: 4, marginBottom: 12 }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> Action required — run pre-deploy cleanup.
               </div>
             )}
             <div className="ac-kpi-grid" style={{ marginBottom: 12 }}>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? '#ef4444' : '#22c55e' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Stalled</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.zombies > 0 ? '#ef4444' : 'var(--j-success)' }}>{fmt(waves.summary.zombies)}</span><span className="ac-kpi-label">Stalled</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: waves.summary.expired > 50 ? '#ef4444' : undefined }}>{fmt(waves.summary.expired)}</span><span className="ac-kpi-label">Expired</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.due_now)}</span><span className="ac-kpi-label">Due Now</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(waves.summary.planned)}</span><span className="ac-kpi-label">Planned</span></div></div>
@@ -810,10 +810,10 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td style={{ fontSize: 11 }}>{c.name || c.campaign_id}</td>
                     <td>{c.status}</td>
                     <td>{fmt(c.queue_total)}</td>
-                    <td style={{ color: '#22c55e' }}>{fmt(sent)}</td>
+                    <td style={{ color: 'var(--j-success)' }}>{fmt(sent)}</td>
                     <td>{fmt(pending)}</td>
                     <td style={{ color: '#ef4444' }}>{fmt(failed)}</td>
-                    <td style={{ color: '#64748b' }}>{fmt(Math.max(0, other))}</td>
+                    <td style={{ color: 'var(--j-text-faint)' }}>{fmt(Math.max(0, other))}</td>
                   </tr>
                 );
               })}
@@ -904,8 +904,8 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
             </div>
             <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(data.summary.total_sent)}</span><span className="ac-kpi-label">Total Sent</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#22c55e' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#8b5cf6' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-success)' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-violet-strong)' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#ef4444' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: '#f59e0b' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
             </div>
@@ -915,7 +915,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                 <th>Sent</th>
                 <th>Delivered</th>
                 <th>Del%</th>
-                <th style={{ color: '#8b5cf6' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
+                <th style={{ color: 'var(--j-violet-strong)' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
                 <th style={{ color: '#ef4444' }}>Hard%</th>
                 <th style={{ color: '#f59e0b' }}>Soft%</th>
               </tr></thead>
@@ -926,7 +926,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td>{fmt(d.sent)}</td>
                     <td>{fmt(d.delivered)}</td>
                     <td>{d.delivery_rate.toFixed(1)}%</td>
-                    <td style={{ color: '#8b5cf6' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
+                    <td style={{ color: 'var(--j-violet-strong)' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
                     <td style={{ color: '#ef4444' }}>{d.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: '#f59e0b' }}>{d.soft_bounce_rate.toFixed(2)}%</td>
                   </tr>

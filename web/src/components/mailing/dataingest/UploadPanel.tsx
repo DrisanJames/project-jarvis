@@ -284,7 +284,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
             value={source}
             onChange={(e) => setSource(e.target.value)}
             placeholder="globusa-att"
-            style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12, marginBottom: 10 }}
+            style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12, marginBottom: 10 }}
           />
           <label htmlFor="di-picker" style={{ fontSize: 11, color: colors.textMuted, display: 'block', marginBottom: 4 }}>
             Files (csv · csv.gz · ndjson · zip — multipart, no size ceiling)
@@ -357,7 +357,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
                 id="di-dataset"
                 value={datasetId}
                 onChange={(e) => setDatasetId(e.target.value)}
-                style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
+                style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
               >
                 <option value="">Choose a dataset…</option>
                 {datasetOptions.map((o) => (
@@ -371,7 +371,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
                 id="di-cleaned"
                 value={declared.cleaned_upstream ? 'yes' : 'no'}
                 onChange={(e) => setDeclared({ ...declared, cleaned_upstream: e.target.value === 'yes' })}
-                style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
+                style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
               >
                 <option value="no">No — validate here (lands pending_eo when released)</option>
                 <option value="yes">Yes — carries an EO verdict column</option>
@@ -383,7 +383,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
                 id="di-landing"
                 value={declared.landing_status}
                 onChange={(e) => setDeclared({ ...declared, landing_status: e.target.value as DeclaredLoad['landing_status'] })}
-                style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
+                style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
               >
                 <option value="held">held — inert until you release a tranche (default)</option>
                 <option value="pending_eo">pending_eo — clean now, mail when ready</option>
@@ -396,7 +396,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
                 id="di-dedupe"
                 value={declared.dedupe}
                 onChange={(e) => setDeclared({ ...declared, dedupe: e.target.value as DeclaredLoad['dedupe'] })}
-                style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
+                style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
               >
                 <option value="skip_known">Skip known addresses (queue + in-base)</option>
                 <option value="skip_lane">Skip only this lane&apos;s addresses</option>
@@ -411,7 +411,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
                 value={declared.note}
                 onChange={(e) => setDeclared({ ...declared, note: e.target.value })}
                 placeholder="why this file, from where"
-                style={{ width: '100%', background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
+                style={{ width: '100%', background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`, borderRadius: 8, padding: '8px 10px', fontSize: 12 }}
               />
             </div>
           </div>
@@ -461,7 +461,7 @@ export const UploadPanel: React.FC<Props> = ({ feeds, feedsError, onOpenFeed }) 
         <pre
           style={{
             margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6, padding: '10px 12px',
-            background: 'rgba(15,23,42,0.6)', border: `1px solid ${colors.panelBorder}`, borderRadius: 8,
+            background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: `1px solid ${colors.panelBorder}`, borderRadius: 8,
             color: colors.text, whiteSpace: 'pre-wrap',
           }}
         >

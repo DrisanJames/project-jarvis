@@ -278,11 +278,11 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
     <div className="ef-creative-selector">
       <style>{`
         .ef-creative-selector {
-          background: #1a1a2e;
+          background: var(--j-surface-2);
           border-radius: 12px;
           padding: 20px;
           margin-bottom: 20px;
-          border: 1px solid rgba(255,255,255,0.1);
+          border: 1px solid color-mix(in srgb, var(--j-text) 10%, transparent);
         }
         .ef-header {
           display: flex;
@@ -292,11 +292,11 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         }
         .ef-header h3 {
           margin: 0;
-          color: #e0e0e0;
+          color: var(--j-text);
           font-size: 16px;
         }
         .ef-header .ef-badge {
-          background: #6c5ce7;
+          background: var(--j-violet-strong);
           color: white;
           padding: 2px 8px;
           border-radius: 12px;
@@ -309,16 +309,16 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         }
         .ef-search-input {
           flex: 1;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.15);
-          color: #e0e0e0;
+          background: color-mix(in srgb, var(--j-text) 6%, transparent);
+          border: 1px solid color-mix(in srgb, var(--j-text) 15%, transparent);
+          color: var(--j-text);
           padding: 8px 12px;
           border-radius: 8px;
           font-size: 14px;
         }
-        .ef-search-input::placeholder { color: rgba(255,255,255,0.35); }
+        .ef-search-input::placeholder { color: color-mix(in srgb, var(--j-text) 35%, transparent); }
         .ef-search-btn {
-          background: #6c5ce7;
+          background: var(--j-violet-strong);
           color: white;
           border: none;
           padding: 8px 16px;
@@ -345,8 +345,8 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           gap: 8px;
         }
         .ef-category {
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.08);
+          background: color-mix(in srgb, var(--j-text) 4%, transparent);
+          border: 1px solid color-mix(in srgb, var(--j-text) 8%, transparent);
           border-radius: 10px;
           overflow: hidden;
         }
@@ -357,7 +357,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           cursor: pointer;
           gap: 10px;
         }
-        .ef-category-header:hover { background: rgba(255,255,255,0.03); }
+        .ef-category-header:hover { background: color-mix(in srgb, var(--j-text) 3%, transparent); }
         .ef-model-badge {
           font-size: 11px;
           font-weight: 700;
@@ -371,12 +371,12 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         .ef-model-badge.cpa { background: #9b59b6; color: white; }
         .ef-category-name {
           flex: 1;
-          color: #e0e0e0;
+          color: var(--j-text);
           font-size: 14px;
           font-weight: 500;
         }
         .ef-category-count {
-          color: rgba(255,255,255,0.4);
+          color: color-mix(in srgb, var(--j-text) 40%, transparent);
           font-size: 12px;
         }
         .ef-manual-badge {
@@ -397,8 +397,8 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           align-items: center;
           gap: 10px;
           padding: 8px 12px;
-          background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.06);
+          background: color-mix(in srgb, var(--j-text) 3%, transparent);
+          border: 1px solid color-mix(in srgb, var(--j-text) 6%, transparent);
           border-radius: 8px;
           cursor: pointer;
           transition: all 0.15s;
@@ -409,34 +409,34 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         }
         .ef-creative-item.selected {
           background: rgba(108,92,231,0.2);
-          border-color: #6c5ce7;
+          border-color: var(--j-violet-strong);
         }
         .ef-creative-name {
           flex: 1;
-          color: #e0e0e0;
+          color: var(--j-text);
           font-size: 13px;
         }
         .ef-creative-id {
-          color: rgba(255,255,255,0.3);
+          color: color-mix(in srgb, var(--j-text) 30%, transparent);
           font-size: 11px;
         }
         .ef-link-icon {
           color: #27ae60;
           font-size: 12px;
         }
-        .ef-link-icon.missing { color: rgba(255,255,255,0.2); }
+        .ef-link-icon.missing { color: color-mix(in srgb, var(--j-text) 20%, transparent); }
         
         /* Tracking Link Builder */
         .ef-link-builder {
           margin-top: 16px;
           padding: 16px;
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.1);
+          background: color-mix(in srgb, var(--j-text) 4%, transparent);
+          border: 1px solid color-mix(in srgb, var(--j-text) 10%, transparent);
           border-radius: 10px;
         }
         .ef-link-builder h4 {
           margin: 0 0 12px;
-          color: #e0e0e0;
+          color: var(--j-text);
           font-size: 14px;
         }
         .ef-link-row {
@@ -447,15 +447,15 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         }
         .ef-link-row label {
           min-width: 80px;
-          color: rgba(255,255,255,0.5);
+          color: color-mix(in srgb, var(--j-text) 50%, transparent);
           font-size: 12px;
         }
         .ef-link-row select,
         .ef-link-row input {
           flex: 1;
-          background: rgba(255,255,255,0.06);
-          border: 1px solid rgba(255,255,255,0.15);
-          color: #e0e0e0;
+          background: color-mix(in srgb, var(--j-text) 6%, transparent);
+          border: 1px solid color-mix(in srgb, var(--j-text) 15%, transparent);
+          color: var(--j-text);
           padding: 6px 10px;
           border-radius: 6px;
           font-size: 13px;
@@ -503,7 +503,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           gap: 6px;
         }
         .ef-btn-primary {
-          background: #6c5ce7;
+          background: var(--j-violet-strong);
           color: white;
         }
         .ef-btn-primary:hover { background: #5a4bd1; }
@@ -516,16 +516,16 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         .ef-btn-success:disabled { opacity: 0.5; cursor: not-allowed; }
         .ef-btn-outline {
           background: transparent;
-          color: #e0e0e0;
-          border: 1px solid rgba(255,255,255,0.2);
+          color: var(--j-text);
+          border: 1px solid color-mix(in srgb, var(--j-text) 20%, transparent);
         }
-        .ef-btn-outline:hover { border-color: rgba(255,255,255,0.4); }
+        .ef-btn-outline:hover { border-color: color-mix(in srgb, var(--j-text) 40%, transparent); }
         
         /* Preview */
         .ef-preview-overlay {
           position: fixed;
           top: 0; left: 0; right: 0; bottom: 0;
-          background: rgba(0,0,0,0.8);
+          background: color-mix(in srgb, var(--j-shade) 100%, transparent);
           z-index: 9999;
           display: flex;
           align-items: center;
@@ -543,15 +543,15 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
           justify-content: space-between;
           align-items: center;
           padding: 12px 16px;
-          border-bottom: 1px solid #eee;
+          border-bottom: 1px solid var(--j-text);
         }
-        .ef-preview-header h4 { margin: 0; color: #333; }
+        .ef-preview-header h4 { margin: 0; color: var(--j-text-2); }
         .ef-preview-close {
           background: none;
           border: none;
           font-size: 20px;
           cursor: pointer;
-          color: #999;
+          color: var(--j-text-muted);
         }
         .ef-preview-body {
           padding: 0;
@@ -564,7 +564,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
         .ef-empty {
           text-align: center;
           padding: 30px;
-          color: rgba(255,255,255,0.3);
+          color: color-mix(in srgb, var(--j-text) 30%, transparent);
           font-size: 14px;
         }
         .ef-selection-summary {
@@ -580,7 +580,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
 
       {/* Header */}
       <div className="ef-header">
-        <FontAwesomeIcon icon={faImage} style={{ color: '#6c5ce7', fontSize: 18 }} />
+        <FontAwesomeIcon icon={faImage} style={{ color: 'var(--j-violet-strong)', fontSize: 18 }} />
         <h3>Offer Creatives</h3>
         {totalCreatives > 0 && <span className="ef-badge">{totalCreatives} creatives</span>}
       </div>
@@ -616,7 +616,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                   </span>
                   <span className="ef-category-name">
                     {cat.offer_name}
-                    {cat.internal_id && <span style={{ color: 'rgba(255,255,255,0.3)', marginLeft: 6, fontSize: 11 }}>({cat.internal_id})</span>}
+                    {cat.internal_id && <span style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', marginLeft: 6, fontSize: 11 }}>({cat.internal_id})</span>}
                   </span>
                   <span className="ef-category-count">{cat.creatives.length} creative{cat.creatives.length !== 1 ? 's' : ''}</span>
                   {cat.requires_manual_link && (
@@ -624,7 +624,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                       <FontAwesomeIcon icon={faExclamationTriangle} /> Manual Link
                     </span>
                   )}
-                  <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} style={{ color: 'rgba(255,255,255,0.3)' }} />
+                  <FontAwesomeIcon icon={isExpanded ? faChevronUp : faChevronDown} style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)' }} />
                 </div>
                 {isExpanded && (
                   <div className="ef-creatives-list">
@@ -642,7 +642,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                             setError('');
                           }}
                         >
-                          <FontAwesomeIcon icon={faTag} style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }} />
+                          <FontAwesomeIcon icon={faTag} style={{ color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', fontSize: 12 }} />
                           <span className="ef-creative-name">{creative.name}</span>
                           <span className="ef-creative-id">ID: {creative.creative_id}</span>
                           <FontAwesomeIcon
@@ -752,7 +752,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                 <div style={{
                   marginTop: 6,
                   fontSize: 11,
-                  color: '#00b894',
+                  color: 'var(--j-success)',
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
@@ -765,7 +765,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
                 <div style={{
                   marginTop: 6,
                   fontSize: 11,
-                  color: '#fdcb6e',
+                  color: 'var(--j-warn)',
                 }}>
                   Using default domain. Set up a branded tracking domain in Tracking Domains tab for better deliverability.
                 </div>

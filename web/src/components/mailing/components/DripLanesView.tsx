@@ -91,19 +91,19 @@ export const DripLanesView: React.FC = () => {
 
   const th: React.CSSProperties = {
     textAlign: 'left', padding: '8px 10px', fontSize: 11, letterSpacing: 0.6,
-    color: 'rgba(180,210,240,0.65)', textTransform: 'uppercase', whiteSpace: 'nowrap',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)', textTransform: 'uppercase', whiteSpace: 'nowrap',
   };
   const td: React.CSSProperties = {
-    padding: '8px 10px', fontSize: 13, color: '#e6edf5',
-    borderTop: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
+    padding: '8px 10px', fontSize: 13, color: 'var(--j-text)',
+    borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
   };
   const totalCapped = lanes.filter(l => l.daily_cap > 0).reduce((a, l) => a + l.daily_cap, 0);
 
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
-        <h2 style={{ margin: 0, fontSize: 18, color: '#e6edf5' }}>Drip Lanes</h2>
-        <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.7)' }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: 'var(--j-text)' }}>Drip Lanes</h2>
+        <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>
           {lanes.length} lanes · {num(totalCapped)}/day capped
           {lanes.some(l => l.daily_cap === 0) ? ' (+ uncapped lanes)' : ''}
         </span>
@@ -113,11 +113,11 @@ export const DripLanesView: React.FC = () => {
           padding: '6px 12px', fontSize: 12, cursor: 'pointer',
         }}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
-      {err && <div style={{ color: '#e94560', fontSize: 12, marginBottom: 10 }}>{err}</div>}
+      {err && <div style={{ color: 'var(--j-danger)', fontSize: 12, marginBottom: 10 }}>{err}</div>}
       {offersErr && (
         <div style={{
-          display: 'inline-block', color: '#e94560', fontSize: 12, fontWeight: 700,
-          background: 'rgba(233,69,96,0.10)', border: '1px solid rgba(233,69,96,0.40)',
+          display: 'inline-block', color: 'var(--j-danger)', fontSize: 12, fontWeight: 700,
+          background: 'color-mix(in srgb, var(--j-danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)',
           borderRadius: 6, padding: '5px 10px', marginBottom: 10,
         }}>
           {offersErr} — offer dropdowns are disabled until it loads.
@@ -137,15 +137,15 @@ export const DripLanesView: React.FC = () => {
             {lanes.map(l => (
               <tr key={l.dataset_id} style={{ opacity: l.paused ? 0.55 : 1 }}>
                 <td style={{ ...td, fontWeight: 600 }}>{l.slug}</td>
-                <td style={{ ...td, color: 'rgba(180,210,240,0.75)' }}>{l.vertical}</td>
+                <td style={{ ...td, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>{l.vertical}</td>
                 <td style={td}>
                   <select
                     value={l.offer_id || 'none'}
                     disabled={busy[l.dataset_id] || !!offersErr}
                     title={offersErr ?? undefined}
                     onChange={e => void save(l, { offer_id: e.target.value })}
-                    style={{ background: 'rgba(255,255,255,0.06)', color: '#e6edf5',
-                             border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+                    style={{ background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', color: 'var(--j-text)',
+                             border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)', borderRadius: 5,
                              padding: '4px 6px', fontSize: 12, maxWidth: 240 }}>
                     <option value="none">(none — vertical default)</option>
                     {offers.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -161,23 +161,23 @@ export const DripLanesView: React.FC = () => {
                       const v = parseInt(e.target.value, 10);
                       if (!Number.isNaN(v) && v !== l.daily_cap) void save(l, { daily_cap: v });
                     }}
-                    style={{ width: 90, textAlign: 'right', background: 'rgba(255,255,255,0.06)',
-                             color: '#e6edf5', border: '1px solid rgba(255,255,255,0.15)',
+                    style={{ width: 90, textAlign: 'right', background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
+                             color: 'var(--j-text)', border: '1px solid color-mix(in srgb, var(--j-text) 15%, transparent)',
                              borderRadius: 5, padding: '4px 6px', fontSize: 12 }} />
-                  {l.daily_cap === 0 && <span style={{ fontSize: 10, color: '#facc15', marginLeft: 6 }}>UNCAPPED</span>}
+                  {l.daily_cap === 0 && <span style={{ fontSize: 10, color: 'var(--j-warn)', marginLeft: 6 }}>UNCAPPED</span>}
                 </td>
                 <td style={{ ...td, textAlign: 'right' }}>{num(l.ready)}</td>
-                <td style={{ ...td, textAlign: 'right', color: 'rgba(180,210,240,0.6)' }}>{num(l.held)}</td>
-                <td style={{ ...td, textAlign: 'right', color: l.mailed_today ? '#00b894' : 'rgba(180,210,240,0.5)' }}>
+                <td style={{ ...td, textAlign: 'right', color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{num(l.held)}</td>
+                <td style={{ ...td, textAlign: 'right', color: l.mailed_today ? 'var(--j-success)' : 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>
                   {num(l.mailed_today)}
                 </td>
                 <td style={td}>
                   <button
                     onClick={() => void save(l, { paused: !l.paused })}
                     disabled={busy[l.dataset_id]}
-                    style={{ background: l.paused ? 'rgba(233,69,96,0.15)' : 'rgba(0,184,148,0.12)',
-                             color: l.paused ? '#e94560' : '#00b894',
-                             border: `1px solid ${l.paused ? 'rgba(233,69,96,0.4)' : 'rgba(0,184,148,0.4)'}`,
+                    style={{ background: l.paused ? 'color-mix(in srgb, var(--j-danger) 15%, transparent)' : 'color-mix(in srgb, var(--j-success) 12%, transparent)',
+                             color: l.paused ? 'var(--j-danger)' : 'var(--j-success)',
+                             border: `1px solid ${l.paused ? 'color-mix(in srgb, var(--j-danger) 40%, transparent)' : 'color-mix(in srgb, var(--j-success) 40%, transparent)'}`,
                              borderRadius: 999, padding: '3px 10px', fontSize: 11,
                              fontWeight: 700, cursor: 'pointer' }}>
                     {l.paused ? 'PAUSED' : 'ACTIVE'}
@@ -188,7 +188,7 @@ export const DripLanesView: React.FC = () => {
           </tbody>
         </table>
       </div>
-      <p style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)', marginTop: 14, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginTop: 14, lineHeight: 1.6 }}>
         Daily cap = new records released to the drip per day (0 = uncapped). Enforced supply-side:
         the release job keeps at most this many rows claimable and parks the rest as held reserve.
         Held records are never lost and never mailed until released.

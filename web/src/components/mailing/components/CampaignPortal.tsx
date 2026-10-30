@@ -595,28 +595,28 @@ const CampaignDetailsModal: React.FC<{
                   <div className="details-section">
                     <style>{`
                       .cv-header { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
-                      .cv-badge { background: rgba(99,102,241,0.15); color: #818cf8; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
+                      .cv-badge { background: color-mix(in srgb, var(--j-violet-strong) 15%, transparent); color: var(--j-violet); padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
                       .cv-tabs { display: flex; gap: 4px; margin: 14px 0 16px; }
-                      .cv-tab { padding: 7px 18px; border-radius: 8px; border: 1px solid rgba(99,102,241,0.15); background: rgba(99,102,241,0.04); color: rgba(180,210,240,0.6); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
-                      .cv-tab:hover { background: rgba(99,102,241,0.08); color: #c7d2fe; border-color: rgba(99,102,241,0.25); }
-                      .cv-tab.active { background: rgba(99,102,241,0.18); color: #a5b4fc; border-color: rgba(99,102,241,0.4); }
-                      .cv-tab .cv-winner-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; display: inline-block; }
-                      .cv-card { background: rgba(15,23,42,0.6); border: 1px solid rgba(99,102,241,0.1); border-radius: 10px; padding: 16px; }
+                      .cv-tab { padding: 7px 18px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent); background: color-mix(in srgb, var(--j-violet-strong) 4%, transparent); color: color-mix(in srgb, var(--j-text) 60%, transparent); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 6px; }
+                      .cv-tab:hover { background: color-mix(in srgb, var(--j-violet-strong) 8%, transparent); color: var(--j-violet-soft); border-color: color-mix(in srgb, var(--j-violet-strong) 25%, transparent); }
+                      .cv-tab.active { background: color-mix(in srgb, var(--j-violet-strong) 18%, transparent); color: var(--j-violet); border-color: color-mix(in srgb, var(--j-violet-strong) 40%, transparent); }
+                      .cv-tab .cv-winner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--j-success); display: inline-block; }
+                      .cv-card { background: color-mix(in srgb, var(--j-shade) 60%, transparent); border: 1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent); border-radius: 10px; padding: 16px; }
                       .cv-field { margin-bottom: 12px; }
-                      .cv-field-label { font-size: 11px; color: rgba(180,210,240,0.4); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
-                      .cv-field-value { font-size: 14px; color: #e0e6f0; line-height: 1.4; }
-                      .cv-split-bar { height: 6px; border-radius: 3px; background: rgba(99,102,241,0.1); margin-top: 6px; overflow: hidden; }
-                      .cv-split-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #818cf8, #6366f1); transition: width 0.3s; }
-                      .cv-metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(99,102,241,0.08); }
+                      .cv-field-label { font-size: 11px; color: color-mix(in srgb, var(--j-text) 40%, transparent); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 4px; }
+                      .cv-field-value { font-size: 14px; color: var(--j-text); line-height: 1.4; }
+                      .cv-split-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--j-violet-strong) 10%, transparent); margin-top: 6px; overflow: hidden; }
+                      .cv-split-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--j-violet), var(--j-violet-strong)); transition: width 0.3s; }
+                      .cv-metrics-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent); }
                       .cv-metric { text-align: center; }
-                      .cv-metric-val { font-size: 18px; font-weight: 700; color: #e0e6f0; }
-                      .cv-metric-lbl { font-size: 11px; color: rgba(180,210,240,0.45); margin-top: 2px; }
-                      .cv-preview-toggle { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(99,102,241,0.08); }
-                      .cv-preview-btn { background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.15); color: #a5b4fc; padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: all 0.15s; }
-                      .cv-preview-btn:hover { background: rgba(99,102,241,0.14); border-color: rgba(99,102,241,0.3); }
-                      .cv-preview-frame { margin-top: 12px; border-radius: 8px; overflow: hidden; border: 1px solid rgba(99,102,241,0.1); background: #fff; }
+                      .cv-metric-val { font-size: 18px; font-weight: 700; color: var(--j-text); }
+                      .cv-metric-lbl { font-size: 11px; color: color-mix(in srgb, var(--j-text) 45%, transparent); margin-top: 2px; }
+                      .cv-preview-toggle { margin-top: 14px; padding-top: 14px; border-top: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent); }
+                      .cv-preview-btn { background: color-mix(in srgb, var(--j-violet-strong) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent); color: var(--j-violet); padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: all 0.15s; }
+                      .cv-preview-btn:hover { background: color-mix(in srgb, var(--j-violet-strong) 14%, transparent); border-color: color-mix(in srgb, var(--j-violet-strong) 30%, transparent); }
+                      .cv-preview-frame { margin-top: 12px; border-radius: 8px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--j-violet-strong) 10%, transparent); background: #fff; }
                       .cv-preview-frame iframe { width: 100%; height: 500px; border: none; }
-                      .cv-winner-badge { display: inline-flex; align-items: center; gap: 5px; background: rgba(34,197,94,0.12); color: #22c55e; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; margin-left: 8px; }
+                      .cv-winner-badge { display: inline-flex; align-items: center; gap: 5px; background: color-mix(in srgb, var(--j-success) 12%, transparent); color: var(--j-success); padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; margin-left: 8px; }
                     `}</style>
                     <h3 className="cv-header">
                       <FontAwesomeIcon icon={faCopy} /> Content Variants
@@ -697,8 +697,8 @@ const CampaignDetailsModal: React.FC<{
               {/* Performance Metrics */}
               {stats && (
                 <div className="details-section">
-                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>engagement counters</span></h3>
-                  <p style={{ fontSize: 11.5, color: 'rgba(180,210,240,0.55)', margin: '-4px 0 10px' }}>
+                  <h3><FontAwesomeIcon icon={faChartBar} /> Performance Metrics <span style={{ fontSize: 11, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>engagement counters</span></h3>
+                  <p style={{ fontSize: 11.5, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', margin: '-4px 0 10px' }}>
                     Engagement (opens/clicks) shown here. For the authoritative delivery &amp; bounce breakdown —
                     including hard bounce vs provider block — see the <strong>Delivery Summary</strong> below
                     (from our Reporting data). The two can differ while a campaign is still settling.
@@ -791,14 +791,14 @@ const CampaignDetailsModal: React.FC<{
                         style={{
                           fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
                           textTransform: 'uppercase', padding: '2px 9px', borderRadius: 12,
-                          background: isSes ? 'rgba(168,85,247,0.15)' : 'rgba(99,102,241,0.15)',
-                          color: isSes ? '#c084fc' : '#818cf8',
-                          border: `1px solid ${isSes ? 'rgba(168,85,247,0.35)' : 'rgba(99,102,241,0.35)'}`,
+                          background: isSes ? 'color-mix(in srgb, var(--j-violet) 15%, transparent)' : 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+                          color: isSes ? 'var(--j-violet)' : 'var(--j-violet)',
+                          border: `1px solid ${isSes ? 'color-mix(in srgb, var(--j-violet) 35%, transparent)' : 'color-mix(in srgb, var(--j-violet-strong) 35%, transparent)'}`,
                         }}
                       >
                         {c.route_type}
                       </span>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'rgba(180,210,240,0.45)' }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)' }}>
                         from Reporting
                       </span>
                     </h3>
@@ -833,8 +833,8 @@ const CampaignDetailsModal: React.FC<{
                         >
                           {meta.map(([label, value]) => (
                             <div key={label} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                              <span style={{ color: 'rgba(180,210,240,0.45)', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>
-                              <span style={{ color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof value === 'string' ? value : undefined}>{value}</span>
+                              <span style={{ color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</span>
+                              <span style={{ color: 'var(--j-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof value === 'string' ? value : undefined}>{value}</span>
                             </div>
                           ))}
                         </div>
@@ -856,7 +856,7 @@ const CampaignDetailsModal: React.FC<{
                             borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 12.5, color: '#fed7aa',
                           }}
                         >
-                          <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fb923c', marginTop: 2 }} />
+                          <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-warn)', marginTop: 2 }} />
                           <span>
                             <strong>{blockPct.toFixed(1)}% provider blocks</strong> — the dominant failure here is the receiving mailbox provider
                             refusing mail from this sending server/domain (e.g. Charter/Spectrum “not accepting messages right now”),
@@ -868,21 +868,21 @@ const CampaignDetailsModal: React.FC<{
                     })()}
 
                     <div className="metrics-grid ig-stagger" style={{ gap: 8 }}>
-                      {tile('Recipients', c.recipients, '#94a3b8', undefined, 'Distinct recipients after list cleaning')}
-                      {isSes && tile('Relayed', c.relayed_to_ses, '#c084fc', undefined, 'Handed off to the relay route — not yet a delivery')}
-                      {tile('Delivered', c.delivered, '#22c55e')}
+                      {tile('Recipients', c.recipients, 'var(--j-text-muted)', undefined, 'Distinct recipients after list cleaning')}
+                      {isSes && tile('Relayed', c.relayed_to_ses, 'var(--j-violet)', undefined, 'Handed off to the relay route — not yet a delivery')}
+                      {tile('Delivered', c.delivered, 'var(--j-success)')}
                       {tile('Hard Bounce', c.hard_bounce, '#ef4444', undefined, 'Invalid address, dead domain, or disabled mailbox. These ARE suppressed.')}
-                      {tile('Provider Block', c.reputation_block, '#fb923c', undefined, 'Sender-side block by the mailbox provider of a VALID recipient. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
+                      {tile('Provider Block', c.reputation_block, 'var(--j-warn)', undefined, 'Sender-side block by the mailbox provider of a VALID recipient. Recoverable via warmup/pacing/reputation work. NOT a bad address and NOT suppressed.')}
                       {tile('Soft Bounce', c.soft_bounce, '#f59e0b', undefined, 'Transient failure (mailbox full, rate-limit, timeout). Clears on retry.')}
-                      {tile('Deferred / Open', c.deferred_open, '#60a5fa', undefined, 'Deferred but later observed open')}
-                      {tile('Sent Only', c.sent_only, '#64748b', undefined, 'Sent with no delivery result yet')}
+                      {tile('Deferred / Open', c.deferred_open, 'var(--j-blue)', undefined, 'Deferred but later observed open')}
+                      {tile('Sent Only', c.sent_only, 'var(--j-text-faint)', undefined, 'Sent with no delivery result yet')}
                     </div>
 
                     {/* Rates with explicit denominator labels */}
                     <div className="metrics-grid ig-stagger" style={{ gap: 8, marginTop: 8 }}>
                       <div className="metric-box">
-                        <FontAwesomeIcon icon={faCheckCircle} className="metric-icon" style={{ color: '#22c55e' }} />
-                        <div className="metric-value" style={{ color: '#22c55e' }}>{c.delivery_rate.toFixed(2)}%</div>
+                        <FontAwesomeIcon icon={faCheckCircle} className="metric-icon" style={{ color: 'var(--j-success)' }} />
+                        <div className="metric-value" style={{ color: 'var(--j-success)' }}>{c.delivery_rate.toFixed(2)}%</div>
                         <div className="metric-label">Delivery (of sent)</div>
                       </div>
                       <div className="metric-box" title="TRUE list-hygiene hard bounces (invalid address / dead domain / disabled mailbox) over processed (delivered + hard + reputation block + soft).">
@@ -891,8 +891,8 @@ const CampaignDetailsModal: React.FC<{
                         <div className="metric-label">Hard Bounce (of processed)</div>
                       </div>
                       <div className="metric-box" title="Provider blocks over processed. High here = a sender-reputation / warmup problem, not a dirty list.">
-                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: '#fb923c' }} />
-                        <div className="metric-value" style={{ color: '#fb923c' }}>{(c.reputation_block_rate ?? 0).toFixed(2)}%</div>
+                        <FontAwesomeIcon icon={faExclamationTriangle} className="metric-icon" style={{ color: 'var(--j-warn)' }} />
+                        <div className="metric-value" style={{ color: 'var(--j-warn)' }}>{(c.reputation_block_rate ?? 0).toFixed(2)}%</div>
                         <div className="metric-label">Provider Block (of processed)</div>
                       </div>
                       <div className="metric-box" title="Transient failures over processed. Clears on retry.">
@@ -918,7 +918,7 @@ const CampaignDetailsModal: React.FC<{
                     </div>
 
                     {c.data_as_of && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.45)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FontAwesomeIcon icon={faClock} />
                         <span>Source: Reporting · as of {new Date(c.data_as_of).toLocaleString()}</span>
                       </div>
@@ -934,7 +934,7 @@ const CampaignDetailsModal: React.FC<{
                   return (
                     <div className="details-section">
                       <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
-                      <div style={{ fontSize: 13, color: 'rgba(180,210,240,0.45)', fontStyle: 'italic' }}>
+                      <div style={{ fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', fontStyle: 'italic' }}>
                         Funnel not recorded for this campaign (finalized before funnel tracking).
                       </div>
                     </div>
@@ -951,10 +951,10 @@ const CampaignDetailsModal: React.FC<{
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       padding: '12px 16px', borderRadius: 10,
-                      background: 'rgba(15,23,42,0.6)', border: '1px solid rgba(99,102,241,0.12)',
+                      background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 12%, transparent)',
                     }}
                   >
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'rgba(180,210,240,0.7)' }}>{label}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{label}</span>
                     <span style={{ fontSize: 18, fontWeight: 700, color }}>{value.toLocaleString()}</span>
                   </div>
                 );
@@ -962,17 +962,17 @@ const CampaignDetailsModal: React.FC<{
                   <div className="details-section">
                     <h3><FontAwesomeIcon icon={faUsers} /> Audience Funnel</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      {stage('Total Seen', funnel.total_seen, '#e0e6f0', 'Subscribers evaluated during list cleaning')}
-                      <div style={{ textAlign: 'center', color: 'rgba(180,210,240,0.3)', lineHeight: 1 }}>
+                      {stage('Total Seen', funnel.total_seen, 'var(--j-text)', 'Subscribers evaluated during list cleaning')}
+                      <div style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', lineHeight: 1 }}>
                         <FontAwesomeIcon icon={faArrowDown} />
                       </div>
-                      {stage('Targeted (selected)', funnel.targeted, '#22c55e', 'Recipients that passed every filter')}
-                      <div style={{ textAlign: 'center', color: 'rgba(180,210,240,0.3)', lineHeight: 1 }}>
+                      {stage('Targeted (selected)', funnel.targeted, 'var(--j-success)', 'Recipients that passed every filter')}
+                      <div style={{ textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 30%, transparent)', lineHeight: 1 }}>
                         <FontAwesomeIcon icon={faArrowDown} />
                       </div>
                       {stage('Suppressed (total)', funnel.suppressed_total, '#f59e0b', 'Sum of all suppression reasons below')}
                       {funnel.reserve > 0 && (
-                        <div style={{ fontSize: 11, color: 'rgba(180,210,240,0.4)', textAlign: 'right' }}>
+                        <div style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', textAlign: 'right' }}>
                           + {funnel.reserve.toLocaleString()} held in reserve
                         </div>
                       )}
@@ -980,7 +980,7 @@ const CampaignDetailsModal: React.FC<{
 
                     {reasons.length > 0 && (
                       <div style={{ marginTop: 16 }}>
-                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, color: 'rgba(180,210,240,0.4)', marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 40%, transparent)', marginBottom: 8 }}>
                           Suppression Reasons
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -994,8 +994,8 @@ const CampaignDetailsModal: React.FC<{
                                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                                     padding: isPrimary ? '10px 14px' : '8px 14px',
                                     borderRadius: 8, position: 'relative', overflow: 'hidden',
-                                    background: isPrimary ? 'rgba(239,68,68,0.08)' : 'rgba(99,102,241,0.05)',
-                                    border: `1px solid ${isPrimary ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.12)'}`,
+                                    background: isPrimary ? 'rgba(239,68,68,0.08)' : 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)',
+                                    border: `1px solid ${isPrimary ? 'rgba(239,68,68,0.3)' : 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)'}`,
                                   }}
                                 >
                                   <div
@@ -1003,7 +1003,7 @@ const CampaignDetailsModal: React.FC<{
                                     style={{
                                       position: 'absolute', left: 0, top: 0, bottom: 0,
                                       width: `${pct}%`,
-                                      background: isPrimary ? 'rgba(239,68,68,0.12)' : 'rgba(99,102,241,0.08)',
+                                      background: isPrimary ? 'rgba(239,68,68,0.12)' : 'color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
                                       zIndex: 0,
                                     }}
                                   />
@@ -1012,7 +1012,7 @@ const CampaignDetailsModal: React.FC<{
                                       position: 'relative', zIndex: 1,
                                       fontSize: isPrimary ? 13 : 12.5,
                                       fontWeight: isPrimary ? 700 : 600,
-                                      color: isPrimary ? '#fca5a5' : 'rgba(199,210,254,0.85)',
+                                      color: isPrimary ? 'var(--j-danger-soft)' : 'rgba(199,210,254,0.85)',
                                     }}
                                   >
                                     {FUNNEL_REASON_LABELS[r.key] || r.key}
@@ -1022,7 +1022,7 @@ const CampaignDetailsModal: React.FC<{
                                       position: 'relative', zIndex: 1,
                                       fontSize: isPrimary ? 15 : 14,
                                       fontWeight: 700,
-                                      color: isPrimary ? '#ef4444' : '#c7d2fe',
+                                      color: isPrimary ? '#ef4444' : 'var(--j-violet-soft)',
                                     }}
                                   >
                                     {r.count.toLocaleString()}
@@ -1036,7 +1036,7 @@ const CampaignDetailsModal: React.FC<{
                     )}
 
                     {funnel.computed_at && (
-                      <div style={{ marginTop: 10, fontSize: 11, color: 'rgba(180,210,240,0.45)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ marginTop: 10, fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 45%, transparent)', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <FontAwesomeIcon icon={faClock} />
                         <span>Funnel computed {new Date(funnel.computed_at).toLocaleString()}</span>
                       </div>
@@ -1056,16 +1056,16 @@ const CampaignDetailsModal: React.FC<{
                   <div className="metrics-grid ig-stagger" style={{ gap: 8 }}>
                     {Object.entries(stats.queue_status).map(([status, count]) => {
                       const statusColor: Record<string, string> = {
-                        queued:        '#60a5fa',
-                        sending:       '#22d3ee',
-                        submitting:    '#22d3ee',
-                        sent:          '#22c55e',
-                        delivered:     '#22c55e',
+                        queued:        'var(--j-blue)',
+                        sending:       'var(--j-cyan)',
+                        submitting:    'var(--j-cyan)',
+                        sent:          'var(--j-success)',
+                        delivered:     'var(--j-success)',
                         failed:        '#ef4444',
                         dead_lettered: '#b91c1c',
                         bounced:       '#f59e0b',
                       };
-                      const color = statusColor[status] || '#94a3b8';
+                      const color = statusColor[status] || 'var(--j-text-muted)';
                       return (
                         <div className="metric-box" key={status}>
                           <FontAwesomeIcon icon={faClock} className="metric-icon" style={{ color }} />
@@ -1109,7 +1109,7 @@ const CampaignDetailsModal: React.FC<{
                           const quotaUsed = row.quota && row.quota > 0 ? Math.round(row.sent / row.quota * 100) : null;
                           return (
                             <tr key={row.isp}>
-                              <td style={{ fontWeight: 600, color: '#e0e6f0' }}>{ispLabels[row.isp] || row.isp}</td>
+                              <td style={{ fontWeight: 600, color: 'var(--j-text)' }}>{ispLabels[row.isp] || row.isp}</td>
                               <td>
                                 {row.quota ? (
                                   <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
@@ -1117,24 +1117,24 @@ const CampaignDetailsModal: React.FC<{
                                     {quotaUsed !== null && (
                                       <span style={{
                                         fontSize: '0.7rem',
-                                        color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : '#22c55e',
+                                        color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : 'var(--j-success)',
                                         fontWeight: 700,
                                       }}>{quotaUsed}% used</span>
                                     )}
                                   </span>
-                                ) : <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>}
+                                ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>}
                               </td>
                               <td>{row.sent.toLocaleString()}</td>
                               <td>{row.delivered.toLocaleString()}</td>
                               <td>
                                 <span>{row.opens.toLocaleString()}</span>
-                                <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
                                   ({pct(row.opens, row.delivered)})
                                 </span>
                               </td>
                               <td>
                                 <span>{row.clicks.toLocaleString()}</span>
-                                <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
                                   ({pct(row.clicks, row.delivered)})
                                 </span>
                               </td>
@@ -1704,7 +1704,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
           {editStatsExpanded && (
             <div className="cb-perf-banner-content">
               {editStatsLoading ? (
-                <div style={{ textAlign: 'center', padding: '16px 0', color: 'rgba(180,210,240,0.55)' }}>
+                <div style={{ textAlign: 'center', padding: '16px 0', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>
                   <FontAwesomeIcon icon={faSpinner} spin /> Loading stats...
                 </div>
               ) : editStats ? (
@@ -1769,7 +1769,7 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                             const quotaUsed = row.quota && row.quota > 0 ? Math.round(row.sent / row.quota * 100) : null;
                             return (
                               <tr key={row.isp}>
-                                <td style={{ fontWeight: 600, color: '#e0e6f0' }}>{ispLabels[row.isp] || row.isp}</td>
+                                <td style={{ fontWeight: 600, color: 'var(--j-text)' }}>{ispLabels[row.isp] || row.isp}</td>
                                 <td>
                                   {row.quota ? (
                                     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
@@ -1777,24 +1777,24 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                                       {quotaUsed !== null && (
                                         <span style={{
                                           fontSize: '0.7rem',
-                                          color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : '#22c55e',
+                                          color: quotaUsed >= 90 ? '#ef4444' : quotaUsed >= 70 ? '#f59e0b' : 'var(--j-success)',
                                           fontWeight: 700,
                                         }}>{quotaUsed}% used</span>
                                       )}
                                     </span>
-                                  ) : <span style={{ color: 'rgba(180,210,240,0.35)' }}>—</span>}
+                                  ) : <span style={{ color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>—</span>}
                                 </td>
                                 <td>{row.sent.toLocaleString()}</td>
                                 <td>{row.delivered.toLocaleString()}</td>
                                 <td>
                                   <span>{row.opens.toLocaleString()}</span>
-                                  <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                  <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
                                     ({pct(row.opens, row.delivered)})
                                   </span>
                                 </td>
                                 <td>
                                   <span>{row.clicks.toLocaleString()}</span>
-                                  <span style={{ fontSize: '0.75rem', color: 'rgba(180,210,240,0.55)', marginLeft: 4 }}>
+                                  <span style={{ fontSize: '0.75rem', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', marginLeft: 4 }}>
                                     ({pct(row.clicks, row.delivered)})
                                   </span>
                                 </td>
@@ -1858,8 +1858,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                 onClick={() => setUseAgentWizard(true)}
                 className={`cb-mode-btn ${useAgentWizard ? 'active' : ''}`}
                 style={{
-                  padding: '6px 14px', borderRadius: 8, border: useAgentWizard ? '1px solid #00e5ff' : '1px solid #333',
-                  background: useAgentWizard ? 'rgba(0,229,255,0.15)' : 'transparent', color: useAgentWizard ? '#00e5ff' : '#888',
+                  padding: '6px 14px', borderRadius: 8, border: useAgentWizard ? '1px solid var(--j-cyan)' : '1px solid var(--j-border)',
+                  background: useAgentWizard ? 'color-mix(in srgb, var(--j-cyan) 15%, transparent)' : 'transparent', color: useAgentWizard ? 'var(--j-cyan)' : 'var(--j-text-muted)',
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
@@ -1869,8 +1869,8 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
                 onClick={() => setUseAgentWizard(false)}
                 className={`cb-mode-btn ${!useAgentWizard ? 'active' : ''}`}
                 style={{
-                  padding: '6px 14px', borderRadius: 8, border: !useAgentWizard ? '1px solid #00b0ff' : '1px solid #333',
-                  background: !useAgentWizard ? 'rgba(0,176,255,0.15)' : 'transparent', color: !useAgentWizard ? '#33ccff' : '#888',
+                  padding: '6px 14px', borderRadius: 8, border: !useAgentWizard ? '1px solid var(--j-blue)' : '1px solid var(--j-border)',
+                  background: !useAgentWizard ? 'color-mix(in srgb, var(--j-blue) 15%, transparent)' : 'transparent', color: !useAgentWizard ? '#33ccff' : 'var(--j-text-muted)',
                   cursor: 'pointer', fontSize: 12, fontWeight: 600
                 }}
               >
@@ -2094,17 +2094,17 @@ const CampaignEditor: React.FC<CampaignEditorProps> = ({ campaign, onSave, onCan
               {creativeMode ? (
                 <div className="cb-creative-content">
                   <style>{`
-                    .cb-creative-content { border: 1px solid rgba(0,200,255,0.08); border-radius: 10px; overflow: hidden; background: #0d1526; }
-                    .cb-creative-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid rgba(0,200,255,0.08); background: rgba(0,200,255,0.03); }
-                    .cb-creative-toolbar .cb-ct-badge { background: #00b894; color: white; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
-                    .cb-creative-toolbar .cb-ct-label { color: rgba(180,210,240,0.5); font-size: 12px; flex: 1; }
-                    .cb-creative-toolbar button { background: rgba(0,200,255,0.08); border: 1px solid rgba(0,200,255,0.15); color: #e0e6f0; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-                    .cb-creative-toolbar button:hover { background: rgba(0,200,255,0.12); }
-                    .cb-creative-toolbar button.active { background: #00b0ff; border-color: #00b0ff; color: white; }
-                    .cb-creative-toolbar .cb-ct-switch { background: rgba(233,69,96,0.15); border-color: rgba(233,69,96,0.3); color: #e94560; }
-                    .cb-creative-toolbar .cb-ct-switch:hover { background: rgba(233,69,96,0.25); }
+                    .cb-creative-content { border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); border-radius: 10px; overflow: hidden; background: var(--j-surface); }
+                    .cb-creative-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent); background: color-mix(in srgb, var(--j-cyan) 3%, transparent); }
+                    .cb-creative-toolbar .cb-ct-badge { background: var(--j-success); color: white; padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+                    .cb-creative-toolbar .cb-ct-label { color: color-mix(in srgb, var(--j-text) 50%, transparent); font-size: 12px; flex: 1; }
+                    .cb-creative-toolbar button { background: color-mix(in srgb, var(--j-cyan) 8%, transparent); border: 1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent); color: var(--j-text); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+                    .cb-creative-toolbar button:hover { background: color-mix(in srgb, var(--j-cyan) 12%, transparent); }
+                    .cb-creative-toolbar button.active { background: var(--j-blue); border-color: var(--j-blue); color: white; }
+                    .cb-creative-toolbar .cb-ct-switch { background: color-mix(in srgb, var(--j-danger) 15%, transparent); border-color: color-mix(in srgb, var(--j-danger) 30%, transparent); color: var(--j-danger); }
+                    .cb-creative-toolbar .cb-ct-switch:hover { background: color-mix(in srgb, var(--j-danger) 25%, transparent); }
                     .cb-creative-preview iframe { width: 100%; height: 600px; border: none; background: white; }
-                    .cb-creative-code textarea { width: 100%; height: 500px; background: #0d1117; color: #c9d1d9; border: none; padding: 14px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; resize: vertical; outline: none; }
+                    .cb-creative-code textarea { width: 100%; height: 500px; background: var(--j-surface); color: var(--j-text-2); border: none; padding: 14px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 13px; line-height: 1.5; resize: vertical; outline: none; }
                   `}</style>
                   <div className="cb-creative-toolbar">
                     <span className="cb-ct-badge">
@@ -2825,7 +2825,7 @@ export const CampaignPortal: React.FC<{
           </div>
         </div>
         <div className="header-actions">
-          <span style={{ fontSize: 10, color: '#374151', alignSelf: 'center', marginRight: 8 }}>
+          <span style={{ fontSize: 10, color: 'var(--j-text-faint)', alignSelf: 'center', marginRight: 8 }}>
             v{PAGE_VERSION_CAMPAIGN_PORTAL}
           </span>
           <button

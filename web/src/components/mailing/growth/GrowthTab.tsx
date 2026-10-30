@@ -45,11 +45,11 @@ import type { LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
 const TAB_VERSION = '1.1';
 
 // Series palette — the shared chart tones (PORTAL_DESIGN_SYSTEM §2).
-const C_VOLUME = '#818cf8'; // indigo — delivered
-const C_OPEN = '#22d3ee';   // cyan   — open rate
-const C_CLICK = '#a78bfa';  // violet — click rate
-const C_ACTION = '#34d399'; // emerald— action-click rate
-const C_COMPLAINT = '#fb7185';
+const C_VOLUME = 'var(--j-violet)'; // indigo — delivered
+const C_OPEN = 'var(--j-cyan)';   // cyan   — open rate
+const C_CLICK = 'var(--j-violet)';  // violet — click rate
+const C_ACTION = 'var(--j-success)'; // emerald— action-click rate
+const C_COMPLAINT = 'var(--j-danger)';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES (match backend JSON keys exactly — internal/api/growth_daily.go)
@@ -523,8 +523,8 @@ export const GrowthTab: React.FC = () => {
                         ...btnStyle,
                         padding: '4px 10px', fontSize: 11,
                         color: chartMetric === m ? theme.indigo400 : theme.textMuted,
-                        borderColor: chartMetric === m ? `${theme.indigo400}66` : theme.panelBorderStrong,
-                        background: chartMetric === m ? `${theme.indigo400}14` : 'transparent',
+                        borderColor: chartMetric === m ? `color-mix(in srgb, ${theme.indigo400} 40%, transparent)` : theme.panelBorderStrong,
+                        background: chartMetric === m ? `color-mix(in srgb, ${theme.indigo400} 8%, transparent)` : 'transparent',
                       }}
                       onClick={() => setChartMetric(m)}
                     >
@@ -540,7 +540,7 @@ export const GrowthTab: React.FC = () => {
               <div style={{ height: 280 }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-                    <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+                    <CartesianGrid stroke="color-mix(in srgb, var(--j-text) 6%, transparent)" vertical={false} />
                     <XAxis dataKey="day" tick={{ fill: theme.textMuted, fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={18} />
                     <YAxis tick={{ fill: theme.textMuted, fontSize: 11 }} tickLine={false} axisLine={false}
                       tickFormatter={(v: number) => (chartMetric === 'rates' ? `${v}%` : v >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`)} />
@@ -552,7 +552,7 @@ export const GrowthTab: React.FC = () => {
                     <Legend wrapperStyle={{ fontSize: 11, color: theme.textMuted }} />
                     {chartMetric === 'volume' ? (
                       <Area type="monotone" dataKey="delivered" name="Delivered" stroke={C_VOLUME}
-                        fill={`${C_VOLUME}33`} strokeWidth={2} />
+                        fill={`color-mix(in srgb, ${C_VOLUME} 20%, transparent)`} strokeWidth={2} />
                     ) : (
                       <>
                         <Line type="monotone" dataKey="open_pct" name="Open rate" stroke={C_OPEN} strokeWidth={2} dot={false} />
@@ -640,7 +640,7 @@ export const GrowthTab: React.FC = () => {
                       </tr>
                       {expandedDay === r.day && breakdowns[r.day] && (
                         <tr>
-                          <td colSpan={17} style={{ ...tdStyle, padding: '4px 8px 10px 32px', background: 'rgba(129,140,248,0.04)' }}>
+                          <td colSpan={17} style={{ ...tdStyle, padding: '4px 8px 10px 32px', background: 'color-mix(in srgb, var(--j-violet) 4%, transparent)' }}>
                             <BreakdownSubTable state={breakdowns[r.day]} />
                           </td>
                         </tr>

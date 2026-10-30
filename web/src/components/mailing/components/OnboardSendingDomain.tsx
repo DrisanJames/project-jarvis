@@ -187,7 +187,7 @@ export const OnboardSendingDomain: React.FC<Props> = ({ onNavigateToProfiles }) 
     return (
       <div className="onboard-domain">
         <div className="onboard-header">
-          <h1><FontAwesomeIcon icon={faCheck} style={{ color: '#00b894' }} /> Sending Domain Onboarded</h1>
+          <h1><FontAwesomeIcon icon={faCheck} style={{ color: 'var(--j-success)' }} /> Sending Domain Onboarded</h1>
           <p className="subtitle">Created in one transaction for {form.domain.trim().toLowerCase()}</p>
         </div>
 

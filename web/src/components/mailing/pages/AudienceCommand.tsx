@@ -406,7 +406,7 @@ export const AudienceCommand: React.FC = () => {
 
   // ── Toolbar (shared filter chrome; see FilterBar note above) ──
   const chipStyle = (active: boolean, tone: string): React.CSSProperties => ({
-    border: `1px solid ${active ? tone + '88' : colors.panelBorderStrong}`,
+    border: `1px solid ${active ? `color-mix(in srgb, ${tone} 53%, transparent)` : colors.panelBorderStrong}`,
     background: active ? alpha(tone, '22') : 'transparent',
     color: active ? tone : colors.textMuted,
     borderRadius: 999, padding: '4px 11px', fontSize: 11.5, fontWeight: 600,

@@ -320,7 +320,7 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
     const eta = rate > 0 && queued > 0 ? ` Queue clears in about ${fmtDuration((queued / rate) * 60)}.` : '';
     return {
       state: 'SENDING',
-      color: '#22c55e',
+      color: 'var(--j-success)',
       sentence: `${ratePhrase} ${fmt(queued)} queued.${eta} Delays normal across mailbox providers.`,
     };
   }
@@ -329,7 +329,7 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
     : '';
   return {
     state: 'IDLE',
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
     sentence: `No sends in the last 5 minutes. ${fmt(queued)} queued.${dueBit}`,
   };
 };
@@ -338,9 +338,9 @@ const deriveEngine = (d: EngineStatusResponse): EngineSummary => {
 // Shared styles
 // ---------------------------------------------------------------------------
 
-const PANEL_BG = 'rgba(15,30,60,0.35)';
-const PANEL_BORDER = '1px solid rgba(99,102,241,0.18)';
-const HEADING_COLOR = '#dbeafe';
+const PANEL_BG = 'color-mix(in srgb, var(--j-shade) 35%, transparent)';
+const PANEL_BORDER = '1px solid color-mix(in srgb, var(--j-violet-strong) 18%, transparent)';
+const HEADING_COLOR = 'var(--j-text)';
 
 const panelStyle: React.CSSProperties = {
   background: PANEL_BG,
@@ -368,15 +368,15 @@ const thStyle: React.CSSProperties = {
   fontSize: 11,
   textTransform: 'uppercase',
   letterSpacing: 0.4,
-  color: '#94a3b8',
-  borderBottom: '1px solid rgba(99,102,241,0.15)',
+  color: 'var(--j-text-muted)',
+  borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
 };
 
 const tdStyle: React.CSSProperties = {
   padding: '7px 10px',
   fontSize: 12,
-  color: '#e5e7eb',
-  borderTop: '1px solid rgba(99,102,241,0.08)',
+  color: 'var(--j-text)',
+  borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent)',
 };
 
 const numTd: React.CSSProperties = { ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
@@ -386,7 +386,7 @@ const SectionError: React.FC<{ label: string; error?: string }> = ({ label, erro
   <div
     style={{
       fontSize: 12,
-      color: '#fca5a5',
+      color: 'var(--j-danger-soft)',
       background: 'rgba(239,68,68,0.08)',
       border: '1px solid rgba(239,68,68,0.25)',
       borderRadius: 6,
@@ -400,8 +400,8 @@ const SectionError: React.FC<{ label: string; error?: string }> = ({ label, erro
 
 const Stat: React.FC<{ label: string; value: string; color?: string; title?: string }> = ({ label, value, color, title }) => (
   <div style={{ minWidth: 90 }} title={title}>
-    <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-    <div style={{ fontSize: 20, fontWeight: 700, color: color ?? '#e5e7eb', fontVariantNumeric: 'tabular-nums' }}>
+    <div style={{ fontSize: 10, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+    <div style={{ fontSize: 20, fontWeight: 700, color: color ?? 'var(--j-text)', fontVariantNumeric: 'tabular-nums' }}>
       {value}
     </div>
   </div>
@@ -412,7 +412,7 @@ const Stat: React.FC<{ label: string; value: string; color?: string; title?: str
 const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, state }) => {
   if (!state || state.loading) {
     return (
-      <div style={{ padding: '12px 16px', fontSize: 12, color: '#94a3b8' }}>
+      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--j-text-muted)' }}>
         <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 6 }} />
         Loading sending servers for {titleCase(isp)}…
       </div>
@@ -427,7 +427,7 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
   }
   if (state.rows.length === 0) {
     return (
-      <div style={{ padding: '12px 16px', fontSize: 12, color: '#64748b' }}>
+      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--j-text-faint)' }}>
         No delivery activity for {titleCase(isp)} in the last 24h.
       </div>
     );
@@ -445,16 +445,16 @@ const PipesSubTable: React.FC<{ isp: string; state?: PipesState }> = ({ isp, sta
       </thead>
       <tbody>
         {state.rows.map((p) => {
-          const defColor = p.deferral_rate > 0.5 ? '#ef4444' : p.deferral_rate > 0.1 ? '#f59e0b' : '#86efac';
+          const defColor = p.deferral_rate > 0.5 ? '#ef4444' : p.deferral_rate > 0.1 ? '#f59e0b' : 'var(--j-success-soft)';
           return (
             <tr key={p.vmta}>
-              <td style={{ ...tdStyle, paddingLeft: 28, fontFamily: 'monospace', fontSize: 11, color: '#c7d2fe' }}>
+              <td style={{ ...tdStyle, paddingLeft: 28, fontFamily: 'monospace', fontSize: 11, color: 'var(--j-violet-soft)' }}>
                 {p.vmta}
               </td>
               <td style={numTd}>{fmt(p.attempted)}</td>
               <td style={numTd}>{fmtPct(p.delivered_rate)}</td>
               <td style={{ ...numTd, color: defColor, fontWeight: 600 }}>{fmtPct(p.deferral_rate)}</td>
-              <td style={{ ...numTd, color: p.hard_bounces > 0 ? '#ef4444' : '#e5e7eb' }}>{fmt(p.hard_bounces)}</td>
+              <td style={{ ...numTd, color: p.hard_bounces > 0 ? '#ef4444' : 'var(--j-text)' }}>{fmt(p.hard_bounces)}</td>
             </tr>
           );
         })}
@@ -502,9 +502,9 @@ const tagPillStyle: React.CSSProperties = {
   fontSize: 9,
   fontWeight: 700,
   letterSpacing: 0.5,
-  color: '#a5b4fc',
-  background: 'rgba(99,102,241,0.14)',
-  border: '1px solid rgba(99,102,241,0.35)',
+  color: 'var(--j-violet)',
+  background: 'color-mix(in srgb, var(--j-violet-strong) 14%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-violet-strong) 35%, transparent)',
   borderRadius: 999,
   padding: '1px 7px',
   flexShrink: 0,
@@ -535,7 +535,7 @@ const SchedulePanel: React.FC<{
 }> = ({ title, data, renderCampaign, emptyLabel }) => (
   <div style={panelStyle}>
     <h2 style={panelTitleStyle}>
-      <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
+      <FontAwesomeIcon icon={faLayerGroup} style={{ color: 'var(--j-violet)' }} />
       {title}
     </h2>
     {!data || !data.ok ? (
@@ -545,10 +545,10 @@ const SchedulePanel: React.FC<{
     ) : (
       <>
         <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
-          <Stat label="Due now" value={fmt(data.planned_due)} color={data.planned_due > 0 ? '#f59e0b' : '#e5e7eb'} />
-          <Stat label="Scheduled" value={fmt(data.planned_future)} color="#c7d2fe" />
-          <Stat label="Preparing" value={fmt(data.enqueuing)} color="#93c5fd" />
-          <Stat label="Sending" value={fmt(data.sending)} color="#86efac" />
+          <Stat label="Due now" value={fmt(data.planned_due)} color={data.planned_due > 0 ? '#f59e0b' : 'var(--j-text)'} />
+          <Stat label="Scheduled" value={fmt(data.planned_future)} color="var(--j-violet-soft)" />
+          <Stat label="Preparing" value={fmt(data.enqueuing)} color="var(--j-blue)" />
+          <Stat label="Sending" value={fmt(data.sending)} color="var(--j-success-soft)" />
           <Stat
             label="Batches done 24h"
             value={`${fmt(data.completed_24h)} (${fmt(data.completed_recipients_24h)} recipients)`}
@@ -557,15 +557,15 @@ const SchedulePanel: React.FC<{
           <Stat
             label="Failed 24h"
             value={fmt(data.failed_24h)}
-            color={data.failed_24h > 0 ? '#ef4444' : '#e5e7eb'}
+            color={data.failed_24h > 0 ? '#ef4444' : 'var(--j-text)'}
           />
         </div>
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+          <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
             Next 5 send batches
           </div>
           {data.upcoming.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>{emptyLabel}</div>
+            <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '10px 0' }}>{emptyLabel}</div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -585,7 +585,7 @@ const SchedulePanel: React.FC<{
                         {renderCampaign ? renderCampaign(u) : (u.campaign_name || u.campaign_id.slice(0, 8))}
                       </td>
                       <td style={numTd}>#{u.wave_number}</td>
-                      <td style={{ ...tdStyle, color: due ? '#f59e0b' : '#e5e7eb' }}>
+                      <td style={{ ...tdStyle, color: due ? '#f59e0b' : 'var(--j-text)' }}>
                         {new Date(u.scheduled_at).toLocaleString([], {
                           month: 'short',
                           day: 'numeric',
@@ -748,34 +748,34 @@ export const OutboxDashboard: React.FC = () => {
       : null;
 
   return (
-    <div style={{ padding: 24, color: '#e5e7eb', minHeight: '100vh' }}>
+    <div style={{ padding: 24, color: 'var(--j-text)', minHeight: '100vh' }}>
       <style>{`@keyframes outboxPulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }`}</style>
 
       {/* ---- Header ---- */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 22, color: HEADING_COLOR, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faBolt} style={{ color: '#818cf8' }} />
+            <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--j-violet)' }} />
             Sending Engine
           </h1>
-          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+          <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
             Live send schedule + delivery monitoring · polls every {POLL_INTERVAL_MS / 1000}s · Page v{PAGE_VERSION}
             {data && <> · API v{data.api_version}</>}
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: '#94a3b8' }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--j-text-muted)' }}>
             <span
               style={{
                 width: 9,
                 height: 9,
                 borderRadius: '50%',
-                background: fetchError ? '#ef4444' : '#22c55e',
+                background: fetchError ? '#ef4444' : 'var(--j-success)',
                 animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
                 display: 'inline-block',
               }}
             />
-            <span style={{ color: fetchError ? '#fca5a5' : '#86efac', fontWeight: 600, letterSpacing: 1 }}>
+            <span style={{ color: fetchError ? 'var(--j-danger-soft)' : 'var(--j-success-soft)', fontWeight: 600, letterSpacing: 1 }}>
               {fetchError ? 'STALE' : 'LIVE'}
             </span>
             {secondsSinceFetch != null && <span>updated {secondsSinceFetch}s ago</span>}
@@ -784,9 +784,9 @@ export const OutboxDashboard: React.FC = () => {
             onClick={fetchStatus}
             disabled={loading}
             style={{
-              background: 'rgba(99,102,241,0.15)',
-              color: '#c7d2fe',
-              border: '1px solid rgba(99,102,241,0.4)',
+              background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+              color: 'var(--j-violet-soft)',
+              border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
               padding: '6px 14px',
               borderRadius: 6,
               cursor: loading ? 'not-allowed' : 'pointer',
@@ -807,7 +807,7 @@ export const OutboxDashboard: React.FC = () => {
           style={{
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.35)',
-            color: '#fecaca',
+            color: 'var(--j-danger-soft)',
             padding: '10px 14px',
             borderRadius: 8,
             marginBottom: 14,
@@ -820,7 +820,7 @@ export const OutboxDashboard: React.FC = () => {
       )}
 
       {loading && !data ? (
-        <div style={{ textAlign: 'center', padding: 80, color: '#94a3b8' }}>
+        <div style={{ textAlign: 'center', padding: 80, color: 'var(--j-text-muted)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading engine state…
         </div>
       ) : data && engine ? (
@@ -839,8 +839,8 @@ export const OutboxDashboard: React.FC = () => {
           >
             <span
               style={{
-                background: `${engine.color}22`,
-                border: `1px solid ${engine.color}66`,
+                background: `color-mix(in srgb, ${engine.color} 13%, transparent)`,
+                border: `1px solid color-mix(in srgb, ${engine.color} 40%, transparent)`,
                 color: engine.color,
                 fontWeight: 800,
                 fontSize: 16,
@@ -851,21 +851,21 @@ export const OutboxDashboard: React.FC = () => {
             >
               {engine.state}
             </span>
-            <div style={{ flex: 1, minWidth: 280, fontSize: 14, color: '#e5e7eb', lineHeight: 1.5 }}>
+            <div style={{ flex: 1, minWidth: 280, fontSize: 14, color: 'var(--j-text)', lineHeight: 1.5 }}>
               {engine.sentence}
             </div>
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
               <Stat
                 label="Rate /min"
                 value={data.throughput.ok ? fmtRate(data.throughput.current_rate_per_min) : '—'}
-                color="#86efac"
+                color="var(--j-success-soft)"
               />
-              <Stat label="Queued" value={data.queue.ok ? fmt(data.queue.queued) : '—'} color="#c7d2fe" />
+              <Stat label="Queued" value={data.queue.ok ? fmt(data.queue.queued) : '—'} color="var(--j-violet-soft)" />
               <Stat
                 label="Oldest queued"
                 value={data.queue.ok ? fmtDuration(data.queue.oldest_queued_seconds) : '—'}
                 color={
-                  data.queue.ok && data.queue.oldest_queued_seconds > BACKLOG_AGE_THRESHOLD_SEC ? '#f59e0b' : '#e5e7eb'
+                  data.queue.ok && data.queue.oldest_queued_seconds > BACKLOG_AGE_THRESHOLD_SEC ? '#f59e0b' : 'var(--j-text)'
                 }
               />
               <Stat
@@ -888,7 +888,7 @@ export const OutboxDashboard: React.FC = () => {
             {/* Capacity */}
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faGaugeHigh} style={{ color: '#818cf8' }} />
+                <FontAwesomeIcon icon={faGaugeHigh} style={{ color: 'var(--j-violet)' }} />
                 Capacity
               </h2>
               {!data.throughput.ok ? (
@@ -898,10 +898,10 @@ export const OutboxDashboard: React.FC = () => {
               ) : (
                 <>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 12 }}>
-                    <span style={{ fontSize: 30, fontWeight: 800, color: '#c7d2fe', fontVariantNumeric: 'tabular-nums' }}>
+                    <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--j-violet-soft)', fontVariantNumeric: 'tabular-nums' }}>
                       {fmtRate(data.throughput.current_rate_per_min)}
                     </span>
-                    <span style={{ fontSize: 13, color: '#94a3b8' }}>
+                    <span style={{ fontSize: 13, color: 'var(--j-text-muted)' }}>
                       / {fmtRate(data.throughput.peak_rate_per_min_24h)} per min (24h peak)
                     </span>
                   </div>
@@ -910,7 +910,7 @@ export const OutboxDashboard: React.FC = () => {
                       marginTop: 10,
                       height: 12,
                       borderRadius: 999,
-                      background: 'rgba(148,163,184,0.15)',
+                      background: 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)',
                       overflow: 'hidden',
                     }}
                   >
@@ -922,31 +922,31 @@ export const OutboxDashboard: React.FC = () => {
                         background:
                           data.throughput.utilization_pct > 90
                             ? 'linear-gradient(90deg,#f59e0b,#ef4444)'
-                            : 'linear-gradient(90deg,#6366f1,#22c55e)',
+                            : 'linear-gradient(90deg,var(--j-violet-strong),var(--j-success))',
                         transition: 'width 600ms ease',
                       }}
                     />
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 12, color: '#94a3b8' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 12, color: 'var(--j-text-muted)' }}>
                     <span>{Math.round(data.throughput.utilization_pct)}% of 24h peak</span>
                     <span>
                       Queue clears in:{' '}
-                      <span style={{ color: '#e5e7eb', fontWeight: 600 }}>
+                      <span style={{ color: 'var(--j-text)', fontWeight: 600 }}>
                         {drainEtaSec != null ? fmtDuration(drainEtaSec) : data.queue.ok && data.queue.queued > 0 ? '∞ (idle)' : '—'}
                       </span>
                     </span>
                   </div>
                   <div style={{ display: 'flex', gap: 24, marginTop: 14, flexWrap: 'wrap' }}>
-                    <Stat label="Processing" value={data.queue.ok ? fmt(data.queue.processing) : '—'} color="#93c5fd" />
+                    <Stat label="Processing" value={data.queue.ok ? fmt(data.queue.processing) : '—'} color="var(--j-blue)" />
                     <Stat
                       label="Failed 24h"
                       value={data.queue.ok ? fmt(data.queue.failed_24h) : '—'}
-                      color={data.queue.ok && data.queue.failed_24h > 0 ? '#f59e0b' : '#e5e7eb'}
+                      color={data.queue.ok && data.queue.failed_24h > 0 ? '#f59e0b' : 'var(--j-text)'}
                     />
                     <Stat
                       label="Failed sends 24h"
                       value={data.queue.ok ? fmt(data.queue.dead_letter_24h) : '—'}
-                      color={data.queue.ok && data.queue.dead_letter_24h > 0 ? '#ef4444' : '#e5e7eb'}
+                      color={data.queue.ok && data.queue.dead_letter_24h > 0 ? '#ef4444' : 'var(--j-text)'}
                     />
                   </div>
                 </>
@@ -972,9 +972,9 @@ export const OutboxDashboard: React.FC = () => {
           {/* ---- Click funnels (waveless click-drip reminder path) ---- */}
           <section style={{ ...panelStyle, marginBottom: 14 }}>
             <h2 style={panelTitleStyle}>
-              <FontAwesomeIcon icon={faLayerGroup} style={{ color: '#818cf8' }} />
+              <FontAwesomeIcon icon={faLayerGroup} style={{ color: 'var(--j-violet)' }} />
               Click Funnels
-              <span style={{ fontSize: 10, fontWeight: 500, color: '#64748b', letterSpacing: 0.4, textTransform: 'none' }}>
+              <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--j-text-faint)', letterSpacing: 0.4, textTransform: 'none' }}>
                 reminder touches dispatch directly per enrollment — no batch schedule
               </span>
             </h2>
@@ -985,38 +985,38 @@ export const OutboxDashboard: React.FC = () => {
             ) : (
               <>
                 <div style={{ display: 'flex', gap: 22, marginTop: 12, flexWrap: 'wrap' }}>
-                  <Stat label="Active enrollments" value={fmt(data.click_funnels.active_enrollments)} color="#c7d2fe" />
+                  <Stat label="Active enrollments" value={fmt(data.click_funnels.active_enrollments)} color="var(--j-violet-soft)" />
                   <Stat
                     label="Touches due now"
                     value={fmt(data.click_funnels.due_now)}
-                    color={data.click_funnels.due_now > 0 ? '#f59e0b' : '#e5e7eb'}
+                    color={data.click_funnels.due_now > 0 ? '#f59e0b' : 'var(--j-text)'}
                   />
                   <Stat label="Touches sent 24h" value={fmt(data.click_funnels.sent_24h)} />
                   <Stat
                     label="Opens 24h"
                     value={fmt(data.click_funnels.opens_24h)}
-                    color="#22d3ee"
+                    color="var(--j-cyan)"
                     title="Raw open events on click-drip reminders (machine/MPP traffic included)"
                   />
                   <Stat
                     label="Clicks 24h"
                     value={fmt(data.click_funnels.clicks_24h)}
-                    color="#a78bfa"
+                    color="var(--j-violet)"
                     title="Raw click events on click-drip reminders (machine traffic included)"
                   />
                   <Stat
                     label="Conversions 24h"
                     value={fmt(data.click_funnels.converted_24h)}
-                    color={data.click_funnels.converted_24h > 0 ? '#86efac' : '#e5e7eb'}
+                    color={data.click_funnels.converted_24h > 0 ? 'var(--j-success-soft)' : 'var(--j-text)'}
                     title="Enrollments exited as converted (Everflow postback) in the last 24h"
                   />
                 </div>
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
                     Per offer funnel
                   </div>
                   {data.click_funnels.offers.length === 0 ? (
-                    <div style={{ fontSize: 12, color: '#64748b', padding: '10px 0' }}>No click-funnel activity yet.</div>
+                    <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '10px 0' }}>No click-funnel activity yet.</div>
                   ) : (
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <thead>
@@ -1034,17 +1034,17 @@ export const OutboxDashboard: React.FC = () => {
                         {data.click_funnels.offers.map((o) => (
                           <tr key={o.everflow_offer_id || o.offer_name}>
                             <td
-                              style={{ ...tdStyle, fontWeight: 600, color: '#dbeafe', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                              style={{ ...tdStyle, fontWeight: 600, color: 'var(--j-text)', maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                               title={`Everflow offer ${o.everflow_offer_id || '—'}`}
                             >
                               {o.offer_name || (o.everflow_offer_id ? `Offer ${o.everflow_offer_id}` : 'Unmapped')}
                             </td>
                             <td style={numTd}>{fmt(o.active_enrollments)}</td>
-                            <td style={{ ...numTd, color: o.due_now > 0 ? '#f59e0b' : '#e5e7eb' }}>{fmt(o.due_now)}</td>
+                            <td style={{ ...numTd, color: o.due_now > 0 ? '#f59e0b' : 'var(--j-text)' }}>{fmt(o.due_now)}</td>
                             <td style={numTd}>{fmt(o.sent_24h)}</td>
-                            <td style={{ ...numTd, color: '#22d3ee' }}>{fmt(o.opens_24h)}</td>
-                            <td style={{ ...numTd, color: '#a78bfa' }}>{fmt(o.clicks_24h)}</td>
-                            <td style={{ ...numTd, color: o.converted_24h > 0 ? '#86efac' : '#e5e7eb', fontWeight: 600 }}>
+                            <td style={{ ...numTd, color: 'var(--j-cyan)' }}>{fmt(o.opens_24h)}</td>
+                            <td style={{ ...numTd, color: 'var(--j-violet)' }}>{fmt(o.clicks_24h)}</td>
+                            <td style={{ ...numTd, color: o.converted_24h > 0 ? 'var(--j-success-soft)' : 'var(--j-text)', fontWeight: 600 }}>
                               {fmt(o.converted_24h)}
                             </td>
                           </tr>
@@ -1060,7 +1060,7 @@ export const OutboxDashboard: React.FC = () => {
           {/* ---- Throughput chart ---- */}
           <section style={{ ...panelStyle, marginBottom: 14 }}>
             <h2 style={panelTitleStyle}>
-              <FontAwesomeIcon icon={faWater} style={{ color: '#818cf8' }} />
+              <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
               Throughput — last 60 minutes
             </h2>
             {!data.throughput.ok ? (
@@ -1068,7 +1068,7 @@ export const OutboxDashboard: React.FC = () => {
                 <SectionError label="Throughput" error={data.throughput.error} />
               </div>
             ) : chartData.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#64748b', padding: '24px 0', textAlign: 'center' }}>
+              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '24px 0', textAlign: 'center' }}>
                 No send events in the last hour.
               </div>
             ) : (
@@ -1077,25 +1077,25 @@ export const OutboxDashboard: React.FC = () => {
                   <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
                     <defs>
                       <linearGradient id="sentFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.55} />
-                        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
+                        <stop offset="0%" stopColor="var(--j-violet-strong)" stopOpacity={0.55} />
+                        <stop offset="100%" stopColor="var(--j-violet-strong)" stopOpacity={0.05} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fill: '#94a3b8', fontSize: 11 }} interval="preserveStartEnd" minTickGap={40} />
-                    <YAxis tick={{ fill: '#94a3b8', fontSize: 11 }} width={52} />
+                    <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} interval="preserveStartEnd" minTickGap={40} />
+                    <YAxis tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} width={52} />
                     <Tooltip
                       contentStyle={{
-                        background: '#0f172a',
-                        border: '1px solid rgba(99,102,241,0.4)',
+                        background: 'var(--j-bg)',
+                        border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
                         borderRadius: 8,
-                        color: '#e5e7eb',
+                        color: 'var(--j-text)',
                         fontSize: 12,
                       }}
-                      labelStyle={{ color: '#dbeafe' }}
+                      labelStyle={{ color: 'var(--j-text)' }}
                     />
-                    <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8' }} />
-                    <Area type="monotone" dataKey="sent" name="Sent /min" stroke="#818cf8" strokeWidth={2} fill="url(#sentFill)" />
+                    <Legend wrapperStyle={{ fontSize: 12, color: 'var(--j-text-muted)' }} />
+                    <Area type="monotone" dataKey="sent" name="Sent /min" stroke="var(--j-violet)" strokeWidth={2} fill="url(#sentFill)" />
                     <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="#f59e0b" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -1114,7 +1114,7 @@ export const OutboxDashboard: React.FC = () => {
           >
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faWater} style={{ color: '#818cf8' }} />
+                <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
                 Per mailbox provider — queue, share, delays
                 {data.storm.ok && data.storm.active && (
                   <span
@@ -1122,7 +1122,7 @@ export const OutboxDashboard: React.FC = () => {
                       marginLeft: 8,
                       background: 'rgba(239,68,68,0.15)',
                       border: '1px solid rgba(239,68,68,0.45)',
-                      color: '#fca5a5',
+                      color: 'var(--j-danger-soft)',
                       fontSize: 10,
                       fontWeight: 700,
                       letterSpacing: 1,
@@ -1139,7 +1139,7 @@ export const OutboxDashboard: React.FC = () => {
                   <SectionError label="Mailbox provider breakdown" error={data.storm.error || data.queue.error} />
                 </div>
               ) : ispRows.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#64748b', padding: '16px 0' }}>No mailbox provider activity in the window.</div>
+                <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '16px 0' }}>No mailbox provider activity in the window.</div>
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
                   <thead>
@@ -1166,14 +1166,14 @@ export const OutboxDashboard: React.FC = () => {
                               background: r.storm
                                 ? 'rgba(239,68,68,0.10)'
                                 : isOpen
-                                  ? 'rgba(99,102,241,0.10)'
+                                  ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)'
                                   : undefined,
                             }}
                           >
-                            <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? '#fca5a5' : '#dbeafe' }}>
+                            <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? 'var(--j-danger-soft)' : 'var(--j-text)' }}>
                               <FontAwesomeIcon
                                 icon={isOpen ? faChevronDown : faChevronRight}
-                                style={{ color: '#6366f1', fontSize: 11, marginRight: 7 }}
+                                style={{ color: 'var(--j-violet-strong)', fontSize: 11, marginRight: 7 }}
                               />
                               {titleCase(r.isp)}
                               {r.storm && (
@@ -1183,17 +1183,17 @@ export const OutboxDashboard: React.FC = () => {
                             <td style={numTd}>{fmt(r.queued)}</td>
                             <td style={numTd}>{fmt(r.sent24h)}</td>
                             <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
-                            <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : '#86efac', fontWeight: 600 }}>
+                            <td style={{ ...numTd, color: r.storm ? '#ef4444' : r.recentRate > 0.05 ? '#f59e0b' : 'var(--j-success-soft)', fontWeight: 600 }}>
                               {fmtPct(r.recentRate)}
                             </td>
                             <td style={numTd}>{fmtPct(r.baselineRate)}</td>
-                            <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : '#94a3b8' }}>
+                            <td style={{ ...numTd, color: r.multiplier >= 2 ? '#f59e0b' : 'var(--j-text-muted)' }}>
                               {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
                             </td>
                           </tr>
                           {isOpen && (
                             <tr>
-                              <td colSpan={7} style={{ padding: 0, background: 'rgba(0,0,0,0.22)' }}>
+                              <td colSpan={7} style={{ padding: 0, background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)' }}>
                                 <PipesSubTable isp={r.isp} state={pipes[r.isp]} />
                               </td>
                             </tr>
@@ -1210,7 +1210,7 @@ export const OutboxDashboard: React.FC = () => {
                 now has its own card grid below). */}
             <div style={panelStyle}>
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
+                <FontAwesomeIcon icon={faHeartPulse} style={{ color: 'var(--j-violet)' }} />
                 Performance — last 24h
               </h2>
               {!data.performance || !data.performance.ok ? (
@@ -1223,13 +1223,13 @@ export const OutboxDashboard: React.FC = () => {
                     <Stat
                       label="Sent 24h"
                       value={fmt(data.performance.sent_24h)}
-                      color="#c7d2fe"
+                      color="var(--j-violet-soft)"
                       title="Per-recipient sent events across all send paths (broadcast, drips, click funnels)"
                     />
                     <Stat
                       label="Delivered 24h"
                       value={fmt(data.performance.delivered_24h)}
-                      color="#86efac"
+                      color="var(--j-success-soft)"
                       title="Delivered events recorded in tracking (campaign-attributed)"
                     />
                     <div>
@@ -1240,11 +1240,11 @@ export const OutboxDashboard: React.FC = () => {
                             ? fmtPct(data.performance.opens_raw_24h / data.performance.delivered_24h)
                             : '—'
                         }
-                        color="#22d3ee"
+                        color="var(--j-cyan)"
                         title={`${fmt(data.performance.opens_raw_24h)} raw opens ÷ ${fmt(data.performance.delivered_24h)} delivered — machine/MPP traffic included`}
                       />
                       {data.performance.human_ok && (
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
                           human {fmt(data.performance.opens_human_24h)}
                         </div>
                       )}
@@ -1257,11 +1257,11 @@ export const OutboxDashboard: React.FC = () => {
                             ? fmtPct(data.performance.clicks_raw_24h / data.performance.delivered_24h)
                             : '—'
                         }
-                        color="#a78bfa"
+                        color="var(--j-violet)"
                         title={`${fmt(data.performance.clicks_raw_24h)} raw clicks ÷ ${fmt(data.performance.delivered_24h)} delivered — machine traffic included`}
                       />
                       {data.performance.human_ok && (
-                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
                           human {fmt(data.performance.clicks_human_24h)}
                         </div>
                       )}
@@ -1269,17 +1269,17 @@ export const OutboxDashboard: React.FC = () => {
                     <Stat
                       label="Complaints 24h"
                       value={fmt(data.performance.complaints_24h)}
-                      color={data.performance.complaints_24h > 0 ? '#fb7185' : '#e5e7eb'}
+                      color={data.performance.complaints_24h > 0 ? 'var(--j-danger)' : 'var(--j-text)'}
                       title="Spam-complaint events recorded in tracking over the last 24h"
                     />
                     <Stat
                       label="Conversions 24h"
                       value={fmt(data.performance.conversions_24h)}
-                      color={data.performance.conversions_24h > 0 ? '#86efac' : '#e5e7eb'}
+                      color={data.performance.conversions_24h > 0 ? 'var(--j-success-soft)' : 'var(--j-text)'}
                       title="Everflow conversion postbacks received in the last 24h"
                     />
                   </div>
-                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 12, lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-faint)', marginTop: 12, lineHeight: 1.5 }}>
                     Rates divide by delivered. Raw opens/clicks include machine and Apple-MPP traffic;
                     "human" is the verdict-filtered count. Refreshes every ~5 minutes.
                   </div>
@@ -1291,15 +1291,15 @@ export const OutboxDashboard: React.FC = () => {
           {/* ---- Background workers — one card per worker ---- */}
           <section style={{ ...panelStyle, marginBottom: 14 }}>
             <h2 style={panelTitleStyle}>
-              <FontAwesomeIcon icon={faHeartPulse} style={{ color: '#818cf8' }} />
+              <FontAwesomeIcon icon={faHeartPulse} style={{ color: 'var(--j-violet)' }} />
               Background Workers
             </h2>
             {!data.workers.ok ? (
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', marginTop: 10 }}>
                 Worker status not available in this environment.
               </div>
             ) : data.workers.workers.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 10 }}>No heartbeats recorded yet.</div>
+              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', marginTop: 10 }}>No heartbeats recorded yet.</div>
             ) : (
               <div
                 style={{
@@ -1310,21 +1310,21 @@ export const OutboxDashboard: React.FC = () => {
                 }}
               >
                 {data.workers.workers.map((wkr) => {
-                  const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : '#22c55e';
+                  const color = wkr.stalled ? '#ef4444' : wkr.last_status === 'error' ? '#f59e0b' : 'var(--j-success)';
                   return (
                     <div
                       key={wkr.name}
                       style={{
                         padding: '10px 12px',
                         borderRadius: 8,
-                        background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'rgba(99,102,241,0.06)',
-                        border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'rgba(99,102,241,0.15)'}`,
+                        background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'color-mix(in srgb, var(--j-violet-strong) 6%, transparent)',
+                        border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)'}`,
                       }}
                       title={wkr.last_error || undefined}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                         <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                        <span style={{ fontSize: 12, fontWeight: 600, color: '#e5e7eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {wkr.name}
                         </span>
                       </div>
@@ -1333,13 +1333,13 @@ export const OutboxDashboard: React.FC = () => {
                           fontSize: 18,
                           fontWeight: 700,
                           fontVariantNumeric: 'tabular-nums',
-                          color: wkr.stalled ? '#fca5a5' : '#e5e7eb',
+                          color: wkr.stalled ? 'var(--j-danger-soft)' : 'var(--j-text)',
                           marginTop: 6,
                         }}
                       >
                         {fmtDuration(wkr.seconds_since_beat)} ago
                       </div>
-                      <div style={{ fontSize: 10, color: wkr.stalled ? '#fca5a5' : '#64748b', marginTop: 3 }}>
+                      <div style={{ fontSize: 10, color: wkr.stalled ? 'var(--j-danger-soft)' : 'var(--j-text-faint)', marginTop: 3 }}>
                         {wkr.stalled
                           ? 'NOT RESPONDING'
                           : wkr.expected_interval_seconds > 0
@@ -1361,19 +1361,19 @@ export const OutboxDashboard: React.FC = () => {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 padding: '12px 16px',
-                borderBottom: '1px solid rgba(99,102,241,0.15)',
+                borderBottom: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
               }}
             >
               <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? '#ef4444' : '#64748b' }} />
+                <FontAwesomeIcon icon={faSkullCrossbones} style={{ color: recentDeadLetter.length > 0 ? '#ef4444' : 'var(--j-text-faint)' }} />
                 Failed Sends ({fmt(recentDeadLetter.length)})
               </h2>
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+              <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
                 Last {DEAD_LETTER_WINDOW_HOURS}h · newest first · max {DEAD_LETTER_MAX_ROWS}
               </span>
             </header>
             {recentDeadLetter.length === 0 ? (
-              <div style={{ padding: 24, textAlign: 'center', color: '#64748b', fontSize: 13 }}>
+              <div style={{ padding: 24, textAlign: 'center', color: 'var(--j-text-faint)', fontSize: 13 }}>
                 No failed sends in the last {DEAD_LETTER_WINDOW_HOURS} hours. Delivery healthy.
               </div>
             ) : (

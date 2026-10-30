@@ -100,7 +100,7 @@ export const DataIngestPortal: React.FC = () => {
               max={denverToday()}
               onChange={(e) => setDate(e.target.value || denverToday())}
               style={{
-                background: 'rgba(15,23,42,0.6)', color: colors.text, border: `1px solid ${colors.panelBorder}`,
+                background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)', color: colors.text, border: `1px solid ${colors.panelBorder}`,
                 borderRadius: 8, padding: '6px 10px', fontSize: 12, fontFamily: 'monospace',
               }}
             />

@@ -54,19 +54,19 @@ interface EditData {
 }
 
 const STATUS_PALETTE: Record<string, { bg: string; bd: string; fg: string }> = {
-  draft:      { bg: 'rgba(120,120,120,0.12)', bd: 'rgba(120,120,120,0.4)', fg: '#9ca3af' },
-  scheduled:  { bg: 'rgba(0,176,255,0.12)',   bd: 'rgba(0,176,255,0.45)', fg: '#00b0ff' },
-  preparing:  { bg: 'rgba(250,204,21,0.12)',  bd: 'rgba(250,204,21,0.45)', fg: '#facc15' },
-  finalizing_audience: { bg: 'rgba(250,204,21,0.12)', bd: 'rgba(250,204,21,0.45)', fg: '#facc15' },
-  sending:    { bg: 'rgba(168,85,247,0.14)',  bd: 'rgba(168,85,247,0.5)',  fg: '#c084fc' },
-  sent:       { bg: 'rgba(0,184,148,0.12)',   bd: 'rgba(0,184,148,0.45)', fg: '#00b894' },
-  completed:  { bg: 'rgba(0,184,148,0.12)',   bd: 'rgba(0,184,148,0.45)', fg: '#00b894' },
-  failed:     { bg: 'rgba(233,69,96,0.12)',   bd: 'rgba(233,69,96,0.5)',  fg: '#e94560' },
+  draft:      { bg: 'rgba(120,120,120,0.12)', bd: 'rgba(120,120,120,0.4)', fg: 'var(--j-text-muted)' },
+  scheduled:  { bg: 'color-mix(in srgb, var(--j-blue) 12%, transparent)',   bd: 'color-mix(in srgb, var(--j-blue) 45%, transparent)', fg: 'var(--j-blue)' },
+  preparing:  { bg: 'rgba(250,204,21,0.12)',  bd: 'rgba(250,204,21,0.45)', fg: 'var(--j-warn)' },
+  finalizing_audience: { bg: 'rgba(250,204,21,0.12)', bd: 'rgba(250,204,21,0.45)', fg: 'var(--j-warn)' },
+  sending:    { bg: 'color-mix(in srgb, var(--j-violet) 14%, transparent)',  bd: 'color-mix(in srgb, var(--j-violet) 50%, transparent)',  fg: 'var(--j-violet)' },
+  sent:       { bg: 'color-mix(in srgb, var(--j-success) 12%, transparent)',   bd: 'color-mix(in srgb, var(--j-success) 45%, transparent)', fg: 'var(--j-success)' },
+  completed:  { bg: 'color-mix(in srgb, var(--j-success) 12%, transparent)',   bd: 'color-mix(in srgb, var(--j-success) 45%, transparent)', fg: 'var(--j-success)' },
+  failed:     { bg: 'color-mix(in srgb, var(--j-danger) 12%, transparent)',   bd: 'color-mix(in srgb, var(--j-danger) 50%, transparent)',  fg: 'var(--j-danger)' },
   cancelled:  { bg: 'rgba(180,180,180,0.10)', bd: 'rgba(180,180,180,0.4)', fg: '#bdbdbd' },
 };
 
 const StatusPill: React.FC<{ status: string }> = ({ status }) => {
-  const p = STATUS_PALETTE[status] ?? { bg: 'rgba(120,120,120,0.12)', bd: 'rgba(120,120,120,0.4)', fg: '#9ca3af' };
+  const p = STATUS_PALETTE[status] ?? { bg: 'rgba(120,120,120,0.12)', bd: 'rgba(120,120,120,0.4)', fg: 'var(--j-text-muted)' };
   return (
     <span style={{
       display: 'inline-block', padding: '2px 8px', borderRadius: 999,
@@ -373,26 +373,26 @@ export const DraftBoardView: React.FC = () => {
   }, []);
 
   return (
-    <div style={{ padding: 18, color: 'rgba(220,235,250,0.92)' }}>
+    <div style={{ padding: 18, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Draft Board · by Sending Domain</h2>
         <input
           type="date" value={date} onChange={e => setDate(e.target.value)}
           style={{
-            background: 'rgba(13,21,38,0.9)', color: 'rgba(220,235,250,0.95)',
-            border: '1px solid rgba(0,200,255,0.25)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
+            background: 'color-mix(in srgb, var(--j-shade) 90%, transparent)', color: 'color-mix(in srgb, var(--j-text) 95%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--j-cyan) 25%, transparent)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
           }}
         />
         <select
           value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           style={{
-            background: 'rgba(13,21,38,0.9)', color: 'rgba(220,235,250,0.95)',
-            border: '1px solid rgba(0,200,255,0.25)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
+            background: 'color-mix(in srgb, var(--j-shade) 90%, transparent)', color: 'color-mix(in srgb, var(--j-text) 95%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--j-cyan) 25%, transparent)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
           }}
         >
           {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>)}
         </select>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'rgba(180,210,240,0.75)', cursor: 'pointer' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)', cursor: 'pointer' }}>
           <input type="checkbox" checked={includeDrip} onChange={e => setIncludeDrip(e.target.checked)} />
           Include automated follow-ups
         </label>
@@ -425,13 +425,13 @@ export const DraftBoardView: React.FC = () => {
             {bulkBusy ? 'Approving…' : `✓ Approve all drafts (${draftIds.length})`}
           </button>
         )}
-        <div style={{ marginLeft: 'auto', fontSize: 12, color: 'rgba(180,210,240,0.75)' }}>
-          {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: '#00e5ff', fontWeight: 600 }}>{num(totals.audience)}</span> planned sends
+        <div style={{ marginLeft: 'auto', fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>
+          {totals.domains} domains · {totals.campaigns} campaigns · <span style={{ color: 'var(--j-cyan)', fontWeight: 600 }}>{num(totals.audience)}</span> planned sends
         </div>
       </div>
 
       {error && (
-        <div style={{ padding: 12, borderRadius: 8, background: 'rgba(233,69,96,0.08)', border: '1px solid rgba(233,69,96,0.4)', color: '#e94560', fontSize: 13, marginBottom: 12 }}>
+        <div style={{ padding: 12, borderRadius: 8, background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)', border: '1px solid color-mix(in srgb, var(--j-danger) 40%, transparent)', color: 'var(--j-danger)', fontSize: 13, marginBottom: 12 }}>
           {error}
         </div>
       )}
@@ -443,12 +443,12 @@ export const DraftBoardView: React.FC = () => {
           <span style={{ color: '#f59e0b', fontWeight: 600 }}>
             ⛔ {gateBlocked.ids.length} draft{gateBlocked.ids.length === 1 ? '' : 's'} blocked by red send-day gate{gateBlocked.gates.length === 1 ? '' : 's'}: {gateBlocked.gates.join(', ')}
           </span>
-          <span style={{ color: 'rgba(220,235,250,0.75)' }}>Fix the gate(s) on the Send Day tab, or override with a reason (audit-logged):</span>
+          <span style={{ color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' }}>Fix the gate(s) on the Send Day tab, or override with a reason (audit-logged):</span>
           <input
             value={overrideReason}
             onChange={e => setOverrideReason(e.target.value)}
             placeholder="Override reason (required)"
-            style={{ flex: 1, minWidth: 220, background: 'rgba(13,21,38,0.9)', color: 'rgba(220,235,250,0.95)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 6, padding: '6px 10px', fontSize: 13 }}
+            style={{ flex: 1, minWidth: 220, background: 'color-mix(in srgb, var(--j-shade) 90%, transparent)', color: 'color-mix(in srgb, var(--j-text) 95%, transparent)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 6, padding: '6px 10px', fontSize: 13 }}
           />
           <button
             onClick={() => void handleOverrideApprove()}
@@ -461,7 +461,7 @@ export const DraftBoardView: React.FC = () => {
       )}
 
       {!loading && !error && grouped.length === 0 && (
-        <div style={{ padding: 24, textAlign: 'center', color: 'rgba(180,210,240,0.55)', fontSize: 13 }}>
+        <div style={{ padding: 24, textAlign: 'center', color: 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontSize: 13 }}>
           No campaigns for {date} (MT){statusFilter !== 'all' ? ` with status "${statusFilter}"` : ''}.
         </div>
       )}
@@ -469,17 +469,17 @@ export const DraftBoardView: React.FC = () => {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {grouped.map(group => (
           <div key={group.domain} style={{
-            background: 'rgba(13,21,38,0.7)', border: '1px solid rgba(0,200,255,0.15)', borderRadius: 10, overflow: 'hidden',
+            background: 'color-mix(in srgb, var(--j-shade) 70%, transparent)', border: '1px solid color-mix(in srgb, var(--j-cyan) 15%, transparent)', borderRadius: 10, overflow: 'hidden',
           }}>
             {/* Domain header */}
             <div style={{
               display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
-              background: 'linear-gradient(135deg, rgba(99,102,241,0.16), rgba(139,92,246,0.12))',
-              borderBottom: '1px solid rgba(0,200,255,0.12)',
+              background: 'linear-gradient(135deg, color-mix(in srgb, var(--j-violet-strong) 16%, transparent), color-mix(in srgb, var(--j-violet-strong) 12%, transparent))',
+              borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 12%, transparent)',
             }}>
-              <span style={{ fontSize: 15, fontWeight: 700, color: 'rgba(225,235,250,0.96)' }}>{group.domain}</span>
-              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.7)' }}>{group.campaigns.length} campaign{group.campaigns.length === 1 ? '' : 's'}</span>
-              <span style={{ marginLeft: 'auto', fontSize: 12, color: '#00e5ff', fontWeight: 600 }}>{num(group.audience)} planned sends</span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--j-text)' }}>{group.domain}</span>
+              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{group.campaigns.length} campaign{group.campaigns.length === 1 ? '' : 's'}</span>
+              <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--j-cyan)', fontWeight: 600 }}>{num(group.audience)} planned sends</span>
             </div>
 
             {/* Campaign rows */}
@@ -488,29 +488,29 @@ export const DraftBoardView: React.FC = () => {
                 const isOpen = expanded.has(c.id);
                 const det = details[c.id];
                 return (
-                  <div key={c.id} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+                  <div key={c.id} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-text) 4%, transparent)' }}>
                     <button
                       onClick={() => toggle(c.id)}
                       style={{
                         width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
-                        background: isOpen ? 'rgba(0,229,255,0.04)' : 'transparent', border: 'none', cursor: 'pointer',
+                        background: isOpen ? 'color-mix(in srgb, var(--j-cyan) 4%, transparent)' : 'transparent', border: 'none', cursor: 'pointer',
                         textAlign: 'left', color: 'inherit',
                       }}
                     >
-                      <span style={{ width: 86, fontSize: 12, fontWeight: 600, color: 'rgba(200,225,250,0.9)' }}>
-                        {mtTime(c.scheduled_at || c.created_at)} <span style={{ color: 'rgba(180,210,240,0.5)' }}>MT</span>
+                      <span style={{ width: 86, fontSize: 12, fontWeight: 600, color: 'var(--j-text)' }}>
+                        {mtTime(c.scheduled_at || c.created_at)} <span style={{ color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>MT</span>
                       </span>
                       <StatusPill status={c.status} />
                       <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'rgba(220,235,250,0.95)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'color-mix(in srgb, var(--j-text) 95%, transparent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {c.subject || '(no subject)'}
                         </span>
-                        <span style={{ display: 'block', fontSize: 11, color: 'rgba(180,210,240,0.5)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ display: 'block', fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {c.name}
                         </span>
                       </span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: '#00e5ff', whiteSpace: 'nowrap' }}>{num(c.total_recipients)}</span>
-                      <span style={{ fontSize: 12, color: 'rgba(180,210,240,0.6)', width: 14, textAlign: 'center' }}>{isOpen ? '▾' : '▸'}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-cyan)', whiteSpace: 'nowrap' }}>{num(c.total_recipients)}</span>
+                      <span style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', width: 14, textAlign: 'center' }}>{isOpen ? '▾' : '▸'}</span>
                     </button>
 
                     {isOpen && (
@@ -557,8 +557,8 @@ export const DraftBoardView: React.FC = () => {
 
                         {/* Per-ISP volume targets / caps */}
                         <div style={fieldLabel}>Volume targets by mailbox provider</div>
-                        {det === 'loading' && <div style={{ fontSize: 12, color: 'rgba(180,210,240,0.55)' }}>Loading mailbox provider plan…</div>}
-                        {det === 'error' && <div style={{ fontSize: 12, color: '#e94560' }}>Could not load mailbox provider plan for this campaign.</div>}
+                        {det === 'loading' && <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>Loading mailbox provider plan…</div>}
+                        {det === 'error' && <div style={{ fontSize: 12, color: 'var(--j-danger)' }}>Could not load mailbox provider plan for this campaign.</div>}
                         {det && det !== 'loading' && det !== 'error' && (() => {
                           const iv = ispVol[c.id];
                           return (
@@ -589,8 +589,8 @@ export const DraftBoardView: React.FC = () => {
                               >
                                 ✕ Disapprove
                               </button>
-                              {a?.error && <span style={{ fontSize: 12, color: '#e94560' }}>{a.error}</span>}
-                              {a?.ok && !a?.error && <span style={{ fontSize: 12, color: '#00b894', fontWeight: 600 }}>{a.ok} ✓</span>}
+                              {a?.error && <span style={{ fontSize: 12, color: 'var(--j-danger)' }}>{a.error}</span>}
+                              {a?.ok && !a?.error && <span style={{ fontSize: 12, color: 'var(--j-success)', fontWeight: 600 }}>{a.ok} ✓</span>}
                             </div>
                           );
                         })()}
@@ -604,7 +604,7 @@ export const DraftBoardView: React.FC = () => {
         ))}
       </div>
 
-      <div style={{ marginTop: 18, fontSize: 10, color: 'rgba(180,210,240,0.35)' }}>
+      <div style={{ marginTop: 18, fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 35%, transparent)' }}>
         Draft Board v1.3 · audience segments/lists shown per campaign; per-provider Planned = planner-selected recipients (mailing_campaign_isp_plans) · send-day gates enforced server-side on Approve (red gate → blocked; override requires an audit-logged reason) · domain → campaign(MT) → volume targets per mailbox provider · "planned sends" = cumulative recipients across a domain's campaigns/send batches (a member in multiple send batches counts each time, so it exceeds unique reach) · times in America/Denver (MT)
       </div>
     </div>
@@ -629,7 +629,7 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number; vol?: IspVolume
   return (
     <table style={{ borderCollapse: 'collapse', fontSize: 12, marginTop: 6, minWidth: 320 }}>
       <thead>
-        <tr style={{ color: 'rgba(180,210,240,0.6)', textAlign: 'left' }}>
+        <tr style={{ color: 'color-mix(in srgb, var(--j-text) 60%, transparent)', textAlign: 'left' }}>
           <th style={thCell}>Mailbox provider</th>
           {hasPlanned && (
             <th style={{ ...thCell, textAlign: 'right' }} title="Planner-selected recipients per provider (mailing_campaign_isp_plans.audience_selected_count)">
@@ -644,25 +644,25 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number; vol?: IspVolume
           const v = quotaByIsp.get(isp) ?? 0;
           const p = plannedByIsp.get(isp);
           return (
-            <tr key={isp} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <tr key={isp} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-text) 5%, transparent)' }}>
               <td style={tdCell}>{ISP_LABEL[isp] || isp}</td>
               {hasPlanned && (
-                <td style={{ ...tdCell, textAlign: 'right', color: (p ?? 0) > 0 ? '#00e5ff' : 'rgba(180,210,240,0.55)', fontWeight: (p ?? 0) > 0 ? 600 : 400 }}>
+                <td style={{ ...tdCell, textAlign: 'right', color: (p ?? 0) > 0 ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontWeight: (p ?? 0) > 0 ? 600 : 400 }}>
                   {p === undefined ? '—' : num(p)}
                 </td>
               )}
-              <td style={{ ...tdCell, textAlign: 'right', color: v > 0 ? '#00e5ff' : 'rgba(180,210,240,0.55)', fontWeight: v > 0 ? 600 : 400 }}>
+              <td style={{ ...tdCell, textAlign: 'right', color: v > 0 ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-text) 55%, transparent)', fontWeight: v > 0 ? 600 : 400 }}>
                 {v > 0 ? num(v) : 'Uncapped'}
               </td>
             </tr>
           );
         })}
-        <tr style={{ borderTop: '1px solid rgba(0,200,255,0.18)' }}>
+        <tr style={{ borderTop: '1px solid color-mix(in srgb, var(--j-cyan) 18%, transparent)' }}>
           <td style={{ ...tdCell, fontWeight: 700 }}>Audience (planned)</td>
           {hasPlanned ? (
             <>
               <td
-                style={{ ...tdCell, textAlign: 'right', color: '#00e5ff', fontWeight: 700 }}
+                style={{ ...tdCell, textAlign: 'right', color: 'var(--j-cyan)', fontWeight: 700 }}
                 title={`Σ planner-selected per provider. Campaign total_recipients: ${num(totalAudience)}`}
               >
                 {num(plannedSum)}
@@ -670,7 +670,7 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number; vol?: IspVolume
               <td style={tdCell} />
             </>
           ) : (
-            <td style={{ ...tdCell, textAlign: 'right', color: '#00e5ff', fontWeight: 700 }}>{num(totalAudience)}</td>
+            <td style={{ ...tdCell, textAlign: 'right', color: 'var(--j-cyan)', fontWeight: 700 }}>{num(totalAudience)}</td>
           )}
         </tr>
       </tbody>
@@ -681,18 +681,18 @@ const IspTable: React.FC<{ det: EditData; totalAudience: number; vol?: IspVolume
 const Field: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div style={{ minWidth: 0, maxWidth: 360 }}>
     <div style={fieldLabel}>{label}</div>
-    <div style={{ fontSize: 12, color: 'rgba(220,235,250,0.9)', overflowWrap: 'anywhere' }}>{value}</div>
+    <div style={{ fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 90%, transparent)', overflowWrap: 'anywhere' }}>{value}</div>
   </div>
 );
 
-const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: 'rgba(180,210,240,0.5)', marginBottom: 3 };
-const segmentChip: React.CSSProperties = { display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: 'rgba(99,102,241,0.14)', border: '1px solid rgba(99,102,241,0.45)', color: '#a5b4fc', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' };
-const listChip: React.CSSProperties = { ...segmentChip, background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.45)', color: '#c084fc' };
+const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: 'color-mix(in srgb, var(--j-text) 50%, transparent)', marginBottom: 3 };
+const segmentChip: React.CSSProperties = { display: 'inline-block', padding: '2px 8px', borderRadius: 999, background: 'color-mix(in srgb, var(--j-violet-strong) 14%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet-strong) 45%, transparent)', color: 'var(--j-violet)', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' };
+const listChip: React.CSSProperties = { ...segmentChip, background: 'color-mix(in srgb, var(--j-violet) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--j-violet) 45%, transparent)', color: 'var(--j-violet)' };
 const thCell: React.CSSProperties = { padding: '4px 14px 4px 0', fontWeight: 600 };
-const tdCell: React.CSSProperties = { padding: '4px 14px 4px 0', color: 'rgba(220,235,250,0.9)' };
-const ghostBtn: React.CSSProperties = { background: 'rgba(0,176,255,0.12)', color: '#00b0ff', border: '1px solid rgba(0,176,255,0.35)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
-const linkBtn: React.CSSProperties = { background: 'transparent', color: '#00b0ff', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' };
-const approveBtn: React.CSSProperties = { background: 'rgba(0,184,148,0.14)', color: '#00b894', border: '1px solid rgba(0,184,148,0.45)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
-const disapproveBtn: React.CSSProperties = { background: 'rgba(233,69,96,0.12)', color: '#e94560', border: '1px solid rgba(233,69,96,0.45)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const tdCell: React.CSSProperties = { padding: '4px 14px 4px 0', color: 'color-mix(in srgb, var(--j-text) 90%, transparent)' };
+const ghostBtn: React.CSSProperties = { background: 'color-mix(in srgb, var(--j-blue) 12%, transparent)', color: 'var(--j-blue)', border: '1px solid color-mix(in srgb, var(--j-blue) 35%, transparent)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const linkBtn: React.CSSProperties = { background: 'transparent', color: 'var(--j-blue)', border: 'none', padding: 0, fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' };
+const approveBtn: React.CSSProperties = { background: 'color-mix(in srgb, var(--j-success) 14%, transparent)', color: 'var(--j-success)', border: '1px solid color-mix(in srgb, var(--j-success) 45%, transparent)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const disapproveBtn: React.CSSProperties = { background: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', color: 'var(--j-danger)', border: '1px solid color-mix(in srgb, var(--j-danger) 45%, transparent)', padding: '6px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
 
 export default DraftBoardView;

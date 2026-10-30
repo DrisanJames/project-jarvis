@@ -135,27 +135,27 @@ export const SendTestEmail: React.FC = () => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #080c14;">
-  <div style="background: #0d1526; border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+  <div style="background: var(--j-surface); border-radius: 16px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
     <div style="text-align: center; margin-bottom: 32px;">
-      <h1 style="color: #00e5ff; margin: 0; font-size: 28px;">📬 Mailing Platform</h1>
-      <p style="color: rgba(180,210,240,0.65); margin: 8px 0 0;">Mailing Platform Test</p>
+      <h1 style="color: var(--j-cyan); margin: 0; font-size: 28px;">📬 Mailing Platform</h1>
+      <p style="color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 8px 0 0;">Mailing Platform Test</p>
     </div>
     
-    <h2 style="color: #e0e6f0; margin-bottom: 16px;">${subject}</h2>
+    <h2 style="color: var(--j-text); margin-bottom: 16px;">${subject}</h2>
     
-    <p style="color: #c0c8d8; line-height: 1.6;">
+    <p style="color: var(--j-text-2); line-height: 1.6;">
       This is a test email sent from your mailing platform.
     </p>
     
-    <div style="background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%); color: white; padding: 20px; border-radius: 12px; margin: 24px 0;">
+    <div style="background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%); color: white; padding: 20px; border-radius: 12px; margin: 24px 0;">
       <h3 style="margin: 0 0 12px 0;">✅ Delivery Confirmed</h3>
       <p style="margin: 0; opacity: 0.9; font-size: 14px;">
         Your email infrastructure is working correctly.
       </p>
     </div>
     
-    <div style="background: #0a0f1a; border-radius: 8px; padding: 16px; margin-top: 24px;">
-      <p style="margin: 0; font-size: 13px; color: rgba(180,210,240,0.65);">
+    <div style="background: var(--j-bg); border-radius: 8px; padding: 16px; margin-top: 24px;">
+      <p style="margin: 0; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent);">
         <strong>Sent via:</strong> sending infrastructure<br>
         <strong>From:</strong> ${fromName} &lt;${fromEmail}&gt;<br>
         <strong>Timestamp:</strong> ${new Date().toISOString()}
@@ -163,7 +163,7 @@ export const SendTestEmail: React.FC = () => {
     </div>
   </div>
   
-  <p style="text-align: center; color: rgba(180,210,240,0.65); font-size: 12px; margin-top: 24px;">
+  <p style="text-align: center; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; margin-top: 24px;">
     Powered by your mailing platform
   </p>
 </body>
@@ -173,12 +173,12 @@ export const SendTestEmail: React.FC = () => {
     return (
       <div className="send-test-email">
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', gap: 16 }}>
-          <FontAwesomeIcon icon={faSpinner} spin style={{ color: '#00e5ff', fontSize: 28 }} />
-          <span style={{ fontSize: 14, color: 'rgba(180,210,240,0.65)' }}>Loading sending profiles...</span>
+          <FontAwesomeIcon icon={faSpinner} spin style={{ color: 'var(--j-cyan)', fontSize: 28 }} />
+          <span style={{ fontSize: 14, color: 'color-mix(in srgb, var(--j-text) 65%, transparent)' }}>Loading sending profiles...</span>
           <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
             {[1, 2, 3].map(i => (
-              <div key={i} style={{ height: 8, width: 48, background: 'rgba(0,200,255,0.08)', borderRadius: 4 }}>
-                <div style={{ height: '100%', borderRadius: 4, background: 'rgba(0,229,255,0.2)', animation: `igSendLoad 1.2s ease infinite`, animationDelay: `${i * 0.2}s` }} />
+              <div key={i} style={{ height: 8, width: 48, background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', borderRadius: 4 }}>
+                <div style={{ height: '100%', borderRadius: 4, background: 'color-mix(in srgb, var(--j-cyan) 20%, transparent)', animation: `igSendLoad 1.2s ease infinite`, animationDelay: `${i * 0.2}s` }} />
               </div>
             ))}
           </div>

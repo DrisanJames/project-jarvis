@@ -54,18 +54,18 @@ const customStyles: StylesConfig<any, true> = {
     ...base,
     minHeight: '44px',
     borderRadius: '10px',
-    borderColor: state.isFocused ? '#00e5ff' : 'rgba(0,200,255,0.08)',
-    boxShadow: state.isFocused ? '0 0 0 3px rgba(0, 200, 255, 0.15)' : 'none',
+    borderColor: state.isFocused ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
+    boxShadow: state.isFocused ? '0 0 0 3px color-mix(in srgb, var(--j-cyan) 15%, transparent)' : 'none',
     '&:hover': {
-      borderColor: '#00e5ff',
+      borderColor: 'var(--j-cyan)',
     },
-    backgroundColor: '#0d1526',
+    backgroundColor: 'var(--j-surface)',
   }),
   menu: (base) => ({
     ...base,
     borderRadius: '12px',
     boxShadow: '0 10px 40px rgba(0, 0, 0, 0.15)',
-    border: '1px solid rgba(0,200,255,0.08)',
+    border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     overflow: 'hidden',
     zIndex: 9999,
   }),
@@ -80,51 +80,51 @@ const customStyles: StylesConfig<any, true> = {
     padding: '10px 12px',
     marginBottom: '2px',
     backgroundColor: state.isSelected 
-      ? '#00e5ff' 
+      ? 'var(--j-cyan)' 
       : state.isFocused 
-        ? 'rgba(0,200,255,0.08)' 
+        ? 'color-mix(in srgb, var(--j-cyan) 8%, transparent)' 
         : 'transparent',
-    color: state.isSelected ? '#fff' : '#e0e6f0',
+    color: state.isSelected ? '#fff' : 'var(--j-text)',
     cursor: 'pointer',
     '&:active': {
-      backgroundColor: state.isSelected ? '#00e5ff' : 'rgba(0,200,255,0.08)',
+      backgroundColor: state.isSelected ? 'var(--j-cyan)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     },
   }),
   multiValue: (base, state) => ({
     ...base,
-    backgroundColor: (state.data as any)?.isLocked ? '#fed7d7' : 'rgba(0,200,255,0.08)',
+    backgroundColor: (state.data as any)?.isLocked ? '#fed7d7' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)',
     borderRadius: '6px',
     padding: '2px 4px',
   }),
   multiValueLabel: (base, state) => ({
     ...base,
-    color: (state.data as any)?.isLocked ? '#c53030' : '#e0e6f0',
+    color: (state.data as any)?.isLocked ? '#c53030' : 'var(--j-text)',
     fontWeight: 500,
     fontSize: '13px',
   }),
   multiValueRemove: (base, state) => ({
     ...base,
     display: (state.data as any)?.isLocked ? 'none' : 'flex',
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     '&:hover': {
       backgroundColor: '#c53030',
-      color: '#fff',
+      color: 'var(--j-text)',
     },
   }),
   placeholder: (base) => ({
     ...base,
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
   }),
   input: (base) => ({
     ...base,
-    color: '#e0e6f0',
+    color: 'var(--j-text)',
   }),
   groupHeading: (base) => ({
     ...base,
     fontSize: '11px',
     fontWeight: 700,
     textTransform: 'uppercase',
-    color: 'rgba(180,210,240,0.65)',
+    color: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
     padding: '8px 12px 4px',
     letterSpacing: '0.05em',
   }),

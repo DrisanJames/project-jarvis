@@ -201,11 +201,11 @@ interface JourneyNodeStatsResponse {
 
 // Node type definitions
 const NODE_TYPES = {
-  trigger: { label: 'Trigger', icon: faBolt, color: '#00b894', description: 'Start the journey' },
-  email: { label: 'Send Email', icon: faEnvelope, color: '#00e5ff', description: 'Send an email' },
-  delay: { label: 'Wait', icon: faClock, color: '#fdcb6e', description: 'Wait before next step' },
-  condition: { label: 'Condition', icon: faCodeBranch, color: '#00b0ff', description: 'Branch based on behavior' },
-  split: { label: 'A/B Split', icon: faRandom, color: '#ec4899', description: 'Split traffic for testing' },
+  trigger: { label: 'Trigger', icon: faBolt, color: 'var(--j-success)', description: 'Start the journey' },
+  email: { label: 'Send Email', icon: faEnvelope, color: 'var(--j-cyan)', description: 'Send an email' },
+  delay: { label: 'Wait', icon: faClock, color: 'var(--j-warn)', description: 'Wait before next step' },
+  condition: { label: 'Condition', icon: faCodeBranch, color: 'var(--j-blue)', description: 'Branch based on behavior' },
+  split: { label: 'A/B Split', icon: faRandom, color: 'var(--j-pink)', description: 'Split traffic for testing' },
   goal: { label: 'Goal', icon: faBullseye, color: '#14b8a6', description: 'Track conversions' },
 };
 
@@ -694,12 +694,12 @@ export const JourneyBuilder: React.FC = () => {
       
       return (
         <g key={idx} className="connection-line">
-          <path d={path} stroke="#6b7280" strokeWidth="2" fill="none" markerEnd="url(#arrowhead)" />
+          <path d={path} stroke="var(--j-text-faint)" strokeWidth="2" fill="none" markerEnd="url(#arrowhead)" />
           <circle 
             cx={(x1 + x2) / 2} 
             cy={midY} 
             r="8" 
-            fill="#e94560" 
+            fill="var(--j-danger)" 
             className="delete-connection"
             onClick={() => deleteConnection(conn.from, conn.to)}
           />
@@ -1412,8 +1412,8 @@ export const JourneyBuilder: React.FC = () => {
             style={{
               padding: '8px 12px',
               borderRadius: 6,
-              border: '1px solid rgba(99,102,241,0.3)',
-              background: 'rgba(15,15,30,0.6)',
+              border: '1px solid color-mix(in srgb, var(--j-violet-strong) 30%, transparent)',
+              background: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
               color: '#e0e0ff',
               fontSize: 14,
               cursor: 'pointer',
@@ -1562,7 +1562,7 @@ export const JourneyBuilder: React.FC = () => {
                 refY="3.5"
                 orient="auto"
               >
-                <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+                <polygon points="0 0, 10 3.5, 0 7" fill="var(--j-text-faint)" />
               </marker>
             </defs>
             {renderConnections()}
@@ -1724,7 +1724,7 @@ export const JourneyBuilder: React.FC = () => {
           </div>
           <div className="jb-drawer-body">
             {templates.length === 0 ? (
-              <p style={{ color: 'rgba(180,210,240,0.6)' }}>
+              <p style={{ color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
                 No templates found. Create templates from the Mailing → Templates page first.
               </p>
             ) : (

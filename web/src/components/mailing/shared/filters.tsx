@@ -173,7 +173,7 @@ export const COMMON_ISP_GROUPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast
 // Explorer / Delivery Queue panel chrome exactly)
 // ═══════════════════════════════════════════════════════════════════════════
 
-const INFO_BLUE = '#60a5fa'; // route_type chip tone (shared chart palette blue)
+const INFO_BLUE = 'var(--j-blue)'; // route_type chip tone (shared chart palette blue)
 
 const fstyles: Record<string, React.CSSProperties> = {
   toolbar: {
@@ -223,7 +223,7 @@ const fstyles: Record<string, React.CSSProperties> = {
     outline: 'none', whiteSpace: 'nowrap',
   },
   primaryBtn: {
-    background: theme.indigo400, color: '#0a0e1a',
+    background: theme.indigo400, color: 'var(--j-bg)',
     border: 'none', padding: '8px 16px', borderRadius: 6,
     fontSize: 13, fontWeight: 600, cursor: 'pointer',
     display: 'flex', alignItems: 'center', gap: 8, height: 34,
@@ -241,7 +241,7 @@ export const filterInputStyle: React.CSSProperties = fstyles.input;
 
 // Removable filter chip (design system §3.4) — one chip style portal-wide.
 export const FilterChip: React.FC<{ label: string; onRemove?: () => void; tone?: string }> = ({ label, onRemove, tone }) => (
-  <span style={{ ...fstyles.chip, borderColor: (tone || theme.indigo400) + '55', color: tone || theme.indigo400 }}>
+  <span style={{ ...fstyles.chip, borderColor: `color-mix(in srgb, ${(tone || theme.indigo400)} 33%, transparent)`, color: tone || theme.indigo400 }}>
     {label}
     {onRemove && (
       <button style={fstyles.chipX} onClick={onRemove} title="Remove filter">
@@ -319,8 +319,8 @@ export const FilterBar: React.FC<{
                 style={{
                   ...fstyles.presetBtn,
                   color: active ? theme.indigo400 : theme.textMuted,
-                  borderColor: active ? theme.indigo400 + '66' : theme.panelBorderStrong,
-                  background: active ? theme.indigo400 + '14' : 'transparent',
+                  borderColor: active ? `color-mix(in srgb, ${theme.indigo400} 40%, transparent)` : theme.panelBorderStrong,
+                  background: active ? `color-mix(in srgb, ${theme.indigo400} 8%, transparent)` : 'transparent',
                 }}
                 onClick={() => setDraft((d) => ({ ...d, from: p.from(), to: p.to() }))}
               >
@@ -387,7 +387,7 @@ export const FilterBar: React.FC<{
                     style={{
                       ...fstyles.segmentedBtn,
                       color: active ? theme.indigo400 : theme.textMuted,
-                      background: active ? theme.indigo400 + '1f' : 'transparent',
+                      background: active ? `color-mix(in srgb, ${theme.indigo400} 12%, transparent)` : 'transparent',
                       fontWeight: active ? 600 : 400,
                     }}
                   >

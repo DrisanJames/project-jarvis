@@ -633,37 +633,37 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           justify-content: space-between;
           align-items: center;
           padding: 20px 24px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
         }
 
         .si-header h2 { margin: 0; font-size: 20px; }
-        .si-header p { margin: 4px 0 0; color: rgba(180,210,240,0.65); font-size: 14px; }
-        .si-close { background: none; border: none; cursor: pointer; color: rgba(180,210,240,0.65); }
+        .si-header p { margin: 4px 0 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
+        .si-close { background: none; border: none; cursor: pointer; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         .si-steps {
           display: flex;
           justify-content: center;
           gap: 24px;
           padding: 20px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
         }
 
         .si-step {
           display: flex;
           align-items: center;
           gap: 8px;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           font-size: 14px;
         }
 
-        .si-step.current { color: #00e5ff; font-weight: 500; }
-        .si-step.complete { color: #00b894; }
+        .si-step.current { color: var(--j-cyan); font-weight: 500; }
+        .si-step.complete { color: var(--j-success); }
 
         .si-step-indicator {
           width: 24px;
           height: 24px;
           border-radius: 50%;
-          background: #e5e7eb;
+          background: var(--j-surface-2);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -671,8 +671,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           font-weight: 600;
         }
 
-        .si-step.current .si-step-indicator { background: #00e5ff; color: white; }
-        .si-step.complete .si-step-indicator { background: #00b894; color: white; }
+        .si-step.current .si-step-indicator { background: var(--j-cyan); color: white; }
+        .si-step.complete .si-step-indicator { background: var(--j-success); color: white; }
 
         .si-error {
           display: flex;
@@ -680,8 +680,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           gap: 10px;
           padding: 12px 24px;
           background: #fef2f2;
-          border-bottom: 1px solid #fecaca;
-          color: #e94560;
+          border-bottom: 1px solid var(--j-danger-soft);
+          color: var(--j-danger);
           font-size: 14px;
         }
 
@@ -690,7 +690,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           background: none;
           border: none;
           cursor: pointer;
-          color: #e94560;
+          color: var(--j-danger);
         }
 
         .si-section-header {
@@ -698,7 +698,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-section-header h3 { margin: 0 0 4px; font-size: 18px; }
-        .si-section-header p { margin: 0; color: rgba(180,210,240,0.65); }
+        .si-section-header p { margin: 0; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         /* Templates */
         .si-templates { padding-bottom: 24px; }
@@ -715,7 +715,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           align-items: center;
           gap: 16px;
           padding: 16px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
           text-decoration: none;
           color: inherit;
@@ -723,15 +723,15 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-template-card:hover {
-          border-color: #00e5ff;
+          border-color: var(--j-cyan);
           background: #f0f9ff;
         }
 
-        .si-template-icon { color: #00e5ff; }
+        .si-template-icon { color: var(--j-cyan); }
         .si-template-info h4 { margin: 0 0 4px; font-size: 15px; }
-        .si-template-info p { margin: 0; font-size: 13px; color: rgba(180,210,240,0.65); }
-        .si-template-fields { font-size: 12px; color: rgba(180,210,240,0.65); }
-        .si-download-icon { margin-left: auto; color: rgba(180,210,240,0.65); }
+        .si-template-info p { margin: 0; font-size: 13px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-template-fields { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-download-icon { margin-left: auto; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         .si-tips {
           margin: 0 24px;
@@ -761,7 +761,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         /* Fields Reference */
         .si-fields-reference {
           margin: 20px 24px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
           overflow: hidden;
         }
@@ -769,12 +769,12 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-fields-reference h4 {
           margin: 0;
           padding: 12px 16px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           font-size: 14px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
         }
 
-        .si-field-category { border-bottom: 1px solid #e5e7eb; }
+        .si-field-category { border-bottom: 1px solid var(--j-text); }
         .si-field-category:last-child { border-bottom: none; }
 
         .si-category-header {
@@ -790,9 +790,9 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           text-align: left;
         }
 
-        .si-category-header:hover { background: #f9fafb; }
+        .si-category-header:hover { background: var(--j-surface-2); }
         .si-category-name { font-weight: 500; }
-        .si-category-count { margin-left: auto; color: rgba(180,210,240,0.65); font-size: 12px; }
+        .si-category-count { margin-left: auto; color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
 
         .si-category-fields { padding: 8px 16px 16px 40px; }
 
@@ -805,21 +805,21 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-field-item code {
-          background: #f3f4f6;
+          background: var(--j-surface-2);
           padding: 2px 6px;
           border-radius: 4px;
           font-size: 12px;
         }
 
-        .si-field-label { color: #374151; }
+        .si-field-label { color: var(--j-text-faint); }
         .si-required-badge {
           background: #fee2e2;
-          color: #e94560;
+          color: var(--j-danger);
           padding: 2px 6px;
           border-radius: 4px;
           font-size: 11px;
         }
-        .si-field-example { color: rgba(180,210,240,0.65); font-size: 12px; }
+        .si-field-example { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 12px; }
 
         /* Upload */
         .si-upload { padding: 24px; }
@@ -830,9 +830,9 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           align-items: center;
           justify-content: center;
           padding: 48px;
-          border: 2px dashed #d1d5db;
+          border: 2px dashed var(--j-text-2);
           border-radius: 12px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           margin-top: 20px;
           text-align: center;
         }
@@ -840,20 +840,20 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-dropzone.loading { pointer-events: none; opacity: 0.7; }
 
         .si-dropzone h4 { margin: 16px 0 8px; }
-        .si-dropzone p { margin: 0 0 16px; color: rgba(180,210,240,0.65); }
+        .si-dropzone p { margin: 0 0 16px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
 
         .si-file-input input { display: none; }
         .si-file-input span {
           display: inline-block;
           padding: 10px 20px;
-          background: #00e5ff;
+          background: var(--j-cyan);
           color: white;
           border-radius: 6px;
           cursor: pointer;
           font-weight: 500;
         }
 
-        .si-file-input span:hover { background: #00b0ff; }
+        .si-file-input span:hover { background: var(--j-blue); }
 
         /* Mapping */
         .si-mapping { padding: 0 24px 24px; }
@@ -869,19 +869,19 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           font-size: 14px;
         }
 
-        .si-file-size { color: rgba(180,210,240,0.65); }
+        .si-file-size { color: color-mix(in srgb, var(--j-text) 65%, transparent); }
         .si-file-info button {
           margin-left: auto;
           background: none;
           border: none;
-          color: #00e5ff;
+          color: var(--j-cyan);
           cursor: pointer;
           font-size: 13px;
         }
 
         .si-mapping-table-wrapper {
           margin-top: 20px;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
           overflow: hidden;
         }
@@ -895,35 +895,35 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-mapping-table td {
           padding: 12px;
           text-align: left;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
         }
 
         .si-mapping-table th {
-          background: #f9fafb;
+          background: var(--j-surface-2);
           font-size: 12px;
           font-weight: 600;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           text-transform: uppercase;
         }
 
         .si-mapping-table select {
           width: 100%;
           padding: 8px;
-          border: 1px solid #d1d5db;
+          border: 1px solid var(--j-text-2);
           border-radius: 6px;
           font-size: 14px;
         }
 
         .si-email-row { background: #f0fdf4; }
 
-        .si-confidence-high { color: #00b894; margin-left: 8px; }
+        .si-confidence-high { color: var(--j-success); margin-left: 8px; }
 
         .si-preview-cell {
           max-width: 150px;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          color: rgba(180,210,240,0.65);
+          color: color-mix(in srgb, var(--j-text) 65%, transparent);
           font-size: 13px;
         }
 
@@ -935,7 +935,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-preview-scroll {
           overflow-x: auto;
-          border: 1px solid #e5e7eb;
+          border: 1px solid var(--j-text);
           border-radius: 8px;
         }
 
@@ -948,11 +948,11 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-preview-scroll th,
         .si-preview-scroll td {
           padding: 8px 12px;
-          border-bottom: 1px solid #e5e7eb;
+          border-bottom: 1px solid var(--j-text);
           white-space: nowrap;
         }
 
-        .si-preview-scroll th { background: #f9fafb; font-weight: 500; }
+        .si-preview-scroll th { background: var(--j-surface-2); font-weight: 500; }
 
         /* Importing & Complete */
         .si-importing, .si-complete {
@@ -961,13 +961,13 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         }
 
         .si-progress-container h3 { margin: 20px 0 8px; }
-        .si-progress-container p { color: rgba(180,210,240,0.65); margin: 0; }
+        .si-progress-container p { color: color-mix(in srgb, var(--j-text) 65%, transparent); margin: 0; }
 
         .si-progress-bar-container {
           width: 100%;
           max-width: 400px;
           height: 8px;
-          background: #e5e7eb;
+          background: var(--j-surface-2);
           border-radius: 4px;
           margin: 24px auto;
           overflow: hidden;
@@ -975,11 +975,11 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-progress-bar {
           height: 100%;
-          background: #00e5ff;
+          background: var(--j-cyan);
           transition: width 0.3s;
         }
 
-        .si-progress-text { color: rgba(180,210,240,0.65); font-size: 14px; }
+        .si-progress-text { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 14px; }
 
         .si-complete-icon {
           width: 80px;
@@ -990,7 +990,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #00b894;
+          color: var(--j-success);
         }
 
         .si-stats-grid {
@@ -1005,17 +1005,17 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
 
         .si-stat {
           padding: 16px;
-          background: #f9fafb;
+          background: var(--j-surface-2);
           border-radius: 8px;
         }
 
         .si-stat-value { display: block; font-size: 24px; font-weight: 700; }
-        .si-stat-label { font-size: 12px; color: rgba(180,210,240,0.65); }
-        .si-stat.success .si-stat-value { color: #00b894; }
-        .si-stat.warning .si-stat-value { color: #fdcb6e; }
-        .si-stat.error .si-stat-value { color: #e94560; }
+        .si-stat-label { font-size: 12px; color: color-mix(in srgb, var(--j-text) 65%, transparent); }
+        .si-stat.success .si-stat-value { color: var(--j-success); }
+        .si-stat.warning .si-stat-value { color: var(--j-warn); }
+        .si-stat.error .si-stat-value { color: var(--j-danger); }
 
-        .si-skip-note { color: rgba(180,210,240,0.65); font-size: 13px; }
+        .si-skip-note { color: color-mix(in srgb, var(--j-text) 65%, transparent); font-size: 13px; }
 
         /* Actions */
         .si-actions {
@@ -1023,7 +1023,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           justify-content: flex-end;
           gap: 12px;
           padding: 20px 24px;
-          border-top: 1px solid #e5e7eb;
+          border-top: 1px solid var(--j-text);
           margin-top: 20px;
         }
 
@@ -1032,7 +1032,7 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           align-items: center;
           gap: 8px;
           padding: 10px 20px;
-          border: 1px solid #d1d5db;
+          border: 1px solid var(--j-text-2);
           border-radius: 6px;
           background: white;
           font-size: 14px;
@@ -1041,16 +1041,16 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
           transition: all 0.2s;
         }
 
-        .si-btn:hover { background: #f9fafb; }
+        .si-btn:hover { background: var(--j-surface-2); }
         .si-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .si-btn-primary {
-          background: #00e5ff;
-          border-color: #00e5ff;
+          background: var(--j-cyan);
+          border-color: var(--j-cyan);
           color: white;
         }
 
-        .si-btn-primary:hover { background: #00b0ff; }
+        .si-btn-primary:hover { background: var(--j-blue); }
 
         /* Loading */
         .si-loading { text-align: center; }
@@ -1058,8 +1058,8 @@ export const SubscriberImport: React.FC<SubscriberImportProps> = ({
         .si-spinner {
           width: 32px;
           height: 32px;
-          border: 3px solid #e5e7eb;
-          border-top-color: #00e5ff;
+          border: 3px solid var(--j-text);
+          border-top-color: var(--j-cyan);
           border-radius: 50%;
           animation: spin 0.8s linear infinite;
           margin: 0 auto;

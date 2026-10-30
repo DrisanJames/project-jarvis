@@ -38,9 +38,9 @@ interface Cell {
 }
 
 const STATUS_FG: Record<string, string> = {
-  draft: '#9ca3af', scheduled: '#00b0ff', preparing: '#facc15',
-  finalizing_audience: '#facc15', sending: '#c084fc', sent: '#00b894',
-  completed: '#00b894', failed: '#e94560', cancelled: '#bdbdbd',
+  draft: 'var(--j-text-muted)', scheduled: 'var(--j-blue)', preparing: 'var(--j-warn)',
+  finalizing_audience: 'var(--j-warn)', sending: 'var(--j-violet)', sent: 'var(--j-success)',
+  completed: 'var(--j-success)', failed: 'var(--j-danger)', cancelled: '#bdbdbd',
 };
 
 // Logical ISP display order + labels (canonical, matches the Draft Board).
@@ -65,7 +65,7 @@ const CATEGORY_RANK: Record<VolCategory, number> = { mature: 0, warming: 1, new:
 const CATEGORY_META: Record<VolCategory, { label: string; color: string; bg: string; border: string }> = {
   mature:  { label: 'Mature',  color: colors.indigo300,  bg: alpha(colors.indigo500, '14'), border: alpha(colors.indigo500, '44') },
   warming: { label: 'Warming', color: colors.warningText, bg: alpha(colors.warning, '14'),  border: alpha(colors.warning, '44') },
-  new:     { label: 'New',     color: colors.textMuted,   bg: 'rgba(148,163,184,0.08)',      border: 'rgba(148,163,184,0.32)' },
+  new:     { label: 'New',     color: colors.textMuted,   bg: 'color-mix(in srgb, var(--j-text-muted) 8%, transparent)',      border: 'color-mix(in srgb, var(--j-text-muted) 32%, transparent)' },
 };
 
 const num = (n: number): string => (n || 0).toLocaleString();
@@ -316,17 +316,17 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
   }, [brands, categoryGroups]);
 
   if (loading) return <div style={msg}>Loading the plan for {date}…</div>;
-  if (error) return <div style={{ ...msg, color: '#e94560' }}>Failed to load plan: {error}</div>;
+  if (error) return <div style={{ ...msg, color: 'var(--j-danger)' }}>Failed to load plan: {error}</div>;
   if (!brands.length) return <div style={msg}>No campaigns scheduled for {date}. (Nothing staged yet for this date.)</div>;
 
   return (
     <div>
-      <style>{`.bwg-cell{transition:background 120ms ease} .bwg-cell:hover{background:rgba(99,102,241,0.12)}`}</style>
+      <style>{`.bwg-cell{transition:background 120ms ease} .bwg-cell:hover{background:color-mix(in srgb, var(--j-violet-strong) 12%, transparent)}`}</style>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(220,235,250,0.92)' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>
           {brands.length} brands · {waves.length} send batches · {num(grandTotal)} planned
         </span>
-        <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.55)' }}>Mature → Warming → New · scroll down through the bands</span>
+        <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 55%, transparent)' }}>Mature → Warming → New · scroll down through the bands</span>
       </div>
 
       {/* One titled, stacked section per volume-category band. */}
@@ -345,20 +345,20 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
               }}>
                 {meta.label}
               </span>
-              <span style={{ fontSize: 11, color: 'rgba(180,210,240,0.6)' }}>
+              <span style={{ fontSize: 11, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>
                 {secBrands.length} {secBrands.length === 1 ? 'domain' : 'domains'} · {num(secTotal)} planned
               </span>
             </div>
-            <div style={{ overflowX: 'auto', border: `1px solid ${meta.border}`, borderRadius: 8, background: 'rgba(13,21,38,0.45)' }}>
+            <div style={{ overflowX: 'auto', border: `1px solid ${meta.border}`, borderRadius: 8, background: 'color-mix(in srgb, var(--j-shade) 45%, transparent)' }}>
               <table style={{ borderCollapse: 'separate', borderSpacing: 0, minWidth: '100%' }}>
                 <thead>
                   <tr>
                     <th style={{ ...thBase, ...stickyLeft, textAlign: 'left' }}>Send batch</th>
                     {secBrands.map(b => (
                       <th key={b.domain} style={thBase}>
-                        <div style={{ fontWeight: 700, color: '#00e5ff', fontSize: 12 }}>{b.label}</div>
-                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.5)' }}>{b.domain}</div>
-                        <div style={{ fontSize: 9, color: 'rgba(180,210,240,0.7)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
+                        <div style={{ fontWeight: 700, color: 'var(--j-cyan)', fontSize: 12 }}>{b.label}</div>
+                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 50%, transparent)' }}>{b.domain}</div>
+                        <div style={{ fontSize: 9, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)' }}>{num(totalsByBrand[b.domain] || 0)}</div>
                       </th>
                     ))}
                   </tr>
@@ -371,12 +371,12 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                     return (
                       <tr key={w}>
                         <td style={{ ...tdBase, ...stickyLeft }}>
-                          <div style={{ fontWeight: 700, fontSize: 12, color: 'rgba(220,235,250,0.92)' }}>{w}</div>
-                          <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.6)' }}>{mtTime(repTime)} MT</div>
+                          <div style={{ fontWeight: 700, fontSize: 12, color: 'color-mix(in srgb, var(--j-text) 92%, transparent)' }}>{w}</div>
+                          <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 60%, transparent)' }}>{mtTime(repTime)} MT</div>
                         </td>
                         {secBrands.map(b => {
                           const cell = matrix[w]?.[b.domain];
-                          if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'rgba(180,210,240,0.25)', textAlign: 'center' }}>—</td>;
+                          if (!cell) return <td key={b.domain} style={{ ...tdBase, color: 'color-mix(in srgb, var(--j-text) 25%, transparent)', textAlign: 'center' }}>—</td>;
                           const isSel = selected?.wave === w && selected?.domain === b.domain;
                           const st = cellStatus(cell.statuses);
                           const clickable = cell.volume > 0;
@@ -384,12 +384,12 @@ export const BrandWaveGrid: React.FC<BrandWaveGridProps> = ({ date, excludeDrip 
                           // per-ISP composition + segments. Zero-volume cells aren't clickable.
                           const inner = (
                             <>
-                              <div style={{ fontSize: 10, color: 'rgba(180,210,240,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
-                              <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? '#cbd5f5' }}>{num(cell.volume)}</div>
+                              <div style={{ fontSize: 10, color: 'color-mix(in srgb, var(--j-text) 70%, transparent)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 120 }}>{cell.offer}</div>
+                              <div style={{ fontSize: 15, fontWeight: 700, color: STATUS_FG[st] ?? 'var(--j-text-2)' }}>{num(cell.volume)}</div>
                             </>
                           );
                           return (
-                            <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'rgba(0,229,255,0.08)', outline: '1px solid rgba(0,229,255,0.5)' } : {}) }}>
+                            <td key={b.domain} style={{ ...tdBase, ...(isSel ? { background: 'color-mix(in srgb, var(--j-cyan) 8%, transparent)', outline: '1px solid color-mix(in srgb, var(--j-cyan) 50%, transparent)' } : {}) }}>
                               {clickable ? (
                                 <button
                                   className="bwg-cell"
@@ -576,16 +576,16 @@ const shelfLabel: React.CSSProperties = {
 };
 const pillWrap: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8 };
 
-const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'rgba(180,210,240,0.75)' };
+const msg: React.CSSProperties = { padding: 18, fontSize: 13, color: 'color-mix(in srgb, var(--j-text) 75%, transparent)' };
 const thBase: React.CSSProperties = {
-  padding: '8px 12px', borderBottom: '1px solid rgba(0,200,255,0.2)', borderRight: '1px solid rgba(0,200,255,0.06)',
-  background: 'rgba(13,21,38,0.95)', minWidth: 130, verticalAlign: 'top',
+  padding: '8px 12px', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 20%, transparent)', borderRight: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
+  background: 'color-mix(in srgb, var(--j-shade) 95%, transparent)', minWidth: 130, verticalAlign: 'top',
 };
 const tdBase: React.CSSProperties = {
-  padding: '8px 12px', borderBottom: '1px solid rgba(0,200,255,0.06)', borderRight: '1px solid rgba(0,200,255,0.06)',
+  padding: '8px 12px', borderBottom: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)', borderRight: '1px solid color-mix(in srgb, var(--j-cyan) 6%, transparent)',
   verticalAlign: 'top', minWidth: 130,
 };
 const stickyLeft: React.CSSProperties = {
   position: 'sticky', left: 0, zIndex: 1, background: 'rgba(10,16,30,0.98)',
-  borderRight: '1px solid rgba(0,200,255,0.25)', minWidth: 90,
+  borderRight: '1px solid color-mix(in srgb, var(--j-cyan) 25%, transparent)', minWidth: 90,
 };

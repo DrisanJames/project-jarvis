@@ -347,13 +347,13 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
   const getInsightColor = (type: Insight['type']) => {
     switch (type) {
       case 'suggestion':
-        return '#facc15';
+        return 'var(--j-warn)';
       case 'warning':
-        return '#f97316';
+        return 'var(--j-warn)';
       case 'success':
-        return '#00b894';
+        return 'var(--j-success)';
       case 'info':
-        return '#00e5ff';
+        return 'var(--j-cyan)';
     }
   };
 
@@ -525,8 +525,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           top: 0;
           bottom: 0;
           width: 380px;
-          background: #1a1a2e;
-          border-left: 1px solid #333;
+          background: var(--j-surface-2);
+          border-left: 1px solid var(--j-border);
           display: flex;
           flex-direction: column;
           z-index: 1001;
@@ -538,8 +538,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           justify-content: space-between;
           padding: 16px 20px;
-          border-bottom: 1px solid #333;
-          background: linear-gradient(135deg, #1e1e2e 0%, #2a2a3e 100%);
+          border-bottom: 1px solid var(--j-border);
+          background: linear-gradient(135deg, var(--j-surface-2) 0%, var(--j-border) 100%);
         }
         
         .header-title {
@@ -552,13 +552,13 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .header-title svg {
-          color: #facc15;
+          color: var(--j-warn);
         }
         
         .close-btn {
           background: none;
           border: none;
-          color: #888;
+          color: var(--j-text-muted);
           cursor: pointer;
           padding: 4px;
           display: flex;
@@ -568,13 +568,13 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .close-btn:hover {
-          background: #333;
+          background: var(--j-border);
           color: #fff;
         }
         
         .insights-tabs {
           display: flex;
-          border-bottom: 1px solid #333;
+          border-bottom: 1px solid var(--j-border);
         }
         
         .insights-tabs .tab {
@@ -586,7 +586,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           padding: 12px;
           background: none;
           border: none;
-          color: #888;
+          color: var(--j-text-muted);
           font-size: 0.8125rem;
           cursor: pointer;
           transition: all 0.2s;
@@ -594,13 +594,13 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .insights-tabs .tab:hover {
           color: #fff;
-          background: rgba(255, 255, 255, 0.05);
+          background: color-mix(in srgb, var(--j-text) 5%, transparent);
         }
         
         .insights-tabs .tab.active {
-          color: #00e5ff;
-          background: rgba(59, 130, 246, 0.1);
-          border-bottom: 2px solid #00e5ff;
+          color: var(--j-cyan);
+          background: color-mix(in srgb, var(--j-blue) 10%, transparent);
+          border-bottom: 2px solid var(--j-cyan);
         }
         
         .insights-content {
@@ -615,7 +615,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           justify-content: center;
           padding: 40px 20px;
-          color: #666;
+          color: var(--j-text-faint);
           text-align: center;
         }
         
@@ -626,7 +626,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .empty-insights p {
           margin: 0 0 4px;
-          color: #888;
+          color: var(--j-text-muted);
         }
         
         .empty-insights small {
@@ -640,8 +640,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .insight-card {
-          background: #1e1e2e;
-          border: 1px solid #333;
+          background: var(--j-surface-2);
+          border: 1px solid var(--j-border);
           border-left: 3px solid;
           border-radius: 8px;
           padding: 14px;
@@ -672,9 +672,9 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .insight-category {
           font-size: 0.6875rem;
-          color: #666;
+          color: var(--j-text-faint);
           text-transform: uppercase;
-          background: #2a2a3e;
+          background: var(--j-border);
           padding: 2px 6px;
           border-radius: 4px;
         }
@@ -682,7 +682,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         .insight-description {
           margin: 0 0 10px;
           font-size: 0.8125rem;
-          color: #aaa;
+          color: var(--j-text-2);
           line-height: 1.5;
         }
         
@@ -691,7 +691,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           gap: 6px;
           font-size: 0.75rem;
-          color: #00e5ff;
+          color: var(--j-cyan);
           margin-bottom: 10px;
         }
         
@@ -700,17 +700,17 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           gap: 6px;
           padding: 6px 10px;
-          background: #2a2a3e;
-          border: 1px solid #333;
+          background: var(--j-border);
+          border: 1px solid var(--j-border);
           border-radius: 6px;
-          color: #888;
+          color: var(--j-text-muted);
           font-size: 0.75rem;
           cursor: pointer;
           transition: all 0.2s;
         }
         
         .copy-prompt-btn:hover {
-          background: #333;
+          background: var(--j-border);
           color: #fff;
         }
         
@@ -731,8 +731,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           align-items: center;
           gap: 10px;
           padding: 12px;
-          background: #1e1e2e;
-          border: 1px solid #333;
+          background: var(--j-surface-2);
+          border: 1px solid var(--j-border);
           border-radius: 8px;
           color: #fff;
           font-size: 0.875rem;
@@ -742,8 +742,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .quick-prompt-btn:hover {
-          background: #2a2a3e;
-          border-color: #00e5ff;
+          background: var(--j-border);
+          border-color: var(--j-cyan);
         }
         
         .quick-prompt-btn span {
@@ -751,16 +751,16 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .quick-prompt-btn .copy-icon {
-          color: #666;
+          color: var(--j-text-faint);
         }
         
         .quick-prompt-btn .copied-icon {
-          color: #00b894;
+          color: var(--j-success);
         }
         
         .custom-prompt-section {
-          background: #1e1e2e;
-          border: 1px solid #333;
+          background: var(--j-surface-2);
+          border: 1px solid var(--j-border);
           border-radius: 8px;
           padding: 14px;
         }
@@ -769,7 +769,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           display: block;
           font-size: 0.75rem;
           font-weight: 500;
-          color: #888;
+          color: var(--j-text-muted);
           margin-bottom: 8px;
           text-transform: uppercase;
         }
@@ -777,8 +777,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         .custom-prompt-section textarea {
           width: 100%;
           padding: 10px;
-          background: #2a2a3e;
-          border: 1px solid #333;
+          background: var(--j-border);
+          border: 1px solid var(--j-border);
           border-radius: 6px;
           color: #fff;
           font-size: 0.875rem;
@@ -789,7 +789,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .custom-prompt-section textarea:focus {
           outline: none;
-          border-color: #00e5ff;
+          border-color: var(--j-cyan);
         }
         
         .generate-btn {
@@ -799,7 +799,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           gap: 8px;
           width: 100%;
           padding: 10px;
-          background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
+          background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%);
           border: none;
           border-radius: 6px;
           color: #fff;
@@ -810,7 +810,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .generate-btn:hover:not(:disabled) {
-          background: linear-gradient(135deg, #00b0ff 0%, #1d4ed8 100%);
+          background: linear-gradient(135deg, var(--j-blue) 0%, #1d4ed8 100%);
         }
         
         .generate-btn:disabled {
@@ -828,8 +828,8 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         }
         
         .context-info {
-          background: #1e1e2e;
-          border: 1px solid #333;
+          background: var(--j-surface-2);
+          border: 1px solid var(--j-border);
           border-radius: 8px;
           padding: 14px;
         }
@@ -838,7 +838,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           margin: 0 0 12px;
           font-size: 0.75rem;
           font-weight: 500;
-          color: #888;
+          color: var(--j-text-muted);
           text-transform: uppercase;
         }
         
@@ -846,7 +846,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
           display: flex;
           justify-content: space-between;
           padding: 6px 0;
-          border-bottom: 1px solid #2a2a3e;
+          border-bottom: 1px solid var(--j-border);
         }
         
         .context-item:last-child {
@@ -855,7 +855,7 @@ export const ABTestInsights: React.FC<ABTestInsightsProps> = ({
         
         .context-item .label {
           font-size: 0.8125rem;
-          color: #666;
+          color: var(--j-text-faint);
         }
         
         .context-item .value {
@@ -894,7 +894,7 @@ export const ABTestInsightsButton: React.FC<InsightsButtonProps> = ({ onClick, i
           width: 52px;
           height: 52px;
           border-radius: 50%;
-          background: linear-gradient(135deg, #facc15 0%, #eab308 100%);
+          background: linear-gradient(135deg, var(--j-warn) 0%, var(--j-warn) 100%);
           color: #000;
           border: none;
           cursor: pointer;
@@ -917,7 +917,7 @@ export const ABTestInsightsButton: React.FC<InsightsButtonProps> = ({ onClick, i
           right: -4px;
           min-width: 20px;
           height: 20px;
-          background: #e94560;
+          background: var(--j-danger);
           color: #fff;
           border-radius: 10px;
           font-size: 0.6875rem;

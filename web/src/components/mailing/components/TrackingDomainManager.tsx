@@ -77,11 +77,11 @@ async function orgFetch(url: string, orgId: string, opts?: RequestInit) {
 }
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; icon: any }> = {
-  not_provisioned: { label: 'Not Provisioned', color: '#888', bg: 'rgba(136,136,136,0.15)', icon: faClock },
-  pending: { label: 'Pending', color: '#fdcb6e', bg: 'rgba(253,203,110,0.15)', icon: faClock },
-  provisioning: { label: 'Provisioning', color: '#74b9ff', bg: 'rgba(116,185,255,0.15)', icon: faSpinner },
-  active: { label: 'Active', color: '#00b894', bg: 'rgba(0,184,148,0.15)', icon: faCheck },
-  failed: { label: 'Failed', color: '#e94560', bg: 'rgba(233,69,96,0.15)', icon: faExclamationTriangle },
+  not_provisioned: { label: 'Not Provisioned', color: 'var(--j-text-muted)', bg: 'rgba(136,136,136,0.15)', icon: faClock },
+  pending: { label: 'Pending', color: 'var(--j-warn)', bg: 'color-mix(in srgb, var(--j-warn) 15%, transparent)', icon: faClock },
+  provisioning: { label: 'Provisioning', color: 'var(--j-blue)', bg: 'color-mix(in srgb, var(--j-blue) 15%, transparent)', icon: faSpinner },
+  active: { label: 'Active', color: 'var(--j-success)', bg: 'color-mix(in srgb, var(--j-success) 15%, transparent)', icon: faCheck },
+  failed: { label: 'Failed', color: 'var(--j-danger)', bg: 'color-mix(in srgb, var(--j-danger) 15%, transparent)', icon: faExclamationTriangle },
 };
 
 // ---- Component ----
@@ -335,20 +335,20 @@ export const TrackingDomainManager: React.FC = () => {
   // ---- Main Render ----
 
   return (
-    <div style={{ padding: '0', maxWidth: '960px', color: '#e0e0e0' }}>
+    <div style={{ padding: '0', maxWidth: '960px', color: 'var(--j-text)' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <FontAwesomeIcon icon={faLink} style={{ fontSize: '22px', color: '#a29bfe' }} />
-          <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#fff' }}>Tracking Domains</h2>
+          <FontAwesomeIcon icon={faLink} style={{ fontSize: '22px', color: 'var(--j-violet)' }} />
+          <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: 'var(--j-text)' }}>Tracking Domains</h2>
         </div>
         <button
           onClick={loadAll}
           disabled={loading}
           style={{
-            background: 'rgba(255,255,255,0.06)',
-            color: '#e0e0e0',
-            border: '1px solid rgba(255,255,255,0.1)',
+            background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
+            color: 'var(--j-text)',
+            border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)',
             borderRadius: '6px',
             padding: '8px 14px',
             cursor: 'pointer',
@@ -367,8 +367,8 @@ export const TrackingDomainManager: React.FC = () => {
       {activeTrackingURL && (
         <div
           style={{
-            background: activeTrackingURL.includes('si3p4trk') ? 'rgba(253,203,110,0.1)' : 'rgba(0,184,148,0.1)',
-            border: `1px solid ${activeTrackingURL.includes('si3p4trk') ? 'rgba(253,203,110,0.3)' : 'rgba(0,184,148,0.3)'}`,
+            background: activeTrackingURL.includes('si3p4trk') ? 'color-mix(in srgb, var(--j-warn) 10%, transparent)' : 'color-mix(in srgb, var(--j-success) 10%, transparent)',
+            border: `1px solid ${activeTrackingURL.includes('si3p4trk') ? 'color-mix(in srgb, var(--j-warn) 30%, transparent)' : 'color-mix(in srgb, var(--j-success) 30%, transparent)'}`,
             borderRadius: '8px',
             padding: '12px 16px',
             marginBottom: '20px',
@@ -380,15 +380,15 @@ export const TrackingDomainManager: React.FC = () => {
         >
           <FontAwesomeIcon
             icon={activeTrackingURL.includes('si3p4trk') ? faExclamationTriangle : faCheckCircle}
-            style={{ color: activeTrackingURL.includes('si3p4trk') ? '#fdcb6e' : '#00b894' }}
+            style={{ color: activeTrackingURL.includes('si3p4trk') ? 'var(--j-warn)' : 'var(--j-success)' }}
           />
           <div>
             <strong>Active Tracking Domain:</strong>{' '}
-            <code style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>
+            <code style={{ background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>
               {activeTrackingURL}
             </code>
             {activeTrackingURL.includes('si3p4trk') && (
-              <span style={{ color: '#fdcb6e', marginLeft: '8px', fontSize: '12px' }}>
+              <span style={{ color: 'var(--j-warn)', marginLeft: '8px', fontSize: '12px' }}>
                 (Default tracking domain - set up a branded domain below)
               </span>
             )}
@@ -400,12 +400,12 @@ export const TrackingDomainManager: React.FC = () => {
       {error && (
         <div
           style={{
-            background: 'rgba(233,69,96,0.12)',
-            border: '1px solid rgba(233,69,96,0.3)',
+            background: 'color-mix(in srgb, var(--j-danger) 12%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--j-danger) 30%, transparent)',
             borderRadius: '8px',
             padding: '12px 16px',
             marginBottom: '20px',
-            color: '#e94560',
+            color: 'var(--j-danger)',
             fontSize: '13px',
             display: 'flex',
             alignItems: 'center',
@@ -416,7 +416,7 @@ export const TrackingDomainManager: React.FC = () => {
           {error}
           <button
             onClick={() => setError(null)}
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#e94560', cursor: 'pointer', fontSize: '16px' }}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--j-danger)', cursor: 'pointer', fontSize: '16px' }}
           >
             &times;
           </button>
@@ -438,10 +438,10 @@ export const TrackingDomainManager: React.FC = () => {
           lineHeight: '1.5',
         }}
       >
-        <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#a29bfe', fontSize: '16px', marginTop: '2px' }} />
+        <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-violet)', fontSize: '16px', marginTop: '2px' }} />
         <div>
-          <strong style={{ color: '#a29bfe' }}>Branded Tracking Domains</strong> (e.g.,{' '}
-          <code style={{ background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>
+          <strong style={{ color: 'var(--j-violet)' }}>Branded Tracking Domains</strong> (e.g.,{' '}
+          <code style={{ background: 'color-mix(in srgb, var(--j-text) 6%, transparent)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>
             track.yoursendingdomain.com
           </code>
           ) replace the default tracking domain in email links, improving brand consistency and inbox deliverability.
@@ -452,24 +452,24 @@ export const TrackingDomainManager: React.FC = () => {
       {/* Suggestions Section */}
       <div
         style={{
-          background: '#1a1a2e',
+          background: 'var(--j-surface-2)',
           borderRadius: '10px',
           overflow: 'hidden',
           marginBottom: '24px',
-          border: '1px solid rgba(255,255,255,0.06)',
+          border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
         }}
       >
         <div
           style={{
             background: '#16213e',
             padding: '14px 20px',
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
           }}
         >
-          <FontAwesomeIcon icon={faGlobe} style={{ color: '#a29bfe' }} />
+          <FontAwesomeIcon icon={faGlobe} style={{ color: 'var(--j-violet)' }} />
           <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
             Domain Suggestions from Sending Profiles
           </h3>
@@ -477,12 +477,12 @@ export const TrackingDomainManager: React.FC = () => {
 
         <div style={{ padding: '16px 20px' }}>
           {loading && suggestions.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '30px', color: '#888' }}>
+            <div style={{ textAlign: 'center', padding: '30px', color: 'var(--j-text-muted)' }}>
               <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: '20px', marginBottom: '10px' }} />
               <div>Loading suggestions...</div>
             </div>
           ) : suggestions.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '30px', color: '#888', fontSize: '14px' }}>
+            <div style={{ textAlign: 'center', padding: '30px', color: 'var(--j-text-muted)', fontSize: '14px' }}>
               No sending profiles found with configured domains. Add sending profiles to see tracking domain suggestions.
             </div>
           ) : (
@@ -494,8 +494,8 @@ export const TrackingDomainManager: React.FC = () => {
                   <div
                     key={idx}
                     style={{
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid rgba(255,255,255,0.06)',
+                      background: 'color-mix(in srgb, var(--j-text) 3%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
                       borderRadius: '8px',
                       padding: '16px',
                     }}
@@ -503,18 +503,18 @@ export const TrackingDomainManager: React.FC = () => {
                     {/* Row: info + action */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                       <div style={{ flex: 1, minWidth: '250px' }}>
-                        <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>
                           {s.profile_name}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '13px', color: '#aaa' }}>{s.sending_domain}</span>
-                          <span style={{ color: '#555' }}>&rarr;</span>
-                          <span style={{ fontSize: '14px', fontWeight: 600, color: '#e0e0e0', fontFamily: 'monospace' }}>
+                          <span style={{ fontSize: '13px', color: 'var(--j-text-2)' }}>{s.sending_domain}</span>
+                          <span style={{ color: 'var(--j-text-faint)' }}>&rarr;</span>
+                          <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--j-text)', fontFamily: 'monospace' }}>
                             {s.suggested_tracking_domain}
                           </span>
                         </div>
                         {s.cloudfront_domain && (
-                          <div style={{ fontSize: '11px', color: '#a29bfe', marginTop: '4px' }}>
+                          <div style={{ fontSize: '11px', color: 'var(--j-violet)', marginTop: '4px' }}>
                             CDN domain: {s.cloudfront_domain}
                           </div>
                         )}
@@ -528,7 +528,7 @@ export const TrackingDomainManager: React.FC = () => {
                             disabled={isProvisioning}
                             style={{
                               background: '#0f3460',
-                              color: '#e0e0e0',
+                              color: 'var(--j-text)',
                               border: 'none',
                               borderRadius: '6px',
                               padding: '8px 16px',
@@ -558,8 +558,8 @@ export const TrackingDomainManager: React.FC = () => {
                             onClick={() => provisionDomain(s.suggested_tracking_domain)}
                             disabled={isProvisioning}
                             style={{
-                              background: '#e94560',
-                              color: '#fff',
+                              background: 'var(--j-danger)',
+                              color: 'var(--j-text)',
                               border: 'none',
                               borderRadius: '6px',
                               padding: '8px 16px',
@@ -583,24 +583,24 @@ export const TrackingDomainManager: React.FC = () => {
                         style={{
                           marginTop: '10px',
                           paddingTop: '10px',
-                          borderTop: '1px solid rgba(255,255,255,0.06)',
+                          borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
                           display: 'flex',
                           gap: '16px',
                           flexWrap: 'wrap',
                           fontSize: '12px',
                         }}
                       >
-                        <span style={{ color: '#00b894' }}>
+                        <span style={{ color: 'var(--j-success)' }}>
                           <FontAwesomeIcon icon={faCheck} style={{ marginRight: '4px' }} />
                           SSL: {s.ssl_status || 'Active'}
                         </span>
                         {s.verified && (
-                          <span style={{ color: '#00b894' }}>
+                          <span style={{ color: 'var(--j-success)' }}>
                             <FontAwesomeIcon icon={faCheck} style={{ marginRight: '4px' }} />
                             DNS Verified
                           </span>
                         )}
-                        <span style={{ color: '#a29bfe' }}>
+                        <span style={{ color: 'var(--j-violet)' }}>
                           <FontAwesomeIcon icon={faLink} style={{ marginRight: '4px' }} />
                           Auto-applied to new tracking links
                         </span>
@@ -617,30 +617,30 @@ export const TrackingDomainManager: React.FC = () => {
       {/* Existing Domains Section */}
       <div
         style={{
-          background: '#1a1a2e',
+          background: 'var(--j-surface-2)',
           borderRadius: '10px',
           overflow: 'hidden',
           marginBottom: '24px',
-          border: '1px solid rgba(255,255,255,0.06)',
+          border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
         }}
       >
         <div
           style={{
             background: '#16213e',
             padding: '14px 20px',
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
           }}
         >
-          <FontAwesomeIcon icon={faGlobe} style={{ color: '#00b894' }} />
+          <FontAwesomeIcon icon={faGlobe} style={{ color: 'var(--j-success)' }} />
           <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>Registered Tracking Domains</h3>
         </div>
 
         <div style={{ padding: '16px 20px' }}>
           {existingDomains.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '24px', color: '#888', fontSize: '14px' }}>
+            <div style={{ textAlign: 'center', padding: '24px', color: 'var(--j-text-muted)', fontSize: '14px' }}>
               No tracking domains registered yet. Use the suggestions above or add a custom domain below.
             </div>
           ) : (
@@ -649,8 +649,8 @@ export const TrackingDomainManager: React.FC = () => {
                 <div
                   key={d.id}
                   style={{
-                    background: 'rgba(255,255,255,0.03)',
-                    border: '1px solid rgba(255,255,255,0.06)',
+                    background: 'color-mix(in srgb, var(--j-text) 3%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
                     borderRadius: '8px',
                     padding: '16px',
                   }}
@@ -659,11 +659,11 @@ export const TrackingDomainManager: React.FC = () => {
                     <div>
                       <div style={{ fontSize: '14px', fontWeight: 600, fontFamily: 'monospace' }}>{d.domain}</div>
                       {d.cloudfront_domain && (
-                        <div style={{ fontSize: '11px', color: '#a29bfe', marginTop: '4px' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--j-violet)', marginTop: '4px' }}>
                           CDN domain: {d.cloudfront_domain}
                         </div>
                       )}
-                      <div style={{ fontSize: '11px', color: '#888', marginTop: '4px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--j-text-muted)', marginTop: '4px' }}>
                         Created: {formatDate(d.created_at)}
                       </div>
                     </div>
@@ -671,7 +671,7 @@ export const TrackingDomainManager: React.FC = () => {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       {getStatusBadge(d.ssl_status || 'pending')}
                       {d.verified ? (
-                        <span style={{ color: '#00b894', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ color: 'var(--j-success)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                           <FontAwesomeIcon icon={faCheck} /> Verified
                         </span>
                       ) : (
@@ -679,9 +679,9 @@ export const TrackingDomainManager: React.FC = () => {
                           onClick={() => verifyDomain(d.id)}
                           disabled={verifying[d.id]}
                           style={{
-                            background: 'rgba(253,203,110,0.15)',
-                            color: '#fdcb6e',
-                            border: '1px solid rgba(253,203,110,0.3)',
+                            background: 'color-mix(in srgb, var(--j-warn) 15%, transparent)',
+                            color: 'var(--j-warn)',
+                            border: '1px solid color-mix(in srgb, var(--j-warn) 30%, transparent)',
                             borderRadius: '6px',
                             padding: '6px 12px',
                             cursor: verifying[d.id] ? 'not-allowed' : 'pointer',
@@ -702,9 +702,9 @@ export const TrackingDomainManager: React.FC = () => {
                       <button
                         onClick={() => refreshAWSStatus(d.id)}
                         style={{
-                          background: 'rgba(255,255,255,0.06)',
-                          color: '#e0e0e0',
-                          border: '1px solid rgba(255,255,255,0.08)',
+                          background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
+                          color: 'var(--j-text)',
+                          border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
                           borderRadius: '6px',
                           padding: '6px 10px',
                           cursor: 'pointer',
@@ -719,8 +719,8 @@ export const TrackingDomainManager: React.FC = () => {
 
                   {/* DNS Records */}
                   {d.dns_records && d.dns_records.length > 0 && !d.verified && (
-                    <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                      <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>
+                    <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>
                         Required DNS Records
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -728,26 +728,26 @@ export const TrackingDomainManager: React.FC = () => {
                           <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px' }}>
                             <span style={{ width: '16px', textAlign: 'center' }}>
                               {rec.status === 'verified' ? (
-                                <FontAwesomeIcon icon={faCheck} style={{ color: '#00b894' }} />
+                                <FontAwesomeIcon icon={faCheck} style={{ color: 'var(--j-success)' }} />
                               ) : (
-                                <FontAwesomeIcon icon={faClock} style={{ color: '#888' }} />
+                                <FontAwesomeIcon icon={faClock} style={{ color: 'var(--j-text-muted)' }} />
                               )}
                             </span>
                             <span style={{
-                              background: 'rgba(255,255,255,0.06)',
+                              background: 'color-mix(in srgb, var(--j-text) 6%, transparent)',
                               padding: '2px 8px',
                               borderRadius: '4px',
                               fontSize: '11px',
                               fontWeight: 600,
-                              color: '#74b9ff',
+                              color: 'var(--j-blue)',
                               minWidth: '50px',
                               textAlign: 'center',
                             }}>
                               {rec.type}
                             </span>
-                            <span style={{ color: '#aaa', fontFamily: 'monospace', fontSize: '11px' }}>{rec.name}</span>
-                            <span style={{ color: '#555' }}>&rarr;</span>
-                            <span style={{ color: '#e0e0e0', fontFamily: 'monospace', fontSize: '11px', wordBreak: 'break-all' }}>
+                            <span style={{ color: 'var(--j-text-2)', fontFamily: 'monospace', fontSize: '11px' }}>{rec.name}</span>
+                            <span style={{ color: 'var(--j-text-faint)' }}>&rarr;</span>
+                            <span style={{ color: 'var(--j-text)', fontFamily: 'monospace', fontSize: '11px', wordBreak: 'break-all' }}>
                               {rec.value}
                             </span>
                           </div>
@@ -765,23 +765,23 @@ export const TrackingDomainManager: React.FC = () => {
       {/* Manual Add Domain */}
       <div
         style={{
-          background: '#1a1a2e',
+          background: 'var(--j-surface-2)',
           borderRadius: '10px',
           overflow: 'hidden',
-          border: '1px solid rgba(255,255,255,0.06)',
+          border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
         }}
       >
         <div
           style={{
             background: '#16213e',
             padding: '14px 20px',
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
             display: 'flex',
             alignItems: 'center',
             gap: '10px',
           }}
         >
-          <FontAwesomeIcon icon={faPlus} style={{ color: '#fdcb6e' }} />
+          <FontAwesomeIcon icon={faPlus} style={{ color: 'var(--j-warn)' }} />
           <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>Add Custom Tracking Domain</h3>
         </div>
 
@@ -794,11 +794,11 @@ export const TrackingDomainManager: React.FC = () => {
               placeholder="track.yourdomain.com"
               style={{
                 flex: 1,
-                background: 'rgba(255,255,255,0.05)',
-                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'color-mix(in srgb, var(--j-text) 5%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--j-text) 12%, transparent)',
                 borderRadius: '6px',
                 padding: '10px 14px',
-                color: '#e0e0e0',
+                color: 'var(--j-text)',
                 fontSize: '14px',
                 fontFamily: 'monospace',
                 outline: 'none',
@@ -810,7 +810,7 @@ export const TrackingDomainManager: React.FC = () => {
               disabled={addingCustom || !customDomain.trim()}
               style={{
                 background: '#0f3460',
-                color: '#e0e0e0',
+                color: 'var(--j-text)',
                 border: 'none',
                 borderRadius: '6px',
                 padding: '10px 20px',
@@ -835,7 +835,7 @@ export const TrackingDomainManager: React.FC = () => {
               )}
             </button>
           </div>
-          <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+          <div style={{ fontSize: '12px', color: 'var(--j-text-muted)', marginTop: '8px' }}>
             Enter a custom tracking domain. The system will set up SSL, content delivery, and DNS records.
             Once active, all tracking links will automatically use this branded domain.
           </div>

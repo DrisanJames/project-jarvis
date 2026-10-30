@@ -82,7 +82,7 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
           ['removed', 'Removed by cleaning', 'EO undeliverable / trap / suppressed, from that day’s rows', colors.dangerText],
           ['duplicates', 'Duplicates of known', 'declared by the loads minus persisted (the dedup drop)', colors.textMuted],
         ] as const).map(([key, label, hint, color]) => (
-          <div key={key} style={{ background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '12px 14px' }}>
+          <div key={key} style={{ background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', border: `1px solid ${colors.panelBorder}`, borderRadius: 10, padding: '12px 14px' }}>
             <div style={{ fontSize: 10, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.6 }}>{label}</div>
             <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.3 }}>
               <Measured fields={f} name={key} value={d?.totals[key] ?? null} color={color} />
@@ -171,7 +171,7 @@ export const YesterdayPanel: React.FC<Props> = ({ date }) => {
                     key={s.name}
                     style={{
                       display: 'flex', justifyContent: 'space-between', gap: 10, padding: '6px 10px',
-                      background: 'rgba(15,23,42,0.55)', border: `1px solid ${colors.panelBorder}`, borderRadius: 8, fontSize: 12,
+                      background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)', border: `1px solid ${colors.panelBorder}`, borderRadius: 8, fontSize: 12,
                     }}
                   >
                     <span>{s.name === 'unknown' ? <span style={{ color: colors.textFaint }}>source_path not stamped</span> : s.name}</span>

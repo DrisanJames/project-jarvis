@@ -161,52 +161,52 @@ function offerTrackingSample(hash: string): string {
 }
 
 const inputStyle: React.CSSProperties = {
-  background: '#1e293b', border: '1px solid #334155', borderRadius: 6,
-  color: '#e5e7eb', padding: '7px 10px', fontSize: 13, width: '100%',
+  background: 'var(--j-surface-2)', border: '1px solid var(--j-border)', borderRadius: 6,
+  color: 'var(--j-text)', padding: '7px 10px', fontSize: 13, width: '100%',
   boxSizing: 'border-box',
 };
 
 const labelStyle: React.CSSProperties = {
-  fontSize: 11, color: '#94a3b8', textTransform: 'uppercase',
+  fontSize: 11, color: 'var(--j-text-muted)', textTransform: 'uppercase',
   letterSpacing: 0.5, marginBottom: 4, display: 'block',
 };
 
 const btnStyle = (bg: string, border: string): React.CSSProperties => ({
   background: bg, border: `1px solid ${border}`, borderRadius: 6,
-  color: '#e5e7eb', padding: '8px 14px', fontSize: 13, cursor: 'pointer',
+  color: 'var(--j-text)', padding: '8px 14px', fontSize: 13, cursor: 'pointer',
   display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600,
 });
 
 const chipStyle = (active: boolean): React.CSSProperties => ({
-  background: active ? '#312e81' : '#1e293b',
-  border: `1px solid ${active ? '#6366f1' : '#334155'}`,
-  borderRadius: 999, color: active ? '#e0e7ff' : '#94a3b8',
+  background: active ? 'var(--j-surface-3)' : 'var(--j-surface-2)',
+  border: `1px solid ${active ? 'var(--j-violet-strong)' : 'var(--j-border)'}`,
+  borderRadius: 999, color: active ? 'var(--j-violet-soft)' : 'var(--j-text-muted)',
   padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontWeight: 600,
 });
 
 const badgeStyle = (fg: string): React.CSSProperties => ({
   display: 'inline-block', padding: '2px 8px', borderRadius: 999,
   fontSize: 11, fontWeight: 600, lineHeight: 1.4,
-  color: fg, background: `${fg}1f`, border: `1px solid ${fg}55`,
+  color: fg, background: `color-mix(in srgb, ${fg} 12%, transparent)`, border: `1px solid color-mix(in srgb, ${fg} 33%, transparent)`,
   whiteSpace: 'nowrap',
 });
 
 function approvalColor(status: CreativeMeta['approval_status']): string {
-  if (status === 'approved') return '#00b894';
-  if (status === 'rejected') return '#e94560';
-  return '#fdcb6e'; // pending / undefined
+  if (status === 'approved') return 'var(--j-success)';
+  if (status === 'rejected') return 'var(--j-danger)';
+  return 'var(--j-warn)'; // pending / undefined
 }
 
 function moneyLinkColor(status: CreativeMeta['money_link_status']): string {
-  if (status === 'pass') return '#00b894';
+  if (status === 'pass') return 'var(--j-success)';
   if (status === 'warn') return '#f59e0b';
   if (status === 'dead') return '#ef4444';
-  return '#94a3b8'; // untested / undefined
+  return 'var(--j-text-muted)'; // untested / undefined
 }
 
 const smallBtnStyle = (bg: string, border: string): React.CSSProperties => ({
   background: bg, border: `1px solid ${border}`, borderRadius: 5,
-  color: '#e5e7eb', padding: '3px 8px', fontSize: 11, cursor: 'pointer',
+  color: 'var(--j-text)', padding: '3px 8px', fontSize: 11, cursor: 'pointer',
   fontWeight: 600, whiteSpace: 'nowrap',
 });
 
@@ -219,7 +219,7 @@ function renderAgentText(text: string): React.ReactNode {
       }
       if (seg.startsWith('`') && seg.endsWith('`')) {
         return (
-          <code key={j} style={{ background: '#0f172a', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>
+          <code key={j} style={{ background: 'var(--j-bg)', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>
             {seg.slice(1, -1)}
           </code>
         );
@@ -251,7 +251,7 @@ const CopyButton: React.FC<{ text: string; title?: string }> = ({ text, title })
       title={title ?? 'Copy'}
       style={{
         background: 'none', border: 'none', cursor: 'pointer',
-        color: copied ? '#22c55e' : '#64748b', padding: '0 4px', fontSize: 11,
+        color: copied ? 'var(--j-success)' : 'var(--j-text-faint)', padding: '0 4px', fontSize: 11,
       }}
     >
       <FontAwesomeIcon icon={copied ? faCheck : faCopy} />
@@ -774,27 +774,27 @@ export const CreativeStudio: React.FC = () => {
   );
 
   return (
-    <div style={{ padding: '20px 24px', color: '#e5e7eb', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
+    <div style={{ padding: '20px 24px', color: 'var(--j-text)', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <h1 style={{ margin: 0, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <FontAwesomeIcon icon={faWandMagicSparkles} style={{ color: '#a78bfa' }} />
+          <FontAwesomeIcon icon={faWandMagicSparkles} style={{ color: 'var(--j-violet)' }} />
           Creative Studio
         </h1>
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => setView('builder')}
-            style={btnStyle(view === 'builder' ? '#312e81' : '#1e293b', view === 'builder' ? '#4338ca' : '#334155')}>
+            style={btnStyle(view === 'builder' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'builder' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faHammer} /> Builder
           </button>
           <button onClick={() => setView('library')}
-            style={btnStyle(view === 'library' ? '#312e81' : '#1e293b', view === 'library' ? '#4338ca' : '#334155')}>
+            style={btnStyle(view === 'library' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'library' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faBookOpen} /> Library
           </button>
           <button onClick={() => setView('offers')}
-            style={btnStyle(view === 'offers' ? '#312e81' : '#1e293b', view === 'offers' ? '#4338ca' : '#334155')}>
+            style={btnStyle(view === 'offers' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'offers' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faStamp} /> Offers
           </button>
           <button onClick={() => setChatOpen((v) => !v)}
-            style={btnStyle(chatOpen ? '#14532d' : '#1e293b', chatOpen ? '#16a34a' : '#334155')}>
+            style={btnStyle(chatOpen ? '#14532d' : 'var(--j-surface-2)', chatOpen ? 'var(--j-success)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faRobot} /> Agent
           </button>
         </div>
@@ -804,12 +804,12 @@ export const CreativeStudio: React.FC = () => {
           </span>
         )}
         {engineUp === true && (
-          <span style={{ color: '#22c55e', fontSize: 12 }}>
+          <span style={{ color: 'var(--j-success)', fontSize: 12 }}>
             <FontAwesomeIcon icon={faCircleCheck} /> engine online
           </span>
         )}
       </div>
-      <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
+      <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
         Renders with the production creative engine. Saves land in Content Library →
         “Creative Studio/&lt;SITE&gt;” and the creative library.
       </div>
@@ -827,11 +827,11 @@ export const CreativeStudio: React.FC = () => {
               <div style={{ flex: '0 0 330px', overflowY: 'auto', paddingRight: 4 }}>
                 <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
                   <button onClick={() => setMode('newsletter')}
-                    style={btnStyle(mode === 'newsletter' ? '#312e81' : '#1e293b', mode === 'newsletter' ? '#4338ca' : '#334155')}>
+                    style={btnStyle(mode === 'newsletter' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', mode === 'newsletter' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
                     Newsletter
                   </button>
                   <button onClick={() => setMode('solo')}
-                    style={btnStyle(mode === 'solo' ? '#312e81' : '#1e293b', mode === 'solo' ? '#4338ca' : '#334155')}>
+                    style={btnStyle(mode === 'solo' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', mode === 'solo' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
                     Solo Offer
                   </button>
                 </div>
@@ -839,9 +839,9 @@ export const CreativeStudio: React.FC = () => {
                 <label style={labelStyle}>
                   Sites ({selectedSites.length} selected)
                   <span style={{ float: 'right', display: 'flex', gap: 8 }}>
-                    <span style={{ cursor: 'pointer', color: '#a78bfa' }}
+                    <span style={{ cursor: 'pointer', color: 'var(--j-violet)' }}
                       onClick={() => setSelectedSites([...SITE_KEYS])}>all</span>
-                    <span style={{ cursor: 'pointer', color: '#64748b' }}
+                    <span style={{ cursor: 'pointer', color: 'var(--j-text-faint)' }}
                       onClick={() => setSelectedSites([])}>none</span>
                   </span>
                 </label>
@@ -882,8 +882,8 @@ export const CreativeStudio: React.FC = () => {
                   </>
                 )}
 
-                <div style={{ borderTop: '1px solid #1f2937', margin: '4px 0 12px', paddingTop: 10 }}>
-                  <div style={{ ...labelStyle, color: '#a78bfa' }}>
+                <div style={{ borderTop: '1px solid var(--j-surface-2)', margin: '4px 0 12px', paddingTop: 10 }}>
+                  <div style={{ ...labelStyle, color: 'var(--j-violet)' }}>
                     {mode === 'solo' ? 'Copy & imagery' : 'Overrides — swap imagery & copy (optional)'}
                   </div>
                   {mode === 'newsletter' && (
@@ -918,18 +918,18 @@ export const CreativeStudio: React.FC = () => {
                 <label style={labelStyle}>Preview text (leave blank to auto-fill)</label>
                 <input value={preheader} onChange={(e) => setPreheader(e.target.value)} style={{ ...inputStyle, marginBottom: 12 }} />
 
-                <label style={{ fontSize: 13, color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                <label style={{ fontSize: 13, color: 'var(--j-text-2)', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
                   <input type="checkbox" checked={refreshContent} onChange={(e) => setRefreshContent(e.target.checked)} />
                   Refresh editorial content (latest site articles)
                 </label>
 
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button disabled={generating || engineUp === false} onClick={() => generate(false)}
-                    style={{ ...btnStyle('#1e293b', '#334155'), opacity: generating ? 0.6 : 1 }}>
+                    style={{ ...btnStyle('var(--j-surface-2)', 'var(--j-border)'), opacity: generating ? 0.6 : 1 }}>
                     <FontAwesomeIcon icon={faRotate} spin={generating} /> Preview
                   </button>
                   <button disabled={generating || engineUp === false} onClick={() => generate(true)}
-                    style={{ ...btnStyle('#312e81', '#4338ca'), opacity: generating ? 0.6 : 1 }}>
+                    style={{ ...btnStyle('var(--j-surface-3)', 'var(--j-violet-strong)'), opacity: generating ? 0.6 : 1 }}>
                     <FontAwesomeIcon icon={faFloppyDisk} /> Generate &amp; Save
                   </button>
                 </div>
@@ -940,7 +940,7 @@ export const CreativeStudio: React.FC = () => {
                   </div>
                 )}
                 {results.some((r) => r.saved) && (
-                  <div style={{ marginTop: 12, color: '#22c55e', fontSize: 13 }}>
+                  <div style={{ marginTop: 12, color: 'var(--j-success)', fontSize: 13 }}>
                     <FontAwesomeIcon icon={faCircleCheck} /> Saved {results.filter((r) => r.saved).length}/{results.length} to
                     the Content Library
                   </div>
@@ -970,20 +970,20 @@ export const CreativeStudio: React.FC = () => {
                       <>
                         <div style={{ fontSize: 13, marginBottom: 8 }}>
                           <div style={{ fontWeight: 600 }}>{activeResult.subject}</div>
-                          <div style={{ color: '#94a3b8', marginTop: 2 }}>{activeResult.preheader}</div>
+                          <div style={{ color: 'var(--j-text-muted)', marginTop: 2 }}>{activeResult.preheader}</div>
                           {activeResult.filename && (
-                            <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>
+                            <div style={{ color: 'var(--j-text-faint)', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>
                               {activeResult.filename} · {activeResult.money_urls} tracking link{activeResult.money_urls === 1 ? '' : 's'}
                             </div>
                           )}
                         </div>
                         <iframe title={`preview-${activeResult.site_key}`} sandbox="" srcDoc={activeResult.html}
-                          style={{ width: '100%', flex: 1, background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                          style={{ width: '100%', flex: 1, background: '#fff', border: '1px solid var(--j-border)', borderRadius: 8 }} />
                       </>
                     ) : null}
                   </>
                 ) : (
-                  <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>
+                  <div style={{ color: 'var(--j-text-faint)', fontSize: 13, padding: 24 }}>
                     Pick sites and hit Preview — one render per brand, tab across the results. The
                     creative engine produces the exact email a recipient would see (live editorial included).
                   </div>
@@ -994,10 +994,10 @@ export const CreativeStudio: React.FC = () => {
             <>
               <div style={{ flex: '0 0 760px', overflowY: 'auto' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-                  <button onClick={fetchLibrary} style={btnStyle('#1e293b', '#334155')}>
+                  <button onClick={fetchLibrary} style={btnStyle('var(--j-surface-2)', 'var(--j-border)')}>
                     <FontAwesomeIcon icon={faRotate} spin={libraryLoading} /> Refresh
                   </button>
-                  <span style={{ fontSize: 12, color: '#94a3b8' }}>
+                  <span style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
                     {creatives.length} creatives · manage in Content Library → “Creative Studio”
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
@@ -1035,7 +1035,7 @@ export const CreativeStudio: React.FC = () => {
                     title={smartLinks.length === 0
                       ? 'No active smart links — seed one in the Smart Link Gateway first'
                       : 'Rewrite the creative’s cratoolpro offer links to the gateway URL so you can click the proof and confirm bot/human/bridge routing'}
-                    style={{ fontSize: 12, color: smartLinks.length === 0 ? '#64748b' : '#cbd5e1', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    style={{ fontSize: 12, color: smartLinks.length === 0 ? 'var(--j-text-faint)' : 'var(--j-text-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     <input
                       type="checkbox"
                       checked={routeViaGateway}
@@ -1057,26 +1057,26 @@ export const CreativeStudio: React.FC = () => {
                     </select>
                   )}
                   {smartLinks.length === 0 && (
-                    <span style={{ fontSize: 11, color: '#64748b' }}>
+                    <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>
                       no active smart links — seed one in the Smart Link Gateway
                     </span>
                   )}
                 </div>
                 {lastGatewayProof && (
                   <div style={{
-                    margin: '0 0 8px', padding: '8px 10px', background: '#0f172a',
-                    border: '1px solid #1f2937', borderRadius: 8, fontSize: 12,
+                    margin: '0 0 8px', padding: '8px 10px', background: 'var(--j-bg)',
+                    border: '1px solid var(--j-surface-2)', borderRadius: 8, fontSize: 12,
                     display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                   }}>
-                    <span style={badgeStyle(lastGatewayProof.risk === 'high' ? '#f59e0b' : '#22c55e')}>
+                    <span style={badgeStyle(lastGatewayProof.risk === 'high' ? '#f59e0b' : 'var(--j-success)')}>
                       risk:{lastGatewayProof.risk}
                     </span>
-                    <span style={{ color: '#94a3b8' }}>offers routed via</span>
+                    <span style={{ color: 'var(--j-text-muted)' }}>offers routed via</span>
                     <a href={lastGatewayProof.url} target="_blank" rel="noopener noreferrer"
-                      style={{ color: '#a78bfa', fontFamily: 'monospace' }}>
+                      style={{ color: 'var(--j-violet)', fontFamily: 'monospace' }}>
                       {lastGatewayProof.url}
                     </a>
-                    <span style={{ color: '#64748b' }}>
+                    <span style={{ color: 'var(--j-text-faint)' }}>
                       {lastGatewayProof.risk === 'high'
                         ? '— you’ll see the bridge page (Continue button)'
                         : '— you’ll be redirected straight to the offer'}
@@ -1085,7 +1085,7 @@ export const CreativeStudio: React.FC = () => {
                 )}
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
-                    <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                    <tr style={{ color: 'var(--j-text-muted)', textAlign: 'left' }}>
                       <th style={{ padding: '6px 8px' }}>Offer</th>
                       <th style={{ padding: '6px 8px' }}>Brand</th>
                       <th style={{ padding: '6px 8px' }}>Date</th>
@@ -1098,11 +1098,11 @@ export const CreativeStudio: React.FC = () => {
                   <tbody>
                     {creatives.map((c) => (
                       <tr key={c.id} onClick={() => openPreview(c)}
-                        style={{ cursor: 'pointer', background: selected?.id === c.id ? '#1e293b' : 'transparent', borderTop: '1px solid #1f2937' }}>
+                        style={{ cursor: 'pointer', background: selected?.id === c.id ? 'var(--j-surface-2)' : 'transparent', borderTop: '1px solid var(--j-surface-2)' }}>
                         <td style={{ padding: '6px 8px' }} title={c.filename}>{c.offer_key}</td>
                         <td style={{ padding: '6px 8px' }}>{c.brand_code}</td>
-                        <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{new Date(c.generated_at).toLocaleDateString()}</td>
-                        <td style={{ padding: '6px 8px', color: c.source === 'studio' ? '#a78bfa' : '#94a3b8' }}>{c.source}</td>
+                        <td style={{ padding: '6px 8px', color: 'var(--j-text-muted)' }}>{new Date(c.generated_at).toLocaleDateString()}</td>
+                        <td style={{ padding: '6px 8px', color: c.source === 'studio' ? 'var(--j-violet)' : 'var(--j-text-muted)' }}>{c.source}</td>
                         <td style={{ padding: '6px 8px' }}>
                           <span style={badgeStyle(approvalColor(c.approval_status))} title={c.approved_by ? `by ${c.approved_by}` : undefined}>
                             {c.approval_status ?? 'pending'}
@@ -1118,13 +1118,13 @@ export const CreativeStudio: React.FC = () => {
                             <button
                               disabled={isInFlight(c.id, 'check')}
                               onClick={() => checkMoneyLink(c)}
-                              style={{ ...smallBtnStyle('#1e293b', '#334155'), opacity: isInFlight(c.id, 'check') ? 0.5 : 1 }}>
+                              style={{ ...smallBtnStyle('var(--j-surface-2)', 'var(--j-border)'), opacity: isInFlight(c.id, 'check') ? 0.5 : 1 }}>
                               Check
                             </button>
                             <button
                               disabled={isInFlight(c.id, 'proof')}
                               onClick={() => sendProof(c)}
-                              style={{ ...smallBtnStyle('#1e293b', '#334155'), opacity: isInFlight(c.id, 'proof') ? 0.5 : 1 }}>
+                              style={{ ...smallBtnStyle('var(--j-surface-2)', 'var(--j-border)'), opacity: isInFlight(c.id, 'proof') ? 0.5 : 1 }}>
                               Proof
                             </button>
                             {approveArmed === c.id ? (
@@ -1132,12 +1132,12 @@ export const CreativeStudio: React.FC = () => {
                                 <button
                                   disabled={isInFlight(c.id, 'approve')}
                                   onClick={() => approveCreative(c)}
-                                  style={{ ...smallBtnStyle('rgba(0,184,148,0.18)', '#00b894'), color: '#00b894', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
+                                  style={{ ...smallBtnStyle('color-mix(in srgb, var(--j-success) 18%, transparent)', 'var(--j-success)'), color: 'var(--j-success)', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
                                   Confirm
                                 </button>
                                 <button
                                   onClick={() => setApproveArmed(null)}
-                                  style={smallBtnStyle('#1e293b', '#334155')}>
+                                  style={smallBtnStyle('var(--j-surface-2)', 'var(--j-border)')}>
                                   Cancel
                                 </button>
                               </>
@@ -1145,14 +1145,14 @@ export const CreativeStudio: React.FC = () => {
                               <button
                                 disabled={isInFlight(c.id, 'approve')}
                                 onClick={() => setApproveArmed(c.id)}
-                                style={{ ...smallBtnStyle('rgba(0,184,148,0.12)', '#00b894'), color: '#00b894', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
+                                style={{ ...smallBtnStyle('color-mix(in srgb, var(--j-success) 12%, transparent)', 'var(--j-success)'), color: 'var(--j-success)', opacity: isInFlight(c.id, 'approve') ? 0.5 : 1 }}>
                                 Approve
                               </button>
                             )}
                             <button
                               disabled={isInFlight(c.id, 'reject')}
                               onClick={() => rejectCreative(c)}
-                              style={{ ...smallBtnStyle('rgba(233,69,96,0.12)', '#e94560'), color: '#e94560', opacity: isInFlight(c.id, 'reject') ? 0.5 : 1 }}>
+                              style={{ ...smallBtnStyle('color-mix(in srgb, var(--j-danger) 12%, transparent)', 'var(--j-danger)'), color: 'var(--j-danger)', opacity: isInFlight(c.id, 'reject') ? 0.5 : 1 }}>
                               Reject
                             </button>
                           </div>
@@ -1160,7 +1160,7 @@ export const CreativeStudio: React.FC = () => {
                       </tr>
                     ))}
                     {!libraryLoading && creatives.length === 0 && (
-                      <tr><td colSpan={7} style={{ padding: 16, color: '#94a3b8' }}>No creatives yet.</td></tr>
+                      <tr><td colSpan={7} style={{ padding: 16, color: 'var(--j-text-muted)' }}>No creatives yet.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -1170,11 +1170,11 @@ export const CreativeStudio: React.FC = () => {
                   <>
                     <div style={{ fontSize: 13, marginBottom: 8 }}>
                       <div style={{ fontWeight: 600 }}>{selected.subject}</div>
-                      <div style={{ color: '#64748b', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>{selected.filename}</div>
+                      <div style={{ color: 'var(--j-text-faint)', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>{selected.filename}</div>
                     </div>
                     <div style={{
                       display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8,
-                      padding: '8px 10px', background: '#0f172a', border: '1px solid #1f2937', borderRadius: 8,
+                      padding: '8px 10px', background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 8,
                     }}>
                       <span style={badgeStyle(approvalColor(selected.approval_status))} title={selected.approved_by ? `by ${selected.approved_by}` : undefined}>
                         {selected.approval_status ?? 'pending'}
@@ -1183,12 +1183,12 @@ export const CreativeStudio: React.FC = () => {
                         tracking link: {selected.money_link_status ?? 'untested'}
                       </span>
                       {selected.money_link_detail && (
-                        <span style={{ fontSize: 11, color: '#94a3b8' }}>{selected.money_link_detail}</span>
+                        <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>{selected.money_link_detail}</span>
                       )}
                       <button
                         disabled={isInFlight(selected.id, 'check')}
                         onClick={() => checkMoneyLink(selected)}
-                        style={{ ...smallBtnStyle('#1e293b', '#334155'), marginLeft: 'auto', opacity: isInFlight(selected.id, 'check') ? 0.5 : 1 }}>
+                        style={{ ...smallBtnStyle('var(--j-surface-2)', 'var(--j-border)'), marginLeft: 'auto', opacity: isInFlight(selected.id, 'check') ? 0.5 : 1 }}>
                         <FontAwesomeIcon icon={faRotate} spin={isInFlight(selected.id, 'check')} /> Run tracking-link check
                       </button>
                     </div>
@@ -1197,37 +1197,37 @@ export const CreativeStudio: React.FC = () => {
                         href in the creative is either already mapped to a /o/
                         tracking hash, or gets a confirm-card to mint one. ──── */}
                     <div style={{
-                      marginBottom: 8, padding: '10px 12px', background: '#0f172a',
-                      border: '1px solid #1f2937', borderRadius: 8, maxHeight: 340, overflowY: 'auto',
+                      marginBottom: 8, padding: '10px 12px', background: 'var(--j-bg)',
+                      border: '1px solid var(--j-surface-2)', borderRadius: 8, maxHeight: 340, overflowY: 'auto',
                     }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: offerLinks && offerLinks.length ? 10 : 0 }}>
-                        <span style={{ ...labelStyle, marginBottom: 0, color: '#a78bfa', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ ...labelStyle, marginBottom: 0, color: 'var(--j-violet)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                           <FontAwesomeIcon icon={faLink} /> Offer links
                         </span>
-                        <span style={{ fontSize: 11, color: '#64748b' }}>
+                        <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>
                           money links detected in this creative · map unmapped ones to a /o/ tracking hash
                         </span>
                         <button
                           onClick={() => selected && fetchOfferLinks(selected.id)}
                           disabled={offerLinksLoading}
-                          style={{ ...smallBtnStyle('#1e293b', '#334155'), marginLeft: 'auto', opacity: offerLinksLoading ? 0.5 : 1 }}>
+                          style={{ ...smallBtnStyle('var(--j-surface-2)', 'var(--j-border)'), marginLeft: 'auto', opacity: offerLinksLoading ? 0.5 : 1 }}>
                           <FontAwesomeIcon icon={faRotate} spin={offerLinksLoading} /> Refresh
                         </button>
                       </div>
 
                       {offerLinksLoading && offerLinks === null ? (
-                        <div style={{ fontSize: 12, color: '#64748b', padding: '4px 2px' }}>
+                        <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '4px 2px' }}>
                           <FontAwesomeIcon icon={faSpinner} spin /> Scanning creative for money links…
                         </div>
                       ) : offerLinksError ? (
                         <div style={{ fontSize: 12, color: '#ef4444', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                           <FontAwesomeIcon icon={faTriangleExclamation} /> {offerLinksError}
-                          <button onClick={() => selected && fetchOfferLinks(selected.id)} style={smallBtnStyle('#1e293b', '#334155')}>
+                          <button onClick={() => selected && fetchOfferLinks(selected.id)} style={smallBtnStyle('var(--j-surface-2)', 'var(--j-border)')}>
                             Retry
                           </button>
                         </div>
                       ) : offerLinks && offerLinks.length === 0 ? (
-                        <div style={{ fontSize: 12, color: '#64748b' }}>No offer links detected in this creative.</div>
+                        <div style={{ fontSize: 12, color: 'var(--j-text-faint)' }}>No offer links detected in this creative.</div>
                       ) : offerLinks ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                           {offerLinks.map((row) => {
@@ -1235,14 +1235,14 @@ export const CreativeStudio: React.FC = () => {
                               return (
                                 <div key={row.normalized} style={{
                                   display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-                                  padding: '7px 9px', background: '#111827', border: '1px solid #1f2937', borderRadius: 6,
+                                  padding: '7px 9px', background: 'var(--j-surface)', border: '1px solid var(--j-surface-2)', borderRadius: 6,
                                 }}>
-                                  <span style={badgeStyle('#22c55e')}>mapped</span>
-                                  <span style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 600 }} title={row.url}>{row.host}</span>
-                                  {row.slug && <span style={{ fontSize: 11, color: '#64748b' }}>/{row.slug}</span>}
+                                  <span style={badgeStyle('var(--j-success)')}>mapped</span>
+                                  <span style={{ fontSize: 12, color: 'var(--j-text-2)', fontWeight: 600 }} title={row.url}>{row.host}</span>
+                                  {row.slug && <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>/{row.slug}</span>}
                                   {row.hash && (
                                     <span style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                                      <code style={{ fontSize: 11, color: '#a78bfa', userSelect: 'all' }}>{row.hash}</code>
+                                      <code style={{ fontSize: 11, color: 'var(--j-violet)', userSelect: 'all' }}>{row.hash}</code>
                                       <CopyButton text={row.hash} title="Copy hash" />
                                     </span>
                                   )}
@@ -1250,7 +1250,7 @@ export const CreativeStudio: React.FC = () => {
                                     title={offerTrackingSample(row.hash ?? 'HASH')}
                                     style={{
                                       marginLeft: 'auto', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11, color: '#64748b', userSelect: 'all',
+                                      whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 11, color: 'var(--j-text-faint)', userSelect: 'all',
                                     }}>
                                     {offerTrackingSample(row.hash ?? 'HASH')}
                                   </span>
@@ -1262,13 +1262,13 @@ export const CreativeStudio: React.FC = () => {
                             const busy = Boolean(offerMapBusy[row.normalized]);
                             return (
                               <div key={row.normalized} style={{
-                                padding: 10, background: '#111827', border: '1px solid #334155',
+                                padding: 10, background: 'var(--j-surface)', border: '1px solid var(--j-border)',
                                 borderRadius: 6, display: 'flex', flexDirection: 'column', gap: 8,
                               }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                   <span style={badgeStyle('#f59e0b')}>unmapped</span>
-                                  <span style={{ fontSize: 12, color: '#cbd5e1', fontWeight: 600 }}>{row.host}</span>
-                                  <span style={{ fontSize: 11, color: '#64748b' }}>— Create tracking map</span>
+                                  <span style={{ fontSize: 12, color: 'var(--j-text-2)', fontWeight: 600 }}>{row.host}</span>
+                                  <span style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>— Create tracking map</span>
                                 </div>
 
                                 <div>
@@ -1303,11 +1303,11 @@ export const CreativeStudio: React.FC = () => {
                                 <div>
                                   <label style={labelStyle}>/o/ link preview — hash mints on create</label>
                                   <div style={{
-                                    fontFamily: 'monospace', fontSize: 11, color: '#94a3b8', wordBreak: 'break-all',
-                                    background: '#0f172a', border: '1px solid #1f2937', borderRadius: 6, padding: '6px 8px',
+                                    fontFamily: 'monospace', fontSize: 11, color: 'var(--j-text-muted)', wordBreak: 'break-all',
+                                    background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 6, padding: '6px 8px',
                                   }}>
                                     {offerTrackingSample('NEW_HASH')}
-                                    <div style={{ color: '#64748b', marginTop: 4 }}>↳ redirects to {draft.destination || '—'}</div>
+                                    <div style={{ color: 'var(--j-text-faint)', marginTop: 4 }}>↳ redirects to {draft.destination || '—'}</div>
                                   </div>
                                 </div>
 
@@ -1315,7 +1315,7 @@ export const CreativeStudio: React.FC = () => {
                                   <button
                                     disabled={busy}
                                     onClick={() => createOfferMap(row)}
-                                    style={{ ...btnStyle('#312e81', '#4338ca'), opacity: busy ? 0.6 : 1 }}>
+                                    style={{ ...btnStyle('var(--j-surface-3)', 'var(--j-violet-strong)'), opacity: busy ? 0.6 : 1 }}>
                                     <FontAwesomeIcon icon={busy ? faSpinner : faCircleCheck} spin={busy} /> Confirm — create tracking map
                                   </button>
                                 </div>
@@ -1326,11 +1326,11 @@ export const CreativeStudio: React.FC = () => {
                       ) : null}
                     </div>
 
-                    <iframe title="library-preview" sandbox="" srcDoc={previewHtml ?? '<p style="font-family:sans-serif;color:#64748b">loading…</p>'}
-                      style={{ width: '100%', flex: 1, minHeight: 180, background: '#fff', border: '1px solid #334155', borderRadius: 8 }} />
+                    <iframe title="library-preview" sandbox="" srcDoc={previewHtml ?? '<p style="font-family:sans-serif;color:var(--j-text-faint)">loading…</p>'}
+                      style={{ width: '100%', flex: 1, minHeight: 180, background: '#fff', border: '1px solid var(--j-border)', borderRadius: 8 }} />
                   </>
                 ) : (
-                  <div style={{ color: '#64748b', fontSize: 13, padding: 24 }}>Select a creative to preview.</div>
+                  <div style={{ color: 'var(--j-text-faint)', fontSize: 13, padding: 24 }}>Select a creative to preview.</div>
                 )}
               </div>
             </>
@@ -1341,15 +1341,15 @@ export const CreativeStudio: React.FC = () => {
         {chatOpen && (
           <div style={{
             flex: '0 0 360px', display: 'flex', flexDirection: 'column',
-            background: '#0f172a', border: '1px solid #1f2937', borderRadius: 10, minHeight: 0,
+            background: 'var(--j-bg)', border: '1px solid var(--j-surface-2)', borderRadius: 10, minHeight: 0,
           }}>
-            <div style={{ padding: '10px 14px', borderBottom: '1px solid #1f2937', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <FontAwesomeIcon icon={faRobot} style={{ color: '#a78bfa' }} /> Creative Agent
-              <span style={{ fontWeight: 400, color: '#64748b', fontSize: 11 }}>generates via the creative engine</span>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--j-surface-2)', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <FontAwesomeIcon icon={faRobot} style={{ color: 'var(--j-violet)' }} /> Creative Agent
+              <span style={{ fontWeight: 400, color: 'var(--j-text-faint)', fontSize: 11 }}>generates via the creative engine</span>
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {messages.length === 0 && (
-                <div style={{ color: '#64748b', fontSize: 12, lineHeight: 1.6 }}>
+                <div style={{ color: 'var(--j-text-faint)', fontSize: 12, lineHeight: 1.6 }}>
                   Try: “Make a Warby Parker newsletter for all brands”, “Regenerate DB with this hero:
                   &lt;url&gt;”, “Give me 5 subject ideas from the BWP pool”.
                 </div>
@@ -1358,22 +1358,22 @@ export const CreativeStudio: React.FC = () => {
                 <div key={i} style={{
                   alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
                   maxWidth: '92%',
-                  background: m.role === 'user' ? '#312e81' : '#1e293b',
-                  border: `1px solid ${m.role === 'user' ? '#4338ca' : '#334155'}`,
+                  background: m.role === 'user' ? 'var(--j-surface-3)' : 'var(--j-surface-2)',
+                  border: `1px solid ${m.role === 'user' ? 'var(--j-violet-strong)' : 'var(--j-border)'}`,
                   borderRadius: 10, padding: '8px 12px', fontSize: 13, lineHeight: 1.5,
                 }}>
                   {renderAgentText(m.content)}
                   {(m.actions ?? []).map((a, j) => (
-                    <div key={j} style={{ marginTop: 6, fontSize: 11, color: '#22c55e' }}>
+                    <div key={j} style={{ marginTop: 6, fontSize: 11, color: 'var(--j-success)' }}>
                       <FontAwesomeIcon icon={faCircleCheck} /> {a}
                     </div>
                   ))}
                 </div>
               ))}
-              {chatBusy && <div style={{ color: '#64748b', fontSize: 12 }}>thinking…</div>}
+              {chatBusy && <div style={{ color: 'var(--j-text-faint)', fontSize: 12 }}>thinking…</div>}
               <div ref={chatBottomRef} />
             </div>
-            <div style={{ padding: 10, borderTop: '1px solid #1f2937', display: 'flex', gap: 8 }}>
+            <div style={{ padding: 10, borderTop: '1px solid var(--j-surface-2)', display: 'flex', gap: 8 }}>
               <input
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
@@ -1382,7 +1382,7 @@ export const CreativeStudio: React.FC = () => {
                 style={{ ...inputStyle, flex: 1 }}
                 disabled={chatBusy}
               />
-              <button onClick={sendChat} disabled={chatBusy || !chatInput.trim()} style={btnStyle('#312e81', '#4338ca')}>
+              <button onClick={sendChat} disabled={chatBusy || !chatInput.trim()} style={btnStyle('var(--j-surface-3)', 'var(--j-violet-strong)')}>
                 <FontAwesomeIcon icon={faPaperPlane} />
               </button>
             </div>

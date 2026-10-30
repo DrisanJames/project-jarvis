@@ -12,11 +12,11 @@
 .suppressions-header h1 {
   margin: 0 0 8px 0;
   font-size: 28px;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .suppressions-header .subtitle {
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   margin: 0;
 }
 
@@ -28,7 +28,7 @@
 }
 
 .stat-card {
-  background: #0d1526;
+  background: var(--j-surface);
   border-radius: 12px;
   padding: 20px;
   text-align: center;
@@ -38,17 +38,17 @@
 .stat-value {
   font-size: 32px;
   font-weight: 700;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .stat-label {
   font-size: 14px;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   margin-top: 4px;
 }
 
 .suppressions-table {
-  background: #0d1526;
+  background: var(--j-surface);
   border-radius: 12px;
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(0,0,0,0.3);
@@ -63,20 +63,20 @@
 .suppressions-table td {
   padding: 12px 16px;
   text-align: left;
-  border-bottom: 1px solid rgba(0,200,255,0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
 }
 
 .suppressions-table th {
-  background: #0a0f1a;
+  background: var(--j-bg);
   font-weight: 600;
-  color: #e0e6f0;
+  color: var(--j-text);
   font-size: 12px;
   text-transform: uppercase;
 }
 
 .email-cell {
   font-family: monospace;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .reason-badge {
@@ -88,39 +88,39 @@
 }
 
 .reason-badge.user-requested-suppression {
-  background: rgba(253,203,110,0.15);
-  color: #fdcb6e;
+  background: color-mix(in srgb, var(--j-warn) 15%, transparent);
+  color: var(--j-warn);
 }
 
 .reason-badge.complaint {
-  background: rgba(233,69,96,0.15);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 15%, transparent);
+  color: var(--j-danger);
 }
 
 .reason-badge.hard-bounce {
-  background: rgba(233,69,96,0.12);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 12%, transparent);
+  color: var(--j-danger);
 }
 
 .reason-badge.spam-trap {
-  background: rgba(0,229,255,0.12);
-  color: #00e5ff;
+  background: color-mix(in srgb, var(--j-cyan) 12%, transparent);
+  color: var(--j-cyan);
 }
 
 .reason-badge.manual-removal {
-  background: rgba(0,176,255,0.12);
-  color: #00b0ff;
+  background: color-mix(in srgb, var(--j-blue) 12%, transparent);
+  color: var(--j-blue);
 }
 
 .empty-state {
   text-align: center;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
   padding: 40px !important;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #00e5ff 0%, #00b0ff 100%);
-  color: white;
+  background: linear-gradient(135deg, var(--j-cyan) 0%, var(--j-blue) 100%);
+  color: var(--j-on-accent);
   border: none;
   padding: 10px 20px;
   border-radius: 8px;
@@ -131,12 +131,12 @@
 
 .btn-primary:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 229, 255, 0.4);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--j-cyan) 40%, transparent);
 }
 
 .btn-danger {
-  background: #e94560;
-  color: white;
+  background: var(--j-danger);
+  color: var(--j-on-accent);
   border: none;
   padding: 6px 12px;
   border-radius: 6px;
@@ -159,7 +159,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0,0,0,0.5);
+  background: color-mix(in srgb, var(--j-shade) 100%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -167,7 +167,7 @@
 }
 
 .modal {
-  background: #0d1526;
+  background: var(--j-surface);
   border-radius: 16px;
   padding: 24px;
   width: 100%;
@@ -177,7 +177,7 @@
 
 .modal h2 {
   margin: 0 0 20px 0;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .form-group {
@@ -188,26 +188,26 @@
   display: block;
   margin-bottom: 6px;
   font-weight: 500;
-  color: #e0e6f0;
+  color: var(--j-text);
 }
 
 .form-group input,
 .form-group select {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid rgba(0,200,255,0.08);
+  border: 1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent);
   border-radius: 8px;
   font-size: 14px;
-  background: #0a0f1a;
-  color: #e0e6f0;
+  background: var(--j-bg);
+  color: var(--j-text);
   transition: border-color 0.2s;
 }
 
 .form-group input:focus,
 .form-group select:focus {
   outline: none;
-  border-color: #00e5ff;
-  box-shadow: 0 0 0 3px rgba(0, 229, 255, 0.1);
+  border-color: var(--j-cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--j-cyan) 10%, transparent);
 }
 
 .form-actions {
@@ -218,8 +218,8 @@
 }
 
 .form-actions button:first-child {
-  background: #0a0f1a;
-  color: #e0e6f0;
+  background: var(--j-bg);
+  color: var(--j-text);
   border: none;
   padding: 10px 20px;
   border-radius: 8px;
@@ -227,8 +227,8 @@
 }
 
 .error-banner {
-  background: rgba(233,69,96,0.15);
-  color: #e94560;
+  background: color-mix(in srgb, var(--j-danger) 15%, transparent);
+  color: var(--j-danger);
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
@@ -237,5 +237,5 @@
 .loading {
   text-align: center;
   padding: 60px;
-  color: rgba(180,210,240,0.65);
+  color: color-mix(in srgb, var(--j-text) 65%, transparent);
 }

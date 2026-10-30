@@ -311,7 +311,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300, gap: 16, color: '#888' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 300, gap: 16, color: 'var(--j-text-muted)' }}>
         <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 28 }} />
         <div>Loading domain inventory...</div>
       </div>
@@ -319,10 +319,10 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
   }
 
   const getStatusIcon = (status: string) => {
-    if (status === 'active') return <FontAwesomeIcon icon={faCheck} style={{ color: '#00b894', fontSize: 11 }} />;
-    if (status === 'pending' || status === 'provisioning') return <FontAwesomeIcon icon={faClock} style={{ color: '#fdcb6e', fontSize: 11 }} />;
-    if (status === 'failed') return <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#e94560', fontSize: 11 }} />;
-    return <FontAwesomeIcon icon={faClock} style={{ color: '#888', fontSize: 11 }} />;
+    if (status === 'active') return <FontAwesomeIcon icon={faCheck} style={{ color: 'var(--j-success)', fontSize: 11 }} />;
+    if (status === 'pending' || status === 'provisioning') return <FontAwesomeIcon icon={faClock} style={{ color: 'var(--j-warn)', fontSize: 11 }} />;
+    if (status === 'failed') return <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-danger)', fontSize: 11 }} />;
+    return <FontAwesomeIcon icon={faClock} style={{ color: 'var(--j-text-muted)', fontSize: 11 }} />;
   };
 
   const getStatusClass = (status: string) => {
@@ -565,7 +565,7 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
 
         {/* Domain Grid */}
         {recentDomains.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 40, color: '#888', fontSize: 14 }}>
+          <div style={{ textAlign: 'center', padding: 40, color: 'var(--j-text-muted)', fontSize: 14 }}>
             No domains configured yet. Start by adding sending profiles or setting up tracking/image domains.
           </div>
         ) : filteredDomains.length === 0 ? (
@@ -616,9 +616,9 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
                     padding: '4px 10px',
                     fontSize: 11,
                     fontWeight: 600,
-                    color: '#74b9ff',
-                    background: 'rgba(116,185,255,0.10)',
-                    border: '1px solid rgba(116,185,255,0.25)',
+                    color: 'var(--j-blue)',
+                    background: 'color-mix(in srgb, var(--j-blue) 10%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--j-blue) 25%, transparent)',
                     borderRadius: 6,
                     cursor: 'pointer',
                   }}
@@ -650,10 +650,10 @@ const DomainDashboard: React.FC<DashboardProps> = ({ stats, recentDomains, onNav
 type ChipTone = 'ok' | 'warn' | 'bad' | 'muted';
 
 const chipToneColors: Record<ChipTone, { fg: string; bg: string; border: string }> = {
-  ok: { fg: '#00b894', bg: 'rgba(0,184,148,0.12)', border: 'rgba(0,184,148,0.3)' },
-  warn: { fg: '#fdcb6e', bg: 'rgba(253,203,110,0.12)', border: 'rgba(253,203,110,0.3)' },
-  bad: { fg: '#e94560', bg: 'rgba(233,69,96,0.12)', border: 'rgba(233,69,96,0.3)' },
-  muted: { fg: '#888', bg: 'rgba(255,255,255,0.05)', border: 'rgba(255,255,255,0.12)' },
+  ok: { fg: 'var(--j-success)', bg: 'color-mix(in srgb, var(--j-success) 12%, transparent)', border: 'color-mix(in srgb, var(--j-success) 30%, transparent)' },
+  warn: { fg: 'var(--j-warn)', bg: 'color-mix(in srgb, var(--j-warn) 12%, transparent)', border: 'color-mix(in srgb, var(--j-warn) 30%, transparent)' },
+  bad: { fg: 'var(--j-danger)', bg: 'color-mix(in srgb, var(--j-danger) 12%, transparent)', border: 'color-mix(in srgb, var(--j-danger) 30%, transparent)' },
+  muted: { fg: 'var(--j-text-muted)', bg: 'color-mix(in srgb, var(--j-text) 5%, transparent)', border: 'color-mix(in srgb, var(--j-text) 12%, transparent)' },
 };
 
 const StatusChip: React.FC<{ tone: ChipTone; children: React.ReactNode }> = ({ tone, children }) => {
@@ -694,7 +694,7 @@ const blocklistTone = (status: string): ChipTone => {
 
 const RecordBlock: React.FC<{ label: string; record: string }> = ({ label, record }) => (
   <details style={{ marginTop: 6 }}>
-    <summary style={{ cursor: 'pointer', fontSize: 11, color: '#74b9ff' }}>{label}</summary>
+    <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--j-blue)' }}>{label}</summary>
     <code
       style={{
         display: 'block',
@@ -702,9 +702,9 @@ const RecordBlock: React.FC<{ label: string; record: string }> = ({ label, recor
         padding: '8px 10px',
         fontSize: 11,
         lineHeight: 1.5,
-        color: '#e0e0e0',
-        background: '#0a0f1a',
-        border: '1px solid rgba(255,255,255,0.08)',
+        color: 'var(--j-text)',
+        background: 'var(--j-bg)',
+        border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
         borderRadius: 6,
         wordBreak: 'break-all',
         whiteSpace: 'pre-wrap',
@@ -725,7 +725,7 @@ const IssueList: React.FC<{ issues?: string[] }> = ({ issues }) => {
           style={{
             fontSize: 11,
             lineHeight: 1.5,
-            color: iss.startsWith('CRITICAL') ? '#e94560' : '#fdcb6e',
+            color: iss.startsWith('CRITICAL') ? 'var(--j-danger)' : 'var(--j-warn)',
           }}
         >
           {iss}
@@ -737,8 +737,8 @@ const IssueList: React.FC<{ issues?: string[] }> = ({ issues }) => {
 
 const dnsSectionStyle: React.CSSProperties = {
   padding: '12px 14px',
-  background: 'rgba(255,255,255,0.02)',
-  border: '1px solid rgba(255,255,255,0.06)',
+  background: 'color-mix(in srgb, var(--j-text) 2%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
   borderRadius: 8,
 };
 
@@ -749,7 +749,7 @@ const dnsSectionTitleStyle: React.CSSProperties = {
   margin: 0,
   fontSize: 12,
   fontWeight: 700,
-  color: '#e0e0e0',
+  color: 'var(--j-text)',
   textTransform: 'uppercase',
   letterSpacing: 0.5,
 };
@@ -818,9 +818,9 @@ const dnsToolbarBtnStyle = (disabled: boolean): React.CSSProperties => ({
   padding: '5px 12px',
   fontSize: 11,
   fontWeight: 600,
-  color: '#74b9ff',
-  background: 'rgba(116,185,255,0.10)',
-  border: '1px solid rgba(116,185,255,0.25)',
+  color: 'var(--j-blue)',
+  background: 'color-mix(in srgb, var(--j-blue) 10%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--j-blue) 25%, transparent)',
   borderRadius: 6,
   cursor: disabled ? 'not-allowed' : 'pointer',
   opacity: disabled ? 0.5 : 1,
@@ -884,7 +884,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
     <SideShelf
       title={(
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, maxWidth: '100%' }}>
-          <FontAwesomeIcon icon={faStethoscope} style={{ color: '#74b9ff', flexShrink: 0 }} />
+          <FontAwesomeIcon icon={faStethoscope} style={{ color: 'var(--j-blue)', flexShrink: 0 }} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             DNS Health — {domain}
           </span>
@@ -892,7 +892,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
       )}
       onClose={onClose}
     >
-      <div style={{ padding: '14px 20px 20px', color: '#e0e0e0' }}>
+      <div style={{ padding: '14px 20px 20px', color: 'var(--j-text)' }}>
         {/* Toolbar: re-run, copy report, checked-at */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           <button
@@ -912,7 +912,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             <FontAwesomeIcon icon={copied ? faCheck : faCopy} /> {copied ? 'Copied' : 'Copy report'}
           </button>
           {data && (
-            <span style={{ marginLeft: 'auto', fontSize: 11, color: '#888' }}>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--j-text-muted)' }}>
               Apex: {data.apex} · Checked {new Date(data.checked_at).toLocaleTimeString()}
             </span>
           )}
@@ -921,7 +921,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
         {/* Check history — last 5 runs of this session, selectable */}
         {history.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--j-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
               <FontAwesomeIcon icon={faHistory} /> Runs
             </span>
             {history.map((run, i) => {
@@ -937,9 +937,9 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                     fontWeight: 600,
                     borderRadius: 999,
                     cursor: 'pointer',
-                    color: isCurrent ? '#74b9ff' : '#888',
-                    background: isCurrent ? 'rgba(116,185,255,0.12)' : 'rgba(255,255,255,0.04)',
-                    border: `1px solid ${isCurrent ? 'rgba(116,185,255,0.35)' : 'rgba(255,255,255,0.10)'}`,
+                    color: isCurrent ? 'var(--j-blue)' : 'var(--j-text-muted)',
+                    background: isCurrent ? 'color-mix(in srgb, var(--j-blue) 12%, transparent)' : 'color-mix(in srgb, var(--j-text) 4%, transparent)',
+                    border: `1px solid ${isCurrent ? 'color-mix(in srgb, var(--j-blue) 35%, transparent)' : 'color-mix(in srgb, var(--j-text) 10%, transparent)'}`,
                   }}
                 >
                   {new Date(run.ts).toLocaleTimeString()}{i === 0 ? ' · latest' : ''}
@@ -951,7 +951,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
 
         {/* Loading */}
         {checking && !data && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 0', color: '#888' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '40px 0', color: 'var(--j-text-muted)' }}>
             <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 24 }} />
             <div style={{ fontSize: 13 }}>Checking your email authentication and sender reputation...</div>
           </div>
@@ -963,9 +963,9 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             style={{
               padding: '12px 14px',
               fontSize: 13,
-              color: '#e94560',
-              background: 'rgba(233,69,96,0.08)',
-              border: '1px solid rgba(233,69,96,0.25)',
+              color: 'var(--j-danger)',
+              background: 'color-mix(in srgb, var(--j-danger) 8%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--j-danger) 25%, transparent)',
               borderRadius: 8,
             }}
           >
@@ -1003,7 +1003,7 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             {/* SPF */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#74b9ff' }} /> SPF
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-blue)' }} /> SPF
                 <StatusChip tone={authStatusTone(data.spf.status)}>{data.spf.status}</StatusChip>
               </h4>
               {data.spf.record && <RecordBlock label="Show record" record={data.spf.record} />}
@@ -1013,11 +1013,11 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             {/* DKIM */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#a29bfe' }} /> DKIM
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-violet)' }} /> DKIM
                 <StatusChip tone={authStatusTone(data.dkim.status)}>{data.dkim.status}</StatusChip>
               </h4>
               {data.dkim.selectors_found.length > 0 ? (
-                <div style={{ marginTop: 6, fontSize: 12, color: '#e0e0e0' }}>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--j-text)' }}>
                   Selectors found:{' '}
                   {data.dkim.selectors_found.map(sel => (
                     <code
@@ -1026,8 +1026,8 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                         margin: '0 4px 0 0',
                         padding: '2px 6px',
                         fontSize: 11,
-                        background: '#0a0f1a',
-                        border: '1px solid rgba(255,255,255,0.08)',
+                        background: 'var(--j-bg)',
+                        border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)',
                         borderRadius: 4,
                       }}
                     >
@@ -1036,14 +1036,14 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                   ))}
                 </div>
               ) : (
-                <div style={{ marginTop: 6, fontSize: 12, color: '#fdcb6e' }}>{data.dkim.note}</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--j-warn)' }}>{data.dkim.note}</div>
               )}
             </div>
 
             {/* DMARC */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faShieldAlt} style={{ color: '#00b894' }} /> DMARC ({'_dmarc.'}{data.apex})
+                <FontAwesomeIcon icon={faShieldAlt} style={{ color: 'var(--j-success)' }} /> DMARC ({'_dmarc.'}{data.apex})
                 <StatusChip tone={authStatusTone(data.dmarc.status)}>
                   {data.dmarc.status}{data.dmarc.policy ? ` · p=${data.dmarc.policy}` : ''}
                 </StatusChip>
@@ -1055,12 +1055,12 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             {/* Infrastructure: NS / MX / A */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faServer} style={{ color: '#74b9ff' }} /> Infrastructure
+                <FontAwesomeIcon icon={faServer} style={{ color: 'var(--j-blue)' }} /> Infrastructure
               </h4>
               <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12 }}>
                 <div>
-                  <span style={{ color: '#888' }}>NS host: </span>
-                  <span style={{ color: '#fff', fontWeight: 600 }}>
+                  <span style={{ color: 'var(--j-text-muted)' }}>NS host: </span>
+                  <span style={{ color: 'var(--j-text)', fontWeight: 600 }}>
                     {data.ns.provider || (data.ns.servers.length > 0 ? 'Unrecognized provider' : 'No NS records found')}
                   </span>
                 </div>
@@ -1070,12 +1070,12 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                 {data.mx.length > 0 ? (
                   <RecordBlock label={`MX records (${data.mx.length})`} record={data.mx.join('\n')} />
                 ) : (
-                  <div style={{ color: '#fdcb6e' }}>No MX records on {data.domain}</div>
+                  <div style={{ color: 'var(--j-warn)' }}>No MX records on {data.domain}</div>
                 )}
                 {data.a.length > 0 ? (
                   <RecordBlock label={`A records (${data.a.length})`} record={data.a.join('\n')} />
                 ) : (
-                  <div style={{ color: '#888' }}>No A record on {data.domain}</div>
+                  <div style={{ color: 'var(--j-text-muted)' }}>No A record on {data.domain}</div>
                 )}
               </div>
             </div>
@@ -1083,19 +1083,19 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
             {/* Blocklists */}
             <div style={dnsSectionStyle}>
               <h4 style={dnsSectionTitleStyle}>
-                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: '#fdcb6e' }} /> Reputation Lists
+                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-warn)' }} /> Reputation Lists
               </h4>
               {data.ip_source && (
-                <div style={{ marginTop: 4, fontSize: 11, color: '#888' }}>
+                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--j-text-muted)' }}>
                   IP source: {data.ip_source === 'db-pool' ? 'sending route IP' : data.ip_source === 'a-record' ? 'domain A record (no route found)' : data.ip_source}
                 </div>
               )}
               {data.blocklists.length === 0 ? (
-                <div style={{ marginTop: 6, fontSize: 12, color: '#888' }}>No reputation list targets resolved.</div>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--j-text-muted)' }}>No reputation list targets resolved.</div>
               ) : (
                 <table style={{ width: '100%', marginTop: 8, borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
-                    <tr style={{ color: '#888', textAlign: 'left' }}>
+                    <tr style={{ color: 'var(--j-text-muted)', textAlign: 'left' }}>
                       <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>Target</th>
                       <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>List</th>
                       <th style={{ padding: '4px 8px 4px 0', fontWeight: 600 }}>Status</th>
@@ -1104,20 +1104,20 @@ const DnsHealthShelf: React.FC<DnsHealthShelfProps> = ({ domain, orgId, onClose 
                   </thead>
                   <tbody>
                     {data.blocklists.map((b, i) => (
-                      <tr key={`${b.target}-${b.list}-${i}`} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                        <td style={{ padding: '5px 8px 5px 0', color: '#e0e0e0', fontFamily: 'monospace' }}>{b.target}</td>
-                        <td style={{ padding: '5px 8px 5px 0', color: '#888' }}>{b.list}</td>
+                      <tr key={`${b.target}-${b.list}-${i}`} style={{ borderTop: '1px solid color-mix(in srgb, var(--j-text) 5%, transparent)' }}>
+                        <td style={{ padding: '5px 8px 5px 0', color: 'var(--j-text)', fontFamily: 'monospace' }}>{b.target}</td>
+                        <td style={{ padding: '5px 8px 5px 0', color: 'var(--j-text-muted)' }}>{b.list}</td>
                         <td style={{ padding: '5px 8px 5px 0' }}>
                           <StatusChip tone={blocklistTone(b.status)}>{b.status}</StatusChip>
                         </td>
-                        <td style={{ padding: '5px 0', color: '#888', lineHeight: 1.4 }}>{b.detail || '—'}</td>
+                        <td style={{ padding: '5px 0', color: 'var(--j-text-muted)', lineHeight: 1.4 }}>{b.detail || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               )}
               {unverifiableCount > 0 && (
-                <div style={{ marginTop: 8, fontSize: 11, color: '#fdcb6e' }}>
+                <div style={{ marginTop: 8, fontSize: 11, color: 'var(--j-warn)' }}>
                   "Unverifiable" usually means the reputation list rejected the query because it came from a
                   public/open resolver — it does NOT mean listed. Verify via a dedicated resolver if needed.
                 </div>

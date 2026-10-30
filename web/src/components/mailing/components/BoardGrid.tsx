@@ -721,8 +721,8 @@ export const BoardGrid: React.FC = () => {
                 return (
                   <button
                     style={{
-                      ...btnStyle, background: 'rgba(34,197,94,0.14)',
-                      border: '1px solid rgba(34,197,94,0.45)', color: colors.success,
+                      ...btnStyle, background: 'color-mix(in srgb, var(--j-success) 14%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--j-success) 45%, transparent)', color: colors.success,
                       opacity: n > 0 ? 1 : 0.55,
                     }}
                     disabled={n === 0 || !!stage}
@@ -1088,8 +1088,8 @@ export const BoardGrid: React.FC = () => {
                     <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                       <button
                         style={{
-                          ...btnStyle, background: 'rgba(34,197,94,0.14)',
-                          border: '1px solid rgba(34,197,94,0.45)', color: colors.success,
+                          ...btnStyle, background: 'color-mix(in srgb, var(--j-success) 14%, transparent)',
+                          border: '1px solid color-mix(in srgb, var(--j-success) 45%, transparent)', color: colors.success,
                           opacity: stage.typed === confirmPhrase ? 1 : 0.5,
                         }}
                         disabled={stage.typed !== confirmPhrase}
@@ -1293,10 +1293,10 @@ const multiBadge: React.CSSProperties = {
 }
 const editedChip: React.CSSProperties = {
   marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 10, fontWeight: 700,
-  background: 'rgba(99,102,241,0.25)', color: colors.text, textTransform: 'uppercase',
+  background: 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)', color: colors.text, textTransform: 'uppercase',
 }
 const overlayStyle: React.CSSProperties = {
-  position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 60,
+  position: 'fixed', inset: 0, background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', zIndex: 60,
   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
 }
 const modalStyle: React.CSSProperties = {

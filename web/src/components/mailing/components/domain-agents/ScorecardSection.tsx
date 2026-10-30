@@ -104,8 +104,8 @@ export const ScorecardSection: React.FC<{ domain: string }> = ({ domain }) => {
                 ...btnStyle,
                 padding: '4px 10px',
                 fontSize: 12,
-                background: days === d ? 'rgba(0,229,255,0.2)' : 'rgba(0,176,255,0.08)',
-                border: days === d ? `1px solid ${C.accent}` : '1px solid rgba(0,176,255,0.25)',
+                background: days === d ? 'color-mix(in srgb, var(--j-cyan) 20%, transparent)' : 'color-mix(in srgb, var(--j-blue) 8%, transparent)',
+                border: days === d ? `1px solid ${C.accent}` : '1px solid color-mix(in srgb, var(--j-blue) 25%, transparent)',
                 color: days === d ? C.accent : C.muted,
               }}
             >

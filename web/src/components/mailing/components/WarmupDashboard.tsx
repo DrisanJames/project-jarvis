@@ -57,12 +57,12 @@ const ISP_COLORS: Record<string, string> = {
   gmail: '#ea4335',
   yahoo: '#6001d2',
   microsoft: '#00a4ef',
-  apple: '#a2aaad',
+  apple: 'var(--j-text-muted)',
   comcast: '#ed1c24',
   att: '#00a8e0',
   cox: '#0072ce',
   charter: '#0070c0',
-  other: '#6b7280',
+  other: 'var(--j-text-faint)',
 };
 
 const KNOWN_ISPS = ['gmail', 'yahoo', 'microsoft', 'apple', 'comcast', 'att', 'cox', 'charter'];
@@ -139,7 +139,7 @@ export const WarmupDashboard: React.FC = () => {
             key={pool.pool}
             style={{
               ...styles.poolCard,
-              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? '#ef4444' : pool.avg_bounce_rate > 0.01 ? '#f59e0b' : '#22c55e'}`,
+              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? '#ef4444' : pool.avg_bounce_rate > 0.01 ? '#f59e0b' : 'var(--j-success)'}`,
             }}
             onClick={() => setSelectedPool(pool.pool === selectedPool ? 'all' : pool.pool)}
           >
@@ -147,7 +147,7 @@ export const WarmupDashboard: React.FC = () => {
             <div style={styles.poolStats}>
               <span>{pool.active_ips} IPs</span>
               <span>{pool.total_sent_today.toLocaleString()} sent today</span>
-              <span style={{ color: pool.avg_bounce_rate > 0.02 ? '#ef4444' : '#94a3b8' }}>
+              <span style={{ color: pool.avg_bounce_rate > 0.02 ? '#ef4444' : 'var(--j-text-muted)' }}>
                 {(pool.avg_bounce_rate * 100).toFixed(1)}% bounce
               </span>
             </div>
@@ -180,7 +180,7 @@ export const WarmupDashboard: React.FC = () => {
                       return <td key={isp} style={styles.heatmapCell}>—</td>;
                     }
                     const deliveryRate = metrics.delivered / (metrics.delivered + metrics.bounced || 1);
-                    const bg = deliveryRate >= 0.95 ? 'rgba(34,197,94,0.25)'
+                    const bg = deliveryRate >= 0.95 ? 'color-mix(in srgb, var(--j-success) 25%, transparent)'
                       : deliveryRate >= 0.8 ? 'rgba(245,158,11,0.25)'
                       : 'rgba(239,68,68,0.25)';
                     return (
@@ -228,8 +228,8 @@ export const WarmupDashboard: React.FC = () => {
                 <td style={styles.td}>
                   <span style={{
                     ...styles.statusBadge,
-                    background: ip.status === 'active' ? 'rgba(34,197,94,0.2)' : 'rgba(245,158,11,0.2)',
-                    color: ip.status === 'active' ? '#22c55e' : '#f59e0b',
+                    background: ip.status === 'active' ? 'color-mix(in srgb, var(--j-success) 20%, transparent)' : 'rgba(245,158,11,0.2)',
+                    color: ip.status === 'active' ? 'var(--j-success)' : '#f59e0b',
                   }}>
                     {ip.status}
                   </span>
@@ -240,7 +240,7 @@ export const WarmupDashboard: React.FC = () => {
                     <div style={{
                       ...styles.progressBar,
                       width: `${Math.min(100, (ip.today_sent / Math.max(ip.warmup_daily_limit, 1)) * 100)}%`,
-                      background: ip.today_sent >= ip.warmup_daily_limit ? '#ef4444' : '#6366f1',
+                      background: ip.today_sent >= ip.warmup_daily_limit ? '#ef4444' : 'var(--j-violet-strong)',
                     }} />
                     <span style={styles.progressText}>
                       {ip.today_sent.toLocaleString()} / {ip.warmup_daily_limit.toLocaleString()}
@@ -251,7 +251,7 @@ export const WarmupDashboard: React.FC = () => {
                 <td style={styles.td}>{ip.total_delivered.toLocaleString()}</td>
                 <td style={{
                   ...styles.td,
-                  color: ip.today_bounce_rate > 0.02 ? '#ef4444' : ip.today_bounce_rate > 0.01 ? '#f59e0b' : '#94a3b8',
+                  color: ip.today_bounce_rate > 0.02 ? '#ef4444' : ip.today_bounce_rate > 0.01 ? '#f59e0b' : 'var(--j-text-muted)',
                 }}>
                   {(ip.today_bounce_rate * 100).toFixed(1)}%
                 </td>
@@ -277,7 +277,7 @@ export const WarmupDashboard: React.FC = () => {
               : recentBounceRates.some(r => r > 0.05)
               ? 'Hold — bounce rate too high'
               : 'Continue at current limit';
-            const recoColor = allBelow1 ? '#22c55e' : recentBounceRates.some(r => r > 0.05) ? '#ef4444' : '#94a3b8';
+            const recoColor = allBelow1 ? 'var(--j-success)' : recentBounceRates.some(r => r > 0.05) ? '#ef4444' : 'var(--j-text-muted)';
 
             return (
               <div key={ip.id} style={styles.recoCard}>
@@ -298,7 +298,7 @@ export const WarmupDashboard: React.FC = () => {
 };
 
 const MiniSparkline: React.FC<{ data: TrendEntry[] }> = ({ data }) => {
-  if (!data || data.length === 0) return <span style={{ color: '#475569' }}>—</span>;
+  if (!data || data.length === 0) return <span style={{ color: 'var(--j-text-faint)' }}>—</span>;
 
   const values = data.map(d => d.sent);
   const max = Math.max(...values, 1);
@@ -316,7 +316,7 @@ const MiniSparkline: React.FC<{ data: TrendEntry[] }> = ({ data }) => {
       <polyline
         points={points}
         fill="none"
-        stroke="#6366f1"
+        stroke="var(--j-violet-strong)"
         strokeWidth="1.5"
         strokeLinejoin="round"
       />
@@ -327,7 +327,7 @@ const MiniSparkline: React.FC<{ data: TrendEntry[] }> = ({ data }) => {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     padding: '24px 32px',
-    color: '#e2e8f0',
+    color: 'var(--j-text)',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace',
   },
   header: {
@@ -339,7 +339,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 22,
     fontWeight: 700,
-    color: '#f1f5f9',
+    color: 'var(--j-text)',
     margin: 0,
   },
   controls: {
@@ -348,23 +348,23 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   select: {
-    background: '#1e293b',
-    color: '#e2e8f0',
-    border: '1px solid #334155',
+    background: 'var(--j-surface-2)',
+    color: 'var(--j-text)',
+    border: '1px solid var(--j-border)',
     borderRadius: 6,
     padding: '6px 10px',
     fontSize: 13,
   },
   toggleLabel: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
     display: 'flex',
     alignItems: 'center',
     gap: 4,
   },
   refreshBtn: {
-    background: '#4f46e5',
-    color: '#fff',
+    background: 'var(--j-violet-strong)',
+    color: 'var(--j-text)',
     border: 'none',
     borderRadius: 6,
     padding: '6px 14px',
@@ -372,7 +372,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   loading: {
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
     textAlign: 'center' as const,
     padding: 48,
     fontSize: 14,
@@ -390,8 +390,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 24,
   },
   poolCard: {
-    background: '#0f172a',
-    border: '1px solid #1e293b',
+    background: 'var(--j-bg)',
+    border: '1px solid var(--j-surface-2)',
     borderRadius: 8,
     padding: '14px 16px',
     cursor: 'pointer',
@@ -400,14 +400,14 @@ const styles: Record<string, React.CSSProperties> = {
   poolName: {
     fontSize: 14,
     fontWeight: 600,
-    color: '#f1f5f9',
+    color: 'var(--j-text)',
     marginBottom: 6,
   },
   poolStats: {
     display: 'flex',
     gap: 16,
     fontSize: 12,
-    color: '#94a3b8',
+    color: 'var(--j-text-muted)',
   },
   section: {
     marginBottom: 28,
@@ -415,11 +415,11 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 16,
     fontWeight: 600,
-    color: '#cbd5e1',
+    color: 'var(--j-text-2)',
     marginBottom: 12,
     margin: 0,
     paddingBottom: 8,
-    borderBottom: '1px solid #1e293b',
+    borderBottom: '1px solid var(--j-surface-2)',
   },
   heatmapContainer: {
     overflowX: 'auto' as const,
@@ -436,15 +436,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: 11,
     textTransform: 'uppercase' as const,
-    color: '#64748b',
-    borderBottom: '1px solid #1e293b',
+    color: 'var(--j-text-faint)',
+    borderBottom: '1px solid var(--j-surface-2)',
   },
   heatmapIP: {
     padding: '6px 10px',
     fontFamily: 'monospace',
     fontSize: 11,
-    color: '#94a3b8',
-    borderBottom: '1px solid #0f172a',
+    color: 'var(--j-text-muted)',
+    borderBottom: '1px solid var(--j-bg)',
     whiteSpace: 'nowrap' as const,
   },
   heatmapCell: {
@@ -452,8 +452,8 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center' as const,
     fontFamily: 'monospace',
     fontSize: 11,
-    color: '#e2e8f0',
-    borderBottom: '1px solid #0f172a',
+    color: 'var(--j-text)',
+    borderBottom: '1px solid var(--j-bg)',
   },
   table: {
     width: '100%',
@@ -467,15 +467,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     fontSize: 11,
     textTransform: 'uppercase' as const,
-    color: '#64748b',
-    borderBottom: '1px solid #1e293b',
+    color: 'var(--j-text-faint)',
+    borderBottom: '1px solid var(--j-surface-2)',
   },
   tr: {
-    borderBottom: '1px solid #0f172a',
+    borderBottom: '1px solid var(--j-bg)',
   },
   td: {
     padding: '8px 10px',
-    color: '#cbd5e1',
+    color: 'var(--j-text-2)',
     whiteSpace: 'nowrap' as const,
   },
   statusBadge: {
@@ -488,7 +488,7 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative' as const,
     width: 120,
     height: 18,
-    background: '#1e293b',
+    background: 'var(--j-surface-2)',
     borderRadius: 4,
     overflow: 'hidden' as const,
   },
@@ -508,7 +508,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     height: '100%',
     fontSize: 10,
-    color: '#e2e8f0',
+    color: 'var(--j-text)',
     fontFamily: 'monospace',
   },
   recoGrid: {
@@ -518,15 +518,15 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 12,
   },
   recoCard: {
-    background: '#0f172a',
-    border: '1px solid #1e293b',
+    background: 'var(--j-bg)',
+    border: '1px solid var(--j-surface-2)',
     borderRadius: 8,
     padding: '12px 14px',
   },
   recoIP: {
     fontFamily: 'monospace',
     fontSize: 13,
-    color: '#f1f5f9',
+    color: 'var(--j-text)',
     marginBottom: 4,
   },
   recoText: {
@@ -536,11 +536,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   recoDetail: {
     fontSize: 11,
-    color: '#64748b',
+    color: 'var(--j-text-faint)',
   },
   footer: {
     textAlign: 'center' as const,
-    color: '#334155',
+    color: 'var(--j-text-2)',
     fontSize: 11,
     marginTop: 32,
   },

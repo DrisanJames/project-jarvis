@@ -183,7 +183,7 @@ const getISPColor = (isp: string): string => {
     case 'Yahoo': return '#7b1fa2';
     case 'Microsoft': return '#0078d4';
     case 'AOL': return '#ff6600';
-    case 'Apple': return '#a2aaad';
+    case 'Apple': return 'var(--j-text-muted)';
     case 'Comcast': return '#e60000';
     case 'Proton': return '#6d4aff';
     default: return colors.textFaint;

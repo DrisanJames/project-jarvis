@@ -266,7 +266,7 @@ const validateDraft = (d: Draft, bench: BenchOffer[]): string | null => {
 };
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(15,30,60,0.55)',
+  background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)',
   border: `1px solid ${colors.panelBorderStrong}`,
   color: colors.text,
   borderRadius: 6,

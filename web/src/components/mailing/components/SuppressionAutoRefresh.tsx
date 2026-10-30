@@ -784,7 +784,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         />
         {sourcesSearch && (
           <button
-            style={{ background: 'none', border: 'none', color: '#5a6070', cursor: 'pointer', padding: '2px 4px' }}
+            style={{ background: 'none', border: 'none', color: 'var(--j-text-faint)', cursor: 'pointer', padding: '2px 4px' }}
             onClick={() => { setSourcesSearch(''); setSourcesPage(1); }}
           >
             <FontAwesomeIcon icon={faTimes} />
@@ -884,7 +884,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         className="sr-toolbar"
         style={{ background: 'rgba(79, 195, 247, 0.06)', borderColor: 'rgba(79, 195, 247, 0.15)' }}
       >
-        <span style={{ color: '#4fc3f7', fontWeight: 600, fontSize: 13 }}>
+        <span style={{ color: 'var(--j-cyan)', fontWeight: 600, fontSize: 13 }}>
           {selectedSources.size} selected
         </span>
         <div className="sr-filter-group">
@@ -913,12 +913,12 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
             {showBulkDropdown && (
               <div style={{
                 position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                background: '#22262e', border: '1px solid rgba(255,255,255,0.1)',
+                background: 'var(--j-surface-2)', border: '1px solid color-mix(in srgb, var(--j-text) 10%, transparent)',
                 borderRadius: 8, padding: 8, zIndex: 50, minWidth: 180,
                 boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
               }}>
                 {uniqueGroups.length === 0 && (
-                  <span style={{ color: '#5a6070', fontSize: 12, padding: 8, display: 'block' }}>
+                  <span style={{ color: 'var(--j-text-faint)', fontSize: 12, padding: 8, display: 'block' }}>
                     No groups yet
                   </span>
                 )}
@@ -928,9 +928,9 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                     style={{
                       display: 'block', width: '100%', textAlign: 'left',
                       padding: '8px 12px', background: 'transparent', border: 'none',
-                      color: '#c0c4cc', fontSize: 13, cursor: 'pointer', borderRadius: 4,
+                      color: 'var(--j-text-2)', fontSize: 13, cursor: 'pointer', borderRadius: 4,
                     }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#2a2e38'; }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--j-border)'; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
                     onClick={() => bulkAction('assign_group', g)}
                   >
@@ -986,7 +986,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
     return (
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '14px 0', fontSize: 13, color: '#8b919c',
+        padding: '14px 0', fontSize: 13, color: 'var(--j-text-muted)',
       }}>
         <span>Showing {start}&ndash;{end} of {formatNumber(totalItems)}</span>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -1101,8 +1101,8 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                       <span className="slider" />
                     </label>
                   </td>
-                  <td style={{ fontWeight: 600, color: '#e4e6ea' }}>{source.offer_id}</td>
-                  <td style={{ color: '#e4e6ea' }}>{source.campaign_name}</td>
+                  <td style={{ fontWeight: 600, color: 'var(--j-text)' }}>{source.offer_id}</td>
+                  <td style={{ color: 'var(--j-text)' }}>{source.campaign_name}</td>
                   <td>
                     <span className={`sr-provider-badge ${getProviderClass(source.source_provider)}`}>
                       {source.source_provider}
@@ -1117,10 +1117,10 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                     </div>
                   </td>
                   <td style={{ fontWeight: 600 }}>{formatNumber(source.last_entry_count)}</td>
-                  <td style={{ color: '#8b919c' }}>
+                  <td style={{ color: 'var(--j-text-muted)' }}>
                     {formatRelative(source.last_refreshed_at)}
                     {source.last_refresh_ms != null && (
-                      <span style={{ display: 'block', fontSize: 11, color: '#5a6070' }}>
+                      <span style={{ display: 'block', fontSize: 11, color: 'var(--j-text-faint)' }}>
                         {formatDuration(source.last_refresh_ms)}
                       </span>
                     )}
@@ -1162,7 +1162,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                       </button>
                       {confirmDeleteSource === source.id ? (
                         <>
-                          <button className="danger" title="Confirm delete" onClick={() => deleteSource(source.id)} style={{ color: '#ef5350' }}>
+                          <button className="danger" title="Confirm delete" onClick={() => deleteSource(source.id)} style={{ color: 'var(--j-danger)' }}>
                             <FontAwesomeIcon icon={faCheckCircle} />
                           </button>
                           <button title="Cancel" onClick={() => setConfirmDeleteSource(null)}>
@@ -1210,20 +1210,20 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
     if (logs.length === 0) {
       return (
         <div className="sr-cycle-expand">
-          <div style={{ color: '#5a6070', fontSize: 13, padding: '12px 0', textAlign: 'center' }}>
+          <div style={{ color: 'var(--j-text-faint)', fontSize: 13, padding: '12px 0', textAlign: 'center' }}>
             No log entries for this cycle
           </div>
         </div>
       );
     }
     const thStyle: React.CSSProperties = {
-      padding: '8px 10px', textAlign: 'left', color: '#8b919c',
+      padding: '8px 10px', textAlign: 'left', color: 'var(--j-text-muted)',
       fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-      letterSpacing: 0.4, borderBottom: '1px solid rgba(255,255,255,0.06)',
+      letterSpacing: 0.4, borderBottom: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)',
       background: '#1e2128', position: 'sticky', top: 0,
     };
     const tdStyle: React.CSSProperties = {
-      padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.03)',
+      padding: '8px 10px', borderBottom: '1px solid color-mix(in srgb, var(--j-text) 3%, transparent)',
     };
     return (
       <div className="sr-cycle-expand">
@@ -1241,23 +1241,23 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
           <tbody>
             {logs.map((log) => (
               <tr key={log.id}>
-                <td style={{ ...tdStyle, color: '#c0c4cc' }}>
+                <td style={{ ...tdStyle, color: 'var(--j-text-2)' }}>
                   <div style={{ fontWeight: 500 }}>{log.campaign_name || log.source_id}</div>
-                  {log.offer_id && <div style={{ fontSize: 11, color: '#5a6070' }}>{log.offer_id}</div>}
+                  {log.offer_id && <div style={{ fontSize: 11, color: 'var(--j-text-faint)' }}>{log.offer_id}</div>}
                 </td>
                 <td style={tdStyle}>
                   <span className={`sr-status-badge ${getStatusBadgeClass(log.status)}`}>{log.status}</span>
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: '#c0c4cc', fontWeight: 600 }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-text-2)', fontWeight: 600 }}>
                   {formatNumber(log.entries_downloaded)}
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: log.entries_new > 0 ? '#81c784' : '#5a6070', fontWeight: 600 }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: log.entries_new > 0 ? '#81c784' : 'var(--j-text-faint)', fontWeight: 600 }}>
                   {log.entries_new > 0 ? `+${formatNumber(log.entries_new)}` : '0'}
                 </td>
-                <td style={{ ...tdStyle, textAlign: 'right', color: '#8b919c' }}>
+                <td style={{ ...tdStyle, textAlign: 'right', color: 'var(--j-text-muted)' }}>
                   {formatDuration(log.download_ms + log.processing_ms)}
                 </td>
-                <td style={{ ...tdStyle, color: '#ef9a9a', fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message || ''}>
+                <td style={{ ...tdStyle, color: 'var(--j-danger-soft)', fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={log.error_message || ''}>
                   {log.error_message || '\u2014'}
                 </td>
               </tr>
@@ -1305,7 +1305,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <FontAwesomeIcon icon={isExpanded ? faChevronDown : faChevronRight} style={{ color: '#5a6070', width: 12 }} />
+                  <FontAwesomeIcon icon={isExpanded ? faChevronDown : faChevronRight} style={{ color: 'var(--j-text-faint)', width: 12 }} />
                   <span className="cycle-date">{formatDateTime(cycle.started_at)}</span>
                   <span className="cycle-duration">{durationMs != null ? formatDuration(durationMs) : 'In progress\u2026'}</span>
                 </div>
@@ -1321,25 +1321,25 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               </div>
               <div className="sr-cycle-stats">
                 <span className="cycle-stat"><strong>{cycle.completed_sources}</strong>/{cycle.total_sources} completed</span>
-                <span className="cycle-stat"><strong style={{ color: cycle.failed_sources > 0 ? '#ef9a9a' : undefined }}>{cycle.failed_sources}</strong> failed</span>
+                <span className="cycle-stat"><strong style={{ color: cycle.failed_sources > 0 ? 'var(--j-danger-soft)' : undefined }}>{cycle.failed_sources}</strong> failed</span>
                 <span className="cycle-stat"><strong>{cycle.skipped_sources}</strong> skipped</span>
                 <span className="cycle-stat"><strong>{formatNumber(cycle.total_entries_downloaded)}</strong> entries</span>
                 <span className="cycle-stat"><strong>{formatNumber(cycle.total_new_entries)}</strong> new</span>
                 <span className="cycle-stat">Avg: <strong>{formatDuration(cycle.avg_download_ms)}</strong></span>
-                <span className="cycle-stat" style={{ color: '#5a6070' }}>By: {cycle.triggered_by}</span>
+                <span className="cycle-stat" style={{ color: 'var(--j-text-faint)' }}>By: {cycle.triggered_by}</span>
               </div>
               {/* Multi-segment progress bar */}
               <div style={{ padding: '0 20px 14px' }}>
                 <div className="sr-progress-bar" style={{ height: 5 }}>
                   <div style={{ display: 'flex', height: '100%', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${successPct}%`, background: '#66bb6a', transition: 'width 0.4s' }} />
-                    <div style={{ width: `${failPct}%`, background: '#ef5350', transition: 'width 0.4s' }} />
-                    <div style={{ width: `${skipPct}%`, background: '#5a6070', transition: 'width 0.4s' }} />
+                    <div style={{ width: `${successPct}%`, background: 'var(--j-success)', transition: 'width 0.4s' }} />
+                    <div style={{ width: `${failPct}%`, background: 'var(--j-danger)', transition: 'width 0.4s' }} />
+                    <div style={{ width: `${skipPct}%`, background: 'var(--j-text-faint)', transition: 'width 0.4s' }} />
                   </div>
                 </div>
               </div>
               {cycle.error_message && (
-                <div style={{ padding: '10px 20px', background: 'rgba(239,83,80,0.06)', borderTop: '1px solid rgba(239,83,80,0.1)', fontSize: 12, color: '#ef9a9a' }}>
+                <div style={{ padding: '10px 20px', background: 'rgba(239,83,80,0.06)', borderTop: '1px solid rgba(239,83,80,0.1)', fontSize: 12, color: 'var(--j-danger-soft)' }}>
                   <FontAwesomeIcon icon={faExclamationTriangle} /> {cycle.error_message}
                 </div>
               )}
@@ -1396,14 +1396,14 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                 <div className="sr-group-stats" style={{ marginLeft: 'auto' }}>
                   <span><span className="count">{group.source_count}</span> sources</span>
                   {group.active_count !== undefined && (
-                    <span><span className="count" style={{ color: '#66bb6a' }}>{group.active_count}</span> active</span>
+                    <span><span className="count" style={{ color: 'var(--j-success)' }}>{group.active_count}</span> active</span>
                   )}
                 </div>
               </div>
               {group.description && (
-                <div style={{ fontSize: 12, color: '#8b919c', marginTop: 6, lineHeight: 1.5 }}>{group.description}</div>
+                <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 6, lineHeight: 1.5 }}>{group.description}</div>
               )}
-              <div style={{ display: 'flex', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid color-mix(in srgb, var(--j-text) 4%, transparent)' }}>
                 <button className="sr-btn-secondary" onClick={() => bulkGroupAction(group.name, 'activate')} style={{ fontSize: 11, padding: '5px 10px' }}>
                   <FontAwesomeIcon icon={faToggleOn} /> Activate All
                 </button>
@@ -1417,13 +1417,13 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                       <button className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(null)} style={{ fontSize: 11, padding: '5px 10px' }}>Cancel</button>
                     </div>
                   ) : (
-                    <button className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(group.name)} style={{ fontSize: 11, padding: '5px 10px', color: '#ef5350' }}>
+                    <button className="sr-btn-secondary" onClick={() => setConfirmDeleteGroup(group.name)} style={{ fontSize: 11, padding: '5px 10px', color: 'var(--j-danger)' }}>
                       <FontAwesomeIcon icon={faTrash} />
                     </button>
                   )}
                 </div>
               </div>
-              <div style={{ fontSize: 11, color: '#5a6070', marginTop: 6 }}>Created {formatRelative(group.created_at)}</div>
+              <div style={{ fontSize: 11, color: 'var(--j-text-faint)', marginTop: 6 }}>Created {formatRelative(group.created_at)}</div>
             </div>
           ))}
         </div>
@@ -1468,7 +1468,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         <header>
           <h3><FontAwesomeIcon icon={faFileImport} style={{ marginRight: 10 }} /> Import Suppression Sources</h3>
           <button
-            style={{ padding: '6px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, color: '#8b919c', cursor: 'pointer', fontSize: 16 }}
+            style={{ padding: '6px 10px', background: 'transparent', border: '1px solid color-mix(in srgb, var(--j-text) 8%, transparent)', borderRadius: 6, color: 'var(--j-text-muted)', cursor: 'pointer', fontSize: 16 }}
             onClick={() => setShowImport(false)}
           >
             <FontAwesomeIcon icon={faTimes} />
@@ -1488,7 +1488,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                 <FontAwesomeIcon icon={faUpload} className="drop-icon" />
                 {importFile ? (
                   <>
-                    <p style={{ color: '#e4e6ea', fontWeight: 600 }}>{importFile.name}</p>
+                    <p style={{ color: 'var(--j-text)', fontWeight: 600 }}>{importFile.name}</p>
                     <small>{(importFile.size / 1024).toFixed(1)} KB</small>
                   </>
                 ) : (
@@ -1519,9 +1519,9 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               <div style={{ marginBottom: 20, textAlign: 'center' }}>
                 <FontAwesomeIcon
                   icon={importResult.errors > 0 ? faExclamationTriangle : faCheckCircle}
-                  style={{ fontSize: 48, color: importResult.errors > 0 ? '#ffa726' : '#66bb6a', marginBottom: 12 }}
+                  style={{ fontSize: 48, color: importResult.errors > 0 ? 'var(--j-warn)' : 'var(--j-success)', marginBottom: 12 }}
                 />
-                <h4 style={{ margin: 0, color: '#e4e6ea', fontSize: 18, fontWeight: 600 }}>Import Complete</h4>
+                <h4 style={{ margin: 0, color: 'var(--j-text)', fontSize: 18, fontWeight: 600 }}>Import Complete</h4>
               </div>
               <div className="sr-import-summary">
                 <div className="summary-item imported"><span className="value">{importResult.imported}</span><span className="label">Imported</span></div>
@@ -1530,9 +1530,9 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                 <div className="summary-item errors"><span className="value">{importResult.errors}</span><span className="label">Errors</span></div>
               </div>
               {importResult.details && importResult.details.length > 0 && (
-                <div style={{ marginTop: 16, padding: 14, background: '#1a1d23', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)', maxHeight: 180, overflowY: 'auto' }}>
+                <div style={{ marginTop: 16, padding: 14, background: 'var(--j-surface-2)', borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', maxHeight: 180, overflowY: 'auto' }}>
                   {importResult.details.map((detail, i) => (
-                    <div key={i} style={{ fontSize: 12, color: '#8b919c', padding: '4px 0', borderBottom: i < (importResult.details?.length ?? 0) - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
+                    <div key={i} style={{ fontSize: 12, color: 'var(--j-text-muted)', padding: '4px 0', borderBottom: i < (importResult.details?.length ?? 0) - 1 ? '1px solid color-mix(in srgb, var(--j-text) 3%, transparent)' : 'none' }}>
                       {detail}
                     </div>
                   ))}
@@ -1567,7 +1567,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
         <div className="sr-overlay" onClick={closeDetailDrawer} />
         <div className="sr-source-detail">
           <div className="sr-detail-header">
-            <h3><FontAwesomeIcon icon={faEye} style={{ marginRight: 10, color: '#4fc3f7' }} /> Source Details</h3>
+            <h3><FontAwesomeIcon icon={faEye} style={{ marginRight: 10, color: 'var(--j-cyan)' }} /> Source Details</h3>
             <button className="close-btn" onClick={closeDetailDrawer}><FontAwesomeIcon icon={faTimes} /></button>
           </div>
 
@@ -1622,9 +1622,9 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                 </div>
                 {/* URL */}
                 <div style={{ marginTop: 14 }}>
-                  <span style={{ fontSize: 11, color: '#5a6070', textTransform: 'uppercase', letterSpacing: 0.3, display: 'block', marginBottom: 6 }}>Suppression URL</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#1a1d23', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)' }}>
-                    <span style={{ flex: 1, fontFamily: "'SF Mono', monospace", fontSize: 12, color: '#8b919c', wordBreak: 'break-all', lineHeight: 1.5 }}>{detailSource.suppression_url}</span>
+                  <span style={{ fontSize: 11, color: 'var(--j-text-faint)', textTransform: 'uppercase', letterSpacing: 0.3, display: 'block', marginBottom: 6 }}>Suppression URL</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'var(--j-surface-2)', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)' }}>
+                    <span style={{ flex: 1, fontFamily: "'SF Mono', monospace", fontSize: 12, color: 'var(--j-text-muted)', wordBreak: 'break-all', lineHeight: 1.5 }}>{detailSource.suppression_url}</span>
                     <button className="sr-btn-secondary" onClick={() => copyToClipboard(detailSource.suppression_url)} style={{ fontSize: 11, padding: '5px 10px', flexShrink: 0 }}>
                       <FontAwesomeIcon icon={faCopy} /> Copy
                     </button>
@@ -1656,7 +1656,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                   </div>
                 </div>
                 {detailSource.last_error && (
-                  <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(239,83,80,0.06)', border: '1px solid rgba(239,83,80,0.15)', borderRadius: 6, fontSize: 12, color: '#ef9a9a', lineHeight: 1.5 }}>
+                  <div style={{ marginTop: 12, padding: '10px 14px', background: 'rgba(239,83,80,0.06)', border: '1px solid rgba(239,83,80,0.15)', borderRadius: 6, fontSize: 12, color: 'var(--j-danger-soft)', lineHeight: 1.5 }}>
                     <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />{detailSource.last_error}
                   </div>
                 )}
@@ -1694,7 +1694,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               {/* Notes */}
               <div className="sr-detail-section">
                 <h4>Notes</h4>
-                <div style={{ padding: '10px 14px', background: '#1a1d23', borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)', fontSize: 13, color: detailSource.notes ? '#c0c4cc' : '#5a6070', lineHeight: 1.6, minHeight: 60 }}>
+                <div style={{ padding: '10px 14px', background: 'var(--j-surface-2)', borderRadius: 6, border: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', fontSize: 13, color: detailSource.notes ? 'var(--j-text-2)' : 'var(--j-text-faint)', lineHeight: 1.6, minHeight: 60 }}>
                   {detailSource.notes || 'No notes added'}
                 </div>
               </div>
@@ -1703,7 +1703,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               <div className="sr-detail-section" style={{ borderBottom: 'none' }}>
                 <h4>Recent Refresh History</h4>
                 {detailLogs.length === 0 ? (
-                  <div style={{ color: '#5a6070', fontSize: 13, padding: '12px 0' }}>No refresh history available for this source</div>
+                  <div style={{ color: 'var(--j-text-faint)', fontSize: 13, padding: '12px 0' }}>No refresh history available for this source</div>
                 ) : (
                   <div className="sr-detail-history">
                     {detailLogs.slice(0, 10).map((log) => (
@@ -1717,7 +1717,7 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
                           {log.entries_new > 0 && (
                             <span style={{ color: '#81c784', fontSize: 11, fontWeight: 600 }}>+{formatNumber(log.entries_new)} new</span>
                           )}
-                          <span style={{ color: '#5a6070', fontSize: 11 }}>{formatDuration(log.download_ms + log.processing_ms)}</span>
+                          <span style={{ color: 'var(--j-text-faint)', fontSize: 11 }}>{formatDuration(log.download_ms + log.processing_ms)}</span>
                         </div>
                       </div>
                     ))}
@@ -1726,8 +1726,8 @@ const SuppressionAutoRefresh: React.FC<SuppressionAutoRefreshProps> = ({
               </div>
 
               {/* Metadata footer */}
-              <div className="sr-detail-section" style={{ background: 'rgba(26,29,35,0.5)', borderBottom: 'none' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#5a6070' }}>
+              <div className="sr-detail-section" style={{ background: 'color-mix(in srgb, var(--j-shade) 50%, transparent)', borderBottom: 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--j-text-faint)' }}>
                   <span>Created: {formatDateTime(detailSource.created_at)}</span>
                   <span>Updated: {formatDateTime(detailSource.updated_at)}</span>
                   <span style={{ fontFamily: "'SF Mono', monospace", fontSize: 10, color: '#3a3f4a' }}>ID: {detailSource.id}</span>
