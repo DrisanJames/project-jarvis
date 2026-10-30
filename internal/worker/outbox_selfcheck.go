@@ -64,7 +64,7 @@ const (
 	// Invariant thresholds. Chosen to be wide enough that the self-check
 	// doesn't cry wolf during normal peak sends, but tight enough that an
 	// actual outage trips within one interval.
-	submittingStuckThresholdSec    = 600 // 10 minutes
+	submittingStuckThresholdSec    = 900 // 15 minutes: reconciler grace 10m + its 60s tick + margin
 	deadLetterRatePerHourThreshold = 500 // permanent fails / hr / system
 	queuedBacklogThreshold         = 150000
 	oldestQueuedAgeThresholdSec    = 3600 // 1 hour
@@ -677,7 +677,8 @@ func (c *OutboxSelfCheck) cancelZombieScheduledCampaigns(ctx context.Context) {
 }
 
 // checkSubmittingStuck looks for rows that have been in 'submitting' beyond
-// the reconciler's grace window. If the reconciler is healthy this should
+// the reconciler's grace window (10m) plus margin. Equal windows raced: a row
+// aged 10m reads stuck until the next 60s reconciler tick. If the reconciler is healthy this should
 // never return a non-zero value; if it does, it means the reconciler is
 // failing to promote or requeue and every stuck row is a potential
 // double-send or silent drop.
@@ -692,7 +693,7 @@ func (c *OutboxSelfCheck) checkSubmittingStuck(ctx context.Context) {
 		FROM mailing_campaign_queue
 		WHERE status = 'submitting'
 		  AND locked_at IS NOT NULL
-		  AND locked_at < NOW() - INTERVAL '10 minutes'
+		  AND locked_at < NOW() - INTERVAL '15 minutes'
 	`).Scan(&count, &oldestSec)
 	})
 	if err != nil {
@@ -703,7 +704,7 @@ func (c *OutboxSelfCheck) checkSubmittingStuck(ctx context.Context) {
 		return
 	}
 	msg := fmt.Sprintf(
-		"queue rows stuck submitting · *%s* rows\nOldest: %ds\nGrace: 10m\nRun: `curl -s $HOST/api/outbox/summary`",
+		"queue rows stuck submitting · *%s* rows\nOldest: %ds\nGrace: 15m\nRun: `curl -s $HOST/api/outbox/summary`",
 		comma(int(count)), oldestSec,
 	)
 	c.maybeAlert(ctx, invSubmittingStuck, msg)
