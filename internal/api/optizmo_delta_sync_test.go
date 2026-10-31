@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -74,6 +76,54 @@ func TestExtractEmail_Quoted(t *testing.T) {
 
 // --- matchAndSuppressSubscribers ---
 
+// expectSuppressShards expects the table size, then one query per block range. hitShard
+// returns one newly suppressed match; every other range matches nobody (-1 = no match).
+func expectSuppressShards(mock sqlmock.Sqlmock, offerID string, hitShard int, id, email, hash string) {
+	const pages = int64(25500)
+	mock.ExpectQuery(`pg_relation_size`).WillReturnRows(sqlmock.NewRows([]string{"pages"}).AddRow(pages))
+	step := pages/suppressShardCount + 1
+	for shard := 0; shard < suppressShardCount; shard++ {
+		lo := fmt.Sprintf("(%d,0)", int64(shard)*step)
+		hi := fmt.Sprintf("(%d,0)", int64(shard+1)*step)
+		rows := sqlmock.NewRows([]string{"id", "email", "hash", "inserted"})
+		if shard == hitShard {
+			rows.AddRow(id, email, hash, 1)
+		}
+		mock.ExpectQuery(`INSERT INTO mailing_offer_suppressions`).
+			WithArgs(defaultOrgID, offerID, lo, hi).WillReturnRows(rows)
+	}
+}
+
+// The last range must reach past the end of the table, or rows added after the size
+// read and the final partial block would never be matched.
+func TestSuppressShardsCoverTheWholeTable(t *testing.T) {
+	const pages = int64(1502155)
+	step := pages/suppressShardCount + 1
+	assert.Greater(t, suppressShardCount*step, pages)
+}
+
+func TestMatchAndSuppressSubscribers_ShardFailureRollsBack(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`CREATE TEMP TABLE`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO _optizmo_hashes`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`CREATE INDEX`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT COUNT`).
+		WithArgs(defaultOrgID).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery(`pg_relation_size`).WillReturnRows(sqlmock.NewRows([]string{"pages"}).AddRow(25500))
+	mock.ExpectQuery(`INSERT INTO mailing_offer_suppressions`).WillReturnError(errors.New("statement timeout"))
+	mock.ExpectRollback()
+
+	_, _, _, matchErr := matchAndSuppressSubscribers(context.Background(), db, "offer-1",
+		map[string]bool{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1": true})
+	require.ErrorContains(t, matchErr, "bulk suppress shard 0")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestMatchAndSuppressSubscribers_HappyPath(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -89,13 +139,7 @@ func TestMatchAndSuppressSubscribers_HappyPath(t *testing.T) {
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs(defaultOrgID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
-	mock.ExpectExec(`INSERT INTO mailing_offer_suppressions`).
-		WithArgs(defaultOrgID, "offer-1").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(`SELECT s.id`).
-		WithArgs(defaultOrgID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "hash"}).
-			AddRow("sub-1", "test@example.com", emailHash))
+	expectSuppressShards(mock, "offer-1", 7, "sub-1", "test@example.com", emailHash)
 	mock.ExpectCommit()
 
 	audience, suppressed, matches, matchErr := matchAndSuppressSubscribers(context.Background(), db, "offer-1", hashes)
@@ -121,12 +165,7 @@ func TestMatchAndSuppressSubscribers_NoMatches(t *testing.T) {
 	mock.ExpectQuery(`SELECT COUNT`).
 		WithArgs(defaultOrgID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectExec(`INSERT INTO mailing_offer_suppressions`).
-		WithArgs(defaultOrgID, "offer-1").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(`SELECT s.id`).
-		WithArgs(defaultOrgID).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "email", "hash"}))
+	expectSuppressShards(mock, "offer-1", -1, "", "", "")
 	mock.ExpectCommit()
 
 	audience, suppressed, matches, matchErr := matchAndSuppressSubscribers(context.Background(), db, "offer-1", hashes)

@@ -910,7 +910,7 @@ func (h *OptizmoHandlers) downloadOptizmoHashes(ctx context.Context, jobID, opti
 //
 // Returns (audienceCount, suppressedCount, matches, error).
 func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string, hashes map[string]bool) (int, int, []optizmoMatch, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
@@ -974,42 +974,10 @@ func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string
 		return 0, 0, nil, fmt.Errorf("count audience: %w", err)
 	}
 
-	// Step 4: Single INSERT ... SELECT to match and suppress in one pass.
-	// Postgres computes MD5(LOWER(TRIM(email))) for each subscriber and JOINs
-	// against the temp table — no data leaves the database.
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO mailing_offer_suppressions
-			(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-		 SELECT $1, $2, s.id, MD5(LOWER(TRIM(s.email))), 'optizmo', 'optizmo_scrub', NOW()
-		 FROM mailing_subscribers s
-		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
-		 WHERE s.organization_id = $1 AND s.status = 'confirmed'
-		 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-		defaultOrgID, offerID)
+	// Step 4: Match and suppress one id range at a time (suppressMatchedShards).
+	suppressedCount, matches, err := suppressMatchedShards(ctx, tx, offerID)
 	if err != nil {
-		return audienceCount, 0, nil, fmt.Errorf("bulk suppress: %w", err)
-	}
-	suppressedCount, _ := res.RowsAffected()
-
-	// Step 5: Retrieve the match list for named suppression lists.
-	var matches []optizmoMatch
-	matchRows, err := tx.QueryContext(ctx,
-		`SELECT s.id, LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email)))
-		 FROM mailing_subscribers s
-		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
-		 WHERE s.organization_id = $1 AND s.status = 'confirmed'`,
-		defaultOrgID)
-	if err != nil {
-		log.Printf("[Optizmo] warning: could not retrieve match details: %v", err)
-	} else {
-		defer matchRows.Close()
-		for matchRows.Next() {
-			var m optizmoMatch
-			if err := matchRows.Scan(&m.ID, &m.Email, &m.Hash); err != nil {
-				continue
-			}
-			matches = append(matches, m)
-		}
+		return audienceCount, 0, nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1019,7 +987,7 @@ func matchAndSuppressSubscribers(ctx context.Context, db *sql.DB, offerID string
 	log.Printf("[Optizmo] DB-side matching: %d audience, %d suppressed (temp table with %d hashes)",
 		audienceCount, suppressedCount, len(hashes))
 
-	return audienceCount, int(suppressedCount), matches, nil
+	return audienceCount, suppressedCount, matches, nil
 }
 
 // matchAndSuppressFromHashFile is the streaming variant of matchAndSuppressSubscribers.
@@ -1035,7 +1003,7 @@ func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hash
 	}
 	defer f.Close()
 
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("begin tx: %w", err)
 	}
@@ -1118,38 +1086,9 @@ func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hash
 		return 0, 0, nil, fmt.Errorf("count audience: %w", err)
 	}
 
-	res, err := tx.ExecContext(ctx,
-		`INSERT INTO mailing_offer_suppressions
-			(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
-		 SELECT $1, $2, s.id, MD5(LOWER(TRIM(s.email))), 'optizmo', 'optizmo_scrub', NOW()
-		 FROM mailing_subscribers s
-		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
-		 WHERE s.organization_id = $1 AND s.status = 'confirmed'
-		 ON CONFLICT (offer_id, subscriber_id) DO NOTHING`,
-		defaultOrgID, offerID)
+	suppressedCount, matches, err := suppressMatchedShards(ctx, tx, offerID)
 	if err != nil {
-		return audienceCount, 0, nil, fmt.Errorf("bulk suppress: %w", err)
-	}
-	suppressedCount, _ := res.RowsAffected()
-
-	var matches []optizmoMatch
-	matchRows, err := tx.QueryContext(ctx,
-		`SELECT s.id, LOWER(TRIM(s.email)), MD5(LOWER(TRIM(s.email)))
-		 FROM mailing_subscribers s
-		 INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
-		 WHERE s.organization_id = $1 AND s.status = 'confirmed'`,
-		defaultOrgID)
-	if err != nil {
-		log.Printf("[Optizmo] warning: could not retrieve match details: %v", err)
-	} else {
-		defer matchRows.Close()
-		for matchRows.Next() {
-			var m optizmoMatch
-			if err := matchRows.Scan(&m.ID, &m.Email, &m.Hash); err != nil {
-				continue
-			}
-			matches = append(matches, m)
-		}
+		return audienceCount, 0, nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1159,7 +1098,74 @@ func matchAndSuppressFromHashFile(ctx context.Context, db *sql.DB, offerID, hash
 	log.Printf("[Optizmo] DB-side matching (streamed): %d audience, %d suppressed (%d hashes from file)",
 		audienceCount, suppressedCount, hashCount)
 
-	return audienceCount, int(suppressedCount), matches, nil
+	return audienceCount, suppressedCount, matches, nil
+}
+
+// suppressShardCount splits mailing_subscribers into physical block ranges. The join key,
+// MD5(LOWER(TRIM(email))), is unindexed (email_hash mixes MD5 and SHA-256), so one
+// statement hashes the whole table: 24.9M rows outran the 600s budget on 2026-10-30 and
+// left a 7.7M-hash offer with 0 suppressions. A ctid range reads its blocks in order
+// (0.8s per range, measured); a primary-key range takes 22s because ids are scattered.
+const suppressShardCount = 256
+
+// suppressMatchedShards matches the temp table _optizmo_hashes against confirmed
+// subscribers one block range at a time. The caller's transaction must be REPEATABLE
+// READ: one snapshot keeps a row from moving between ranges mid-run. The whole offer
+// still commits or rolls back as one unit. It returns the newly suppressed count and
+// every match, including people already suppressed.
+func suppressMatchedShards(ctx context.Context, tx *sql.Tx, offerID string) (int, []optizmoMatch, error) {
+	var pages int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT pg_relation_size('mailing_subscribers') / current_setting('block_size')::bigint`,
+	).Scan(&pages); err != nil {
+		return 0, nil, fmt.Errorf("bulk suppress table size: %w", err)
+	}
+	step := pages/suppressShardCount + 1
+	suppressed := 0
+	var matches []optizmoMatch
+	for shard := int64(0); shard < suppressShardCount; shard++ {
+		lo := fmt.Sprintf("(%d,0)", shard*step)
+		hi := fmt.Sprintf("(%d,0)", (shard+1)*step)
+		rows, err := tx.QueryContext(ctx, `
+			WITH m AS (
+				SELECT s.id, LOWER(TRIM(s.email)) AS email, MD5(LOWER(TRIM(s.email))) AS hash
+				FROM mailing_subscribers s
+				INNER JOIN _optizmo_hashes h ON h.hash = MD5(LOWER(TRIM(s.email)))
+				WHERE s.ctid >= $3::tid AND s.ctid < $4::tid
+				  AND s.organization_id = $1::uuid AND s.status = 'confirmed'
+			), ins AS (
+				INSERT INTO mailing_offer_suppressions
+					(organization_id, offer_id, subscriber_id, email_hash, reason, source, suppressed_at)
+				SELECT $1::uuid, $2::uuid, m.id, m.hash, 'optizmo', 'optizmo_scrub', NOW() FROM m
+				ON CONFLICT (offer_id, subscriber_id) DO NOTHING
+				RETURNING 1
+			)
+			SELECT m.id, m.email, m.hash, (SELECT COUNT(*) FROM ins) FROM m`,
+			defaultOrgID, offerID, lo, hi)
+		if err != nil {
+			return suppressed, nil, fmt.Errorf("bulk suppress shard %d: %w", shard, err)
+		}
+		first := true
+		for rows.Next() {
+			var m optizmoMatch
+			var inserted int
+			if err := rows.Scan(&m.ID, &m.Email, &m.Hash, &inserted); err != nil {
+				rows.Close()
+				return suppressed, nil, fmt.Errorf("bulk suppress shard %d scan: %w", shard, err)
+			}
+			if first {
+				suppressed += inserted
+				first = false
+			}
+			matches = append(matches, m)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return suppressed, nil, fmt.Errorf("bulk suppress shard %d: %w", shard, err)
+		}
+	}
+	return suppressed, matches, nil
 }
 
 // extractScrubMAK extracts the MAK from various Optizmo URL formats:
