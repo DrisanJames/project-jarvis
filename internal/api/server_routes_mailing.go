@@ -32,6 +32,7 @@ import (
 // SetMailingDB sets the PostgreSQL database for mailing platform and registers routes
 func (s *Server) SetMailingDB(db *sql.DB) {
 	s.mailingDB = db
+	leads.bindDB(db)
 	if s.OfferSuppMgr != nil && db != nil {
 		s.OfferSuppMgr.db = db
 	}
@@ -910,6 +911,9 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			r.Get("/analytics/lake/events", s.HandleLakeEvents)
 			r.Get("/analytics/lake/breakdown", s.HandleLakeBreakdown)
 			r.Get("/analytics/lake/lanes", s.HandleLakeLanes) // sending environments + their lake scope (lake_lanes.go)
+			r.Get("/analytics/lake/cube", s.HandleLakeCube)   // one-scan Reporting data, sliced in the browser
+			r.Get("/analytics/campaign-tree", s.HandleCampaignTree)
+			r.Get("/analytics/campaign-tree/campaigns", s.HandleCampaignTreeCampaigns)
 			r.Get("/analytics/deferral-funnel", s.HandleDeferralFunnel)
 
 			// Engagement KPIs (READ ONLY) — HUMAN opens/clicks from Postgres

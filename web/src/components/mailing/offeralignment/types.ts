@@ -1,8 +1,8 @@
-// types.ts — Offer Alignment API contract (PART B2 of the 2026-07-07 design
+// types.ts — Conversions tab (Offer Alignment) API contract (PART B2 of the 2026-07-07 design
 // doc) plus the small fetch/format helpers every level shares.
 //
 // Endpoints (all READ ONLY, called via apiFetch):
-//   GET /api/mailing/offer-alignment/matrix?window=7|30
+//   GET /api/mailing/offer-alignment/matrix?window=3|7|14
 //       → { rows: MatrixRow[], refreshed_at, staleness }
 //       → 202/503 { status: 'building' }  (snapshot warming — designed state)
 //       → 200 { disabled: true }          (feature dark — designed state)
@@ -27,6 +27,8 @@ export type BadgeKind =
   | 'LOW_VOLUME'
   | 'NO_LAKE';
 
+export type WindowDays = 3 | 7 | 14;
+
 export interface MatrixRow {
   offer_key: string;
   offer_name: string;
@@ -42,6 +44,7 @@ export interface MatrixRow {
   clicker_rate: number;      // fraction of delivered
   conversions: number;
   revenue: number;
+  revenue_known: boolean;    // false ⇒ show — for revenue, RPM and EPC, never $0.00
   rpm: number;               // revenue / delivered × 1000
   epc: number;               // revenue / human clicks
   badge: string;             // BadgeKind expected; unknown values tolerated
@@ -69,7 +72,6 @@ export interface OfferAttribution {
 export interface OfferHeader {
   status_line?: string;
   attribution?: OfferAttribution;
-  pg_sent?: number;   // PG sent-event denominator for clicker_rate (engagement is PG-scoped)
   delivered?: number;
   hard?: number;
   soft?: number;
@@ -80,13 +82,13 @@ export interface OfferHeader {
   clicker_rate?: number;
   conversions?: number;
   revenue?: number;
+  revenue_known?: boolean;
   rpm?: number;
   epc?: number;
 }
 
 export interface OfferIspRow {
   isp: string;
-  pg_sent?: number;   // PG sent-event denominator for clicker_rate
   delivered: number;
   hard: number;
   soft: number;
@@ -98,6 +100,7 @@ export interface OfferIspRow {
   clicker_rate: number;
   conversions: number;
   revenue: number;
+  revenue_known: boolean;
   rpm: number;
   epc: number;
   badge: string;
@@ -116,6 +119,7 @@ export interface OfferCreativeRow {
   clicker_rate: number;   // fraction of delivered
   conversions: number;
   revenue: number;
+  revenue_known: boolean;
   sample_campaign_id: string;
   has_html: boolean;
   inferred: boolean;      // historical (name/slug-inferred) attribution
@@ -125,6 +129,7 @@ export interface OfferDataSourceRow {
   data_source: string | null; // null/'' ⇒ "(unattributed)" row
   delivered: number;
   hard: number;
+  delivered_known: boolean;   // false ⇒ the sent scan ran out of time; show —
   invalid_rate: number;       // fraction of delivered+hard
   clicks: number;
   clickers: number;
@@ -136,6 +141,7 @@ export interface OfferResponse {
   isp_rows: OfferIspRow[];
   creatives: OfferCreativeRow[];
   data_sources: OfferDataSourceRow[];
+  notes?: string[];
 }
 
 export interface EvidenceRow {

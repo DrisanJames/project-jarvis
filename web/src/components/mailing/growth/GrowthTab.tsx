@@ -1,48 +1,35 @@
 // Growth — the daily send-program growth series.
 //
-// TAB_VERSION 1.1 (2026-07-30). Replaces the hand-kept growth spreadsheet: one
-// row per Denver day for a (sending domain × mailbox provider) slice, over ANY
-// historical range, with the day-over-day deltas the operator tracks. Each day
-// row expands (chevron) into that day's per-ISP breakdown — or per-sending-
-// domain when a provider filter is already applied.
+// One row per Denver day for a (sending domain × mailbox provider) slice, with
+// day-over-day changes. Each day expands into its per-ISP breakdown, or
+// per-sending-domain when a provider filter is applied. Dates, brand and provider
+// come from the Reporting page's one filter.
 //
 // Backend (READ ONLY, via apiFetch):
 //   GET /api/mailing/growth/daily?from=&to=&sending_domain=&isp=
-//       → { rows: GrowthRow[], totals, coverage, notes }
 //   GET /api/mailing/growth/day?day=&sending_domain=&isp=&by=isp|sending_domain
-//       → { rows: BreakdownRow[], notes }   (the expand drill-down)
-//   GET /api/mailing/growth/filters
-//       → { sending_domains, isps, min_day, max_day }
 //
-// Both read mailing_growth_daily (worker.GrowthRollupWorker): delivery from the
-// event lake, engagement from platform tracking. PG-backed, so this tab works
-// regardless of whether the lake READ layer is enabled — the rollup already
-// did the lake reads.
+// Both read mailing_growth_daily (worker.GrowthRollupWorker), keyed by root
+// domain, so this tab works without the lake read layer.
 //
-// RATE CONVENTION (matches the API and the operator's sheet): open/click rates
-// are EVENTS ÷ delivered, so they can legitimately exceed 100% — one scanner
-// opening one message many times. "Action clicks" are unique mailboxes on
-// navigational links only (the governing cohort) and are the number that means
-// engagement. Hard and soft bounces are never summed. Every rate discloses its
-// denominator in the header tooltip (PORTAL_DESIGN_SYSTEM §1.5).
+// Open and click rates are EVENTS ÷ delivered and can pass 100%. Hard and soft
+// bounces are never summed.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faSpinner, faArrowUp, faArrowDown, faMinus, faDownload,
-  faChartLine, faTable, faInfoCircle, faChevronRight, faChevronDown,
+  faChartLine, faTable, faChevronRight, faChevronDown,
 } from '@fortawesome/free-solid-svg-icons';
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import { apiFetch } from '../shared/apiFetch';
-import { colors as theme, panelTitleStyle, thStyle, tdStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
+import { colors as theme, thStyle, tdStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState } from '../shared/ui';
-import { FilterBar, denverToday, daysAgoDenver } from '../shared/filters';
-import type { LakeFilterDraft, AppliedLakeFilters } from '../shared/filters';
-
-const TAB_VERSION = '1.1';
+import type { AppliedLakeFilters } from '../shared/filters';
+import { brandApex } from '../reporting/cube';
 
 // Series palette — the shared chart tones (PORTAL_DESIGN_SYSTEM §2).
 const C_VOLUME = 'var(--j-violet)'; // indigo — delivered
@@ -99,15 +86,7 @@ interface GrowthResponse {
   isp: string;
   rows: GrowthRow[];
   totals: GrowthTotals;
-  coverage: { lake_epoch: string; domain_attribution_from: string; last_computed_at: string };
-  notes: string[];
-}
-
-interface GrowthFilters {
-  sending_domains: string[];
-  isps: string[];
-  min_day: string;
-  max_day: string;
+  coverage: { last_computed_at: string };
 }
 
 // Single-day drill-down (internal/api/growth_daily.go HandleDayBreakdown).
@@ -141,7 +120,6 @@ interface BreakdownResponse {
   day: string;
   by: 'isp' | 'sending_domain';
   rows: BreakdownRow[];
-  notes: string[];
 }
 
 type BreakdownState =
@@ -167,7 +145,7 @@ const fmtDay = (d: string) => {
 // flips the color semantics for metrics where a rise is bad (complaints).
 const DeltaCell: React.FC<{ value: number | null; goodUp?: boolean }> = ({ value, goodUp = true }) => {
   if (value == null) {
-    return <span style={{ color: theme.textFaint }} title="No prior day in range — ratio undefined">n/a</span>;
+    return <span style={{ color: theme.textFaint }} title="No day before this one in the range">n/a</span>;
   }
   const flat = Math.abs(value) < 0.005;
   const up = value > 0;
@@ -231,27 +209,31 @@ function downloadCSV(name: string, csv: string) {
 // conventions as the parent table; adds "Share" (slice ÷ day delivered).
 // ═══════════════════════════════════════════════════════════════════════════
 
+const OPEN_TITLE = 'Every open out of delivered. Can pass 100%.';
+const CLICK_TITLE = 'Every click out of delivered.';
+const ACTION_TITLE = 'People who clicked a real link. Each person counts once.';
+
 const BreakdownSubTable: React.FC<{ state: BreakdownState }> = ({ state }) => {
   if (state.status === 'loading') {
     return (
       <div style={{ color: theme.textMuted, padding: '10px 4px', fontSize: 12 }}>
-        <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading breakdown…
+        <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading…
       </div>
     );
   }
   if (state.status === 'error') {
     return (
       <div style={{ color: theme.dangerText, padding: '10px 4px', fontSize: 12 }}>
-        Breakdown failed: {state.message} — collapse and expand to retry.
+        Could not load: {state.message}. Close and open the day to try again.
       </div>
     );
   }
   const { data } = state;
-  const dimLabel = data.by === 'isp' ? 'Provider' : 'Sending domain';
+  const dimLabel = data.by === 'isp' ? 'Provider' : 'Brand';
   if (data.rows.length === 0) {
     return (
       <div style={{ color: theme.textMuted, padding: '10px 4px', fontSize: 12 }}>
-        No rollup rows for this day under the current filters.
+        Nothing to show for this day.
       </div>
     );
   }
@@ -260,17 +242,17 @@ const BreakdownSubTable: React.FC<{ state: BreakdownState }> = ({ state }) => {
       <thead>
         <tr>
           <th style={thStyle}>{dimLabel}</th>
-          <th style={numTh} title="Delivered — event lake, real transports only">Delivered</th>
-          <th style={numTh} title="This slice ÷ the day's delivered">Share</th>
-          <th style={numTh} title="Open EVENTS ÷ delivered — exceeds 100% when scanners re-open">Open %</th>
-          <th style={numTh} title="Click EVENTS ÷ delivered (includes asset fetches)">Click %</th>
-          <th style={numTh} title="Unique mailboxes clicking a navigational link — the governing cohort">Action clk</th>
-          <th style={numTh} title="Action clicks ÷ delivered">Action %</th>
-          <th style={numTh} title="Complaint events">Compl</th>
-          <th style={numTh} title="Complaints ÷ delivered">Compl %</th>
-          <th style={numTh} title="Distinct subscribers unsubscribing">Unsub</th>
-          <th style={numTh} title="Hard bounces — never summed with soft">Hard</th>
-          <th style={numTh} title="Soft bounces — never summed with hard">Soft</th>
+          <th style={numTh}>Delivered</th>
+          <th style={numTh} title="Share of the day's delivered">Share</th>
+          <th style={numTh} title={OPEN_TITLE}>Open %</th>
+          <th style={numTh} title={CLICK_TITLE}>Click %</th>
+          <th style={numTh} title={ACTION_TITLE}>Action clicks</th>
+          <th style={numTh} title="Action clicks out of delivered">Action %</th>
+          <th style={numTh}>Complaints</th>
+          <th style={numTh} title="Out of delivered">Complaint %</th>
+          <th style={numTh}>Unsubscribes</th>
+          <th style={numTh}>Hard bounce</th>
+          <th style={numTh}>Soft bounce</th>
         </tr>
       </thead>
       <tbody>
@@ -299,25 +281,15 @@ const BreakdownSubTable: React.FC<{ state: BreakdownState }> = ({ state }) => {
 // TAB
 // ═══════════════════════════════════════════════════════════════════════════
 
-const emptyDraft = (): LakeFilterDraft => ({
-  from: daysAgoDenver(29),
-  to: denverToday(),
-  ispGroup: '',
-  brand: '',
-  routeType: '',
-  transport: 'combined',
-});
-
-export const GrowthTab: React.FC = () => {
-  const [draft, setDraft] = useState<LakeFilterDraft>(emptyDraft);
-  const [applied, setApplied] = useState<AppliedLakeFilters>(() => ({ ...emptyDraft(), nonce: 0 }));
+export const GrowthTab: React.FC<{ applied: AppliedLakeFilters }> = ({ applied }) => {
+  const { from, to } = applied;
+  // The rollup keys on the root domain, so a sub domain reads as its root.
+  const domain = brandApex(applied.brand);
+  const isp = applied.ispGroup.trim().toLowerCase();
 
   const [data, setData] = useState<GrowthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [fetchedAt, setFetchedAt] = useState('');
-  const [tookMs, setTookMs] = useState(0);
-  const [filters, setFilters] = useState<GrowthFilters | null>(null);
   const [chartMetric, setChartMetric] = useState<'rates' | 'volume'>('rates');
 
   // Day drill-down: which day is expanded + a per-day cache of its breakdown.
@@ -328,24 +300,21 @@ export const GrowthTab: React.FC = () => {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (f: AppliedLakeFilters) => {
+  const load = useCallback(async () => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
     setLoading(true);
     setError('');
-    const t0 = performance.now();
     try {
-      const qs = new URLSearchParams({ from: f.from, to: f.to });
-      if (f.brand.trim()) qs.set('sending_domain', f.brand.trim());
-      if (f.ispGroup.trim()) qs.set('isp', f.ispGroup.trim().toLowerCase());
+      const qs = new URLSearchParams({ from, to });
+      if (domain) qs.set('sending_domain', domain);
+      if (isp) qs.set('isp', isp);
       const res = await apiFetch(`/api/mailing/growth/daily?${qs.toString()}`, { signal: ac.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as GrowthResponse & { error?: string };
       if (body.error) throw new Error(body.error);
       setData(body);
-      setTookMs(Math.round(performance.now() - t0));
-      setFetchedAt(new Date().toLocaleTimeString());
     } catch (e) {
       if ((e as Error).name === 'AbortError') return;
       setData(null);
@@ -353,43 +322,22 @@ export const GrowthTab: React.FC = () => {
     } finally {
       if (!ac.signal.aborted) setLoading(false);
     }
-  }, []);
+  }, [from, to, domain, isp]);
 
-  // Initial + on-Run fetch.
-  useEffect(() => { void load(applied); }, [applied, load]);
-
-  // Filter option lists — one cheap fetch, fail-soft (the bar still works with
-  // its static datalists if this 500s).
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await apiFetch('/api/mailing/growth/filters');
-        if (!res.ok) return;
-        const body = (await res.json()) as GrowthFilters;
-        if (alive) setFilters(body);
-      } catch { /* fail-soft: the shared datalists remain */ }
-    })();
-    return () => { alive = false; };
-  }, []);
+  useEffect(() => { void load(); }, [load]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
-
-  const onRun = useCallback((next: LakeFilterDraft) => {
-    setApplied((prev) => ({ ...next, nonce: prev.nonce + 1 }));
-  }, []);
 
   // New slice → stale drill-downs. Collapse and drop the cache.
   useEffect(() => {
     setExpandedDay(null);
     setBreakdowns({});
-  }, [applied]);
+  }, [from, to, domain, isp]);
 
   // The drill-down dimension: by ISP normally; when a provider filter is
   // already applied, splitting by ISP would return one row, so split by
   // sending domain instead.
-  const breakdownBy: 'isp' | 'sending_domain' =
-    applied.ispGroup.trim() ? 'sending_domain' : 'isp';
+  const breakdownBy: 'isp' | 'sending_domain' = isp ? 'sending_domain' : 'isp';
 
   const toggleDay = useCallback((day: string) => {
     setExpandedDay((cur) => (cur === day ? null : day));
@@ -397,8 +345,8 @@ export const GrowthTab: React.FC = () => {
       // Loaded or in flight → keep. An error retries on the next expand.
       if (cache[day] && cache[day].status !== 'error') return cache;
       const qs = new URLSearchParams({ day, by: breakdownBy });
-      if (applied.brand.trim()) qs.set('sending_domain', applied.brand.trim());
-      if (applied.ispGroup.trim()) qs.set('isp', applied.ispGroup.trim().toLowerCase());
+      if (domain) qs.set('sending_domain', domain);
+      if (isp) qs.set('isp', isp);
       void (async () => {
         try {
           const res = await apiFetch(`/api/mailing/growth/day?${qs.toString()}`);
@@ -412,7 +360,7 @@ export const GrowthTab: React.FC = () => {
       })();
       return { ...cache, [day]: { status: 'loading' } };
     });
-  }, [applied.brand, applied.ispGroup, breakdownBy]);
+  }, [domain, isp, breakdownBy]);
 
   const rows = data?.rows ?? [];
   const totals = data?.totals;
@@ -425,40 +373,16 @@ export const GrowthTab: React.FC = () => {
     action_click_pct: r.action_click_pct,
   })), [rows]);
 
-  const scopeLabel = useMemo(() => {
-    const d = applied.brand.trim() || 'all sending domains';
-    const i = applied.ispGroup.trim() || 'all providers';
-    return `${d} · ${i}`;
-  }, [applied.brand, applied.ispGroup]);
+  const scopeLabel = `${domain || 'All brands'} · ${isp || 'All providers'}`;
 
   return (
     <div>
-      <FilterBar
-        draft={draft}
-        setDraft={setDraft}
-        applied={applied}
-        onRun={onRun}
-        show={{ brand: true, isp: true }}
-        activeLabel="Active (Growth):"
-      />
-
-      {/* Known values actually present in the rollup — so a filter never
-          returns an empty screen because the value does not exist. */}
-      {filters && (
-        <div style={{ fontSize: 11, color: theme.textFaint, margin: '-6px 0 14px' }}>
-          <FontAwesomeIcon icon={faInfoCircle} style={{ marginRight: 6 }} />
-          History available {filters.min_day || '—'} → {filters.max_day || '—'} ·{' '}
-          {filters.sending_domains.length} sending domain(s) · providers:{' '}
-          {filters.isps.slice(0, 12).join(', ')}
-        </div>
-      )}
-
-      {error && <SectionError label="Growth series" error={error} onRetry={() => void load(applied)} />}
+      {error && <SectionError label="Growth" error={error} onRetry={() => void load()} />}
 
       {loading && !data && (
         <Panel style={{ marginBottom: 16 }}>
           <div style={{ color: theme.textMuted, padding: '12px 0' }}>
-            <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading growth series…
+            <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading…
           </div>
         </Panel>
       )}
@@ -470,43 +394,25 @@ export const GrowthTab: React.FC = () => {
             <SectionHeader
               title={`Growth — ${scopeLabel}`}
               icon={faChartLine}
-              right={
-                <span style={{ fontSize: 11, color: theme.textFaint }}>
-                  {data.from} → {data.to} · America/Denver · {totals.days} day(s)
-                </span>
-              }
             />
             <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
               <Stat label="Delivered" value={fmtInt(totals.delivered)}
-                sub={`${fmtInt(totals.attempted)} attempted*`}
-                title="Sum of daily delivered from the event lake (real transports only). Attempted* is derived = delivered + hard + soft." />
-              <Stat label="Open rate" value={fmtPct(totals.open_pct)} color={C_OPEN}
-                sub="open events ÷ delivered"
-                title="EVENTS ÷ delivered — can exceed 100% because one scanner opens one message many times. Machine traffic included." />
-              <Stat label="Click rate" value={fmtPct(totals.click_pct)} color={C_CLICK}
-                sub="click events ÷ delivered"
-                title="EVENTS ÷ delivered. Includes asset fetches; see Action clicks for the governing cohort." />
+                sub={`${fmtInt(totals.attempted)} sent`} />
+              <Stat label="Open rate" value={fmtPct(totals.open_pct)} color={C_OPEN} title={OPEN_TITLE} />
+              <Stat label="Click rate" value={fmtPct(totals.click_pct)} color={C_CLICK} title={CLICK_TITLE} />
               <Stat label="Action clicks" value={fmtInt(totals.action_click_subs)} color={C_ACTION}
-                sub={`${fmtPct(totals.action_click_pct)} of delivered`}
-                title="Unique mailboxes clicking a navigational/commercial link. Asset fetches and unsub/preference links are NOT clicks." />
+                sub={fmtPct(totals.action_click_pct)} title={ACTION_TITLE} />
               <Stat label="Complaints" value={fmtInt(totals.complaints)} color={C_COMPLAINT}
-                sub={fmtPct(totals.complaint_pct)}
-                title="Complaint events ÷ delivered." />
+                sub={fmtPct(totals.complaint_pct)} title="Out of delivered" />
               <Stat label="Unsubscribes" value={fmtInt(totals.unsubs)}
-                sub={fmtPct(totals.unsub_pct)}
-                title="Distinct subscribers unsubscribing ÷ delivered." />
-              <Stat label="Hard bounces" value={fmtInt(totals.hard_bounce)} color={theme.danger}
+                sub={fmtPct(totals.unsub_pct)} title="Out of delivered" />
+              <Stat label="Hard bounce" value={fmtInt(totals.hard_bounce)} color={theme.danger}
                 sub={totals.reputation_block > 0
-                  ? <span style={{ color: theme.warningText }}>+{fmtInt(totals.reputation_block)} reputation blocks</span>
+                  ? <span style={{ color: theme.warningText }}>+{fmtInt(totals.reputation_block)} blocked</span>
                   : undefined}
-                title="True list hygiene only. NEVER summed with soft bounces. Reputation/policy blocks and administrative queue flushes are counted in NEITHER hard nor soft — blocks are called out separately here." />
-              <Stat label="Soft bounces" value={fmtInt(totals.soft_bounce)} color={theme.warning}
-                title="Transient. NEVER summed with hard bounces." />
-            </div>
-            <div style={{ fontSize: 11, color: theme.textFaint, marginTop: 12 }}>
-              fetched {fetchedAt} · {tookMs}ms
-              {data.coverage.last_computed_at &&
-                ` · rollup last computed ${new Date(data.coverage.last_computed_at).toLocaleString()}`}
+                title="Address is bad. Blocks by the provider show apart." />
+              <Stat label="Soft bounce" value={fmtInt(totals.soft_bounce)} color={theme.warning}
+                title="A short-term failure." />
             </div>
           </Panel>
 
@@ -528,14 +434,14 @@ export const GrowthTab: React.FC = () => {
                       }}
                       onClick={() => setChartMetric(m)}
                     >
-                      {m === 'rates' ? 'Engagement rates' : 'Volume'}
+                      {m === 'rates' ? 'Rates' : 'Volume'}
                     </button>
                   ))}
                 </div>
               }
             />
             {rows.length === 0 ? (
-              <EmptyState title="No days in this range" hint="Widen the date range or clear the sending-domain / provider filter." />
+              <EmptyState title="No days to show" hint="Pick more days or clear a filter." />
             ) : (
               <div style={{ height: 280 }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -576,7 +482,7 @@ export const GrowthTab: React.FC = () => {
                   style={{ ...btnStyle, padding: '4px 10px', fontSize: 11 }}
                   disabled={rows.length === 0}
                   onClick={() => downloadCSV(
-                    `growth_${applied.brand.trim() || 'all'}_${applied.ispGroup.trim() || 'all'}_${data.from}_${data.to}.csv`,
+                    `growth_${domain || 'all'}_${isp || 'all'}_${data.from}_${data.to}.csv`,
                     toCSV(rows),
                   )}
                 >
@@ -585,36 +491,35 @@ export const GrowthTab: React.FC = () => {
               }
             />
             {rows.length === 0 ? (
-              <EmptyState title="Nothing to show" hint="No rollup rows for this slice yet — history back-fills every 2 hours." />
+              <EmptyState title="Nothing to show" hint="Pick more days or clear a filter." />
             ) : (
-              <div style={{ overflowX: 'auto' }}>
+              <div style={{ overflowX: 'auto' }} tabIndex={0}>
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      <th style={{ ...thStyle, width: 28 }} title={`Expand a day to see its breakdown by ${breakdownBy === 'isp' ? 'provider' : 'sending domain'}`} />
+                      <th style={{ ...thStyle, width: 28 }} />
                       <th style={thStyle}>Date</th>
-                      <th style={numTh} title="Delivered — event lake, real transports only, deduped">Delivered</th>
-                      <th style={numTh} title="Change vs the previous day in this range">Δ vol</th>
-                      <th style={numTh} title="Change vs the previous day, relative to the previous day">Δ vol %</th>
-                      <th style={numTh} title="Open EVENTS ÷ delivered — exceeds 100% when scanners re-open">Open %</th>
-                      <th style={numTh} title="Change in open rate vs the previous day">Δ open</th>
-                      <th style={numTh} title="Click EVENTS ÷ delivered (includes asset fetches)">Click %</th>
-                      <th style={numTh} title="Change in click rate vs the previous day">Δ click</th>
-                      <th style={numTh} title="Unique mailboxes clicking a navigational link — the governing cohort">Action clk</th>
-                      <th style={numTh} title="Action clicks ÷ delivered">Action %</th>
-                      <th style={numTh} title="Complaint events">Compl</th>
-                      <th style={numTh} title="Complaints ÷ delivered">Compl %</th>
-                      <th style={numTh} title="Distinct subscribers unsubscribing">Unsub</th>
-                      <th style={numTh} title="Unsubscribes ÷ delivered">Unsub %</th>
-                      <th style={numTh} title="Hard bounces — true list hygiene, never summed with soft">Hard</th>
-                      <th style={numTh} title="Soft bounces — transient, never summed with hard">Soft</th>
+                      <th style={numTh}>Delivered</th>
+                      <th style={numTh} title="Change from the day before">Change</th>
+                      <th style={numTh} title="Change from the day before">Change %</th>
+                      <th style={numTh} title={OPEN_TITLE}>Open %</th>
+                      <th style={numTh} title="Change from the day before">Open change</th>
+                      <th style={numTh} title={CLICK_TITLE}>Click %</th>
+                      <th style={numTh} title="Change from the day before">Click change</th>
+                      <th style={numTh} title={ACTION_TITLE}>Action clicks</th>
+                      <th style={numTh} title="Action clicks out of delivered">Action %</th>
+                      <th style={numTh}>Complaints</th>
+                      <th style={numTh} title="Out of delivered">Complaint %</th>
+                      <th style={numTh}>Unsubscribes</th>
+                      <th style={numTh} title="Out of delivered">Unsubscribe %</th>
+                      <th style={numTh}>Hard bounce</th>
+                      <th style={numTh}>Soft bounce</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((r) => (
                       <React.Fragment key={r.day}>
-                      <tr onClick={() => toggleDay(r.day)} style={{ cursor: 'pointer' }}
-                        title={`Break ${r.day} down by ${breakdownBy === 'isp' ? 'provider' : 'sending domain'}`}>
+                      <tr onClick={() => toggleDay(r.day)} style={{ cursor: 'pointer' }}>
                         <td style={{ ...tdStyle, width: 28, color: expandedDay === r.day ? theme.indigo400 : theme.textFaint }}>
                           <FontAwesomeIcon icon={expandedDay === r.day ? faChevronDown : faChevronRight} style={{ fontSize: 10 }} />
                         </td>
@@ -673,15 +578,6 @@ export const GrowthTab: React.FC = () => {
               </div>
             )}
 
-            {/* Honest caveats — rendered, never hidden. */}
-            {data.notes.length > 0 && (
-              <ul style={{ margin: '14px 0 0', paddingLeft: 18, fontSize: 11, color: theme.textMuted, lineHeight: 1.6 }}>
-                {data.notes.map((n, i) => <li key={i}>{n}</li>)}
-              </ul>
-            )}
-            <div style={{ ...panelTitleStyle, marginTop: 14, fontSize: 10, color: theme.textFaint }}>
-              Growth v{TAB_VERSION} · rollup source: mailing_growth_daily · lake history from {data.coverage.lake_epoch}
-            </div>
           </Panel>
         </>
       )}

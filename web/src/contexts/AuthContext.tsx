@@ -184,13 +184,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           errorMessage = 'That account doesn’t have access. Sign in with your team account.';
           break;
         case 'invalid_state':
-          errorMessage = 'Invalid authentication state. Please try again.';
+          errorMessage = 'That sign-in expired. Please try again.';
+          break;
+        case 'email_not_verified':
+          errorMessage = 'Google hasn’t verified the email on that account. Verify it with Google, then try again.';
           break;
         case 'exchange_failed':
-          errorMessage = 'Failed to complete authentication. Please try again.';
+        case 'session_failed':
+          errorMessage = 'We couldn’t finish signing you in. Please try again.';
           break;
         default:
-          errorMessage = `Authentication error: ${errorParam}`;
+          errorMessage = 'We couldn’t sign you in. Please try again.';
       }
       setError(errorMessage);
       window.history.replaceState({}, '', window.location.pathname);

@@ -188,3 +188,8 @@ mediator's own records rather than raw event counts.
 - 2026-10-29: §2 rewritten: portal restyled to the Jarvis marketing brand with light/dark mode. All portal colour literals codemodded to `--j-*` tokens (`styles/jarvis-tokens.css`); `theme.ts` resolves to tokens and `alpha()` is `color-mix`; legacy `index.css` vars alias the tokens; sidebar + sign-in carry `JarvisMark`. Supersedes the indigo/slate palette.
 - 2026-10-30: §2 accessibility pass (operator). Light tokens darkened to AA including on self-tints; `--j-hard` / `--j-soft` added (literals kept in dark); translucent text replaced with solid tokens; accessible names added to controls; rules recorded in §2.
 - 2026-10-30: dark mode brought to AA; bounce colours split into `-fill` (exact literals, both modes) and text tokens; Drip Journey touch cards no longer nest interactive controls.
+- 2026-10-31 — **Reporting has one FilterBar** for Overview, Dimensions, Growth and
+  Campaign Lookup (a tab shows a subset, Campaign Lookup dates only); Conversions keeps
+  its own range control. `applyTransportNow` applies Transport on click and `brandOptions`
+  fills Brand from the data, for screens that slice in the browser. Bar labels are plain:
+  Provider, Brand, Route type, Transport.

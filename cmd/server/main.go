@@ -5614,6 +5614,11 @@ func runStartupMigrations(db *sql.DB) {
 		// Ensure PMTA profiles with correct host also have api_endpoint set
 		{"set_api_endpoint_for_ovh", `UPDATE mailing_sending_profiles SET api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE vendor_type = 'pmta' AND smtp_host = '15.204.101.125' AND (api_endpoint IS NULL OR api_endpoint = '')`},
 		{"fix_pmta_bridge_port_19099", `UPDATE mailing_sending_profiles SET api_endpoint = 'http://15.204.101.125:19099', updated_at = NOW() WHERE vendor_type = 'pmta' AND smtp_host = '15.204.101.125' AND api_endpoint != 'http://15.204.101.125:19099'`},
+		// Marketing-site lead capture (internal/api/marketing_leads.go). Global,
+		// pre-tenant: no organization_id, read only through the admin-key route.
+		{"create_marketing_leads", `CREATE TABLE IF NOT EXISTS marketing_leads (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), kind TEXT NOT NULL CHECK (kind IN ('early_access','demo','contact','api_access','onboarding')), email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', website_url TEXT NOT NULL DEFAULT '', volume TEXT NOT NULL DEFAULT '', use_case TEXT NOT NULL DEFAULT '', current_platform TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', source_page TEXT NOT NULL DEFAULT '', marketing_opt_in BOOLEAN NOT NULL DEFAULT FALSE, google_subject TEXT NOT NULL DEFAULT '', ip_hash TEXT NOT NULL DEFAULT '', user_agent TEXT NOT NULL DEFAULT '', dedupe_key TEXT NOT NULL UNIQUE, notify_attempts INT NOT NULL DEFAULT 0, notify_claimed_at TIMESTAMPTZ, notified_at TIMESTAMPTZ, notify_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`},
+		{"create_marketing_leads_pending_idx", `CREATE INDEX IF NOT EXISTS idx_marketing_leads_pending ON marketing_leads (created_at) WHERE notified_at IS NULL`},
+		{"create_marketing_lead_rate", `CREATE TABLE IF NOT EXISTS marketing_lead_rate (bucket TEXT NOT NULL, window_start TIMESTAMPTZ NOT NULL, hits INT NOT NULL DEFAULT 0, PRIMARY KEY (bucket, window_start))`},
 		// Seed quizfiesta.com profile if not present
 		{"seed_quizfiesta_profile", `INSERT INTO mailing_sending_profiles (id, organization_id, name, vendor_type, from_name, from_email, reply_email, sending_domain, smtp_host, smtp_port, api_endpoint, tracking_domain, hourly_limit, daily_limit, ip_pool, status, is_default, created_at, updated_at) SELECT gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'QuizFiesta PMTA', 'pmta', 'QuizFiesta', 'hello@em.quizfiesta.com', 'reply@em.quizfiesta.com', 'em.quizfiesta.com', '15.204.101.125', 587, 'http://15.204.101.125:19099', 'trk.em.quizfiesta.com', 3200, 25000, 'warmup-pool', 'active', false, NOW(), NOW() WHERE NOT EXISTS (SELECT 1 FROM mailing_sending_profiles WHERE sending_domain = 'em.quizfiesta.com' AND organization_id = '00000000-0000-0000-0000-000000000001')`},
 		// === KumoMTA Colo1 (OVH 40.160.129.116) infrastructure + per-brand profiles ===
@@ -7813,6 +7818,22 @@ WHERE NOT EXISTS (SELECT 1 FROM mailing_ip_pools p
 			ADD COLUMN IF NOT EXISTS lake_clickers BIGINT NOT NULL DEFAULT 0`},
 		{"add_offer_alignment_lake_clicks", `ALTER TABLE mailing_offer_alignment_snapshot
 			ADD COLUMN IF NOT EXISTS lake_clicks BIGINT NOT NULL DEFAULT 0`},
+		// revenue_known: false ⇒ the Conversions tab shows — for an offer with
+		// no posted payout and no rate on file, never $0.00.
+		{"add_offer_alignment_revenue_known", `ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS revenue_known BOOLEAN NOT NULL DEFAULT TRUE`},
+		// Human money clicks per campaign × subscriber × ISP × Denver day: the
+		// rollup behind the Conversions tab (refreshOfferAlignmentClicks). The
+		// primary key's campaign prefix serves its reads.
+		{"create_offer_alignment_clicks", `CREATE TABLE IF NOT EXISTS mailing_offer_alignment_clicks (
+			organization_id UUID NOT NULL,
+			campaign_id UUID NOT NULL,
+			subscriber_id UUID NOT NULL,
+			isp TEXT NOT NULL,
+			local_dt DATE NOT NULL,
+			clicks BIGINT NOT NULL DEFAULT 0,
+			PRIMARY KEY (organization_id, campaign_id, subscriber_id, isp, local_dt)
+		)`},
 
 		// =====================================================================
 		// Phase 6: Two-PMTA Multi-Server Infrastructure

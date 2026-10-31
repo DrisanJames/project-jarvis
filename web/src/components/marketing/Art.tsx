@@ -146,7 +146,7 @@ const Envelope: React.FC<{ fill: string; mark?: string }> = ({ fill, mark }) => 
 
 // Mail rides the belt into the inbox; the scanner envelope gets plucked.
 export const InboxSorterLoop: React.FC = () => (
-  <svg className="jv-loop jv-loop--sorter" viewBox="0 0 480 220" role="img" aria-label="Jarvis sends the good emails on their way and catches the one with a mistake">
+  <svg className="jv-loop jv-loop--sorter" viewBox="0 0 480 220" role="img" aria-label="Jarvis helps review each email and flags the one with a mistake">
     <rect x="1" y="1" width="478" height="218" rx="24" fill="#FFFFFF" stroke={INK} strokeWidth="2.5" />
     <rect x="20" y="170" width="380" height="14" rx="7" fill={INK} />
     {[40, 110, 180, 250, 320, 380].map((x) => (
@@ -158,7 +158,7 @@ export const InboxSorterLoop: React.FC = () => (
     <g className="jv-loop-burst">
       <path d="M244 70l4 8 8 4-8 4-4 8-4-8-8-4 8-4z" fill="#C6F432" stroke={INK} strokeWidth="1.5" />
     </g>
-    <text x="300" y="56" className="jv-loop-label">only the good stuff.</text>
+    <text x="300" y="56" className="jv-loop-label">checked before it goes.</text>
     <g className="jv-env">
       <Envelope fill="#19D3F0" />
     </g>
@@ -172,7 +172,7 @@ export const InboxSorterLoop: React.FC = () => (
       <Envelope fill="#E4D8FF" />
     </g>
     <path d="M404 140h60v52a8 8 0 0 1-8 8h-44a8 8 0 0 1-8-8z" fill="#C6F432" stroke={INK} strokeWidth="2.5" strokeLinejoin="round" />
-    <text x="434" y="182" textAnchor="middle" className="jv-loop-label">inbox</text>
+    <text x="434" y="182" textAnchor="middle" className="jv-loop-label">ready</text>
   </svg>
 );
 

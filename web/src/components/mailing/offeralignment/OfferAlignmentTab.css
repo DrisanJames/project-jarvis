@@ -36,14 +36,6 @@
   color: var(--j-violet);
 }
 
-.oa-tab-subtitle {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: var(--j-text-muted);
-  max-width: 860px;
-  line-height: 1.5;
-}
-
 .oa-tab-crumbs {
   display: flex;
   align-items: center;

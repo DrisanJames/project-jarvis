@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -53,6 +54,8 @@ type AuthManager struct {
 	sessionMu    sync.RWMutex
 	baseURL      string
 	rdb          *redis.Client
+	// identityFromCode swaps the Google exchange in tests; nil means Google.
+	identityFromCode func(ctx context.Context, code string) (*GoogleUserInfo, error)
 }
 
 const redisSessionPrefix = "session:"
@@ -119,6 +122,23 @@ func allowedIdentity(u *GoogleUserInfo, allowedDomain string) bool {
 	return strings.ToLower(strings.TrimSpace(u.HD)) == want
 }
 
+// secureCookies is true when the site is served over https, as it is in prod.
+func (am *AuthManager) secureCookies() bool {
+	return strings.HasPrefix(am.baseURL, "https://")
+}
+
+// googleIdentity exchanges the OAuth code for the Google profile.
+func (am *AuthManager) googleIdentity(ctx context.Context, code string) (*GoogleUserInfo, error) {
+	if am.identityFromCode != nil {
+		return am.identityFromCode(ctx, code)
+	}
+	token, err := am.oauth2Config.Exchange(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("exchange: %w", err)
+	}
+	return am.getUserInfo(token.AccessToken)
+}
+
 // HandleLogin initiates the Google OAuth flow
 func (am *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := generateState()
@@ -134,6 +154,7 @@ func (am *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   300, // 5 minutes
 		HttpOnly: true,
+		Secure:   am.secureCookies(),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -152,13 +173,14 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil {
 		log.Printf("Auth: No state cookie found: %v", err)
-		http.Redirect(w, r, "/?error=invalid_state", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/sign-in?error=invalid_state", http.StatusTemporaryRedirect)
 		return
 	}
 
-	if r.URL.Query().Get("state") != stateCookie.Value {
+	state := r.URL.Query().Get("state")
+	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(stateCookie.Value)) != 1 {
 		log.Printf("Auth: State mismatch")
-		http.Redirect(w, r, "/?error=invalid_state", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/sign-in?error=invalid_state", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -173,30 +195,35 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Check for errors from Google
 	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 		log.Printf("Auth: Google returned error: %s", errMsg)
-		http.Redirect(w, r, "/?error="+errMsg, http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/sign-in?error="+url.QueryEscape(errMsg), http.StatusTemporaryRedirect)
 		return
 	}
 
-	// Exchange code for token
-	code := r.URL.Query().Get("code")
-	token, err := am.oauth2Config.Exchange(context.Background(), code)
+	// Exchange code for the Google profile
+	userInfo, err := am.googleIdentity(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		log.Printf("Auth: Failed to exchange code: %v", err)
-		http.Redirect(w, r, "/?error=exchange_failed", http.StatusTemporaryRedirect)
-		return
-	}
-
-	// Get user info from Google
-	userInfo, err := am.getUserInfo(token.AccessToken)
-	if err != nil {
-		log.Printf("Auth: Failed to get user info: %v", err)
-		http.Redirect(w, r, "/?error=userinfo_failed", http.StatusTemporaryRedirect)
+		log.Printf("Auth: Failed to resolve Google identity: %v", err)
+		http.Redirect(w, r, "/sign-in?error=exchange_failed", http.StatusTemporaryRedirect)
 		return
 	}
 
 	if !allowedIdentity(userInfo, am.config.AllowedDomain) {
-		log.Printf("Auth: identity not allowed: %s (hd=%q verified=%v)", userInfo.Email, userInfo.HD, userInfo.VerifiedEmail)
-		http.Redirect(w, r, "/?error=domain_not_allowed", http.StatusTemporaryRedirect)
+		// No session and no session cookie. A verified outside account goes to
+		// the new-customer form with a token that authenticates nothing else.
+		if !userInfo.VerifiedEmail {
+			log.Printf("Auth: unverified Google email refused: %s", userInfo.Email)
+			http.Redirect(w, r, "/sign-in?error=email_not_verified", http.StatusTemporaryRedirect)
+			return
+		}
+		tok, err := am.IssueOnboardingToken(userInfo, time.Now())
+		if err != nil {
+			log.Printf("Auth: onboarding token failed: %v", err)
+			http.Redirect(w, r, "/sign-in?error=session_failed", http.StatusTemporaryRedirect)
+			return
+		}
+		log.Printf("Auth: outside account sent to onboarding: %s (hd=%q)", userInfo.Email, userInfo.HD)
+		// Fragment, not query: it stays out of access logs and Referer headers.
+		http.Redirect(w, r, "/onboarding#t="+tok, http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -204,7 +231,7 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	sessionID, err := generateSessionID()
 	if err != nil {
 		log.Printf("Auth: Failed to generate session ID: %v", err)
-		http.Redirect(w, r, "/?error=session_failed", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/sign-in?error=session_failed", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -229,6 +256,7 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   am.config.CookieMaxAge,
 		HttpOnly: true,
+		Secure:   am.secureCookies(),
 		SameSite: http.SameSiteLaxMode,
 	})
 

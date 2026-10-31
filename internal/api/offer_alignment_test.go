@@ -57,7 +57,7 @@ func TestClassifyAlignmentCell(t *testing.T) {
 		{
 			name: "blocking with real demand gets demand-but-blocked",
 			in: alignmentCellStats{Delivered: 5000, ReputationBlock: 800,
-				PGSent: 10000, Clickers: 60}, // clicker rate 0.6% ≥ 0.5%
+				Clickers: 60}, // clicker rate 0.6% ≥ 0.5%
 			wantBadge:  "BLOCKING",
 			wantAction: "Demand exists but the ISP is blocking",
 		},
@@ -88,14 +88,14 @@ func TestClassifyAlignmentCell(t *testing.T) {
 		{
 			name: "healthy with dead clicker rate gets audience-mismatch",
 			in: alignmentCellStats{Delivered: 10000,
-				PGSent: 10000, Clickers: 10}, // 0.1% < 0.2%
+				Clickers: 10}, // 0.1% < 0.2%
 			wantBadge:  "HEALTHY",
 			wantAction: "Audience mismatch",
 		},
 		{
 			name: "healthy with strong RPM gets scale",
 			in: alignmentCellStats{Delivered: 10000, Revenue: 300, // rpm $30
-				PGSent: 10000, Clickers: 100},
+				Clickers: 100},
 			wantBadge:  "HEALTHY",
 			wantAction: "Scale",
 		},
@@ -148,7 +148,6 @@ func TestResolveOfferCampaignSet(t *testing.T) {
 	org := "00000000-0000-0000-0000-000000000001"
 	idStamped := "aaaaaaaa-0000-0000-0000-000000000001"
 	idName := "bbbbbbbb-0000-0000-0000-000000000002"
-	idClick := "cccccccc-0000-0000-0000-000000000003"
 	from := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 7, 7, 23, 59, 59, 0, time.UTC)
 
@@ -161,21 +160,19 @@ func TestResolveOfferCampaignSet(t *testing.T) {
 	mock.ExpectQuery(`COALESCE\(offer_key,''\) = ''[\s\S]*name ILIKE \$4`).
 		WithArgs(org, from, to, "% - fidelity", "% - Fidelity Term Life", "").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(idName).AddRow(idStamped)) // idStamped dupes → deduped
-	// (2) slug-anchored clicks — money-link marker + slug patterns.
-	mock.ExpectQuery(`t\.link_url ILIKE '%source_id=email%'[\s\S]*t\.link_url ILIKE ANY\(\$4\)`).
-		WithArgs(org, from, to, sqlmock.AnyArg(), "").
-		WillReturnRows(sqlmock.NewRows([]string{"campaign_id"}).AddRow(idClick).AddRow(idName))
+	// NO click query: stamped campaigns already define the offer, and that
+	// scan times out on prod.
 
 	set, err := resolveOfferCampaignSet(context.Background(), db, org,
 		"fidelity", "Fidelity Term Life", []string{"%/FIDELITY/%"}, from, to, "")
 	if err != nil {
 		t.Fatalf("resolveOfferCampaignSet: %v", err)
 	}
-	if set.Stamped != 1 || set.Inferred != 2 {
-		t.Fatalf("stamped=%d inferred=%d, want 1/2", set.Stamped, set.Inferred)
+	if set.Stamped != 1 || set.Inferred != 1 {
+		t.Fatalf("stamped=%d inferred=%d, want 1/1", set.Stamped, set.Inferred)
 	}
-	if len(set.IDs) != 3 {
-		t.Fatalf("ids = %v, want 3 deduped", set.IDs)
+	if len(set.IDs) != 2 {
+		t.Fatalf("ids = %v, want 2 deduped", set.IDs)
 	}
 	if set.IDs[0] != idStamped {
 		t.Fatalf("stamped ids must sort first, got %v", set.IDs)
@@ -241,11 +238,11 @@ func TestAlignmentISPCaseBuckets(t *testing.T) {
 func TestHandleOfferAlignmentMatrixValidation(t *testing.T) {
 	s := &Server{}
 	// Bad window → 400 with the {"error": ...} shape.
-	req := httptest.NewRequest("GET", "/api/mailing/offer-alignment/matrix?window=14", nil)
+	req := httptest.NewRequest("GET", "/api/mailing/offer-alignment/matrix?window=30", nil)
 	rec := httptest.NewRecorder()
 	s.HandleOfferAlignmentMatrix(rec, req)
 	if rec.Code != 400 {
-		t.Fatalf("window=14 status = %d, want 400", rec.Code)
+		t.Fatalf("window=30 status = %d, want 400", rec.Code)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == nil {
@@ -399,37 +396,154 @@ func TestHandleOfferAlignmentOfferEmptySet(t *testing.T) {
 	}
 }
 
-// TestApplyEstimatedConversionRevenue pins the estimator rules: fires only
-// when the ledger contributed zero dollars AND a price exists; any real
-// ledger revenue wins over the estimate.
-func TestApplyEstimatedConversionRevenue(t *testing.T) {
-	mk := func(pairs ...int64) map[string]*alignmentConversions {
-		out := map[string]*alignmentConversions{}
-		isps := []string{"apple", "gmail", "microsoft"}
-		for i := 0; i+1 < len(pairs); i += 2 {
-			out[isps[i/2]] = &alignmentConversions{Conversions: pairs[i], Revenue: float64(pairs[i+1])}
+// TestResolveOfferCampaignSetByOfferID pins the identity most campaigns carry:
+// an offer-id key selects on offer_id alone, with no inference and no
+// click scan. Stamped-key matching missed 18,677 of 24,600 campaigns.
+func TestResolveOfferCampaignSetByOfferID(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	org := "00000000-0000-0000-0000-000000000001"
+	key := "b0559641-3dc5-4623-9fe5-a1f199dacd9b"
+	from := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(`offer_id = \$2::uuid`).
+		WithArgs(org, key, from, to, "").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("aaaaaaaa-0000-0000-0000-000000000001"))
+
+	set, err := resolveOfferCampaignSet(context.Background(), db, org, key, "eHealth CPC - Switchers",
+		[]string{"%/X/%"}, from, to, "")
+	if err != nil {
+		t.Fatalf("resolveOfferCampaignSet: %v", err)
+	}
+	if set.Stamped != 1 || set.Inferred != 0 || len(set.IDs) != 1 {
+		t.Fatalf("set = %+v, want 1 exact campaign", set)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestAlignmentConversionsFromLedger is the regression guard for $0.00 RPM:
+// the ledger's posted dollars reach the cell, a $0 post prices at the on-file
+// rate, and a window slices without a second read.
+func TestAlignmentConversionsFromLedger(t *testing.T) {
+	rows := []alignmentConvRow{
+		{LocalDt: "2026-10-30", ISP: "microsoft", EverflowID: "379", Conversions: 10, Payout: 25},
+		{LocalDt: "2026-10-20", ISP: "microsoft", EverflowID: "379", Conversions: 4, Payout: 10},
+		{LocalDt: "2026-10-30", ISP: "apple", EverflowID: "338", Conversions: 3, Unpriced: 3},
+	}
+	wide := aggregateAlignmentConversions(rows, "2026-10-18", "2026-10-31")
+	if c := wide["microsoft"]; c.Conversions != 14 || c.Revenue != 35 {
+		t.Fatalf("14d microsoft = %+v, want 14 conv $35", c)
+	}
+	if c := wide["apple"]; c.Conversions != 3 || c.Revenue != 198 {
+		t.Fatalf("Liberty posts $0 and must price at $66 on file: %+v", c)
+	}
+	narrow := aggregateAlignmentConversions(rows, "2026-10-29", "2026-10-31")
+	if c := narrow["microsoft"]; c.Conversions != 10 || c.Revenue != 25 {
+		t.Fatalf("3d microsoft = %+v, want 10 conv $25", c)
+	}
+	if !alignmentOfferPriced(rows) {
+		t.Fatalf("offer with posted payout must read priced")
+	}
+}
+
+// TestAlignmentRevenueUnknownIsNotZero pins the rule that an unknown payout
+// shows — and never $0.00, and that no deal goal is ever used as revenue.
+func TestAlignmentRevenueUnknownIsNotZero(t *testing.T) {
+	empire := []alignmentConvRow{{LocalDt: "2026-10-30", ISP: "yahoo", EverflowID: "cake:48865", Conversions: 14, Unpriced: 14}}
+	if alignmentOfferPriced(empire) {
+		t.Fatalf("$0 post with no rate on file must read unpriced")
+	}
+	cell := aggregateAlignmentConversions(empire, "", "")["yahoo"]
+	if cell.Revenue != 0 {
+		t.Fatalf("no price must not invent revenue: %+v", cell)
+	}
+	if alignmentRevenueKnown(false, cell) {
+		t.Fatalf("unpriced offer must be unknown")
+	}
+	if alignmentRevenueKnown(false, &alignmentConversions{}) {
+		t.Fatalf("offer with no price and no conversions has unknown revenue (CPM)")
+	}
+	if !alignmentRevenueKnown(true, &alignmentConversions{}) {
+		t.Fatalf("priced offer with no conversions in the window is a true $0")
+	}
+	if alignmentRevenueKnown(true, cell) {
+		t.Fatalf("conversions with no dollars must be unknown even on a priced offer")
+	}
+}
+
+// TestFetchAlignmentConversionRowsReadsLedger pins the source: the live
+// ledger by campaign_id, the excluded allocation row left out.
+func TestFetchAlignmentConversionRowsReadsLedger(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(`FROM mailing_everflow_conversions ec[\s\S]*ec\.campaign_id = ANY\(\$2::uuid\[\]\)[\s\S]*<> ALL\(\$5\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"c", "d", "i", "e", "s", "n", "p", "u"}).
+			AddRow("aaaaaaaa-0000-0000-0000-000000000001", "2026-10-30", "microsoft", "379", "src", 2, 5.0, 0))
+	rows, err := fetchAlignmentConversionRows(context.Background(), db, "org",
+		[]string{"aaaaaaaa-0000-0000-0000-000000000001"}, time.Now(), time.Now())
+	if err != nil {
+		t.Fatalf("fetchAlignmentConversionRows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Conversions != 2 || rows[0].revenue() != 5 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestAlignmentEngagementReadsRollup pins the fix for 0% click rates: the live
+// path must not touch mailing_tracking_events, whose per-offer scan never
+// finishes. Empty rollup rows are a value, not an error.
+func TestAlignmentEngagementReadsRollup(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(`FROM mailing_offer_alignment_clicks`).
+		WillReturnRows(sqlmock.NewRows([]string{"isp", "c", "n"}).AddRow("microsoft", 192, 59))
+	eng, err := fetchAlignmentEngagement(context.Background(), db, "org",
+		[]string{"aaaaaaaa-0000-0000-0000-000000000001"}, time.Now(), time.Now())
+	if err != nil {
+		t.Fatalf("fetchAlignmentEngagement: %v", err)
+	}
+	if e := eng["microsoft"]; e == nil || e.HumanClicks != 192 || e.Clickers != 59 {
+		t.Fatalf("engagement = %+v", eng["microsoft"])
+	}
+}
+
+func TestAlignmentMoneyClickPredicateCoversGatewayLinks(t *testing.T) {
+	if !strings.Contains(alignmentMoneyClickPredicate, "/o/") {
+		t.Fatalf("predicate must match /o/ gateway links: %s", alignmentMoneyClickPredicate)
+	}
+}
+
+func TestOfferAlignmentWindows(t *testing.T) {
+	for _, d := range []int{3, 7, 14} {
+		if !isOfferAlignmentWindow(d) {
+			t.Fatalf("window %d must be valid", d)
 		}
-		return out
 	}
-
-	// zero ledger dollars + $40 price → conversions × price per bucket.
-	conv := mk(7, 0, 3, 0)
-	applyEstimatedConversionRevenue(conv, 40)
-	if conv["apple"].Revenue != 280 || conv["gmail"].Revenue != 120 {
-		t.Fatalf("estimate not applied: %+v %+v", conv["apple"], conv["gmail"])
+	for _, d := range []int{0, 1, 30} {
+		if isOfferAlignmentWindow(d) {
+			t.Fatalf("window %d must be invalid", d)
+		}
 	}
-
-	// any real ledger revenue anywhere → estimator must NOT touch anything.
-	conv = mk(7, 0, 3, 55)
-	applyEstimatedConversionRevenue(conv, 40)
-	if conv["apple"].Revenue != 0 || conv["gmail"].Revenue != 55 {
-		t.Fatalf("ledger revenue must win: %+v %+v", conv["apple"], conv["gmail"])
+	old := time.Now().AddDate(0, 0, -60)
+	if got := alignmentScopeFrom(old); !got.Equal(old) {
+		t.Fatalf("a range older than 14d keeps its start: %v", got)
 	}
-
-	// no price → untouched zeros.
-	conv = mk(7, 0)
-	applyEstimatedConversionRevenue(conv, 0)
-	if conv["apple"].Revenue != 0 {
-		t.Fatalf("zero price must not invent revenue: %+v", conv["apple"])
+	if got := alignmentScopeFrom(time.Now()); time.Since(got) < 12*24*time.Hour {
+		t.Fatalf("a short range widens to the 14d campaign set: %v", got)
 	}
 }

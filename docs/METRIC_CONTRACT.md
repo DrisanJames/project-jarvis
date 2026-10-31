@@ -215,17 +215,18 @@ SQL against the lake/PG for a fixed window and reconcile against the Reporting s
 must say why (unit difference, scope difference) in the UI itself (tooltip/subtext), not in a
 commit message.
 
-## 9. Offer Alignment (2026-07-07)
+## 9. Conversions tab / Offer Alignment (2026-07-07, rewritten 2026-10-31)
 
 Surfaces: `GET /api/mailing/offer-alignment/{matrix,offer,evidence}` + the
 `mailing_offer_alignment_snapshot` worker (`internal/api/offer_alignment_snapshot.go`,
 `handlers_offer_alignment.go`). Every number below is scoped to an **offer campaign-ID set**.
 
-**Offer identity & attribution.** The offer key is the stamped
-`mailing_campaigns.offer_key` (deploy-time stamping, `attribution_source`
-'payload' | 'name_inferred'). Historical campaigns (offer_key NULL) are **inferred**: campaign-name
-" - <offer>" suffix match (against the key and the slug-map offer_name) ∪ slug-anchored money
-clicks. Every response carries `attribution: {stamped_campaigns, inferred_campaigns}`;
+**Offer identity & attribution.** The offer key is `mailing_campaigns.offer_id`, name from
+`mailing_offers.name`: 18,677 of 24,600 campaigns over the 14 days to 2026-10-31 carried it and no
+`offer_key`, including all of eHealth. Campaigns with `offer_id` NULL fall back to the stamped
+`offer_key`, then the campaign-name " - <offer>" suffix, then slug-anchored money clicks (these are
+**inferred**, and the click pass runs only when no stamped campaign exists). 2026-10-31: no active
+offer uses the fallback. Every response carries `attribution: {stamped_campaigns, inferred_campaigns}`;
 `attribution_coverage` on matrix rows is **campaign-count based** (stamped / (stamped+inferred)) —
 NOT delivery-weighted (a delivery-weighted split would need a per-campaign lake group-by that
 blows the row cap).
@@ -244,49 +245,54 @@ reputation_block / attempted. **Footnote metric:** ~20% of PMTA lake rows carry 
 campaign_id — campaign-set-scoped delivery therefore UNDERCOUNTS by up to that share
 (`unattributed_delivery`); this is a floor, not a truth-drift.
 
-**Engagement cells (PG).** `mailing_tracking_events`, human =
-`ignite_verdict_is_human(ignite_event_verdict(user_agent, ip_address))`; clicks restricted to
-money links (`link_url ILIKE '%source_id=email%'`); `clickers` = COUNT(DISTINCT subscriber_id).
-`clicker_rate` denominator = the **PG sent-event count** for the same campaign set + window.
-**Scope rule: engagement rates are PG-scoped and delivery rates are lake-scoped — the two stores
-are never divided into each other** (§2 "never divide metrics with different scopes"). ISP via the
-canonical clean classifier over `recipient_domain` (mirrors `ISP_CASE_PG` /
-`analytics.ispExpr` buckets exactly).
+**Engagement cells.** `mailing_offer_alignment_clicks`: human money clicks per campaign ×
+subscriber × ISP × Denver day, one row per that grain, kept by `refreshOfferAlignmentClicks` from
+one org-wide scan per refresh. Human = stored `click_verdict IN ('human','human-relay','proxy-view')`
+(the `ignite_verdict_is_human` set, 100% populated when sampled 2026-10-31). Money click = `/o/`
+gateway link or `source_id=email`. `source_id=email` alone misses `/o/` and read 12 human clicks
+estate-wide. The lake cannot replace this: its clicks are raw (Liberty sample 709 clicks / 193
+people vs 192 / 59 human) and carry no verdict. `clickers` = COUNT(DISTINCT subscriber_id). Clicks
+lag by up to one refresh (3h). `clicker_rate` = clickers / **lake delivered**, as is human click
+rate. PG `sent` is gone from this surface: it cannot be read per offer inside any budget (120s
+timed out every large offer, 2026-10-31). This is the deliberate exception to §2 "never divide
+metrics with different scopes", and the UI states the denominator on every rate. ISP via the
+canonical clean classifier over `recipient_domain` (mirrors `ISP_CASE_PG` / `analytics.ispExpr`
+buckets exactly).
 
-**Creatives panel.** creative identity = md5(html_content); `delivered` per creative × ISP is the
-**PG sent-event count** (the lake cannot key delivery by creative; per §1 PG tracking is the
-per-campaign delivery proxy) — its `clicker_rate` is therefore a same-store PG fraction. Rows
-whose campaign group carries no stamped offer_key are flagged `inferred`.
+**Creatives panel.** creative identity = md5(html_content) per campaign. `delivered` per creative
+× ISP is lake delivered grouped by campaign × ISP; clicks are human money clicks from the rollup;
+conversions come from the ledger's own `campaign_id`. Rows whose campaign group carries neither
+`offer_id` nor `offer_key` are flagged `inferred`.
 
-**Conversions.** conv UNION = `mailing_offer_suppressions` reason='converted' (postback truth,
-revenue 0) ∪ `mailing_cpm_manual_conversions` (revenue column exists but — verified against prod
-2026-07-07 — every row ever written is $0; `mailing_revenue_attributions` is empty), offer-scoped
-via the slug map's everflow ids (unmapped offers report 0 conversions rather than mis-tally other
-offers'). Conversion × ISP uses the converting subscriber's email domain; conversion × data_source
-uses `mailing_subscribers.data_source`. Creative attribution = LATERAL most-recent in-window
-money-link click (90-day lookback).
+**Conversions.** `mailing_everflow_conversions`, the ledger the Everflow postback and Cake sync
+write, by the conversion's own `campaign_id` within the offer's set and `converted_at` in window.
+No slug map or offer dictionary sits in the path. `mailing_offer_suppressions` carries no dollars
+and `mailing_cpm_manual_conversions` had 0 rows in the 14 days to 2026-10-31; neither is read.
+Transactions in `conversion_inputs.json` `exclude_transactions` are left out. Conversion × ISP uses
+the converting subscriber's email domain; conversion × data_source uses
+`mailing_subscribers.data_source`. A conversion with no `campaign_id` belongs to no offer here (6
+rows, $7 over the 14 days to 2026-10-31).
 
-**Revenue is ESTIMATED, not ledger truth.** Because no in-platform ledger carries per-conversion
-dollars, Offer Alignment prices conversions at `resolveOfferConversionPrice` = the offer's CPM-deal
-`ecpa_goal` (the same economics the CPM calculator derives: eCPA = budget/conversions), else
-`mailing_offers.payout`, else $0 (no price ⇒ revenue stays 0 rather than inventing a number). Any
-real ledger dollars, if they ever appear, win over the estimate. The offer profile discloses the
-per-conversion price in `notes`. Real per-conversion revenue truth is the Everflow export
-(off-platform); importing it (e.g. into `mailing_revenue_attributions`) supersedes this estimate.
+**Revenue is posted payout.** `payout` from the ledger, plus the on-file rate for conversions that
+post $0 (`alignmentOnFilePayout`, same rates as `conversion_inputs.json` `offer_rate`; Liberty 338 =
+$66). An offer with neither over the 14-day set has **unknown** revenue: `revenue_known=false` and
+the UI shows — for revenue, RPM and EPC, never $0.00. A cell with conversions and no dollars is
+also unknown. Deal `ecpa_goal` and `ecpm_goal` are targets and are never revenue; the earlier
+estimate at `ecpa_goal` is removed. A priced offer with no conversions in a window is a true $0.
 `rpm` = revenue / lake delivered × 1000; `epc` = revenue / human_clicks; zero denominators emit 0,
 never NaN/null.
 
 **Large-set query discipline (drip-scale offers).** A drip offer's campaign set reaches tens of
-thousands of ids (ps8241: 23,722 / 7d). Event scans chunk at 8,000 ids/statement (roundtrip-
-dominated below that; every statement stays under the prod 30s statement_timeout). Creative
-grouping computes `md5(html_content)` ONCE per campaign (`camp_dim` MATERIALIZED CTE), never per
-event row. Consequence disclosed: clicker counts in the creatives panel and data-source panel are
-per-campaign/per-chunk DISTINCT summed — a subscriber clicking the same creative across campaigns
-(or chunks) counts once per campaign, not once globally.
+thousands of ids (ps8241: 23,722 / 7d). The surface reads the click rollup and the ledger, both
+indexed by campaign. Consequence disclosed: clicker counts in the creatives panel are
+per-campaign DISTINCT summed — a subscriber clicking the same creative across campaigns counts
+once per campaign, not once globally.
 
 **Data-source panel.** `mailing_subscribers.data_source` via subscriber join; NULL/'' renders as
-"(unattributed)". `invalid_rate` = hard / (delivered + hard), **PG scope** (hard = PG
-`event_type='bounced' AND bounce_type='hard'`).
+"(unattributed)". Clicks from the rollup, conversions from the ledger. `invalid_rate` =
+hard / (delivered + hard), **PG scope** (hard = PG `event_type='bounced' AND bounce_type='hard'`).
+This is the one remaining `mailing_tracking_events` scan: it gets 25s, and on a miss the row sets
+`delivered_known=false` and the UI shows — for delivered, hard and invalid rate.
 
 **Badges (delivery-health channel, never blended with performance).** Single source =
 `classifyAlignmentCell`: `< 500` attempted ⇒ LOW_VOLUME (`sample_ok=false`); BLOCKING =
@@ -295,13 +301,13 @@ AND block_rate < 10% (capacity language, never reputation); LIST_QUALITY = hard/
 dominated (≥50%) by the 5.1.1 family; else HEALTHY. `dsn_family` is a computed lake dimension
 (`dsnFamilyExpr`, reader.go). Hard and soft are never combined; reputation_block is its own class.
 
-**Windows.** Matrix windows are 7 and 30 trailing **America/Denver** days, refreshed every 30m
-into `mailing_offer_alignment_snapshot` (staleness disclosed in the response). BOTH windows use
-events-in-window semantics over the SAME 30-day-active campaign set — delivery (lake, sliced by
-`local_dt`), engagement and conversions (PG, sliced by event time) all share one campaign scope
-per cell, so a cell's rates never mix scopes. Consequence: an older campaign's in-window events
-(e.g. deferral retries) count in the 7d cells, and the matrix 7d numbers may differ slightly from
-a live offer-profile query whose campaign set is resolved from the 7-day window itself. A
+**Windows.** Matrix windows are 3, 7 and 14 trailing **America/Denver** days (default 7), refreshed
+every 3h into `mailing_offer_alignment_snapshot` (staleness disclosed in the response). Every window
+uses events-in-window semantics over the SAME 14-day-active campaign set — delivery (lake, sliced by
+`local_dt`), engagement (rollup, by Denver day) and conversions (ledger, by Denver day) all share
+one campaign scope per cell, so a cell's rates never mix scopes. Consequence: an older campaign's
+in-window events (e.g. deferral retries) count in the 3d and 7d cells. The offer profile and
+evidence panel read the same set, so they match the cell. A
 per-(org,window) `__meta__` sentinel row marks each successful refresh: a built-but-empty window
 serves an empty matrix (designed empty state), never a perpetual "building" status.
 
@@ -795,3 +801,15 @@ open; do not smooth it into a total.
   filters: `ses_bot_event` added (AWS `isBotEvent`), the SES click verdict wired
   into the lake, and `is_machine_open` explicitly left unwritten so the ~15 inert
   `ExcludeMPP` filters cannot switch on by accident.
+- 2026-10-31 — **Reporting cube.** Overview and Dimensions read one query per date
+  range (`GET /analytics/lake/cube`, `internal/analytics/reader_cube.go`) and slice in
+  the browser (`web/.../reporting/cube.ts`). Same merge rule: open/click only from
+  `source='app'`, everything else only from pmta/ses/kumo. Verified equal to the
+  breakdown endpoint for 10-30 (delivered 4,216,741) and 10-24..10-30 (delivered
+  24,507,846); opens and clicks equal `source='app'`. An app row takes its campaign's
+  main lane (3-day lookback); about 8% of opens and 11% of clicks match no campaign
+  in that window and read 'Not matched', counted under Combined only. The Overview
+  tiles no longer call `/analytics/engagement` (15s timeout, 500 on 1- and 7-day ranges).
+- 2026-10-31: §9 rewritten for the Conversions tab. Offer key = `offer_id`; conversions and revenue
+  from `mailing_everflow_conversions` by campaign; unknown revenue shows —; `ecpa_goal` estimate
+  removed; human clicks from a rollup; clicker rate over lake delivered; windows 3D/7D/14D.

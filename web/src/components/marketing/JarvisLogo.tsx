@@ -33,8 +33,9 @@ export const JarvisMark: React.FC<MarkProps> = ({
       width={size}
       height={size}
       viewBox="0 0 64 64"
-      role="img"
-      aria-label={title}
+      role={title ? 'img' : undefined}
+      aria-label={title || undefined}
+      aria-hidden={title ? undefined : true}
       className={cls}
       xmlns="http://www.w3.org/2000/svg"
     >

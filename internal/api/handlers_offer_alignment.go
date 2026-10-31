@@ -10,23 +10,17 @@ package api
 //     classifyAlignmentCell — the single source for thresholds.
 //
 // METRIC_CONTRACT.md is binding (see its "Offer Alignment" section):
-//   - Delivery cells come from the Athena lake, source IN ('pmta','ses'),
+//   - Delivery cells come from the Athena lake, source IN ('pmta','ses','kumo'),
 //     COUNT(DISTINCT event_uid), scoped by the offer's campaign-ID set.
 //     NEVER PG campaign counters.
-//   - Engagement comes from PG mailing_tracking_events with the canonical
-//     human verdict ignite_verdict_is_human(ignite_event_verdict(...)) and
-//     money-link clicks only (link_url ILIKE '%source_id=email%').
-//   - Engagement rates are PG-scoped (clicker_rate divides by the PG
-//     sent-event count); delivery rates are lake-scoped. The two stores are
-//     never divided into each other.
-//   - Conversions reuse the conv UNION shape from
-//     handlers_analytics_creatives.go (offer-suppression 'converted' rows +
-//     CPM manual conversions, offer-scoped via everflow ids).
+//   - Engagement comes from the mailing_offer_alignment_clicks rollup: human
+//     verdict, money clicks only. clicker_rate divides by lake delivered.
+//   - Conversions and revenue come from mailing_everflow_conversions by each
+//     conversion's own campaign_id. Unknown revenue is unknown, never $0.
 //
-// Offer → campaign-set attribution (PART A stamped + historical inference):
-// stamped campaigns carry offer_key (attribution_source 'payload' |
-// 'name_inferred'); historical campaigns (offer_key NULL) are inferred via
-// the campaign-name " - <offer>" suffix and via slug-anchored money clicks.
+// Offer → campaign-set attribution: the key is mailing_campaigns.offer_id.
+// Campaigns without one fall back to stamped offer_key, then to inference
+// from the campaign-name " - <offer>" suffix and slug-anchored money clicks.
 // Every response carries {stamped_campaigns, inferred_campaigns} so the UI
 // can label inferred data.
 //
@@ -40,6 +34,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -50,6 +45,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	"github.com/ignite/sparkpost-monitor/internal/analytics"
@@ -75,7 +71,7 @@ const (
 	alignmentScaleRPMThreshold      = 25.0  // HEALTHY + rpm ≥ this ⇒ "scale"
 	alignmentDemandClickerRate      = 0.005 // BLOCKING + clicker rate ≥ this ⇒ demand-but-blocked
 	alignmentMismatchClickerRate    = 0.002 // HEALTHY + clicker rate < this ⇒ audience mismatch
-	alignmentMismatchMinPGSent      = 1000  // ...but only with a real engagement sample
+	alignmentMismatchMinDelivered   = 1000  // ...but only with a real engagement sample
 	alignmentAppleHM08ActionMinimum = 100   // HM08 count that triggers the apple-pull action
 )
 
@@ -164,6 +160,13 @@ func alignmentSessionConn(ctx context.Context, db *sql.DB, timeoutMs int) (*sql.
 }
 
 func resolveOfferSlugsForKey(ctx context.Context, db alignmentDB, offer string) (slugs []string, efids []string, offerName string, err error) {
+	if isOfferIDKey(offer) {
+		err = db.QueryRowContext(ctx, `SELECT COALESCE(name, '') FROM mailing_offers WHERE id = $1::uuid`, offer).Scan(&offerName)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, "", nil
+		}
+		return nil, nil, offerName, err
+	}
 	const q = `
 		SELECT cratoolpro_slug, COALESCE(offer_name, ''), COALESCE(everflow_offer_id, '')
 		FROM mailing_offer_slug_map
@@ -203,6 +206,17 @@ func resolveOfferSlugsForKey(ctx context.Context, db alignmentDB, offer string) 
 	return slugs, efids, offerName, nil
 }
 
+// isOfferIDKey reports whether an offer key is a mailing_offers id. Those are
+// the keys the matrix uses for every campaign carrying offer_id (most carry no
+// offer_key: 18,677 of 24,600 over the 14 days to 2026-10-31).
+func isOfferIDKey(key string) bool {
+	if len(key) != 36 {
+		return false
+	}
+	_, err := uuid.Parse(key)
+	return err == nil
+}
+
 // offerCampaignSet is the resolved campaign universe for one offer + window.
 // Stamped campaigns carry offer_key (PART A deploy-time stamping); Inferred
 // are historical campaigns matched by name-suffix or slug-anchored clicks.
@@ -238,12 +252,38 @@ func resolveOfferCampaignSet(
 	set := offerCampaignSet{}
 	seen := map[string]bool{}
 
+	// An offer id is exact: every campaign carrying it, nothing inferred.
+	if isOfferIDKey(offerKey) {
+		rows, err := db.QueryContext(ctx, `
+			SELECT id::text FROM mailing_campaigns
+			WHERE organization_id = $1
+			  AND offer_id = $2::uuid
+			  AND scheduled_at >= $3 AND scheduled_at <= $4
+			  AND ($5 = '' OR lower(split_part(from_email,'@',2)) = lower($5))
+			ORDER BY scheduled_at DESC
+		`, orgID, offerKey, from, to, sendingDomain)
+		if err != nil {
+			return set, fmt.Errorf("offer campaign set: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return set, err
+			}
+			set.IDs = append(set.IDs, id)
+			set.Stamped++
+		}
+		return set, rows.Err()
+	}
+
 	// (0) stamped: forward data, exact by construction.
 	// $1 org, $2 key, $3 from, $4 to, $5 sending-domain ('' = all).
 	const stampedQ = `
 		SELECT id::text FROM mailing_campaigns
 		WHERE organization_id = $1
 		  AND lower(COALESCE(offer_key,'')) = lower($2)
+		  AND offer_id IS NULL
 		  AND scheduled_at >= $3 AND scheduled_at <= $4
 		  AND ($5 = '' OR lower(split_part(from_email,'@',2)) = lower($5))
 		ORDER BY scheduled_at DESC
@@ -277,6 +317,7 @@ func resolveOfferCampaignSet(
 		SELECT id::text FROM mailing_campaigns
 		WHERE organization_id = $1
 		  AND COALESCE(offer_key,'') = ''
+		  AND offer_id IS NULL
 		  AND scheduled_at >= $2 AND scheduled_at <= $3
 		  AND (name ILIKE $4 OR ($5 <> '' AND name ILIKE $5))
 		  AND ($6 = '' OR lower(split_part(from_email,'@',2)) = lower($6))
@@ -309,8 +350,10 @@ func resolveOfferCampaignSet(
 	}
 
 	// (2) inferred by slug-anchored money clicks (historical). Skipped when
-	// the offer has no slug patterns.
-	if len(patterns) > 0 {
+	// the offer has no slug patterns, and when stamped campaigns already
+	// define it: this scan times out on prod and dropped insurhomev1 (3,095
+	// campaigns) from a refresh.
+	if len(patterns) > 0 && set.Stamped == 0 {
 		// $1 org, $2 from, $3 to, $4 slug patterns, $5 domain.
 		const clickQ = `
 			SELECT DISTINCT t.campaign_id::text
@@ -319,6 +362,7 @@ func resolveOfferCampaignSet(
 			  ON c.id = t.campaign_id AND c.organization_id = $1
 			WHERE t.organization_id = $1
 			  AND COALESCE(c.offer_key,'') = ''
+			  AND c.offer_id IS NULL
 			  AND t.event_at >= $2 AND t.event_at <= $3
 			  AND t.event_type = 'clicked'
 			  AND t.link_url ILIKE '%source_id=email%'
@@ -377,9 +421,13 @@ func (d *alignmentDelivery) attempted() int64 {
 
 // fetchAlignmentLakeRows runs the two lake Breakdowns for one campaign set:
 // delivery (local_dt × isp × event_type) and dsn families (local_dt × isp ×
-// dsn_family). local_dt rides along so a 30-day fetch can be sliced into the
-// 7-day window without a second Athena round trip.
+// dsn_family). local_dt rides along so a 14-day fetch can be sliced into the
+// narrower windows without a second Athena round trip.
 const alignmentLakeChunk = 2000
+
+// alignmentLakeSources is every transport that carries delivery rows. kumo
+// offers read as zero delivered (and $0 RPM) without it.
+var alignmentLakeSources = []string{"pmta", "ses", "kumo"}
 
 // alignmentLakeConcurrency bounds parallel Athena calls per fetch. Serial
 // chunking put drip-scale profiles (10 chunks x 2 calls x ~5s) past the
@@ -422,7 +470,7 @@ func fetchAlignmentLakeRows(ctx context.Context, ids []string, fromDt, toDt stri
 			}
 			filter := analytics.BreakdownFilter{
 				From: fromDt, To: toDt,
-				SourceIn:    []string{"pmta", "ses"},
+				SourceIn:    alignmentLakeSources,
 				CampaignIDs: j.chunk,
 				Limit:       5000,
 			}
@@ -619,7 +667,6 @@ type alignmentCellStats struct {
 	Hard511         int64 // 5.1.1-family count
 	HumanClicks     int64
 	Clickers        int64
-	PGSent          int64
 	Revenue         float64
 }
 
@@ -637,8 +684,8 @@ func classifyAlignmentCell(c alignmentCellStats) (badge, reason, action string, 
 	deferredRate := float64(c.Deferred) / float64(attempted)
 	hardRate := float64(c.Hard) / float64(attempted)
 	clickerRate := 0.0
-	if c.PGSent > 0 {
-		clickerRate = float64(c.Clickers) / float64(c.PGSent)
+	if c.Delivered > 0 {
+		clickerRate = float64(c.Clickers) / float64(c.Delivered)
 	}
 	rpm := 0.0
 	if c.Delivered > 0 {
@@ -673,7 +720,7 @@ func classifyAlignmentCell(c alignmentCellStats) (badge, reason, action string, 
 		reason = fmt.Sprintf("healthy: block rate %.1f%%, hard %.1f%%, deferrals %.1f%% of %d attempted",
 			blockRate*100, hardRate*100, deferredRate*100, attempted)
 		switch {
-		case c.PGSent >= alignmentMismatchMinPGSent && clickerRate < alignmentMismatchClickerRate:
+		case c.Delivered >= alignmentMismatchMinDelivered && clickerRate < alignmentMismatchClickerRate:
 			action = "Audience mismatch — delivery is healthy but the offer is not resonating on this ISP; rotate the offer"
 		case c.Revenue > 0 && rpm >= alignmentScaleRPMThreshold:
 			action = "Scale — healthy delivery with strong RPM"
@@ -717,219 +764,173 @@ func alignmentDiv(num, den float64) float64 {
 
 // ─── PG aggregations shared by the profile handler and the snapshot worker ──
 
-// alignmentEngagement is the PG engagement cell: human money clicks, distinct
-// clickers, and the PG sent-event denominator, per ISP bucket.
+// alignmentEngagement is the engagement cell: human money clicks and distinct
+// clickers, per ISP bucket.
 type alignmentEngagement struct {
 	HumanClicks int64
 	Clickers    int64
-	PGSent      int64
 }
 
-// alignmentEngagementChunk bounds the campaign-id set per SENT-count query.
-// Sized from live measurement (2026-07-07 prod diagnosis): the ANY(ids) index
-// path is fast — a FULL 23,722-id/2.99M-row sent scan runs 7.8s, while
-// per-chunk cost is ROUNDTRIP-dominated (~80ms of real work per statement).
-// 150-id chunks turned drip-scale offers into 159 statements ≈ 60s of
-// roundtrips; 8,000-id chunks keep every statement well under the prod 30s
-// statement_timeout in ~3 roundtrips. Chunk counts sum exactly. Clicked rows
-// are ~3 orders of magnitude fewer, so the click query runs once over the
-// full set (keeps COUNT(DISTINCT clickers) exact).
+// alignmentEngagementChunk bounds the campaign-id set per sent/bounce query in
+// the data-source panel.
 const alignmentEngagementChunk = 8000
 
-// fetchAlignmentEngagement aggregates mailing_tracking_events for the
-// campaign set: sent-event denominator (chunked) plus verdict-human money
-// clicks/clickers (single narrow pass over clicked rows using the STORED
-// click_verdict column — write-side materialized + partial-indexed; the
-// verdict function only computes for pre-backfill NULL rows), bucketed by the
-// clean ISP of recipient_domain. NULL recipient_domain folds into 'other'.
+// alignmentMoneyClickPredicate matches an offer click on an events row aliased
+// t: the /o/ gateway links every current creative uses, plus legacy cratoolpro
+// links. source_id=email alone misses /o/ and read 12 human clicks estate-wide.
+const alignmentMoneyClickPredicate = `(t.link_url ~* '^https?://[^/]+/o/' OR t.link_url ILIKE '%source_id=email%')`
+
+// fetchAlignmentEngagement reads human money clicks from
+// mailing_offer_alignment_clicks, the rollup RefreshOfferAlignmentSnapshot
+// keeps. mailing_tracking_events cannot answer this per offer: the campaign
+// scan timed out at 280s for Liberty's set, so every large offer read zero.
+// Rows carry Denver days, so from/to resolve to calendar dates.
 func fetchAlignmentEngagement(ctx context.Context, db alignmentDB, orgID interface{}, ids []string, from, to time.Time) (map[string]*alignmentEngagement, error) {
 	out := map[string]*alignmentEngagement{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	get := func(isp string) *alignmentEngagement {
-		e := out[isp]
-		if e == nil {
-			e = &alignmentEngagement{}
-			out[isp] = e
-		}
-		return e
-	}
-
-	sentQ := `
-		SELECT ` + alignmentISPCase("COALESCE(t.recipient_domain,'')") + ` AS isp, COUNT(*)
-		FROM mailing_tracking_events t
-		WHERE t.organization_id = $1
-		  AND t.campaign_id = ANY($2::uuid[])
-		  AND t.event_type = 'sent'
-		  AND t.event_at >= $3 AND t.event_at <= $4
+	rows, err := db.QueryContext(ctx, `
+		SELECT isp, COALESCE(SUM(clicks), 0)::bigint, COUNT(DISTINCT subscriber_id)
+		FROM mailing_offer_alignment_clicks
+		WHERE organization_id = $1
+		  AND campaign_id = ANY($2::uuid[])
+		  AND local_dt >= $3::date AND local_dt <= $4::date
 		GROUP BY 1
-	`
-	for start := 0; start < len(ids); start += alignmentEngagementChunk {
-		end := start + alignmentEngagementChunk
-		if end > len(ids) {
-			end = len(ids)
-		}
-		rows, err := db.QueryContext(ctx, sentQ, orgID, pq.Array(ids[start:end]), from, to)
-		if err != nil {
-			return nil, fmt.Errorf("alignment engagement (sent chunk %d): %w", start/alignmentEngagementChunk, err)
-		}
-		for rows.Next() {
-			var isp string
-			var n int64
-			if err := rows.Scan(&isp, &n); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			get(isp).PGSent += n
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-	}
-
-	clickQ := `
-		SELECT ` + alignmentISPCase("COALESCE(t.recipient_domain,'')") + ` AS isp,
-		       COUNT(*) AS human_clicks,
-		       COUNT(DISTINCT t.subscriber_id) AS clickers
-		FROM mailing_tracking_events t
-		WHERE t.organization_id = $1
-		  AND t.campaign_id = ANY($2::uuid[])
-		  AND t.event_type = 'clicked'
-		  AND t.event_at >= $3 AND t.event_at <= $4
-		  AND t.link_url ILIKE '%source_id=email%'
-		  AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))
-		GROUP BY 1
-	`
-	rows, err := db.QueryContext(ctx, clickQ, orgID, pq.Array(ids), from, to)
+	`, orgID, pq.Array(ids), from.In(mstLoc).Format("2006-01-02"), to.In(mstLoc).Format("2006-01-02"))
 	if err != nil {
-		return nil, fmt.Errorf("alignment engagement (clicks): %w", err)
+		return nil, fmt.Errorf("alignment engagement: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var isp string
-		var clicks, clickers int64
-		if err := rows.Scan(&isp, &clicks, &clickers); err != nil {
+		e := &alignmentEngagement{}
+		if err := rows.Scan(&isp, &e.HumanClicks, &e.Clickers); err != nil {
 			return nil, err
 		}
-		e := get(isp)
-		e.HumanClicks = clicks
-		e.Clickers = clickers
+		out[isp] = e
 	}
 	return out, rows.Err()
 }
 
-// alignmentConversions is one ISP (or data-source) slice of the conversion
-// ledger.
+// alignmentConversions is one ISP slice of the conversion ledger.
 type alignmentConversions struct {
 	Conversions int64
 	Revenue     float64
 }
 
-// fetchAlignmentConversionsByISP counts offer-scoped conversions per the
-// converting subscriber's email-domain ISP. The conv UNION mirrors
-// creativesBreakdown (handlers_analytics_creatives.go): offer-suppression
-// 'converted' rows (postback truth, revenue 0) + CPM manual conversions
-// (sub1 = subscriber UUID, revenue carried). Offers without everflow ids
-// cannot be honestly scoped — returns empty (0 conversions), matching the
-// creatives handler's convention.
-func fetchAlignmentConversionsByISP(ctx context.Context, db alignmentDB, orgID interface{}, efids []string, from, to time.Time) (map[string]*alignmentConversions, error) {
-	if len(efids) == 0 {
-		return map[string]*alignmentConversions{}, nil
+// alignmentConvRow is one ledger bucket. Every view (ISP, creative, data
+// source, each window) folds these, so one read serves them all.
+type alignmentConvRow struct {
+	CampaignID  string
+	LocalDt     string
+	ISP         string
+	EverflowID  string
+	DataSource  string
+	Conversions int64
+	Payout      float64 // posted dollars
+	Unpriced    int64   // conversions that posted $0
+}
+
+// alignmentOnFilePayout prices conversions the network posts at $0, keyed by
+// the ledger's everflow_offer_id. Same rates as the conversion report's
+// offer_rate (agents/reporting/data/conversion_inputs.json). An offer absent
+// here with no posted dollars has unknown revenue and shows —, never $0.00.
+var alignmentOnFilePayout = map[string]float64{
+	"338": 66.0, // Liberty Mutual: the network posts $0
+}
+
+// alignmentExcludedTransactions are ledger rows that are not conversions,
+// from conversion_inputs.json exclude_transactions.
+var alignmentExcludedTransactions = []string{
+	"8fff07cc98394084a181be19d324cbb7", // Liberty $12,000 CPM allocation 2026-09-10
+}
+
+// revenue is the bucket's dollars: posted payout plus on-file rate × the
+// conversions that posted $0.
+func (r alignmentConvRow) revenue() float64 {
+	return r.Payout + float64(r.Unpriced)*alignmentOnFilePayout[r.EverflowID]
+}
+
+// fetchAlignmentConversionRows reads mailing_everflow_conversions, the ledger
+// the Everflow postback and Cake sync write, by each conversion's own
+// campaign_id. No offer dictionary sits in the path.
+func fetchAlignmentConversionRows(ctx context.Context, db alignmentDB, orgID interface{}, ids []string, from, to time.Time) ([]alignmentConvRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	q := `
-		WITH conv AS (
-			SELECT s.subscriber_id, 0::numeric AS revenue
-			FROM mailing_offer_suppressions s
-			WHERE s.organization_id = $1
-			  AND s.reason = 'converted'
-			  AND s.suppressed_at >= $2 AND s.suppressed_at <= $3
-			  AND s.offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($4))
-			UNION ALL
-			SELECT cm.sub1::uuid AS subscriber_id, COALESCE(cm.revenue, 0)::numeric AS revenue
-			FROM mailing_cpm_manual_conversions cm
-			WHERE cm.organization_id = $1
-			  AND cm.converted_at >= $2 AND cm.converted_at <= $3
-			  AND cm.sub1 ~ '^[0-9a-f-]{36}$'
-			  AND cm.deal_id IN (SELECT id FROM mailing_cpm_deals WHERE organization_id = $1 AND (everflow_offer_id = ANY($4) OR offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($4))))
-		)
-		SELECT ` + alignmentISPCase("split_part(sub.email,'@',2)") + ` AS isp,
-		       COUNT(*) AS conversions,
-		       COALESCE(SUM(cv.revenue), 0)::float8 AS revenue
-		FROM conv cv
-		JOIN mailing_subscribers sub ON sub.id = cv.subscriber_id AND sub.organization_id = $1
-		GROUP BY 1
-	`
-	rows, err := db.QueryContext(ctx, q, orgID, from, to, pq.Array(efids))
+	rows, err := db.QueryContext(ctx, `
+		SELECT ec.campaign_id::text,
+		       to_char(ec.converted_at AT TIME ZONE 'America/Denver', 'YYYY-MM-DD'),
+		       `+alignmentISPCase("split_part(COALESCE(sub.email,''),'@',2)")+`,
+		       COALESCE(ec.everflow_offer_id, ''),
+		       COALESCE(sub.data_source, ''),
+		       COUNT(*),
+		       COALESCE(SUM(ec.payout), 0)::float8,
+		       COUNT(*) FILTER (WHERE COALESCE(ec.payout, 0) = 0)
+		FROM mailing_everflow_conversions ec
+		LEFT JOIN mailing_subscribers sub ON sub.id = ec.subscriber_id AND sub.organization_id = $1
+		WHERE ec.organization_id = $1
+		  AND ec.campaign_id = ANY($2::uuid[])
+		  AND ec.converted_at >= $3 AND ec.converted_at <= $4
+		  AND COALESCE(ec.transaction_id, '') <> ALL($5)
+		GROUP BY 1, 2, 3, 4, 5
+	`, orgID, pq.Array(ids), from, to, pq.Array(alignmentExcludedTransactions))
 	if err != nil {
 		return nil, fmt.Errorf("alignment conversions: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]*alignmentConversions{}
+	out := []alignmentConvRow{}
 	for rows.Next() {
-		var isp string
-		var c alignmentConversions
-		if err := rows.Scan(&isp, &c.Conversions, &c.Revenue); err != nil {
+		var r alignmentConvRow
+		if err := rows.Scan(&r.CampaignID, &r.LocalDt, &r.ISP, &r.EverflowID, &r.DataSource,
+			&r.Conversions, &r.Payout, &r.Unpriced); err != nil {
 			return nil, err
 		}
-		out[isp] = &c
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-// resolveOfferConversionPrice returns the per-conversion dollar value used to
-// ESTIMATE revenue when the conversion ledgers carry no dollars — which, as
-// verified against prod 2026-07-07, is every conversion ever recorded:
-// mailing_offer_suppressions has NO revenue column, every
-// mailing_cpm_manual_conversions.revenue row is 0, and
-// mailing_revenue_attributions is empty. Price = the offer's CPM-deal eCPA
-// goal (the same economics the CPM calculator derives: eCPA = budget /
-// conversions), else the offer's payout, else 0 — a zero price keeps revenue
-// at 0 rather than inventing a number. Estimated revenue is disclosed in
-// METRIC_CONTRACT §9.
-func resolveOfferConversionPrice(ctx context.Context, db alignmentDB, orgID interface{}, efids []string) float64 {
-	if len(efids) == 0 {
-		return 0
+// aggregateAlignmentConversions folds ledger rows inside [minDt, maxDt] into
+// per-ISP cells ("" = unbounded on that side).
+func aggregateAlignmentConversions(rows []alignmentConvRow, minDt, maxDt string) map[string]*alignmentConversions {
+	out := map[string]*alignmentConversions{}
+	for _, r := range rows {
+		if !alignmentDtInRange(r.LocalDt, minDt, maxDt) {
+			continue
+		}
+		c := out[r.ISP]
+		if c == nil {
+			c = &alignmentConversions{}
+			out[r.ISP] = c
+		}
+		c.Conversions += r.Conversions
+		c.Revenue += r.revenue()
 	}
-	var price float64
-	err := db.QueryRowContext(ctx, `
-		SELECT COALESCE(
-			(SELECT MAX(d.ecpa_goal) FROM mailing_cpm_deals d
-			  WHERE d.organization_id = $1
-			    AND COALESCE(d.ecpa_goal, 0) > 0
-			    AND (d.everflow_offer_id = ANY($2)
-			         OR d.offer_id IN (SELECT id FROM mailing_offers
-			                            WHERE organization_id = $1 AND everflow_offer_id = ANY($2)))),
-			(SELECT MAX(o.payout) FROM mailing_offers o
-			  WHERE o.organization_id = $1 AND o.everflow_offer_id = ANY($2)
-			    AND COALESCE(o.payout, 0) > 0),
-			0)::float8
-	`, orgID, pq.Array(efids)).Scan(&price)
-	if err != nil {
-		log.Printf("[offer-alignment] conversion price lookup failed (revenue stays ledger-valued): %v", err)
-		return 0
-	}
-	return price
+	return out
 }
 
-// applyEstimatedConversionRevenue prices zero-dollar conversion buckets at
-// the offer's per-conversion price. Only fires when the ledger contributed
-// NO dollars at all (any real ledger revenue wins over the estimate).
-func applyEstimatedConversionRevenue(conv map[string]*alignmentConversions, price float64) {
-	if price <= 0 {
-		return
+func alignmentDtInRange(dt, minDt, maxDt string) bool {
+	return (minDt == "" || dt >= minDt) && (maxDt == "" || dt <= maxDt)
+}
+
+// alignmentOfferPriced reports whether any money is known for the offer: a
+// posted payout or an on-file rate. CPM offers post no conversions at all, so
+// the answer is read over the 14-day set, not a single window.
+func alignmentOfferPriced(rows []alignmentConvRow) bool {
+	for _, r := range rows {
+		if r.Payout > 0 || alignmentOnFilePayout[r.EverflowID] > 0 {
+			return true
+		}
 	}
-	var total float64
-	for _, c := range conv {
-		total += c.Revenue
-	}
-	if total != 0 {
-		return
-	}
-	for _, c := range conv {
-		c.Revenue = price * float64(c.Conversions)
-	}
+	return false
+}
+
+// alignmentRevenueKnown is false when the dollars in a cell cannot be trusted
+// as a number: the offer has no known price, or conversions landed with none.
+func alignmentRevenueKnown(offerPriced bool, c *alignmentConversions) bool {
+	return offerPriced && !(c.Conversions > 0 && c.Revenue == 0)
 }
 
 // ─── HTTP: matrix ────────────────────────────────────────────────────────────
@@ -951,6 +952,7 @@ type offerAlignmentMatrixRow struct {
 	ClickerRate         float64 `json:"clicker_rate"`
 	Conversions         int64   `json:"conversions"`
 	Revenue             float64 `json:"revenue"`
+	RevenueKnown        bool    `json:"revenue_known"` // false ⇒ the UI shows — for revenue, RPM and EPC
 	RPM                 float64 `json:"rpm"`
 	EPC                 float64 `json:"epc"`
 	Badge               string  `json:"badge"`
@@ -962,7 +964,7 @@ type offerAlignmentMatrixRow struct {
 
 // HandleOfferAlignmentMatrix serves the snapshot-backed offer × ISP matrix.
 //
-// GET /api/mailing/offer-alignment/matrix?window=7|30 (trailing 'd' tolerated)
+// GET /api/mailing/offer-alignment/matrix?window=3|7|14 (trailing 'd' tolerated)
 //
 // Responses: 200 {rows, refreshed_at, staleness} · 202 {"status":"building"}
 // (empty snapshot; async build kicked) · 200 {"disabled":true} (lake dark).
@@ -977,8 +979,8 @@ func (s *Server) HandleOfferAlignmentMatrix(w http.ResponseWriter, r *http.Reque
 		win = "7"
 	}
 	days, convErr := strconv.Atoi(win)
-	if convErr != nil || (days != 7 && days != 30) {
-		respondError(w, http.StatusBadRequest, "window must be 7 or 30")
+	if convErr != nil || !isOfferAlignmentWindow(days) {
+		respondError(w, http.StatusBadRequest, "window must be 3, 7 or 14")
 		return
 	}
 	if !analytics.ReaderEnabled() {
@@ -1039,21 +1041,21 @@ func (s *Server) HandleOfferAlignmentRefresh(w http.ResponseWriter, r *http.Requ
 
 // Response structs match types.ts (OfferResponse) byte-for-byte.
 type offerAlignmentHeader struct {
-	StatusLine  string                    `json:"status_line"`
-	Attribution offerAlignmentAttribution `json:"attribution"`
-	Delivered   int64                     `json:"delivered"`
-	Hard        int64                     `json:"hard"`
-	Soft        int64                     `json:"soft"`
-	Deferred    int64                     `json:"deferred"`
-	RepBlock    int64                     `json:"reputation_block"`
-	HumanClicks int64                     `json:"human_clicks"`
-	Clickers    int64                     `json:"clickers"`
-	PGSent      int64                     `json:"pg_sent"`
-	ClickerRate float64                   `json:"clicker_rate"`
-	Conversions int64                     `json:"conversions"`
-	Revenue     float64                   `json:"revenue"`
-	RPM         float64                   `json:"rpm"`
-	EPC         float64                   `json:"epc"`
+	StatusLine   string                    `json:"status_line"`
+	Attribution  offerAlignmentAttribution `json:"attribution"`
+	Delivered    int64                     `json:"delivered"`
+	Hard         int64                     `json:"hard"`
+	Soft         int64                     `json:"soft"`
+	Deferred     int64                     `json:"deferred"`
+	RepBlock     int64                     `json:"reputation_block"`
+	HumanClicks  int64                     `json:"human_clicks"`
+	Clickers     int64                     `json:"clickers"`
+	ClickerRate  float64                   `json:"clicker_rate"`
+	Conversions  int64                     `json:"conversions"`
+	Revenue      float64                   `json:"revenue"`
+	RevenueKnown bool                      `json:"revenue_known"`
+	RPM          float64                   `json:"rpm"`
+	EPC          float64                   `json:"epc"`
 }
 
 type offerAlignmentAttribution struct {
@@ -1062,24 +1064,24 @@ type offerAlignmentAttribution struct {
 }
 
 type offerAlignmentISPRow struct {
-	ISP         string  `json:"isp"`
-	Delivered   int64   `json:"delivered"`
-	Hard        int64   `json:"hard"`
-	Soft        int64   `json:"soft"`
-	RepBlock    int64   `json:"reputation_block"`
-	Deferred    int64   `json:"deferred"`
-	BlockRate   float64 `json:"block_rate"`
-	HumanClicks int64   `json:"human_clicks"`
-	Clickers    int64   `json:"clickers"`
-	PGSent      int64   `json:"pg_sent"`
-	ClickerRate float64 `json:"clicker_rate"`
-	Conversions int64   `json:"conversions"`
-	Revenue     float64 `json:"revenue"`
-	RPM         float64 `json:"rpm"`
-	EPC         float64 `json:"epc"`
-	Badge       string  `json:"badge"`
-	BadgeReason string  `json:"badge_reason"`
-	Action      string  `json:"action"`
+	ISP          string  `json:"isp"`
+	Delivered    int64   `json:"delivered"`
+	Hard         int64   `json:"hard"`
+	Soft         int64   `json:"soft"`
+	RepBlock     int64   `json:"reputation_block"`
+	Deferred     int64   `json:"deferred"`
+	BlockRate    float64 `json:"block_rate"`
+	HumanClicks  int64   `json:"human_clicks"`
+	Clickers     int64   `json:"clickers"`
+	ClickerRate  float64 `json:"clicker_rate"`
+	Conversions  int64   `json:"conversions"`
+	Revenue      float64 `json:"revenue"`
+	RevenueKnown bool    `json:"revenue_known"`
+	RPM          float64 `json:"rpm"`
+	EPC          float64 `json:"epc"`
+	Badge        string  `json:"badge"`
+	BadgeReason  string  `json:"badge_reason"`
+	Action       string  `json:"action"`
 }
 
 type offerAlignmentCreativeRow struct {
@@ -1093,19 +1095,22 @@ type offerAlignmentCreativeRow struct {
 	ClickerRate      float64 `json:"clicker_rate"`
 	Conversions      int64   `json:"conversions"`
 	Revenue          float64 `json:"revenue"`
+	RevenueKnown     bool    `json:"revenue_known"`
 	SampleCampaignID string  `json:"sample_campaign_id"`
 	HasHTML          bool    `json:"has_html"`
 	Inferred         bool    `json:"inferred"`
 }
 
 type offerAlignmentDataSourceRow struct {
-	DataSource  *string `json:"data_source"` // null ⇒ "(unattributed)" in the UI
-	Delivered   int64   `json:"delivered"`
-	Hard        int64   `json:"hard"`
-	InvalidRate float64 `json:"invalid_rate"`
-	Clicks      int64   `json:"clicks"`
-	Clickers    int64   `json:"clickers"`
-	Conversions int64   `json:"conversions"`
+	DataSource *string `json:"data_source"` // null ⇒ "(unattributed)" in the UI
+	Delivered  int64   `json:"delivered"`
+	Hard       int64   `json:"hard"`
+	// DeliveredKnown is false when the sent/bounce scan ran out of budget.
+	DeliveredKnown bool    `json:"delivered_known"`
+	InvalidRate    float64 `json:"invalid_rate"`
+	Clicks         int64   `json:"clicks"`
+	Clickers       int64   `json:"clickers"`
+	Conversions    int64   `json:"conversions"`
 }
 
 // parseAlignmentRange parses from/to (YYYY-MM-DD, America/Denver days) with a
@@ -1171,7 +1176,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		log.Printf("[offer-alignment] session conn unavailable, using pool: %v", connErr)
 	}
 
-	slugs, efids, offerName, err := resolveOfferSlugsForKey(ctx, adb, offer)
+	slugs, _, offerName, err := resolveOfferSlugsForKey(ctx, adb, offer)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1184,7 +1189,9 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		offerName = offer
 	}
 
-	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, from, to, sendingDomain)
+	// Same campaign scope as the matrix cell: the 14-day set, events in range.
+	scopeFrom := alignmentScopeFrom(from)
+	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, scopeFrom, to, sendingDomain)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1228,18 +1235,13 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	convByISP, err := fetchAlignmentConversionsByISP(ctx, adb, orgID, efids, from, to)
+	convRows, err := fetchAlignmentConversionRows(ctx, adb, orgID, set.IDs, scopeFrom, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The conversion ledgers carry no dollars (see resolveOfferConversionPrice)
-	// — price zero-revenue buckets at the offer's deal-eCPA/payout estimate.
-	convPrice := resolveOfferConversionPrice(ctx, adb, orgID, efids)
-	applyEstimatedConversionRevenue(convByISP, convPrice)
-	if convPrice > 0 {
-		notes = append(notes, fmt.Sprintf("revenue estimated at $%.2f/conversion (deal eCPA goal / offer payout) — conversion ledgers carry no dollars", convPrice))
-	}
+	offerPriced := alignmentOfferPriced(convRows)
+	convByISP := aggregateAlignmentConversions(convRows, fromDt, toDt)
 
 	// ── per-ISP rows (union of every source's ISPs) ──────────────────────
 	ispSet := map[string]bool{}
@@ -1274,7 +1276,7 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 			BlockingDSN: fams["HM08"] + fams["HCM2"] + fams["S3140"],
 			HM08:        fams["HM08"],
 			Hard511:     fams["5.1.1"],
-			HumanClicks: e.HumanClicks, Clickers: e.Clickers, PGSent: e.PGSent,
+			HumanClicks: e.HumanClicks, Clickers: e.Clickers,
 			Revenue: cv.Revenue,
 		}
 		badge, reason, action, _ := classifyAlignmentCell(stats)
@@ -1285,12 +1287,13 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 			ISP: isp, Delivered: d.Delivered, Hard: d.Hard, Soft: d.Soft,
 			RepBlock: d.ReputationBlock, Deferred: d.Deferred,
 			BlockRate:   alignmentDiv(float64(d.ReputationBlock), float64(d.attempted())),
-			HumanClicks: e.HumanClicks, Clickers: e.Clickers, PGSent: e.PGSent,
-			ClickerRate: alignmentDiv(float64(e.Clickers), float64(e.PGSent)),
+			HumanClicks: e.HumanClicks, Clickers: e.Clickers,
+			ClickerRate: alignmentDiv(float64(e.Clickers), float64(d.Delivered)),
 			Conversions: cv.Conversions, Revenue: cv.Revenue,
-			RPM:   alignmentDiv(cv.Revenue*1000, float64(d.Delivered)),
-			EPC:   alignmentDiv(cv.Revenue, float64(e.HumanClicks)),
-			Badge: badge, BadgeReason: reason, Action: action,
+			RevenueKnown: alignmentRevenueKnown(offerPriced, cv),
+			RPM:          alignmentDiv(cv.Revenue*1000, float64(d.Delivered)),
+			EPC:          alignmentDiv(cv.Revenue, float64(e.HumanClicks)),
+			Badge:        badge, BadgeReason: reason, Action: action,
 		}
 		ispRows = append(ispRows, row)
 		hdr.Delivered += d.Delivered
@@ -1300,17 +1303,13 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 		hdr.RepBlock += d.ReputationBlock
 		hdr.HumanClicks += e.HumanClicks
 		hdr.Clickers += e.Clickers
-		hdr.PGSent += e.PGSent
 		hdr.Conversions += cv.Conversions
 		hdr.Revenue += cv.Revenue
 	}
 	sort.Slice(ispRows, func(i, j int) bool { return ispRows[i].Delivered > ispRows[j].Delivered })
 
-	var pgSentTotal int64
-	for _, e := range engByISP {
-		pgSentTotal += e.PGSent
-	}
-	hdr.ClickerRate = alignmentDiv(float64(hdr.Clickers), float64(pgSentTotal))
+	hdr.ClickerRate = alignmentDiv(float64(hdr.Clickers), float64(hdr.Delivered))
+	hdr.RevenueKnown = offerPriced
 	hdr.RPM = alignmentDiv(hdr.Revenue*1000, float64(hdr.Delivered))
 	hdr.EPC = alignmentDiv(hdr.Revenue, float64(hdr.HumanClicks))
 	hdr.Attribution = offerAlignmentAttribution{StampedCampaigns: set.Stamped, InferredCampaigns: set.Inferred}
@@ -1329,22 +1328,20 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	}
 
 	// ── creative × subject × ISP panel ───────────────────────────────────
-	creatives, err := s.fetchAlignmentCreatives(ctx, adb, orgID, set.IDs, patterns, efids, from, to)
+	// Panels fail soft: a slow panel must not take the whole profile down.
+	creatives, err := s.fetchAlignmentCreatives(ctx, adb, orgID, set.IDs, convRows, offerPriced, from, to, fromDt, toDt)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	for i := range creatives {
-		if creatives[i].Revenue == 0 && creatives[i].Conversions > 0 && convPrice > 0 {
-			creatives[i].Revenue = convPrice * float64(creatives[i].Conversions)
-		}
+		log.Printf("[offer-alignment] creatives panel %s: %v", offer, err)
+		notes = append(notes, "The creative table did not load. Try again in a minute.")
+		creatives = []offerAlignmentCreativeRow{}
 	}
 
 	// ── data-source panel ────────────────────────────────────────────────
-	dataSources, err := s.fetchAlignmentDataSources(ctx, adb, orgID, set.IDs, efids, from, to)
+	dataSources, err := s.fetchAlignmentDataSources(ctx, adb, orgID, set.IDs, convRows, from, to, fromDt, toDt)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
+		log.Printf("[offer-alignment] data-source panel %s: %v", offer, err)
+		notes = append(notes, "The data source table did not load. Try again in a minute.")
+		dataSources = []offerAlignmentDataSourceRow{}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]any{
@@ -1356,341 +1353,353 @@ func (s *Server) HandleOfferAlignmentOffer(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// fetchAlignmentCreatives is the creativesBreakdown CTE shape
-// (handlers_analytics_creatives.go) recut by ISP-of-recipient instead of
-// sending_domain and scoped to the offer's campaign set. Delivered here is
-// the PG sent-event count per creative × ISP (the contract's per-campaign
-// PG delivery proxy — the lake cannot key delivery by creative), so
-// clicker_rate stays a same-store fraction. Conversions re-attribute via the
-// LATERAL most-recent in-window money-link click. inferred=true when NO
-// campaign in the group carries a stamped offer_key.
+// alignmentDeliveredChunk bounds the per-campaign delivered fetch: the reader
+// caps a breakdown at 5,000 rows and a campaign can span several ISPs.
+const alignmentDeliveredChunk = 800
+
+// fetchAlignmentDeliveredByCampaign returns lake delivered per campaign × ISP.
+func fetchAlignmentDeliveredByCampaign(ctx context.Context, ids []string, fromDt, toDt string) (map[string]map[string]int64, error) {
+	out := map[string]map[string]int64{}
+	if !analytics.ReaderEnabled() {
+		return out, nil
+	}
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+	)
+	sem := make(chan struct{}, alignmentLakeConcurrency)
+	for start := 0; start < len(ids); start += alignmentDeliveredChunk {
+		end := start + alignmentDeliveredChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		wg.Add(1)
+		go func(chunk []string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			rows, err := analytics.Breakdown(ctx, analytics.BreakdownFilter{
+				From: fromDt, To: toDt,
+				SourceIn:    alignmentLakeSources,
+				CampaignIDs: chunk,
+				GroupBy:     []string{"campaign_id", "isp"},
+				Eq:          map[string]string{"event_type": "delivered"},
+				Limit:       5000,
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			for _, r := range rows {
+				id, isp := r.Keys["campaign_id"], r.Keys["isp"]
+				if isp == "" {
+					isp = "other"
+				}
+				if out[id] == nil {
+					out[id] = map[string]int64{}
+				}
+				out[id][isp] += r.Count
+			}
+		}(ids[start:end])
+	}
+	wg.Wait()
+	return out, firstErr
+}
+
+// alignmentCreativeDim is one campaign's creative identity.
+type alignmentCreativeDim struct {
+	CreativeKey string
+	Subject     string
+	FromName    string
+	HasHTML     bool
+	Stamped     bool
+}
+
+// fetchAlignmentCreatives builds the creative × subject × ISP panel per
+// campaign, then folds by creative: delivered from the lake, human money
+// clicks from the rollup, conversions from the ledger's own campaign_id.
+// Clickers are per-campaign DISTINCT summed across a creative's campaigns, so
+// one person clicking the same creative in two campaigns counts twice. Delivered
+// is lake truth; a lake failure leaves it 0 with clicks and conversions intact.
 func (s *Server) fetchAlignmentCreatives(
-	ctx context.Context, db alignmentDB, orgID interface{}, ids, patterns, efids []string, from, to time.Time,
+	ctx context.Context, db alignmentDB, orgID interface{}, ids []string,
+	conv []alignmentConvRow, offerPriced bool, from, to time.Time, fromDt, toDt string,
 ) ([]offerAlignmentCreativeRow, error) {
 	out := []offerAlignmentCreativeRow{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	ispClick := alignmentISPCase("COALESCE(t.recipient_domain,'')")
 
-	// Conversion-ledger offer scoping — same convention as creativesBreakdown:
-	// only when everflow ids are known. Conversion CTEs (and their LATERAL,
-	// which needs the slug patterns) are emitted only when BOTH efids and
-	// patterns exist; otherwise conversions are 0 per row.
-	// $1 org, $2 from, $3 to, $4 campaign ids, $5 row limit,
-	// $6 slug patterns (only when conversions are scoped), $7 everflow ids.
-	args := []interface{}{orgID, from, to, pq.Array(ids), creativesAnalyticsRowLimit + 1}
-	convCTE := ""
-	convJoin := ""
-	convKeyExpr := "COALESCE(cg.creative_key, sg.creative_key, 'no-html')"
-	convSubjExpr := "COALESCE(cg.subject, sg.subject, '')"
-	convISPExpr := "COALESCE(cg.isp, sg.isp, 'other')"
-	convCountExpr := "0::bigint"
-	convRevExpr := "0::float8"
-	if len(efids) > 0 && len(patterns) > 0 {
-		args = append(args, pq.Array(patterns), pq.Array(efids))
-		convCTE = `,
-		conv AS (
-			SELECT s.subscriber_id, s.suppressed_at AS converted_at, 0::numeric AS revenue
-			FROM mailing_offer_suppressions s
-			WHERE s.organization_id = $1
-			  AND s.reason = 'converted'
-			  AND s.suppressed_at >= $2 AND s.suppressed_at <= $3
-			  AND s.offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($7))
-			UNION ALL
-			SELECT cm.sub1::uuid AS subscriber_id, cm.converted_at, COALESCE(cm.revenue, 0)::numeric AS revenue
-			FROM mailing_cpm_manual_conversions cm
-			WHERE cm.organization_id = $1
-			  AND cm.converted_at >= $2 AND cm.converted_at <= $3
-			  AND cm.sub1 ~ '^[0-9a-f-]{36}$'
-			  AND cm.deal_id IN (SELECT id FROM mailing_cpm_deals WHERE organization_id = $1 AND (everflow_offer_id = ANY($7) OR offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($7))))
-		),
-		conv_attr AS (
-			SELECT cv.revenue, att.creative_key, att.subject, att.isp
-			FROM conv cv
-			LEFT JOIN LATERAL (
-				SELECT d.creative_key,
-				       d.subject,
-				       ` + ispClick + ` AS isp
-				FROM mailing_tracking_events t
-				JOIN camp_dim d ON d.id = t.campaign_id
-				WHERE t.organization_id = $1
-				  AND t.subscriber_id = cv.subscriber_id
-				  AND t.campaign_id = ANY($4::uuid[])
-				  AND t.event_type = 'clicked'
-				  AND t.link_url ILIKE '%source_id=email%'
-				  AND t.link_url ILIKE ANY($6)
-				  AND t.event_at <= cv.converted_at
-				  AND t.event_at >= cv.converted_at - INTERVAL '90 days'
-				ORDER BY t.event_at DESC
-				LIMIT 1
-			) att ON TRUE
-		),
-		conv_grp AS (
-			SELECT creative_key, subject, isp,
-			       COUNT(*)     AS conversions,
-			       SUM(revenue) AS revenue
-			FROM conv_attr
-			WHERE creative_key IS NOT NULL
-			GROUP BY creative_key, subject, isp
-		)`
-		convJoin = `FULL OUTER JOIN conv_grp cv
-		  ON cv.creative_key = COALESCE(cg.creative_key, sg.creative_key)
-		 AND cv.subject = COALESCE(cg.subject, sg.subject)
-		 AND cv.isp = COALESCE(cg.isp, sg.isp)`
-		convKeyExpr = "COALESCE(cg.creative_key, sg.creative_key, cv.creative_key, 'no-html')"
-		convSubjExpr = "COALESCE(cg.subject, sg.subject, cv.subject, '')"
-		convISPExpr = "COALESCE(cg.isp, sg.isp, cv.isp, 'other')"
-		convCountExpr = "COALESCE(cv.conversions, 0)"
-		convRevExpr = "COALESCE(cv.revenue, 0)::float8"
-	}
-
-	// Aggregation pushdown (2026-07-07 prod diagnosis, ps8241 = 23,722
-	// campaigns / 2.99M sent events per 7d): events are counted per
-	// (campaign_id, isp) FIRST, and creative identity comes from camp_dim —
-	// ONE md5(html_content) per campaign (MATERIALIZED so the planner can't
-	// inline it back to per-event; drip campaigns have NULL html → free).
-	// The per-event-row md5 variant of sent_grp measured ~12s alone and blew
-	// the prod 30s statement_timeout.
-	// Trade-off: clickers = per-campaign DISTINCT summed across a creative's
-	// campaigns, so a subscriber clicking the same creative in two campaigns
-	// counts twice (within-campaign repeat clicks still dedup — the dominant
-	// case). Exact cross-campaign dedup would reintroduce the per-event join.
-	q := `
-		WITH camp_dim AS MATERIALIZED (
-			SELECT c.id,
-			       COALESCE(md5(c.html_content), 'no-html') AS creative_key,
-			       c.subject,
-			       c.from_name,
-			       c.html_content IS NOT NULL AS has_html,
-			       COALESCE(c.offer_key,'') <> '' AS stamped
-			FROM mailing_campaigns c
-			WHERE c.organization_id = $1 AND c.id = ANY($4::uuid[])
-		),
-		clicks_by_campaign AS (
-			SELECT t.campaign_id, ` + ispClick + ` AS isp,
-			       COUNT(*) AS clicks,
-			       COUNT(DISTINCT t.subscriber_id) AS clickers
-			FROM mailing_tracking_events t
-			WHERE t.organization_id = $1
-			  AND t.campaign_id = ANY($4::uuid[])
-			  AND t.event_at >= $2 AND t.event_at <= $3
-			  AND t.event_type = 'clicked'
-			  AND t.link_url ILIKE '%source_id=email%'
-			GROUP BY 1, 2
-		),
-		clicks_grp AS (
-			SELECT d.creative_key,
-			       d.subject,
-			       cb.isp,
-			       SUM(cb.clicks)::bigint   AS clicks,
-			       SUM(cb.clickers)::bigint AS clickers,
-			       min(d.id::text)          AS sample_campaign_id,
-			       min(d.from_name)         AS from_name,
-			       bool_or(d.has_html)      AS has_html,
-			       bool_or(d.stamped)       AS any_stamped
-			FROM clicks_by_campaign cb
-			JOIN camp_dim d ON d.id = cb.campaign_id
-			GROUP BY 1, d.subject, cb.isp
-		),
-		sent_by_campaign AS (
-			SELECT t.campaign_id, ` + ispClick + ` AS isp, COUNT(*) AS delivered
-			FROM mailing_tracking_events t
-			WHERE t.organization_id = $1
-			  AND t.campaign_id = ANY($4::uuid[])
-			  AND t.event_at >= $2 AND t.event_at <= $3
-			  AND t.event_type = 'sent'
-			GROUP BY 1, 2
-		),
-		sent_grp AS (
-			SELECT d.creative_key,
-			       d.subject,
-			       sb.isp,
-			       SUM(sb.delivered)::bigint AS delivered,
-			       bool_or(d.stamped)        AS any_stamped
-			FROM sent_by_campaign sb
-			JOIN camp_dim d ON d.id = sb.campaign_id
-			GROUP BY 1, d.subject, sb.isp
-		)` + convCTE + `
-		SELECT ` + convKeyExpr + ` AS creative_key,
-		       ` + convSubjExpr + ` AS subject,
-		       ` + convISPExpr + ` AS isp,
-		       COALESCE(sg.delivered, 0)                             AS delivered,
-		       COALESCE(cg.clicks, 0)                                AS clicks,
-		       COALESCE(cg.clickers, 0)                              AS clickers,
-		       ` + convCountExpr + `                                 AS conversions,
-		       ` + convRevExpr + `                                   AS revenue,
-		       cg.sample_campaign_id                                 AS sample_campaign_id,
-		       cg.from_name                                          AS from_name,
-		       COALESCE(cg.has_html, false)                          AS has_html,
-		       NOT COALESCE(cg.any_stamped, sg.any_stamped, false)   AS inferred
-		FROM clicks_grp cg
-		FULL OUTER JOIN sent_grp sg
-		  ON sg.creative_key = cg.creative_key AND sg.subject = cg.subject AND sg.isp = cg.isp
-		` + convJoin + `
-		ORDER BY clicks DESC, delivered DESC
-		LIMIT $5
-	`
-	rows, err := db.QueryContext(ctx, q, args...)
+	dims := map[string]alignmentCreativeDim{}
+	rows, err := db.QueryContext(ctx, `
+		SELECT c.id::text,
+		       COALESCE(md5(c.html_content), 'no-html'),
+		       COALESCE(c.subject, ''),
+		       COALESCE(c.from_name, ''),
+		       c.html_content IS NOT NULL,
+		       COALESCE(c.offer_key,'') <> '' OR c.offer_id IS NOT NULL
+		FROM mailing_campaigns c
+		WHERE c.organization_id = $1 AND c.id = ANY($2::uuid[])
+	`, orgID, pq.Array(ids))
 	if err != nil {
 		return nil, fmt.Errorf("alignment creatives: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var (
-			row              offerAlignmentCreativeRow
-			sampleCampaignID sql.NullString
-			fromName         sql.NullString
-		)
-		if err := rows.Scan(&row.CreativeKey, &row.Subject, &row.ISP, &row.Delivered,
-			&row.Clicks, &row.Clickers, &row.Conversions, &row.Revenue,
-			&sampleCampaignID, &fromName, &row.HasHTML, &row.Inferred); err != nil {
+		var id string
+		var d alignmentCreativeDim
+		if err := rows.Scan(&id, &d.CreativeKey, &d.Subject, &d.FromName, &d.HasHTML, &d.Stamped); err != nil {
 			return nil, err
 		}
-		row.SampleCampaignID = sampleCampaignID.String
-		row.FromName = fromName.String
-		row.ClickerRate = alignmentDiv(float64(row.Clickers), float64(row.Delivered))
-		out = append(out, row)
+		dims[id] = d
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+
+	type groupKey struct{ creative, subject, isp string }
+	type group struct {
+		row     offerAlignmentCreativeRow
+		stamped bool
+	}
+	groups := map[groupKey]*group{}
+	touch := func(campaignID, isp string) *group {
+		d, ok := dims[campaignID]
+		if !ok {
+			return nil
+		}
+		k := groupKey{d.CreativeKey, d.Subject, isp}
+		g := groups[k]
+		if g == nil {
+			g = &group{row: offerAlignmentCreativeRow{
+				CreativeKey: d.CreativeKey, Subject: d.Subject, ISP: isp, FromName: d.FromName,
+			}}
+			groups[k] = g
+		}
+		if g.row.SampleCampaignID == "" || campaignID < g.row.SampleCampaignID {
+			g.row.SampleCampaignID = campaignID
+			g.row.FromName = d.FromName
+		}
+		g.row.HasHTML = g.row.HasHTML || d.HasHTML
+		g.stamped = g.stamped || d.Stamped
+		return g
+	}
+
+	delivered, derr := fetchAlignmentDeliveredByCampaign(ctx, ids, fromDt, toDt)
+	if derr != nil {
+		log.Printf("[offer-alignment] creative delivered (lake, non-fatal): %v", derr)
+	}
+	for id, byISP := range delivered {
+		for isp, n := range byISP {
+			if g := touch(id, isp); g != nil {
+				g.row.Delivered += n
+			}
+		}
+	}
+
+	clickRows, err := db.QueryContext(ctx, `
+		SELECT campaign_id::text, isp, COALESCE(SUM(clicks), 0)::bigint, COUNT(DISTINCT subscriber_id)
+		FROM mailing_offer_alignment_clicks
+		WHERE organization_id = $1
+		  AND campaign_id = ANY($2::uuid[])
+		  AND local_dt >= $3::date AND local_dt <= $4::date
+		GROUP BY 1, 2
+	`, orgID, pq.Array(ids), from.In(mstLoc).Format("2006-01-02"), to.In(mstLoc).Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("alignment creative clicks: %w", err)
+	}
+	defer clickRows.Close()
+	for clickRows.Next() {
+		var id, isp string
+		var clicks, clickers int64
+		if err := clickRows.Scan(&id, &isp, &clicks, &clickers); err != nil {
+			return nil, err
+		}
+		if g := touch(id, isp); g != nil {
+			g.row.Clicks += clicks
+			g.row.Clickers += clickers
+		}
+	}
+	if err := clickRows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, c := range conv {
+		if !alignmentDtInRange(c.LocalDt, fromDt, toDt) {
+			continue
+		}
+		if g := touch(c.CampaignID, c.ISP); g != nil {
+			g.row.Conversions += c.Conversions
+			g.row.Revenue += c.revenue()
+		}
+	}
+
+	for _, g := range groups {
+		g.row.Inferred = !g.stamped
+		g.row.ClickerRate = alignmentDiv(float64(g.row.Clickers), float64(g.row.Delivered))
+		g.row.RevenueKnown = alignmentRevenueKnown(offerPriced, &alignmentConversions{
+			Conversions: g.row.Conversions, Revenue: g.row.Revenue,
+		})
+		out = append(out, g.row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Clicks != b.Clicks {
+			return a.Clicks > b.Clicks
+		}
+		if a.Delivered != b.Delivered {
+			return a.Delivered > b.Delivered
+		}
+		return a.CreativeKey+a.Subject+a.ISP < b.CreativeKey+b.Subject+b.ISP
+	})
 	if len(out) > creativesAnalyticsRowLimit {
 		out = out[:creativesAnalyticsRowLimit]
 	}
 	return out, nil
 }
 
-// fetchAlignmentDataSources builds the per-data-source panel: PG sent
-// (delivered proxy), hard bounces, human money clicks/clickers via the
-// subscriber join, plus offer-scoped conversions per the converting
-// subscriber's data_source. NULL/” data_source is emitted as JSON null
-// (the UI renders "(unattributed)"). invalid_rate = hard/(delivered+hard),
-// PG scope.
+// alignmentDataSourceSentBudget bounds the only tracking-events scan left on
+// the profile. Large offers do not finish inside it; those rows report
+// delivered_known=false and the UI shows — rather than a false zero.
+const alignmentDataSourceSentBudget = 25 * time.Second
+
+// fetchAlignmentDataSources builds the per-data-source panel: human money
+// clicks from the rollup, conversions from the ledger, and PG sent + hard
+// bounces when the scan fits alignmentDataSourceSentBudget. NULL/” data_source
+// is emitted as JSON null (the UI renders "(unattributed)"). invalid_rate =
+// hard/(delivered+hard), PG scope.
 func (s *Server) fetchAlignmentDataSources(
-	ctx context.Context, db alignmentDB, orgID interface{}, ids, efids []string, from, to time.Time,
+	ctx context.Context, db alignmentDB, orgID interface{}, ids []string,
+	conv []alignmentConvRow, from, to time.Time, fromDt, toDt string,
 ) ([]offerAlignmentDataSourceRow, error) {
 	out := []offerAlignmentDataSourceRow{}
 	if len(ids) == 0 {
 		return out, nil
 	}
+	byKey := map[string]*offerAlignmentDataSourceRow{}
+	get := func(key string) *offerAlignmentDataSourceRow {
+		row := byKey[key]
+		if row == nil {
+			row = &offerAlignmentDataSourceRow{}
+			if key != "" {
+				ds := key
+				row.DataSource = &ds
+			}
+			byKey[key] = row
+		}
+		return row
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(sub.data_source,''),''),
+		       COALESCE(SUM(c.clicks), 0)::bigint,
+		       COUNT(DISTINCT c.subscriber_id)
+		FROM mailing_offer_alignment_clicks c
+		JOIN mailing_subscribers sub ON sub.id = c.subscriber_id AND sub.organization_id = $1
+		WHERE c.organization_id = $1
+		  AND c.campaign_id = ANY($2::uuid[])
+		  AND c.local_dt >= $3::date AND c.local_dt <= $4::date
+		GROUP BY 1
+	`, orgID, pq.Array(ids), from.In(mstLoc).Format("2006-01-02"), to.In(mstLoc).Format("2006-01-02"))
+	if err != nil {
+		return nil, fmt.Errorf("alignment data sources: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var clicks, clickers int64
+		if err := rows.Scan(&key, &clicks, &clickers); err != nil {
+			return nil, err
+		}
+		row := get(key)
+		row.Clicks = clicks
+		row.Clickers = clickers
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, c := range conv {
+		if alignmentDtInRange(c.LocalDt, fromDt, toDt) {
+			get(c.DataSource).Conversions += c.Conversions
+		}
+	}
+
+	sent, sentErr := s.fetchAlignmentDataSourceSent(ctx, orgID, ids, from, to)
+	if sentErr != nil {
+		log.Printf("[offer-alignment] data-source sent scan (shows —): %v", sentErr)
+	} else {
+		for key, v := range sent {
+			row := get(key)
+			row.Delivered = v[0]
+			row.Hard = v[1]
+		}
+	}
+	for _, row := range byKey {
+		row.DeliveredKnown = sentErr == nil
+		row.InvalidRate = alignmentDiv(float64(row.Hard), float64(row.Delivered+row.Hard))
+		out = append(out, *row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Delivered != out[j].Delivered {
+			return out[i].Delivered > out[j].Delivered
+		}
+		return out[i].Clicks > out[j].Clicks
+	})
+	return out, nil
+}
+
+// fetchAlignmentDataSourceSent counts sent + hard bounces per data source. It
+// runs on the pool, not the caller's session: a budget cancel can poison the
+// connection, and the profile still needs its session afterwards.
+func (s *Server) fetchAlignmentDataSourceSent(ctx context.Context, orgID interface{}, ids []string, from, to time.Time) (map[string][2]int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, alignmentDataSourceSentBudget)
+	defer cancel()
 	// $1 org, $2 campaign ids, $3 from, $4 to.
 	const q = `
 		SELECT COALESCE(NULLIF(sub.data_source,''),'') AS data_source,
 		       COUNT(*) FILTER (WHERE t.event_type = 'sent') AS delivered,
-		       COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND t.bounce_type = 'hard') AS hard,
-		       COUNT(*) FILTER (WHERE t.event_type = 'clicked'
-		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))) AS clicks,
-		       COUNT(DISTINCT t.subscriber_id) FILTER (WHERE t.event_type = 'clicked'
-		         AND t.link_url ILIKE '%source_id=email%'
-		         AND ignite_verdict_is_human(COALESCE(t.click_verdict, ignite_event_verdict(t.user_agent, t.ip_address)))) AS clickers
+		       COUNT(*) FILTER (WHERE t.event_type = 'bounced' AND t.bounce_type = 'hard') AS hard
 		FROM mailing_tracking_events t
 		JOIN mailing_subscribers sub ON sub.id = t.subscriber_id AND sub.organization_id = $1
 		WHERE t.organization_id = $1
 		  AND t.campaign_id = ANY($2::uuid[])
+		  AND t.event_type IN ('sent', 'bounced')
 		  AND t.event_at >= $3 AND t.event_at <= $4
 		GROUP BY 1
 	`
-	// Chunked like fetchAlignmentEngagement — drip-scale offers hand this an
-	// id set in the tens of thousands; one statement over the full set risks
-	// the prod 30s statement_timeout. Counts sum exactly across chunks;
-	// clickers (per-chunk DISTINCT summed) can double-count a subscriber
-	// clicking in campaigns that landed in different chunks — second-order.
-	byKey := map[string]*offerAlignmentDataSourceRow{}
+	out := map[string][2]int64{}
 	for start := 0; start < len(ids); start += alignmentEngagementChunk {
 		end := start + alignmentEngagementChunk
 		if end > len(ids) {
 			end = len(ids)
 		}
-		rows, err := db.QueryContext(ctx, q, orgID, pq.Array(ids[start:end]), from, to)
+		rows, err := s.mailingDB.QueryContext(ctx, q, orgID, pq.Array(ids[start:end]), from, to)
 		if err != nil {
-			return nil, fmt.Errorf("alignment data sources (chunk %d): %w", start/alignmentEngagementChunk, err)
+			return nil, fmt.Errorf("chunk %d: %w", start/alignmentEngagementChunk, err)
 		}
 		for rows.Next() {
 			var key string
-			var delivered, hard, clicks, clickers int64
-			if err := rows.Scan(&key, &delivered, &hard, &clicks, &clickers); err != nil {
+			var delivered, hard int64
+			if err := rows.Scan(&key, &delivered, &hard); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			row := byKey[key]
-			if row == nil {
-				row = &offerAlignmentDataSourceRow{}
-				if key != "" {
-					ds := key
-					row.DataSource = &ds
-				}
-				byKey[key] = row
-			}
-			row.Delivered += delivered
-			row.Hard += hard
-			row.Clicks += clicks
-			row.Clickers += clickers
+			v := out[key]
+			v[0] += delivered
+			v[1] += hard
+			out[key] = v
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, err
 		}
 	}
-
-	// Conversions per data_source (offer-scoped conv UNION → subscriber join).
-	if len(efids) > 0 {
-		// $1 org, $2 from, $3 to, $4 everflow ids.
-		const cq = `
-			WITH conv AS (
-				SELECT s.subscriber_id
-				FROM mailing_offer_suppressions s
-				WHERE s.organization_id = $1
-				  AND s.reason = 'converted'
-				  AND s.suppressed_at >= $2 AND s.suppressed_at <= $3
-				  AND s.offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($4))
-				UNION ALL
-				SELECT cm.sub1::uuid AS subscriber_id
-				FROM mailing_cpm_manual_conversions cm
-				WHERE cm.organization_id = $1
-				  AND cm.converted_at >= $2 AND cm.converted_at <= $3
-				  AND cm.sub1 ~ '^[0-9a-f-]{36}$'
-				  AND cm.deal_id IN (SELECT id FROM mailing_cpm_deals WHERE organization_id = $1 AND (everflow_offer_id = ANY($4) OR offer_id IN (SELECT id FROM mailing_offers WHERE organization_id = $1 AND everflow_offer_id = ANY($4))))
-			)
-			SELECT COALESCE(NULLIF(sub.data_source,''),'') AS data_source, COUNT(*) AS conversions
-			FROM conv cv
-			JOIN mailing_subscribers sub ON sub.id = cv.subscriber_id AND sub.organization_id = $1
-			GROUP BY 1
-		`
-		crows, err := db.QueryContext(ctx, cq, orgID, from, to, pq.Array(efids))
-		if err != nil {
-			return nil, fmt.Errorf("alignment data-source conversions: %w", err)
-		}
-		for crows.Next() {
-			var key string
-			var n int64
-			if err := crows.Scan(&key, &n); err != nil {
-				crows.Close()
-				return nil, err
-			}
-			row := byKey[key]
-			if row == nil {
-				row = &offerAlignmentDataSourceRow{}
-				if key != "" {
-					ds := key
-					row.DataSource = &ds
-				}
-				byKey[key] = row
-			}
-			row.Conversions = n
-		}
-		crows.Close()
-		if err := crows.Err(); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, row := range byKey {
-		row.InvalidRate = alignmentDiv(float64(row.Hard), float64(row.Delivered+row.Hard))
-		out = append(out, *row)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Delivered > out[j].Delivered })
 	return out, nil
 }
 
@@ -1759,7 +1768,7 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 	for i, sl := range slugs {
 		patterns[i] = "%/" + sl + "/%"
 	}
-	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, from, to, "")
+	set, err := resolveOfferCampaignSet(ctx, adb, orgID, offer, offerName, patterns, alignmentScopeFrom(from), to, "")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1776,7 +1785,7 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 		From: fromDt, To: toDt,
 		GroupBy:     []string{"event_type", "dsn_family", "dsn_code", "local_dt"},
 		Eq:          map[string]string{"isp": ispBucket},
-		SourceIn:    []string{"pmta", "ses"},
+		SourceIn:    alignmentLakeSources,
 		CampaignIDs: ids,
 		Limit:       5000,
 	})
@@ -1790,7 +1799,7 @@ func (s *Server) HandleOfferAlignmentEvidence(w http.ResponseWriter, r *http.Req
 		From: fromDt, To: toDt,
 		GroupBy:     []string{"event_type", "dsn_family", "dsn_code", "dsn_diag"},
 		Eq:          map[string]string{"isp": ispBucket},
-		SourceIn:    []string{"pmta", "ses"},
+		SourceIn:    alignmentLakeSources,
 		CampaignIDs: ids,
 		Limit:       2000,
 	})

@@ -427,6 +427,18 @@ func (h *CpmPlannerHandlers) ensureTables() {
 			ADD COLUMN IF NOT EXISTS lake_clickers BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE mailing_offer_alignment_snapshot
 			ADD COLUMN IF NOT EXISTS lake_clicks BIGINT NOT NULL DEFAULT 0`,
+		// Same synchronous slot, same reason: the Conversions tab reads both.
+		`ALTER TABLE mailing_offer_alignment_snapshot
+			ADD COLUMN IF NOT EXISTS revenue_known BOOLEAN NOT NULL DEFAULT TRUE`,
+		`CREATE TABLE IF NOT EXISTS mailing_offer_alignment_clicks (
+			organization_id UUID NOT NULL,
+			campaign_id UUID NOT NULL,
+			subscriber_id UUID NOT NULL,
+			isp TEXT NOT NULL,
+			local_dt DATE NOT NULL,
+			clicks BIGINT NOT NULL DEFAULT 0,
+			PRIMARY KEY (organization_id, campaign_id, subscriber_id, isp, local_dt)
+		)`,
 	}
 	// Non-CPM performance surface (day rollup + operator offer groups). Same
 	// synchronous slot, same reason: its routes are registered moments later.

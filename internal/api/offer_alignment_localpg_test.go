@@ -14,6 +14,16 @@ import (
 	"time"
 )
 
+func mustConn(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn {
+	t.Helper()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 	dsn := os.Getenv("OFFER_ALIGNMENT_LOCALPG_DSN")
 	if dsn == "" {
@@ -61,27 +71,35 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 		t.Fatalf("domain-miss set = %v, want empty", setMiss.IDs)
 	}
 
+	if err := refreshOfferAlignmentClicks(ctx, mustConn(t, ctx, db), org, from); err != nil {
+		t.Fatalf("refreshOfferAlignmentClicks: %v", err)
+	}
+	// A second pass only rescans the newest days and must not double count.
+	if err := refreshOfferAlignmentClicks(ctx, mustConn(t, ctx, db), org, from); err != nil {
+		t.Fatalf("refreshOfferAlignmentClicks (2nd): %v", err)
+	}
 	eng, err := fetchAlignmentEngagement(ctx, db, org, set.IDs, from, to)
 	if err != nil {
 		t.Fatalf("fetchAlignmentEngagement: %v", err)
 	}
-	if e := eng["apple"]; e == nil || e.PGSent != 1 || e.HumanClicks != 2 || e.Clickers != 1 {
+	if e := eng["apple"]; e == nil || e.HumanClicks != 2 || e.Clickers != 1 {
 		t.Fatalf("engagement apple = %+v", eng["apple"])
 	}
 
-	conv, err := fetchAlignmentConversionsByISP(ctx, db, org, efids, from, to)
+	convRows, err := fetchAlignmentConversionRows(ctx, db, org, set.IDs, from, to)
 	if err != nil {
-		t.Fatalf("fetchAlignmentConversionsByISP: %v", err)
+		t.Fatalf("fetchAlignmentConversionRows: %v", err)
 	}
-	if c := conv["apple"]; c == nil || c.Conversions != 1 {
+	conv := aggregateAlignmentConversions(convRows, "", "")
+	if c := conv["apple"]; c == nil || c.Conversions != 1 || c.Revenue != 12.5 {
 		t.Fatalf("conversions apple = %+v", conv["apple"])
 	}
 
 	s := &Server{mailingDB: db}
-	// Scoped variant (conv CTE + LATERAL) and unscoped variant both compile+run.
-	creatives, err := s.fetchAlignmentCreatives(ctx, db, org, set.IDs, patterns, efids, from, to)
+	fromDt, toDt := from.In(mstLoc).Format("2006-01-02"), to.In(mstLoc).Format("2006-01-02")
+	creatives, err := s.fetchAlignmentCreatives(ctx, db, org, set.IDs, convRows, true, from, to, fromDt, toDt)
 	if err != nil {
-		t.Fatalf("fetchAlignmentCreatives(scoped): %v", err)
+		t.Fatalf("fetchAlignmentCreatives: %v", err)
 	}
 	if len(creatives) == 0 {
 		t.Fatalf("expected creative rows, got none")
@@ -98,16 +116,14 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 	if !foundStamped {
 		t.Fatalf("stamped campaign's creative should not be flagged inferred: %+v", creatives)
 	}
-	if _, err := s.fetchAlignmentCreatives(ctx, db, org, set.IDs, nil, nil, from, to); err != nil {
-		t.Fatalf("fetchAlignmentCreatives(unscoped): %v", err)
-	}
 
-	dataSources, err := s.fetchAlignmentDataSources(ctx, db, org, set.IDs, efids, from, to)
+	dataSources, err := s.fetchAlignmentDataSources(ctx, db, org, set.IDs, convRows, from, to, fromDt, toDt)
 	if err != nil {
 		t.Fatalf("fetchAlignmentDataSources: %v", err)
 	}
 	if len(dataSources) != 1 || dataSources[0].DataSource == nil || *dataSources[0].DataSource != "partnerX" ||
-		dataSources[0].Delivered != 1 || dataSources[0].Clicks != 2 || dataSources[0].Conversions != 1 {
+		dataSources[0].Delivered != 1 || !dataSources[0].DeliveredKnown ||
+		dataSources[0].Clicks != 2 || dataSources[0].Conversions != 1 {
 		t.Fatalf("data sources = %+v", dataSources)
 	}
 
@@ -134,6 +150,9 @@ func TestOfferAlignmentSQLAgainstLocalPG(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].OfferKey != "fidelity" || rows[0].Delivered != 1000 {
 		t.Fatalf("snapshot rows = %+v", rows)
+	}
+	if rows[0].ClickerRate != 0.001 {
+		t.Fatalf("clicker rate is clickers over delivered: %+v", rows[0])
 	}
 	if rows[0].BlockRate == 0 || rows[0].RPM == 0 || rows[0].AttributionCoverage != 0.5 {
 		t.Fatalf("derived rates wrong: %+v", rows[0])

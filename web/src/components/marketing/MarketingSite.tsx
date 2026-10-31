@@ -1,41 +1,74 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './marketing.css';
-import { CONTACT_EMAIL, PAGES, PageId, pageForPath, pathFor } from './brand';
-import { JarvisLockup, JarvisMark } from './JarvisLogo';
+import { PageId, canonicalPath, pageForPath, pageMeta, pathFor } from './brand';
+import { JarvisChat } from './JarvisChat';
+import { JarvisLockup } from './JarvisLogo';
 import { NavContext, PageLink } from './parts';
 import { HomePage } from './pages/HomePage';
 import { PlatformPage } from './pages/PlatformPage';
-import { AgentPage } from './pages/AgentPage';
+import { AiPage } from './pages/AiPage';
+import { SolutionsPage } from './pages/SolutionsPage';
+import { IntegrationsPage } from './pages/IntegrationsPage';
+import { DevelopersPage } from './pages/DevelopersPage';
 import { PricingPage } from './pages/PricingPage';
+import { MigrationPage } from './pages/MigrationPage';
+import { AboutPage } from './pages/AboutPage';
+import { ContactPage, DemoPage, EarlyAccessPage } from './pages/ConversionPages';
+import { PrivacyPage, TrustPage } from './pages/TrustPages';
 import { BrandPage } from './pages/BrandPage';
+import { SignInPage } from './pages/SignInPage';
+import { OnboardingPage } from './pages/OnboardingPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 
-// Public marketing site, shown to signed-out visitors. Signing in still goes
-// through Google OAuth restricted to the allowed Workspace domain
-// (internal/auth/auth.go) — nothing here creates accounts.
+// Public marketing site, shown to signed-out visitors. Access to the portal is
+// decided only in internal/auth/auth.go; nothing here grants anything.
 
-const FONT_HREF =
-  'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600;700&display=swap';
+const NAV: PageId[] = ['platform', 'ai', 'solutions', 'integrations', 'pricing', 'developers'];
 
-const NAV: PageId[] = ['platform', 'agent', 'pricing'];
+const PAGE_COMPONENTS: Record<PageId, React.FC> = {
+  home: HomePage,
+  platform: PlatformPage,
+  ai: AiPage,
+  solutions: SolutionsPage,
+  integrations: IntegrationsPage,
+  developers: DevelopersPage,
+  pricing: PricingPage,
+  migration: MigrationPage,
+  about: AboutPage,
+  demo: DemoPage,
+  earlyAccess: EarlyAccessPage,
+  contact: ContactPage,
+  trust: TrustPage,
+  privacy: PrivacyPage,
+  brand: BrandPage,
+  signIn: SignInPage,
+  onboarding: OnboardingPage,
+  notFound: NotFoundPage,
+};
+
+const setMeta = (selector: string, attr: string, value: string) => {
+  document.head.querySelector(selector)?.setAttribute(attr, value);
+};
 
 interface Props {
   onSignIn: () => void;
+  authError?: string | null;
+  // Set by the prerender, where there is no window.
+  initialPath?: string;
 }
 
-export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
-  const [page, setPage] = useState<PageId>(() => pageForPath(window.location.pathname));
+export const MarketingSite: React.FC<Props> = ({ onSignIn, authError = null, initialPath }) => {
+  const [page, setPage] = useState<PageId>(() => pageForPath(initialPath ?? window.location.pathname));
   const [menuOpen, setMenuOpen] = useState(false);
-  const [modalIntent, setModalIntent] = useState<string | null>(null);
+  const fromPath = useRef('');
 
   useEffect(() => {
-    if (!document.querySelector('link[data-jv-fonts]')) {
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = FONT_HREF;
-      link.setAttribute('data-jv-fonts', '1');
-      document.head.appendChild(link);
-    }
     document.body.classList.add('jv-body');
+    // A legacy URL that reached the client: show the address it now lives at.
+    const canon = canonicalPath(window.location.pathname);
+    if (canon !== window.location.pathname && pageForPath(canon) !== 'notFound') {
+      window.history.replaceState({}, '', canon + window.location.search + window.location.hash);
+    }
     const onPop = () => setPage(pageForPath(window.location.pathname));
     window.addEventListener('popstate', onPop);
     return () => {
@@ -45,11 +78,17 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
   }, []);
 
   useEffect(() => {
-    document.title = PAGES.find((p) => p.id === page)?.title ?? 'Jarvis';
+    const meta = pageMeta(page);
+    document.title = meta.title;
+    setMeta('meta[name="description"]', 'content', meta.description);
+    setMeta('meta[property="og:title"]', 'content', meta.title);
+    setMeta('meta[property="og:description"]', 'content', meta.description);
+    setMeta('link[rel="canonical"]', 'href', `https://projectjarvis.io${meta.path}`);
   }, [page]);
 
   const go = useCallback((id: PageId, hash?: string) => {
     const target = pathFor(id) + (hash ? `#${hash}` : '');
+    fromPath.current = window.location.pathname;
     if (window.location.pathname + window.location.hash !== target) {
       window.history.pushState({}, '', target);
     }
@@ -57,23 +96,15 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
     setMenuOpen(false);
     requestAnimationFrame(() => {
       const el = hash ? document.getElementById(hash) : null;
-      if (el) el.scrollIntoView({ behavior: 'smooth' });
+      if (el) el.scrollIntoView();
       else window.scrollTo({ top: 0 });
+      document.getElementById('jv-main')?.focus({ preventScroll: true });
     });
   }, []);
 
-  const nav = useMemo(
-    () => ({ go, openEarlyAccess: (intent?: string) => setModalIntent(intent ?? 'Early access'), signIn: onSignIn }),
-    [go, onSignIn],
-  );
+  const nav = useMemo(() => ({ go, signIn: onSignIn, fromPath: fromPath.current }), [go, onSignIn, page]);
 
-  const Page = {
-    home: HomePage,
-    platform: PlatformPage,
-    agent: AgentPage,
-    pricing: PricingPage,
-    brand: BrandPage,
-  }[page];
+  const Page = PAGE_COMPONENTS[page];
 
   return (
     <NavContext.Provider value={nav}>
@@ -81,12 +112,10 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
         <a className="jv-skip" href="#jv-main">
           Skip to content
         </a>
-        <div className="jv-announce">
-          <span>Jarvis opens for early access in 2027.</span>
-          <button type="button" onClick={() => nav.openEarlyAccess('Early access')}>
-            Claim a seat →
-          </button>
-        </div>
+        <aside className="jv-announce" aria-label="Availability">
+          <span>Early access planned for 2027.</span>
+          <PageLink to="earlyAccess">Join the list →</PageLink>
+        </aside>
 
         <header className="jv-nav">
           <div className="jv-wrap jv-nav-inner">
@@ -96,16 +125,16 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
             <nav className={`jv-nav-links${menuOpen ? ' is-open' : ''}`} aria-label="Main">
               {NAV.map((id) => (
                 <PageLink key={id} to={id} className={`jv-nav-link${page === id ? ' is-active' : ''}`}>
-                  {PAGES.find((p) => p.id === id)?.label}
+                  {pageMeta(id).label}
                 </PageLink>
               ))}
               <div className="jv-nav-actions">
-                <button type="button" className="jv-nav-signin" onClick={onSignIn}>
+                <PageLink to="signIn" className="jv-nav-signin">
                   Sign in
-                </button>
-                <button type="button" className="jv-btn jv-btn--primary jv-btn--sm" onClick={() => nav.openEarlyAccess('Demo')}>
-                  Get a demo
-                </button>
+                </PageLink>
+                <PageLink to="earlyAccess" className="jv-btn jv-btn--primary jv-btn--sm">
+                  Request early access
+                </PageLink>
               </div>
             </nav>
             <button
@@ -122,120 +151,49 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn }) => {
           </div>
         </header>
 
-        <main id="jv-main">
-          <Page />
+        <main id="jv-main" tabIndex={-1}>
+          {page === 'signIn' ? <SignInPage error={authError} /> : <Page />}
         </main>
 
         <footer className="jv-footer">
           <div className="jv-wrap jv-footer-grid">
             <div className="jv-footer-brand">
               <JarvisLockup size={34} inverse />
-              <p>The email agent that's already on it.</p>
+              <p>AI-powered email marketing.</p>
             </div>
             <div>
-              <h4>Product</h4>
-              <PageLink to="platform">Features</PageLink>
-              <PageLink to="agent">Meet Jarvis</PageLink>
+              <h2>Product</h2>
+              <PageLink to="platform">Platform</PageLink>
+              <PageLink to="ai">AI</PageLink>
+              <PageLink to="solutions">Solutions</PageLink>
+              <PageLink to="integrations">Integrations</PageLink>
               <PageLink to="pricing">Pricing</PageLink>
+              <PageLink to="developers">Developers</PageLink>
+              <PageLink to="migration">Migration</PageLink>
             </div>
             <div>
-              <h4>Company</h4>
-              <a href={`mailto:${CONTACT_EMAIL}`}>Contact</a>
+              <h2>Company</h2>
+              <PageLink to="about">About</PageLink>
+              <PageLink to="contact">Contact</PageLink>
+              <PageLink to="trust">Trust</PageLink>
+              <PageLink to="privacy">Privacy</PageLink>
+              <PageLink to="brand">Brand</PageLink>
             </div>
             <div>
-              <h4>Account</h4>
-              <button type="button" className="jv-footer-btn" onClick={onSignIn}>
-                Sign in
-              </button>
+              <h2>Account</h2>
+              <PageLink to="signIn">Sign in</PageLink>
+              <PageLink to="earlyAccess">Early access</PageLink>
+              <PageLink to="demo">Request a demo</PageLink>
             </div>
           </div>
           <div className="jv-wrap jv-footer-base">
-            <span>© {new Date().getFullYear()} James Ventures Corp. Jarvis is a product of James Ventures.</span>
-            <span>Made with care. Checked twice by Jarvis.</span>
+            <span>© {new Date().getFullYear()} James Ventures Corp. Jarvis is a product of James Ventures Corp.</span>
           </div>
         </footer>
 
-        {modalIntent && <EarlyAccessModal intent={modalIntent} onClose={() => setModalIntent(null)} />}
+        <JarvisChat />
       </div>
     </NavContext.Provider>
-  );
-};
-
-// No backend lead store yet: the form composes an email to the team. Swapping
-// in a POST later only touches submit().
-const EarlyAccessModal: React.FC<{ intent: string; onClose: () => void }> = ({ intent, onClose }) => {
-  const [sent, setSent] = useState(false);
-  const firstField = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    firstField.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const submit = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    const line = (k: string) => `${k}: ${String(f.get(k) ?? '').trim()}`;
-    const body = [line('Name'), line('Work email'), line('Company'), line('List size'), '', String(f.get('Notes') ?? '')].join('\n');
-    const subject = `Jarvis ${intent} — ${String(f.get('Company') ?? '').trim() || 'request'}`;
-    window.location.href = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    setSent(true);
-  };
-
-  return (
-    <div className="jv-modal-backdrop" onClick={onClose}>
-      <div className="jv-modal" role="dialog" aria-modal="true" aria-labelledby="jv-modal-title" onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="jv-modal-close" aria-label="Close" onClick={onClose}>
-          ×
-        </button>
-        <div className="jv-modal-head">
-          <JarvisMark size={52} mood={sent ? 'wink' : 'idle'} animated={!sent} />
-          <div>
-            <h2 id="jv-modal-title">{sent ? 'Noted. I’ll take it from here.' : `${intent}: let’s talk`}</h2>
-            <p>
-              {sent
-                ? `Your email app should have opened with everything filled in. If it didn't, write to ${CONTACT_EMAIL}.`
-                : 'A few fields. I already guessed the rest.'}
-            </p>
-          </div>
-        </div>
-        {!sent && (
-          <form className="jv-form" onSubmit={submit}>
-            <label>
-              Name
-              <input ref={firstField} name="Name" required autoComplete="name" />
-            </label>
-            <label>
-              Work email
-              <input name="Work email" type="email" required autoComplete="email" />
-            </label>
-            <label>
-              Company
-              <input name="Company" required autoComplete="organization" />
-            </label>
-            <label>
-              List size
-              <select name="List size" defaultValue="1,000–10,000">
-                <option>Just starting</option>
-                <option>Under 1,000</option>
-                <option>1,000–10,000</option>
-                <option>10,000–50,000</option>
-                <option>50,000+</option>
-              </select>
-            </label>
-            <label className="jv-form-wide">
-              What should Jarvis take off your plate?
-              <textarea name="Notes" rows={3} placeholder="Newsletters, sale announcements, welcome emails, all of it…" />
-            </label>
-            <button type="submit" className="jv-btn jv-btn--primary jv-form-wide">
-              Send it to the team
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
   );
 };
 

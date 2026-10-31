@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/ignite/sparkpost-monitor/internal/auth"
@@ -113,6 +114,16 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	// looking like an auth failure.
 	r.Post("/api/mailing/webhooks/ses-events", serveSESEventsWhenReady)
 
+	// Public marketing-site forms. Registered at construction, before the
+	// /api auth group, and these are the only public paths under it; each
+	// handler answers 503 until the mailing DB is bound.
+	leads.setAuth(authManager)
+	r.Get("/api/public/form-token", leads.HandleFormToken)
+	r.Post("/api/public/leads", leads.HandleLead)
+	r.Post("/api/public/onboarding", leads.HandleOnboarding)
+	// Admin-key only, for reading leads whose notification failed.
+	r.Get("/api/admin/marketing-leads", leads.HandleAdminList)
+
 	// Auth routes (no auth required)
 	if authManager != nil {
 		r.Get("/auth/login", authManager.HandleLogin)
@@ -217,12 +228,23 @@ func SetupRoutes(h *Handlers, authManager *auth.AuthManager) (*chi.Mux, chi.Rout
 	return r, apiRouter
 }
 
-// spaHandler serves static files and falls back to index.html for SPA routing
+// marketingRedirects keeps the marketing site's retired URLs alive.
+var marketingRedirects = map[string]string{
+	"/features":    "/platform",
+	"/meet-jarvis": "/ai",
+	"/login":       "/sign-in",
+}
+
+// spaHandler serves static files, the prerendered marketing pages in
+// _prerender/ (web/scripts/prerender.mjs), and otherwise the SPA with a 404
+// status. Signed-in users still get the portal from that 404 body: the portal
+// has no path-based routes. A build without _prerender/ falls back to
+// index.html, as local builds do.
 func spaHandler(r chi.Router, staticPath string) {
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
 		// Get the path
 		path := req.URL.Path
-		
+
 		// Skip API routes. The SPA catch-all is registered at router-build
 		// time, so it shadows /api GETs whose real handler has not been
 		// registered yet — route them through the same startup-aware path.
@@ -230,12 +252,32 @@ func spaHandler(r chi.Router, staticPath string) {
 			handleUnmatchedRoute(w, req)
 			return
 		}
-		
+
+		clean := strings.TrimRight(path, "/")
+		if to, ok := marketingRedirects[clean]; ok {
+			http.Redirect(w, req, to, http.StatusMovedPermanently)
+			return
+		}
+
+		// Marketing routes. The slug comes from the request, so it is limited
+		// to one path segment of plain characters before it touches the disk.
+		slug := strings.TrimPrefix(clean, "/")
+		if slug == "" {
+			slug = "home"
+		}
+		if prerenderSlug.MatchString(slug) {
+			page := filepath.Join(staticPath, "_prerender", slug+".html")
+			if info, err := os.Stat(page); err == nil && info.Mode().IsRegular() {
+				http.ServeFile(w, req, page)
+				return
+			}
+		}
+
 		// Try to serve the file directly
 		filePath := filepath.Join(staticPath, path)
-		
+
 		// Check if file exists
-		if _, err := os.Stat(filePath); err == nil {
+		if info, err := os.Stat(filePath); err == nil && info.Mode().IsRegular() {
 			http.ServeFile(w, req, filePath)
 			return
 		}
@@ -246,9 +288,19 @@ func spaHandler(r chi.Router, staticPath string) {
 			http.NotFound(w, req)
 			return
 		}
-		
+
+		// Unknown path: the not-found page, with a real 404 status.
+		if body, err := os.ReadFile(filepath.Join(staticPath, "_prerender", "not-found.html")); err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write(body)
+			return
+		}
+
 		// For SPA routing, serve index.html for unknown paths
 		indexPath := filepath.Join(staticPath, "index.html")
 		http.ServeFile(w, req, indexPath)
 	})
 }
+
+var prerenderSlug = regexp.MustCompile(`^[a-z][a-z-]{1,30}$`)

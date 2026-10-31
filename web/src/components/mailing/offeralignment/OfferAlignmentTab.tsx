@@ -1,12 +1,12 @@
-// OfferAlignmentTab.tsx — the "Offer Alignment" tab (replaces the old
-// Creatives tab in the Event Explorer).
+// OfferAlignmentTab.tsx — the "Conversions" tab (replaces the old Creatives
+// tab in the Event Explorer).
 //
 // The primary object is the DECISION: offer × ISP × data-source × creative ×
 // subject. Two independent visual channels — PERFORMANCE (RPM / click rates,
 // sequential indigo ramp) and DELIVERY HEALTH (badges) — never blended.
 //
 // View routing is component state (no React Router), three levels:
-//   matrix   (Level 0) — offers × ISPs snapshot, window 7d/30d
+//   matrix   (Level 0) — offers × ISPs snapshot, window 3D/7D/14D
 //   profile  (Level 1) — one offer: KPIs, per-ISP table, creatives, sources
 //   evidence (Level 2) — grouped SMTP evidence behind a BLOCKING/THROTTLED badge
 //
@@ -21,6 +21,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCrosshairs } from '@fortawesome/free-solid-svg-icons';
 import { daysAgoDenver, denverToday } from '../shared/filters';
 import AlignmentMatrix from './AlignmentMatrix';
+import type { WindowDays } from './types';
 import OfferProfile from './OfferProfile';
 import EvidencePanel from './EvidencePanel';
 import './OfferAlignmentTab.css';
@@ -32,9 +33,8 @@ type View =
 
 export const OfferAlignmentTab: React.FC = () => {
   const [view, setView] = useState<View>({ level: 'matrix' });
-  const [windowDays, setWindowDays] = useState<7 | 30>(7);
-  // Profile/evidence date range — seeded from the matrix window on drill-in,
-  // then freely editable inside the profile.
+  const [windowDays, setWindowDays] = useState<WindowDays>(7);
+  // Profile/evidence date range follows the matrix window on drill-in.
   const [range, setRange] = useState<{ from: string; to: string }>(() => ({
     from: daysAgoDenver(6),
     to: denverToday(),
@@ -42,7 +42,7 @@ export const OfferAlignmentTab: React.FC = () => {
 
   const openProfile = useCallback(
     (offer: string, offerName: string, isp?: string) => {
-      setRange({ from: daysAgoDenver(windowDays === 7 ? 6 : 29), to: denverToday() });
+      setRange({ from: daysAgoDenver(windowDays - 1), to: denverToday() });
       setView({ level: 'profile', offer, offerName, focusIsp: isp });
     },
     [windowDays]
@@ -50,7 +50,7 @@ export const OfferAlignmentTab: React.FC = () => {
 
   const openEvidenceFromMatrix = useCallback(
     (offer: string, offerName: string, isp: string, badge: string) => {
-      setRange({ from: daysAgoDenver(windowDays === 7 ? 6 : 29), to: denverToday() });
+      setRange({ from: daysAgoDenver(windowDays - 1), to: denverToday() });
       setView({ level: 'evidence', offer, offerName, isp, badge });
     },
     [windowDays]
@@ -65,18 +65,12 @@ export const OfferAlignmentTab: React.FC = () => {
         <div>
           <h2 className="oa-tab-title">
             <FontAwesomeIcon icon={faCrosshairs} className="oa-tab-title-icon" />
-            Offer Alignment
+            Conversions
           </h2>
-          <p className="oa-tab-subtitle">
-            The decision surface: offer × ISP × data-source × creative × subject. Color carries{' '}
-            <b>performance</b> (RPM / click rates); badges carry <b>delivery health</b> — two independent
-            channels, never blended. Click a cell for the offer profile; click a red/amber badge for the SMTP
-            evidence. Every rate discloses its denominator. Days are America/Denver.
-          </p>
         </div>
         {view.level !== 'matrix' && (
           <div className="oa-tab-crumbs">
-            <button type="button" className="oa-tab-crumb" onClick={backToMatrix}>Matrix</button>
+            <button type="button" className="oa-tab-crumb" onClick={backToMatrix}>All offers</button>
             <span className="oa-tab-crumb-sep">›</span>
             {view.level === 'profile' ? (
               <span className="oa-tab-crumb-here">{view.offerName || view.offer}</span>
@@ -116,7 +110,6 @@ export const OfferAlignmentTab: React.FC = () => {
           focusIsp={view.focusIsp}
           from={range.from}
           to={range.to}
-          onRangeChange={(from, to) => setRange({ from, to })}
           onBack={backToMatrix}
           onOpenEvidence={(isp, badge) =>
             setView({ level: 'evidence', offer: view.offer, offerName: view.offerName, isp, badge })

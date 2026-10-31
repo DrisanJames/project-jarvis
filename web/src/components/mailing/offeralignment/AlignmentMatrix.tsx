@@ -1,4 +1,4 @@
-// AlignmentMatrix.tsx — Offer Alignment Level 0.
+// AlignmentMatrix.tsx — Conversions tab, Level 0.
 //
 // Offers as rows × ISPs as columns. Each cell is a hybrid highlight-table
 // entry: the metric number is ALWAYS printed (text ink, never series color), a
@@ -8,7 +8,7 @@
 // independent delivery-health channel. LOW_VOLUME cells are grey — excluded
 // from the ramp so noisy rates never look hot.
 //
-// Data: GET /api/mailing/offer-alignment/matrix?window=7|30 (pre-built
+// Data: GET /api/mailing/offer-alignment/matrix?window=3|7|14 (pre-built
 // snapshot). 202/{status:'building'} renders the designed "snapshot building"
 // state with a retry; {disabled:true} renders the feature-dark card. Right
 // rail: offer leaderboard (RPM, clicker rate, delivered N, active badges).
@@ -18,7 +18,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faSpinner, faSyncAlt, faHourglassHalf, faMoon, faTrophy } from '@fortawesome/free-solid-svg-icons';
 import { SectionError, EmptyState } from '../shared/ui';
 import {
-  MatrixResponse, MatrixRow, MatrixMetric,
+  MatrixResponse, MatrixRow, MatrixMetric, WindowDays,
   fetchAlignment, isAbortError,
   fmtNum, fmtMoney, fmtRate, rateWithDenom, safeDiv,
   orderIsps, ispLabel,
@@ -27,15 +27,15 @@ import { badgeMeta, CornerBadge, BadgePill } from './badges';
 import './AlignmentMatrix.css';
 
 const METRICS: Array<{ id: MatrixMetric; label: string; blurb: string }> = [
-  { id: 'rpm', label: 'RPM', blurb: 'revenue per 1,000 delivered' },
-  { id: 'human_click_rate', label: 'Human click rate', blurb: 'verdict-human clicks ÷ delivered' },
-  { id: 'clicker_rate', label: 'Clicker rate', blurb: 'unique clickers ÷ delivered' },
+  { id: 'rpm', label: 'RPM', blurb: 'money per 1,000 emails delivered' },
+  { id: 'human_click_rate', label: 'Human click rate', blurb: 'clicks by real people ÷ delivered' },
+  { id: 'clicker_rate', label: 'Clicker rate', blurb: 'people who clicked ÷ delivered' },
 ];
 
 const metricValue = (r: MatrixRow, m: MatrixMetric): number | null => {
   switch (m) {
     case 'rpm':
-      return Number.isFinite(r.rpm) ? r.rpm : null;
+      return r.revenue_known && Number.isFinite(r.rpm) ? r.rpm : null;
     case 'human_click_rate':
       return safeDiv(r.human_clicks, r.delivered);
     case 'clicker_rate':
@@ -53,14 +53,13 @@ interface MatrixState {
 }
 
 export const AlignmentMatrix: React.FC<{
-  windowDays: 7 | 30;
-  onWindowChange: (w: 7 | 30) => void;
+  windowDays: WindowDays;
+  onWindowChange: (w: WindowDays) => void;
   onOpenProfile: (offerKey: string, offerName: string, isp?: string) => void;
   onOpenEvidence: (offerKey: string, offerName: string, isp: string, badge: string) => void;
 }> = ({ windowDays, onWindowChange, onOpenProfile, onOpenEvidence }) => {
   const [state, setState] = useState<MatrixState>({ kind: 'loading' });
   const [metric, setMetric] = useState<MatrixMetric>('rpm');
-  const [fetchedAt, setFetchedAt] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -77,7 +76,6 @@ export const AlignmentMatrix: React.FC<{
       if (out.kind === 'building') setState({ kind: 'building' });
       else if (out.kind === 'disabled') setState({ kind: 'disabled' });
       else setState({ kind: 'ready', data: { ...out.data, rows: Array.isArray(out.data.rows) ? out.data.rows : [] } });
-      setFetchedAt(new Date().toLocaleTimeString('en-US', { hour12: false }));
     } catch (e) {
       if (isAbortError(e)) return;
       setState({ kind: 'error', error: e instanceof Error ? e.message : String(e) });
@@ -123,15 +121,16 @@ export const AlignmentMatrix: React.FC<{
 
   // Right-rail leaderboard: per-offer aggregate, ranked by RPM.
   const leaderboard = useMemo(() => {
-    const agg = new Map<string, { name: string; delivered: number; revenue: number; clickers: number; badges: Set<string> }>();
+    const agg = new Map<string, { name: string; delivered: number; revenue: number; revenueKnown: boolean; clickers: number; badges: Set<string> }>();
     for (const r of rows) {
       let a = agg.get(r.offer_key);
       if (!a) {
-        a = { name: r.offer_name || r.offer_key, delivered: 0, revenue: 0, clickers: 0, badges: new Set() };
+        a = { name: r.offer_name || r.offer_key, delivered: 0, revenue: 0, revenueKnown: false, clickers: 0, badges: new Set() };
         agg.set(r.offer_key, a);
       }
       a.delivered += r.delivered;
       a.revenue += r.revenue;
+      a.revenueKnown = a.revenueKnown || r.revenue_known;
       a.clickers += r.clickers;
       if (r.badge && r.badge !== 'HEALTHY' && r.badge !== 'LOW_VOLUME') a.badges.add(r.badge);
     }
@@ -140,7 +139,7 @@ export const AlignmentMatrix: React.FC<{
         key,
         name: a.name,
         delivered: a.delivered,
-        rpm: a.delivered > 0 ? (a.revenue / a.delivered) * 1000 : null,
+        rpm: a.revenueKnown && a.delivered > 0 ? (a.revenue / a.delivered) * 1000 : null,
         clickerRate: safeDiv(a.clickers, a.delivered),
         badges: Array.from(a.badges),
       }))
@@ -151,13 +150,15 @@ export const AlignmentMatrix: React.FC<{
     const v = metricValue(r, metric);
     const lines: string[] = [];
     if (metric === 'rpm') {
-      lines.push(`RPM ${fmtMetric(v, metric)} = ${fmtMoney(r.revenue)} revenue / ${fmtNum(r.delivered)} delivered × 1,000`);
+      lines.push(r.revenue_known
+        ? `RPM ${fmtMetric(v, metric)} = ${fmtMoney(r.revenue)} revenue / ${fmtNum(r.delivered)} delivered × 1,000`
+        : 'RPM unknown: no payout on record for this offer');
     } else if (metric === 'human_click_rate') {
       lines.push(`Human click rate ${rateWithDenom(v, r.delivered)} (${fmtNum(r.human_clicks)} human clicks)`);
     } else {
       lines.push(`Clicker rate ${rateWithDenom(v, r.delivered)} (${fmtNum(r.clickers)} clickers)`);
     }
-    lines.push(`Delivered ${fmtNum(r.delivered)} · conversions ${fmtNum(r.conversions)} · revenue ${fmtMoney(r.revenue)}`);
+    lines.push(`Delivered ${fmtNum(r.delivered)} · conversions ${fmtNum(r.conversions)} · revenue ${r.revenue_known ? fmtMoney(r.revenue) : '—'}`);
     const meta = badgeMeta(r.badge);
     if (meta) lines.push(`${meta.label}${r.badge_reason ? ` — ${r.badge_reason}` : ''}`);
     if (r.action) lines.push(`Action: ${r.action}`);
@@ -172,14 +173,14 @@ export const AlignmentMatrix: React.FC<{
   const controls = (
     <div className="oa-mx-controls">
       <div className="oa-mx-seg" role="group" aria-label="Window">
-        {([7, 30] as const).map((w) => (
+        {([3, 7, 14] as const).map((w) => (
           <button
             key={w}
             type="button"
             className={`oa-mx-seg-btn${windowDays === w ? ' is-active' : ''}`}
             onClick={() => onWindowChange(w)}
           >
-            {w}d
+            {w}D
           </button>
         ))}
       </div>
@@ -196,7 +197,7 @@ export const AlignmentMatrix: React.FC<{
           </button>
         ))}
       </div>
-      <span className="oa-mx-metricnote">Color ramp: {metricBlurb}. Badges are delivery health — an independent channel.</span>
+      <span className="oa-mx-metricnote">Color shows {metricBlurb}. Badges show delivery problems.</span>
       <button type="button" className="oa-mx-refresh" onClick={load} disabled={state.kind === 'loading'}>
         <FontAwesomeIcon icon={state.kind === 'loading' ? faSpinner : faSyncAlt} spin={state.kind === 'loading'} /> Refresh
       </button>
@@ -207,7 +208,7 @@ export const AlignmentMatrix: React.FC<{
   if (state.kind === 'loading') {
     body = (
       <div className="oa-mx-statecard">
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading the offer × ISP alignment snapshot…
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading conversions…
       </div>
     );
   } else if (state.kind === 'building') {
@@ -215,10 +216,9 @@ export const AlignmentMatrix: React.FC<{
       <div className="oa-mx-statecard">
         <FontAwesomeIcon icon={faHourglassHalf} className="oa-mx-statecard-icon" />
         <div>
-          <div className="oa-mx-statecard-title">Snapshot building</div>
+          <div className="oa-mx-statecard-title">Building the numbers</div>
           <div className="oa-mx-statecard-body">
-            The alignment snapshot for the {windowDays}-day window is being computed server-side. It usually
-            lands within a refresh cycle (~15–30 min after boot, seconds when warm).
+            The {windowDays}-day numbers are being built. This can take up to 30 minutes.
           </div>
           <button type="button" className="oa-mx-retry" onClick={load}>
             <FontAwesomeIcon icon={faSyncAlt} /> Retry
@@ -231,11 +231,8 @@ export const AlignmentMatrix: React.FC<{
       <div className="oa-mx-statecard">
         <FontAwesomeIcon icon={faMoon} className="oa-mx-statecard-icon" />
         <div>
-          <div className="oa-mx-statecard-title">Offer alignment is off</div>
-          <div className="oa-mx-statecard-body">
-            The server reports this feature disabled. Enable the offer-alignment snapshot worker to light up
-            this screen.
-          </div>
+          <div className="oa-mx-statecard-title">Conversions is off</div>
+          <div className="oa-mx-statecard-body">This screen is turned off on the server.</div>
           <button type="button" className="oa-mx-retry" onClick={load}>
             <FontAwesomeIcon icon={faSyncAlt} /> Retry
           </button>
@@ -243,12 +240,12 @@ export const AlignmentMatrix: React.FC<{
       </div>
     );
   } else if (state.kind === 'error') {
-    body = <SectionError label="Alignment matrix" error={state.error} onRetry={load} />;
+    body = <SectionError label="Conversions" error={state.error} onRetry={load} />;
   } else if (grid.offers.length === 0) {
     body = (
       <EmptyState
-        title="No offer activity in this window"
-        hint={`No delivery attributed to any offer in the last ${windowDays} days. Try the ${windowDays === 7 ? '30d' : '7d'} window.`}
+        title="No offers in this window"
+        hint={`No offer mail was delivered in the last ${windowDays} days.${windowDays < 14 ? ' Try 14D.' : ''}`}
       />
     );
   } else {
@@ -303,16 +300,18 @@ export const AlignmentMatrix: React.FC<{
                           className={`oa-mx-cell${low ? ' oa-mx-cell--low' : ''}`}
                           style={{ background: bg }}
                           title={cellTitle(r)}
-                          role="button"
-                          tabIndex={0}
                           onClick={() => onOpenProfile(o.key, o.name, isp)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              onOpenProfile(o.key, o.name, isp);
-                            }
-                          }}
                         >
+                          {/* Keyboard route; a role=button cell can't hold the badge button. */}
+                          <button
+                            type="button"
+                            className="oa-mx-cell-hit"
+                            aria-label={`Open ${o.name}, ${isp}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenProfile(o.key, o.name, isp);
+                            }}
+                          />
                           <div className="oa-mx-cell-top">
                             <span className="oa-mx-cell-value">{fmtMetric(v, metric)}</span>
                             <CornerBadge
@@ -337,10 +336,10 @@ export const AlignmentMatrix: React.FC<{
             </tbody>
           </table>
           <div className="oa-mx-footnote">
-            Cell = {METRICS.find((m) => m.id === metric)?.label} ({metricBlurb}); thin bar = delivered volume; corner
-            chip = delivery-health badge (B blocking · T throttled · LQ list quality · LV low volume). Hover any cell
-            for its full numbers and denominators. Click a cell to open the offer profile at that ISP; click a red/amber
-            chip for the SMTP evidence.
+            Each cell shows {METRICS.find((m) => m.id === metric)?.label}. The thin bar shows how much was delivered.
+            Corner letters: B blocked · T slowed down · LQ bad addresses · LV too little mail to judge. A dash in RPM
+            means we have no payout on record. Click a cell for the offer. Click a red or amber letter for the mail
+            server replies.
           </div>
         </div>
 
@@ -386,10 +385,9 @@ export const AlignmentMatrix: React.FC<{
       {controls}
       {body}
       <div className="oa-mx-timing">
-        {snap?.refreshed_at ? `Snapshot refreshed ${snap.refreshed_at}` : ''}
-        {snap?.staleness !== undefined && snap?.staleness !== '' ? ` · staleness ${String(snap.staleness)}` : ''}
-        {fetchedAt ? ` · fetched ${fetchedAt}` : ''}
-        {` · window ${windowDays}d · America/Denver`}
+        {snap?.refreshed_at
+          ? `Updated ${new Date(snap.refreshed_at).toLocaleTimeString('en-US', { timeZone: 'America/Denver', hour: 'numeric', minute: '2-digit' })} Denver time`
+          : ''}
       </div>
     </div>
   );

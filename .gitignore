@@ -57,3 +57,4 @@ fix_exclusion_segments
 
 # Claude Code local session state — never ship
 .claude/
+web/dist-ssr

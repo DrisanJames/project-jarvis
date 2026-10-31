@@ -1,14 +1,13 @@
-// OfferProfile.tsx — Offer Alignment Level 1: one offer, decomposed.
+// OfferProfile.tsx — Conversions tab, Level 1: one offer, decomposed.
 //
 // Hierarchy (PORTAL_DESIGN_SYSTEM §1): KPI band (≤8 tiles) + one plain-English
 // status line → per-ISP delivery/engagement table (hard var(--j-hard) and soft
 // var(--j-soft) ALWAYS split, never combined) → creative × subject panel recut by
 // ISP (with the sandboxed-iframe preview reused from the old Creatives tab) →
-// data-source panel (incl. the "(unattributed)" row) → a collapsed Diagnostics
-// section holding the sending-domain filter (sending domain is NOT a primary
-// axis — diagnostic only, hidden by default).
+// data-source panel (incl. the "(unattributed)" row). The date range comes from
+// the 3D/7D/14D control on the matrix, the tab's only filter.
 //
-// Data: GET /api/mailing/offer-alignment/offer?offer=&from=&to=[&sending_domain=]
+// Data: GET /api/mailing/offer-alignment/offer?offer=&from=&to=
 // (one fetch feeds all panels; a failure renders this panel's designed error
 // state with Retry — the surrounding tab chrome and matrix stay alive).
 // Preview: GET /api/mailing/analytics/creatives/preview?campaign_id= (reused).
@@ -16,7 +15,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faSpinner, faSyncAlt, faArrowLeft, faImages, faChevronDown, faChevronRight, faStethoscope,
+  faSpinner, faSyncAlt, faArrowLeft, faImages,
 } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { Stat, SectionError, EmptyState } from '../shared/ui';
@@ -70,22 +69,15 @@ export const OfferProfile: React.FC<{
   focusIsp?: string;
   from: string;
   to: string;
-  onRangeChange: (from: string, to: string) => void;
   onBack: () => void;
   onOpenEvidence: (isp: string, badge: string) => void;
-}> = ({ offer, offerName, focusIsp, from, to, onRangeChange, onBack, onOpenEvidence }) => {
+}> = ({ offer, offerName, focusIsp, from, to, onBack, onOpenEvidence }) => {
   const [state, setState] = useState<ProfileState>({ kind: 'loading' });
   const [fetchedAt, setFetchedAt] = useState('');
   const abortRef = useRef<AbortController | null>(null);
 
   // Creative recut: which ISP lane the creative panel shows ('' = all).
   const [creativeIsp, setCreativeIsp] = useState(focusIsp ?? '');
-
-  // Diagnostics (collapsed by default): sending-domain equality filter,
-  // applied to the offer fetch as a diagnostic-only param.
-  const [diagOpen, setDiagOpen] = useState(false);
-  const [domainDraft, setDomainDraft] = useState('');
-  const [domainApplied, setDomainApplied] = useState('');
 
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
@@ -97,7 +89,6 @@ export const OfferProfile: React.FC<{
     setState({ kind: 'loading' });
     try {
       const qs = new URLSearchParams({ offer, from, to });
-      if (domainApplied) qs.set('sending_domain', domainApplied);
       const out = await fetchAlignment<OfferResponse>(`/api/mailing/offer-alignment/offer?${qs.toString()}`, ctl.signal);
       if (ctl.signal.aborted) return;
       if (out.kind === 'building') setState({ kind: 'building' });
@@ -111,6 +102,7 @@ export const OfferProfile: React.FC<{
             isp_rows: Array.isArray(d.isp_rows) ? d.isp_rows : [],
             creatives: Array.isArray(d.creatives) ? d.creatives : [],
             data_sources: Array.isArray(d.data_sources) ? d.data_sources : [],
+            notes: Array.isArray(d.notes) ? d.notes : [],
           },
         });
       }
@@ -119,7 +111,7 @@ export const OfferProfile: React.FC<{
       if (isAbortError(e)) return;
       setState({ kind: 'error', error: e instanceof Error ? e.message : String(e) });
     }
-  }, [offer, from, to, domainApplied]);
+  }, [offer, from, to]);
 
   useEffect(() => {
     load();
@@ -185,19 +177,18 @@ export const OfferProfile: React.FC<{
     const sum = (f: (r: OfferIspRow) => number) => ispRows.reduce((a, r) => a + (Number.isFinite(f(r)) ? f(r) : 0), 0);
     const h = data?.header ?? {};
     const delivered = h.delivered ?? sum((r) => r.delivered);
-    const pgSent = h.pg_sent ?? sum((r) => r.pg_sent ?? 0);
     const humanClicks = h.human_clicks ?? sum((r) => r.human_clicks);
     const clickers = h.clickers ?? sum((r) => r.clickers);
     const conversions = h.conversions ?? sum((r) => r.conversions);
     const revenue = h.revenue ?? sum((r) => r.revenue);
     return {
       delivered,
-      pgSent,
       humanClicks,
       clickers,
-      clickerRate: h.clicker_rate ?? safeDiv(clickers, pgSent > 0 ? pgSent : delivered),
+      clickerRate: h.clicker_rate ?? safeDiv(clickers, delivered),
       conversions,
       revenue,
+      revenueKnown: h.revenue_known ?? false,
       rpm: h.rpm ?? (delivered > 0 ? (revenue / delivered) * 1000 : null),
       epc: h.epc ?? safeDiv(revenue, humanClicks),
     };
@@ -209,11 +200,9 @@ export const OfferProfile: React.FC<{
   const ispTotals = useMemo(() => {
     const sum = (f: (r: OfferIspRow) => number) => ispRows.reduce((a, r) => a + (Number.isFinite(f(r)) ? f(r) : 0), 0);
     const delivered = sum((r) => r.delivered);
-    const pgSent = sum((r) => r.pg_sent ?? 0);
     const revenue = sum((r) => r.revenue);
     return {
       delivered,
-      pgSent,
       blocked: sum((r) => r.reputation_block),
       deferred: sum((r) => r.deferred),
       hard: sum((r) => r.hard),
@@ -242,18 +231,18 @@ export const OfferProfile: React.FC<{
   if (state.kind === 'loading') {
     body = (
       <div className="oa-op-loading">
-        <FontAwesomeIcon icon={faSpinner} spin /> Loading offer profile…
+        <FontAwesomeIcon icon={faSpinner} spin /> Loading offer…
       </div>
     );
   } else if (state.kind === 'building') {
     body = (
       <div className="oa-op-loading">
-        Profile data is still building server-side.
+        This offer is still being built.
         <button type="button" className="oa-op-inlineretry" onClick={load}>Retry</button>
       </div>
     );
   } else if (state.kind === 'disabled') {
-    body = <EmptyState title="Offer alignment is off" hint="The server reports this feature disabled." />;
+    body = <EmptyState title="Conversions is off" hint="This screen is turned off on the server." />;
   } else if (state.kind === 'error') {
     body = <SectionError label="Offer profile" error={state.error} onRetry={load} />;
   } else if (!data) {
@@ -264,26 +253,29 @@ export const OfferProfile: React.FC<{
         {/* ── KPI band (8 tiles) + status line ── */}
         <div className="oa-op-kpiband">
           <Stat label="Delivered" value={fmtNum(kpis.delivered)} sub={`${from} → ${to}`} />
-          <Stat label="Human clicks" value={fmtNum(kpis.humanClicks)} sub="verdict-human only" />
+          <Stat label="Human clicks" value={fmtNum(kpis.humanClicks)} sub="real people only" />
           <Stat label="Clickers" value={fmtNum(kpis.clickers)} sub="unique people" />
           <Stat
             label="Clicker rate"
             value={fmtRate(kpis.clickerRate)}
-            sub={`of ${fmtNum(kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered)} sent (PG-scoped)`}
-            title={rateWithDenom(kpis.clickerRate, kpis.pgSent > 0 ? kpis.pgSent : kpis.delivered, 'sent (PG)')}
+            sub={`of ${fmtNum(kpis.delivered)} delivered`}
+            title={rateWithDenom(kpis.clickerRate, kpis.delivered)}
           />
-          <Stat label="Conversions" value={fmtNum(kpis.conversions)} color="var(--j-success)" sub="last-click attributed" />
-          <Stat label="Revenue" value={fmtMoney(kpis.revenue)} />
-          <Stat label="RPM" value={kpis.rpm == null ? '—' : fmtMoney(kpis.rpm)} sub={`revenue / ${fmtNum(kpis.delivered)} delivered × 1,000`} />
-          <Stat label="EPC" value={kpis.epc == null ? '—' : fmtMoney(kpis.epc)} sub={`revenue / ${fmtNum(kpis.humanClicks)} human clicks`} />
+          <Stat label="Conversions" value={fmtNum(kpis.conversions)} color="var(--j-success)" sub="from the campaign that earned it" />
+          <Stat label="Revenue" value={kpis.revenueKnown ? fmtMoney(kpis.revenue) : '—'} />
+          <Stat label="RPM" value={!kpis.revenueKnown || kpis.rpm == null ? '—' : fmtMoney(kpis.rpm)} sub={`revenue / ${fmtNum(kpis.delivered)} delivered × 1,000`} />
+          <Stat label="EPC" value={!kpis.revenueKnown || kpis.epc == null ? '—' : fmtMoney(kpis.epc)} sub={`revenue / ${fmtNum(kpis.humanClicks)} human clicks`} />
         </div>
-        <div className="oa-op-statusline" title="Derived from the per-ISP delivery-health badges below.">
+        {(data.notes ?? []).map((n) => (
+          <div key={n} className="oa-op-attribution">{n}</div>
+        ))}
+        <div className="oa-op-statusline" title="Based on the delivery badges below.">
           {statusLine}
         </div>
         {attribution && (
           <div className="oa-op-attribution">
-            Attribution: {fmtNum(attribution.stamped_campaigns)} stamped campaign{attribution.stamped_campaigns === 1 ? '' : 's'} ·{' '}
-            {fmtNum(attribution.inferred_campaigns)} inferred (historical, name/slug-matched).
+            {fmtNum(attribution.stamped_campaigns + attribution.inferred_campaigns)} campaign{attribution.stamped_campaigns + attribution.inferred_campaigns === 1 ? '' : 's'}
+            {attribution.inferred_campaigns > 0 ? ` · ${fmtNum(attribution.inferred_campaigns)} matched by name` : ''}
           </div>
         )}
 
@@ -328,12 +320,12 @@ export const OfferProfile: React.FC<{
                         <td className="oa-op-td" style={{ color: HARD_RED }}>{fmtNum(r.hard)}</td>
                         <td className="oa-op-td" style={{ color: SOFT_AMBER }}>{fmtNum(r.soft)}</td>
                         <td className="oa-op-td">{fmtNum(r.clickers)}</td>
-                        <td className="oa-op-td" title={rateWithDenom(r.clicker_rate, r.pg_sent ?? r.delivered, 'sent (PG)')}>
+                        <td className="oa-op-td" title={rateWithDenom(r.clicker_rate, r.delivered)}>
                           {fmtRate(r.clicker_rate)}
                           <span className="oa-op-denom"> of {fmtNum(r.delivered)}</span>
                         </td>
                         <td className="oa-op-td">{fmtNum(r.conversions)}</td>
-                        <td className="oa-op-td">{Number.isFinite(r.rpm) ? fmtMoney(r.rpm) : '—'}</td>
+                        <td className="oa-op-td">{r.revenue_known && Number.isFinite(r.rpm) ? fmtMoney(r.rpm) : '—'}</td>
                         <td className="oa-op-td oa-op-td--left">
                           <BadgePill
                             badge={r.badge}
@@ -355,18 +347,18 @@ export const OfferProfile: React.FC<{
                     <td className="oa-op-td" style={{ color: HARD_RED }}>{fmtNum(ispTotals.hard)}</td>
                     <td className="oa-op-td" style={{ color: SOFT_AMBER }}>{fmtNum(ispTotals.soft)}</td>
                     <td className="oa-op-td">{fmtNum(ispTotals.clickers)}</td>
-                    <td className="oa-op-td" title={rateWithDenom(safeDiv(ispTotals.clickers, ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered), ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered, 'sent (PG)')}>
-                      {fmtRate(safeDiv(ispTotals.clickers, ispTotals.pgSent > 0 ? ispTotals.pgSent : ispTotals.delivered))}
+                    <td className="oa-op-td" title={rateWithDenom(safeDiv(ispTotals.clickers, ispTotals.delivered), ispTotals.delivered)}>
+                      {fmtRate(safeDiv(ispTotals.clickers, ispTotals.delivered))}
                     </td>
                     <td className="oa-op-td">{fmtNum(ispTotals.conversions)}</td>
-                    <td className="oa-op-td">{ispTotals.rpm == null ? '—' : fmtMoney(ispTotals.rpm)}</td>
+                    <td className="oa-op-td">{!kpis.revenueKnown || ispTotals.rpm == null ? '—' : fmtMoney(ispTotals.rpm)}</td>
                     <td className="oa-op-td oa-op-td--left" colSpan={2} />
                   </tr>
                 </tfoot>
               </table>
               <div className="oa-op-footnote">
-                Blocked = reputation-class rejections (its own class, not a bounce). Hard (red) and soft (amber)
-                bounces are always split, never combined. Click a red/amber badge for the grouped SMTP evidence.
+                Blocked means the mail server refused us for reputation. Hard bounces are red and soft bounces are
+                amber. Click a red or amber badge for the mail server replies.
               </div>
             </div>
           )}
@@ -439,16 +431,15 @@ export const OfferProfile: React.FC<{
                           <span className="oa-op-denom"> of {fmtNum(c.delivered)}</span>
                         </td>
                         <td className="oa-op-td">{fmtNum(c.conversions)}</td>
-                        <td className="oa-op-td">{fmtMoney(c.revenue)}</td>
+                        <td className="oa-op-td">{c.revenue_known ? fmtMoney(c.revenue) : '—'}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
               <div className="oa-op-footnote">
-                Ranked by clickers; rows under {fmtNum(LOW_VOLUME_FLOOR)} delivered are greyed and ranked last
-                (low volume — not comparable). “Inferred” = historical attribution from campaign name/slug rather
-                than a deploy-time stamp.
+                Most clickers first. Rows under {fmtNum(LOW_VOLUME_FLOOR)} delivered are grey and sit last because
+                there is too little mail to compare.
               </div>
             </div>
           )}
@@ -458,7 +449,7 @@ export const OfferProfile: React.FC<{
         <div className="oa-op-section">
           <div className="oa-op-sectiontitle">Data sources</div>
           {data.data_sources.length === 0 ? (
-            <EmptyState title="No data-source rows" hint="No subscriber data-source attribution in this window." />
+            <EmptyState title="No data sources" hint="No data sources in this window." />
           ) : (
             <div className="oa-op-tablewrap">
               <table className="oa-op-table">
@@ -479,11 +470,11 @@ export const OfferProfile: React.FC<{
                     return (
                       <tr key={`${label}|${idx}`} className="oa-op-tr">
                         <td className={`oa-op-td oa-op-td--left${label === '(unattributed)' ? ' oa-op-unattributed' : ''}`}>{label}</td>
-                        <td className="oa-op-td">{fmtNum(s.delivered)}</td>
-                        <td className="oa-op-td" style={{ color: HARD_RED }}>{fmtNum(s.hard)}</td>
-                        <td className="oa-op-td" title={rateWithDenom(s.invalid_rate, s.delivered + s.hard, 'delivered + hard')}>
-                          {fmtRate(s.invalid_rate)}
-                          <span className="oa-op-denom"> of {fmtNum(s.delivered + s.hard)}</span>
+                        <td className="oa-op-td">{s.delivered_known ? fmtNum(s.delivered) : '—'}</td>
+                        <td className="oa-op-td" style={{ color: HARD_RED }}>{s.delivered_known ? fmtNum(s.hard) : '—'}</td>
+                        <td className="oa-op-td" title={s.delivered_known ? rateWithDenom(s.invalid_rate, s.delivered + s.hard, 'delivered + hard') : undefined}>
+                          {s.delivered_known ? fmtRate(s.invalid_rate) : '—'}
+                          {s.delivered_known && <span className="oa-op-denom"> of {fmtNum(s.delivered + s.hard)}</span>}
                         </td>
                         <td className="oa-op-td">{fmtNum(s.clicks)}</td>
                         <td className="oa-op-td">{fmtNum(s.clickers)}</td>
@@ -497,79 +488,22 @@ export const OfferProfile: React.FC<{
           )}
         </div>
 
-        {/* ── Diagnostics (collapsed; sending domain is NOT a primary axis) ── */}
-        <div className="oa-op-section">
-          <button type="button" className="oa-op-diagtoggle" onClick={() => setDiagOpen((o) => !o)}>
-            <FontAwesomeIcon icon={diagOpen ? faChevronDown : faChevronRight} />
-            <FontAwesomeIcon icon={faStethoscope} /> Diagnostics
-            {domainApplied && <span className="oa-op-diagactive">sending_domain = {domainApplied}</span>}
-          </button>
-          {diagOpen && (
-            <div className="oa-op-diagbody">
-              <div className="oa-op-diagnote">
-                Sending domain is a diagnostic filter only — brands are separate senders and domain is not a
-                primary axis of this screen. Applying it re-scopes every panel above to that domain.
-              </div>
-              <div className="oa-op-diagrow">
-                <label className="oa-op-diaglabel">
-                  Sending domain
-                  <input
-                    type="text"
-                    className="oa-op-diaginput"
-                    placeholder="em.discountblog.com"
-                    value={domainDraft}
-                    onChange={(e) => setDomainDraft(e.target.value)}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="oa-op-diagapply"
-                  disabled={domainDraft.trim() === domainApplied}
-                  onClick={() => setDomainApplied(domainDraft.trim())}
-                >
-                  Apply
-                </button>
-                {domainApplied && (
-                  <button
-                    type="button"
-                    className="oa-op-diagclear"
-                    onClick={() => {
-                      setDomainDraft('');
-                      setDomainApplied('');
-                    }}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
       </>
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
   return (
     <div className="oa-op-root">
       {/* ── Header controls ── */}
       <div className="oa-op-header">
         <button type="button" className="oa-op-back" onClick={onBack}>
-          <FontAwesomeIcon icon={faArrowLeft} /> Matrix
+          <FontAwesomeIcon icon={faArrowLeft} /> Back
         </button>
         <div className="oa-op-titleblock">
           <div className="oa-op-title">{offerName || offer}</div>
           <div className="oa-op-offerkey">{offer}</div>
         </div>
         <div className="oa-op-rangectl">
-          <label className="oa-op-diaglabel">
-            From
-            <input type="date" className="oa-op-diaginput" value={from} max={to} onChange={(e) => onRangeChange(e.target.value, to)} />
-          </label>
-          <label className="oa-op-diaglabel">
-            To
-            <input type="date" className="oa-op-diaginput" value={to} min={from} max={today} onChange={(e) => onRangeChange(from, e.target.value)} />
-          </label>
           <button type="button" className="oa-op-refresh" onClick={load} disabled={state.kind === 'loading'}>
             <FontAwesomeIcon icon={state.kind === 'loading' ? faSpinner : faSyncAlt} spin={state.kind === 'loading'} /> Refresh
           </button>
@@ -581,7 +515,6 @@ export const OfferProfile: React.FC<{
       <div className="oa-op-timing">
         {fetchedAt ? `fetched ${fetchedAt} · ` : ''}
         {from} → {to} · America/Denver
-        {domainApplied ? ` · sending_domain=${domainApplied} (diagnostic)` : ''}
       </div>
 
       {/* ── Creative HTML preview modal (sandboxed iframe) ── */}

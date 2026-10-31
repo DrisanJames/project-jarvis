@@ -200,6 +200,7 @@
 }
 
 .oa-mx-cell {
+  position: relative;
   border-radius: 6px;
   padding: 6px 8px 5px;
   cursor: pointer;
@@ -209,8 +210,23 @@
 }
 
 .oa-mx-cell:hover,
-.oa-mx-cell:focus-visible {
+.oa-mx-cell:focus-within {
   border-color: rgba(165, 180, 252, 0.7);
+}
+
+.oa-mx-cell-hit {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
+}
+
+.oa-mx-cell-hit:focus-visible {
+  outline: 2px solid var(--j-violet);
+  outline-offset: 1px;
 }
 
 .oa-mx-cell--empty {

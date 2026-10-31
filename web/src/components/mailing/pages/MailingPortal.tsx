@@ -130,7 +130,7 @@ const tabs: Tab[] = [
   { id: 'brain', label: 'Brain', icon: faBook, description: 'The platform\'s operational memory — claims with their evidence and verification status, the capabilities that answer recognised tasks, and the evals that pin known answers.' },
   { id: 'agents', label: 'Agents', icon: faRobot, description: 'The autonomous agents — warmup (rates, caps, lessons), scheduling (nightly plan, offers, supervisor repairs) and data (checks, repairs, pages) — each from its own journal: what it decided, why, and what happened.' },
   { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
-  { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: 'Email performance reporting — deliverability, engagement and results by mailbox provider, brand and campaign. Filter by date and provider to see how each send performed.' },
+  { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: '' },
   { id: 'inbox-score', label: 'Inbox Score', icon: faEnvelope, description: 'Will this email land in the inbox? One guess per mailbox provider from a spam filter trained on our own sends, next to what our real test inbox saw.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
   { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
@@ -426,7 +426,7 @@ export const MailingPortal: React.FC = () => {
       <main className="mailing-content">
         <div className="content-header">
           <h2><FontAwesomeIcon icon={currentTab?.icon || faChartLine} className="content-header-icon" /> {currentTab?.label}</h2>
-          <p className="content-description">{currentTab?.description}</p>
+          {currentTab?.description && <p className="content-description">{currentTab.description}</p>}
         </div>
         <Suspense fallback={<ChunkLoader />}>
           {renderContent()}

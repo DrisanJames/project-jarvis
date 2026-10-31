@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
+export default defineConfig(({ isSsrBuild }) => ({
   plugins: [react()],
   server: {
     port: 5173,
@@ -25,7 +25,7 @@ export default defineConfig({
     sourcemap: true,
     chunkSizeWarningLimit: 600,
     rollupOptions: {
-      output: {
+      output: isSsrBuild ? undefined : {
         manualChunks: {
           // Vendor: React + React DOM (large, stable, highly cacheable)
           'vendor-react': ['react', 'react-dom'],
@@ -46,4 +46,4 @@ export default defineConfig({
     css: true,
     exclude: ['e2e/**', 'node_modules/**'],
   },
-})
+}))

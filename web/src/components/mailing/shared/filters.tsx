@@ -49,8 +49,8 @@ export const TRANSPORT_OPTIONS: { id: Transport; label: string }[] = [
   { id: 'pmta_a', label: 'PMTA A' },
   { id: 'pmta_b', label: 'PMTA B' },
   { id: 'kumo', label: 'Kumo' },
-  { id: 'colo1', label: 'Colo 1' },
-  { id: 'colo2', label: 'Colo 2' },
+  { id: 'colo1', label: 'COLO 1' },
+  { id: 'colo2', label: 'COLO 2' },
 ];
 export const transportLabel = (t: Transport): string => TRANSPORT_OPTIONS.find((o) => o.id === t)?.label ?? t;
 // A box lane scopes rows to ONE sending box (by VMTA code) — it is a scope on
@@ -166,7 +166,7 @@ export const BRAND_OPTIONS = [
 ];
 
 // Clean ISP classifier values — datalist suggestions for the Mailbox Provider field.
-export const COMMON_ISP_GROUPS = ['gmail', 'yahoo', 'microsoft', 'aol', 'comcast', 'charter', 'att', 'verizon', 'other'];
+export const COMMON_ISP_GROUPS = ['gmail', 'microsoft', 'yahoo', 'aol', 'apple', 'comcast', 'cox', 'charter', 'att', 'sbcglobal', 'verizon', 'other'];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STYLES — the shared filter-bar look (theme tokens; matches the Event Lake
@@ -281,7 +281,12 @@ export const FilterBar: React.FC<{
   // row — so a screen with its own dimensions still has ONE bar, ONE chip style.
   extraFields?: React.ReactNode;
   extraChips?: Array<{ label: string; tone?: string; onRemove?: () => void }>;
-}> = ({ draft, setDraft, applied, onRun, show, activeLabel, hideDates, extraFields, extraChips }) => {
+  // Transport applies on click, with no Run — for a screen that slices in the
+  // browser and pays nothing for the change.
+  applyTransportNow?: boolean;
+  // Brand suggestions from the data on screen, instead of BRAND_OPTIONS.
+  brandOptions?: string[];
+}> = ({ draft, setDraft, applied, onRun, show, activeLabel, hideDates, extraFields, extraChips, applyTransportNow, brandOptions }) => {
   const on = show ?? SHOW_ALL;
   const uid = React.useId(); // unique datalist ids — the bar can mount more than once per page
 
@@ -289,22 +294,25 @@ export const FilterBar: React.FC<{
     { label: `${applied.from} → ${applied.to}` },
   ];
   if (on.isp && applied.ispGroup.trim()) chips.push({
-    label: `isp_group=${applied.ispGroup.trim()}`, tone: theme.indigo300,
+    label: `Provider: ${applied.ispGroup.trim()}`, tone: theme.indigo300,
     onRemove: () => { const next = { ...draft, ispGroup: '' }; setDraft(next); onRun(next); },
   });
   if (on.brand && applied.brand.trim()) chips.push({
-    label: `brand=${applied.brand.trim()}`, tone: theme.indigo200,
+    label: `Brand: ${applied.brand.trim()}`, tone: theme.indigo200,
     onRemove: () => { const next = { ...draft, brand: '' }; setDraft(next); onRun(next); },
   });
   if (on.routeType && applied.routeType) chips.push({
-    label: `route_type=${applied.routeType}`, tone: INFO_BLUE,
+    label: `Route type: ${applied.routeType}`, tone: INFO_BLUE,
     onRemove: () => { const next = { ...draft, routeType: '' as RouteTypeFilter }; setDraft(next); onRun(next); },
   });
   if (on.transport && applied.transport !== 'combined') chips.push({
-    label: `transport=${transportLabel(applied.transport)}`, tone: theme.success,
+    label: `Transport: ${transportLabel(applied.transport)}`, tone: theme.success,
     onRemove: () => { const next = { ...draft, transport: 'combined' as Transport }; setDraft(next); onRun(next); },
   });
   if (extraChips) chips.push(...extraChips);
+
+  const runOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') onRun(draft); };
+  const brands = brandOptions && brandOptions.length > 0 ? brandOptions : BRAND_OPTIONS;
 
   return (
     <div style={fstyles.toolbar}>
@@ -340,9 +348,10 @@ export const FilterBar: React.FC<{
         </>)}
         {on.isp && (
           <>
-            <label style={fstyles.fieldLabel}>isp_group
+            <label style={fstyles.fieldLabel}>Provider
               <input type="text" list={`${uid}-isp-groups`} value={draft.ispGroup} placeholder="all"
                 onChange={(e) => setDraft((d) => ({ ...d, ispGroup: e.target.value }))}
+                onKeyDown={runOnEnter}
                 style={{ ...fstyles.input, width: 120 }} />
             </label>
             <datalist id={`${uid}-isp-groups`}>
@@ -352,18 +361,19 @@ export const FilterBar: React.FC<{
         )}
         {on.brand && (
           <>
-            <label style={fstyles.fieldLabel}>brand
+            <label style={fstyles.fieldLabel}>Brand
               <input type="text" list={`${uid}-brands`} value={draft.brand} placeholder="all"
                 onChange={(e) => setDraft((d) => ({ ...d, brand: e.target.value }))}
+                onKeyDown={runOnEnter}
                 style={{ ...fstyles.input, width: 150 }} />
             </label>
             <datalist id={`${uid}-brands`}>
-              {BRAND_OPTIONS.map((b) => <option key={b} value={b} />)}
+              {brands.map((b) => <option key={b} value={b} />)}
             </datalist>
           </>
         )}
         {on.routeType && (
-          <label style={fstyles.fieldLabel}>route_type
+          <label style={fstyles.fieldLabel}>Route type
             <select value={draft.routeType}
               onChange={(e) => setDraft((d) => ({ ...d, routeType: e.target.value as RouteTypeFilter }))}
               style={{ ...fstyles.input, width: 130 }}>
@@ -383,7 +393,10 @@ export const FilterBar: React.FC<{
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => setDraft((d) => ({ ...d, transport: opt.id }))}
+                    onClick={() => {
+                      setDraft((d) => ({ ...d, transport: opt.id }));
+                      if (applyTransportNow) onRun({ ...applied, transport: opt.id });
+                    }}
                     style={{
                       ...fstyles.segmentedBtn,
                       color: active ? theme.indigo400 : theme.textMuted,
