@@ -135,7 +135,7 @@ export const PartnerQualityReport: React.FC<{ datasetId: string }> = ({ datasetI
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="Received" fill="var(--j-violet-strong)" radius={[2, 2, 0, 0]} />
               <Bar dataKey="Passed" fill="var(--j-success)" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="Rejected" fill="var(--j-hard)" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="Rejected" fill="var(--j-hard-fill)" radius={[2, 2, 0, 0]} />
               <Line type="monotone" dataKey="Mailed" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
               <Line type="monotone" dataKey="Engaged" stroke="var(--j-violet)" strokeWidth={2} dot={false} />
             </ComposedChart>

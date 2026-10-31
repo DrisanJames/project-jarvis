@@ -43,7 +43,7 @@ const td: React.CSSProperties = {
   padding: '8px 10px', fontSize: 13, borderTop: '1px solid color-mix(in srgb, var(--j-text) 6%, transparent)', whiteSpace: 'nowrap',
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: 'var(--j-violet-strong)',
+  background: 'transparent', color: 'var(--j-violet)',
   border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };

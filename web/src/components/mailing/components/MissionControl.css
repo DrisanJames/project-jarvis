@@ -247,7 +247,7 @@
   transition: width 0.5s;
 }
 .mc-race-winner { background: linear-gradient(90deg, var(--j-warn), var(--j-success)) !important; }
-.mc-race-elim { background: color-mix(in srgb, var(--j-hard) 14%, transparent) !important; }
+.mc-race-elim { background: color-mix(in srgb, var(--j-hard-fill) 14%, transparent) !important; }
 .mc-race-value { font-size: 10px; font-weight: 700; width: 36px; text-align: right; }
 
 /* Decisions */

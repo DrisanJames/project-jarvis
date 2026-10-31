@@ -1519,8 +1519,8 @@ const OperationsBoard: React.FC<{
                     />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Line type="monotone" dataKey="delivered" name="Delivered" stroke="var(--j-success)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="deferred" name="Deferred" stroke="var(--j-soft)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="var(--j-hard)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="deferred" name="Deferred" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="hard_bounce" name="Hard Bounce" stroke="var(--j-hard-fill)" strokeWidth={2} dot={false} isAnimationActive={false} />
                     <Line type="monotone" dataKey="soft_bounce" name="Soft Bounce" stroke="var(--j-warn)" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="4 3" />
                   </LineChart>
                 </ResponsiveContainer>

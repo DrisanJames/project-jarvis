@@ -721,7 +721,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                         className="ia-managed-engagement-fill ig-progress-fill"
                         style={{
                           width: `${Math.min(agent.avg_engagement, 100)}%`,
-                          background: agent.avg_engagement >= 60 ? 'var(--j-success)' : agent.avg_engagement >= 30 ? 'var(--j-soft)' : 'var(--j-hard)'
+                          background: agent.avg_engagement >= 60 ? 'var(--j-success)' : agent.avg_engagement >= 30 ? 'var(--j-soft-fill)' : 'var(--j-hard-fill)'
                         }}
                       />
                     </div>
@@ -844,7 +844,7 @@ export const ISPAgentIntelligence: React.FC = () => {
                         <div className="ia-bar-bg" style={{ marginTop: '8px' }}>
                           <div className="ia-bar-fill" style={{
                             width: `${Math.min((engineData.rate_adjustment || 1) * 100, 100)}%`,
-                            background: (engineData.rate_adjustment || 1) < 0.5 ? 'var(--j-hard)'
+                            background: (engineData.rate_adjustment || 1) < 0.5 ? 'var(--j-hard-fill)'
                               : (engineData.rate_adjustment || 1) < 0.9 ? 'var(--j-soft)' : 'var(--j-success)',
                             transition: 'width 0.5s ease'
                           }} />

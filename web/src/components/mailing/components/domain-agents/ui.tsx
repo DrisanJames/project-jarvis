@@ -9,7 +9,7 @@ export const C = {
   panel: 'color-mix(in srgb, var(--j-shade) 60%, transparent)',
   panelBorder: 'color-mix(in srgb, var(--j-cyan) 12%, transparent)',
   text: 'var(--j-text)',
-  muted: 'color-mix(in srgb, var(--j-text) 65%, transparent)',
+  muted: 'var(--j-text-muted)',
   accent: 'var(--j-cyan)',
   accent2: 'var(--j-blue)',
   success: 'var(--j-success)',

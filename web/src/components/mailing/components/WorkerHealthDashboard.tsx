@@ -131,14 +131,14 @@ export const WorkerHealthDashboard: React.FC = () => {
       </header>
 
       {error && (
-        <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ background: 'color-mix(in srgb, var(--j-hard-fill) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '10px 14px', borderRadius: 6, marginBottom: 14, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
           <FontAwesomeIcon icon={faTriangleExclamation} />
           Error loading background processing status: {error}
         </div>
       )}
 
       {stalledCount > 0 && (
-        <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid color-mix(in srgb, var(--j-hard) 33%, transparent)' }}>
+        <div style={{ background: 'color-mix(in srgb, var(--j-hard-fill) 14%, transparent)', color: 'var(--j-danger-soft)', padding: '12px 16px', borderRadius: 6, marginBottom: 16, fontSize: 14, display: 'flex', alignItems: 'center', gap: 10, border: '1px solid color-mix(in srgb, var(--j-hard-fill) 33%, transparent)' }}>
           <FontAwesomeIcon icon={faSkull} style={{ color: 'var(--j-hard)' }} />
           <strong>{stalledCount}</strong> background process{stalledCount === 1 ? '' : 'es'} stalled — the team has been alerted.
         </div>

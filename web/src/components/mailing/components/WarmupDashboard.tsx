@@ -139,7 +139,7 @@ export const WarmupDashboard: React.FC = () => {
             key={pool.pool}
             style={{
               ...styles.poolCard,
-              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? 'var(--j-hard)' : pool.avg_bounce_rate > 0.01 ? 'var(--j-soft)' : 'var(--j-success)'}`,
+              borderLeft: `4px solid ${pool.avg_bounce_rate > 0.02 ? 'var(--j-hard-fill)' : pool.avg_bounce_rate > 0.01 ? 'var(--j-soft-fill)' : 'var(--j-success)'}`,
             }}
             onClick={() => setSelectedPool(pool.pool === selectedPool ? 'all' : pool.pool)}
           >
@@ -240,7 +240,7 @@ export const WarmupDashboard: React.FC = () => {
                     <div style={{
                       ...styles.progressBar,
                       width: `${Math.min(100, (ip.today_sent / Math.max(ip.warmup_daily_limit, 1)) * 100)}%`,
-                      background: ip.today_sent >= ip.warmup_daily_limit ? 'var(--j-hard)' : 'var(--j-violet-strong)',
+                      background: ip.today_sent >= ip.warmup_daily_limit ? 'var(--j-hard-fill)' : 'var(--j-violet-strong)',
                     }} />
                     <span style={styles.progressText}>
                       {ip.today_sent.toLocaleString()} / {ip.warmup_daily_limit.toLocaleString()}

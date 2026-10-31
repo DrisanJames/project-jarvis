@@ -630,7 +630,7 @@ export const SupplyContractForm: React.FC<{
                   <select aria-label="Key"
                     value={values[s.key] ?? s.def}
                     onChange={e => setValues(v => ({ ...v, [s.key]: e.target.value }))}
-                    style={{ ...inputStyle, width: s.width ?? 170, ...(bad(s.key) ? { borderColor: colors.danger } : {}) }}
+                    style={{ ...inputStyle, width: s.width ?? 170, ...(bad(s.key) ? { borderColor: colors.dangerFill } : {}) }}
                   >
                     {(s.options ?? []).map(o => <option key={o} value={o}>{o === '' ? '(unset)' : o}</option>)}
                   </select>
@@ -641,7 +641,7 @@ export const SupplyContractForm: React.FC<{
                     value={values[s.key] ?? s.def}
                     placeholder={s.type === 'nullable-int' ? 'blank = no limit (null)' : s.type === 'csv' ? 'comma,separated' : ''}
                     onChange={e => setValues(v => ({ ...v, [s.key]: e.target.value }))}
-                    style={{ ...inputStyle, width: s.width ?? 140, ...(bad(s.key) ? { borderColor: colors.danger } : {}) }}
+                    style={{ ...inputStyle, width: s.width ?? 140, ...(bad(s.key) ? { borderColor: colors.dangerFill } : {}) }}
                   />
                 )}
               </label>
@@ -655,7 +655,7 @@ export const SupplyContractForm: React.FC<{
                 placeholder={bandNeedsNotes
                   ? `required: the operator ruling behind health_band ${values['health_band']}`
                   : 'why this version exists (required to open gmail > 0)'}
-                style={{ ...inputStyle, ...(bad('notes') || bandNeedsNotes ? { borderColor: colors.danger } : {}) }}
+                style={{ ...inputStyle, ...(bad('notes') || bandNeedsNotes ? { borderColor: colors.dangerFill } : {}) }}
               />
             </label>
           </div>

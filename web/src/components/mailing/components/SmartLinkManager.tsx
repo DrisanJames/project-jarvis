@@ -395,7 +395,7 @@ export const SmartLinkManager: React.FC = () => {
           <div style={{ textAlign: 'center' }}>
             <button
               onClick={() => setShowCreate(true)}
-              style={{ background: 'none', border: 'none', color: 'var(--j-violet-strong)', cursor: 'pointer', textDecoration: 'underline', fontSize: '0.875rem' }}
+              style={{ background: 'none', border: 'none', color: 'var(--j-violet)', cursor: 'pointer', textDecoration: 'underline', fontSize: '0.875rem' }}
             >
               Create one
             </button>

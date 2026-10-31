@@ -731,7 +731,7 @@
 
 .ia-bar-opens { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }
 .ia-bar-clicks { background: linear-gradient(90deg, var(--j-success), var(--j-success)); }
-.ia-bar-engagement { background: linear-gradient(90deg, var(--j-soft), var(--j-warn)); }
+.ia-bar-engagement { background: linear-gradient(90deg, var(--j-soft-fill), var(--j-warn)); }
 
 /* Learning Sources Breakdown */
 .ia-sources-section {

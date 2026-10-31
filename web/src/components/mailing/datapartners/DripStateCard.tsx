@@ -29,7 +29,7 @@ export const DripStateCard: React.FC<Props> = ({
     <div style={card}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8, minWidth: 0 }}>
         <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 15, minWidth: 0, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-          <FontAwesomeIcon icon={faRoute} style={{ marginRight: 6, color: 'var(--j-violet-strong)' }} />
+          <FontAwesomeIcon icon={faRoute} style={{ marginRight: 6, color: 'var(--j-violet)' }} />
           {verticalLabel}
         </h3>
         <span style={badge}>{vertical}</span>

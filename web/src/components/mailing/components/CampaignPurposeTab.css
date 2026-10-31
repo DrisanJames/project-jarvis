@@ -1717,7 +1717,7 @@
 
 .inbox-badge.inbox-gmail { background: var(--j-surface-2); color: var(--j-blue); }
 .inbox-badge.inbox-yahoo { background: #fce7f3; color: var(--j-violet); }
-.inbox-badge.inbox-outlook { background: var(--j-violet-soft); color: var(--j-violet-strong); }
+.inbox-badge.inbox-outlook { background: var(--j-violet-soft); color: var(--j-violet); }
 .inbox-badge.inbox-apple_mail { background: var(--j-surface-2); color: var(--j-text-faint); }
 .inbox-badge.inbox-other { background: var(--bg-muted, var(--j-text)); color: var(--text-muted-accessible, var(--j-text-faint)); }
 

@@ -122,7 +122,7 @@ export const FeedFunnelBoard: React.FC = () => {
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
         <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16 }}>
-          <FontAwesomeIcon icon={faArrowRightArrowLeft} style={{ marginRight: 8, color: 'var(--j-violet-strong)' }} />
+          <FontAwesomeIcon icon={faArrowRightArrowLeft} style={{ marginRight: 8, color: 'var(--j-violet)' }} />
           Feeds → Funnels
         </h3>
         <span style={{ fontSize: 11, color: 'var(--j-text-muted)' }}>
@@ -140,7 +140,7 @@ export const FeedFunnelBoard: React.FC = () => {
           {/* Funnel header row: the roll-up + click-to-drill */}
           <button type="button" onClick={() => setOpenFunnel(g.vertical)} style={funnelHeader} title="View touch ladder + feeds">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <FontAwesomeIcon icon={faRoute} style={{ color: 'var(--j-violet-strong)' }} />
+              <FontAwesomeIcon icon={faRoute} style={{ color: 'var(--j-violet)' }} />
               <span style={{ fontWeight: 700, color: 'var(--j-text)', fontSize: 14 }}>{labelForVertical(g.vertical)}</span>
               <span style={badge}>{g.feeds.length} feed{g.feeds.length === 1 ? '' : 's'}</span>
             </div>
@@ -205,7 +205,7 @@ export const FeedFunnelBoard: React.FC = () => {
           <div style={drawer}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h3 style={{ margin: 0, color: 'var(--j-text)', fontSize: 16 }}>
-                <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 8, color: 'var(--j-violet-strong)' }} />
+                <FontAwesomeIcon icon={faLayerGroup} style={{ marginRight: 8, color: 'var(--j-violet)' }} />
                 {labelForVertical(openFunnel)}
               </h3>
               <button aria-label="Close" type="button" onClick={() => setOpenFunnel(null)} style={closeBtn}><FontAwesomeIcon icon={faXmark} /></button>

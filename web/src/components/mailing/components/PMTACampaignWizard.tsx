@@ -3559,7 +3559,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   </div>
                 )}
                 {r.warnings && r.warnings.length > 0 && (
-                  <div style={{ marginTop: 8, padding: '6px 8px', background: 'color-mix(in srgb, var(--j-soft) 8%, transparent)', borderRadius: 6, fontSize: 11, color: 'var(--j-soft)' }}>
+                  <div style={{ marginTop: 8, padding: '6px 8px', background: 'color-mix(in srgb, var(--j-soft-fill) 8%, transparent)', borderRadius: 6, fontSize: 11, color: 'var(--j-soft)' }}>
                     <FontAwesomeIcon icon={faExclamationTriangle} /> {r.warnings[0]}
                   </div>
                 )}
@@ -3746,7 +3746,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
           }} onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h3 style={{ margin: 0, fontSize: 16, color: 'var(--j-text)' }}>
-                <FontAwesomeIcon icon={faBrain} style={{ color: 'var(--j-violet-strong)', marginRight: 8 }} />
+                <FontAwesomeIcon icon={faBrain} style={{ color: 'var(--j-violet)', marginRight: 8 }} />
                 Deliverability Recommendations
               </h3>
               <button onClick={() => setDelivRecsOpen(false)} style={{
@@ -3802,7 +3802,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             )}
 
             {delivRecsError && (
-              <div style={{ padding: 12, background: 'color-mix(in srgb, var(--j-hard) 13%, transparent)', borderRadius: 8, color: 'var(--j-hard)', fontSize: 12, marginBottom: 12 }}>
+              <div style={{ padding: 12, background: 'color-mix(in srgb, var(--j-hard-fill) 13%, transparent)', borderRadius: 8, color: 'var(--j-hard)', fontSize: 12, marginBottom: 12 }}>
                 {delivRecsError}
               </div>
             )}
@@ -3823,7 +3823,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                   <div style={{ marginBottom: 14 }}>
                     {delivRecsResult.cautions.map((c: string, i: number) => (
                       <div key={i} style={{
-                        padding: '6px 10px', background: 'color-mix(in srgb, var(--j-soft) 8%, transparent)', borderRadius: 6,
+                        padding: '6px 10px', background: 'color-mix(in srgb, var(--j-soft-fill) 8%, transparent)', borderRadius: 6,
                         fontSize: 11, color: 'var(--j-soft)', marginBottom: 4,
                       }}>
                         ⚠ {c}
@@ -5060,7 +5060,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
             <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
               {[
                 { label: 'Lists Selected', value: selectedLists.length, total: lists.length, color: 'var(--j-blue)' },
-                { label: 'Segments Selected', value: selectedSegments.length, total: segments.length, color: 'var(--j-violet-strong)' },
+                { label: 'Segments Selected', value: selectedSegments.length, total: segments.length, color: 'var(--j-violet)' },
                 { label: 'Suppression Active', value: totalSuppSelected, total: suppressionLists.length, color: 'var(--j-hard)' },
               ].map(stat => (
                 <div key={stat.label} style={{
@@ -5146,7 +5146,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               {/* Suppression panel */}
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                  <div style={{ width: 4, height: 16, borderRadius: 2, background: 'var(--j-hard)' }} />
+                  <div style={{ width: 4, height: 16, borderRadius: 2, background: 'var(--j-hard-fill)' }} />
                   <h4 style={{ margin: 0, fontSize: 13, color: 'var(--j-hard)', fontWeight: 600 }}>Suppression</h4>
                   <span style={{ fontSize: 9, color: 'var(--j-text-muted)', marginLeft: 6 }}>
                     curated lists only
@@ -5210,7 +5210,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 {segments.length > 0 && (
                   <>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 14, marginBottom: 8 }}>
-                      <div style={{ width: 4, height: 16, borderRadius: 2, background: 'var(--j-soft)' }} />
+                      <div style={{ width: 4, height: 16, borderRadius: 2, background: 'var(--j-soft-fill)' }} />
                       <h4 style={{ margin: 0, fontSize: 13, color: 'var(--j-soft)', fontWeight: 600 }}>Exclusion Segments</h4>
                       <span style={{ fontSize: 10, color: 'var(--j-text-muted)', marginLeft: 'auto' }}>{selectedExclusionSegments.length} active</span>
                     </div>
@@ -5490,7 +5490,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                       <div style={{ fontSize: 10, color: 'var(--j-text-muted)', marginTop: 2 }}>Suppressed</div>
                       <div style={{ position: 'absolute', bottom: -8, left: '10%', right: '10%', height: 3, borderRadius: 2, background: 'rgba(239,68,68,0.15)' }}>
                         <div style={{
-                          height: '100%', borderRadius: 2, background: 'var(--j-hard)',
+                          height: '100%', borderRadius: 2, background: 'var(--j-hard-fill)',
                           width: audienceEstimate.total_recipients > 0 ? `${(audienceEstimate.suppressed_count / audienceEstimate.total_recipients) * 100}%` : '0%',
                           transition: 'width 0.5s ease',
                         }} />
@@ -5515,7 +5515,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
                       <span style={{ fontSize: 10, color: 'var(--j-text-faint)', alignSelf: 'center', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sources:</span>
                       {Object.entries(audienceEstimate.suppression_sources).map(([source, count]) => (
-                        <span key={source} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4, fontSize: 10, background: 'color-mix(in srgb, var(--j-hard) 7%, transparent)', color: 'var(--j-hard)', border: '1px solid color-mix(in srgb, var(--j-hard) 15%, transparent)' }}>
+                        <span key={source} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 8px', borderRadius: 4, fontSize: 10, background: 'color-mix(in srgb, var(--j-hard-fill) 7%, transparent)', color: 'var(--j-hard)', border: '1px solid color-mix(in srgb, var(--j-hard-fill) 15%, transparent)' }}>
                           {source}: {(count as number).toLocaleString()}
                         </span>
                       ))}
@@ -5621,7 +5621,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
                 never be misread as "this is today's content". */}
             <div style={{
               background: warmupCreativeStale ? 'rgba(245,158,11,0.10)' : 'var(--j-surface)',
-              border: `1.5px solid ${warmupCreativeStale ? 'var(--j-soft)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)'}`,
+              border: `1.5px solid ${warmupCreativeStale ? 'var(--j-soft-fill)' : 'color-mix(in srgb, var(--j-cyan) 8%, transparent)'}`,
               borderRadius: 10, padding: 14, marginBottom: 16,
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
@@ -6186,7 +6186,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               onClick={() => handleDeploy(gateOverrideReason)}
               disabled={deploying || gateOverrideReason.trim().length < 10}
               style={{
-                background: gateOverrideReason.trim().length >= 10 ? 'var(--j-soft)' : 'rgba(245,158,11,0.25)',
+                background: gateOverrideReason.trim().length >= 10 ? 'var(--j-soft-fill)' : 'rgba(245,158,11,0.25)',
                 color: 'var(--j-bg)', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 12,
                 fontWeight: 600, cursor: gateOverrideReason.trim().length >= 10 ? 'pointer' : 'default',
               }}>
@@ -7093,7 +7093,7 @@ export const PMTACampaignWizard: React.FC<PMTACampaignWizardProps> = ({ onClose,
               {hasErrors && (
                 <span style={{
                   position: 'absolute', top: 2, right: 4, width: 6, height: 6,
-                  borderRadius: '50%', background: 'var(--j-hard)',
+                  borderRadius: '50%', background: 'var(--j-hard-fill)',
                 }} />
               )}
             </button>

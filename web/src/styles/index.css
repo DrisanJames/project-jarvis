@@ -1625,7 +1625,7 @@ body {
 }
 
 .btn-danger {
-  background: var(--j-hard);
+  background: var(--j-hard-fill);
   color: var(--j-on-accent);
 }
 

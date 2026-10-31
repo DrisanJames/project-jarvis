@@ -198,7 +198,7 @@
   display: block;
   font-size: 15px;
   font-weight: 700;
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
   font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 }
 
@@ -242,7 +242,7 @@
 
 /* Content Header Icon */
 .content-header-icon {
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
   margin-right: 8px;
 }
 
@@ -539,7 +539,7 @@
 
 .suggestion-category {
   background: color-mix(in srgb, var(--j-violet-strong) 20%, transparent);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
   padding: 2px 8px;
   border-radius: 4px;
   font-size: 11px;
@@ -572,7 +572,7 @@
 
 .suggestion-status.implemented {
   background: color-mix(in srgb, var(--j-violet-strong) 20%, transparent);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 .loading {
@@ -805,7 +805,7 @@
 
 .status-badge.scheduled {
   background: color-mix(in srgb, var(--j-violet-strong) 20%, transparent);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 .status-badge.paused {
@@ -815,7 +815,7 @@
 
 .status-badge.testing {
   background: color-mix(in srgb, var(--j-violet-strong) 20%, transparent);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 .status-badge.completed,
@@ -1148,7 +1148,7 @@
 .page-explanation h3 {
   margin: 0 0 8px 0;
   font-size: 16px;
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 .page-explanation p {
@@ -1326,7 +1326,7 @@
 
 .item-actions button:hover {
   border-color: var(--j-violet-strong);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 .no-data {
@@ -1423,7 +1423,7 @@
 
 .add-step-btns button:hover {
   border-color: var(--j-violet-strong);
-  color: var(--j-violet-strong);
+  color: var(--j-violet);
 }
 
 /* Variants Builder */

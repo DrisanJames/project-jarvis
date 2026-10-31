@@ -942,11 +942,6 @@ const TouchNode: React.FC<{
   return (
     <div
       onClick={onOpen}
-      role={onOpen ? 'button' : undefined}
-      tabIndex={onOpen ? 0 : undefined}
-      onKeyDown={onOpen ? (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
-      } : undefined}
       title={onOpen ? `Open touch ${touch.touch} — config, edit actions and step metrics` : undefined}
       style={{
         position: 'absolute', left: x, top: y, width: NODE_W, height: NODE_H,
@@ -965,6 +960,16 @@ const TouchNode: React.FC<{
         overflow: 'hidden',
       }}
     >
+      {/* Keyboard route to the card. The card holds its own controls, so it can't
+          be a button itself; mouse clicks stay on the card and pass through. */}
+      {onOpen && (
+        <button
+          type="button"
+          aria-label={`Open touch ${touch.touch}`}
+          onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          style={{ position: 'absolute', inset: 0, padding: 0, border: 'none', borderRadius: 10, background: 'transparent', pointerEvents: 'none' }}
+        />
+      )}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: colors.heading }}>
           TOUCH {touch.touch}

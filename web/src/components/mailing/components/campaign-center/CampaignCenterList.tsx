@@ -465,7 +465,7 @@ export const CampaignCenterList: React.FC<{
         >
           <td style={{ padding: '6px 4px 6px 8px', width: 18 }}>
             {expandable ? (
-              <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet-strong)' }} />
+              <FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet)' }} />
             ) : (
               <FontAwesomeIcon icon={faLayerGroup} title="Automated follow-ups grouped — individual sends aggregated; no inline expand" style={{ fontSize: 10, color: 'var(--j-soft)' }} />
             )}
@@ -481,7 +481,7 @@ export const CampaignCenterList: React.FC<{
               {r.isRollup && (
                 <span style={{
                   fontSize: 9.5, fontWeight: 700, padding: '1px 6px', borderRadius: 6,
-                  border: '1px solid color-mix(in srgb, var(--j-soft) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft) 10%, transparent)', color: 'var(--j-soft)', whiteSpace: 'nowrap',
+                  border: '1px solid color-mix(in srgb, var(--j-soft-fill) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft-fill) 10%, transparent)', color: 'var(--j-soft)', whiteSpace: 'nowrap',
                 }}>
                   ROLLUP · {numFmt(r.identity.wave_count || 0)}
                 </span>
@@ -569,7 +569,7 @@ export const CampaignCenterList: React.FC<{
       {error && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', marginBottom: 8,
-          borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-hard) 33%, transparent)', background: 'color-mix(in srgb, var(--j-hard) 10%, transparent)', color: 'var(--j-danger-soft)', fontSize: 12.5,
+          borderRadius: 8, border: '1px solid color-mix(in srgb, var(--j-hard-fill) 33%, transparent)', background: 'color-mix(in srgb, var(--j-hard-fill) 10%, transparent)', color: 'var(--j-danger-soft)', fontSize: 12.5,
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-hard)' }} />
           Failed to load campaigns: {error}
@@ -578,7 +578,7 @@ export const CampaignCenterList: React.FC<{
       {enrichNote && (
         <div style={{
           padding: '8px 12px', marginBottom: 8, borderRadius: 8, fontSize: 12,
-          border: '1px solid color-mix(in srgb, var(--j-soft) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft) 8%, transparent)', color: 'var(--j-warn)',
+          border: '1px solid color-mix(in srgb, var(--j-soft-fill) 33%, transparent)', background: 'color-mix(in srgb, var(--j-soft-fill) 8%, transparent)', color: 'var(--j-warn)',
         }}>
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 6 }} />
           Row metrics unavailable: {enrichNote} (campaign details still shown)
@@ -634,7 +634,7 @@ export const CampaignCenterList: React.FC<{
                         style={{ borderTop: '1px solid color-mix(in srgb, var(--j-violet-strong) 15%, transparent)', cursor: 'pointer', background: 'color-mix(in srgb, var(--j-violet-strong) 5%, transparent)' }}
                       >
                         <td style={{ padding: '7px 4px 7px 8px' }}>
-                          <FontAwesomeIcon icon={gOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet-strong)' }} />
+                          <FontAwesomeIcon icon={gOpen ? faChevronDown : faChevronRight} style={{ fontSize: 10, color: 'var(--j-violet)' }} />
                         </td>
                         <td style={{ padding: '7px 8px' }} colSpan={4}>
                           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--j-violet-soft)' }}>{g.offer}</span>

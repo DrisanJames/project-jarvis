@@ -72,7 +72,7 @@
 .ac-camp-status.completed, .ac-camp-status.sent { background: var(--j-success); }
 .ac-camp-status.sending, .ac-camp-status.active { background: var(--j-cyan); }
 .ac-camp-status.draft { background: var(--j-text-faint); }
-.ac-camp-status.paused { background: var(--j-soft); }
+.ac-camp-status.paused { background: var(--j-soft-fill); }
 .ac-good { color: var(--j-success); }
 .ac-ok { color: var(--j-warn); }
 .ac-bad { color: var(--j-danger); }
@@ -213,7 +213,7 @@
 .ac-agent-perf-bar-track { flex: 1; height: 8px; background: color-mix(in srgb, var(--j-text) 4%, transparent); border-radius: 4px; overflow: hidden; }
 .ac-agent-perf-bar-fill { height: 100%; border-radius: 4px; transition: width 0.4s; min-width: 2px; }
 .ac-agent-perf-bar-fill.ac-st-active { background: linear-gradient(90deg, var(--j-success), var(--j-success)); }
-.ac-agent-perf-bar-fill.ac-st-idle { background: linear-gradient(90deg, var(--j-soft), var(--j-warn)); }
+.ac-agent-perf-bar-fill.ac-st-idle { background: linear-gradient(90deg, var(--j-soft-fill), var(--j-warn)); }
 .ac-agent-perf-bar-fill.ac-st-sleeping { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }
 .ac-agent-perf-bar-fill.ac-st-dormant { background: linear-gradient(90deg, var(--j-border-strong), var(--j-text-faint)); }
 .ac-agent-perf-bar-fill.ac-st-sending { background: linear-gradient(90deg, var(--j-cyan), var(--j-blue)); }

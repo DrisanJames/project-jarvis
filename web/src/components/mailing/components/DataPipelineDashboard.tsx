@@ -179,8 +179,8 @@ export const DataPipelineDashboard: React.FC = () => {
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="verified" name="Verified" fill="var(--j-success)" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="suppressed" name="Suppressed" fill="var(--j-hard)" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="deduped" name="Deduped" fill="var(--j-soft)" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="suppressed" name="Suppressed" fill="var(--j-hard-fill)" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="deduped" name="Deduped" fill="var(--j-soft-fill)" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

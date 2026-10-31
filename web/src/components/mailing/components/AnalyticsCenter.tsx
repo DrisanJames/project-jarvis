@@ -1340,8 +1340,8 @@ export const AnalyticsCenter: React.FC = () => {
                             <Line yAxisId="left" type="monotone" dataKey="sent" stroke={ISP_COLORS[selectedISP] || 'var(--j-violet)'} strokeWidth={2} dot={false} name="Sent" />
                             <Line yAxisId="right" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={1.5} dot={false} name="Opens" />
                             <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="var(--j-blue)" strokeWidth={1.5} dot={false} name="Clicks" />
-                            <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard)" strokeWidth={1.5} dot={false} name="Hard Bounces" />
-                            <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft)" strokeWidth={1.5} dot={false} name="Soft Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard-fill)" strokeWidth={1.5} dot={false} name="Hard Bounces" />
+                            <Line yAxisId="right" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft-fill)" strokeWidth={1.5} dot={false} name="Soft Bounces" />
                             <Line yAxisId="right" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" />
                           </LineChart>
                         </ResponsiveContainer>
@@ -1437,9 +1437,9 @@ export const AnalyticsCenter: React.FC = () => {
                         />
                         <Line yAxisId="sent" type="monotone" dataKey="sent" stroke="var(--j-cyan)" strokeWidth={2} dot={false} name="Sent" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="opens" stroke="var(--j-success)" strokeWidth={2} dot={false} name="Opens" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="var(--j-soft)" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard)" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
-                        <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft)" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="clicks" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} name="Clicks" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="hard_bounces" stroke="var(--j-hard-fill)" strokeWidth={1.5} dot={false} name="Hard Bounces" animationDuration={800} />
+                        <Line yAxisId="engagement" type="monotone" dataKey="soft_bounces" stroke="var(--j-soft-fill)" strokeWidth={1.5} dot={false} name="Soft Bounces" animationDuration={800} />
                         <Line yAxisId="engagement" type="monotone" dataKey="complaints" stroke="var(--j-violet)" strokeWidth={1.5} dot={false} name="Complaints" animationDuration={800} />
                       </LineChart>
                     </ResponsiveContainer>

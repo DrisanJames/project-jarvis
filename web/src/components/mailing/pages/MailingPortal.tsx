@@ -2006,7 +2006,7 @@ const TemplatesManager: React.FC = () => {
                       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                         {t.subject && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Subject: <span style={{ color: 'var(--j-blue)' }}>{t.subject}</span></div>}
                         {t.from_name && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>From: <span style={{ color: 'var(--j-blue)' }}>{t.from_name}</span></div>}
-                        {t.preview_text && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Pre-header: <span style={{ color: 'var(--j-violet-strong)' }}>{t.preview_text}</span></div>}
+                        {t.preview_text && <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>Pre-header: <span style={{ color: 'var(--j-violet)' }}>{t.preview_text}</span></div>}
                       </div>
                       {previewId === t.id && t.html_content && (
                         <div style={{ marginTop: 10, background: 'var(--j-bg)', borderRadius: 8, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--j-cyan) 8%, transparent)' }}>
@@ -2088,7 +2088,7 @@ const PreparationBanner: React.FC<{
         <div key={c.id} style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 16px', borderRadius: 8,
-          background: 'rgba(245, 158, 11, 0.08)', borderLeft: '3px solid var(--j-soft)',
+          background: 'rgba(245, 158, 11, 0.08)', borderLeft: '3px solid var(--j-soft-fill)',
           fontSize: 13, color: 'var(--j-warn)',
         }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

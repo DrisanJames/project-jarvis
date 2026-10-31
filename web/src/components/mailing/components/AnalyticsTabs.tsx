@@ -264,7 +264,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                   <th>Sent</th>
                   <th>Delivered</th>
                   <th>Del%</th>
-                  <th style={{ color: 'var(--j-violet-strong)' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
+                  <th style={{ color: 'var(--j-violet)' }} title="Message handed to the relay route for delivery. This is NOT a recipient delivery — relay delivery events are folded into the Delivered column.">Relayed</th>
                   <th style={{ color: 'var(--j-hard)' }}>Hard%</th>
                   <th style={{ color: 'var(--j-soft)' }}>Soft%</th>
                   <th>Complaints</th>
@@ -279,7 +279,7 @@ const DeliverabilityTab: React.FC<{ range: 'today' | 'yesterday'; orgId: string 
                     <td>{fmt(c.sent)}</td>
                     <td>{fmt(c.delivered)}</td>
                     <td>{c.delivery_rate.toFixed(1)}%</td>
-                    <td style={{ color: 'var(--j-violet-strong)' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
+                    <td style={{ color: 'var(--j-violet)' }}>{c.relayed_to_ses ? fmt(c.relayed_to_ses) : '—'}</td>
                     <td style={{ color: 'var(--j-hard)' }}>{c.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: 'var(--j-soft)' }}>{c.soft_bounce_rate.toFixed(2)}%</td>
                     <td>{fmt(c.complaints)}</td>
@@ -717,7 +717,7 @@ const OperationsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
         {waves && (
           <>
             {waves.action_required && (
-              <div style={{ background: 'color-mix(in srgb, var(--j-hard) 14%, transparent)', color: 'var(--j-danger-soft)', padding: 8, borderRadius: 4, marginBottom: 12 }}>
+              <div style={{ background: 'color-mix(in srgb, var(--j-hard-fill) 14%, transparent)', color: 'var(--j-danger-soft)', padding: 8, borderRadius: 4, marginBottom: 12 }}>
                 <FontAwesomeIcon icon={faExclamationTriangle} /> Action required — run pre-deploy cleanup.
               </div>
             )}
@@ -905,7 +905,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
             <div className="ac-kpi-grid" style={{ marginBottom: 16 }}>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value">{fmt(data.summary.total_sent)}</span><span className="ac-kpi-label">Total Sent</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-success)' }}>{fmt(data.summary.total_delivered)}</span><span className="ac-kpi-label">Total Delivered ({pct(data.summary.delivery_rate)})</span></div></div>
-              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-violet-strong)' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
+              <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-violet)' }}>{fmt(data.summary.total_relayed_to_ses || 0)}</span><span className="ac-kpi-label">Relay Handoff (not delivery)</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-hard)' }}>{pct(data.summary.hard_bounce_rate)}</span><span className="ac-kpi-label">Hard Bnc Rate ({fmt(data.summary.total_hard)})</span></div></div>
               <div className="ac-kpi"><div className="ac-kpi-body"><span className="ac-kpi-value" style={{ color: 'var(--j-soft)' }}>{pct(data.summary.soft_bounce_rate)}</span><span className="ac-kpi-label">Soft Bnc Rate ({fmt(data.summary.total_soft)})</span></div></div>
             </div>
@@ -915,7 +915,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                 <th>Sent</th>
                 <th>Delivered</th>
                 <th>Del%</th>
-                <th style={{ color: 'var(--j-violet-strong)' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
+                <th style={{ color: 'var(--j-violet)' }} title="Relay route handoff — not a recipient delivery. Relay delivery events are folded into Delivered.">Relayed</th>
                 <th style={{ color: 'var(--j-hard)' }}>Hard%</th>
                 <th style={{ color: 'var(--j-soft)' }}>Soft%</th>
               </tr></thead>
@@ -926,7 +926,7 @@ const ReportsTab: React.FC<{ orgId: string | null }> = ({ orgId }) => {
                     <td>{fmt(d.sent)}</td>
                     <td>{fmt(d.delivered)}</td>
                     <td>{d.delivery_rate.toFixed(1)}%</td>
-                    <td style={{ color: 'var(--j-violet-strong)' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
+                    <td style={{ color: 'var(--j-violet)' }}>{d.relayed_to_ses ? fmt(d.relayed_to_ses) : '—'}</td>
                     <td style={{ color: 'var(--j-hard)' }}>{d.hard_bounce_rate.toFixed(2)}%</td>
                     <td style={{ color: 'var(--j-soft)' }}>{d.soft_bounce_rate.toFixed(2)}%</td>
                   </tr>

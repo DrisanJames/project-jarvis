@@ -732,30 +732,30 @@ const ManualRevenuePanel: React.FC<{ lane: string; onSaved: () => void }> = ({ l
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
           <label style={fieldLabelStyle}>Revenue date
             <input type="date" value={form.revenue_date} onChange={e => set('revenue_date', e.target.value)}
-              style={{ ...inputStyle, ...(bad('revenue_date') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, ...(bad('revenue_date') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <label style={fieldLabelStyle}>Attribution start
             <input type="date" value={form.attribution_start} onChange={e => set('attribution_start', e.target.value)}
-              style={{ ...inputStyle, ...(bad('attribution_start') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, ...(bad('attribution_start') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <label style={fieldLabelStyle}>Attribution end
             <input type="date" value={form.attribution_end} onChange={e => set('attribution_end', e.target.value)}
-              style={{ ...inputStyle, ...(bad('attribution_end') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, ...(bad('attribution_end') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <label style={fieldLabelStyle}>Amount (USD)
             <input type="number" step="0.01" value={form.amount} onChange={e => set('amount', e.target.value)}
               placeholder="0.00"
-              style={{ ...inputStyle, width: 120, ...(bad('amount') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, width: 120, ...(bad('amount') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <label style={fieldLabelStyle}>Source
             <input type="text" value={form.source} onChange={e => set('source', e.target.value)}
               placeholder="e.g. partner statement"
-              style={{ ...inputStyle, width: 180, ...(bad('source') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, width: 180, ...(bad('source') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <label style={fieldLabelStyle}>Reference
             <input type="text" value={form.reference} onChange={e => set('reference', e.target.value)}
               placeholder="invoice / report id"
-              style={{ ...inputStyle, width: 180, ...(bad('reference') ? { borderColor: colors.danger } : {}) }} />
+              style={{ ...inputStyle, width: 180, ...(bad('reference') ? { borderColor: colors.dangerFill } : {}) }} />
           </label>
           <button
             type="button"

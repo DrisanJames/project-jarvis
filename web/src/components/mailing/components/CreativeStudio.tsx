@@ -955,7 +955,7 @@ export const CreativeStudio: React.FC = () => {
                         <span key={r.site_key}
                           style={{
                             ...chipStyle(activeResultSite === r.site_key),
-                            ...(r.error ? { borderColor: 'var(--j-hard)', color: 'var(--j-hard)' } : {}),
+                            ...(r.error ? { borderColor: 'var(--j-hard-fill)', color: 'var(--j-hard)' } : {}),
                           }}
                           onClick={() => setActiveResultSite(r.site_key)}>
                           {r.site_key.toUpperCase()}{r.error ? ' ✕' : r.saved ? ' ✓' : ''}

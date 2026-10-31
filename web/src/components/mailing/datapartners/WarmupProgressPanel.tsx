@@ -204,7 +204,7 @@ export const WarmupProgressPanel: React.FC = () => {
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar yAxisId="vol" dataKey="Sent" fill="var(--j-violet-strong)" radius={[2, 2, 0, 0]} />
               <Bar yAxisId="vol" dataKey="Delivered" fill="var(--j-success)" radius={[2, 2, 0, 0]} />
-              <Line yAxisId="pct" type="monotone" dataKey="Delivered %" stroke="var(--j-soft)" strokeWidth={2.5} dot={false} />
+              <Line yAxisId="pct" type="monotone" dataKey="Delivered %" stroke="var(--j-soft-fill)" strokeWidth={2.5} dot={false} />
               {warmBrands.map((b, i) => (
                 <Line key={b} yAxisId="pct" type="monotone" dataKey={`${b.toUpperCase()} %`} stroke={BRAND_COLORS[i % BRAND_COLORS.length]} strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
               ))}

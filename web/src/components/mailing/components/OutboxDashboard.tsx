@@ -770,7 +770,7 @@ export const OutboxDashboard: React.FC = () => {
                 width: 9,
                 height: 9,
                 borderRadius: '50%',
-                background: fetchError ? 'var(--j-hard)' : 'var(--j-success)',
+                background: fetchError ? 'var(--j-hard-fill)' : 'var(--j-success)',
                 animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
                 display: 'inline-block',
               }}
@@ -1096,7 +1096,7 @@ export const OutboxDashboard: React.FC = () => {
                     />
                     <Legend wrapperStyle={{ fontSize: 12, color: 'var(--j-text-muted)' }} />
                     <Area type="monotone" dataKey="sent" name="Sent /min" stroke="var(--j-violet)" strokeWidth={2} fill="url(#sentFill)" />
-                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
@@ -1173,7 +1173,7 @@ export const OutboxDashboard: React.FC = () => {
                             <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? 'var(--j-danger-soft)' : 'var(--j-text)' }}>
                               <FontAwesomeIcon
                                 icon={isOpen ? faChevronDown : faChevronRight}
-                                style={{ color: 'var(--j-violet-strong)', fontSize: 11, marginRight: 7 }}
+                                style={{ color: 'var(--j-violet)', fontSize: 11, marginRight: 7 }}
                               />
                               {titleCase(r.isp)}
                               {r.storm && (

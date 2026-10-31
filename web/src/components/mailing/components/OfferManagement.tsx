@@ -1597,7 +1597,7 @@ const CreativePreviewModal: React.FC<{
             <button style={{ ...btnPrimary, background: 'var(--j-success)' }} onClick={onApprove}>Approve</button>
           )}
           {creative.status !== 'rejected' && (
-            <button style={{ ...btnPrimary, background: 'var(--j-hard)' }} onClick={onReject}>Reject</button>
+            <button style={{ ...btnPrimary, background: 'var(--j-hard-fill)' }} onClick={onReject}>Reject</button>
           )}
           <button style={btnGhost} onClick={onClose}>Close</button>
         </div>
@@ -1611,12 +1611,12 @@ const CreativePreviewModal: React.FC<{
 // ═══════════════════════════════════════════════════════════════════════════
 
 const ROLE_CATEGORIES: Record<string, { label: string; color: string }> = {
-  email_hero: { label: 'Email', color: 'var(--j-violet-strong)' },
-  email_header: { label: 'Email', color: 'var(--j-violet-strong)' },
-  email_content: { label: 'Email', color: 'var(--j-violet-strong)' },
-  landing_hero: { label: 'Landing Page', color: 'var(--j-violet-strong)' },
-  landing_banner: { label: 'Landing Page', color: 'var(--j-violet-strong)' },
-  landing_billboard: { label: 'Landing Page', color: 'var(--j-violet-strong)' },
+  email_hero: { label: 'Email', color: 'var(--j-violet)' },
+  email_header: { label: 'Email', color: 'var(--j-violet)' },
+  email_content: { label: 'Email', color: 'var(--j-violet)' },
+  landing_hero: { label: 'Landing Page', color: 'var(--j-violet)' },
+  landing_banner: { label: 'Landing Page', color: 'var(--j-violet)' },
+  landing_billboard: { label: 'Landing Page', color: 'var(--j-violet)' },
   mobile_interstitial: { label: 'Mobile', color: 'var(--j-pink)' },
   mobile_banner: { label: 'Mobile', color: 'var(--j-pink)' },
   content_block: { label: 'Content', color: '#14b8a6' },
@@ -2825,7 +2825,7 @@ const PerformanceTab: React.FC<{
                   <Bar yAxisId="vol" dataKey="sent" name="Sent" fill="color-mix(in srgb, var(--j-violet) 45%, transparent)" radius={[2, 2, 0, 0]} />
                   <Bar yAxisId="vol" dataKey="delivered" name="Delivered" fill="color-mix(in srgb, var(--j-success) 45%, transparent)" radius={[2, 2, 0, 0]} />
                   <Line yAxisId="eng" type="monotone" dataKey="opened" name="Human Opens" stroke="var(--j-success)" strokeWidth={2} dot={false} />
-                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Human Clicks" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
+                  <Line yAxisId="eng" type="monotone" dataKey="clicked" name="Human Clicks" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} />
                   <Line yAxisId="eng" type="monotone" dataKey="conversions" name="Conversions" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
                 </ComposedChart>
               </ResponsiveContainer>

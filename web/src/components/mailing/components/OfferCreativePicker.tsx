@@ -490,7 +490,7 @@ export const OfferCreativePicker: React.FC<Props> = ({
                      opacity: cleared ? 1 : 0.6,
                    }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: 'var(--j-violet-strong)', fontSize: 12 }} />}
+                  {selected && <FontAwesomeIcon icon={faCheckCircle} style={{ color: 'var(--j-violet)', fontSize: 12 }} />}
                   {loadingProofId === p.id && <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 11, color: 'var(--j-blue)' }} />}
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)' }}>{p.name}</span>
                 </div>

@@ -692,11 +692,11 @@ const IspBreakdownDrawer: React.FC<{ brand: GrowthBrand; onClose: () => void }> 
               </div>
               <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: colors.textFaint, flexWrap: 'wrap' }}>
                 <span>
-                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.danger, marginRight: 5 }} />
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.dangerFill, marginRight: 5 }} />
                   hard bounce
                 </span>
                 <span>
-                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.warning, marginRight: 5 }} />
+                  <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: colors.warningFill, marginRight: 5 }} />
                   soft bounce
                 </span>
                 <span style={{ marginLeft: 'auto' }}>

@@ -5,8 +5,9 @@
 // Palette: the Jarvis brand — violet / pink / cyan / lime over ink (dark) or
 // cream (light). Spec: docs/PORTAL_DESIGN_SYSTEM.md §2.
 //
-// Hard bounce is always red (--j-hard) and soft bounce always amber (--j-soft):
-// #ef4444 / #f59e0b in dark, the same hues darkened to pass AA in light.
+// Hard bounce is always red and soft bounce always amber. Fills (bars, dots,
+// series, tints) are exactly #ef4444 / #f59e0b in both modes: dangerFill /
+// warningFill. danger / warning are the same hues adjusted per mode for text.
 
 import type React from "react"
 
@@ -49,8 +50,10 @@ export const colors = {
   success: v("success"),
   successText: v("success-soft"),
   warning: v("soft"),
+  warningFill: v("soft-fill"),
   warningText: v("warn"),
   danger: v("hard"),
+  dangerFill: v("hard-fill"),
   dangerText: v("danger-soft"),
   dangerFaint: v("danger-soft"),
   idle: v("text-muted"),
@@ -66,7 +69,7 @@ export const alpha = (c: string, a: keyof typeof ALPHA_PCT) => mix(c, ALPHA_PCT[
 export const gradients = {
   // Utilization / progress bar fills
   progressOk: `linear-gradient(90deg,${v("violet-strong")},${v("success")})`,
-  progressHot: `linear-gradient(90deg,${v("soft")},${v("hard")})`,
+  progressHot: `linear-gradient(90deg,${v("soft-fill")},${v("hard-fill")})`,
   // Brand button / accent — the marketing site's violet → pink
   accent: `linear-gradient(135deg,${v("violet-strong")} 0%,${v("pink")} 100%)`,
 } as const

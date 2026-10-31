@@ -1289,7 +1289,7 @@ const cellTd: React.CSSProperties = {
 }
 const multiBadge: React.CSSProperties = {
   marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 10, fontWeight: 700,
-  background: 'rgba(239,68,68,0.25)', color: colors.danger,
+  background: 'rgba(239,68,68,0.25)', color: colors.dangerText,
 }
 const editedChip: React.CSSProperties = {
   marginLeft: 6, padding: '0 5px', borderRadius: 8, fontSize: 10, fontWeight: 700,

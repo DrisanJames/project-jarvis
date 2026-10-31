@@ -6,12 +6,13 @@
  * preference. Spec: docs/PORTAL_DESIGN_SYSTEM.md §2.
  *
  * Accents have a separate value per mode so the same token is readable as
- * text on both a cream page and an ink page. Light values are held to WCAG AA:
+ * text on both a cream page and an ink page. Both modes are held to WCAG AA:
  * every text token >= 4.5:1 on every surface and on a 30% tint of itself;
  * --j-border-strong >= 3:1 for form-control outlines.
  *
- * --j-hard / --j-soft are the hard- and soft-bounce colours: #ef4444 / #f59e0b
- * in dark, the same hues darkened to pass AA in light.
+ * Hard and soft bounce: --j-hard-fill / --j-soft-fill are exactly #ef4444 /
+ * #f59e0b in both modes, for bars, dots, chart series and tints.
+ * --j-hard / --j-soft are the same hues adjusted per mode for text.
  */
 
 :root,
@@ -25,27 +26,29 @@
   --j-shade: #0d0b20;
   --j-border: #3d3770;
   --j-border-subtle: #2b2650;
-  --j-border-strong: #4f4888;
+  --j-border-strong: #666097;
 
   --j-text: #fff8ee;
   --j-text-2: #ddd8f2;
   --j-text-muted: #a9a4cb;
-  --j-text-faint: #7d77a3;
+  --j-text-faint: #9b96b8;
   --j-on-accent: #ffffff;
 
-  --j-violet: #a48bff;
+  --j-violet: #b7a3ff;
   --j-violet-strong: #6d28ff;
   --j-violet-soft: #cbbcff;
-  --j-pink: #ff5ca8;
+  --j-pink: #ff84bd;
   --j-cyan: #19d3f0;
-  --j-blue: #5ab0ff;
+  --j-blue: #72bbff;
   --j-success: #c6f432;
   --j-success-soft: #ddf98a;
   --j-warn: #ffb547;
-  --j-danger: #ff5c7a;
+  --j-danger: #ff869c;
   --j-danger-soft: #ffa3b5;
-  --j-hard: #ef4444;
-  --j-soft: #f59e0b;
+  --j-hard: #f47f7f;
+  --j-soft: #f5a51d;
+  --j-hard-fill: #ef4444;
+  --j-soft-fill: #f59e0b;
 
   --j-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
   --j-shadow-pop: 4px 4px 0 #0a0818;
@@ -82,6 +85,8 @@
   --j-danger-soft: #a50e30;
   --j-hard: #942929;
   --j-soft: #744800;
+  --j-hard-fill: #ef4444;
+  --j-soft-fill: #f59e0b;
 
   --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
   --j-shadow-pop: 4px 4px 0 #14112b;
@@ -116,6 +121,8 @@
     --j-danger-soft: #a50e30;
     --j-hard: #942929;
     --j-soft: #744800;
+    --j-hard-fill: #ef4444;
+    --j-soft-fill: #f59e0b;
     --j-shadow: 0 2px 0 color-mix(in srgb, var(--j-shade) 8%, transparent);
     --j-shadow-pop: 4px 4px 0 #14112b;
   }

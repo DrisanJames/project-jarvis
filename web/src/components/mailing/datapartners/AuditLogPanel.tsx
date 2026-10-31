@@ -172,7 +172,7 @@ const iconBtn: React.CSSProperties = {
   cursor: 'pointer', fontSize: 12,
 };
 const ghostBtn: React.CSSProperties = {
-  background: 'transparent', color: 'var(--j-violet-strong)',
+  background: 'transparent', color: 'var(--j-violet)',
   border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };

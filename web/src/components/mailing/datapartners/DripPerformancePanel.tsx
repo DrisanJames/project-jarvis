@@ -286,7 +286,7 @@ export const DripPerformancePanel: React.FC = () => {
             return (
               <React.Fragment key={key}>
                 <tr onClick={() => toggleGroup(key)} style={{ cursor: 'pointer', background: isOpen ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)' : undefined }}>
-                  <td style={td}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ color: 'var(--j-violet-strong)', fontSize: 12 }} /></td>
+                  <td style={td}><FontAwesomeIcon icon={isOpen ? faChevronDown : faChevronRight} style={{ color: 'var(--j-violet)', fontSize: 12 }} /></td>
                   <td style={td}>
                     <div>{labelForVertical(g.vertical)}</div>
                     <div style={{ fontSize: 11, color: 'var(--j-violet)', fontFamily: 'ui-monospace, monospace' }}>{g.brand.toUpperCase()}</div>
@@ -396,8 +396,8 @@ const GroupDetail: React.FC<{ group: RollupGroup; series: SeriesPoint[]; waves: 
             <Legend wrapperStyle={{ fontSize: 12 }} />
             <Bar yAxisId="vol" dataKey="Sent" fill="var(--j-violet-strong)" radius={[2, 2, 0, 0]} />
             <Bar yAxisId="vol" dataKey="Delivered" fill="var(--j-success)" radius={[2, 2, 0, 0]} />
-            <Line yAxisId="eng" type="monotone" dataKey="Hard" stroke="var(--j-hard)" strokeWidth={2} dot={false} />
-            <Line yAxisId="eng" type="monotone" dataKey="Soft" stroke="var(--j-soft)" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Hard" stroke="var(--j-hard-fill)" strokeWidth={2} dot={false} />
+            <Line yAxisId="eng" type="monotone" dataKey="Soft" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} />
             <Line yAxisId="eng" type="monotone" dataKey="Opens" stroke="var(--j-blue)" strokeWidth={2} dot={false} />
             <Line yAxisId="eng" type="monotone" dataKey="Clicks" stroke="var(--j-violet)" strokeWidth={2} dot={false} />
           </ComposedChart>

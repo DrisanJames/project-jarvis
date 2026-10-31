@@ -291,7 +291,7 @@ const ActiveSendsPanel: React.FC = () => {
               {/* Header */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-                  <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--j-violet-strong)', fontSize: 11, flexShrink: 0 }} />
+                  <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--j-violet)', fontSize: 11, flexShrink: 0 }} />
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--j-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{c.name}</span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, marginLeft: 10 }}>
@@ -340,7 +340,7 @@ const ActiveSendsPanel: React.FC = () => {
                 {[
                   { label: 'Delivered', value: c.delivered_count, color: 'var(--j-success)' },
                   { label: 'Opens', value: c.open_count, color: 'var(--j-blue)' },
-                  { label: 'Clicks', value: c.click_count, color: 'var(--j-violet-strong)' },
+                  { label: 'Clicks', value: c.click_count, color: 'var(--j-violet)' },
                   { label: 'Hard Bounce', value: c.hard_bounce_count, color: c.hard_bounce_count > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' },
                   { label: 'Soft Bounce', value: c.soft_bounce_count, color: c.soft_bounce_count > 0 ? 'var(--j-soft)' : 'var(--j-border-strong)' },
                   { label: 'Complaints', value: c.complaint_count, color: c.complaint_count > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' },
@@ -759,7 +759,7 @@ const AgentCalendar: React.FC = () => {
                 {day && (
                   <>
                     <div style={{ fontSize: 11, color: day.date === today ? 'var(--j-violet)' : 'var(--j-text-faint)', fontWeight: day.date === today ? 700 : 400 }}>{parseInt(day.date.split('-')[2])}</div>
-                    {day.projected_volume > 0 && <div style={{ fontSize: 10, color: 'var(--j-violet-strong)', fontWeight: 600, marginTop: 2 }}>{(day.projected_volume / 1000).toFixed(0)}K</div>}
+                    {day.projected_volume > 0 && <div style={{ fontSize: 10, color: 'var(--j-violet)', fontWeight: 600, marginTop: 2 }}>{(day.projected_volume / 1000).toFixed(0)}K</div>}
                     {day.recommendations.map((r, j) => (
                       <div key={j} onClick={(e) => { e.stopPropagation(); setCameFromDay(day); setSelectedDay(null); setSelectedRec(r); }}
                         style={{ marginTop: 2, fontSize: 9, padding: '2px 4px', borderRadius: 4, background: `color-mix(in srgb, ${statusColor(r.status)} 8%, transparent)`, color: statusColor(r.status), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', border: `1px solid color-mix(in srgb, ${statusColor(r.status)} 19%, transparent)` }}>
@@ -1052,7 +1052,7 @@ const AgentCalendar: React.FC = () => {
                             <span style={{ fontSize: 7, padding: '1px 4px', borderRadius: 3, background: 'color-mix(in srgb, var(--j-violet-strong) 12%, transparent)', color: 'var(--j-violet)', fontWeight: 700, flexShrink: 0, letterSpacing: 0.5 }}>LIST</span>
                           )}
                           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{l.name}</span>
-                          <FontAwesomeIcon icon={faPlus} style={{ color: 'var(--j-violet-strong)', fontSize: 10, flexShrink: 0 }} />
+                          <FontAwesomeIcon icon={faPlus} style={{ color: 'var(--j-violet)', fontSize: 10, flexShrink: 0 }} />
                         </div>
                       ))}
                     </div>

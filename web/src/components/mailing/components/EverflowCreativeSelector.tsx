@@ -580,7 +580,7 @@ export const EverflowCreativeSelector: React.FC<Props> = ({ onCreativeSelect, or
 
       {/* Header */}
       <div className="ef-header">
-        <FontAwesomeIcon icon={faImage} style={{ color: 'var(--j-violet-strong)', fontSize: 18 }} />
+        <FontAwesomeIcon icon={faImage} style={{ color: 'var(--j-violet)', fontSize: 18 }} />
         <h3>Offer Creatives</h3>
         {totalCreatives > 0 && <span className="ef-badge">{totalCreatives} creatives</span>}
       </div>
