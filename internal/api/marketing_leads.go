@@ -60,7 +60,7 @@ const (
 	leadNotifyTo       = "drisan@jamesventurescorp.com"
 	// Sent straight through the SES API, not a sending profile, so it never
 	// queues behind campaign mail. The identity is verified in SES_REGION.
-	leadNotifyFrom = "Jarvis Leads <notify@em.discountblog.com>"
+	leadNotifyFrom = "Jarvis Leads <notify@e.projectjarvis.io>"
 )
 
 // leadSubjects are fixed. Nothing a visitor typed reaches a mail header.
