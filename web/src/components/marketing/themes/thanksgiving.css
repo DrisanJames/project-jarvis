@@ -1,0 +1,126 @@
+/* Traditional Thanksgiving. Everything is scoped to the theme attribute, so
+   setting ACTIVE_SITE_THEME to null restores the base brand untouched. */
+
+.jv-site[data-site-theme='thanksgiving'] {
+  --jv-violet: #8c1c3a;
+  --jv-pink: #8c1c3a;
+  --jv-lime: #e0a526;
+  --jv-cyan: #5c7045;
+  --jv-tangerine: #c8691e;
+  --jv-ink: #3a2418;
+  --jv-ink-2: #52362a;
+  --jv-muted: #5e4a3e;
+  --jv-line: rgba(58, 36, 24, 0.14);
+  --jv-radius: 16px;
+  --jv-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --jvt-border: #e2cfb4;
+  --jvt-wheat: #fbefdd;
+  --jvt-soft: #efe1d6;
+}
+
+[data-site-theme='thanksgiving'] h1,
+[data-site-theme='thanksgiving'] h2,
+[data-site-theme='thanksgiving'] h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+[data-site-theme='thanksgiving'] .jv-wordmark {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+[data-site-theme='thanksgiving'] .jv-eyebrow {
+  background: var(--jvt-wheat);
+  border-color: var(--jvt-border);
+  color: var(--jv-violet);
+}
+[data-site-theme='thanksgiving'] .jv-btn {
+  border-color: var(--jv-violet);
+}
+[data-site-theme='thanksgiving'] .jv-btn:hover {
+  box-shadow: 0 6px 16px rgba(58, 36, 24, 0.22);
+}
+[data-site-theme='thanksgiving'] .jv-btn--primary {
+  color: #fff;
+}
+[data-site-theme='thanksgiving'] .jv-btn--ghost {
+  color: var(--jv-violet);
+}
+
+[data-site-theme='thanksgiving'] .jv-announce {
+  background: var(--jv-violet);
+}
+[data-site-theme='thanksgiving'] .jv-announce a {
+  color: #ffe2a8;
+}
+[data-site-theme='thanksgiving'] .jv-nav-link:hover,
+[data-site-theme='thanksgiving'] .jv-nav-link.is-active {
+  background: var(--jvt-wheat);
+}
+[data-site-theme='thanksgiving'] .jv-burger {
+  border-color: var(--jv-ink);
+}
+
+[data-site-theme='thanksgiving'] .jv-hero,
+[data-site-theme='thanksgiving'] .jv-page-hero {
+  background: var(--jvt-wheat);
+}
+[data-site-theme='thanksgiving'] .jv-hl {
+  background: none;
+  color: var(--jv-violet);
+  padding: 0;
+}
+
+.jv-theme-scene {
+  background: #fbefdd;
+  height: clamp(240px, 32vw, 460px);
+  overflow: hidden;
+}
+.jv-theme-scene img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center bottom;
+}
+
+[data-site-theme='thanksgiving'] .jv-section--cream {
+  background: var(--jvt-wheat);
+}
+[data-site-theme='thanksgiving'] .jv-section--ink .jv-lede,
+[data-site-theme='thanksgiving'] .jv-footer {
+  color: var(--jvt-soft);
+}
+[data-site-theme='thanksgiving'] .jv-card {
+  background: #fff;
+  border: 1.5px solid var(--jvt-border);
+}
+[data-site-theme='thanksgiving'] .jv-card:hover {
+  box-shadow: 0 8px 20px rgba(58, 36, 24, 0.14);
+}
+[data-site-theme='thanksgiving'] .jv-card--dark {
+  background: var(--jv-ink-2);
+  border-color: var(--jv-ink-2);
+}
+[data-site-theme='thanksgiving'] .jv-cta-band {
+  background: var(--jv-violet);
+}
+[data-site-theme='thanksgiving'] .jv-cta-band .jv-btn--primary {
+  background: #fff;
+  color: var(--jv-violet);
+}
+
+[data-site-theme='thanksgiving'] .jv-section--ink :focus-visible,
+[data-site-theme='thanksgiving'] .jv-cta-band :focus-visible,
+[data-site-theme='thanksgiving'] .jv-announce :focus-visible,
+[data-site-theme='thanksgiving'] .jv-footer :focus-visible {
+  outline-color: #ffe2a8;
+}
+
+[data-site-theme='thanksgiving'] .jv-msg--you {
+  background: #ffe2a8;
+  color: var(--jv-ink);
+}
+[data-site-theme='thanksgiving'] .jv-footer-base {
+  color: var(--jvt-soft);
+}

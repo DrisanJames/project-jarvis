@@ -19,6 +19,7 @@ import { BrandPage } from './pages/BrandPage';
 import { SignInPage } from './pages/SignInPage';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ACTIVE_SITE_THEME } from './themes';
 
 // Public marketing site, shown to signed-out visitors. Access to the portal is
 // decided only in internal/auth/auth.go; nothing here grants anything.
@@ -108,7 +109,7 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn, authError = null, ini
 
   return (
     <NavContext.Provider value={nav}>
-      <div className="jv-site">
+      <div className="jv-site" data-site-theme={page === 'brand' ? undefined : (ACTIVE_SITE_THEME ?? undefined)}>
         <a className="jv-skip" href="#jv-main">
           Skip to content
         </a>

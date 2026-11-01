@@ -3,6 +3,7 @@ import { InboxSorterLoop, Spot } from '../Art';
 import { JarvisMark } from '../JarvisLogo';
 import { AudiencePreview, AutomationPreview, CampaignPreview, ReportPreview } from '../ProductPreview';
 import { Availability, CtaBand, EarlyAccessLink, Eyebrow, PageLink } from '../parts';
+import { SiteThemeScene } from '../themes';
 
 const CARDS = [
   {
@@ -115,6 +116,8 @@ export const HomePage: React.FC = () => (
         <CampaignPreview />
       </div>
     </section>
+
+    <SiteThemeScene />
 
     <section className="jv-section">
       <div className="jv-wrap">
