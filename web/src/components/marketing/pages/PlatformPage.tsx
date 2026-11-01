@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React from 'react';
 import { JarvisMark } from '../JarvisLogo';
 import { AudiencePreview, AutomationPreview, CampaignPreview, ReportPreview } from '../ProductPreview';
 import { Availability, CtaBand, EarlyAccessLink, Eyebrow, PageHero, PageLink } from '../parts';
@@ -42,47 +42,9 @@ const CHAPTERS = [
   },
 ];
 
-// Moves [data-speed] layers as the page scrolls. Transforms only, so nothing
-// reflows, and off entirely for visitors who ask for reduced motion.
-const useParallax = () => {
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    if (!root.current || !motion || motion.matches) return;
-    const layers = Array.from(root.current.querySelectorAll<HTMLElement>('[data-speed]'));
-    let frame = 0;
-    const paint = () => {
-      frame = 0;
-      const mid = window.innerHeight / 2;
-      layers.forEach((el) => {
-        const box = el.parentElement!.getBoundingClientRect();
-        if (box.bottom < -200 || box.top > window.innerHeight + 200) return;
-        const offset = (box.top + box.height / 2 - mid) * Number(el.dataset.speed);
-        el.style.transform = `translate3d(0, ${offset.toFixed(1)}px, 0)`;
-      });
-    };
-    const onScroll = () => {
-      if (!frame) frame = requestAnimationFrame(paint);
-    };
-    paint();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onScroll);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
-      layers.forEach((el) => {
-        el.style.transform = '';
-      });
-    };
-  }, []);
-  return root;
-};
-
 export const PlatformPage: React.FC = () => {
-  const root = useParallax();
   return (
-    <div ref={root}>
+    <>
       <PageHero
         eyebrow="Platform"
         title={
@@ -146,6 +108,6 @@ export const PlatformPage: React.FC = () => {
       </section>
 
       <CtaBand title="A clear path from draft to results." body="Prepare your content, select the right audience, review the details and learn from what happened." />
-    </div>
+    </>
   );
 };

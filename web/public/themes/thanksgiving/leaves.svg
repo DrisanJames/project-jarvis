@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 460" width="1440" height="460">
+<defs>
+    <path id="leaf" d="M0-12l3 6 6-2-2 6 5 2-6 4 1 5-6-1-2 4-2-4-6 1 1-5-6-4 5-2-2-6 6 2z"/>
+</defs>
+  <g fill="#C8691E"><use href="#leaf" x="96" y="96"/><use href="#leaf" x="1370" y="150"/><use href="#leaf" x="940" y="60"/></g>
+  <g fill="#8C1C3A"><use href="#leaf" x="430" y="120"/><use href="#leaf" x="1180" y="330"/></g>
+  <g fill="#E0A526"><use href="#leaf" x="260" y="60"/><use href="#leaf" x="1010" y="190"/></g>
+</svg>

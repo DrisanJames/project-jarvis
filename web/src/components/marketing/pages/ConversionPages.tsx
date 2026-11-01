@@ -1,10 +1,11 @@
 import React from 'react';
 import { JarvisMark } from '../JarvisLogo';
 import { FieldDef, LeadForm, USE_CASES, VOLUME_OPTIONS } from '../LeadForm';
-import { Eyebrow } from '../parts';
+import { Eyebrow, ParallaxLayers } from '../parts';
 
 const FormPage: React.FC<{ eyebrow: string; title: string; body: string; children: React.ReactNode }> = ({ eyebrow, title, body, children }) => (
-  <section className="jv-section jv-section--tight jv-form-page">
+  <section className="jv-section jv-section--tight jv-form-page jv-plx-host">
+    <ParallaxLayers />
     <div className="jv-wrap jv-split jv-split--top">
       <div>
         <Eyebrow>{eyebrow}</Eyebrow>

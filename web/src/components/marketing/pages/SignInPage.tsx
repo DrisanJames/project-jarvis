@@ -1,12 +1,13 @@
 import React from 'react';
 import { JarvisMark } from '../JarvisLogo';
-import { useMarketingNav } from '../parts';
+import { ParallaxLayers, useMarketingNav } from '../parts';
 import { markSignInStarted } from '../signInHint';
 
 export const SignInPage: React.FC<{ error?: string | null }> = ({ error }) => {
   const { signIn } = useMarketingNav();
   return (
-    <section className="jv-section jv-signin">
+    <section className="jv-section jv-signin jv-plx-host">
+      <ParallaxLayers />
       <div className="jv-signin-card">
         <JarvisMark size={64} title="" animated look />
         <h1>Sign in to Jarvis</h1>

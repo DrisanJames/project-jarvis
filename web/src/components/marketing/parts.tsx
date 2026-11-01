@@ -71,13 +71,25 @@ export const CtaBand: React.FC<{ title: string; body: string }> = ({ title, body
   </section>
 );
 
+// Decorative layers for a page's opening section. Its section takes jv-plx-host.
+const PLX_SPEEDS = [0.22, 0.14, -0.12, 0.3, -0.2];
+
+export const ParallaxLayers: React.FC = () => (
+  <div className="jv-plx-bg" aria-hidden="true">
+    {PLX_SPEEDS.map((speed, i) => (
+      <span key={speed} className={`jv-plx-bit jv-plx-bit--${i + 1}`} data-speed={speed} />
+    ))}
+  </div>
+);
+
 export const PageHero: React.FC<{ eyebrow: string; title: React.ReactNode; body: string; children?: React.ReactNode }> = ({
   eyebrow,
   title,
   body,
   children,
 }) => (
-  <section className="jv-page-hero">
+  <section className="jv-page-hero jv-plx-host">
+    <ParallaxLayers />
     <div className="jv-wrap">
       <Eyebrow>{eyebrow}</Eyebrow>
       <h1>{title}</h1>

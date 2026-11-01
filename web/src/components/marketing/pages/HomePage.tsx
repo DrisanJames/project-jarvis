@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { InboxSorterLoop, Spot } from '../Art';
 import { JarvisMark } from '../JarvisLogo';
 import { AudiencePreview, AutomationPreview, CampaignPreview, ReportPreview } from '../ProductPreview';
-import { Availability, CtaBand, EarlyAccessLink, Eyebrow, PageLink } from '../parts';
+import { Availability, CtaBand, EarlyAccessLink, Eyebrow, PageLink, ParallaxLayers } from '../parts';
 import { SiteThemeScene } from '../themes';
 
 const CARDS = [
@@ -94,7 +94,8 @@ const Walkthrough: React.FC = () => {
 
 export const HomePage: React.FC = () => (
   <>
-    <section className="jv-hero">
+    <section className="jv-hero jv-plx-host">
+      <ParallaxLayers />
       <div className="jv-wrap jv-hero-grid">
         <div className="jv-hero-copy">
           <Eyebrow tone="pink">AI-powered email marketing</Eyebrow>

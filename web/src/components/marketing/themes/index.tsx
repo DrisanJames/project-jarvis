@@ -11,6 +11,9 @@ export const ACTIVE_SITE_THEME: string | null = 'thanksgiving';
 export const SiteThemeScene: React.FC = () =>
   ACTIVE_SITE_THEME === 'thanksgiving' ? (
     <div className="jv-theme-scene">
+      <img src="/themes/thanksgiving/sun.svg" alt="" width={1440} height={460} decoding="async" data-speed="0.2" />
+      <img src="/themes/thanksgiving/hills.svg" alt="" width={1440} height={460} decoding="async" data-speed="0.08" />
       <img src="/themes/thanksgiving/homestead.svg" alt="" width={1440} height={460} decoding="async" />
+      <img src="/themes/thanksgiving/leaves.svg" alt="" width={1440} height={460} decoding="async" data-speed="-0.14" />
     </div>
   ) : null;

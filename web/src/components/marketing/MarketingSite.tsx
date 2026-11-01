@@ -20,6 +20,7 @@ import { SignInPage } from './pages/SignInPage';
 import { OnboardingPage } from './pages/OnboardingPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { ACTIVE_SITE_THEME } from './themes';
+import { useParallax } from './useParallax';
 
 // Public marketing site, shown to signed-out visitors. Access to the portal is
 // decided only in internal/auth/auth.go; nothing here grants anything.
@@ -62,6 +63,7 @@ export const MarketingSite: React.FC<Props> = ({ onSignIn, authError = null, ini
   const [page, setPage] = useState<PageId>(() => pageForPath(initialPath ?? window.location.pathname));
   const [menuOpen, setMenuOpen] = useState(false);
   const fromPath = useRef('');
+  useParallax(page);
 
   useEffect(() => {
     document.body.classList.add('jv-body');

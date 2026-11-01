@@ -1,31 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 460" width="1440" height="460">
-  <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FBEFDD"/>
-      <stop offset="0.65" stop-color="#F9D9A8"/>
-      <stop offset="1" stop-color="#F2B36B"/>
-    </linearGradient>
+<defs>
     <linearGradient id="jv-grad" x1="6" y1="12" x2="58" y2="62" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#6D28FF"/>
       <stop offset="0.55" stop-color="#FF2E88"/>
       <stop offset="1" stop-color="#FF8A00"/>
     </linearGradient>
-    <g id="tree-o"><rect x="-8" y="30" width="16" height="84" rx="4" fill="#6B4226"/><circle cy="0" r="56" fill="#D9761F"/><circle cx="-38" cy="24" r="36" fill="#C8691E"/><circle cx="38" cy="24" r="38" fill="#E0A526"/></g>
-    <g id="tree-r"><rect x="-8" y="30" width="16" height="84" rx="4" fill="#6B4226"/><circle cy="0" r="52" fill="#A8321A"/><circle cx="-34" cy="26" r="34" fill="#8C1C3A"/><circle cx="36" cy="24" r="36" fill="#C8691E"/></g>
     <g id="pumpkin"><ellipse rx="26" ry="20" fill="#D9761F" stroke="#6B4226" stroke-width="2.5"/><path d="M-9-18q-9 18 0 36M9-18q9 18 0 36" fill="none" stroke="#6B4226" stroke-width="2"/><path d="M0-19q1-11 9-12" fill="none" stroke="#5C7045" stroke-width="5" stroke-linecap="round"/></g>
-    <path id="leaf" d="M0-12l3 6 6-2-2 6 5 2-6 4 1 5-6-1-2 4-2-4-6 1 1-5-6-4 5-2-2-6 6 2z"/>
-  </defs>
-
-  <rect width="1440" height="460" fill="url(#sky)"/>
-  <circle cx="1130" cy="120" r="58" fill="#FFF3D6"/>
-  <path d="M0 300q220-90 470-34t500-16 470 8v202H0z" fill="#D8B26A"/>
-  <path d="M0 340q300-70 640-30t800-20v170H0z" fill="#B99A4E"/>
-
-  <use href="#tree-o" x="170" y="258"/>
-  <use href="#tree-r" x="330" y="280"/>
-  <use href="#tree-r" x="1080" y="268"/>
-  <use href="#tree-o" x="1270" y="262"/>
-
+</defs>
   <path d="M0 382q360-34 720-16t720-10v104H0z" fill="#7F8A4C"/>
 
   <g stroke="#6B4226" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
@@ -80,7 +61,4 @@
     </g>
   </g>
 
-  <g fill="#C8691E"><use href="#leaf" x="96" y="96"/><use href="#leaf" x="1370" y="150"/><use href="#leaf" x="940" y="60"/></g>
-  <g fill="#8C1C3A"><use href="#leaf" x="430" y="120"/><use href="#leaf" x="1180" y="330"/></g>
-  <g fill="#E0A526"><use href="#leaf" x="260" y="60"/><use href="#leaf" x="1010" y="190"/></g>
 </svg>

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { JarvisMark } from '../JarvisLogo';
 import { Honeypot, SUBMIT_ERROR, USE_CASES, VOLUME_OPTIONS, useFormSubmit } from '../LeadForm';
-import { Eyebrow, PageLink } from '../parts';
+import { Eyebrow, PageLink, ParallaxLayers } from '../parts';
 
 // The new-customer form. The token comes from the Google sign-in, in the URL
 // fragment. It only fills in this form: it is not a session, and finishing the
@@ -136,7 +136,8 @@ export const OnboardingPage: React.FC = () => {
 
   if (!ready) {
     return (
-      <section className="jv-section jv-signin">
+      <section className="jv-section jv-signin jv-plx-host">
+        <ParallaxLayers />
         <noscript>
           <h1>Please turn on JavaScript to continue.</h1>
         </noscript>
@@ -145,7 +146,8 @@ export const OnboardingPage: React.FC = () => {
   }
 
   return (
-    <section className="jv-section jv-signin">
+    <section className="jv-section jv-signin jv-plx-host">
+      <ParallaxLayers />
       {!claims || status === 'expired' ? (
         <Expired />
       ) : status === 'done' ? (

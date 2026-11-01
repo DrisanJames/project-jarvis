@@ -1,9 +1,10 @@
 import React from 'react';
 import { JarvisMark } from '../JarvisLogo';
-import { PageLink } from '../parts';
+import { PageLink, ParallaxLayers } from '../parts';
 
 export const NotFoundPage: React.FC = () => (
-  <section className="jv-section jv-signin">
+  <section className="jv-section jv-signin jv-plx-host">
+    <ParallaxLayers />
     <div className="jv-signin-card">
       <JarvisMark size={72} title="" mood="wink" />
       <h1>We couldn’t find that page.</h1>

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 460" width="1440" height="460">
+<defs>
+    <g id="tree-o"><rect x="-8" y="30" width="16" height="84" rx="4" fill="#6B4226"/><circle cy="0" r="56" fill="#D9761F"/><circle cx="-38" cy="24" r="36" fill="#C8691E"/><circle cx="38" cy="24" r="38" fill="#E0A526"/></g>
+    <g id="tree-r"><rect x="-8" y="30" width="16" height="84" rx="4" fill="#6B4226"/><circle cy="0" r="52" fill="#A8321A"/><circle cx="-34" cy="26" r="34" fill="#8C1C3A"/><circle cx="36" cy="24" r="36" fill="#C8691E"/></g>
+</defs>
+  <path d="M0 300q220-90 470-34t500-16 470 8v202H0z" fill="#D8B26A"/>
+  <path d="M0 340q300-70 640-30t800-20v170H0z" fill="#B99A4E"/>
+  <use href="#tree-o" x="170" y="258"/>
+  <use href="#tree-r" x="330" y="280"/>
+  <use href="#tree-r" x="1080" y="268"/>
+  <use href="#tree-o" x="1270" y="262"/>
+</svg>

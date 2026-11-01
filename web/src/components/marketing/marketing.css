@@ -2032,3 +2032,86 @@ body.jv-body {
 @media (max-width: 600px) {
   .jv-usecases { grid-template-columns: 1fr; }
 }
+
+/* Parallax on every page: decorative layers behind each page's opening section.
+   Moved by useParallax; a seasonal theme restyles them. */
+.jv-plx-host {
+  position: relative;
+}
+.jv-plx-host > :not(.jv-plx-bg) {
+  position: relative;
+  z-index: 1;
+}
+.jv-plx-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.jv-plx-bit {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  will-change: transform;
+}
+.jv-plx-bit--1 {
+  right: 3%;
+  top: 10%;
+  width: 120px;
+  height: 120px;
+  background: #e4d8ff;
+}
+.jv-plx-bit--2 {
+  left: 2%;
+  top: 22%;
+  width: 44px;
+  height: 44px;
+  background: #c9f5fc;
+}
+.jv-plx-bit--3 {
+  right: 12%;
+  bottom: 12%;
+  width: 72px;
+  height: 72px;
+  background: #ffd3e6;
+}
+.jv-plx-bit--4 {
+  left: 6%;
+  bottom: 8%;
+  width: 64px;
+  height: 64px;
+  background: #f3fdd3;
+}
+.jv-plx-bit--5 {
+  right: 5%;
+  top: 58%;
+  width: 34px;
+  height: 34px;
+  background: #ffe1bd;
+}
+/* Text reaches the edges below this width, so only corner layers stay. */
+@media (max-width: 1280px) {
+  .jv-plx-bit--2,
+  .jv-plx-bit--4 {
+    display: none;
+  }
+}
+@media (max-width: 860px) {
+  .jv-plx-bit--5 {
+    display: none;
+  }
+  .jv-plx-bit--1,
+  .jv-site[data-site-theme] .jv-plx-bit--1 {
+    top: 8px;
+    right: 8px;
+    width: 52px;
+    height: 52px;
+  }
+  .jv-plx-bit--3,
+  .jv-site[data-site-theme] .jv-plx-bit--3 {
+    right: 10px;
+    bottom: 6px;
+    width: 34px;
+    height: 34px;
+  }
+}
