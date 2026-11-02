@@ -6,7 +6,7 @@ import {
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, /* faStore (offer-center nav retired 2026-08-17), */
   faSpinner, faSeedling, faWandMagicSparkles,
-  faTruckFast, faRoute, faLink, faGears, faLayerGroup, faSliders,
+  faTruckFast, faRoute, faGears, faLayerGroup, faSliders,
   faRightLeft, faBoxesStacked, faUsers, faNewspaper, faBook, faSun, faMoon,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
@@ -28,7 +28,7 @@ const SuppressionPortal = lazy(() => import('../components/SuppressionPortal').t
 const InboxProfiles = lazy(() => import('../components/InboxProfiles').then(m => ({ default: m.InboxProfiles })));
 const SendTestEmail = lazy(() => import('../components/SendTestEmail').then(m => ({ default: m.SendTestEmail })));
 const MissionControl = lazy(() => import('../components/MissionControl').then(m => ({ default: m.MissionControl })));
-const DomainCenter = lazy(() => import('../components/DomainCenter').then(m => ({ default: m.DomainCenter })));
+const DomainCenterTabs = lazy(() => import('../components/DomainCenterTabs').then(m => ({ default: m.DomainCenterTabs })));
 const DomainAgents = lazy(() => import('../components/DomainAgents').then(m => ({ default: m.DomainAgents })));
 // AnalyticsCenter retired 2026-06-09: the Event Lake Explorer (now labeled
 // "Analytics") is the operator's analytics surface. Component file kept for
@@ -59,7 +59,6 @@ const AudienceAnalytics = lazy(() => import('../components/AudienceAnalytics').t
 const AudienceCadenceByCell = lazy(() => import('../components/AudienceCadenceByCell').then(m => ({ default: m.AudienceCadenceByCell })));
 const EventLakeExplorer = lazy(() => import('../components/EventLakeExplorer').then(m => ({ default: m.EventLakeExplorer })));
 const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m => ({ default: m.CreativeStudio })));
-const InboxScore = lazy(() => import('../components/InboxScore'));
 // Content Desk (2026-09-11) — review queue, block-by-block article review with
 // claim evidence, ops dashboard, and briefs over /api/mailing/content-desk/*.
 const ContentDesk = lazy(() => import('../components/ContentDesk').then(m => ({ default: m.ContentDesk })));
@@ -67,7 +66,6 @@ const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(
 const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
 const DataIngestPortal = lazy(() => import('../dataingest/DataIngestPortal').then(m => ({ default: m.DataIngestPortal })));
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
-const SmartLinkManager = lazy(() => import('../components/SmartLinkManager').then(m => ({ default: m.SmartLinkManager })));
 const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
 const SegmentationCommand = lazy(() => import('./SegmentationCommand').then(m => ({ default: m.SegmentationCommand })));
 const AudienceCommand = lazy(() => import('./AudienceCommand').then(m => ({ default: m.AudienceCommand })));
@@ -79,7 +77,6 @@ const ClickFunnels = lazy(() => import('../components/ClickFunnels').then(m => (
 const SupplyView = lazy(() => import('../components/SupplyView').then(m => ({ default: m.SupplyView })));
 // Brain (2026-09-13) — the platform-hosted operational memory (claims +
 // evidence, capabilities, evals) over /api/mailing/brain/*.
-const Brain = lazy(() => import('../components/Brain').then(m => ({ default: m.Brain })));
 const Agents = lazy(() => import('../components/Agents'));
 
 // ── Suspense fallback ───────────────────────────────────────────────────────
@@ -103,10 +100,11 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
   { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'day-cards', 'drip-journey', 'schedule'] },
+  { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: '' },
   { id: 'audiences', label: 'Audiences', icon: faUsers, hidden: true, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
   { id: 'lists', label: 'Segments', icon: faListUl, hidden: true, description: 'Build and manage your audience segments, lists and subscribers.' },
   { id: 'segmentation-command', label: 'Segmentation', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
-  { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
+  { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, hidden: true, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
   { id: 'click-funnels', label: 'Click Funnels', icon: faRoute, description: 'Click-drip offer funnels — per-node reach, open, click and conversion rates, the copy on each touch, and bulk clicker upload by sub1.' },
   // Tab id stays 'eo-cleaning' — it is the persisted key in localStorage
   // ('jarvis.portal.activeTab'); renaming the id would silently bounce the
@@ -114,21 +112,16 @@ const tabs: Tab[] = [
   { id: 'supply', label: 'Supply', icon: faBoxesStacked, description: 'The drip supply chain — ecosystem queue, lane detail, sending-domain capacity and the contracts behind them.' },
   { id: 'eo-cleaning', label: 'Export & Import', icon: faRightLeft, description: 'Export and import audience data — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
-  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
-  { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.' },
+  { id: 'ai-agents', label: 'AI Agents', icon: faBrain, hidden: true, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
+  { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.', childIds: ['domain-center', 'smart-links'] },
   { id: 'domain-agents', label: 'Domain Agents', icon: faRobot, description: 'AI send-planning and approval for each sending domain — baselines, recommendations and scorecards.' },
   { id: 'cpm-planner', label: 'CPM Planner', icon: faCalculator, description: 'Price and plan CPM deals — projected volume, pace, capacity risk and live earnings vs goal.' },
   // Offer Center ('offers') nav entry retired 2026-08-17 — operator ruling:
   // "we should no longer display that screen… its only value is performance
   // and even that is stale." Nav removal only (component + routes kept);
   // replacements: Property Ledger lane panel + Creative Studio.
-  { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.' },
+  { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.', childIds: ['creative-studio', 'inbox-score'] },
   { id: 'content-desk', label: 'Content Desk', icon: faNewspaper, description: 'Article review queue, block-by-block review against source evidence, pipeline operations, and new briefs.' },
-  { id: 'brain', label: 'Brain', icon: faBook, description: 'The platform\'s operational memory — claims with their evidence and verification status, the capabilities that answer recognised tasks, and the evals that pin known answers.' },
-  { id: 'agents', label: 'Agents', icon: faRobot, description: 'The autonomous agents — warmup (rates, caps, lessons), scheduling (nightly plan, offers, supervisor repairs) and data (checks, repairs, pages) — each from its own journal: what it decided, why, and what happened.' },
-  { id: 'smart-links', label: 'Smart Links', icon: faLink, description: 'Manage smart link gateway routes — brand-domain bot/human routing for offer links.' },
-  { id: 'event-lake', label: 'Reporting', icon: faChartPie, description: '' },
-  { id: 'inbox-score', label: 'Inbox Score', icon: faEnvelope, description: 'Will this email land in the inbox? One guess per mailbox provider from a spam filter trained on our own sends, next to what our real test inbox saw.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
   { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
   { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
@@ -137,6 +130,7 @@ const tabs: Tab[] = [
   { id: 'data-ingest', label: 'Data Ingest', icon: faDatabase, description: 'Every record landing or moving: at rest (S3 + database) vs dynamic feeds, day over day, composition, mailed vs not, and the static upload door.' },
   { id: 'outbox', label: 'Delivery Queue', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
   { id: 'operations', label: 'Operations', icon: faGears, description: 'Platform ownership console — job and worker health, segment-family freshness vs SLA, nightly send-day invariants and engager cohort growth.' },
+  { id: 'brain', label: 'Brain', icon: faBook, description: 'What the agents decided for each sending environment, why, and what happened, with the platform\'s operational memory.', childIds: ['brain', 'agents'] },
 ];
 
 interface VersionInfo {
@@ -251,7 +245,7 @@ export const MailingPortal: React.FC = () => {
       case 'ai-agents':
         return <AIAgentsSection activeSubTab={activeTab === 'ai-agents' ? 'profiles' : activeTab} onSubTabChange={setActiveTab} />;
       case 'domain-center':
-        return <DomainCenter />;
+        return <Suspense fallback={<ChunkLoader />}><DomainCenterTabs key="domains" /></Suspense>;
       case 'domain-agents':
         return <Suspense fallback={<ChunkLoader />}><DomainAgents /></Suspense>;
       case 'suppressions':
@@ -263,9 +257,9 @@ export const MailingPortal: React.FC = () => {
       case 'event-lake':
         return <Suspense fallback={<ChunkLoader />}><EventLakeExplorer /></Suspense>;
       case 'inbox-score':
-        return <Suspense fallback={<ChunkLoader />}><InboxScore /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><CreativeStudio key="inbox" initialView="inbox" /></Suspense>;
       case 'creative-studio':
-        return <Suspense fallback={<ChunkLoader />}><CreativeStudio /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><CreativeStudio key="studio" /></Suspense>;
       case 'content-desk':
         return <Suspense fallback={<ChunkLoader />}><ContentDesk /></Suspense>;
       case 'audience-health':
@@ -281,7 +275,7 @@ export const MailingPortal: React.FC = () => {
       // localStorage activeTab of 'offers' now falls through to the default
       // dashboard render.
       case 'smart-links':
-        return <Suspense fallback={<ChunkLoader />}><SmartLinkManager /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><DomainCenterTabs key="smart-links" initial="smart-links" /></Suspense>;
       case 'automations':
         return <AutomationsManager />;
       case 'ab-tests':
@@ -311,9 +305,9 @@ export const MailingPortal: React.FC = () => {
       case 'supply':
         return <Suspense fallback={<ChunkLoader />}><SupplyView /></Suspense>;
       case 'brain':
-        return <Suspense fallback={<ChunkLoader />}><Brain /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><Agents key="brain" initial="brain" /></Suspense>;
       case 'agents':
-        return <Suspense fallback={<ChunkLoader />}><Agents /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><Agents key="agents" /></Suspense>;
       default:
         return <EnhancedDashboard />;
     }

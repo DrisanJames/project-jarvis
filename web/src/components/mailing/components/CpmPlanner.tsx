@@ -246,6 +246,8 @@ interface DealOfferPerformance {
   note?: string;
 }
 
+const HISTORY_LIFETIME = 'lifetime';
+
 // ─── Monthly historics & planning types (mirror cpm_planner_handlers.go) ─────
 interface MonthlyTarget {
   budget: number | null;
@@ -262,6 +264,7 @@ interface MonthDeal {
   target: MonthlyTarget;
   delivered: number;
   revenue: number;          // CPM-billable: delivered/1000 × eCPM
+  budget_set: number;       // monthly target, else the budget of a deal started this month
   conversions: number;      // tracked + manual for THIS month (no lifetime override)
   conversions_tracked: number;
   conversions_manual: number;
@@ -364,6 +367,7 @@ interface PacingResp {
 interface NonCpmOffer {
   offer_key: string;
   group_name: string;
+  display_name: string;
   sent: number;
   billable_clicks: number;
   delivered: number;
@@ -639,7 +643,7 @@ export const CpmPlanner: React.FC = () => {
   const [monthsLoaded, setMonthsLoaded] = useState(false);
   const [monthsError, setMonthsError] = useState<string | null>(null);
   const [plannerMonth, setPlannerMonth] = useState<string>(''); // future month being planned
-  const [historyMonth, setHistoryMonth] = useState<string>(''); // past month being viewed
+  const [historyMonth, setHistoryMonth] = useState<string>(''); // '' until months load, then a past month or HISTORY_LIFETIME
   const [curMonthYM, setCurMonthYM] = useState<string>('');     // current Denver YYYY-MM (from /months)
   const [targetEdits, setTargetEdits] = useState<Record<string, TargetEdit>>({});
   const [targetSaving, setTargetSaving] = useState<string | null>(null);
@@ -746,12 +750,12 @@ export const CpmPlanner: React.FC = () => {
       // Planner defaults to the nearest future month; History to the most
       // recent closed month. Keep the user's pick when still valid.
       setPlannerMonth(prev => (prev && prev > curYM) ? prev : (curYM ? nextMonthKeys(curYM, 1)[0] : ''));
-      // historyMonth: '' = Lifetime (the default view); only keep a chosen
-      // month if it still exists in the response.
+      // History defaults to the previous month (rows are newest first); keep
+      // a chosen view while it still exists.
       setHistoryMonth(prev => {
-        if (!prev) return '';
+        if (prev === HISTORY_LIFETIME) return prev;
         const past = rows.filter(r => !r.is_current && !r.is_future);
-        return past.some(r => r.month === prev) ? prev : '';
+        return past.some(r => r.month === prev) ? prev : (past[0]?.month ?? HISTORY_LIFETIME);
       });
     } catch (e) {
       setMonthsError(e instanceof Error ? e.message : 'failed to load months');
@@ -995,7 +999,7 @@ export const CpmPlanner: React.FC = () => {
         const deal = deals.find(x => x.id === dealId);
         const fresh = apply({
           deal_id: dealId, name: deal?.name || '', offer_name: deal?.offer_name || '',
-          has_target: false, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
+          has_target: false, budget_set: 0, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
           delivered: 0, revenue: 0, conversions: 0, conversions_tracked: 0, conversions_manual: 0,
           ecpm: deal?.ecpm_goal || 0,
         });
@@ -1096,7 +1100,7 @@ export const CpmPlanner: React.FC = () => {
         const dealMeta = deals.find(x => x.id === dealId);
         const effEcpm = dealMeta?.ecpm_goal || md.ecpm;
         return {
-          ...md, has_target: false,
+          ...md, has_target: false, budget_set: 0,
           target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
           ecpm: effEcpm,
           revenue: md.delivered > 0 && effEcpm > 0 ? (md.delivered / 1000) * effEcpm : 0,
@@ -2782,7 +2786,7 @@ export const CpmPlanner: React.FC = () => {
   };
   const synthMonthDeal = (deal: Deal): MonthDeal => ({
     deal_id: deal.id, name: deal.name, offer_name: deal.offer_name,
-    has_target: false, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
+    has_target: false, budget_set: 0, target: { budget: null, volume: null, ecpm: null, ecpa: null, notes: '' },
     delivered: 0, revenue: 0, conversions: 0, conversions_tracked: 0, conversions_manual: 0, ecpm: deal.ecpm_goal,
   });
 
@@ -2924,7 +2928,7 @@ export const CpmPlanner: React.FC = () => {
           <Stat label="Delivered" value={fmtInt(sel.portfolio.delivered)} />
           <Stat label="Revenue" value={fmtMoney(sel.portfolio.revenue)} color={C.green} />
           <Stat label="Conversions" value={fmtInt(sel.portfolio.conversions)} />
-          <Stat label="Target budget" value={sel.portfolio.target_budget > 0 ? fmtMoney(sel.portfolio.target_budget) : '—'} />
+          <Stat label="Budget set" value={sel.portfolio.target_budget > 0 ? fmtMoney(sel.portfolio.target_budget) : '—'} />
           <Stat label="Target volume" value={sel.portfolio.target_volume > 0 ? fmtInt(sel.portfolio.target_volume) : '—'} />
         </div>
         {sel.deals.length === 0 ? (
@@ -2936,12 +2940,12 @@ export const CpmPlanner: React.FC = () => {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
                 <th style={thStyle}>Deal</th>
-                <th style={thStyle}>Target Budget</th>
+                <th style={thStyle}>Budget Set</th>
                 <th style={thStyle}>Target Volume</th>
                 <th style={thStyle}>eCPM</th>
                 <th style={thStyle}>eCPA</th>
                 <th style={thStyle}>Delivered</th>
-                <th style={thStyle}>Revenue</th>
+                <th style={thStyle} title="The budget set for the month. A deal with no budget for the month shows delivered ÷ 1,000 × eCPM.">Revenue</th>
                 <th style={thStyle}>Conv</th>
               </tr></thead>
               <tbody>
@@ -2953,7 +2957,7 @@ export const CpmPlanner: React.FC = () => {
                         <div style={{ color: C.heading }}>{d.name}</div>
                         {d.offer_name && <div style={{ fontSize: 11, color: C.muted }}>{d.offer_name}</div>}
                       </td>
-                      <td style={tdStyle}>{d.target.budget != null ? fmtMoney(d.target.budget) : '—'}</td>
+                      <td style={tdStyle}>{d.budget_set > 0 ? fmtMoney(d.budget_set) : '—'}</td>
                       <td style={tdStyle}>{d.target.volume != null ? fmtInt(d.target.volume) : '—'}</td>
                       <td style={tdStyle}>{d.ecpm > 0 ? '$' + d.ecpm.toFixed(2) : '—'}</td>
                       <td style={tdStyle}>{d.target.ecpa != null ? fmtMoney(d.target.ecpa) : '—'}</td>
@@ -2987,7 +2991,7 @@ export const CpmPlanner: React.FC = () => {
     const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
     const money = (v: number) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const groups = nonCpm?.groups || [];
-    const shown = nonCpmShowAll ? groups : groups.filter(g => !g.is_cpm);
+    const shown = groups.filter(g => g.sent > 0 && (nonCpmShowAll || !g.is_cpm));
     const t = nonCpm?.totals;
 
     // Period pills: current month (MTD) plus the previous five calendar months.
@@ -3291,7 +3295,8 @@ export const CpmPlanner: React.FC = () => {
               )}
               {shown.map(g => {
                 const open = !!nonCpmExpanded[g.group_name];
-                const multi = g.offers.length > 1;
+                const variants = g.offers.filter(o => o.sent > 0);
+                const multi = variants.length > 1;
                 return (
                   <React.Fragment key={g.group_name}>
                     <tr
@@ -3302,9 +3307,9 @@ export const CpmPlanner: React.FC = () => {
                         {multi && (
                           <span style={{ color: C.muted, marginRight: 6, fontSize: 11 }}>{open ? '▾' : '▸'}</span>
                         )}
-                        <span style={{ color: C.heading }}>{g.group_name}</span>
+                        <span style={{ color: C.heading }} title={g.group_name}>{g.display_name || g.group_name}</span>
                         {multi && (
-                          <span style={{ color: C.muted, fontSize: 11 }}> · {g.offers.length} variants</span>
+                          <span style={{ color: C.muted, fontSize: 11 }}> · {variants.length} variants</span>
                         )}
                         {g.carry_over && (
                           <span
@@ -3324,10 +3329,10 @@ export const CpmPlanner: React.FC = () => {
                       {planCells(g)}
                     </tr>
                     {revEditor(g)}
-                    {open && g.offers.map(o => (
+                    {open && variants.map(o => (
                       <tr key={`${g.group_name}:${o.offer_key}`} style={{ background: 'color-mix(in srgb, var(--j-shade) 35%, transparent)' }}>
-                        <td style={{ ...tdStyle, paddingLeft: 30, color: C.muted, fontSize: 12 }}>
-                          {o.offer_key}
+                        <td style={{ ...tdStyle, paddingLeft: 30, color: C.muted, fontSize: 12 }} title={o.offer_key}>
+                          {o.display_name && o.display_name !== g.display_name ? o.display_name : o.offer_key}
                         </td>
                         <td style={tdStyle}>
                           <button
@@ -3364,18 +3369,8 @@ export const CpmPlanner: React.FC = () => {
 
   return (
     <div style={{ padding: 24 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
-        <div>
-          <h2 style={{ margin: 0, color: C.heading, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faCalculator} style={{ color: C.indigo }} />
-            CPM Planner
-          </h2>
-          <div style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>
-            Set each deal's budget, eCPM goal and eCPA target → see the volume required, how this month
-            is pacing against it, and which creatives, subjects and brands are earning it.
-          </div>
-        </div>
+      {/* Actions */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {recalcFlash && (
             <span style={{
@@ -3426,30 +3421,20 @@ export const CpmPlanner: React.FC = () => {
       {/* 2 · Planner — future months only */}
       {renderPlanner()}
 
-      {/* 3 · Deal history & performance — Lifetime by default; month pills
-          drive the read-only per-month breakdown (replaces the old separate
-          Monthly History section — operator 2026-07-01). */}
+      {/* 3 · Deal history & performance — previous month by default; pills
+          pick another closed month or Lifetime (operator 2026-11-02). */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 10 }}>
         <div>
           <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', color: C.heading }}>
             3 · Deal History &amp; Performance
           </div>
           <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-            {historyMonth
-              ? `${monthLabel(historyMonth)} — target vs what actually delivered (read-only).`
-              : "Lifetime totals since each deal's start date (not this month). Click a row for performance detail."}
+            {historyMonth === HISTORY_LIFETIME
+              ? "Lifetime totals since each deal's start date (not this month). Click a row for performance detail."
+              : historyMonth ? `${monthLabel(historyMonth)} — budget set vs what actually delivered (read-only).` : ' '}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button onClick={() => setHistoryMonth('')}
-            style={{
-              padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
-              border: `1px solid ${historyMonth === '' ? C.indigo : C.border}`,
-              background: historyMonth === '' ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
-              color: historyMonth === '' ? C.heading : C.muted, fontWeight: 700,
-            }}>
-            Lifetime
-          </button>
           {months.filter(m => !m.is_current && !m.is_future).map(m => (
             <button key={m.month} onClick={() => setHistoryMonth(m.month)}
               style={{
@@ -3461,9 +3446,18 @@ export const CpmPlanner: React.FC = () => {
               {monthLabel(m.month)}
             </button>
           ))}
+          <button onClick={() => setHistoryMonth(HISTORY_LIFETIME)}
+            style={{
+              padding: '6px 12px', borderRadius: 16, fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+              border: `1px solid ${historyMonth === HISTORY_LIFETIME ? C.indigo : C.border}`,
+              background: historyMonth === HISTORY_LIFETIME ? 'color-mix(in srgb, var(--j-violet-strong) 25%, transparent)' : 'transparent',
+              color: historyMonth === HISTORY_LIFETIME ? C.heading : C.muted,
+            }}>
+            Lifetime
+          </button>
         </div>
       </div>
-      {historyMonth ? renderMonthBreakdown() : loading ? (
+      {historyMonth !== HISTORY_LIFETIME ? renderMonthBreakdown() : loading ? (
         <div style={{ padding: 60, textAlign: 'center', color: C.muted }}>
           <FontAwesomeIcon icon={faSpinner} spin style={{ fontSize: 22 }} />
         </div>

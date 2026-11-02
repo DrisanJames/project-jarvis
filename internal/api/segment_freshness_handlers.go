@@ -235,7 +235,8 @@ func (s *SegmentFreshnessService) HandleSegmentFreshness(w http.ResponseWriter, 
 // loadMemberStamps reads max(materialized_at) per segment — the REAL member
 // stamp, cross-checking the ledger. Served by idx_segment_members_seg_stamp
 // (segment_id, materialized_at DESC — concurrentIndexSpecs, cmd/server/
-// main.go): one backward index probe per segment, never a member-table scan.
+// main.go): one backward index probe per segment via LATERAL. The GROUP BY
+// form walked every member row (59s for the 218 grid cells, 2026-11-02).
 // Bounded to 10s; any failure degrades to "no stamps" (nulls), never a guess.
 func (s *SegmentFreshnessService) loadMemberStamps(r *http.Request, ids []string) map[string]time.Time {
 	out := make(map[string]time.Time, len(ids))
@@ -245,10 +246,15 @@ func (s *SegmentFreshnessService) loadMemberStamps(r *http.Request, ids []string
 	ctx, cancel := contextWithTimeout(r, 10*time.Second)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT segment_id::text, MAX(materialized_at)
-		FROM mailing_segment_members
-		WHERE segment_id = ANY($1::uuid[])
-		GROUP BY segment_id
+		SELECT ids.id::text, m.materialized_at
+		FROM unnest($1::uuid[]) AS ids(id)
+		LEFT JOIN LATERAL (
+			SELECT materialized_at
+			FROM mailing_segment_members
+			WHERE segment_id = ids.id AND materialized_at IS NOT NULL
+			ORDER BY materialized_at DESC
+			LIMIT 1
+		) m ON TRUE
 	`, pq.Array(ids))
 	if err != nil {
 		log.Printf("[segment-freshness] member-stamp read failed (degrading to null): %v", err)

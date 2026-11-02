@@ -956,10 +956,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// email_events; first-touch counts first-in-lake recipients per
 			// day; member is a single-address profile + 90d event history.
 			// See handlers_analytics_audience.go.
-			r.Get("/analytics/lake/audience/status", s.HandleAudienceLakeStatus)
-			r.Get("/analytics/lake/audience/breakdown", s.HandleAudienceLakeBreakdown)
-			r.Get("/analytics/lake/audience/source-performance", s.HandleAudienceLakeSourcePerformance)
-			r.Get("/analytics/lake/audience/first-touch", s.HandleAudienceLakeFirstTouch)
+			r.Get("/analytics/lake/audience/status", audienceCached(s.HandleAudienceLakeStatus))
+			r.Get("/analytics/lake/audience/breakdown", audienceCached(s.HandleAudienceLakeBreakdown))
+			r.Get("/analytics/lake/audience/source-performance", audienceCached(s.HandleAudienceLakeSourcePerformance))
+			r.Get("/analytics/lake/audience/first-touch", audienceCached(s.HandleAudienceLakeFirstTouch))
 			r.Get("/analytics/lake/audience/member", s.HandleAudienceLakeMember)
 
 			// Cross-Campaign Reporting

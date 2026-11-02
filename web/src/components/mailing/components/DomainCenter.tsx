@@ -259,28 +259,19 @@ export const DomainCenter: React.FC = () => {
 
   return (
     <div className="domain-center">
-      {/* Breadcrumb Navigation */}
-      <nav className="domain-breadcrumb">
-        <button
-          className={viewMode === 'dashboard' ? 'active' : ''}
-          onClick={() => navigateTo('dashboard')}
-        >
-          <span className="bc-icon"><FontAwesomeIcon icon={faGlobe} /></span>
-          Domain Center
-        </button>
-
-        {viewMode !== 'dashboard' && (
-          <>
-            <span className="bc-separator">&rsaquo;</span>
-            <span className="bc-current">
-              {viewMode === 'sending' && 'Sending Domains'}
-              {viewMode === 'tracking' && 'Tracking Domains'}
-              {viewMode === 'image-cdn' && 'Image CDN'}
-              {viewMode === 'onboard' && 'Onboard Sending Domain'}
-            </span>
-          </>
-        )}
-      </nav>
+      {/* Breadcrumb, sub-views only */}
+      {viewMode !== 'dashboard' && (
+        <nav className="domain-breadcrumb">
+          <button onClick={() => navigateTo('dashboard')}>Overview</button>
+          <span className="bc-separator">&rsaquo;</span>
+          <span className="bc-current">
+            {viewMode === 'sending' && 'Sending Domains'}
+            {viewMode === 'tracking' && 'Tracking Domains'}
+            {viewMode === 'image-cdn' && 'Image CDN'}
+            {viewMode === 'onboard' && 'Onboard Sending Domain'}
+          </span>
+        </nav>
+      )}
 
       {/* Main Content */}
       <div className="domain-content">

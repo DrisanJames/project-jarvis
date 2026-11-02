@@ -42,7 +42,7 @@ import { usePolling } from '../shared/usePolling';
 // internal/api/segment_freshness_handlers.go — this component renders that
 // contract's fields and nothing else).
 // Action: POST /api/mailing/segments/refresh {"segment_ids":[...]} -> 202
-// {queued:[...], already:[...]}.
+// {queued:[{segment_id,request_id}], already_pending:[...], skipped:[{segment_id,reason}]}.
 //
 // HONESTY RULES (this screen's law, unchanged from v1.0):
 //  - 'unknown' freshness is NEVER green and NEVER rendered as 0.
@@ -57,7 +57,7 @@ import { usePolling } from '../shared/usePolling';
 //  - No trend is drawn: the freshness contract carries no history, and an
 //    invented trend is worse than an absent one.
 
-const BOARD_VERSION = '2.0';
+const BOARD_VERSION = '2.1';
 
 // ── API shapes (mirror the freshness contract; do not drift) ────────────────
 
@@ -87,7 +87,6 @@ interface WorkerInfo {
   last_pass_at: string | null;
   last_pass_outcome: string;
   degraded: boolean;
-  leader: boolean;
 }
 
 interface FreshnessResponse {
@@ -113,6 +112,8 @@ const KINDS: readonly Kind[] = ['openers', 'clickers'] as const;
 const DEFAULT_BRAND = 'DB';
 const BRAND_STORAGE_KEY = 'segment-freshness-brand';
 
+// Segment brand code → apex: the grid covers the em. and m. senders of a brand
+// (lake brand = the apex; 2026-11-02 the board mailed 1.77M on m. vs 50k on em.).
 // Segment brand code → sending domain. VERIFIED 2026-08-21 by reading the
 // live `sending_domain` condition off every active grid segment (28 codes,
 // 1:1). This is DISPLAY ONLY: segment codes are NOT the Python registry brand
@@ -122,35 +123,39 @@ const BRAND_STORAGE_KEY = 'segment-freshness-brand';
 // REQUIREMENT handed back: expose `sending_domain` on the freshness row so
 // this map can be deleted.
 const BRAND_DOMAIN: Record<string, string> = {
-  AAD: 'em.aadwd.com',
-  BCC: 'em.bestcreditcare.com',
-  BWP: 'em.businessweeklypro.com',
-  CI: 'em.casainsure.com',
-  CP: 'em.consumerpro.net',
-  DB: 'em.discountblog.com',
-  FC: 'em.financialcalculate.com',
-  FTH: 'em.firsttimebuyerhomeloan.com',
-  HFC: 'em.hfcl.net',
-  HLJ: 'em.homeloansbyjaime.com',
-  HT: 'em.historythinking.com',
-  HTM: 'em.hometracmortgage.com',
-  HWS: 'em.homewarrantyservices.org',
-  LP: 'em.learnpersonalloans.com',
-  MH: 'em.myownhealth.net',
-  MPF: 'em.mypersonalfinancial.com',
-  MR: 'em.myrepairdiy.com',
-  PMD: 'em.paymydebit.com',
-  QF: 'em.quizfiesta.com',
-  RB: 'em.ratesbazar.com',
-  RRU: 'em.refinanceratesusa.com',
-  TOT: 'em.thingoftheday.org',
-  TRB: 'em.theretirementblog.com',
-  USF: 'em.us-finance.com',
-  WCL: 'em.wcl-heloc.com',
-  WF: 'em.warrantyforyou.com',
-  YFB: 'em.yourfinancialblog.com',
-  YIH: 'em.yourinsurancehub.com',
+  AAD: 'aadwd.com',
+  BCC: 'bestcreditcare.com',
+  BWP: 'businessweeklypro.com',
+  CI: 'casainsure.com',
+  CP: 'consumerpro.net',
+  DB: 'discountblog.com',
+  FC: 'financialcalculate.com',
+  FTH: 'firsttimebuyerhomeloan.com',
+  HFC: 'hfcl.net',
+  HLJ: 'homeloansbyjaime.com',
+  HT: 'historythinking.com',
+  HTM: 'hometracmortgage.com',
+  HWS: 'homewarrantyservices.org',
+  LP: 'learnpersonalloans.com',
+  MH: 'myownhealth.net',
+  MPF: 'mypersonalfinancial.com',
+  MR: 'myrepairdiy.com',
+  PMD: 'paymydebit.com',
+  QF: 'quizfiesta.com',
+  RB: 'ratesbazar.com',
+  RRU: 'refinanceratesusa.com',
+  TOT: 'thingoftheday.org',
+  TRB: 'theretirementblog.com',
+  USF: 'us-finance.com',
+  WCL: 'wcl-heloc.com',
+  WF: 'warrantyforyou.com',
+  YFB: 'yourfinancialblog.com',
+  YIH: 'yourinsurancehub.com',
 };
+
+// The 16 legacy brands' 60D Openers carry exclude_never_clickers gte 15, which
+// is why 60D can read below 30D.
+const LEGACY_60D = new Set(['BWP', 'CI', 'CP', 'DB', 'FC', 'HT', 'HWS', 'LP', 'MH', 'MR', 'QF', 'RB', 'RRU', 'TOT', 'WF', 'YIH']);
 
 const POLL_ACTIVE_MS = 10_000; // anything queued/running → tight poll
 const POLL_IDLE_MS = 60_000;
@@ -172,6 +177,14 @@ const TYPICAL_REBUILD_MS = 7 * 60_000;
 // measurement artifact (count zeroed while membership demonstrably built —
 // the segment_subscriber_count silent-zero defect class).
 const SILENT_ZERO_STAMP_HOURS = 24;
+
+// The worker's delta guard refused the new membership, so the old count is
+// still what mails. Its ledger note carries "delta guard: 45341 → 625 (…".
+const guardHold = (r: FreshnessRow): { from: number; to: number } | null => {
+  if (r.last_build_status !== 'skipped_delta') return null;
+  const m = /(\d+) → (\d+)/.exec(r.last_error);
+  return m ? { from: Number(m[1]), to: Number(m[2]) } : null;
+};
 
 // ── Refresh job lifecycle (the fix for "no progress") ───────────────────────
 
@@ -256,7 +269,7 @@ const readStoredBrand = (): string => {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export const SegmentFreshnessBoard: React.FC = () => {
+export const SegmentFreshnessBoard: React.FC<{ refreshNonce?: number }> = ({ refreshNonce = 0 }) => {
   const [jobs, setJobs] = useState<Record<string, RefreshJob>>({});
   const [posting, setPosting] = useState(false);
   const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -282,6 +295,11 @@ export const SegmentFreshnessBoard: React.FC = () => {
     anyActive ? POLL_ACTIVE_MS : POLL_IDLE_MS,
     [anyActive],
   );
+
+  const pollRefresh = poll.refresh;
+  useEffect(() => {
+    if (refreshNonce > 0) pollRefresh();
+  }, [refreshNonce, pollRefresh]);
 
   const data = poll.data && !isUnavailable(poll.data) ? poll.data : null;
   const rows = useMemo(() => data?.rows ?? [], [data]);
@@ -457,18 +475,19 @@ export const SegmentFreshnessBoard: React.FC = () => {
   // ── Estate verdict (replaces the dense all-domain table) ─────────────────
   const estate = useMemo(() => {
     let openers = 0, clickers = 0;
-    let oCells = 0, cCells = 0, noMeasure = 0, artifacts = 0;
+    let oCells = 0, cCells = 0, noMeasure = 0, artifacts = 0, held = 0;
     for (const b of brands) {
       for (const k of KINDS) {
         const r = cellMap.get(b)?.get(`${k}|${estateWin}`);
         if (!r || r.member_count == null) { noMeasure++; continue; }
+        if (guardHold(r)) { held++; continue; }
         const stampH = ageHours(r.members_stamped_at);
         if (r.member_count === 0 && stampH != null && stampH < SILENT_ZERO_STAMP_HOURS) artifacts++;
         if (k === 'openers') { openers += r.member_count; oCells++; }
         else { clickers += r.member_count; cCells++; }
       }
     }
-    return { openers, clickers, oCells, cCells, noMeasure, artifacts, domains: brands.length };
+    return { openers, clickers, oCells, cCells, noMeasure, artifacts, held, domains: brands.length };
   }, [brands, cellMap, estateWin]);
 
   const healthStrip = useMemo(() => brands.map(b => {
@@ -496,10 +515,16 @@ export const SegmentFreshnessBoard: React.FC = () => {
       if (res.ok) { // 202 expected
         let queued: string[] = [];
         let already: string[] = [];
+        let skipped: { segment_id: string; reason: string }[] = [];
         try {
-          const body = (await res.json()) as { queued?: string[]; already?: string[] };
-          queued = body.queued ?? [];
-          already = body.already ?? [];
+          const body = (await res.json()) as {
+            queued?: { segment_id: string }[];
+            already_pending?: string[];
+            skipped?: { segment_id: string; reason: string }[];
+          };
+          queued = (body.queued ?? []).map(q => q.segment_id);
+          already = body.already_pending ?? [];
+          skipped = body.skipped ?? [];
         } catch { /* body optional — fall through with empty acks */ }
         const acked = new Set([...queued, ...already]);
         const trackAll = acked.size === 0; // no ack lists → track what we sent
@@ -525,7 +550,7 @@ export const SegmentFreshnessBoard: React.FC = () => {
         setAnyActive(true);
         setActionMsg({
           ok: true,
-          text: `${what} — ${queued.length} queued${already.length > 0 ? `, ${already.length} already in flight` : ''}. `
+          text: `${what} — ${queued.length} queued${already.length > 0 ? `, ${already.length} already in flight` : ''}${skipped.length > 0 ? `, ${skipped.length} skipped (${skipped[0].reason})` : ''}. `
             + 'A full membership rebuild takes 3–7 minutes; live progress is on the card, not here.',
         });
         poll.refresh();
@@ -616,6 +641,9 @@ export const SegmentFreshnessBoard: React.FC = () => {
     const stampH = ageHours(r.members_stamped_at);
     const neverBuilt = r.last_built_at == null && r.members_stamped_at == null;
     const silentZero = r.member_count === 0 && stampH != null && stampH < SILENT_ZERO_STAMP_HOURS;
+    const held = guardHold(r);
+    const buildFailed = r.last_build_status === 'failed';
+    const narrowed60 = kind === 'openers' && win === 60 && LEGACY_60D.has(brand);
 
     // Big count — honest per state, never a bare misleading 0.
     let countNode: React.ReactNode;
@@ -671,6 +699,16 @@ export const SegmentFreshnessBoard: React.FC = () => {
             <span style={{ color: colors.textFaint }}> · built empty</span>
           )}
         </div>
+
+        {narrowed60 && <div style={{ fontSize: 10.5, color: colors.textFaint }}>minus 15+ sends with 0 clicks</div>}
+        {held && (
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: colors.warningText }}>
+            Held by size guard: rebuild found {fmtInt(held.to)}, old {fmtInt(held.from)} still mails
+          </div>
+        )}
+        {buildFailed && (
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: colors.dangerText }}>Last rebuild failed: hover for the reason</div>
+        )}
 
         {job && renderJobLine(job)}
 
@@ -734,7 +772,6 @@ export const SegmentFreshnessBoard: React.FC = () => {
         {w && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
             <Pill color={w.running ? colors.success : colors.danger}>{w.running ? 'worker running' : 'worker NOT running'}</Pill>
-            <Pill color={w.leader ? colors.indigo400 : colors.idle}>{w.leader ? 'leader' : 'not leader'}</Pill>
             <span style={{ fontSize: 11.5, color: colors.textMuted }}>
               last pass: {w.last_pass_at ? `${fmtAge(w.last_pass_at)} ago` : 'NEVER'}
               {w.last_pass_outcome ? ` · ${w.last_pass_outcome}` : ''}
@@ -984,7 +1021,7 @@ export const SegmentFreshnessBoard: React.FC = () => {
       {data && brands.length > 0 && (
         <div style={panelStyle}>
           <SectionHeader
-            title="Estate verdict — active openers & clickers"
+            title="Estate verdict — openers & clickers"
             icon={faGaugeHigh}
             right={
               <span style={{ display: 'inline-flex', gap: 4 }}>
@@ -1008,7 +1045,7 @@ export const SegmentFreshnessBoard: React.FC = () => {
 
           <div style={{ display: 'flex', gap: 30, flexWrap: 'wrap', marginBottom: 10 }}>
             <Stat
-              label={`Active openers — ${estateWin}D`}
+              label={`Openers, machine opens included — ${estateWin}D`}
               /* No contributing cell means NO MEASUREMENT, which is not zero. */
               value={estate.oCells === 0 ? '—' : estate.openers.toLocaleString()}
               color={estate.oCells === 0 ? colors.textMuted : colors.text}
@@ -1035,6 +1072,12 @@ export const SegmentFreshnessBoard: React.FC = () => {
               value={estate.noMeasure}
               color={estate.noMeasure > 0 ? colors.idle : colors.textMuted}
               sub={`${estateWin}D cells with no verified build — contribute nothing, NOT zero`}
+            />
+            <Stat
+              label="Held by size guard"
+              value={estate.held}
+              color={estate.held > 0 ? colors.warning : colors.textMuted}
+              sub={`${estateWin}D cells left out of the sums: the new count was refused, the old one still mails`}
             />
             <Stat
               label="Silent-zero artifacts"

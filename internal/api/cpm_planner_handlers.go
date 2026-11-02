@@ -2217,6 +2217,7 @@ type cpmMonthDeal struct {
 	Conversions        int64            `json:"conversions"`
 	ConversionsTracked int64            `json:"conversions_tracked"`
 	ConversionsManual  int64            `json:"conversions_manual"`
+	BudgetSet          float64          `json:"budget_set"` // the month's budget: target if set, else the budget of a deal that started this month
 	Ecpm               float64          `json:"ecpm"` // effective eCPM used for revenue (target if set, else deal goal)
 }
 
@@ -2535,19 +2536,22 @@ func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request
 				ecpm = *tgt.Ecpm
 			}
 			revenue := cpmMonthlyRevenue(delivered, ecpm)
+			budgetSet := cpmMonthBudget(d, tgt, hasTgt, m)
+			// A closed CPM month earned what was set (operator 2026-11-02).
+			if ym < curYM && budgetSet > 0 {
+				revenue = budgetSet
+			}
 			row.Deals = append(row.Deals, cpmMonthDeal{
 				DealID: d.ID, Name: d.Name, OfferName: d.OfferName,
-				HasTarget: hasTgt, Target: tgt,
+				HasTarget: hasTgt, Target: tgt, BudgetSet: budgetSet,
 				Delivered: delivered, Revenue: revenue, Conversions: conv,
 				ConversionsTracked: tracked, ConversionsManual: manual, Ecpm: ecpm,
 			})
 			row.Portfolio.Delivered += delivered
 			row.Portfolio.Revenue += revenue
 			row.Portfolio.Conversions += conv
+			row.Portfolio.TargetBudget += budgetSet
 			if hasTgt {
-				if tgt.Budget != nil {
-					row.Portfolio.TargetBudget += *tgt.Budget
-				}
 				if tgt.Volume != nil {
 					row.Portfolio.TargetVolume += *tgt.Volume
 				}
@@ -2556,6 +2560,43 @@ func (h *CpmPlannerHandlers) HandleMonths(w http.ResponseWriter, r *http.Request
 		out = append(out, row)
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"months": out, "current_month": curYM})
+}
+
+// cpmMonthBudget is the budget set for a deal in a month: its monthly target,
+// else its own budget when the deal started that month. An older open-ended
+// deal has no budget for a later month, so it returns 0.
+func cpmMonthBudget(d *cpmDeal, tgt cpmMonthlyTarget, hasTgt bool, month time.Time) float64 {
+	if hasTgt && tgt.Budget != nil && *tgt.Budget > 0 {
+		return *tgt.Budget
+	}
+	if start, ok := cpmDealDate(d.StartDate); ok && start.Year() == month.Year() && start.Month() == month.Month() {
+		return d.Budget
+	}
+	return 0
+}
+
+// cpmDealInMonth says whether a deal runs in the month starting at month: it
+// starts inside it, or carries an end date that reaches it. An open-ended deal
+// from an earlier month does not count; it needs a monthly target to stay.
+func cpmDealInMonth(startDate, endDate string, month time.Time) bool {
+	start, ok := cpmDealDate(startDate)
+	next := month.AddDate(0, 1, 0)
+	if !ok || !start.Before(next) {
+		return false
+	}
+	if !start.Before(month) {
+		return true
+	}
+	end, ok := cpmDealDate(endDate)
+	return ok && !end.Before(month)
+}
+
+func cpmDealDate(s string) (time.Time, bool) {
+	if len(s) < 10 {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("2006-01-02", s[:10])
+	return t, err == nil
 }
 
 // parseMonthArg normalizes a {month} path param ("YYYY-MM" or "YYYY-MM-DD") to
@@ -3094,6 +3135,11 @@ func (h *CpmPlannerHandlers) HandleCurrentMonthPacing(w http.ResponseWriter, r *
 	}
 	for i := range deals {
 		d := &deals[i]
+		// This month's deals only: a monthly target, or an active deal dated
+		// into the month. Older open-ended deals stay in Deal History.
+		if _, ok := targets[d.ID]; !ok && (d.Status != "active" || !cpmDealInMonth(d.StartDate, d.EndDate, curMonth)) {
+			continue
+		}
 		a := actuals[d.ID]
 		if a == nil {
 			a = &agg{daily: map[string]int64{}}

@@ -192,6 +192,8 @@ Lake reads re-derive bounce classes from `bounce_cat` + `dsn_diag` (`eventTypeEx
 - ~90% of opens are Apple-MPP/scanner machine traffic — never present raw opens as "people opened".
 - SES click-tracking fires on stylesheet/font/asset URLs — machine-click URL filtering applies
   (`isMachineClickURL`) at ingest; the verdict is the only human filter at read.
+- Exception (operator 2026-11-02): the Dashboard Open Rate and Click Rate tiles show raw rates from
+  the 2h `mailing_growth_daily` rollup with no human subtext; the tile label says so.
 
 ## 7. Backend surface (where the contract is implemented)
 
@@ -756,6 +758,7 @@ open; do not smooth it into a total.
 
 ## Amendment log
 
+- 2026-11-02: §6 Dashboard rate tiles, raw from the 2h growth rollup, no human companion subtext.
 - 2026-07-01: initial contract, consolidated from the Reporting-screen fix set (commits f76582f,
   dd4cb0f, ca0b3c0, cc303d5) and the audience-knowledge MCP catalog rules.
 - 2026-07-07: §9 Offer Alignment — offer-keyed delivery/engagement/conversion cells, stamped vs

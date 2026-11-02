@@ -612,6 +612,9 @@ func nonCpmDealMapSQL() string {
 type nonCpmOfferRow struct {
 	OfferKey  string `json:"offer_key"` // the resolved identity
 	GroupName string `json:"group_name"`
+	// DisplayName is the plain name shown on the row. Budgets stay keyed on
+	// GroupName, so renaming a row never detaches its plan.
+	DisplayName string `json:"display_name"`
 
 	Sent        int64 `json:"sent"`
 	Delivered   int64 `json:"delivered"`
@@ -985,6 +988,51 @@ func (h *CpmPlannerHandlers) nonCpmGroups(orgID string) (map[string]string, map[
 // nonCpmMonthBounds resolves ?month=YYYY-MM to [first, last] Denver dates.
 // The current month is capped at TODAY so an MTD number is never divided by
 // days that have not happened.
+// nonCpmOfferNames resolves identities to the offer's name: an offer_key to the
+// offer its campaigns mail most this period, an identity already built from a
+// name back to that name's original case.
+func (h *CpmPlannerHandlers) nonCpmOfferNames(orgID string, from, to time.Time) (map[string]string, error) {
+	rows, closeRows, err := h.nonCpmQuery(`
+		SELECT DISTINCT ON (identity) identity, name FROM (
+			SELECT lower(c.offer_key) AS identity, o.name, COUNT(*) AS n
+			FROM mailing_campaigns c
+			JOIN mailing_offers o ON o.id = c.offer_id
+			WHERE c.organization_id = $1 AND c.scheduled_at >= $2 AND c.scheduled_at < $3
+			  AND NULLIF(c.offer_key, '') IS NOT NULL AND NULLIF(o.name, '') IS NOT NULL
+			GROUP BY 1, 2
+			UNION ALL
+			SELECT lower(o.name), o.name, 0 FROM mailing_offers o
+			WHERE o.organization_id = $1 AND NULLIF(o.name, '') IS NOT NULL
+		) x ORDER BY identity, n DESC, name`, orgID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows()
+	out := map[string]string{}
+	for rows.Next() {
+		var identity, name string
+		if err := rows.Scan(&identity, &name); err != nil {
+			return nil, err
+		}
+		out[identity] = name
+	}
+	return out, rows.Err()
+}
+
+// nonCpmDisplayName picks a row's name: a named group, else the offer's name.
+func nonCpmDisplayName(identity, group string, names map[string]string) string {
+	if group != "" && group != identity {
+		return group
+	}
+	if identity == nonCpmUnattributed {
+		return "Not tied to an offer"
+	}
+	if n := names[identity]; n != "" {
+		return n
+	}
+	return identity
+}
+
 func (h *CpmPlannerHandlers) nonCpmMonthBounds(arg string) (from, to time.Time, ym string, isCurrent bool, err error) {
 	var today time.Time
 	if e := h.db.QueryRow(`SELECT (NOW() AT TIME ZONE 'America/Denver')::date`).Scan(&today); e != nil {
@@ -1058,6 +1106,10 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		log.Printf("[CpmPlanner] non-cpm deal map: %v", err)
 		deals = map[string][2]string{}
 		degraded = append(degraded, "cpm-allocation")
+	}
+	offerNames, err := h.nonCpmOfferNames(orgID, from, to.AddDate(0, 0, 1))
+	if err != nil {
+		log.Printf("[CpmPlanner] non-cpm offer names: %v", err) // raw keys still read
 	}
 	groups, carryOver, err := h.nonCpmGroups(orgID)
 	if err != nil {
@@ -1162,6 +1214,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 			g = identity
 		}
 		row.GroupName = g
+		row.DisplayName = nonCpmDisplayName(identity, groups[identity], offerNames)
 		if carryOver[g] && cumCounts != nil {
 			row.Conversions = cumCounts[identity]
 			row.PayoutCoverage = cumPaid[identity]
@@ -1174,6 +1227,7 @@ func (h *CpmPlannerHandlers) HandleNonCpmPerformance(w http.ResponseWriter, r *h
 		if gr == nil {
 			gr = &nonCpmGroupRow{GroupName: g}
 			gr.nonCpmOfferRow.GroupName = g
+			gr.nonCpmOfferRow.DisplayName = row.DisplayName
 			byGroup[g] = gr
 		}
 		gr.Offers = append(gr.Offers, row)

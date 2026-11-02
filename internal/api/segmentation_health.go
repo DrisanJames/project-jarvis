@@ -82,6 +82,7 @@ var segmentationExpectedWorkers = []string{
 	"segment_cleanup",
 	"verified_humans_ledger",
 	"partner_human_rollup",
+	"job:nightly_cohort_remint",
 }
 
 // segHealthMaxSegments bounds the backbone query; segHealthMaxDrilldown caps
@@ -718,6 +719,17 @@ type segHealthBeatRow struct {
 // Heartbeats returns every heartbeat row (the table is one row per worker —
 // platform-global, no org column, same as /api/worker-health). Degrades to
 // empty: every expected worker then renders UNKNOWN, never OK.
+// SummaryCounts is the cheap estate count behind ?summary=1: no registry match,
+// no family build, and no row bound to hit.
+func (s *SegmentationHealthStore) SummaryCounts(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM mailing_segments
+		WHERE organization_id = $1 AND archived_at IS NULL
+	`, orgID).Scan(&n)
+	return n, err
+}
+
 func (s *SegmentationHealthStore) Heartbeats(ctx context.Context) map[string]segHealthBeatRow {
 	out := make(map[string]segHealthBeatRow, 16)
 	rows, err := s.db.QueryContext(ctx, `
@@ -1072,6 +1084,10 @@ func buildSegmentationWorkers(beats map[string]segHealthBeatRow, runs map[string
 			w.LastRunStatus = r.Status
 			at := r.StartedAt.UTC().Format(time.RFC3339)
 			w.LastRunAt = &at
+			// A live heartbeat over a failing run is not healthy.
+			if w.Light == workerLightOK && (r.Status == "partial" || r.Status == "failed") {
+				w.Light = workerLightStale
+			}
 		}
 		out = append(out, w)
 	}
@@ -1104,6 +1120,24 @@ func (s *SegmentationHealthService) HandleHealth(w http.ResponseWriter, r *http.
 	ctx, cancel := context.WithTimeout(r.Context(), segHealthRequestBudget)
 	defer cancel()
 	now := time.Now()
+
+	// ?summary=1 is the portal's path: the segment count + worker lights. The
+	// family aggregation below costs ~18s of churn/ref reads the screen ignores.
+	if r.URL.Query().Get("summary") == "1" {
+		total, err := s.store.SummaryCounts(ctx, orgID)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "segmentation health: "+err.Error())
+			return
+		}
+		resp := segmentationHealthResponse{
+			APIVersion:  VersionSegmentationHealthAPI,
+			GeneratedAt: now.UTC().Format(time.RFC3339),
+			Workers:     buildSegmentationWorkers(s.store.Heartbeats(ctx), s.store.LastRuns(ctx)),
+		}
+		resp.Summary.SegmentsTotal = total
+		respondJSON(w, http.StatusOK, resp)
+		return
+	}
 
 	registry, registryOK := s.store.Registry(ctx, orgID)
 

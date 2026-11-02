@@ -314,27 +314,21 @@ export const SuppressionPortal: React.FC = () => {
 
   return (
     <div className="suppression-portal">
-      {/* Breadcrumb Navigation */}
+      {/* Breadcrumb, sub-views only */}
+      {viewMode !== 'dashboard' && (
       <nav className="portal-breadcrumb">
-        <button
-          className={viewMode === 'dashboard' ? 'active' : ''}
-          onClick={() => navigateTo('dashboard')}
-        >
+        <button onClick={() => navigateTo('dashboard')}>
           <span className="breadcrumb-icon"><FontAwesomeIcon icon={faChartBar} /></span>
           Dashboard
         </button>
-        {viewMode !== 'dashboard' && (
-          <>
-            <span className="breadcrumb-separator">›</span>
-            <button
-              className={viewMode === 'lists' ? 'active' : ''}
-              onClick={() => navigateTo('lists')}
-            >
-              <span className="breadcrumb-icon"><FontAwesomeIcon icon={faList} /></span>
-              Manage Lists
-            </button>
-          </>
-        )}
+        <span className="breadcrumb-separator">›</span>
+        <button
+          className={viewMode === 'lists' ? 'active' : ''}
+          onClick={() => navigateTo('lists')}
+        >
+          <span className="breadcrumb-icon"><FontAwesomeIcon icon={faList} /></span>
+          Manage Lists
+        </button>
         {(viewMode === 'create' || viewMode === 'edit' || viewMode === 'entries' || viewMode === 'bulk-upload') && (
           <>
             <span className="breadcrumb-separator">›</span>
@@ -362,6 +356,7 @@ export const SuppressionPortal: React.FC = () => {
           </>
         )}
       </nav>
+      )}
 
       {/* Main Content */}
       <div className="portal-content">

@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faWandMagicSparkles,
+  faEnvelope,
   faRotate,
   faCircleCheck,
   faTriangleExclamation,
@@ -19,6 +19,7 @@ import {
 import { apiFetch } from '../shared/apiFetch';
 import { useToast } from '../shared/ToastSystem';
 import { OfferProofs } from './OfferProofs';
+const InboxScore = lazy(() => import('./InboxScore'));
 
 // Creative Studio v2 — the ReviewForge email builder, centralized in the
 // portal. Builder renders through the engine sidecar (byte-identical to the
@@ -259,11 +260,13 @@ const CopyButton: React.FC<{ text: string; title?: string }> = ({ text, title })
   );
 };
 
-export const CreativeStudio: React.FC = () => {
+type StudioView = 'builder' | 'library' | 'offers' | 'inbox';
+
+export const CreativeStudio: React.FC<{ initialView?: StudioView }> = ({ initialView = 'builder' }) => {
   const { addToast } = useToast();
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [brands, setBrands] = useState<StudioBrand[]>([]);
-  const [view, setView] = useState<'builder' | 'library' | 'offers'>('builder');
+  const [view, setView] = useState<StudioView>(initialView);
 
   // Builder state
   const [mode, setMode] = useState<'newsletter' | 'solo'>('newsletter');
@@ -776,10 +779,6 @@ export const CreativeStudio: React.FC = () => {
   return (
     <div style={{ padding: '20px 24px', color: 'var(--j-text)', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <h1 style={{ margin: 0, fontSize: 22, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <FontAwesomeIcon icon={faWandMagicSparkles} style={{ color: 'var(--j-violet)' }} />
-          Creative Studio
-        </h1>
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => setView('builder')}
             style={btnStyle(view === 'builder' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'builder' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
@@ -792,6 +791,10 @@ export const CreativeStudio: React.FC = () => {
           <button onClick={() => setView('offers')}
             style={btnStyle(view === 'offers' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'offers' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
             <FontAwesomeIcon icon={faStamp} /> Offers
+          </button>
+          <button onClick={() => setView('inbox')}
+            style={btnStyle(view === 'inbox' ? 'var(--j-surface-3)' : 'var(--j-surface-2)', view === 'inbox' ? 'var(--j-violet-strong)' : 'var(--j-border)')}>
+            <FontAwesomeIcon icon={faEnvelope} /> Inbox Score
           </button>
           <button onClick={() => setChatOpen((v) => !v)}
             style={btnStyle(chatOpen ? 'color-mix(in srgb, var(--j-success) 20%, transparent)' : 'var(--j-surface-2)', chatOpen ? 'var(--j-success)' : 'var(--j-border)')}>
@@ -809,12 +812,12 @@ export const CreativeStudio: React.FC = () => {
           </span>
         )}
       </div>
-      <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
-        Renders with the production creative engine. Saves land in Content Library →
-        “Creative Studio/&lt;SITE&gt;” and the creative library.
-      </div>
 
-      {view === 'offers' ? (
+      {view === 'inbox' ? (
+        <div style={{ marginTop: 16, flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <Suspense fallback={null}><InboxScore /></Suspense>
+        </div>
+      ) : view === 'offers' ? (
         <div style={{ display: 'flex', marginTop: 16, flex: 1, minHeight: 0 }}>
           <OfferProofs />
         </div>

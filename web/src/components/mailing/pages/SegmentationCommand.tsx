@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faLayerGroup, faHeartPulse, faRotate, faSpinner } from '@fortawesome/free-solid-svg-icons';
+import { faHeartPulse, faRotate, faSpinner } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, alpha, pageStyle, panelStyle } from '../shared/theme';
 import { SectionHeader, Stat, SectionError } from '../shared/ui';
 import { SegmentFreshnessBoard } from './SegmentFreshnessBoard';
 
 // =============================================================================
-// SEGMENTATION COMMAND — the life-blood screen
+// SEGMENTATION — the life-blood screen
 // =============================================================================
 // The operator's segmentation truth surface. Its one job: make MEMBERSHIP
 // staleness impossible to hide, and make fixing it one click away.
@@ -33,6 +33,9 @@ import { SegmentFreshnessBoard } from './SegmentFreshnessBoard';
 // State honesty (§1.6): loading, fetch-error-with-retry, endpoint-not-on-
 // this-build (404 = deploy held), and genuinely-empty are all distinct.
 
+// PAGE_VERSION 1.5 — operator audit (2026-11-02). Page header removed (portal
+// chrome carries it). Health uses ?summary=1, Refresh reloads the board too,
+// and the SUM-of-counts Members stat is gone: 50M has no decision value.
 // PAGE_VERSION 1.4 — operator rework (2026-08-21). REMOVED: the "Alerts —
 // ranked by blast radius" panel and the "Segment families" table (with its
 // drilldown, member-scoped perf columns, churn sparkline and per-family EO
@@ -51,39 +54,23 @@ import { SegmentFreshnessBoard } from './SegmentFreshnessBoard';
 // 1.4 — the capability lives on the EO Cleaning tab).
 // PAGE_VERSION 1.1 — performance surface: member-scoped 7d/30d windows +
 // 14d churn timeline (REMOVED in 1.4 with the family table).
-const PAGE_VERSION = '1.4';
 
 // ── API shapes (mirror segmentation_health.go; do not drift) ────────────────
-// Only the fields this screen still renders are typed. The endpoint also
-// returns `families` and `alerts`; both are deliberately unread since 1.4.
+// Only the fields this screen renders are typed.
 
 interface WorkerRow {
   name: string;
-  kind: string;
   cadence_seconds: number;
   last_beat_at: string | null;
-  seconds_since_beat: number | null;
-  last_status: string;
   last_error: string;
-  cycle_count: number;
-  stalled: boolean;
   last_run_status: string;
   last_run_at: string | null;
   light: 'ok' | 'stale' | 'error' | 'stalled' | 'unknown';
 }
 
-interface HealthSummary {
-  segments_total: number;
-  subscriber_total: number;
-}
-
 interface HealthResponse {
-  api_version: string;
-  generated_at: string;
-  summary: HealthSummary;
+  summary: { segments_total: number };
   workers: WorkerRow[];
-  segments_truncated: boolean;
-  registry_available: boolean;
 }
 
 // ── Fetch plumbing (single endpoint; mirrors OperationsConsole's panel hook —
@@ -99,10 +86,7 @@ interface FetchState {
   ms: number | null;
 }
 
-// window=7d is pinned: the member-scoped performance windows were removed in
-// 1.4, so nothing on this screen varies by window — but the param stays on the
-// request because the handler whitelists it.
-const HEALTH_URL = '/api/mailing/segmentation/health?window=7d';
+const HEALTH_URL = '/api/mailing/segmentation/health?summary=1';
 
 const useHealthFetch = (nonce: number): [FetchState, () => void] => {
   const [state, setState] = useState<FetchState>({
@@ -223,16 +207,7 @@ export const SegmentationCommand: React.FC = () => {
 
   return (
     <div style={pageStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faLayerGroup} style={{ color: colors.indigo400 }} /> Segmentation Command
-          </h2>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-            Per-sending-domain segment freshness — is the engaged audience current, and rebuild it here. v{PAGE_VERSION}
-            {state.fetchedAt && <span> · health fetched {state.fetchedAt}{state.ms != null ? ` · ${state.ms}ms` : ''}</span>}
-          </div>
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 8 }}>
         <button
           onClick={() => setNonce(n => n + 1)}
           style={{
@@ -247,10 +222,10 @@ export const SegmentationCommand: React.FC = () => {
       {/* ── The dashboard. Own endpoint + polling + states; independent of the
            health fetch below so neither surface can blank the other. ── */}
       <div style={{ marginBottom: 16 }}>
-        <SegmentFreshnessBoard />
+        <SegmentFreshnessBoard refreshNonce={nonce} />
       </div>
 
-      {state.loading && (
+      {state.loading && !d && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: colors.textMuted, fontSize: 13, padding: '18px 4px' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading segmentation health…
         </div>
@@ -263,7 +238,7 @@ export const SegmentationCommand: React.FC = () => {
           color: colors.warning,
         }}>
           <strong>SOURCE UNAVAILABLE.</strong> <code style={{ fontFamily: 'monospace' }}>/api/mailing/segmentation/health</code> is
-          not exposed by this server build — the Segmentation Command backend has not been deployed here yet.
+          not exposed by this server build — the Segmentation backend has not been deployed here yet.
         </div>
       )}
 
@@ -271,32 +246,19 @@ export const SegmentationCommand: React.FC = () => {
         <SectionError label="segmentation health" error={state.error} onRetry={retry} />
       )}
 
-      {!state.loading && !state.error && !state.unavailable && d && (
+      {!state.error && !state.unavailable && d && (
         <div style={panelStyle}>
           <SectionHeader title="Segmentation workers & estate totals" icon={faHeartPulse} />
           <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap', marginBottom: 12 }}>
             <Stat label="Segments" value={fmtInt(d.summary.segments_total)}
               sub="non-archived segments in this org" />
-            <Stat label="Members" value={fmtInt(d.summary.subscriber_total)}
-              sub="SUM of segment counts (overlap not deduped)*" />
             <Stat label="Workers" value={d.workers.length}
-              sub="segmentation workers reporting a heartbeat" />
+              sub="segmentation workers tracked" />
           </div>
           <WorkerLights workers={d.workers} />
-          {!d.registry_available && (
-            <div style={{ fontSize: 11.5, color: colors.warningText, marginTop: 10 }}>
-              Registry source failed on this fetch — family ownership could not be resolved. Retry before acting on any registry claim.
-            </div>
-          )}
-          {d.segments_truncated && (
-            <div style={{ fontSize: 11.5, color: colors.warningText, marginTop: 10 }}>
-              Segment scan hit its hard bound — the totals above are computed over a truncated set and are a FLOOR, not the truth.
-            </div>
-          )}
           <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10, lineHeight: 1.6 }}>
-            * Members is a SUM of per-segment counts — a subscriber in three segments is counted three times. It is a workload
-            figure, not an audience size. Worker dots: hover for last beat, cadence, last run status and last error.
-            To clean a segment through EmailOversight, use the <strong>EO Cleaning</strong> tab — it has a segment picker.
+            Worker dots: hover for last beat, cadence, last run status and last error.
+            To clean a segment through EmailOversight, use the <strong>Export &amp; Import</strong> tab. It has a segment picker.
           </div>
         </div>
       )}

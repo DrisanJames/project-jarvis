@@ -2,6 +2,7 @@
 // (internal/brain, served by internal/api/brain_handlers.go on the session
 // path /api/mailing/brain/*).
 //
+// PAGE_VERSION 2 (2026-11-02) — mounted as the Jarvis Brain tab inside Agents.tsx; own page shell removed.
 // PAGE_VERSION 1 (2026-09-13) — three panes over the brain API:
 //
 //     Claims  →  Capabilities  →  Evals
@@ -22,7 +23,7 @@
 
 import React from 'react'
 import { apiFetch } from '../shared/apiFetch'
-import { colors, alpha, pageStyle, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme'
+import { colors, alpha, tdStyle, thStyle, numTd, numTh, tableStyle, btnStyle } from '../shared/theme'
 import { Panel, SectionHeader, Stat, SectionError, EmptyState, Pill } from '../shared/ui'
 import { SubNav } from '../shared/SubNav'
 import {
@@ -1078,14 +1079,9 @@ export const Brain: React.FC = () => {
   const bump = React.useCallback(() => setNonce(n => n + 1), [])
 
   return (
-    <div style={pageStyle}>
-      <div style={{ marginBottom: 14 }}>
-        <h1 style={{ margin: 0, fontSize: 22, color: colors.heading }}>Brain</h1>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, maxWidth: 900 }}>
-          The platform's operational memory: claims with their evidence, the capabilities that answer recognised tasks, and the evals that
-          pin known answers. A <em>candidate</em> claim is UNVERIFIED until its required verifier records a result. Times are America/Denver;
-          hover for UTC.
-        </div>
+    <div>
+      <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12, maxWidth: 900 }}>
+        A <em>candidate</em> claim is UNVERIFIED until its required verifier records a result. Times are America/Denver; hover for UTC.
       </div>
 
       <StatsStrip nonce={nonce} />

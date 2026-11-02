@@ -70,3 +70,41 @@ func TestCpmMonthlyConversions(t *testing.T) {
 		}
 	}
 }
+
+func TestCpmDealInMonth(t *testing.T) {
+	nov := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, start, end string
+		want             bool
+	}{
+		{"starts inside", "2026-11-01", "2026-11-30", true},
+		{"open-ended, starts inside", "2026-11-05", "", true},
+		{"older deal reaching the month", "2026-10-15", "2026-11-10", true},
+		{"older open-ended deal", "2026-07-01", "", false},
+		{"ended last month", "2026-10-28", "2026-10-31", false},
+		{"starts next month", "2026-12-01", "2026-12-31", false},
+		{"full timestamp start", "2026-11-01T00:00:00Z", "", true},
+		{"no start", "", "", false},
+	}
+	for _, c := range cases {
+		if got := cpmDealInMonth(c.start, c.end, nov); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCpmMonthBudget(t *testing.T) {
+	oct := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	budget := 20000.0
+	d := &cpmDeal{Budget: 12000, StartDate: "2026-10-01"}
+	if got := cpmMonthBudget(d, cpmMonthlyTarget{Budget: &budget}, true, oct); got != 20000 {
+		t.Errorf("target wins: got %v", got)
+	}
+	if got := cpmMonthBudget(d, cpmMonthlyTarget{}, false, oct); got != 12000 {
+		t.Errorf("deal started that month: got %v", got)
+	}
+	old := &cpmDeal{Budget: 3700, StartDate: "2026-06-11"}
+	if got := cpmMonthBudget(old, cpmMonthlyTarget{}, false, oct); got != 0 {
+		t.Errorf("older open-ended deal has no budget for the month: got %v", got)
+	}
+}

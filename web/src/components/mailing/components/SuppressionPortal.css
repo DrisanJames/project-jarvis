@@ -2086,3 +2086,175 @@
     justify-content: space-between;
   }
 }
+
+/* ============================================================================
+   PORTAL MATCH (operator 2026-11-02): same surfaces, icon chips and section
+   titles as the Dashboard. Sub-views inherit the surfaces.
+   ============================================================================ */
+.suppression-portal {
+  min-height: 0;
+  background: transparent;
+}
+.suppression-portal .portal-content {
+  padding: 16px 24px 24px;
+}
+.suppression-portal .hero-stats {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+.suppression-portal .hero-stat-card,
+.suppression-portal .hero-stat-card.primary,
+.suppression-portal .hero-stat-card.optizmo {
+  --chip: var(--j-violet);
+  background: color-mix(in srgb, var(--j-violet-strong) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent);
+  border-radius: 12px;
+  padding: 20px;
+  gap: 16px;
+  align-items: center;
+  min-height: 104px;
+  box-shadow: var(--j-shadow);
+}
+.suppression-portal .hero-stat-card:nth-child(2) { --chip: var(--j-cyan); }
+.suppression-portal .hero-stat-card:nth-child(3) { --chip: var(--j-pink); }
+.suppression-portal .hero-stat-card:nth-child(4) { --chip: var(--j-success); }
+.suppression-portal .hero-stat-icon,
+.suppression-portal .hero-stat-card.primary .hero-stat-icon,
+.suppression-portal .hero-stat-card.optizmo .hero-stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 19px;
+  color: var(--chip);
+  background: color-mix(in srgb, var(--chip) 15%, transparent);
+  opacity: 1;
+}
+.suppression-portal .hero-stat-value,
+.suppression-portal .hero-stat-card.primary .hero-stat-value,
+.suppression-portal .hero-stat-card.optizmo .hero-stat-value {
+  font-size: 24px;
+  color: var(--j-text);
+}
+.suppression-portal .hero-stat-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--j-text-muted);
+}
+.suppression-portal .hero-stat-trend,
+.suppression-portal .hero-stat-card.primary .hero-stat-trend.positive,
+.suppression-portal .hero-stat-card.optizmo .hero-stat-trend {
+  font-size: 11px;
+  color: var(--j-text-muted);
+}
+
+/* Section titles = panelTitleStyle */
+.suppression-portal .dashboard-section h3,
+.suppression-portal .chart-card h4,
+.suppression-portal .info-card h4,
+.suppression-portal .health-card h4,
+.suppression-portal .how-it-works h4,
+.suppression-portal .global-header-title h3 {
+  margin: 0;
+  font-family: var(--j-font-display);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--j-text);
+}
+.suppression-portal .dashboard-section h3,
+.suppression-portal .chart-card h4,
+.suppression-portal .info-card h4,
+.suppression-portal .how-it-works h4 {
+  margin-bottom: 12px;
+}
+
+/* Surfaces = panelStyle */
+.suppression-portal .chart-card,
+.suppression-portal .info-card,
+.suppression-portal .how-it-works,
+.suppression-portal .global-suppression-section {
+  background: var(--j-surface);
+  border: 1px solid var(--j-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: var(--j-shadow);
+}
+
+/* Quick actions: one compact row */
+.suppression-portal .quick-actions-grid {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+.suppression-portal .quick-action-btn,
+.suppression-portal .quick-action-btn.primary,
+.suppression-portal .quick-action-btn.optizmo {
+  padding: 10px 12px;
+  gap: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 16%, transparent);
+  border-left-width: 1px !important;
+  background: transparent;
+  color: var(--j-text);
+}
+.suppression-portal .quick-action-btn:hover {
+  background: color-mix(in srgb, var(--j-violet-strong) 8%, transparent);
+  transform: none;
+}
+.suppression-portal .qa-icon {
+  font-size: 15px;
+  color: var(--j-violet) !important;
+  background: none !important;
+}
+.suppression-portal .qa-content strong {
+  font-size: 13px;
+  color: var(--j-text);
+}
+.suppression-portal .qa-content small {
+  font-size: 11px;
+  color: var(--j-text-muted);
+}
+
+/* Global list */
+.suppression-portal .global-icon {
+  font-size: 19px;
+  color: var(--j-violet);
+}
+.suppression-portal .global-total-value {
+  font-size: 24px;
+  color: var(--j-text);
+}
+.suppression-portal .global-categories-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.suppression-portal .global-category-card {
+  background: color-mix(in srgb, var(--j-violet-strong) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--j-violet-strong) 8%, transparent);
+  border-radius: 12px;
+}
+
+/* Bars: one fill */
+.suppression-portal .bar-fill,
+.suppression-portal .bar-fill[data-source] {
+  background: var(--j-violet);
+}
+
+/* Donut total fits inside the ring */
+.suppression-portal .donut-total {
+  font-size: 15px;
+}
+
+/* Category tag sits on its own line so it never covers the count */
+.suppression-portal .global-category-card {
+  padding-top: 30px;
+}
+.suppression-portal .category-badge {
+  top: 8px;
+  right: 10px;
+}

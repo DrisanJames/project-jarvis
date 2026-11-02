@@ -445,7 +445,7 @@ export const EOCleaning: React.FC = () => {
             {jobs.length === 0 ? (
               <EmptyState
                 title="No cleaning jobs yet"
-                hint="Queue one above, or use the Clean action on a segment in Segmentation Command."
+                hint="Queue one above."
               />
             ) : (
               <div style={{ overflowX: 'auto' }}>

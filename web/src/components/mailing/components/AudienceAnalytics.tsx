@@ -347,7 +347,7 @@ async function fetchCachedJSON<T>(
     if (hit) return { data: hit.data as T, meta: { ...hit.meta, fromCache: true } };
   }
   const t0 = performance.now();
-  const res = await apiFetch(url, { signal: opts?.signal });
+  const res = await apiFetch(opts?.bypass ? `${url}${url.includes('?') ? '&' : '?'}fresh=1` : url, { signal: opts?.signal });
   if (!res.ok) await throwHttpError(res);
   const data = (await res.json()) as T;
   const payload: CachedPayload<T> = {

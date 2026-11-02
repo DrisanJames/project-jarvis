@@ -607,3 +607,29 @@ func TestBuildSegmentationFamilies_PerfAggregationAndTimeline(t *testing.T) {
 type errFake string
 
 func (e errFake) Error() string { return string(e) }
+
+// A live heartbeat must not read as healthy while the worker's runs fail.
+func TestSegmentationWorkerRunStatusDowngradesLight(t *testing.T) {
+	now := time.Now()
+	beats := map[string]segHealthBeatRow{
+		"segment_refresh": {LastBeatAt: now, LastStatus: "ok", ExpectedIntervalSeconds: 3600},
+		"segment_cleanup": {LastBeatAt: now, LastStatus: "ok", ExpectedIntervalSeconds: 3600},
+	}
+	runs := map[string]segHealthRunRow{
+		"segment_refresh": {Status: "partial", StartedAt: now},
+		"segment_cleanup": {Status: "completed", StartedAt: now},
+	}
+	got := map[string]string{}
+	for _, w := range buildSegmentationWorkers(beats, runs) {
+		got[w.Name] = w.Light
+	}
+	if got["segment_refresh"] != workerLightStale {
+		t.Errorf("partial run: light = %q, want %q", got["segment_refresh"], workerLightStale)
+	}
+	if got["segment_cleanup"] != workerLightOK {
+		t.Errorf("completed run: light = %q, want %q", got["segment_cleanup"], workerLightOK)
+	}
+	if got["job:nightly_cohort_remint"] != workerLightUnknown {
+		t.Errorf("remint must always be listed: %q", got["job:nightly_cohort_remint"])
+	}
+}

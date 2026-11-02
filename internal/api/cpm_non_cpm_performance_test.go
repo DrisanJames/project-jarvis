@@ -136,3 +136,19 @@ func TestNonCpmDeriveRates(t *testing.T) {
 		t.Errorf("clicker rate = %v, want 0.0005", r.ClickerRate)
 	}
 }
+
+func TestNonCpmDisplayName(t *testing.T) {
+	names := map[string]string{"insurhomev1": "Insurify Home Insurance", "insurify auto insurance": "Insurify Auto Insurance"}
+	cases := []struct{ identity, group, want string }{
+		{"liberty-mutual", "Liberty Mutual", "Liberty Mutual"},
+		{"insurhomev1", "", "Insurify Home Insurance"},
+		{"insurify auto insurance", "insurify auto insurance", "Insurify Auto Insurance"},
+		{nonCpmUnattributed, "", "Not tied to an offer"},
+		{"unknownkey", "", "unknownkey"},
+	}
+	for _, c := range cases {
+		if got := nonCpmDisplayName(c.identity, c.group, names); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.identity, got, c.want)
+		}
+	}
+}
