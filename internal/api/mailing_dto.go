@@ -15,11 +15,12 @@ type DashboardResponse struct {
 	ThrottleStatus  ThrottleStatus            `json:"throttle_status"`
 
 	// Org-scoped counts
-	TotalSuppressions       int `json:"total_suppressions"`
-	GlobalSuppressionsTotal int `json:"global_suppressions_total"`
-	SuppressionsToday       int `json:"suppressions_today"`
-	SuppressionsYesterday   int `json:"suppressions_yesterday"`
-	ActiveAutomations       int `json:"active_automations"`
+	TotalSuppressions       int                            `json:"total_suppressions"`
+	GlobalSuppressionsTotal int                            `json:"global_suppressions_total"`
+	SuppressionsToday       int                            `json:"suppressions_today"`
+	SuppressionsYesterday   int                            `json:"suppressions_yesterday"`
+	SuppressionCategories   DashboardSuppressionCategories `json:"suppression_categories"`
+	ActiveAutomations       int                            `json:"active_automations"`
 
 	// Org-scoped subscriber total
 	TotalSubscribers int `json:"total_subscribers"`
@@ -49,6 +50,21 @@ type DashboardResponse struct {
 	SectionErrors map[string]string `json:"section_errors,omitempty"`
 	MetricSources map[string]string `json:"metric_sources"`
 	GeneratedAt   time.Time         `json:"generated_at"`
+}
+
+// DashboardSuppressionCounts splits one day's new suppressions. Other is
+// everything else (hard bounces, invalid addresses, blocks), so the three
+// always sum to that day's total.
+type DashboardSuppressionCounts struct {
+	Unsubscribes int `json:"unsubscribes"`
+	Complaints   int `json:"complaints"`
+	Other        int `json:"other"`
+}
+
+// DashboardSuppressionCategories is the Deliverability Protection breakdown.
+type DashboardSuppressionCategories struct {
+	Today     DashboardSuppressionCounts `json:"today"`
+	Yesterday DashboardSuppressionCounts `json:"yesterday"`
 }
 
 type DashboardOverview struct {
@@ -115,25 +131,25 @@ type PlatformIntelligence struct {
 // ---------------------------------------------------------------------------
 
 type CampaignListItem struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	Subject          string    `json:"subject"`
-	FromName         string    `json:"from_name"`
-	FromEmail        string    `json:"from_email"`
-	Status           string    `json:"status"`
-	SentCount        int       `json:"sent_count"`
-	OpenCount        int       `json:"open_count"`
-	ClickCount       int       `json:"click_count"`
-	BounceCount      int       `json:"bounce_count"`
-	HardBounceCount       int `json:"hard_bounce_count"`
-	SoftBounceCount       int `json:"soft_bounce_count"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Subject         string `json:"subject"`
+	FromName        string `json:"from_name"`
+	FromEmail       string `json:"from_email"`
+	Status          string `json:"status"`
+	SentCount       int    `json:"sent_count"`
+	OpenCount       int    `json:"open_count"`
+	ClickCount      int    `json:"click_count"`
+	BounceCount     int    `json:"bounce_count"`
+	HardBounceCount int    `json:"hard_bounce_count"`
+	SoftBounceCount int    `json:"soft_bounce_count"`
 	// DerivedDeliveredCount is COALESCE(delivered_count, sent - bounce).
 	// When the column is NULL, this is an approximation — not ground truth.
-	DerivedDeliveredCount int `json:"derived_delivered_count"`
-	ComplaintCount        int `json:"complaint_count"`
-	UnsubscribeCount int       `json:"unsubscribe_count"`
-	Revenue          float64   `json:"revenue"`
-	CreatedAt        time.Time `json:"created_at"`
+	DerivedDeliveredCount int       `json:"derived_delivered_count"`
+	ComplaintCount        int       `json:"complaint_count"`
+	UnsubscribeCount      int       `json:"unsubscribe_count"`
+	Revenue               float64   `json:"revenue"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type CampaignListResponse struct {

@@ -2,12 +2,12 @@ import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faChartLine, faEnvelope, faBullhorn, faPaperPlane, faCalculator,
-  faListUl, faCrosshairs, faBolt,
+  faListUl, faCrosshairs, faClockRotateLeft, faShieldHalved,
   faBan, faBrain, faRobot, faChartPie, faServer, faDatabase,
   /* faArrowLeft, */ faGlobe, /* faStore (offer-center nav retired 2026-08-17), */
   faSpinner, faSeedling, faWandMagicSparkles,
-  faTruckFast, faFire, faTriangleExclamation, faRoute, faLink, faGears, faLayerGroup, faSliders,
-  faRightLeft, faUsers, faNewspaper, faBook, faSun, faMoon,
+  faTruckFast, faRoute, faLink, faGears, faLayerGroup, faSliders,
+  faRightLeft, faBoxesStacked, faUsers, faNewspaper, faBook, faSun, faMoon,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -16,8 +16,7 @@ import '../shared/animations.css';
 import { ToastProvider } from '../shared/ToastSystem';
 import { apiFetch } from '../shared/apiFetch';
 import { colors, stateColor, thStyle, tdStyle, numTd, numTh, tableStyle } from '../shared/theme';
-import { Panel, Stat, SectionHeader, EmptyState, ProgressBar, Pill, SectionError } from '../shared/ui';
-import { WorkerHealthWidget } from '../components/WorkerHealthDashboard';
+import { Panel, Stat, SectionHeader, EmptyState, Pill, SectionError } from '../shared/ui';
 import { JarvisMark } from '../../marketing/JarvisLogo';
 import { useColorMode } from '../shared/colorMode';
 
@@ -42,11 +41,7 @@ const DomainAgents = lazy(() => import('../components/DomainAgents').then(m => (
 // const OfferManagement = lazy(() => import('../components/OfferManagement').then(m => ({ default: m.OfferManagement })));
 const JarvisDashboard = lazy(() => import('../components/JarvisDashboard').then(m => ({ default: m.JarvisDashboard })));
 const PMTACampaignWizard = lazy(() => import('../components/PMTACampaignWizard').then(m => ({ default: m.PMTACampaignWizard })));
-const DraftBoardView = lazy(() => import('../components/DraftBoardView').then(m => ({ default: m.DraftBoardView })));
-const DripLanesView = lazy(() => import('../components/DripLanesView').then(m => ({ default: m.DripLanesView })));
 const DripJourneyCanvas = lazy(() => import('../components/DripJourneyCanvas').then(m => ({ default: m.DripJourneyCanvas })));
-const DripLaneOnboarding = lazy(() => import('../components/DripLaneOnboarding').then(m => ({ default: m.DripLaneOnboarding })));
-const BoardGrid = lazy(() => import('../components/BoardGrid').then(m => ({ default: m.BoardGrid })));
 const DayCards = lazy(() => import('../components/DayCards').then(m => ({ default: m.DayCards })));
 const ScheduleView = lazy(() => import('../components/ScheduleView').then(m => ({ default: m.ScheduleView })));
 const ConsciousnessDashboard = lazy(() => import('../components/ConsciousnessDashboard').then(m => ({ default: m.ConsciousnessDashboard })));
@@ -94,7 +89,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'draft-board' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'scheduling-copilot' | 'click-funnels' | 'drip-lanes' | 'drip-journey' | 'drip-lane-onboarding' | 'board-grid' | 'day-cards' | 'supply' | 'brain' | 'inbox-score' | 'agents';
+type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'click-funnels' | 'drip-journey' | 'day-cards' | 'supply' | 'brain' | 'inbox-score' | 'agents';
 
 interface Tab {
   id: TabId;
@@ -102,19 +97,21 @@ interface Tab {
   icon: IconDefinition;
   description: string;
   childIds?: TabId[];
+  hidden?: boolean; // reachable by deep link, left out of the nav
 }
 
 const tabs: Tab[] = [
   { id: 'dashboard', label: 'Dashboard', icon: faChartLine, description: 'A real-time overview of your email performance — sends, opens, clicks and deliverability at a glance.' },
-  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'supply', 'schedule', 'scheduling-copilot'] },
-  { id: 'audiences', label: 'Audiences', icon: faUsers, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
-  { id: 'lists', label: 'Segments', icon: faListUl, description: 'Build and manage your audience segments, lists and subscribers.' },
-  { id: 'segmentation-command', label: 'Segmentation Command', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
+  { id: 'campaign-center', label: 'Campaign Center', icon: faBullhorn, description: 'Create, schedule and monitor your email campaigns.', childIds: ['campaign-center', 'pmta-wizard', 'day-cards', 'drip-journey', 'schedule'] },
+  { id: 'audiences', label: 'Audiences', icon: faUsers, hidden: true, description: 'The single source of truth for segmentation — performance subsets, counts, freshness, pruning.' },
+  { id: 'lists', label: 'Segments', icon: faListUl, hidden: true, description: 'Build and manage your audience segments, lists and subscribers.' },
+  { id: 'segmentation-command', label: 'Segmentation', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
   { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
   { id: 'click-funnels', label: 'Click Funnels', icon: faRoute, description: 'Click-drip offer funnels — per-node reach, open, click and conversion rates, the copy on each touch, and bulk clicker upload by sub1.' },
   // Tab id stays 'eo-cleaning' — it is the persisted key in localStorage
   // ('jarvis.portal.activeTab'); renaming the id would silently bounce the
   // operator to the Dashboard on their next refresh. Label only.
+  { id: 'supply', label: 'Supply', icon: faBoxesStacked, description: 'The drip supply chain — ecosystem queue, lane detail, sending-domain capacity and the contracts behind them.' },
   { id: 'eo-cleaning', label: 'Export & Import', icon: faRightLeft, description: 'Export and import audience data — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
@@ -243,15 +240,10 @@ export const MailingPortal: React.FC = () => {
         return <ListPortal />;
       case 'campaign-center':
       case 'pmta-wizard':
-      case 'draft-board':
-      case 'drip-lanes':
-      case 'drip-lane-onboarding':
-      case 'board-grid':
       case 'day-cards':
       case 'drip-journey':
       case 'schedule':
       case 'marketing-agent':
-      case 'scheduling-copilot':
         return <CampaignCenterSection activeSubTab={activeTab} onSubTabChange={setActiveTab} pendingOffer={pendingOffer} onOfferConsumed={() => setPendingOffer(null)} copilotOpen={copilotOpen} setCopilotOpen={setCopilotOpen} />;
       case 'sending-plans':
       case 'profiles':
@@ -358,7 +350,7 @@ export const MailingPortal: React.FC = () => {
         </div>
 
         <nav className="sidebar-nav">
-          {tabs.map((tab) => {
+          {tabs.filter((t) => !t.hidden).map((tab) => {
             const isActive = tab.childIds
               ? tab.childIds.includes(activeTab) || activeTab === tab.id
               : activeTab === tab.id;
@@ -488,7 +480,15 @@ export const MailingPortal: React.FC = () => {
 //       Active/Learning/Protected/Running) (BUG-12).
 //     * SectionError gains a Retry button; the one-shot Growth/Trending/Funnels
 //       fetches are re-callable so a failed panel isn't stuck until reload (BUG-15).
-const PAGE_VERSION_DASHBOARD = '1.4';
+//   1.5 (2026-11-02) — operator rework. REMOVED: Deferrals, Trending Offers,
+//     Email Sending (platform cap), Background Processing, Inbox Intelligence,
+//     Automation Engine, the Today's Performance source badge. Open/click rates
+//     now read the daily growth rollup (the /analytics/engagement fetch timed
+//     out at 15s, leaving both tiles blank). In Transit is a one-shot list of
+//     content, sending domain and volume. Click Funnels gets its own row, timed
+//     by last send. Audience Growth reads audience_growth_daily, adds by-ISP.
+//     Deliverability Protection adds unsubscribes and complaints.
+const PAGE_VERSION_DASHBOARD = '1.5';
 
 // Today's lake counts (reclassified event_type buckets from the canonical
 // /analytics/lake/breakdown query — Denver day, source_in=pmta,ses; see
@@ -496,23 +496,21 @@ const PAGE_VERSION_DASHBOARD = '1.4';
 // delivered and is excluded).
 interface LakeTodayCounts {
   delivered: number;
-  opens: number; // raw lake open events — fallback when the engagement fetch fails
-  clicks: number; // raw lake click events — fallback when the engagement fetch fails
   hard: number;
   soft: number;
   bouncedUntyped: number; // ses-source 'bounced' (no hard/soft split)
 }
 
-// Raw + human opens/clicks from GET /api/mailing/analytics/engagement
-// (PG mailing_tracking_events + ignite_event_verdict — METRIC_CONTRACT §6).
-// Same endpoint the Reporting tab's KPI strip uses.
+// Today's opens/clicks from GET /api/mailing/growth/daily — mailing_growth_daily,
+// rebuilt every 2 hours, so the rate's two sides come from the same pass and the
+// tile carries the pass time. Machine opens and clicks are included.
 interface EngTodayCounts {
-  raw_opens: number;
-  human_opens: number;
-  human_openers: number;
-  raw_clicks: number;
-  human_clicks: number;
-  human_clickers: number;
+  delivered: number;
+  open_events: number;
+  open_subs: number;
+  click_events: number;
+  click_subs: number;
+  computed_at: string | null;
 }
 
 // Today's date (YYYY-MM-DD) in America/Denver — mirrors the dashboard
@@ -521,16 +519,17 @@ const denverToday = (): string =>
   new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Denver' }).format(new Date());
 
 // --- Audience growth (acquisition vs churn) ------------------------------
-// Now sourced from GET /dashboard/audience-growth (PG mailing_subscribers over
-// the last 7 Denver days). The prior lake-window helpers (nextUTCDay /
-// denverDaysAgo) and the sumRows reducer were removed with the stale Athena
-// audience-table fetch (BUG-10).
+// GET /dashboard/audience-growth reads audience_growth_daily, 7 Denver days by
+// ISP, rebuilt every 2 hours. ready=false = the first pass has not landed yet.
+// activated is a current-state pool (mailed ≤4 times and opened or clicked), not
+// a 7-day flow; null when its count fails.
+interface AudienceGrowthISP { isp: string; acquired: number; churned: number; net: number }
 interface AudienceGrowth {
+  ready: boolean;
   acquired7d: number;
   churned7d: number;
-  // Activated pool: subscribers mailed ≤4 times who opened or clicked. A
-  // state/pool count (all-time), not a 7-day flow like acquired/churned.
-  activated: number;
+  activated: number | null;
+  byISP: AudienceGrowthISP[];
 }
 
 // --- In-transit campaigns (GET /campaigns?status=sending) ----------------
@@ -539,24 +538,16 @@ interface AudienceGrowth {
 interface InTransitCampaign {
   id: string;
   name: string;
-  status: string;
+  subject?: string;
+  from_email?: string;
   total_recipients: number;
   sent_count: number;
-  from_name?: string;
-  profile_name?: string;
   started_at?: string;
   scheduled_at?: string;
 }
 
-// --- Deferring ISPs (GET /dashboard/deferring-isps) ----------------------
-interface DeferReason { code: string; count: number; sample: string }
-interface DeferringISP { isp: string; deferred: number; reasons: DeferReason[] }
-
-// --- Trending offers (GET /dashboard/trending-offers) --------------------
-interface TrendingOffer { offer_id: string; name: string; conversions: number }
-
 // --- Click funnels (GET /dashboard/click-funnels) — LIVE click-drip lanes.
-// Replaces the dead /journey-center/overview source (METRIC per handler doc).
+// Time on this panel is the last send, from the journey execution log.
 interface ClickFunnelLane {
   offer_id: string;
   name: string;
@@ -564,12 +555,36 @@ interface ClickFunnelLane {
   payout_type: string;
   active_enrolled: number;
   completed_or_converted: number; // LIFETIME (all-time), not windowed
+  last_send_at: string | null;
+  sends_7d: number;
 }
 interface ClickFunnelsOverview {
   lanes: ClickFunnelLane[];
   total_active_lanes: number;
   total_enrolled: number;
+  last_send_at: string | null;
 }
+
+// "3h ago" for a past timestamp.
+const timeAgo = (iso?: string | null): string => {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (isNaN(ms)) return 'never';
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return `${m}m ago`;
+  if (m < 2880) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+};
+
+// "Nov 2, 14:05" Denver date and clock.
+const denverStamp = (iso?: string | null): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Denver', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d);
+};
 
 // Short "HH:MM" Denver clock for a timestamp (in-transit "started" column).
 const denverClock = (iso?: string): string => {
@@ -587,8 +602,7 @@ const EnhancedDashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   // null = lake disabled/unavailable/errored → render the PG fallback.
   const [lakeToday, setLakeToday] = useState<LakeTodayCounts | null>(null);
-  // Raw+human engagement for today (PG + verdict). Fail-soft: null → the
-  // open/click tiles fall back to the lake's raw counts (never blank).
+  // Today's opens/clicks from the growth rollup. null = no row yet today.
   const [engToday, setEngToday] = useState<EngTodayCounts | null>(null);
   // Console modules — each is optional/failure-tolerant. A slow or unavailable
   // source shows a per-panel error/empty state and never blanks the console
@@ -601,19 +615,12 @@ const EnhancedDashboard: React.FC = () => {
   // envelope), so the panel can say "N sending" rather than just "top 5".
   const [inTransitTotal, setInTransitTotal] = useState<number>(0);
   const [inTransitErr, setInTransitErr] = useState<string | null>(null);
-  const [deferring, setDeferring] = useState<DeferringISP[] | null>(null);
-  const [deferringErr, setDeferringErr] = useState<string | null>(null);
-  const [trending, setTrending] = useState<{ rows: TrendingOffer[]; total: number } | null>(null);
-  const [trendingErr, setTrendingErr] = useState<string | null>(null);
   const [funnels, setFunnels] = useState<ClickFunnelsOverview | null>(null);
   const [funnelsErr, setFunnelsErr] = useState<string | null>(null);
 
-  // Acquisition vs churn over the last 7 America/Denver days. BUG-10/11 fix:
-  // reads the NEW GET /dashboard/audience-growth (PG mailing_subscribers, org-
-  // scoped, exactly 7 Denver days) instead of the stale Athena audience table
-  // (last refresh 2026-06-09) that reported a false "+0 net". Membership truth
-  // (who was acquired/churned) lives in PG, not the delivery lake. Re-callable
-  // (BUG-15) so a failed one-shot fetch can be retried without a page reload.
+  // Acquisition vs churn over the last 7 America/Denver days, read from the
+  // rollup so the panel answers in milliseconds. Re-callable so a failed fetch
+  // can be retried without a page reload.
   const loadGrowth = useCallback(async (signal?: AbortSignal) => {
     setGrowthErr(null);
     try {
@@ -622,7 +629,14 @@ const EnhancedDashboard: React.FC = () => {
       const data = await res.json();
       if (signal?.aborted) return;
       if (data && typeof data.acquired_7d === 'number') {
-        setGrowth({ acquired7d: data.acquired_7d || 0, churned7d: data.churned_7d || 0, activated: data.activated || 0 });
+        setGrowth({
+          ready: data.ready !== false,
+          acquired7d: data.acquired_7d || 0,
+          churned7d: data.churned_7d || 0,
+          activated: typeof data.activated === 'number' ? data.activated : null,
+          byISP: Array.isArray(data.by_isp) ? data.by_isp : [],
+        });
+        setGrowthErr(null);
       } else {
         throw new Error('unexpected payload');
       }
@@ -653,6 +667,7 @@ const EnhancedDashboard: React.FC = () => {
         lanes: Array.isArray(data?.lanes) ? data.lanes : [],
         total_active_lanes: Number(data?.total_active_lanes) || 0,
         total_enrolled: Number(data?.total_enrolled) || 0,
+        last_send_at: data?.last_send_at ?? null,
       });
       setFunnelsErr(null);
     } catch (e: any) {
@@ -666,14 +681,10 @@ const EnhancedDashboard: React.FC = () => {
     return () => ctrl.abort();
   }, [loadFunnels]);
 
-  // In-transit campaigns — the "what's mailing right now" hero. BUG-4 fix:
-  // exclude_drip=true hides the continuous partner-drip micro-campaigns (which,
-  // being the most-recently-CREATED rows, were 100% of the unfiltered window and
-  // hid the operator's real broadcast waves). Polled every 45s so the console
-  // feels live. Sort client-side by started_at desc (fall back to scheduled_at)
-  // and keep the 5 most-recently-started. BUG-5: the paginated envelope's
-  // pagination.total is the count of ALL non-drip sending campaigns (same
-  // filters), surfaced as "N sending" in the header. Re-callable for BUG-15.
+  // In-transit campaigns: what is going out, loaded once with the page.
+  // exclude_drip=true hides the continuous partner-drip micro-campaigns. Sorted
+  // client-side by started_at desc (fall back to scheduled_at), top 5.
+  // pagination.total is the count of ALL non-drip sending campaigns.
   const loadInTransit = useCallback(async (signal?: AbortSignal) => {
     try {
       const res = await apiFetch('/api/mailing/campaigns?status=sending&exclude_drip=true&limit=50', { credentials: 'include', signal });
@@ -699,54 +710,8 @@ const EnhancedDashboard: React.FC = () => {
   useEffect(() => {
     const ctrl = new AbortController();
     loadInTransit(ctrl.signal);
-    const id = window.setInterval(() => loadInTransit(), 45000);
-    return () => { ctrl.abort(); window.clearInterval(id); };
-  }, [loadInTransit]);
-
-  // Deferring ISPs + reason codes (last 24h). Polled every 45s; re-callable (BUG-15).
-  const loadDeferring = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const res = await apiFetch('/api/mailing/dashboard/deferring-isps?hours=24', { credentials: 'include', signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (signal?.aborted) return;
-      setDeferring(Array.isArray(data?.rows) ? data.rows : []);
-      setDeferringErr(null);
-    } catch (e: any) {
-      if (signal?.aborted) return;
-      setDeferringErr(e?.message || 'unreachable');
-    }
-  }, []);
-  useEffect(() => {
-    const ctrl = new AbortController();
-    loadDeferring(ctrl.signal);
-    const id = window.setInterval(() => loadDeferring(), 45000);
-    return () => { ctrl.abort(); window.clearInterval(id); };
-  }, [loadDeferring]);
-
-  // Trending offers (24h conversions). One-shot — conversions are sparse.
-  // Re-callable so a failed fetch can be retried without a reload (BUG-15).
-  const loadTrending = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const res = await apiFetch('/api/mailing/dashboard/trending-offers?hours=24', { credentials: 'include', signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (signal?.aborted) return;
-      setTrending({
-        rows: Array.isArray(data?.rows) ? data.rows : [],
-        total: Number(data?.total_conversions) || 0,
-      });
-      setTrendingErr(null);
-    } catch (e: any) {
-      if (signal?.aborted) return;
-      setTrendingErr(e?.message || 'unreachable');
-    }
-  }, []);
-  useEffect(() => {
-    const ctrl = new AbortController();
-    loadTrending(ctrl.signal);
     return () => ctrl.abort();
-  }, [loadTrending]);
+  }, [loadInTransit]);
 
   // Lake fetch for Today's Performance. Independent of the PG dashboard fetch
   // so a slow/failed Athena query never blocks the rest of the dashboard.
@@ -782,8 +747,6 @@ const EnhancedDashboard: React.FC = () => {
         if (!cancelled) {
           setLakeToday({
             delivered: byType['delivered'] || 0,
-            opens: byType['open'] || 0,
-            clicks: byType['click'] || 0,
             hard: byType['hard_bounce'] || 0,
             soft: byType['soft_bounce'] || 0,
             bouncedUntyped: byType['bounced'] || 0,
@@ -796,32 +759,28 @@ const EnhancedDashboard: React.FC = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Raw + human opens/clicks for the Denver day — the same PG+verdict endpoint
-  // the Reporting tab's KPI strip uses (METRIC_CONTRACT §6). Fail-soft: on any
-  // failure engToday stays null and the tiles show the lake counts instead.
+  // Today's opens/clicks from the growth rollup (see EngTodayCounts).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const day = denverToday();
-        const res = await apiFetch(
-          `/api/mailing/analytics/engagement?from=${day}&to=${day}`,
-          { credentials: 'include' },
-        );
+        const res = await apiFetch(`/api/mailing/growth/daily?from=${day}&to=${day}`, { credentials: 'include' });
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled && data && typeof data.raw_opens === 'number') {
+        const row = Array.isArray(data?.rows) ? data.rows.find((r: any) => r?.day === day) : null;
+        if (!cancelled && row) {
           setEngToday({
-            raw_opens: data.raw_opens || 0,
-            human_opens: data.human_opens || 0,
-            human_openers: data.human_openers || 0,
-            raw_clicks: data.raw_clicks || 0,
-            human_clicks: data.human_clicks || 0,
-            human_clickers: data.human_clickers || 0,
+            delivered: Number(row.delivered) || 0,
+            open_events: Number(row.open_events) || 0,
+            open_subs: Number(row.open_subs) || 0,
+            click_events: Number(row.click_events) || 0,
+            click_subs: Number(row.click_subs) || 0,
+            computed_at: data?.coverage?.last_computed_at ?? null,
           });
         }
       } catch {
-        // Engagement endpoint unreachable → tiles fall back to lake counts.
+        // Rollup unreachable → the tiles show — (engToday stays null).
       }
     })();
     return () => { cancelled = true; };
@@ -846,35 +805,18 @@ const EnhancedDashboard: React.FC = () => {
 
   if (loading) return <div className="loading-state">Loading dashboard...</div>;
 
-  const throttle = dashboard?.throttle_status || {};
-
   // Today's Performance source selection: lake (Athena) when available, else
   // the PG dashboard payload. Revenue ALWAYS comes from the PG payload.
   const perf = dashboard?.performance || {};
   const todayDelivered: number = lakeToday ? lakeToday.delivered : (perf.delivered || 0);
-  // Opens/clicks tiles: RAW (machine incl.) counts from the engagement
-  // endpoint ONLY. The lake's own open/click buckets under source_in=pmta,ses
-  // are the SES-webhook slice — a small fraction of true opens (PMTA emits
-  // none) — so falling back to them silently collapsed the tile to a large
-  // undercount with a plausible-looking rate. When the engagement fetch fails
-  // the tiles now say "unavailable", matching the Reporting tab's fail-soft
-  // (QA gate finding, 2026-07-01). Rates divide by lake delivered — the same
-  // convention as the Reporting KPI strip (METRIC_CONTRACT §2/§6).
-  const todayOpens: number | null = lakeToday && engToday ? engToday.raw_opens : null;
-  const todayClicks: number | null = lakeToday && engToday ? engToday.raw_clicks : null;
-  // BUG-1: cap at 100%. The numerator (same-day open/click events) and the
-  // denominator (same-day delivered) are DIFFERENT cohorts — opens today may be
-  // against mail delivered on a prior day — so the ratio can legitimately exceed
-  // 100% (prod showed 84.5%+ and could top 100). Capping keeps the tile honest;
-  // the metric-card tooltip discloses the same-day-over-same-day approximation.
-  const todayOpenRate: number | null = lakeToday
-    ? (engToday && lakeToday.delivered > 0 ? Math.min(100, (engToday.raw_opens / lakeToday.delivered) * 100) : null)
-    : (perf.open_rate ? Math.min(100, perf.open_rate * 100) : 0);
-  const todayClickRate: number | null = lakeToday
-    ? (engToday && lakeToday.delivered > 0 ? Math.min(100, (engToday.raw_clicks / lakeToday.delivered) * 100) : null)
-    : (perf.click_rate ? Math.min(100, perf.click_rate * 100) : 0);
-  // Same-day approximation note reused as the open/click tile tooltip (BUG-1).
-  const rateApproxNote = 'Approximate: same-day open/click events ÷ same-day delivered. These are different cohorts — today\'s opens may be against mail delivered on a prior day — so the raw ratio can exceed 100% and is capped at 100% here. Human counts are verdict-filtered.';
+  // Rates divide the rollup's own opens/clicks by the rollup's own delivered, so
+  // both sides are the same pass. Same-day events can answer earlier mail, so the
+  // ratio can pass 100% and is capped (tooltip discloses it).
+  const engDelivered = engToday?.delivered ?? 0;
+  const todayOpenRate: number | null = engDelivered > 0 ? Math.min(100, (engToday!.open_events / engDelivered) * 100) : null;
+  const todayClickRate: number | null = engDelivered > 0 ? Math.min(100, (engToday!.click_events / engDelivered) * 100) : null;
+  const rateApproxNote = 'Approximate: today\'s open/click events ÷ today\'s delivered, from the daily rollup (rebuilt every 2 hours). Today\'s events can answer mail delivered earlier, so the raw ratio can pass 100% and is capped at 100%. Machine opens and clicks are included.';
+  const engAsOf = engToday?.computed_at ? `as of ${denverClock(engToday.computed_at)} MT` : '';
   const todayHard: number = lakeToday ? lakeToday.hard : (perf.hard_bounces || 0);
   const todaySoft: number = lakeToday ? lakeToday.soft : (perf.soft_bounces || 0);
   // Bounce-rate denominator = DERIVED attempted (METRIC_CONTRACT §2):
@@ -889,87 +831,60 @@ const EnhancedDashboard: React.FC = () => {
     ? (todayProcessed > 0 ? (todaySoft / todayProcessed) * 100 : 0)
     : (perf.soft_bounce_rate ?? null);
 
-  // Deferring-ISP count severity accent (BUG-7). Deferrals are TRANSIENT retry
-  // events (many per message), NOT failures — so the old >=5000/>=500 red/amber
-  // bands lit every ISP red on a normal prod day and read like an outage. Red is
-  // now reserved for genuinely extreme volume; most counts render neutral.
-  const deferSeverity = (n: number): string =>
-    n >= 200000 ? colors.danger : n >= 50000 ? colors.warning : colors.text;
+  const cats = dashboard?.suppression_categories;
+  const inFunnelNow = funnels?.total_enrolled ?? 0;
+  const funnelsBySend = funnels
+    ? [...funnels.lanes].sort((x, y) => (y.last_send_at ?? '').localeCompare(x.last_send_at ?? ''))
+    : [];
+  const funnelSends7d = funnels ? funnels.lanes.reduce((n, l) => n + (l.sends_7d || 0), 0) : 0;
+  const quietFunnels = Math.max(0, funnelsBySend.length - 6);
 
   return (
-    <div className="enhanced-dashboard ig-fade-in">
+    <div className="enhanced-dashboard ig-fade-in" data-page-version={PAGE_VERSION_DASHBOARD}>
       {/* ── Row 1 · Today's Performance — the answer at the top (KPIs) ────── */}
       <div className="metrics-section">
         <h3>
           <FontAwesomeIcon icon={faChartLine} /> Today's Performance
-          {' '}
-          <span
-            title={lakeToday
-              ? 'Source: analytics event lake (Athena) — Denver calendar day, sources pmta+ses only (the app mirror stream is excluded so delivered is not double-counted). Opens/clicks are raw (machine incl.) from the PG+verdict engagement endpoint.'
-              : 'Source: Postgres tracking tables — SES routes are pixel-blind here (SES strips tracking pixels), so opens/clicks under-count on SES-routed mail.'}
-            style={{
-              fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
-              padding: '2px 8px', borderRadius: 10, verticalAlign: 'middle', marginLeft: 6,
-              background: lakeToday ? 'color-mix(in srgb, var(--j-violet-strong) 18%, transparent)' : 'color-mix(in srgb, var(--j-text-muted) 15%, transparent)',
-              color: lakeToday ? 'var(--j-violet)' : 'var(--j-text-muted)',
-              border: `1px solid ${lakeToday ? 'color-mix(in srgb, var(--j-violet-strong) 40%, transparent)' : 'color-mix(in srgb, var(--j-text-muted) 30%, transparent)'}`,
-            }}
-          >
-            {lakeToday ? 'lake · Denver day · pmta+ses' : 'pg — SES routes are pixel-blind here'}
-          </span>
         </h3>
         <div className="metrics-grid">
           <div className="metric-card" title="Today's send volume — total mail attempted (delivered + hard + soft + untyped bounces), the Denver-day count of everything that left. Delivered is the subset that landed.">
-            <span className="metric-icon"><FontAwesomeIcon icon={faTruckFast} /></span>
+            <span className="metric-icon metric-icon--violet"><FontAwesomeIcon icon={faTruckFast} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayProcessed.toLocaleString()}</span>
               <span className="metric-label">Volume{todayProcessed > 0 ? ` · ${((todayDelivered / todayProcessed) * 100).toFixed(1)}% delivered` : ''}</span>
             </div>
           </div>
           <div className="metric-card">
-            <span className="metric-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
+            <span className="metric-icon metric-icon--success"><FontAwesomeIcon icon={faPaperPlane} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayDelivered.toLocaleString()}</span>
               <span className="metric-label">Delivered</span>
             </div>
           </div>
           <div className="metric-card" title={rateApproxNote}>
-            <span className="metric-icon"><FontAwesomeIcon icon={faEnvelope} /></span>
+            <span className="metric-icon metric-icon--cyan"><FontAwesomeIcon icon={faEnvelope} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayOpenRate != null ? `${todayOpenRate.toFixed(1)}%` : '—'}</span>
-              <span className="metric-label">Open Rate*{todayOpens != null ? ` (${todayOpens.toLocaleString()} opens)` : ''}</span>
-              {lakeToday ? (
-                <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
-                  {engToday ? `machine incl. · human ${engToday.human_opens.toLocaleString()}` : 'engagement unavailable'}
-                </span>
-              ) : null}
+              <span className="metric-label">Open Rate*{engToday ? ` (${engToday.open_events.toLocaleString()} opens)` : ''}</span>
+              <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
+                {engToday ? `machine incl. · ${engToday.open_subs.toLocaleString()} openers${engAsOf ? ` · ${engAsOf}` : ''}` : 'first count within 2 hours'}
+              </span>
             </div>
           </div>
           <div className="metric-card" title={rateApproxNote}>
-            <span className="metric-icon"><FontAwesomeIcon icon={faCrosshairs} /></span>
+            <span className="metric-icon metric-icon--pink"><FontAwesomeIcon icon={faCrosshairs} /></span>
             <div className="metric-content">
               <span className="metric-value">{todayClickRate != null ? `${todayClickRate.toFixed(1)}%` : '—'}</span>
-              <span className="metric-label">Click Rate*{todayClicks != null ? ` (${todayClicks.toLocaleString()} clicks)` : ''}</span>
-              {lakeToday ? (
-                <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
-                  {engToday ? `machine incl. · human ${engToday.human_clicks.toLocaleString()}` : 'engagement unavailable'}
-                </span>
-              ) : null}
+              <span className="metric-label">Click Rate*{engToday ? ` (${engToday.click_events.toLocaleString()} clicks)` : ''}</span>
+              <span style={{ display: 'block', fontSize: 10, opacity: 0.65 }}>
+                {engToday ? `machine incl. · ${engToday.click_subs.toLocaleString()} clickers${engAsOf ? ` · ${engAsOf}` : ''}` : 'first count within 2 hours'}
+              </span>
             </div>
           </div>
-          {/*
-            Per .cursor/rules/bounce-metrics.mdc:
-              Never display a single combined "Bounced" metric. Always break
-              bounces into hard (var(--j-hard) = red) and soft (var(--j-soft) = amber).
-            The fields hard_bounces / soft_bounces are returned by HandleDashboard
-            from ComputeMetrics; surfacing them here closes the visibility gap
-            the audit identified (the Dashboard previously showed zero bounce
-            information at all).
-          */}
+          {/* Never a single combined "Bounced" metric: hard = var(--j-hard) red,
+              soft = var(--j-soft) amber (bounce-metrics.mdc). */}
           <div className="metric-card">
-            <span className="metric-icon" style={{ color: todayHard > 0 ? 'var(--j-hard)' : 'var(--j-border-strong)' }}>
-              <FontAwesomeIcon icon={faBan} />
-            </span>
+            <span className="metric-icon metric-icon--hard"><FontAwesomeIcon icon={faBan} /></span>
             <div className="metric-content">
               <span className="metric-value" style={{ color: todayHard > 0 ? 'var(--j-hard)' : undefined }}>
                 {todayHard.toLocaleString()}
@@ -983,9 +898,7 @@ const EnhancedDashboard: React.FC = () => {
             className="metric-card"
             title="Soft bounces from the analytics lake include transient failures (greylisting, throttling, temporary defers) that were later RETRIED and delivered — so this is NOT a final-undelivered rate and reads higher than the mail that actually failed. Hard bounces (list-hygiene failures) are the reputation signal."
           >
-            <span className="metric-icon" style={{ color: todaySoft > 0 ? 'var(--j-soft)' : 'var(--j-border-strong)' }}>
-              <FontAwesomeIcon icon={faBan} />
-            </span>
+            <span className="metric-icon metric-icon--soft"><FontAwesomeIcon icon={faClockRotateLeft} /></span>
             <div className="metric-content">
               <span className="metric-value" style={{ color: todaySoft > 0 ? 'var(--j-soft)' : undefined }}>
                 {todaySoft.toLocaleString()}
@@ -998,256 +911,204 @@ const EnhancedDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* ── Row 2 · In-Transit (hero) + Platform Sending Cap ─────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(320px, 1fr)', gap: 14, marginBottom: 18, alignItems: 'stretch' }}>
-        {/* In-transit: "what's mailing right now" — top 5 most recently started */}
-        <Panel accent={colors.indigo500}>
-          <SectionHeader
-            title="In Transit · Now Mailing"
-            icon={faTruckFast}
-            right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Broadcast waves only — continuous partner-drip micro-campaigns are excluded (exclude_drip). Count = all non-drip campaigns in the sending state; the list shows the most recently started of them.">
-              {inTransit === null ? '…' : `${inTransitTotal.toLocaleString()} sending${inTransit.length < inTransitTotal ? ` · top ${inTransit.length} by start` : ''}`} · live 45s
-            </span>}
-          />
-          {inTransitErr ? (
-            <SectionError label="In-transit campaigns" error={inTransitErr} onRetry={() => loadInTransit()} />
-          ) : inTransit == null ? (
-            <div style={{ fontSize: 12, color: colors.textMuted, padding: '18px 4px' }}>
-              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading in-transit campaigns…
-            </div>
-          ) : inTransit.length === 0 ? (
-            <EmptyState icon={faPaperPlane} title="Nothing in transit" hint="Campaigns appear here the moment they enter the sending state." />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {inTransit.map((c) => {
-                const pct = c.total_recipients > 0 ? c.sent_count / c.total_recipients : 0;
-                return (
-                  <div key={c.id} style={{ padding: '10px 0', borderTop: `1px solid ${colors.divider}` }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
-                      <span title={c.name} style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '62%' }}>{c.name}</span>
-                      <span style={{ fontSize: 11, color: colors.textMuted, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>started {denverClock(c.started_at || c.scheduled_at)}</span>
-                    </div>
-                    <ProgressBar pct={pct} />
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 5, fontSize: 11, color: colors.textMuted }}>
-                      <span title={c.profile_name ? `profile: ${c.profile_name}` : undefined} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>
-                        {c.from_name || c.profile_name || '—'}
-                      </span>
-                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                        <strong style={{ color: colors.indigo200 }}>{c.sent_count.toLocaleString()}</strong> / {c.total_recipients.toLocaleString()} ({(pct * 100).toFixed(0)}%)
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Panel>
-
-        {/* Platform Sending Cap / throttle (kept — existing system card) */}
-        <div className="system-card sending ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faPaperPlane} /></span>
-            <h3>Email Sending</h3>
-            {/* BUG-12: derive the pill from live utilization instead of a static
-                green "Active" that reassured even when the cap was maxed or idle. */}
-            {(() => {
-              const util = dashboard?.platform_daily_utilization || 0;
-              const sent = dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0;
-              if (util > 90) return <span className="status-badge scheduled" title={`${util.toFixed(1)}% of daily cap used`}>Near cap</span>;
-              if (sent > 0) return <span className="status-badge active" title={`${Number(sent).toLocaleString()} sent today`}>Active</span>;
-              return <span className="status-badge draft" title="No sends recorded yet today">Idle</span>;
-            })()}
-          </div>
-          {/* Daily Cap Gauge */}
-          <div className="daily-cap-section">
-            <div className="daily-cap-header">
-              <span className="daily-cap-title">Platform Sending Cap</span>
-              <span className={`daily-cap-pct ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}>
-                {(dashboard?.platform_daily_utilization || 0).toFixed(1)}% used
-              </span>
-            </div>
-            <div className="daily-cap-bar">
-              <div
-                className={`daily-cap-fill ${(dashboard?.platform_daily_utilization || 0) > 90 ? 'critical' : (dashboard?.platform_daily_utilization || 0) > 70 ? 'warning' : 'healthy'}`}
-                style={{ width: `${Math.min(dashboard?.platform_daily_utilization || 0, 100)}%` }}
-              />
-            </div>
-            <div className="daily-cap-details">
-              <span className="daily-cap-used">{(dashboard?.platform_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent today (platform)</span>
-              <span className="daily-cap-total">{(dashboard?.platform_daily_capacity || 0).toLocaleString()} platform cap</span>
-            </div>
-            <div className="daily-cap-details" style={{ fontSize: '0.78em', opacity: 0.75 }}>
-              <span>Your org: {(dashboard?.org_daily_sent ?? dashboard?.daily_used ?? 0).toLocaleString()} sent</span>
-              <span>v{PAGE_VERSION_DASHBOARD}</span>
-            </div>
-            <div className="daily-cap-remaining">
-              <strong>{(dashboard?.daily_remaining || 0).toLocaleString()}</strong> emails remaining today
-            </div>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{throttle?.minute_used || 0}/{throttle?.minute_limit || 1000}</span>
-              <span className="stat-label">This Minute</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value">{throttle?.hour_used || 0}/{throttle?.hour_limit || 50000}</span>
-              <span className="stat-label">This Hour</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── Row 3 · Deferring ISPs · Trending Offers · Click Funnels ──────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 18, alignItems: 'start' }}>
-        {/* Deferring ISPs + reason codes (last 24h, live 45s) */}
-        <Panel accent={colors.indigo500}>
-          <SectionHeader
-            title="Deferrals · transient retries · 24h"
-            icon={faTriangleExclamation}
-            right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Deferrals are TRANSIENT retry events (greylisting, throttling, temporary defers) — the ISP asked us to try again later, not a failure. Many retries occur per message; a high count on a healthy day is normal.">PMTA · retries, not failures · live 45s</span>}
-          />
-          {deferringErr ? (
-            <SectionError label="Deferring ISPs" error={deferringErr} onRetry={() => loadDeferring()} />
-          ) : deferring == null ? (
-            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
-              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading deferrals…
-            </div>
-          ) : deferring.length === 0 ? (
-            <EmptyState icon={faServer} title="No deferrals in the last 24h" hint="ISPs deferring PMTA mail (with DSN reason codes) appear here." />
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={tableStyle}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>ISP</th>
-                    <th style={numTh} title="Transient retry events in the last 24h — not failures">Retries</th>
-                    <th style={thStyle}>Top reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {deferring.slice(0, 8).map((d) => {
-                    const top = d.reasons && d.reasons[0];
-                    return (
-                      <tr key={d.isp}>
-                        <td style={tdStyle}>{d.isp}</td>
-                        <td style={{ ...numTd, color: deferSeverity(d.deferred), fontWeight: 700 }}>{d.deferred.toLocaleString()}</td>
-                        <td style={tdStyle} title={top?.sample || 'no DSN sample'}>
-                          {top ? `${top.code} (${top.count.toLocaleString()})` : '—'}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Panel>
-
-        {/* Trending offers — 24h conversions (sparse by design) */}
-        <Panel accent={colors.success}>
-          <SectionHeader
-            title="Trending Offers · 24h"
-            icon={faFire}
-            right={trending ? (
-              <span style={{ fontSize: 11, color: colors.textMuted }}>
-                {trending.total.toLocaleString()} conversions
-              </span>
-            ) : undefined}
-          />
-          {trendingErr ? (
-            <SectionError label="Trending offers" error={trendingErr} onRetry={() => loadTrending()} />
-          ) : trending == null ? (
-            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
-              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading conversions…
-            </div>
-          ) : trending.rows.length === 0 ? (
-            <EmptyState icon={faFire} title="No conversions in last 24h" hint="Conversions are sparse — only CPA/CPL offers write a conversion ledger row." />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {trending.rows.map((o, i) => (
-                <div key={o.offer_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '7px 0', borderTop: `1px solid ${colors.divider}` }}>
-                  <span style={{ fontSize: 13, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '72%' }} title={o.name || o.offer_id}>
-                    <span style={{ color: colors.textFaint, marginRight: 6 }}>{i + 1}.</span>{o.name || o.offer_id}
-                  </span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: colors.successText, fontVariantNumeric: 'tabular-nums' }}>{o.conversions.toLocaleString()}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </Panel>
-
-        {/* Click funnels — LIVE click-drip lanes */}
-        <Panel accent={colors.indigo500}>
-          <SectionHeader
-            title="Click Funnels"
-            icon={faRoute}
-            right={funnels ? (
-              <span style={{ fontSize: 11, color: colors.textMuted }}>
-                {funnels.total_active_lanes.toLocaleString()} active lanes · {funnels.total_enrolled.toLocaleString()} enrolled
-              </span>
-            ) : undefined}
-          />
+      {/* ── Row 2 · Click Funnels — timed by the last send ───────────────── */}
+      <div style={{ marginBottom: 18 }}>
+        <Panel accent={colors.pink}>
+          <SectionHeader title="Click Funnels" icon={faRoute} />
           {funnelsErr ? (
             <SectionError label="Click funnels" error={funnelsErr} onRetry={() => loadFunnels()} />
           ) : funnels == null ? (
             <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
-              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading lanes…
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading funnels…
             </div>
           ) : funnels.lanes.length === 0 ? (
-            <EmptyState icon={faRoute} title="No click-drip lanes" hint="Live click-drip offer lanes and their enrollment appear here." />
+            <EmptyState icon={faRoute} title="No click funnels" hint="Click funnels and their last send appear here." />
           ) : (
             <>
-              <div style={{ display: 'flex', gap: 24, marginBottom: 8 }}>
-                <Stat label="Active lanes" value={funnels.total_active_lanes.toLocaleString()} color={colors.indigo200} title="Lanes with enabled=true in mailing_offer_journey_map" />
-                <Stat label="Enrolled" value={funnels.total_enrolled.toLocaleString()} color={colors.text} title="Sum of currently-active enrollments across all lanes" />
+              <div style={{ display: 'flex', gap: 36, flexWrap: 'wrap', marginBottom: 12 }}>
+                <Stat label="Last send" value={timeAgo(funnels.last_send_at)} color={colors.pink} title={`${denverStamp(funnels.last_send_at)} Denver`} sub={denverStamp(funnels.last_send_at)} />
+                <Stat label="Sends, 7 days" value={funnelSends7d.toLocaleString()} color={colors.text} title="Funnel emails sent in the last 7 days" />
+                <Stat label="In a funnel" value={inFunnelNow.toLocaleString()} color={colors.text} title="People currently enrolled across all funnels" />
+                <Stat label="Active funnels" value={funnels.total_active_lanes.toLocaleString()} color={colors.indigo200} title="Funnels switched on" />
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {[...funnels.lanes].sort((a, b) => b.active_enrolled - a.active_enrolled).slice(0, 5).map((l) => (
-                  <div key={l.offer_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '6px 0', borderTop: `1px solid ${colors.divider}` }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                      <span style={{ fontSize: 13, color: colors.text, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 150 }} title={l.name || `offer ${l.offer_id}`}>
-                        {l.name || `offer ${l.offer_id}`}
-                      </span>
-                      {!l.enabled && <Pill color={colors.idle} style={{ padding: '0 6px', fontSize: 9 }}>off</Pill>}
-                    </span>
-                    <span style={{ fontSize: 12, color: colors.textMuted, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                      <strong style={{ color: colors.indigo200 }}>{l.active_enrolled.toLocaleString()}</strong> active
-                      <span title="lifetime (all-time), not windowed"> · {l.completed_or_converted.toLocaleString()} done*</span>
-                    </span>
-                  </div>
-                ))}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Funnel</th>
+                      <th style={thStyle}>Last send</th>
+                      <th style={numTh}>Sends, 7 days</th>
+                      <th style={numTh}>In funnel</th>
+                      <th style={numTh} title="All-time, not windowed">Finished, all time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {funnelsBySend.slice(0, 6).map((l) => (
+                      <tr key={l.offer_id}>
+                        <td style={{ ...tdStyle, fontWeight: 600 }}>
+                          {l.name || `offer ${l.offer_id}`}
+                          {!l.enabled && <Pill color={colors.idle} style={{ padding: '0 6px', fontSize: 9, marginLeft: 6 }}>off</Pill>}
+                        </td>
+                        <td style={tdStyle} title={denverStamp(l.last_send_at)}>
+                          {timeAgo(l.last_send_at)}
+                          {l.last_send_at && <span style={{ color: colors.textFaint }}> · {denverStamp(l.last_send_at)}</span>}
+                        </td>
+                        <td style={numTd}>{(l.sends_7d || 0).toLocaleString()}</td>
+                        <td style={numTd}>{l.active_enrolled.toLocaleString()}</td>
+                        <td style={numTd}>{l.completed_or_converted.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div style={{ fontSize: 10, color: colors.textFaint, marginTop: 8 }}>* completed/converted is lifetime (all-time), not last-24h.</div>
+              {quietFunnels > 0 && (
+                <div style={{ fontSize: 11, color: colors.textFaint, marginTop: 8 }}>
+                  {quietFunnels.toLocaleString()} more {quietFunnels === 1 ? 'funnel' : 'funnels'} with older sends. See the Click Funnels page.
+                </div>
+              )}
             </>
           )}
         </Panel>
       </div>
 
+      {/* ── Row 3 · In Transit + Deliverability Protection ───────────────── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginBottom: 18, alignItems: 'stretch' }}>
+        <div style={{ flex: '2 1 460px', minWidth: 0 }}>
+          <Panel accent={colors.indigo500}>
+            <SectionHeader
+              title="In Transit"
+              icon={faTruckFast}
+              right={<span style={{ fontSize: 11, color: colors.textMuted }} title="Broadcasts only. Partner drip micro-campaigns are not listed.">
+                {inTransit === null ? '…' : `${inTransitTotal.toLocaleString()} sending${inTransit.length < inTransitTotal ? ` · latest ${inTransit.length}` : ''}`}
+              </span>}
+            />
+            {inTransitErr ? (
+              <SectionError label="In-transit campaigns" error={inTransitErr} onRetry={() => loadInTransit()} />
+            ) : inTransit == null ? (
+              <div style={{ fontSize: 12, color: colors.textMuted, padding: '18px 4px' }}>
+                <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading in-transit campaigns…
+              </div>
+            ) : inTransit.length === 0 ? (
+              <EmptyState icon={faPaperPlane} title="Nothing in transit" hint="Campaigns appear here once they start sending." />
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={tableStyle}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Content</th>
+                      <th style={thStyle}>Sending domain</th>
+                      <th style={numTh}>Volume</th>
+                      <th style={thStyle}>Started</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inTransit.map((c) => (
+                      <tr key={c.id}>
+                        <td style={{ ...tdStyle, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.name}>{c.subject || c.name}</td>
+                        <td style={tdStyle}>{c.from_email?.split('@')[1] || '—'}</td>
+                        <td style={numTd}>{c.sent_count.toLocaleString()} / {c.total_recipients.toLocaleString()}</td>
+                        <td style={tdStyle}>{denverClock(c.started_at || c.scheduled_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+        </div>
+
+        <div style={{ flex: '1 1 280px', minWidth: 0 }}>
+        <Panel accent={colors.success}>
+          <SectionHeader
+            title="Deliverability Protection"
+            icon={faShieldHalved}
+            right={<span style={{ fontSize: 11, color: colors.textMuted }}>{(dashboard?.global_suppressions_total || 0).toLocaleString()} blocked in total</span>}
+          />
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Added</th>
+                <th style={numTh}>Today</th>
+                <th style={numTh}>Yesterday</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={tdStyle}>Unsubscribes</td>
+                <td style={numTd}>{cats ? cats.today.unsubscribes.toLocaleString() : '—'}</td>
+                <td style={numTd}>{cats ? cats.yesterday.unsubscribes.toLocaleString() : '—'}</td>
+              </tr>
+              <tr>
+                <td style={tdStyle}>Complaints</td>
+                <td style={numTd}>{cats ? cats.today.complaints.toLocaleString() : '—'}</td>
+                <td style={numTd}>{cats ? cats.yesterday.complaints.toLocaleString() : '—'}</td>
+              </tr>
+              <tr>
+                <td style={tdStyle} title="Bounces, invalid addresses, domain blocks and manual additions">Other</td>
+                <td style={numTd}>{cats ? cats.today.other.toLocaleString() : '—'}</td>
+                <td style={numTd}>{cats ? cats.yesterday.other.toLocaleString() : '—'}</td>
+              </tr>
+              <tr>
+                <td style={{ ...tdStyle, fontWeight: 600 }}>Total</td>
+                <td style={{ ...numTd, fontWeight: 600 }}>{(dashboard?.suppressions_today || 0).toLocaleString()}</td>
+                <td style={{ ...numTd, fontWeight: 600 }}>{(dashboard?.suppressions_yesterday || 0).toLocaleString()}</td>
+              </tr>
+            </tbody>
+          </table>
+        </Panel>
+        </div>
+      </div>
+
       {/* ── Row 4 · Audience Growth + Recent Campaigns ───────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(0, 1.4fr)', gap: 14, marginBottom: 18, alignItems: 'start' }}>
-        <Panel accent={!growth ? undefined : growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
-          <SectionHeader title="Audience Growth · 7 Denver days" icon={faSeedling} />
-          {growth ? (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))', gap: 14, marginBottom: 18, alignItems: 'start' }}>
+        <Panel accent={!growth?.ready ? undefined : growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}>
+          <SectionHeader title="Audience Growth · 7 days" icon={faSeedling} />
+          {growthErr ? (
+            <SectionError label="Audience growth" error={growthErr} onRetry={() => loadGrowth()} />
+          ) : growth == null ? (
+            <div style={{ fontSize: 12, color: colors.textMuted, padding: '14px 4px' }}>
+              <FontAwesomeIcon icon={faSpinner} spin style={{ marginRight: 8 }} /> Loading audience growth…
+            </div>
+          ) : !growth.ready ? (
+            <EmptyState icon={faSeedling} title="Audience growth is being counted" hint="The first count lands within 2 hours." />
+          ) : (
             <>
               <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap' }}>
-                <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="Subscribers acquired in the last 7 Denver days (COALESCE(subscribed_at, created_at))" />
-                <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Subscribers who unsubscribed or reached a terminal status (bounced/complained/blacklisted/unsubscribed) in the last 7 Denver days" />
-                <Stat label="Activated" value={growth.activated.toLocaleString()} color={colors.indigo300} title="Early-funnel pool: subscribers we have mailed ≤4 times who have opened or clicked (current state, all-time — not a 7-day flow)" />
+                <Stat label="Acquired" value={growth.acquired7d.toLocaleString()} color={colors.successText} title="Subscribers added in the last 7 Denver days" />
+                <Stat label="Churned" value={growth.churned7d.toLocaleString()} color={colors.dangerText} title="Subscribers who unsubscribed, bounced, complained or were blocked in the last 7 Denver days" />
+                <Stat label="Activated" value={growth.activated != null ? growth.activated.toLocaleString() : '—'} color={colors.indigo300} title="People mailed 4 times or fewer who have opened or clicked. Current total, not a 7-day flow." />
                 <Stat
                   label="Net"
                   value={`${growth.acquired7d - growth.churned7d >= 0 ? '+' : ''}${(growth.acquired7d - growth.churned7d).toLocaleString()}`}
                   color={growth.acquired7d - growth.churned7d >= 0 ? colors.success : colors.danger}
-                  title="Net change = acquired − churned"
+                  title="Acquired minus churned"
                 />
               </div>
-              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10 }}>
-                Acquired vs churned across the last 7 America/Denver days (PG mailing_subscribers — membership truth, not the delivery lake). Activated = early-funnel pool (mailed ≤4×, opened or clicked), a current-state count.
-              </div>
+              {growth.byISP.length > 0 && (
+                <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>ISP</th>
+                        <th style={numTh}>Acquired</th>
+                        <th style={numTh}>Churned</th>
+                        <th style={numTh}>Net</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {growth.byISP.map((r) => (
+                        <tr key={r.isp}>
+                          <td style={tdStyle}>{r.isp}</td>
+                          <td style={numTd}>{r.acquired.toLocaleString()}</td>
+                          <td style={numTd}>{r.churned.toLocaleString()}</td>
+                          <td style={{ ...numTd, color: r.net >= 0 ? colors.successText : colors.dangerText }}>{r.net >= 0 ? '+' : ''}{r.net.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
-          ) : growthErr ? (
-            <SectionError label="Audience growth" error={growthErr} onRetry={() => loadGrowth()} />
-          ) : (
-            <EmptyState icon={faSeedling} title="Audience growth unavailable" hint="Acquisition vs churn appears once the subscriber store is reachable." />
           )}
         </Panel>
 
@@ -1284,74 +1145,6 @@ const EnhancedDashboard: React.FC = () => {
         </Panel>
       </div>
 
-      {/* ── System Health (kept working pieces) ──────────────────────────── */}
-      <div className="system-overview ig-stagger">
-        <WorkerHealthWidget />
-
-        <div className="system-card intelligence ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBrain} /></span>
-            <h3>Inbox Intelligence</h3>
-            {/* BUG-12: "Learning" only when profiles were actually built today. */}
-            {(dashboard?.platform_intelligence?.inbox_profiles_today || 0) > 0
-              ? <span className="status-badge active" title={`${Number(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()} profiles built today`}>Learning</span>
-              : <span className="status-badge draft" title="No inbox profiles built yet today">Idle</span>}
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{(dashboard?.platform_intelligence?.inbox_profiles_today || 0).toLocaleString()}</span>
-              <span className="stat-label">Built Today</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value" style={{ fontSize: '0.85em', opacity: 0.7 }}>{(dashboard?.platform_intelligence?.inbox_profiles || 0).toLocaleString()}</span>
-              <span className="stat-label">Total Profiles</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="system-card suppression ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBan} /></span>
-            <h3>Deliverability Protection</h3>
-            {/* BUG-12: "Protected" only when a suppression list actually exists. */}
-            {(dashboard?.global_suppressions_total || 0) > 0
-              ? <span className="status-badge active" title={`${Number(dashboard?.global_suppressions_total || 0).toLocaleString()} addresses blocked`}>Protected</span>
-              : <span className="status-badge draft" title="No suppression entries loaded">Inactive</span>}
-          </div>
-          <div className="system-description">
-            <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: 0 }}>
-              {(dashboard?.global_suppressions_total || 0).toLocaleString()} total blocked addresses
-            </p>
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{(dashboard?.suppressions_today || 0).toLocaleString()}</span>
-              <span className="stat-label">Added Today</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value" style={{ fontSize: '1.2rem', opacity: 0.7 }}>{(dashboard?.suppressions_yesterday || 0).toLocaleString()}</span>
-              <span className="stat-label">Added Yesterday</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="system-card automation ig-card-hover ig-scan-line">
-          <div className="system-header">
-            <span className="system-icon"><FontAwesomeIcon icon={faBolt} /></span>
-            <h3>Automation Engine</h3>
-            {/* BUG-12: "Running" only when there are active workflows. */}
-            {(dashboard?.active_automations || 0) > 0
-              ? <span className="status-badge active" title={`${Number(dashboard?.active_automations || 0).toLocaleString()} active workflows`}>Running</span>
-              : <span className="status-badge draft" title="No active workflows">Idle</span>}
-          </div>
-          <div className="system-stats">
-            <div className="stat">
-              <span className="stat-value">{dashboard?.active_automations || 0}</span>
-              <span className="stat-label">Active Workflows</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
   );
 };
@@ -2128,7 +1921,7 @@ const CampaignCenterSection: React.FC<{
   setCopilotOpen: (v: boolean) => void;
 }> = ({ activeSubTab, onSubTabChange, pendingOffer, onOfferConsumed, copilotOpen, setCopilotOpen }) => {
   const { organization } = useAuth();
-  const subTab = (['pmta-wizard', 'board-grid', 'day-cards', 'draft-board', 'drip-lanes', 'drip-lane-onboarding', 'drip-journey', 'marketing-agent', 'schedule', 'scheduling-copilot'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
+  const subTab = (['pmta-wizard', 'day-cards', 'drip-journey', 'marketing-agent', 'schedule'].includes(activeSubTab)) ? activeSubTab : 'campaign-center';
   const [editCampaignId, setEditCampaignId] = useState<string | null>(null);
   const [preparingCampaigns, setPreparingCampaigns] = useState<PreparingCampaign[]>([]);
   const [transitions, setTransitions] = useState<{ id: string; name: string; status: string }[]>([]);
@@ -2181,15 +1974,9 @@ const CampaignCenterSection: React.FC<{
       <div style={subNavStyle}>
         <button style={subNavBtnStyle(subTab === 'campaign-center')} onClick={() => onSubTabChange('campaign-center')}>Dashboard</button>
         <button style={subNavBtnStyle(subTab === 'pmta-wizard')} onClick={() => onSubTabChange('pmta-wizard')}>Campaign Manager</button>
-        <button style={subNavBtnStyle(subTab === 'board-grid')} onClick={() => onSubTabChange('board-grid')}>Board Grid</button>
         <button style={subNavBtnStyle(subTab === 'day-cards')} onClick={() => onSubTabChange('day-cards')}>Day Cards</button>
-        <button style={subNavBtnStyle(subTab === 'draft-board')} onClick={() => onSubTabChange('draft-board')}>Draft Board</button>
-        <button style={subNavBtnStyle(subTab === 'drip-lanes')} onClick={() => onSubTabChange('drip-lanes')}>Drip Lanes</button>
-        <button style={subNavBtnStyle(subTab === 'drip-lane-onboarding')} onClick={() => onSubTabChange('drip-lane-onboarding')}>Lane Onboarding</button>
         <button style={subNavBtnStyle(subTab === 'drip-journey')} onClick={() => onSubTabChange('drip-journey')}>Drip Journey</button>
-        <button style={subNavBtnStyle(false)} onClick={() => onSubTabChange('supply')} title="The drip supply chain — ecosystem queue, lane detail, sending-domain capacity and the contracts behind them.">Supply</button>
         <button style={subNavBtnStyle(subTab === 'schedule')} onClick={() => onSubTabChange('schedule')}>Schedule</button>
-        <button style={subNavBtnStyle(subTab === 'scheduling-copilot')} onClick={() => onSubTabChange('scheduling-copilot')}>Copilot</button>
       </div>
       <PreparationBanner campaigns={preparingCampaigns} transitions={transitions} onDismissTransition={handleDismissTransition} />
       <Suspense fallback={<ChunkLoader />}>
@@ -2222,20 +2009,10 @@ const CampaignCenterSection: React.FC<{
           </>
         ) : subTab === 'marketing-agent' ? (
           <EmailMarketingAgentPanel />
-        ) : subTab === 'board-grid' ? (
-          <BoardGrid />
         ) : subTab === 'day-cards' ? (
           <DayCards />
-        ) : subTab === 'draft-board' ? (
-          <DraftBoardView />
-        ) : subTab === 'drip-lanes' ? (
-          <DripLanesView />
-        ) : subTab === 'drip-lane-onboarding' ? (
-          <DripLaneOnboarding />
         ) : subTab === 'drip-journey' ? (
-          <DripJourneyCanvas onNavigate={onSubTabChange} />
-        ) : subTab === 'scheduling-copilot' ? (
-          <CampaignCopilotPanel isOpen inline onClose={() => onSubTabChange('campaign-center')} />
+          <DripJourneyCanvas />
         ) : subTab === 'schedule' ? (
           <ScheduleView />
         ) : (

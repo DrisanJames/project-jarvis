@@ -1005,6 +1005,27 @@
   font-size: 32px;
 }
 
+/* Dashboard KPI icons: one chip shape, one color per metric. */
+.enhanced-dashboard .metric-icon {
+  --chip: var(--j-violet);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 19px;
+  color: var(--chip);
+  background: color-mix(in srgb, var(--chip) 15%, transparent);
+}
+.enhanced-dashboard .metric-icon--violet { --chip: var(--j-violet); }
+.enhanced-dashboard .metric-icon--success { --chip: var(--j-success); }
+.enhanced-dashboard .metric-icon--cyan { --chip: var(--j-cyan); }
+.enhanced-dashboard .metric-icon--pink { --chip: var(--j-pink); }
+.enhanced-dashboard .metric-icon--hard { --chip: var(--j-hard); }
+.enhanced-dashboard .metric-icon--soft { --chip: var(--j-soft); }
+
 .metric-content {
   display: flex;
   flex-direction: column;

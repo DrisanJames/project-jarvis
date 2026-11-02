@@ -1,60 +1,74 @@
 package api
 
 // Send-Day Schedule (day-clock) — read-only view of a single send day's
-// campaigns, grouped into board waves (the engaged tier's W1/W2/W3) and sidecar
-// / peppering lanes, with each lane's send window, route (PMTA/SES/Kumo), offer
-// mix and recipient total. Backs the portal "Schedule" tab (ScheduleView.tsx).
+// campaigns, one band per transport (SES, PMTA, Kumo) with every lane inside it,
+// each with its send window, offer mix and recipient total. Backs the portal
+// "Schedule" tab (ScheduleView.tsx).
 //
-// This is the live-data twin of the operator's schedule_report.py generator:
-// campaigns are selected by their Denver send day, the lane/offer come from the
-// canonical "<day> - <Brand> - <LANE> - <offer>" name, the window is derived
-// from isp_quotas.isp_plans[].time_spans[], and the route from the sending
-// profile's domain (em.* = PMTA, m.* = SES, else Kumo/other).
+// Campaigns are selected by their Denver send day and the lane/offer come from
+// the canonical "<day> - <Brand> - <LANE>[ - <offer>]" name. The transport comes
+// from the sending PROFILE (scheduleRoute), never the domain prefix: em.* mails
+// on Kumo and PMTA alike, and NX lanes on PMTA and Kumo share one name shape.
+// Bands are always all three, so an empty transport reads as empty, not missing.
 
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
 
-const ScheduleDayVersion = "1.0.0"
+const ScheduleDayVersion = "2.0.0"
 
-// board wave families (name lane prefix) -> display label + meta.
-var scheduleBoardFamilies = []struct{ key, label, meta string }{
-	{"W1-CLK1", "W1 · Clicker", "first touch"},
-	{"W2-ENG", "W2 · Engaged", "mid-day"},
-	{"W3-ENG2", "W3 · Engaged 2", "evening"},
+// scheduleLaneNames turns lane tokens into plain language (PORTAL = plain
+// language, operator 2026-10-27). An unknown token keeps its words.
+var scheduleLaneNames = strings.NewReplacer(
+	"NL-GM-COLD-NEWSLETTER", "Gmail cold newsletter",
+	"NL-GM-NEWSLETTER", "Gmail newsletter",
+	"NL-COLD-NEWSLETTER", "Cold newsletter",
+	"NL-ENG-NEWSLETTER", "Engaged newsletter",
+	"NL-YF-NEWSLETTER", "Yahoo family newsletter",
+	"NL-WARMUP-NEWSLETTER", "Warmup newsletter",
+	"OFFER-WARMUP", "Warmup offer",
+	"OFFER-ENG", "Engaged offer",
+	"OFFER-YF", "Yahoo family offer",
+	"KUMO-WARM", "Kumo warm",
+	"-", " ",
+)
+
+var (
+	scheduleDayRe     = regexp.MustCompile(`-D\d+`)
+	scheduleReleaseRe = regexp.MustCompile(`-R\d+-W\d+$`)
+	scheduleClockRe   = regexp.MustCompile(`^\d{4}(-|$)`)
+)
+
+// scheduleTransports fixes the band order.
+var scheduleTransports = []struct{ key, label string }{
+	{"ses", "SES"},
+	{"pmta", "PMTA"},
+	{"kumo", "Kumo"},
 }
-
-// sidecar lane token -> friendly label (falls back to the token itself).
-var scheduleSidecarLabels = map[string]string{
-	"SamsYahooAcclim": "Sam's Yahoo/AOL acclim",
-	"CLK30-PMTA":      "Peppering · 30D clickers",
-	"SPICY-T1":        "Spicy backlog T1", "SPICY-T2": "Spicy backlog T2",
-	"SPICY-T3": "Spicy backlog T3", "SPICY-T4": "Spicy backlog T4",
-	"Clicker-Broad":   "Clicker-Campaign broad",
-	"OptOut-LibTest":  "Opt-out corpus test",
-	"OptOut-SamsTest": "Opt-out corpus test (gated)",
-	"MOOv2-Mortgage":  "MOOv2 mortgage",
-}
-
-var scheduleGatedTokens = map[string]bool{"OptOut-SamsTest": true}
 
 type scheduleLane struct {
 	Name   string         `json:"name"`
 	Label  string         `json:"label"`
-	Meta   string         `json:"meta,omitempty"`
-	Start  string         `json:"start"`            // ISO8601 UTC (earliest campaign)
-	Window int            `json:"window"`           // hours
-	N      int            `json:"n"`                // campaign count
-	Rec    int64          `json:"rec"`              // sum total_recipients
-	Offers map[string]int `json:"offers"`           // offer token -> count
-	Esp    map[string]int `json:"esp"`              // pmta/ses/kumo -> count
-	Route  string         `json:"route"`            // PMTA | SES | PMTA+SES | KUMO
-	Gated  bool           `json:"gated,omitempty"`
+	Start  string         `json:"start"`  // ISO8601 UTC (earliest campaign)
+	Window int            `json:"window"` // hours
+	N      int            `json:"n"`      // campaign count
+	Rec    int64          `json:"rec"`    // sum total_recipients
+	Offers map[string]int `json:"offers"` // offer token -> count
+}
+
+type scheduleBand struct {
+	Key   string          `json:"key"`
+	Label string          `json:"label"`
+	N     int             `json:"n"`
+	Rec   int64           `json:"rec"`
+	Lanes []*scheduleLane `json:"lanes"`
 }
 
 type ispPlanEnvelope struct {
@@ -112,18 +126,39 @@ func windowHoursFromISPQuotas(raw []byte) int {
 	return int((maxEnd.Sub(minStart).Hours()) + 0.5)
 }
 
-func scheduleRoute(sendingDomain string) string {
-	d := strings.ToLower(sendingDomain)
+// scheduleRoute names the transport a profile actually mails on. Kumo first:
+// its profiles carry vendor_type='pmta'. Then SES, which includes the PMTA
+// profiles that relay to SES (pool <code>-ses-pool or ses-relay-a).
+func scheduleRoute(vendorType, routingMode, ipPool string, viaSES bool) string {
 	switch {
-	case strings.HasPrefix(d, "em."):
-		return "pmta"
-	case strings.HasPrefix(d, "m."):
-		return "ses"
-	case d == "":
-		return "other"
-	default:
+	case routingMode == "kumo":
 		return "kumo"
+	case vendorType == "ses", viaSES, strings.Contains(strings.ToLower(ipPool), "ses"):
+		return "ses"
+	default:
+		return "pmta"
 	}
+}
+
+// scheduleLaneOffer splits a campaign name into its lane token and offer. Day
+// and wave numbers leave the token so a lane is one row across the day. A trailing
+// HHMM clock is not an offer; a board cell's offer IS its lane token.
+func scheduleLaneOffer(name string) (lane, offer string) {
+	parts := strings.Split(name, " - ")
+	if len(parts) >= 3 {
+		lane = strings.TrimSpace(parts[2])
+	}
+	if len(parts) >= 4 {
+		offer = scheduleClockRe.ReplaceAllString(strings.TrimSpace(parts[3]), "")
+	}
+	if lane == "" {
+		lane = "Other"
+	}
+	if offer == "" {
+		offer = lane
+	}
+	lane = scheduleReleaseRe.ReplaceAllString(scheduleDayRe.ReplaceAllString(lane, ""), "")
+	return lane, offer
 }
 
 // HandleScheduleDay GET /api/mailing/schedule/day?date=YYYY-MM-DD
@@ -157,145 +192,93 @@ func (s *Server) HandleScheduleDay(w http.ResponseWriter, r *http.Request) {
 
 	const q = `
 		SELECT c.name, c.scheduled_at, COALESCE(c.total_recipients,0),
-		       COALESCE(p.sending_domain,''), COALESCE(c.isp_quotas::text,'')
+		       COALESCE(p.vendor_type,''), COALESCE(p.routing_mode,''),
+		       COALESCE(p.ip_pool,''), COALESCE(p.via_ses,false),
+		       COALESCE(c.isp_quotas::text,'')
 		FROM mailing_campaigns c
 		LEFT JOIN mailing_sending_profiles p ON c.sending_profile_id = p.id
 		WHERE c.organization_id = $1
-		  AND c.status NOT IN ('cancelled','draft')
+		  AND c.status NOT IN ('cancelled','draft','deleted')
 		  AND c.name NOT LIKE '[partner-drip]%'
-		  AND (c.scheduled_at AT TIME ZONE 'America/Denver')::date = $2::date
+		  AND c.scheduled_at >= $2 AND c.scheduled_at < $3
 		ORDER BY c.scheduled_at, c.name`
-	rows, err := s.mailingDB.QueryContext(ctx, q, orgID, dateStr)
+	dayEnd := day.AddDate(0, 0, 1)
+	rows, err := s.mailingDB.QueryContext(ctx, q, orgID, day, dayEnd)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "database query failed")
 		return
 	}
 	defer rows.Close()
 
-	board := map[string]*scheduleLane{}
-	side := map[string]*scheduleLane{}
-	winByGroup := map[string]int{} // group key -> max window seen
-
-	upsert := func(store map[string]*scheduleLane, key, name, label, meta string) *scheduleLane {
-		l := store[key]
-		if l == nil {
-			l = &scheduleLane{Name: name, Label: label, Meta: meta,
-				Offers: map[string]int{}, Esp: map[string]int{}}
-			store[key] = l
-		}
-		return l
-	}
-
+	bands := map[string]map[string]*scheduleLane{}
+	ends := map[*scheduleLane]time.Time{} // lane -> latest campaign end
 	var totalRec int64
 	var totalN int
 	offerSet := map[string]bool{}
 
 	for rows.Next() {
-		var name, sched, dom, ispq string
+		var name, vendorType, routingMode, ipPool, ispq string
+		var viaSES bool
 		var scheduledAt time.Time
 		var rec int64
-		if err := rows.Scan(&name, &scheduledAt, &rec, &dom, &ispq); err != nil {
+		if err := rows.Scan(&name, &scheduledAt, &rec, &vendorType, &routingMode, &ipPool, &viaSES, &ispq); err != nil {
 			continue
 		}
-		sched = scheduledAt.UTC().Format(time.RFC3339)
-		parts := strings.Split(name, " - ")
-		lane, offer := "", ""
-		if len(parts) >= 3 {
-			lane = strings.TrimSpace(parts[2])
+		route := scheduleRoute(vendorType, routingMode, ipPool, viaSES)
+		token, offer := scheduleLaneOffer(name)
+		if bands[route] == nil {
+			bands[route] = map[string]*scheduleLane{}
 		}
-		if len(parts) >= 4 {
-			offer = strings.TrimSpace(parts[3])
+		l := bands[route][token]
+		if l == nil {
+			l = &scheduleLane{Name: route + ":" + token, Label: scheduleLaneNames.Replace(token), Offers: map[string]int{}}
+			bands[route][token] = l
 		}
-		if offer == "" {
-			offer = "other"
+		sched := scheduledAt.UTC().Format(time.RFC3339)
+		if l.Start == "" || sched < l.Start {
+			l.Start = sched
 		}
-		route := scheduleRoute(dom)
 		win := windowHoursFromISPQuotas([]byte(ispq))
-
-		// board family?
-		var fam string
-		for _, f := range scheduleBoardFamilies {
-			if strings.HasPrefix(lane, f.key) {
-				fam = f.key
-				break
-			}
+		if win == 0 {
+			win = 1 // display fallback
 		}
-		var l *scheduleLane
-		var gkey string
-		if fam != "" {
-			var label, meta string
-			for _, f := range scheduleBoardFamilies {
-				if f.key == fam {
-					label, meta = f.label, f.meta
-				}
-			}
-			gkey = "b:" + fam
-			l = upsert(board, fam, fam, label, meta)
-			_ = meta
-		} else {
-			token := lane
-			if token == "" || strings.Contains(strings.ToLower(offer), "warmup") {
-				token = "KUMO"
-			}
-			label := scheduleSidecarLabels[token]
-			if label == "" {
-				label = token
-			}
-			gkey = "s:" + token
-			l = upsert(side, token, token, label, "")
-			if scheduleGatedTokens[token] {
-				l.Gated = true
-			}
+		if end := scheduledAt.Add(time.Duration(win) * time.Hour); end.After(ends[l]) {
+			ends[l] = end
 		}
 		l.N++
 		l.Rec += rec
 		l.Offers[offer]++
-		l.Esp[route]++
-		if l.Start == "" || sched < l.Start {
-			l.Start = sched
-		}
-		if win > winByGroup[gkey] {
-			winByGroup[gkey] = win
-		}
 		totalRec += rec
 		totalN++
 		offerSet[offer] = true
 	}
-
-	finalize := func(l *scheduleLane, gkey string) {
-		l.Window = winByGroup[gkey]
-		if l.Window == 0 {
-			l.Window = 8 // display fallback
-		}
-		pmta, ses, kumo := l.Esp["pmta"], l.Esp["ses"], l.Esp["kumo"]
-		switch {
-		case pmta > 0 && ses > 0:
-			l.Route = "PMTA+SES"
-		case ses > 0:
-			l.Route = "SES"
-		case kumo > 0:
-			l.Route = "KUMO"
-		default:
-			l.Route = "PMTA"
-		}
+	if err := rows.Err(); err != nil {
+		respondError(w, http.StatusInternalServerError, "database query failed")
+		return
 	}
 
 	// non-nil so JSON emits [] (a nil slice marshals to null, which the
 	// frontend cannot spread)
-	boardOut := make([]*scheduleLane, 0, len(scheduleBoardFamilies))
-	sideOut := make([]*scheduleLane, 0, len(side))
-	for _, f := range scheduleBoardFamilies {
-		if l := board[f.key]; l != nil {
-			finalize(l, "b:"+f.key)
-			boardOut = append(boardOut, l)
+	out := make([]scheduleBand, 0, len(scheduleTransports))
+	lanes := 0
+	for _, t := range scheduleTransports {
+		band := scheduleBand{Key: t.key, Label: t.label, Lanes: []*scheduleLane{}}
+		for _, l := range bands[t.key] {
+			start, _ := time.Parse(time.RFC3339, l.Start)
+			l.Window = int(math.Ceil(ends[l].Sub(start).Hours()))
+			band.N += l.N
+			band.Rec += l.Rec
+			band.Lanes = append(band.Lanes, l)
 		}
+		sort.Slice(band.Lanes, func(i, j int) bool {
+			if band.Lanes[i].Start != band.Lanes[j].Start {
+				return band.Lanes[i].Start < band.Lanes[j].Start
+			}
+			return band.Lanes[i].Name < band.Lanes[j].Name
+		})
+		lanes += len(band.Lanes)
+		out = append(out, band)
 	}
-	for token, l := range side {
-		finalize(l, "s:"+token)
-		sideOut = append(sideOut, l)
-	}
-	sort.Slice(boardOut, func(i, j int) bool { return boardOut[i].Start < boardOut[j].Start })
-	sort.Slice(sideOut, func(i, j int) bool { return sideOut[i].Start < sideOut[j].Start })
 
 	offers := make([]string, 0, len(offerSet))
 	for o := range offerSet {
@@ -303,12 +286,9 @@ func (s *Server) HandleScheduleDay(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(offers)
 
-	lanes := len(boardOut) + len(sideOut)
-	// day-clock anchor: 07:00Z of the send day, spanning +21h (matches the ops
-	// day-clock); extended if any campaign falls outside.
-	anchor := time.Date(day.Year(), day.Month(), day.Day(), 7, 0, 0, 0, time.UTC)
-	spanStart := anchor.UnixMilli()
-	spanEnd := anchor.Add(21 * time.Hour).UnixMilli()
+	// The day-clock is the Denver day, midnight to midnight, DST included.
+	spanStart := day.UnixMilli()
+	spanEnd := dayEnd.UnixMilli()
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"version":          ScheduleDayVersion,
@@ -320,7 +300,6 @@ func (s *Server) HandleScheduleDay(w http.ResponseWriter, r *http.Request) {
 		"total_recipients": totalRec,
 		"lanes":            lanes,
 		"offers":           offers,
-		"board_waves":      boardOut,
-		"sidecars":         sideOut,
+		"bands":            out,
 	})
 }

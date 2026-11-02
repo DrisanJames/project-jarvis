@@ -5000,6 +5000,18 @@ func runStartupMigrations(db *sql.DB) {
 		)`},
 		{"idx_growth_daily_day", `CREATE INDEX IF NOT EXISTS idx_growth_daily_day ON mailing_growth_daily (day)`},
 		{"idx_growth_daily_isp_day", `CREATE INDEX IF NOT EXISTS idx_growth_daily_isp_day ON mailing_growth_daily (isp, day)`},
+		// Dashboard Audience Growth by ISP, written by GrowthRollupWorker
+		// (internal/worker/audience_growth_rollup.go). The live count took 45s
+		// against an 8s budget. New table, no deps, fast.
+		{"create_audience_growth_daily", `CREATE TABLE IF NOT EXISTS mailing_audience_growth_daily (
+			organization_id UUID NOT NULL,
+			day             DATE NOT NULL,
+			isp             TEXT NOT NULL,
+			acquired        BIGINT NOT NULL DEFAULT 0,
+			churned         BIGINT NOT NULL DEFAULT 0,
+			computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (organization_id, day, isp)
+		)`},
 		// Per-dataset HUMAN engagement rollup (REQ-035) — one row per
 		// (dataset, UTC day), written nightly by PartnerHumanRollupWorker
 		// (internal/worker/partner_human_rollup.go) because the live

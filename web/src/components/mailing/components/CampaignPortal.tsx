@@ -2815,16 +2815,9 @@ export const CampaignPortal: React.FC<{
 
   return (
     <div className="campaign-portal">
-      {/* Header */}
+      {/* Actions */}
       <div className="portal-header">
-        <div className="header-title">
-          <FontAwesomeIcon icon={faEnvelope} className="header-icon" />
-          <div>
-            <h1>Campaign Center</h1>
-            <p>One list, inline analytics — expand any row for its send pace &amp; KPIs</p>
-          </div>
-        </div>
-        <div className="header-actions">
+        <div className="header-actions" style={{ marginLeft: 'auto' }}>
           <span style={{ fontSize: 10, color: 'var(--j-text-faint)', alignSelf: 'center', marginRight: 8 }}>
             v{PAGE_VERSION_CAMPAIGN_PORTAL}
           </span>

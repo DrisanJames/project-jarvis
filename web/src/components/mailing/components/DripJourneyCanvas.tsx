@@ -1683,12 +1683,7 @@ interface MembershipState {
 
 // ── Screen ──────────────────────────────────────────────────────────────────
 
-export const DripJourneyCanvas: React.FC<{
-  // Optional tab-navigation hook threaded from MailingPortal's
-  // CampaignCenterSection (onSubTabChange). Absent = the onboarding button is
-  // not rendered (this component stays mountable standalone).
-  onNavigate?: (tab: 'drip-lane-onboarding') => void;
-}> = ({ onNavigate }) => {
+export const DripJourneyCanvas: React.FC = () => {
   const toast = useToast();
   const [brand, setBrand] = useState<string | null>(null);
   const [vertical, setVertical] = useState<string | null>(null);
@@ -2797,7 +2792,6 @@ export const DripJourneyCanvas: React.FC<{
           // → back to the All-lanes overview, never an auto-reselected lane.
           onSelectLane={(v) => { setVertical(v ?? ALL_LANES); setShowRoster(false); }}
           onOpenIngest={() => setIngestOpen(true)}
-          onOnboardLane={onNavigate ? () => onNavigate('drip-lane-onboarding') : undefined}
           onNotice={notify}
         />
       </CollapsibleSection>

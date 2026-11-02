@@ -368,6 +368,9 @@ func (w *GrowthRollupWorker) RunOnce(ctx context.Context) {
 		case <-time.After(w.chunkPause):
 		}
 	}
+	audDone, audFailed := w.runAudienceGrowth(ctx, time.Now())
+	done += audDone
+	failed += audFailed
 	if failed > 0 {
 		hbStatus = "error"
 		hbErr = fmt.Sprintf("%d chunk(s) failed", failed)

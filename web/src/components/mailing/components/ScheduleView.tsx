@@ -6,41 +6,38 @@ import { colors, alpha, pageStyle } from '../shared/theme';
 import { Panel, SectionHeader, Stat, SectionError, EmptyState } from '../shared/ui';
 import { denverToday } from '../shared/filters';
 
-// Send-Day Schedule — the day-clock. Live twin of schedule_report.py: one
-// timeline per lane (board waves + sidecars), each showing its send window,
-// route (PMTA solid / SES hatched), offer mix and recipients. Reads
-// GET /api/mailing/schedule/day?date=YYYY-MM-DD.
-const PAGE_VERSION = '1.0.0';
+// Send-Day Schedule — the day-clock. One band per transport (SES, PMTA, Kumo)
+// with every lane mailing on it: send window, offer mix, campaigns, recipients.
+// Reads GET /api/mailing/schedule/day?date=YYYY-MM-DD.
+// PAGE_VERSION 2.0.0 — all lanes (operator 2026-11-02): the old board/sidecar
+// split matched retired W1/W2 names and guessed transport from the domain prefix.
+const PAGE_VERSION = '2.0.0';
 
-// offer → color (kept local; these are domain identities, like series colors)
-const OFFER_COLOR: Record<string, string> = {
-  'metal-roofing': 'var(--j-soft)',
-  'liberty-mutual': 'var(--j-blue)',
-  'sams-club': 'var(--j-success)',
-  'fidelity': 'var(--j-violet)',
+// Offers are not a fixed list, so each one takes a stable color from its name.
+const OFFER_PALETTE = ['--j-blue', '--j-violet', '--j-success', '--j-soft', '--j-cyan', '--j-pink'];
+const offerColor = (o: string) => {
+  let h = 0;
+  for (let i = 0; i < o.length; i++) h = (h * 31 + o.charCodeAt(i)) >>> 0;
+  return `var(${OFFER_PALETTE[h % OFFER_PALETTE.length]})`;
 };
-const OFFER_NAME: Record<string, string> = {
-  'metal-roofing': 'Metal Roofing', 'liberty-mutual': 'Liberty Mutual',
-  'sams-club': "Sam's Club", 'fidelity': 'Fidelity',
-};
-const offerColor = (o: string) => OFFER_COLOR[o] ?? colors.indigo400;
+const offerName = (o: string) => o.replace(/-/g, ' ');
 
 interface Lane {
-  name: string; label: string; meta?: string; start: string; window: number;
-  n: number; rec: number; offers: Record<string, number>; esp: Record<string, number>;
-  route: string; gated?: boolean;
+  name: string; label: string; start: string; window: number;
+  n: number; rec: number; offers: Record<string, number>;
 }
+interface Band { key: string; label: string; n: number; rec: number; lanes: Lane[] }
 interface ScheduleModel {
   date: string; day_label: string; span_start_ms: number; span_end_ms: number;
   total_campaigns: number; total_recipients: number; lanes: number; offers: string[];
-  board_waves: Lane[]; sidecars: Lane[];
+  bands: Band[];
 }
 
 const LANE_W = 190;
 const fmtInt = (n: number) => n.toLocaleString();
 const pad = (n: number) => String(n).padStart(2, '0');
 const hhz = (ms: number) => { const d = new Date(ms); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
-const mdt = (ms: number) => { const d = new Date(ms - 6 * 3600e3); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; };
+const mdt = (ms: number) => new Date(ms).toLocaleTimeString('en-GB', { timeZone: 'America/Denver', hour: '2-digit', minute: '2-digit' });
 const dominant = (offers: Record<string, number>) =>
   Object.entries(offers).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'other';
 
@@ -50,7 +47,7 @@ const OfferBar: React.FC<{ offers: Record<string, number> }> = ({ offers }) => {
     <div style={{ display: 'flex', height: 9, borderRadius: 3, overflow: 'hidden', flex: 1,
       minWidth: 40, maxWidth: 230, border: `1px solid ${alpha('#000000', '33')}` }} title="offer mix">
       {Object.entries(offers).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
-        <span key={k} title={`${OFFER_NAME[k] ?? k} ×${v}`}
+        <span key={k} title={`${offerName(k)} ×${v}`}
           style={{ width: `${(v / tot) * 100}%`, height: '100%', background: offerColor(k) }} />
       ))}
     </div>
@@ -68,7 +65,7 @@ const Ruler: React.FC<{ t0: number; t1: number }> = ({ t0, t1 }) => {
         background: h % 6 === 0 ? colors.hairline : colors.divider, zIndex: 0 }}>
         <span style={{ position: 'absolute', top: 2, left: 5, fontSize: 10.5, whiteSpace: 'nowrap',
           color: colors.textFaint, fontVariantNumeric: 'tabular-nums' }}>
-          {hhz(t)}Z<br /><span style={{ color: colors.textMuted }}>{mdt(t)} MDT</span>
+          {mdt(t)} MT<br /><span style={{ color: colors.textMuted }}>{hhz(t)}Z</span>
         </span>
       </div>,
     );
@@ -82,9 +79,7 @@ const LaneRow: React.FC<{ lane: Lane; t0: number; t1: number; last: boolean }> =
   const st = new Date(lane.start).getTime();
   const en = st + lane.window * 3600e3;
   const pct = (t: number) => ((t - t0) / span) * 100;
-  const dom = dominant(lane.offers);
-  const stripe = offerColor(dom);
-  const ses = lane.route === 'SES';
+  const stripe = offerColor(dominant(lane.offers));
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'stretch', minHeight: 56,
       borderBottom: last ? 'none' : `1px solid ${colors.divider}` }}>
@@ -92,26 +87,20 @@ const LaneRow: React.FC<{ lane: Lane; t0: number; t1: number; last: boolean }> =
         flexDirection: 'column', justifyContent: 'center', gap: 3 }}>
         <span style={{ fontWeight: 600, fontSize: 13.5, color: colors.text, letterSpacing: '-0.01em' }}>{lane.label}</span>
         <span style={{ fontSize: 10.5, color: colors.textFaint, fontVariantNumeric: 'tabular-nums' }}>
-          {lane.meta ? `${lane.meta} · ` : ''}{lane.name}
+          {fmtInt(lane.rec)} recipients
         </span>
       </div>
       <div style={{ position: 'relative', flex: 1, margin: '8px 0' }}>
         <div title={`${lane.label} — ${lane.n} campaigns · ${fmtInt(lane.rec)} recipients`}
           style={{ position: 'absolute', top: 0, bottom: 0, left: `${pct(st)}%`, width: `${Math.max(pct(en) - pct(st), 6)}%`,
-            borderRadius: 6, border: `1px solid ${lane.gated ? colors.warning : colors.panelBorder}`,
-            borderStyle: lane.gated ? 'dashed' : 'solid', background: colors.panelBgSolid, display: 'flex',
-            alignItems: 'center', overflow: 'hidden', minWidth: 60,
-            backgroundImage: ses ? 'repeating-linear-gradient(135deg,transparent,transparent 6px,color-mix(in srgb, var(--j-text) 3%, transparent) 6px,color-mix(in srgb, var(--j-text) 3%, transparent) 7px)' : undefined }}>
-          <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: lane.gated ? colors.warning : stripe }} />
+            borderRadius: 6, border: `1px solid ${colors.panelBorder}`, background: colors.panelBgSolid, display: 'flex',
+            alignItems: 'center', overflow: 'hidden', minWidth: 60 }}>
+          <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: stripe }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px 0 13px', width: '100%', minWidth: 0 }}>
             <span style={{ fontSize: 11, color: colors.text, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-              <b>{lane.n}</b> <span style={{ color: colors.textMuted }}>camp · {hhz(st)}Z ({mdt(st)}) · +{lane.window}h · {lane.route}</span>
+              <b>{lane.n}</b> <span style={{ color: colors.textMuted }}>camp · {mdt(st)} MT · +{lane.window}h</span>
             </span>
             <OfferBar offers={lane.offers} />
-            {lane.gated && (
-              <span style={{ fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase', color: colors.warning,
-                border: `1px solid ${colors.warning}`, borderRadius: 3, padding: '1px 5px', whiteSpace: 'nowrap' }}>gated</span>
-            )}
           </div>
         </div>
       </div>
@@ -149,8 +138,7 @@ export const ScheduleView: React.FC = () => {
       const r = await apiFetch(`/api/mailing/schedule/day?date=${encodeURIComponent(date)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as ScheduleModel;
-      // server may emit null for empty lane sets — normalize so spreads are safe
-      setModel({ ...j, board_waves: j.board_waves ?? [], sidecars: j.sidecars ?? [], offers: j.offers ?? [] });
+      setModel({ ...j, bands: j.bands ?? [], offers: j.offers ?? [] });
       setFetchedAt(new Date().toLocaleTimeString());
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load schedule');
@@ -161,7 +149,7 @@ export const ScheduleView: React.FC = () => {
 
   useEffect(() => { void load(); }, [load]);
 
-  const allLanes = useMemo(() => (model ? [...model.board_waves, ...model.sidecars] : []), [model]);
+  const bands = useMemo(() => model?.bands ?? [], [model]);
 
   return (
     <div style={pageStyle}>
@@ -172,10 +160,10 @@ export const ScheduleView: React.FC = () => {
             Project Jarvis · Operating Schedule
           </div>
           <h1 style={{ fontSize: 32, lineHeight: 1.02, margin: 0, fontWeight: 600, color: colors.heading, letterSpacing: '-0.015em' }}>
-            Send-Day <span style={{ color: OFFER_COLOR['metal-roofing'] }}>{model?.day_label ?? '—'}</span>
+            Send-Day <span style={{ color: colors.indigo400 }}>{model?.day_label ?? '—'}</span>
           </h1>
           <p style={{ color: colors.textMuted, fontSize: 13, margin: '8px 0 0', maxWidth: '54ch' }}>
-            Every wave, its send window, and the route it rides — one day-clock so cadence stays consistent brand-to-brand.
+            Every lane on SES, PMTA and Kumo for the day, with its send window, volume and offers.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 22, alignItems: 'flex-end' }}>
@@ -188,7 +176,7 @@ export const ScheduleView: React.FC = () => {
           </label>
           {model && (
             <>
-              <Stat label="Campaigns" value={model.total_campaigns} />
+              <Stat label="Campaigns" value={fmtInt(model.total_campaigns)} />
               <Stat label="Recipients" value={fmtInt(model.total_recipients)} />
               <Stat label="Lanes" value={model.lanes} />
               <Stat label="Offers" value={model.offers.length} />
@@ -202,42 +190,23 @@ export const ScheduleView: React.FC = () => {
         </div>
       </div>
 
-      {/* legend */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px 24px', alignItems: 'center', marginBottom: 20,
-        fontSize: 12, color: colors.textMuted }}>
-        {Object.keys(OFFER_COLOR).map((o) => (
-          <span key={o} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ width: 12, height: 12, borderRadius: 3, background: offerColor(o) }} />{OFFER_NAME[o]}
-          </span>
-        ))}
-        <span style={{ marginLeft: 'auto', display: 'flex', gap: 10, fontSize: 10.5 }}>
-          <span style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 4, padding: '2px 7px' }}>PMTA solid</span>
-          <span style={{ border: `1px solid ${colors.panelBorder}`, borderRadius: 4, padding: '2px 7px',
-            backgroundImage: 'repeating-linear-gradient(135deg,transparent,transparent 3px,color-mix(in srgb, var(--j-text) 8%, transparent) 3px,color-mix(in srgb, var(--j-text) 8%, transparent) 4px)' }}>SES hatched</span>
-        </span>
-      </div>
-
       {error && <SectionError label="Schedule" error={error} onRetry={() => void load()} />}
-      {!error && model && allLanes.length === 0 && (
+      {!error && model && model.lanes === 0 && (
         <EmptyState icon={faCalendarDay} title="No campaigns scheduled for this day"
-          hint="Pick another send day, or deploy a board — this reflects what's live in mailing_campaigns." />
+          hint="Pick another send day, or schedule a campaign. This shows what is in mailing_campaigns." />
       )}
 
-      {!error && model && model.board_waves.length > 0 && (
-        <>
-          <BandHeader>The Board — engaged tier</BandHeader>
-          <Timeline lanes={model.board_waves} t0={model.span_start_ms} t1={model.span_end_ms} />
-        </>
-      )}
-      {!error && model && model.sidecars.length > 0 && (
-        <>
-          <BandHeader>Sidecars &amp; peppering lanes</BandHeader>
-          <Timeline lanes={model.sidecars} t0={model.span_start_ms} t1={model.span_end_ms} />
-        </>
-      )}
+      {!error && model && model.lanes > 0 && bands.map((b) => (
+        <React.Fragment key={b.key}>
+          <BandHeader>{b.label} · {b.lanes.length} {b.lanes.length === 1 ? 'lane' : 'lanes'} · {fmtInt(b.n)} campaigns · {fmtInt(b.rec)} recipients</BandHeader>
+          {b.lanes.length > 0
+            ? <Timeline lanes={b.lanes} t0={model.span_start_ms} t1={model.span_end_ms} />
+            : <div style={{ fontSize: 12.5, color: colors.textMuted, padding: '4px 2px' }}>Nothing scheduled on {b.label} for this day.</div>}
+        </React.Fragment>
+      ))}
 
       {/* lane detail table */}
-      {!error && model && allLanes.length > 0 && (
+      {!error && model && model.lanes > 0 && (
         <>
           <BandHeader>Lane detail</BandHeader>
           <Panel>
@@ -246,39 +215,38 @@ export const ScheduleView: React.FC = () => {
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', color: colors.textMuted, borderBottom: `1px solid ${colors.hairline}` }}>
+                    <th style={{ padding: '6px 8px' }}>Sent through</th>
                     <th style={{ padding: '6px 8px' }}>Lane</th>
                     <th style={{ padding: '6px 8px' }}>Start</th>
                     <th style={{ padding: '6px 8px' }}>Window</th>
-                    <th style={{ padding: '6px 8px' }}>Route</th>
                     <th style={{ padding: '6px 8px', textAlign: 'right' }}>Campaigns</th>
                     <th style={{ padding: '6px 8px', textAlign: 'right' }}>Recipients</th>
                     <th style={{ padding: '6px 8px' }}>Offers</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {allLanes.map((l) => {
+                  {bands.flatMap((b) => b.lanes.map((l) => {
                     const st = new Date(l.start).getTime();
                     return (
                       <tr key={l.name} style={{ borderBottom: `1px solid ${colors.divider}` }}>
-                        <td style={{ padding: '6px 8px', color: colors.text }}>
-                          {l.label}{l.gated && <span style={{ color: colors.warning, marginLeft: 6, fontSize: 10 }}>GATED</span>}
-                        </td>
-                        <td style={{ padding: '6px 8px', color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>{hhz(st)}Z ({mdt(st)} MDT)</td>
+                        <td style={{ padding: '6px 8px', color: colors.textMuted }}>{b.label}</td>
+                        <td style={{ padding: '6px 8px', color: colors.text }}>{l.label}</td>
+                        <td style={{ padding: '6px 8px', color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>{mdt(st)} MT</td>
                         <td style={{ padding: '6px 8px', color: colors.textMuted }}>+{l.window}h</td>
-                        <td style={{ padding: '6px 8px', color: colors.textMuted }}>{l.route}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{l.n}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(l.n)}</td>
                         <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(l.rec)}</td>
                         <td style={{ padding: '6px 8px', color: colors.textMuted }}>
-                          {Object.entries(l.offers).sort((a, b) => b[1] - a[1]).map(([o, c]) => `${OFFER_NAME[o] ?? o} ×${c}`).join(' · ')}
+                          {Object.entries(l.offers).sort((x, y) => y[1] - x[1]).slice(0, 6).map(([o, c]) => `${offerName(o)} ×${c}`).join(' · ')}
+                          {Object.keys(l.offers).length > 6 ? ` · +${Object.keys(l.offers).length - 6} more` : ''}
                         </td>
                       </tr>
                     );
-                  })}
+                  }))}
                 </tbody>
                 <tfoot>
                   <tr style={{ borderTop: `1px solid ${colors.hairline}`, fontWeight: 600 }}>
                     <td style={{ padding: '6px 8px', color: colors.text }} colSpan={4}>Total</td>
-                    <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{model.total_campaigns}</td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(model.total_campaigns)}</td>
                     <td style={{ padding: '6px 8px', textAlign: 'right', color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{fmtInt(model.total_recipients)}</td>
                     <td />
                   </tr>
@@ -291,7 +259,7 @@ export const ScheduleView: React.FC = () => {
 
       <div style={{ marginTop: 22, paddingTop: 14, borderTop: `1px solid ${colors.hairline}`,
         fontSize: 11, color: colors.textFaint, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <span>All times UTC · Denver (MDT = UTC−6) in parentheses · window = hours · v{PAGE_VERSION}</span>
+        <span>Times are Denver · window = hours · v{PAGE_VERSION}</span>
         <span>{fetchedAt ? `fetched ${fetchedAt}` : ''}</span>
       </div>
     </div>

@@ -37,6 +37,14 @@ package api
 //                                    ('completed','converted'). Documented as
 //                                    lifetime because enrollments carry no cheap
 //                                    per-window completion timestamp to bound on.
+//   - lanes[].last_send_at         = newest successful email-node execution for
+//                                    the lane in mailing_journey_execution_log
+//                                    (90-day lookback, null if none). An email
+//                                    node skipped at send time for suppression
+//                                    also logs success, so this can lead the
+//                                    last delivered message slightly.
+//   - lanes[].sends_7d             = the same rows over the last 7 days.
+//   - last_send_at                 = newest last_send_at across lanes.
 //   - total_active_lanes           = number of lanes with enabled=true.
 //   - total_enrolled               = SUM of active_enrolled across ALL lanes.
 //
@@ -59,16 +67,20 @@ import (
 //
 // 1.0 (2026-07-02): initial — live click-drip lanes from mailing_offer_journey_map
 // joined to mailing_journey_enrollments active/terminal counts.
-const VersionDashboardClickFunnels = "1.0"
+//
+// 1.1 (2026-11-02): last_send_at + sends_7d per lane, last_send_at overall.
+const VersionDashboardClickFunnels = "1.1"
 
 type clickFunnelLane struct {
-	OfferID              string `json:"offer_id"` // everflow_offer_id (lane key)
-	Name                 string `json:"name"`
-	Enabled              bool   `json:"enabled"`
-	PayoutType           string `json:"payout_type"`
-	ClickJourneyID       string `json:"click_journey_id"`
-	ActiveEnrolled       int    `json:"active_enrolled"`        // current in-journey
-	CompletedOrConverted int    `json:"completed_or_converted"` // LIFETIME
+	OfferID              string     `json:"offer_id"` // everflow_offer_id (lane key)
+	Name                 string     `json:"name"`
+	Enabled              bool       `json:"enabled"`
+	PayoutType           string     `json:"payout_type"`
+	ClickJourneyID       string     `json:"click_journey_id"`
+	ActiveEnrolled       int        `json:"active_enrolled"`        // current in-journey
+	CompletedOrConverted int        `json:"completed_or_converted"` // LIFETIME
+	LastSendAt           *time.Time `json:"last_send_at"`
+	Sends7d              int        `json:"sends_7d"`
 }
 
 // HandleDashboardClickFunnels serves GET /api/mailing/dashboard/click-funnels.
@@ -96,7 +108,9 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 			COALESCE(jm.payout_type, 'UNKNOWN') AS payout_type,
 			COALESCE(jm.click_journey_id, '') AS click_journey_id,
 			COALESCE(e.active_enrolled, 0) AS active_enrolled,
-			COALESCE(e.converted, 0) AS completed_or_converted
+			COALESCE(e.converted, 0) AS completed_or_converted,
+			ls.last_send_at,
+			COALESCE(ls.sends_7d, 0) AS sends_7d
 		FROM mailing_offer_journey_map jm
 		LEFT JOIN (
 			SELECT enrollment_offer_id,
@@ -109,6 +123,17 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 			WHERE enrollment_offer_id <> ''
 			GROUP BY enrollment_offer_id
 		) e ON e.enrollment_offer_id = jm.everflow_offer_id
+		LEFT JOIN (
+			SELECT en.enrollment_offer_id,
+				MAX(l.executed_at) AS last_send_at,
+				COUNT(*) FILTER (WHERE l.executed_at > NOW() - INTERVAL '7 days') AS sends_7d
+			FROM mailing_journey_execution_log l
+			JOIN mailing_journey_enrollments en ON en.id = l.enrollment_id
+			WHERE l.executed_at > NOW() - INTERVAL '90 days'
+			  AND l.node_type = 'email' AND l.result = 'success'
+			  AND en.enrollment_offer_id <> ''
+			GROUP BY en.enrollment_offer_id
+		) ls ON ls.enrollment_offer_id = jm.everflow_offer_id
 		ORDER BY COALESCE(e.active_enrolled, 0) DESC, jm.everflow_offer_id ASC`
 
 	rows, err := s.mailingDB.QueryContext(ctx, query)
@@ -121,16 +146,26 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 	lanes := make([]clickFunnelLane, 0)
 	totalActiveLanes := 0
 	totalEnrolled := 0
+	var lastSendAt *time.Time
 	for rows.Next() {
 		var lane clickFunnelLane
 		var name sql.NullString
+		var laneLastSend sql.NullTime
 		if err := rows.Scan(
 			&lane.OfferID, &name, &lane.Enabled, &lane.PayoutType,
 			&lane.ClickJourneyID, &lane.ActiveEnrolled, &lane.CompletedOrConverted,
+			&laneLastSend, &lane.Sends7d,
 		); err != nil {
 			continue
 		}
 		lane.Name = name.String
+		if laneLastSend.Valid {
+			t := laneLastSend.Time
+			lane.LastSendAt = &t
+			if lastSendAt == nil || t.After(*lastSendAt) {
+				lastSendAt = &t
+			}
+		}
 		if lane.Enabled {
 			totalActiveLanes++
 		}
@@ -142,6 +177,7 @@ func (s *Server) HandleDashboardClickFunnels(w http.ResponseWriter, r *http.Requ
 		"lanes":              lanes,
 		"total_active_lanes": totalActiveLanes,
 		"total_enrolled":     totalEnrolled,
+		"last_send_at":       lastSendAt,
 		"api_version":        VersionDashboardClickFunnels,
 		"generated_at":       time.Now().UTC(),
 	})

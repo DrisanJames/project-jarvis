@@ -319,6 +319,41 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		sectionErrors["suppressions_yesterday"] = "failed to load yesterday's suppressions"
 	}
 
+	// Categories come from the reason column of the same rows, so they sum to
+	// the totals above. reason values verified against prod 2026-11-02:
+	// 'unsubscribe', and 'ses_complaint', 'ses_complaint:abuse', 'spam_complaint'.
+	var suppressionCategories DashboardSuppressionCategories
+	catRows, err := svc.db.QueryContext(ctx, `
+		SELECT created_at >= $2 AS is_today,
+		       COUNT(*) FILTER (WHERE reason = 'unsubscribe'),
+		       COUNT(*) FILTER (WHERE reason ILIKE '%complaint%'),
+		       COUNT(*)
+		FROM mailing_global_suppressions
+		WHERE organization_id = $1 AND created_at >= $3
+		GROUP BY 1
+	`, orgID, todayStart, yesterdayStart)
+	if err != nil {
+		log.Printf("[dashboard] suppression_categories error org=%s: %v", orgStr, err)
+		sectionErrors["suppression_categories"] = "failed to load suppression categories"
+	} else {
+		for catRows.Next() {
+			var isToday bool
+			var unsubs, complaints, total int
+			if err := catRows.Scan(&isToday, &unsubs, &complaints, &total); err != nil {
+				log.Printf("[dashboard] suppression_categories scan org=%s: %v", orgStr, err)
+				sectionErrors["suppression_categories"] = "failed to load suppression categories"
+				break
+			}
+			counts := DashboardSuppressionCounts{Unsubscribes: unsubs, Complaints: complaints, Other: total - unsubs - complaints}
+			if isToday {
+				suppressionCategories.Today = counts
+			} else {
+				suppressionCategories.Yesterday = counts
+			}
+		}
+		catRows.Close()
+	}
+
 	// --- Section: Active automations (org-scoped) ---
 	var activeAutomations int
 	if err := svc.db.QueryRowContext(ctx, `
@@ -526,6 +561,7 @@ func (svc *MailingService) HandleDashboard(w http.ResponseWriter, r *http.Reques
 		GlobalSuppressionsTotal: globalSuppTotal,
 		SuppressionsToday:       suppressionsToday,
 		SuppressionsYesterday:   suppressionsYesterday,
+		SuppressionCategories:   suppressionCategories,
 		ActiveAutomations:       activeAutomations,
 
 		TotalSubscribers:         totalSubs,
