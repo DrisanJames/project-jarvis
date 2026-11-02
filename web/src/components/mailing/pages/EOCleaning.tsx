@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faBroom, faRotate, faSpinner, faPlay, faPause, faPlus, faRightLeft,
-} from '@fortawesome/free-solid-svg-icons';
+  faBroom, faRotate, faSpinner, faPlay, faPause, faPlus, } from '@fortawesome/free-solid-svg-icons';
 import { apiFetch } from '../shared/apiFetch';
 import {
   colors, alpha, pageStyle, panelStyle, tableStyle,
@@ -371,14 +370,9 @@ export const EOCleaning: React.FC = () => {
   return (
     <div style={pageStyle}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faRightLeft} style={{ color: colors.indigo400 }} /> Export &amp; Import
-          </h2>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
-            Audience data in and out — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight. v{PAGE_VERSION}
-            {state.fetchedAt && <span> · fetched {state.fetchedAt}</span>}
-          </div>
+        <div style={{ fontSize: 12, color: colors.textMuted }}>
+          Send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight. v{PAGE_VERSION}
+          {state.fetchedAt && <span> · fetched {state.fetchedAt}</span>}
         </div>
         <button
           onClick={() => setNonce(n => n + 1)}

@@ -104,6 +104,17 @@ func main() {
 	bi := buildinfo.Current()
 	log.Printf("Build info: version=%s git_sha=%s image_digest=%s build_time=%s", bi.Version, bi.GitSHA, bi.ImageDigest, bi.BuildTime)
 
+	// Provider keys saved in Account > API Keys go into the environment before
+	// the real config load below, so config and constructors see them. Reading
+	// the config here is only for the database URL and the encryption key. Any
+	// failure logs and boot continues on deployment settings.
+	if bootCfg, err := config.LoadFromEnv("config/config.yaml"); err != nil {
+		log.Printf("[Account] couldn't read config, saved provider keys not applied: %v", err)
+	} else if bootCfg.Mailing.Enabled && bootCfg.Mailing.DatabaseURL != "" {
+		api.ApplySavedProviderKeysAtBoot(bootCfg.Mailing.DatabaseURL,
+			auth.NewAuthManager(&bootCfg.Auth, "").DerivedKey(api.ProviderKeyPurpose))
+	}
+
 	// Load configuration
 	cfg, err := config.LoadFromEnv("config/config.yaml")
 	if err != nil {
@@ -4306,6 +4317,35 @@ func runStartupMigrations(db *sql.DB) {
 		name string
 		sql  string
 	}{
+		// ── account screen (2026-11-02, internal/api/account_keys.go) ────────
+		// New empty table, O(1). The app user holds REFERENCES on organizations
+		// and INSERT/UPDATE on users (has_table_privilege, 2026-11-02).
+		{"account_provider_keys", `CREATE TABLE IF NOT EXISTS account_provider_keys (
+			organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			key_name        TEXT NOT NULL,
+			ciphertext      BYTEA NOT NULL,
+			last4           TEXT NOT NULL,
+			updated_by      TEXT NOT NULL,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (organization_id, key_name)
+		)`},
+		// Seed the first owner. GET /account/me can run before this slice
+		// finishes and create the row as a plain user, so the second entry
+		// promotes it, but only while the organization has no active owner:
+		// a later deliberate demotion always leaves another owner in place.
+		{"seed_account_owner", `INSERT INTO users (organization_id, email, name, role, status)
+			SELECT '00000000-0000-0000-0000-000000000001', 'drisan@jamesventurescorp.com', NULL, 'owner', 'active'
+			 WHERE EXISTS (SELECT 1 FROM organizations WHERE id = '00000000-0000-0000-0000-000000000001')
+			   AND NOT EXISTS (SELECT 1 FROM users
+			                    WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+			                      AND email = 'drisan@jamesventurescorp.com')`},
+		{"seed_account_owner_promote", `UPDATE users SET role = 'owner', status = 'active', updated_at = NOW()
+			 WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+			   AND email = 'drisan@jamesventurescorp.com'
+			   AND NOT EXISTS (SELECT 1 FROM users
+			                    WHERE organization_id = '00000000-0000-0000-0000-000000000001'
+			                      AND role = 'owner' AND status = 'active')`},
+
 		// ── subscriber preferences (2026-09-11) ─────────────────────────────
 		// Recipient pause / frequency / topic store behind the preference page
 		// and the in-memory preferences hub (internal/preferences). A NEW,

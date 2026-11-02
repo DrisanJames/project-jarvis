@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -56,6 +57,9 @@ type AuthManager struct {
 	rdb          *redis.Client
 	// identityFromCode swaps the Google exchange in tests; nil means Google.
 	identityFromCode func(ctx context.Context, code string) (*GoogleUserInfo, error)
+	// accessGate, when set, can refuse an identity the domain rule admitted.
+	// Atomic because the gate is armed during boot while requests are served.
+	accessGate atomic.Pointer[func(email string) bool]
 }
 
 const redisSessionPrefix = "session:"
@@ -87,6 +91,24 @@ func (am *AuthManager) SetRedisClient(rdb *redis.Client) {
 	log.Println("Auth: Redis session store enabled — sessions persist across deploys")
 }
 
+// SetAccessGate installs an optional per-user check on top of the domain rule.
+// The gate answers true to let an email in. It is consulted at login and on
+// every session read, so turning a user off also ends their open sessions.
+func (am *AuthManager) SetAccessGate(gate func(email string) bool) {
+	if gate == nil {
+		am.accessGate.Store(nil)
+		return
+	}
+	am.accessGate.Store(&gate)
+}
+
+// accessAllowed reports whether the optional gate admits email. No gate means
+// the domain rule alone decides.
+func (am *AuthManager) accessAllowed(email string) bool {
+	gate := am.accessGate.Load()
+	return gate == nil || (*gate)(email)
+}
+
 // generateState creates a random state string for OAuth
 func generateState() (string, error) {
 	b := make([]byte, 32)
@@ -114,12 +136,26 @@ func allowedIdentity(u *GoogleUserInfo, allowedDomain string) bool {
 	if u == nil || allowedDomain == "" || !u.VerifiedEmail {
 		return false
 	}
-	want := strings.ToLower(strings.TrimSpace(allowedDomain))
-	parts := strings.Split(strings.ToLower(strings.TrimSpace(u.Email)), "@")
-	if len(parts) != 2 || parts[0] == "" || parts[1] != want {
+	if !emailInDomain(u.Email, allowedDomain) {
 		return false
 	}
-	return strings.ToLower(strings.TrimSpace(u.HD)) == want
+	return strings.ToLower(strings.TrimSpace(u.HD)) == strings.ToLower(strings.TrimSpace(allowedDomain))
+}
+
+// emailInDomain is the address half of allowedIdentity.
+func emailInDomain(email, allowedDomain string) bool {
+	want := strings.ToLower(strings.TrimSpace(allowedDomain))
+	if want == "" {
+		return false
+	}
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(email)), "@")
+	return len(parts) == 2 && parts[0] != "" && parts[1] == want
+}
+
+// EmailAllowed applies the sign-in domain rule to an address that has no Google
+// profile yet, such as a user being added to the roster.
+func (am *AuthManager) EmailAllowed(email string) bool {
+	return am != nil && am.config != nil && emailInDomain(email, am.config.AllowedDomain)
 }
 
 // secureCookies is true when the site is served over https, as it is in prod.
@@ -224,6 +260,12 @@ func (am *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Auth: outside account sent to onboarding: %s (hd=%q)", userInfo.Email, userInfo.HD)
 		// Fragment, not query: it stays out of access logs and Referer headers.
 		http.Redirect(w, r, "/onboarding#t="+tok, http.StatusTemporaryRedirect)
+		return
+	}
+
+	if !am.accessAllowed(userInfo.Email) {
+		log.Printf("Auth: disabled user refused at login: %s", userInfo.Email)
+		http.Redirect(w, r, "/sign-in?error=access_disabled", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -392,6 +434,12 @@ func (am *AuthManager) GetSession(r *http.Request) *Session {
 
 	if time.Now().After(session.ExpiresAt) {
 		am.deleteSession(cookie.Value)
+		return nil
+	}
+
+	// Every authenticated path comes through here: RequireAuth and the /api
+	// middleware (apiAuthMiddleware) via IsAuthenticated, and HandleUserInfo.
+	if !am.accessAllowed(session.Email) {
 		return nil
 	}
 

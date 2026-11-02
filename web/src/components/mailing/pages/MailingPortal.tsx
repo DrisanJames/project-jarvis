@@ -7,7 +7,7 @@ import {
   /* faArrowLeft, */ faGlobe, /* faStore (offer-center nav retired 2026-08-17), */
   faSpinner, faSeedling, faWandMagicSparkles,
   faTruckFast, faRoute, faGears, faLayerGroup, faSliders,
-  faRightLeft, faBoxesStacked, faUsers, faNewspaper, faBook, faSun, faMoon,
+  faBoxesStacked, faUsers, faNewspaper, faBook, faSun, faMoon,
 } from '@fortawesome/free-solid-svg-icons';
 import { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -63,14 +63,13 @@ const CreativeStudio = lazy(() => import('../components/CreativeStudio').then(m 
 // claim evidence, ops dashboard, and briefs over /api/mailing/content-desk/*.
 const ContentDesk = lazy(() => import('../components/ContentDesk').then(m => ({ default: m.ContentDesk })));
 const OutboxDashboard = lazy(() => import('../components/OutboxDashboard').then(m => ({ default: m.OutboxDashboard })));
-const PartnerIngestPortal = lazy(() => import('../datapartners/PartnerIngestPortal').then(m => ({ default: m.PartnerIngestPortal })));
-const DataIngestPortal = lazy(() => import('../dataingest/DataIngestPortal').then(m => ({ default: m.DataIngestPortal })));
+const Account = lazy(() => import('../components/Account'));
+const DataCenter = lazy(() => import('../datacenter/DataCenter').then(m => ({ default: m.DataCenter })));
 const CpmPlanner = lazy(() => import('../components/CpmPlanner').then(m => ({ default: m.CpmPlanner })));
 const OperationsConsole = lazy(() => import('./OperationsConsole').then(m => ({ default: m.OperationsConsole })));
 const SegmentationCommand = lazy(() => import('./SegmentationCommand').then(m => ({ default: m.SegmentationCommand })));
 const AudienceCommand = lazy(() => import('./AudienceCommand').then(m => ({ default: m.AudienceCommand })));
 const FreshBroadcastConfig = lazy(() => import('./FreshBroadcastConfig').then(m => ({ default: m.FreshBroadcastConfig })));
-const EOCleaning = lazy(() => import('./EOCleaning').then(m => ({ default: m.EOCleaning })));
 const ClickFunnels = lazy(() => import('../components/ClickFunnels').then(m => ({ default: m.ClickFunnels })));
 // REQ-118 WP10 — the drip supply chain's operator surface (three panes:
 // ecosystem queue / lane / domains) over /api/mailing/supply/*.
@@ -86,7 +85,7 @@ const ChunkLoader: React.FC = () => (
   </div>
 );
 
-type TabId = 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'click-funnels' | 'drip-journey' | 'day-cards' | 'supply' | 'brain' | 'inbox-score' | 'agents';
+type TabId = 'account' | 'data-center' | 'dashboard' | 'audiences' | 'lists' | 'campaign-center' | 'suppressions' | 'global-suppression' | 'profiles' | 'send' | 'sending-plans' | 'domain-center' | 'domain-agents' | 'delivery-servers' | /* 'offers' — Offer Center nav retired 2026-08-17 (operator ruling); see Property Ledger lane panel + Creative Studio */ 'analytics' | 'segments' | 'automations' | 'ab-tests' | 'import' | 'mission-control' | 'jarvis' | 'pmta-wizard' | 'schedule' | 'consciousness' | 'content-library' | 'marketing-agent' | 'ai-agents' | 'outbox' | 'audience-health' | 'audience-cadence' | 'event-lake' | 'data-partners' | 'data-ingest' | 'creative-studio' | 'content-desk' | 'cpm-planner' | 'smart-links' | 'operations' | 'segmentation-command' | 'fresh-broadcast' | 'eo-cleaning' | 'click-funnels' | 'drip-journey' | 'day-cards' | 'supply' | 'brain' | 'inbox-score' | 'agents';
 
 interface Tab {
   id: TabId;
@@ -106,11 +105,7 @@ const tabs: Tab[] = [
   { id: 'segmentation-command', label: 'Segmentation', icon: faLayerGroup, description: 'Per-sending-domain segment freshness — is the engaged audience current, rebuild it here, and see the estate verdict.' },
   { id: 'fresh-broadcast', label: 'Fresh Broadcast', icon: faSliders, hidden: true, description: 'Fresh-introduction broadcast program config — per-stream caps, offers, ISP caps and throttle; the build pipeline reads this same table.' },
   { id: 'click-funnels', label: 'Click Funnels', icon: faRoute, description: 'Click-drip offer funnels — per-node reach, open, click and conversion rates, the copy on each touch, and bulk clicker upload by sub1.' },
-  // Tab id stays 'eo-cleaning' — it is the persisted key in localStorage
-  // ('jarvis.portal.activeTab'); renaming the id would silently bounce the
-  // operator to the Dashboard on their next refresh. Label only.
   { id: 'supply', label: 'Supply', icon: faBoxesStacked, description: 'The drip supply chain — ecosystem queue, lane detail, sending-domain capacity and the contracts behind them.' },
-  { id: 'eo-cleaning', label: 'Export & Import', icon: faRightLeft, description: 'Export and import audience data — send-day MD5 exports for external scrubbing, suppression imports, and list cleaning through EmailOversight.' },
   { id: 'suppressions', label: 'Suppressions', icon: faBan, description: 'Manage who you do not email — opt-outs, complaints and do-not-contact lists.', childIds: ['suppressions', 'global-suppression'] },
   { id: 'ai-agents', label: 'AI Agents', icon: faBrain, hidden: true, description: 'AI-powered deliverability tools — inbox intelligence and per-recipient engagement scoring.', childIds: ['profiles'] },
   { id: 'domain-center', label: 'Domain Center', icon: faGlobe, description: 'Manage your sending, tracking and image domains and their authentication.', childIds: ['domain-center', 'smart-links'] },
@@ -123,12 +118,15 @@ const tabs: Tab[] = [
   { id: 'creative-studio', label: 'Creative Studio', icon: faWandMagicSparkles, description: 'Browse, preview and manage newsletter creatives for each offer and sending brand.', childIds: ['creative-studio', 'inbox-score'] },
   { id: 'content-desk', label: 'Content Desk', icon: faNewspaper, description: 'Article review queue, block-by-block review against source evidence, pipeline operations, and new briefs.' },
   { id: 'audience-health', label: 'Audience', icon: faSeedling, description: 'Understand your audience — growth, churn, performance by acquisition source, subscriber lookup and welcome-list capacity.' },
-  { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
+  { id: 'audience-cadence', label: 'Send Frequency', icon: faChartLine, hidden: true, description: 'Recommended send frequency for each mailbox provider to maximize engagement without fatiguing your audience.' },
   { id: 'delivery-servers', label: 'Sending Infrastructure', icon: faServer, description: 'Your sending servers and dedicated IP addresses.' },
-  { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, description: 'The AI insights and strategy behind your campaigns.' },
-  { id: 'data-partners', label: 'Data Partners', icon: faDatabase, description: 'Manage inbound data-partner connections — access keys, submitted lists, automated follow-ups and creatives.' },
-  { id: 'data-ingest', label: 'Data Ingest', icon: faDatabase, description: 'Every record landing or moving: at rest (S3 + database) vs dynamic feeds, day over day, composition, mailed vs not, and the static upload door.' },
-  { id: 'outbox', label: 'Delivery Queue', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
+  { id: 'consciousness', label: 'Campaign Intelligence', icon: faCrosshairs, hidden: true, description: 'The AI insights and strategy behind your campaigns.' },
+  { id: 'account', label: 'Account', icon: faUsers, hidden: true, description: 'Your profile, company, subscription, users and API keys.' },
+  // 'data-partners', 'data-ingest', 'eo-cleaning' stay valid ids: they are
+  // persisted in localStorage ('jarvis.portal.activeTab') and open the matching
+  // Data Center tab.
+  { id: 'data-center', label: 'Data Center', icon: faDatabase, childIds: ['data-partners', 'data-ingest', 'eo-cleaning'], description: 'Every record coming in or going out: feeds, partners, the reservoir, uploads, exports and imports.' },
+  { id: 'outbox', label: 'Delivery', icon: faPaperPlane, description: 'Track emails in progress, queued and any that failed to send.' },
   { id: 'operations', label: 'Operations', icon: faGears, description: 'Platform ownership console — job and worker health, segment-family freshness vs SLA, nightly send-day invariants and engager cohort growth.' },
   { id: 'brain', label: 'Brain', icon: faBook, description: 'What the agents decided for each sending environment, why, and what happened, with the platform\'s operational memory.', childIds: ['brain', 'agents'] },
 ];
@@ -156,11 +154,11 @@ const restoreActiveTab = (): TabId => {
 };
 
 export const MailingPortal: React.FC = () => {
-  const { organization } = useAuth();
+  const { organization, user } = useAuth();
   const [mode, toggleMode] = useColorMode();
   const [activeTab, setActiveTab] = useState<TabId>(restoreActiveTab);
-  const [realTimeStats, setRealTimeStats] = useState<any>(null);
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+  const [plan, setPlan] = useState('');
 
   // Cross-component offer state — when user clicks "Use This Offer" in Offer Center,
   // we switch to Campaign Center and pass the selected offer through.
@@ -197,23 +195,12 @@ export const MailingPortal: React.FC = () => {
     return () => window.removeEventListener('jarvis:navigate', onNavigate);
   }, []);
 
-  // Fetch real-time stats for sidebar
+  // Subscription line under the profile in the sidebar.
   useEffect(() => {
-    const fetchStats = () => {
-      const headers: HeadersInit = {
-        'Content-Type': 'application/json',
-      };
-      if (organization?.id) {
-        headers['X-Organization-ID'] = organization.id;
-      }
-      apiFetch('/api/mailing/dashboard', { headers, credentials: 'include' })
-        .then(res => res.json())
-        .then(data => setRealTimeStats(data))
-        .catch(() => {});
-    };
-    fetchStats();
-    const interval = setInterval(fetchStats, 30000);
-    return () => clearInterval(interval);
+    apiFetch('/api/mailing/account/subscription')
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => setPlan(data?.plan || ''))
+      .catch(() => {});
   }, [organization]);
 
   // Fetch version info once on mount
@@ -284,10 +271,13 @@ export const MailingPortal: React.FC = () => {
         return <MissionControl />;
       case 'consciousness':
         return <ConsciousnessDashboard />;
-      case 'data-partners':
-        return <Suspense fallback={<ChunkLoader />}><PartnerIngestPortal /></Suspense>;
+      case 'account':
+        return <Suspense fallback={<ChunkLoader />}><Account /></Suspense>;
+      case 'data-center':
       case 'data-ingest':
-        return <Suspense fallback={<ChunkLoader />}><DataIngestPortal /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><DataCenter key="overview" /></Suspense>;
+      case 'data-partners':
+        return <Suspense fallback={<ChunkLoader />}><DataCenter key="partners" initial="partners" /></Suspense>;
       case 'outbox':
         return <Suspense fallback={<ChunkLoader />}><OutboxDashboard /></Suspense>;
       case 'cpm-planner':
@@ -299,7 +289,7 @@ export const MailingPortal: React.FC = () => {
       case 'fresh-broadcast':
         return <Suspense fallback={<ChunkLoader />}><FreshBroadcastConfig /></Suspense>;
       case 'eo-cleaning':
-        return <Suspense fallback={<ChunkLoader />}><EOCleaning /></Suspense>;
+        return <Suspense fallback={<ChunkLoader />}><DataCenter key="export" initial="export" /></Suspense>;
       case 'click-funnels':
         return <Suspense fallback={<ChunkLoader />}><ClickFunnels /></Suspense>;
       case 'supply':
@@ -363,24 +353,20 @@ export const MailingPortal: React.FC = () => {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="quick-stats">
-            <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.active_audience_60d?.toLocaleString() || '—'}</span>
-              <span className="quick-stat-label">Active Audience</span>
-            </div>
-            <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.global_churn_pct != null ? `${realTimeStats.platform_intelligence.global_churn_pct.toFixed(2)}%` : '—'}</span>
-              <span className="quick-stat-label">Global Churn</span>
-            </div>
-            <div className="quick-stat">
-              <span className="quick-stat-value">{realTimeStats?.platform_intelligence?.global_intro_pct != null ? `${realTimeStats.platform_intelligence.global_intro_pct.toFixed(1)}%` : '—'}</span>
-              <span className="quick-stat-label">Global Intro</span>
-            </div>
-          </div>
-          <div className="connection-status">
-            <span className={`status-dot ${realTimeStats?.pmta_connected ? 'active' : ''}`}></span>
-            <span>{realTimeStats?.pmta_connected ? `PMTA Connected (${realTimeStats.pmta_server_count})` : realTimeStats ? 'PMTA Offline' : 'Connecting...'}</span>
-          </div>
+          <button
+            type="button"
+            className={`sidebar-profile ${activeTab === 'account' ? 'active' : ''}`}
+            onClick={() => handleTabChange('account')}
+            title="Profile, company, subscription, users and API keys"
+          >
+            {user?.picture
+              ? <img className="sidebar-profile-photo" src={user.picture} alt="" referrerPolicy="no-referrer" />
+              : <span className="sidebar-profile-photo sidebar-profile-initial">{(user?.name || user?.email || '?').charAt(0).toUpperCase()}</span>}
+            <span className="sidebar-profile-text">
+              <span className="sidebar-profile-name">{user?.name || user?.email || 'Account'}</span>
+              <span className="sidebar-profile-plan">{plan ? `${plan.charAt(0).toUpperCase()}${plan.slice(1)} plan` : organization?.name || 'Account'}</span>
+            </span>
+          </button>
           {versionInfo && (
             <div className="sidebar-version-info">
               <div className="version-row">

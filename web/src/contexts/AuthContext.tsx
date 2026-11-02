@@ -183,6 +183,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         case 'domain_not_allowed':
           errorMessage = 'That account doesn’t have access. Sign in with your team account.';
           break;
+        case 'access_disabled':
+          errorMessage = 'Your access has been turned off. Ask an admin on your team to turn it back on.';
+          break;
         case 'invalid_state':
           errorMessage = 'That sign-in expired. Please try again.';
           break;

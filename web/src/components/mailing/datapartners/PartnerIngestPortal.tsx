@@ -1,29 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faPlus, faSync, faSpinner, faExclamationTriangle, faPause, faPlay,
-  faSeedling, faFingerprint, faRoute, faChartBar, faClipboardList, faGaugeHigh,
-  faKey, faDatabase,
+  faPlus, faSync, faSpinner, faExclamationTriangle, faPause, faPlay, faKey, faChartBar,
 } from '@fortawesome/free-solid-svg-icons';
 import { PartnerOnboardingWizard } from './PartnerOnboardingWizard';
 import { DatasetKeysPanel } from './DatasetKeysPanel';
 import { BatchInspector } from './BatchInspector';
-import { DripStateCard } from './DripStateCard';
-import { DripPerformancePanel } from './DripPerformancePanel';
-import { FeedFunnelBoard } from './FeedFunnelBoard';
-import { WarmupProgressPanel } from './WarmupProgressPanel';
 import { PartnerQualityReport } from './PartnerQualityReport';
 import { ISPDistributionPanel } from './ISPDistributionPanel';
 import { AuditLogPanel } from './AuditLogPanel';
 import { PreviousActivationsPanel } from './PreviousActivationsPanel';
-import { LaneHealthPanel } from './LaneHealthPanel';
 import { ReservoirPanel } from './ReservoirPanel';
 import { apiFetch } from '../shared/apiFetch';
 import { labelForVertical } from './verticalLabels';
 
 // 1.4: shared vertical-label map (both DP screens agree), governed base-slug
 // re-lookup, filtered landing cards (hide 0/0 governed-pointer/followup noise).
-const PAGE_VERSION = '1.4';
+// 2.0: lives inside Data Center. Drip-era tabs left the screen (all datasets
+// sit behind the send pause; partner data mails through the daily gate), the
+// sections fetch only what they show, and the poll cannot overlap itself.
+export const PAGE_VERSION = '2.0';
+const POLL_MS = 60_000;
 
 interface VerticalState {
   vertical: string;
@@ -75,33 +72,12 @@ interface DashboardResponse {
   recent_batches: BatchSummary[];
 }
 
-type TabId = 'overview' | 'reservoir' | 'lane-health' | 'warmup' | 'partners' | 'batches' | 'activations' | 'creatives' | 'audit';
+export type PartnerSection = 'reservoir' | 'partners' | 'batches' | 'activations' | 'audit';
 
-// isRealLandingVertical hides the noise landing cards: a partner_drip_state row
-// that is a governed-pass pointer ("<vertical>:governed") or the internal
-// "followup" bookkeeping row shows up with all-zero counts and isn't a real
-// vertical the operator manages. Keep it only if it actually has volume.
-const isRealLandingVertical = (v: VerticalState): boolean => {
-  const isNoiseRow = v.vertical.endsWith(':governed') || v.vertical === 'followup';
-  const allZero = v.ready_queue === 0 && v.pending_eo === 0 && v.mailed_total === 0;
-  return !(isNoiseRow && allZero);
-};
-
-export const PartnerIngestPortal: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabId>('overview');
-  // Lane Health selection; defaults to the first real vertical once the dashboard lands.
-  const [laneVertical, setLaneVertical] = useState<string>('');
+export const PartnerIngestPortal: React.FC<{ section: PartnerSection }> = ({ section }) => {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
-
-  // Default the Lane Health selection to the first vertical that actually has
-  // volume, once the dashboard arrives. Guarded on empty so an operator's
-  // explicit choice is never overwritten by a later 30s poll.
-  useEffect(() => {
-    if (laneVertical) return;
-    const first = (dashboard?.verticals ?? []).filter(isRealLandingVertical)[0];
-    if (first) setLaneVertical(first.vertical);
-  }, [dashboard, laneVertical]);
+  const [countsAsOf, setCountsAsOf] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Pause/resume failures live in their own state so the 30s dashboard poll
@@ -115,31 +91,43 @@ export const PartnerIngestPortal: React.FC = () => {
   const [reportDatasetId, setReportDatasetId] = useState<string>('');
   const [showRawPosts, setShowRawPosts] = useState(false);
 
+  const needsDatasets = section === 'partners' || section === 'batches';
+  const needsBatches = section === 'batches';
+  const inFlight = useRef(false);
+
   const fetchAll = useCallback(() => {
+    if (!needsDatasets || inFlight.current) return;
+    inFlight.current = true;
     setLoading(true);
     setError(null);
     Promise.all([
-      apiFetch('/api/mailing/data-partners/dashboard', { credentials: 'include' }).then(r => r.json()),
+      needsBatches
+        ? apiFetch('/api/mailing/data-partners/dashboard?verticals=0', { credentials: 'include' }).then(r => r.json())
+        : Promise.resolve(null),
       apiFetch('/api/mailing/data-partners/datasets', { credentials: 'include' }).then(r => r.json()),
     ])
       .then(([dash, ds]) => {
         // Defensive: an unauthenticated response is `{error:"unauthorized"}`,
         // not a DashboardResponse — keep the rendered tree safe.
-        if (dash && Array.isArray(dash.verticals) && Array.isArray(dash.recent_batches)) {
+        if (dash && Array.isArray(dash.recent_batches)) {
           setDashboard(dash);
-        } else {
-          setDashboard(null);
-          if (dash && dash.error) setError(`Dashboard fetch: ${dash.error}`);
+        } else if (dash?.error) {
+          setError(`Batches fetch: ${dash.error}`);
         }
+        if (ds?.error) setError(`Datasets fetch: ${ds.error}`);
         setDatasets(ds?.datasets ?? []);
+        setCountsAsOf(ds?.counts_as_of ?? null);
       })
       .catch(err => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => {
+        inFlight.current = false;
+        setLoading(false);
+      });
+  }, [needsDatasets, needsBatches]);
 
   useEffect(() => {
     fetchAll();
-    const t = setInterval(fetchAll, 30000);
+    const t = setInterval(fetchAll, POLL_MS);
     return () => clearInterval(t);
   }, [fetchAll]);
 
@@ -223,37 +211,10 @@ export const PartnerIngestPortal: React.FC = () => {
     fetchAll();
   };
 
-  const tabs: { id: TabId; label: string; icon: typeof faSeedling }[] = [
-    { id: 'overview', label: 'Overview', icon: faRoute },
-    { id: 'reservoir', label: 'Reservoir', icon: faDatabase },
-    { id: 'lane-health', label: 'Lane Health', icon: faGaugeHigh },
-    { id: 'warmup', label: 'Warm-Up', icon: faGaugeHigh },
-    { id: 'partners', label: 'Partners & Datasets', icon: faFingerprint },
-    { id: 'batches', label: 'Inbound Batches', icon: faSeedling },
-    { id: 'activations', label: 'Previous Activations', icon: faChartBar },
-    { id: 'creatives', label: 'Follow-Up Creatives', icon: faSeedling },
-    { id: 'audit', label: 'Audit Log', icon: faClipboardList },
-  ];
+  const activeTab = section;
 
   return (
-    <div style={{ padding: 24, color: 'var(--j-text)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, color: 'var(--j-text)' }}>Data Partner Imports</h2>
-          <div style={{ fontSize: 13, color: 'var(--j-text-muted)', marginTop: 4 }}>
-            Secure inbound API → list storage → suppression and email verification → 15-min round-robin automated follow-ups across 4 mature brands. v{PAGE_VERSION}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={fetchAll} style={iconBtn}>
-            <FontAwesomeIcon icon={faSync} spin={loading} /> Refresh
-          </button>
-          <button onClick={() => setWizardOpen(true)} style={primaryBtn}>
-            <FontAwesomeIcon icon={faPlus} /> Onboard Partner
-          </button>
-        </div>
-      </div>
-
+    <div style={{ color: 'var(--j-text)' }}>
       {error && (
         <div style={{ background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)', padding: 12, borderRadius: 6, marginBottom: 12 }}>
           <FontAwesomeIcon icon={faExclamationTriangle} /> {error}
@@ -267,87 +228,27 @@ export const PartnerIngestPortal: React.FC = () => {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid color-mix(in srgb, var(--j-text-muted) 18%, transparent)', marginBottom: 16 }}>
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            style={{
-              ...tabBtn,
-              borderBottom: activeTab === t.id ? '2px solid var(--j-violet-strong)' : '2px solid transparent',
-              color: activeTab === t.id ? 'var(--j-text-2)' : 'var(--j-text-muted)',
-            }}
-          >
-            <FontAwesomeIcon icon={t.icon} /> {t.label}
-          </button>
-        ))}
-      </div>
-
-      {loading && !dashboard && (
+      {loading && needsDatasets && datasets.length === 0 && (
         <div style={{ textAlign: 'center', padding: 60, color: 'var(--j-text-muted)' }}>
           <FontAwesomeIcon icon={faSpinner} spin /> Loading…
         </div>
       )}
 
-      {activeTab === 'overview' && dashboard && (
-        <div>
-          {/* Decision surface: which feeds → which funnels, ranked by value. */}
-          <FeedFunnelBoard />
-
-          {/* Operational queue state per funnel (ready / pending / rotation).
-              Deterministic 3-per-row grid; minmax(0,1fr) lets tracks shrink
-              below content min-width so a long label can't distort the row. */}
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--j-text-muted)', fontWeight: 700, margin: '4px 0 10px' }}>
-            Funnel queue state
+      {activeTab === 'partners' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginRight: 'auto' }}>
+            {countsAsOf
+              ? `Ready and mailed counts measured ${new Date(countsAsOf).toLocaleTimeString()} (background scan, about every 10 minutes).`
+              : 'Ready and mailed counts appear after the first background scan.'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16, marginBottom: 24 }}>
-            {dashboard.verticals.filter(isRealLandingVertical).map(v => (
-              <DripStateCard
-                key={v.vertical}
-                vertical={v.vertical}
-                verticalLabel={labelForVertical(v.vertical)}
-                readyQueue={v.ready_queue}
-                pendingEO={v.pending_eo}
-                mailedTotal={v.mailed_total}
-                lastWaveAt={v.last_wave_at}
-                lastWaveBrand={v.last_wave_brand}
-                lastWaveSize={v.last_wave_size}
-                nextBrandIndex={v.next_brand_index}
-                onChanged={fetchAll}
-              />
-            ))}
-          </div>
-
-          <DripPerformancePanel />
-
-          <div style={{ fontSize: 12, color: 'var(--j-text-muted)' }}>
-            Per-submission batch detail (one row per partner API call) lives in the <b>Inbound Batches</b> tab.
-          </div>
+          <button onClick={fetchAll} style={iconBtn}>
+            <FontAwesomeIcon icon={faSync} spin={loading} /> Refresh
+          </button>
+          <button onClick={() => setWizardOpen(true)} style={primaryBtn}>
+            <FontAwesomeIcon icon={faPlus} /> Onboard Partner
+          </button>
         </div>
       )}
-
-      {activeTab === 'lane-health' && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-400">Lane</label>
-            <select aria-label="Lane"
-              value={laneVertical}
-              onChange={(e) => setLaneVertical(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200"
-            >
-              {(dashboard?.verticals ?? [])
-                .filter(isRealLandingVertical)
-                .map(v => (
-                  <option key={v.vertical} value={v.vertical}>{labelForVertical(v.vertical)}</option>
-                ))}
-            </select>
-          </div>
-          {laneVertical
-            ? <LaneHealthPanel vertical={laneVertical} />
-            : <div className="text-sm text-gray-500">No lanes with activity yet.</div>}
-        </div>
-      )}
-      {activeTab === 'warmup' && <WarmupProgressPanel />}
 
       {activeTab === 'partners' && (
         <div>
@@ -372,8 +273,8 @@ export const PartnerIngestPortal: React.FC = () => {
                   </td>
                   <td style={td}>{labelForVertical(d.vertical)}</td>
                   <td style={tdNum}>{d.flush_window_hours}h</td>
-                  <td style={tdNum}>{d.ready_queue_count.toLocaleString()}</td>
-                  <td style={tdNum}>{d.mailed_count.toLocaleString()}</td>
+                  <td style={tdNum}>{countsAsOf ? d.ready_queue_count.toLocaleString() : '—'}</td>
+                  <td style={tdNum}>{countsAsOf ? d.mailed_count.toLocaleString() : '—'}</td>
                   <td style={td}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                       {d.paused_emergency && (
@@ -501,8 +402,6 @@ export const PartnerIngestPortal: React.FC = () => {
         </div>
       )}
 
-      {activeTab === 'creatives' && <CreativesPanel />}
-
       {activeTab === 'reservoir' && <ReservoirPanel />}
 
       {activeTab === 'activations' && <PreviousActivationsPanel />}
@@ -533,156 +432,6 @@ export const PartnerIngestPortal: React.FC = () => {
 };
 
 // ============ Creatives panel ============
-
-interface CreativeRow {
-  vertical: string;
-  brand: string;
-  creative_filename: string;
-  subject_line: string;
-  preheader: string;
-  from_name: string;
-  active: boolean;
-  effective_from: string;
-  updated_by: string;
-}
-
-const CreativesPanel: React.FC = () => {
-  const [creatives, setCreatives] = useState<CreativeRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editing, setEditing] = useState<{ vertical: string; brand: string } | null>(null);
-
-  const fetchCreatives = useCallback(() => {
-    setLoading(true);
-    apiFetch('/api/mailing/data-partners/creatives', { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => setCreatives(data?.creatives ?? []))
-      .finally(() => setLoading(false));
-  }, []);
-  useEffect(() => { fetchCreatives(); }, [fetchCreatives]);
-
-  const grid: Record<string, CreativeRow[]> = {};
-  creatives.forEach(c => {
-    if (!grid[c.vertical]) grid[c.vertical] = [];
-    grid[c.vertical].push(c);
-  });
-
-  if (loading) return <div style={{ color: 'var(--j-text-muted)' }}><FontAwesomeIcon icon={faSpinner} spin /> Loading creatives…</div>;
-
-  return (
-    <div>
-      <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--j-text-2)' }}>
-        Hot-swappable creatives for the partner follow-up sequences. One row per (vertical × brand). Updates take effect on the <b>next send batch</b>.
-      </div>
-      {Object.entries(grid).map(([vertical, rows]) => (
-        <div key={vertical} style={{ marginBottom: 24 }}>
-          <h3 style={{ color: 'var(--j-text-2)', margin: '0 0 8px 0' }}>{labelForVertical(vertical)}</h3>
-          <table style={tableStyle}>
-            <thead>
-              <tr style={{ background: 'color-mix(in srgb, var(--j-text-muted) 6%, transparent)' }}>
-                <th style={th}>Brand</th>
-                <th style={th}>Creative</th>
-                <th style={th}>Subject</th>
-                <th style={th}>Preheader</th>
-                <th style={th}>From Name</th>
-                <th style={th}>Effective</th>
-                <th style={th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(c => (
-                <tr key={c.brand} style={tr}>
-                  <td style={td}><b>{c.brand.toUpperCase()}</b></td>
-                  <td style={tdMono}>{c.creative_filename}</td>
-                  <td style={td}>{c.subject_line}</td>
-                  <td style={td}>{c.preheader || <i style={{ opacity: 0.5 }}>(empty)</i>}</td>
-                  <td style={td}>{c.from_name}</td>
-                  <td style={td}>{new Date(c.effective_from).toLocaleString()}</td>
-                  <td style={td}>
-                    <button onClick={() => setEditing({ vertical: c.vertical, brand: c.brand })} style={ghostBtn}>Edit</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
-      {editing && (
-        <CreativeEditModal
-          vertical={editing.vertical}
-          brand={editing.brand}
-          existing={creatives.find(c => c.vertical === editing.vertical && c.brand === editing.brand)}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); fetchCreatives(); }}
-        />
-      )}
-    </div>
-  );
-};
-
-interface CreativeEditModalProps {
-  vertical: string;
-  brand: string;
-  existing?: CreativeRow;
-  onClose: () => void;
-  onSaved: () => void;
-}
-
-const CreativeEditModal: React.FC<CreativeEditModalProps> = ({ vertical, brand, existing, onClose, onSaved }) => {
-  const [filename, setFilename] = useState(existing?.creative_filename ?? '');
-  const [subject, setSubject] = useState(existing?.subject_line ?? '');
-  const [preheader, setPreheader] = useState(existing?.preheader ?? '');
-  const [fromName, setFromName] = useState(existing?.from_name ?? '');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`/api/mailing/data-partners/creatives/${vertical}/${brand}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ creative_filename: filename, subject_line: subject, preheader, from_name: fromName }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError(body.error ?? `HTTP ${res.status}`);
-        setSaving(false);
-        return;
-      }
-      onSaved();
-    } catch (err) {
-      setError(String(err));
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div style={modalBackdrop}>
-      <div style={modalBody}>
-        <h3 style={{ marginTop: 0, color: 'var(--j-text)' }}>Edit creative — {labelForVertical(vertical)} / {brand.toUpperCase()}</h3>
-        <label style={fieldLabel}>Creative filename (must exist in the creative library)</label>
-        <input aria-label="Filename" value={filename} onChange={e => setFilename(e.target.value)} style={input} />
-        <label style={fieldLabel}>Subject line</label>
-        <input aria-label="Subject line" value={subject} onChange={e => setSubject(e.target.value)} style={input} />
-        <label style={fieldLabel}>Preheader</label>
-        <input aria-label="Preheader" value={preheader} onChange={e => setPreheader(e.target.value)} style={input} />
-        <label style={fieldLabel}>From name</label>
-        <input aria-label="From name" value={fromName} onChange={e => setFromName(e.target.value)} style={input} />
-        {error && <div style={errorBox}>{error}</div>}
-        <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={ghostBtn}>Cancel</button>
-          <button onClick={handleSave} disabled={saving} style={primaryBtn}>
-            {saving && <FontAwesomeIcon icon={faSpinner} spin />} Save (next send batch)
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// ============ Status badge ============
 
 const StatusBadge: React.FC<{ status: string; emergencyStopped: boolean }> = ({ status, emergencyStopped }) => {
   if (emergencyStopped) {
@@ -721,10 +470,6 @@ const dangerBtn: React.CSSProperties = {
   border: '1px solid rgba(239,68,68,0.35)', padding: '4px 10px', borderRadius: 4,
   cursor: 'pointer', fontSize: 12,
 };
-const tabBtn: React.CSSProperties = {
-  background: 'transparent', border: 'none', padding: '10px 16px',
-  cursor: 'pointer', fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8,
-};
 const selectInput: React.CSSProperties = {
   background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)', color: 'var(--j-text)',
   border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 6, padding: '6px 10px', fontSize: 13,
@@ -742,24 +487,3 @@ const td: React.CSSProperties = { padding: '10px 12px', borderTop: '1px solid co
 const tdNum: React.CSSProperties = { ...td, fontVariantNumeric: 'tabular-nums', textAlign: 'right' };
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'ui-monospace, monospace', fontSize: 12 };
 const tr: React.CSSProperties = {};
-const modalBackdrop: React.CSSProperties = {
-  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'color-mix(in srgb, var(--j-shade) 100%, transparent)', display: 'flex', alignItems: 'center',
-  justifyContent: 'center', zIndex: 1000, padding: 24,
-};
-const modalBody: React.CSSProperties = {
-  background: 'var(--j-surface)', border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)',
-  borderRadius: 10, padding: 24, width: '100%', maxWidth: 540,
-  boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
-};
-const fieldLabel: React.CSSProperties = {
-  display: 'block', fontSize: 12, color: 'var(--j-text-2)', margin: '12px 0 4px 0',
-};
-const input: React.CSSProperties = {
-  width: '100%', padding: '8px 10px', background: 'color-mix(in srgb, var(--j-shade) 62.5%, transparent)',
-  border: '1px solid color-mix(in srgb, var(--j-text-muted) 25%, transparent)', borderRadius: 4, color: 'var(--j-text)', fontSize: 13,
-};
-const errorBox: React.CSSProperties = {
-  background: 'rgba(239,68,68,0.18)', border: '1px solid rgba(239,68,68,0.4)',
-  padding: 8, borderRadius: 4, marginTop: 12, fontSize: 12,
-};

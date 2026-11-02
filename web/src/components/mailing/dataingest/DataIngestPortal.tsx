@@ -13,10 +13,9 @@
 import React, { useMemo, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faDatabase, faSync } from '@fortawesome/free-solid-svg-icons';
-import { SubNav } from '../shared/SubNav';
 import { usePolling } from '../shared/usePolling';
 import { LivePill, PortalKeyframes, Panel, SectionHeader, SectionError, EmptyState, Pill } from '../shared/ui';
-import { colors, pageStyle, btnStyle, tableStyle, thStyle, tdStyle } from '../shared/theme';
+import { colors, btnStyle, tableStyle, thStyle, tdStyle } from '../shared/theme';
 import { denverToday } from '../shared/filters';
 import { useDataIngestStream } from '../../../hooks/useDataIngestStream';
 import { OverviewPanel, FeedStatusPill } from './OverviewPanel';
@@ -31,19 +30,12 @@ const POLL_MS = 30_000;
 // classes, feedComposition {raw,staged}, loadTotals mailed/not_mailed); the
 // counters pill reads running/redis_available/measured_today; notes and
 // cache age/query cost are rendered; SSE deltas cleared per poll.
-const PAGE_VERSION = '1.1';
+// 1.2 — lives inside Data Center: the parent owns the tabs and the title.
+export const PAGE_VERSION = '1.2';
 
-type View = 'overview' | 'feeds' | 'yesterday' | 'upload';
+export type View = 'overview' | 'feeds' | 'yesterday' | 'upload';
 
-const VIEWS = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'feeds', label: 'Feeds' },
-  { key: 'yesterday', label: 'Yesterday' },
-  { key: 'upload', label: 'Upload' },
-];
-
-export const DataIngestPortal: React.FC = () => {
-  const [view, setView] = useState<View>('overview');
+export const DataIngestPortal: React.FC<{ view: View; onViewChange: (v: View) => void }> = ({ view, onViewChange }) => {
   const [date, setDate] = useState<string>(() => denverToday());
   const [selectedFeed, setSelectedFeed] = useState<string>('');
 
@@ -53,7 +45,7 @@ export const DataIngestPortal: React.FC = () => {
 
   const openFeed = (datasetId: string) => {
     setSelectedFeed(datasetId);
-    setView('feeds');
+    onViewChange('feeds');
   };
 
   const refreshAll = () => {
@@ -68,21 +60,10 @@ export const DataIngestPortal: React.FC = () => {
   const selectedRow = useMemo(() => feedRoster.find((r) => r.dataset_id === selectedFeed) ?? null, [feedRoster, selectedFeed]);
 
   return (
-    <div style={pageStyle}>
+    <div>
       <PortalKeyframes />
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
-        <div style={{ maxWidth: 720 }}>
-          <h2 style={{ margin: 0, color: colors.heading, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faDatabase} style={{ color: colors.indigo400 }} /> Data Ingest
-          </h2>
-          <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4 }}>
-            Two supply classes, never mixed: what is LOADED and at rest (static files in S3, rows parked in the
-            database) and what ARRIVES on its own clock (API feeds, site events, pulls). Internal transfers are
-            shown and never counted as ingest. v{PAGE_VERSION}
-          </div>
-        </div>
-
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
             <LivePill live={stream.live || state.live} agoSeconds={state.secondsSinceUpdate} />
@@ -111,13 +92,6 @@ export const DataIngestPortal: React.FC = () => {
         </div>
       </div>
 
-      <SubNav
-        items={VIEWS}
-        active={view}
-        onChange={(k) => setView(k as View)}
-        ariaLabel="Data ingest sections"
-      />
-
       {state.error && !state.data && <SectionError label="Ingest state" error={state.error} onRetry={state.refresh} />}
       {state.data && (
         <div style={{ marginBottom: 10 }}>
@@ -140,7 +114,7 @@ export const DataIngestPortal: React.FC = () => {
           feedsError={feeds.error}
           refreshFeeds={feeds.refresh}
           onOpenFeed={openFeed}
-          onGoUpload={() => setView('upload')}
+          onGoUpload={() => onViewChange('upload')}
         />
       )}
 

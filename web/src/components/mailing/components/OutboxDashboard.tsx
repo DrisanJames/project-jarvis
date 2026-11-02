@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faBolt,
   faChevronDown,
   faChevronRight,
   faExclamationTriangle,
@@ -45,7 +44,11 @@ import { apiFetch } from '../shared/apiFetch';
 // now the 24h Performance scoreboard (volume, open/click % raw+human,
 // complaints, conversions). Backend counterpart: engine-status API v1.2.
 
-const PAGE_VERSION = '2.2';
+// v2.3: header removed (the portal chrome names the screen; live status and
+// Refresh stay), Throughput + Per mailbox provider + Performance moved to the
+// top, Background Workers moved to the Operations screen.
+
+const PAGE_VERSION = '2.3';
 const POLL_INTERVAL_MS = 10_000;
 const DEAD_LETTER_POLL_EVERY_N_TICKS = 3; // every ~30s
 const DEAD_LETTER_WINDOW_HOURS = 8;
@@ -138,22 +141,6 @@ interface StormSection {
   isps: ISPDeferral[];
 }
 
-interface WorkerBeat {
-  name: string;
-  last_beat_at: string;
-  seconds_since_beat: number;
-  expected_interval_seconds: number;
-  stalled: boolean;
-  last_status: string;
-  last_error?: string;
-}
-
-interface WorkerSection {
-  ok: boolean;
-  error?: string;
-  workers: WorkerBeat[];
-}
-
 interface ClickFunnelOffer {
   everflow_offer_id: string;
   offer_name: string;
@@ -204,7 +191,6 @@ interface EngineStatusResponse {
   performance: PerformanceSection;
   throughput: ThroughputSection;
   storm: StormSection;
-  workers: WorkerSection;
 }
 
 interface DeadLetterRow {
@@ -387,8 +373,8 @@ const SectionError: React.FC<{ label: string; error?: string }> = ({ label, erro
     style={{
       fontSize: 12,
       color: 'var(--j-danger-soft)',
-      background: 'rgba(239,68,68,0.08)',
-      border: '1px solid rgba(239,68,68,0.25)',
+      background: 'color-mix(in srgb, var(--j-hard-fill) 8%, transparent)',
+      border: '1px solid color-mix(in srgb, var(--j-hard-fill) 25%, transparent)',
       borderRadius: 6,
       padding: '8px 10px',
     }}
@@ -748,65 +734,57 @@ export const OutboxDashboard: React.FC = () => {
       : null;
 
   return (
-    <div style={{ padding: 24, color: 'var(--j-text)', minHeight: '100vh' }}>
+    <div
+      style={{ padding: 24, color: 'var(--j-text)', minHeight: '100vh' }}
+      data-page-version={PAGE_VERSION}
+      data-api-version={data?.api_version}
+    >
       <style>{`@keyframes outboxPulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }`}</style>
 
-      {/* ---- Header ---- */}
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, color: HEADING_COLOR, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FontAwesomeIcon icon={faBolt} style={{ color: 'var(--j-violet)' }} />
-            Sending Engine
-          </h1>
-          <div style={{ fontSize: 12, color: 'var(--j-text-muted)', marginTop: 4 }}>
-            Live send schedule + delivery monitoring · polls every {POLL_INTERVAL_MS / 1000}s · Page v{PAGE_VERSION}
-            {data && <> · API v{data.api_version}</>}
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--j-text-muted)' }}>
-            <span
-              style={{
-                width: 9,
-                height: 9,
-                borderRadius: '50%',
-                background: fetchError ? 'var(--j-hard-fill)' : 'var(--j-success)',
-                animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
-                display: 'inline-block',
-              }}
-            />
-            <span style={{ color: fetchError ? 'var(--j-danger-soft)' : 'var(--j-success-soft)', fontWeight: 600, letterSpacing: 1 }}>
-              {fetchError ? 'STALE' : 'LIVE'}
-            </span>
-            {secondsSinceFetch != null && <span>updated {secondsSinceFetch}s ago</span>}
-          </span>
-          <button
-            onClick={fetchStatus}
-            disabled={loading}
+      {/* ---- Live status + refresh (the portal chrome carries the title) ---- */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 14, marginBottom: 14 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--j-text-muted)' }}>
+          <span
             style={{
-              background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
-              color: 'var(--j-violet-soft)',
-              border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
-              padding: '6px 14px',
-              borderRadius: 6,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 13,
+              width: 9,
+              height: 9,
+              borderRadius: '50%',
+              background: fetchError ? 'var(--j-hard-fill)' : 'var(--j-success)',
+              animation: fetchError ? undefined : 'outboxPulse 2s ease-in-out infinite',
+              display: 'inline-block',
             }}
-          >
-            <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} />
-            Refresh
-          </button>
-        </div>
-      </header>
+          />
+          <span style={{ color: fetchError ? 'var(--j-danger-soft)' : 'var(--j-success-soft)', fontWeight: 600, letterSpacing: 1 }}>
+            {fetchError ? 'STALE' : 'LIVE'}
+          </span>
+          {secondsSinceFetch != null && <span>updated {secondsSinceFetch}s ago</span>}
+        </span>
+        <button
+          onClick={fetchStatus}
+          disabled={loading}
+          style={{
+            background: 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)',
+            color: 'var(--j-violet-soft)',
+            border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
+            padding: '6px 14px',
+            borderRadius: 6,
+            cursor: loading ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 13,
+          }}
+        >
+          <FontAwesomeIcon icon={loading ? faSpinner : faSyncAlt} spin={loading} />
+          Refresh
+        </button>
+      </div>
 
       {fetchError && (
         <div
           style={{
-            background: 'rgba(239,68,68,0.1)',
-            border: '1px solid rgba(239,68,68,0.35)',
+            background: 'color-mix(in srgb, var(--j-hard-fill) 10%, transparent)',
+            border: '1px solid color-mix(in srgb, var(--j-hard-fill) 35%, transparent)',
             color: 'var(--j-danger-soft)',
             padding: '10px 14px',
             borderRadius: 8,
@@ -815,16 +793,246 @@ export const OutboxDashboard: React.FC = () => {
           }}
         >
           <FontAwesomeIcon icon={faExclamationTriangle} style={{ marginRight: 8 }} />
-          Could not refresh engine status: {fetchError} — showing last known data.
+          Could not refresh delivery status: {fetchError}. Showing last known data.
         </div>
       )}
 
       {loading && !data ? (
         <div style={{ textAlign: 'center', padding: 80, color: 'var(--j-text-muted)' }}>
-          <FontAwesomeIcon icon={faSpinner} spin /> Loading engine state…
+          <FontAwesomeIcon icon={faSpinner} spin /> Loading delivery status…
         </div>
       ) : data && engine ? (
         <>
+          {/* ---- Throughput chart ---- */}
+          <section style={{ ...panelStyle, marginBottom: 14 }}>
+            <h2 style={panelTitleStyle}>
+              <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
+              Throughput — last 60 minutes
+            </h2>
+            {!data.throughput.ok ? (
+              <div style={{ marginTop: 10 }}>
+                <SectionError label="Throughput" error={data.throughput.error} />
+              </div>
+            ) : chartData.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '24px 0', textAlign: 'center' }}>
+                No send events in the last hour.
+              </div>
+            ) : (
+              <div style={{ width: '100%', height: 240, marginTop: 8 }}>
+                <ResponsiveContainer>
+                  <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <defs>
+                      <linearGradient id="sentFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--j-violet-strong)" stopOpacity={0.55} />
+                        <stop offset="100%" stopColor="var(--j-violet-strong)" stopOpacity={0.05} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} interval="preserveStartEnd" minTickGap={40} />
+                    <YAxis tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} width={52} />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--j-bg)',
+                        border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
+                        borderRadius: 8,
+                        color: 'var(--j-text)',
+                        fontSize: 12,
+                      }}
+                      labelStyle={{ color: 'var(--j-text)' }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12, color: 'var(--j-text-muted)' }} />
+                    <Area type="monotone" dataKey="sent" name="Sent /min" stroke="var(--j-violet)" strokeWidth={2} fill="url(#sentFill)" />
+                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </section>
+
+          {/* ---- Per-ISP table + 24h performance ---- */}
+          <section
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)',
+              gap: 14,
+              marginBottom: 14,
+            }}
+          >
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
+                Per mailbox provider — queue, share, delays
+                {data.storm.ok && data.storm.active && (
+                  <span
+                    style={{
+                      marginLeft: 8,
+                      background: 'color-mix(in srgb, var(--j-hard-fill) 15%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--j-hard-fill) 45%, transparent)',
+                      color: 'var(--j-danger-soft)',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: 1,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                    }}
+                  >
+                    HEAVY DELAYS
+                  </span>
+                )}
+              </h2>
+              {!data.storm.ok && !data.queue.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="Mailbox provider breakdown" error={data.storm.error || data.queue.error} />
+                </div>
+              ) : ispRows.length === 0 ? (
+                <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '16px 0' }}>No mailbox provider activity in the window.</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Mailbox Provider</th>
+                      <th style={numTh}>Queued</th>
+                      <th style={numTh}>Sent 24h</th>
+                      <th style={numTh}>Share</th>
+                      <th style={numTh}>Delays 60m</th>
+                      <th style={numTh}>Baseline</th>
+                      <th style={numTh}>× Base</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ispRows.map((r) => {
+                      const isOpen = expandedISP === r.isp;
+                      return (
+                        <React.Fragment key={r.isp}>
+                          <tr
+                            onClick={() => toggleISP(r.isp)}
+                            title="Click to view per sending server (last 24h)"
+                            style={{
+                              cursor: 'pointer',
+                              background: r.storm
+                                ? 'color-mix(in srgb, var(--j-hard-fill) 10%, transparent)'
+                                : isOpen
+                                  ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)'
+                                  : undefined,
+                            }}
+                          >
+                            <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? 'var(--j-danger-soft)' : 'var(--j-text)' }}>
+                              <FontAwesomeIcon
+                                icon={isOpen ? faChevronDown : faChevronRight}
+                                style={{ color: 'var(--j-violet)', fontSize: 11, marginRight: 7 }}
+                              />
+                              {titleCase(r.isp)}
+                              {r.storm && (
+                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-hard)', marginLeft: 6 }} title="Heavy delays" />
+                              )}
+                            </td>
+                            <td style={numTd}>{fmt(r.queued)}</td>
+                            <td style={numTd}>{fmt(r.sent24h)}</td>
+                            <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
+                            <td style={{ ...numTd, color: r.storm ? 'var(--j-hard)' : r.recentRate > 0.05 ? 'var(--j-soft)' : 'var(--j-success-soft)', fontWeight: 600 }}>
+                              {fmtPct(r.recentRate)}
+                            </td>
+                            <td style={numTd}>{fmtPct(r.baselineRate)}</td>
+                            <td style={{ ...numTd, color: r.multiplier >= 2 ? 'var(--j-soft)' : 'var(--j-text-muted)' }}>
+                              {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
+                            </td>
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={7} style={{ padding: 0, background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)' }}>
+                                <PipesSubTable isp={r.isp} state={pipes[r.isp]} />
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* 24h performance scoreboard */}
+            <div style={panelStyle}>
+              <h2 style={panelTitleStyle}>
+                <FontAwesomeIcon icon={faHeartPulse} style={{ color: 'var(--j-violet)' }} />
+                Performance — last 24h
+              </h2>
+              {!data.performance || !data.performance.ok ? (
+                <div style={{ marginTop: 10 }}>
+                  <SectionError label="Performance" error={data.performance?.error} />
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 12 }}>
+                    <Stat
+                      label="Sent 24h"
+                      value={fmt(data.performance.sent_24h)}
+                      color="var(--j-violet-soft)"
+                      title="Per-recipient sent events across all send paths (broadcast, drips, click funnels)"
+                    />
+                    <Stat
+                      label="Delivered 24h"
+                      value={fmt(data.performance.delivered_24h)}
+                      color="var(--j-success-soft)"
+                      title="Delivered events recorded in tracking (campaign-attributed)"
+                    />
+                    <div>
+                      <Stat
+                        label="Open % (raw)"
+                        value={
+                          data.performance.delivered_24h > 0
+                            ? fmtPct(data.performance.opens_raw_24h / data.performance.delivered_24h)
+                            : '—'
+                        }
+                        color="var(--j-cyan)"
+                        title={`${fmt(data.performance.opens_raw_24h)} raw opens ÷ ${fmt(data.performance.delivered_24h)} delivered — machine/MPP traffic included`}
+                      />
+                      {data.performance.human_ok && (
+                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
+                          human {fmt(data.performance.opens_human_24h)}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <Stat
+                        label="Click % (raw)"
+                        value={
+                          data.performance.delivered_24h > 0
+                            ? fmtPct(data.performance.clicks_raw_24h / data.performance.delivered_24h)
+                            : '—'
+                        }
+                        color="var(--j-violet)"
+                        title={`${fmt(data.performance.clicks_raw_24h)} raw clicks ÷ ${fmt(data.performance.delivered_24h)} delivered — machine traffic included`}
+                      />
+                      {data.performance.human_ok && (
+                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
+                          human {fmt(data.performance.clicks_human_24h)}
+                        </div>
+                      )}
+                    </div>
+                    <Stat
+                      label="Complaints 24h"
+                      value={fmt(data.performance.complaints_24h)}
+                      color={data.performance.complaints_24h > 0 ? 'var(--j-danger)' : 'var(--j-text)'}
+                      title="Spam-complaint events recorded in tracking over the last 24h"
+                    />
+                    <Stat
+                      label="Conversions 24h"
+                      value={fmt(data.performance.conversions_24h)}
+                      color={data.performance.conversions_24h > 0 ? 'var(--j-success-soft)' : 'var(--j-text)'}
+                      title="Everflow conversion postbacks received in the last 24h"
+                    />
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--j-text-faint)', marginTop: 12, lineHeight: 1.5 }}>
+                    Rates divide by delivered. Raw opens/clicks include machine and Apple-MPP traffic;
+                    "human" is the verdict-filtered count. Refreshes every ~5 minutes.
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+
           {/* ---- Status hero ---- */}
           <section
             style={{
@@ -1054,302 +1262,6 @@ export const OutboxDashboard: React.FC = () => {
                   )}
                 </div>
               </>
-            )}
-          </section>
-
-          {/* ---- Throughput chart ---- */}
-          <section style={{ ...panelStyle, marginBottom: 14 }}>
-            <h2 style={panelTitleStyle}>
-              <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
-              Throughput — last 60 minutes
-            </h2>
-            {!data.throughput.ok ? (
-              <div style={{ marginTop: 10 }}>
-                <SectionError label="Throughput" error={data.throughput.error} />
-              </div>
-            ) : chartData.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '24px 0', textAlign: 'center' }}>
-                No send events in the last hour.
-              </div>
-            ) : (
-              <div style={{ width: '100%', height: 240, marginTop: 8 }}>
-                <ResponsiveContainer>
-                  <ComposedChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-                    <defs>
-                      <linearGradient id="sentFill" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--j-violet-strong)" stopOpacity={0.55} />
-                        <stop offset="100%" stopColor="var(--j-violet-strong)" stopOpacity={0.05} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="color-mix(in srgb, var(--j-text-muted) 12%, transparent)" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} interval="preserveStartEnd" minTickGap={40} />
-                    <YAxis tick={{ fill: 'var(--j-text-muted)', fontSize: 11 }} width={52} />
-                    <Tooltip
-                      contentStyle={{
-                        background: 'var(--j-bg)',
-                        border: '1px solid color-mix(in srgb, var(--j-violet-strong) 40%, transparent)',
-                        borderRadius: 8,
-                        color: 'var(--j-text)',
-                        fontSize: 12,
-                      }}
-                      labelStyle={{ color: 'var(--j-text)' }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 12, color: 'var(--j-text-muted)' }} />
-                    <Area type="monotone" dataKey="sent" name="Sent /min" stroke="var(--j-violet)" strokeWidth={2} fill="url(#sentFill)" />
-                    <Line type="monotone" dataKey="deferred" name="Delayed /min" stroke="var(--j-soft-fill)" strokeWidth={2} dot={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </section>
-
-          {/* ---- Per-ISP table + workers ---- */}
-          <section
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 2fr) minmax(280px, 1fr)',
-              gap: 14,
-              marginBottom: 14,
-            }}
-          >
-            <div style={panelStyle}>
-              <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faWater} style={{ color: 'var(--j-violet)' }} />
-                Per mailbox provider — queue, share, delays
-                {data.storm.ok && data.storm.active && (
-                  <span
-                    style={{
-                      marginLeft: 8,
-                      background: 'rgba(239,68,68,0.15)',
-                      border: '1px solid rgba(239,68,68,0.45)',
-                      color: 'var(--j-danger-soft)',
-                      fontSize: 10,
-                      fontWeight: 700,
-                      letterSpacing: 1,
-                      padding: '2px 8px',
-                      borderRadius: 999,
-                    }}
-                  >
-                    HEAVY DELAYS
-                  </span>
-                )}
-              </h2>
-              {!data.storm.ok && !data.queue.ok ? (
-                <div style={{ marginTop: 10 }}>
-                  <SectionError label="Mailbox provider breakdown" error={data.storm.error || data.queue.error} />
-                </div>
-              ) : ispRows.length === 0 ? (
-                <div style={{ fontSize: 12, color: 'var(--j-text-faint)', padding: '16px 0' }}>No mailbox provider activity in the window.</div>
-              ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>Mailbox Provider</th>
-                      <th style={numTh}>Queued</th>
-                      <th style={numTh}>Sent 24h</th>
-                      <th style={numTh}>Share</th>
-                      <th style={numTh}>Delays 60m</th>
-                      <th style={numTh}>Baseline</th>
-                      <th style={numTh}>× Base</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ispRows.map((r) => {
-                      const isOpen = expandedISP === r.isp;
-                      return (
-                        <React.Fragment key={r.isp}>
-                          <tr
-                            onClick={() => toggleISP(r.isp)}
-                            title="Click to view per sending server (last 24h)"
-                            style={{
-                              cursor: 'pointer',
-                              background: r.storm
-                                ? 'rgba(239,68,68,0.10)'
-                                : isOpen
-                                  ? 'color-mix(in srgb, var(--j-violet-strong) 10%, transparent)'
-                                  : undefined,
-                            }}
-                          >
-                            <td style={{ ...tdStyle, fontWeight: 600, color: r.storm ? 'var(--j-danger-soft)' : 'var(--j-text)' }}>
-                              <FontAwesomeIcon
-                                icon={isOpen ? faChevronDown : faChevronRight}
-                                style={{ color: 'var(--j-violet)', fontSize: 11, marginRight: 7 }}
-                              />
-                              {titleCase(r.isp)}
-                              {r.storm && (
-                                <FontAwesomeIcon icon={faExclamationTriangle} style={{ color: 'var(--j-hard)', marginLeft: 6 }} title="Heavy delays" />
-                              )}
-                            </td>
-                            <td style={numTd}>{fmt(r.queued)}</td>
-                            <td style={numTd}>{fmt(r.sent24h)}</td>
-                            <td style={numTd}>{r.sentShare > 0 ? `${(r.sentShare * 100).toFixed(1)}%` : '—'}</td>
-                            <td style={{ ...numTd, color: r.storm ? 'var(--j-hard)' : r.recentRate > 0.05 ? 'var(--j-soft)' : 'var(--j-success-soft)', fontWeight: 600 }}>
-                              {fmtPct(r.recentRate)}
-                            </td>
-                            <td style={numTd}>{fmtPct(r.baselineRate)}</td>
-                            <td style={{ ...numTd, color: r.multiplier >= 2 ? 'var(--j-soft)' : 'var(--j-text-muted)' }}>
-                              {r.multiplier > 0 ? `${r.multiplier.toFixed(1)}×` : '—'}
-                            </td>
-                          </tr>
-                          {isOpen && (
-                            <tr>
-                              <td colSpan={7} style={{ padding: 0, background: 'color-mix(in srgb, var(--j-shade) 55%, transparent)' }}>
-                                <PipesSubTable isp={r.isp} state={pipes[r.isp]} />
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-
-            {/* 24h performance scoreboard (replaced the worker list, which
-                now has its own card grid below). */}
-            <div style={panelStyle}>
-              <h2 style={panelTitleStyle}>
-                <FontAwesomeIcon icon={faHeartPulse} style={{ color: 'var(--j-violet)' }} />
-                Performance — last 24h
-              </h2>
-              {!data.performance || !data.performance.ok ? (
-                <div style={{ marginTop: 10 }}>
-                  <SectionError label="Performance" error={data.performance?.error} />
-                </div>
-              ) : (
-                <>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, marginTop: 12 }}>
-                    <Stat
-                      label="Sent 24h"
-                      value={fmt(data.performance.sent_24h)}
-                      color="var(--j-violet-soft)"
-                      title="Per-recipient sent events across all send paths (broadcast, drips, click funnels)"
-                    />
-                    <Stat
-                      label="Delivered 24h"
-                      value={fmt(data.performance.delivered_24h)}
-                      color="var(--j-success-soft)"
-                      title="Delivered events recorded in tracking (campaign-attributed)"
-                    />
-                    <div>
-                      <Stat
-                        label="Open % (raw)"
-                        value={
-                          data.performance.delivered_24h > 0
-                            ? fmtPct(data.performance.opens_raw_24h / data.performance.delivered_24h)
-                            : '—'
-                        }
-                        color="var(--j-cyan)"
-                        title={`${fmt(data.performance.opens_raw_24h)} raw opens ÷ ${fmt(data.performance.delivered_24h)} delivered — machine/MPP traffic included`}
-                      />
-                      {data.performance.human_ok && (
-                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
-                          human {fmt(data.performance.opens_human_24h)}
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <Stat
-                        label="Click % (raw)"
-                        value={
-                          data.performance.delivered_24h > 0
-                            ? fmtPct(data.performance.clicks_raw_24h / data.performance.delivered_24h)
-                            : '—'
-                        }
-                        color="var(--j-violet)"
-                        title={`${fmt(data.performance.clicks_raw_24h)} raw clicks ÷ ${fmt(data.performance.delivered_24h)} delivered — machine traffic included`}
-                      />
-                      {data.performance.human_ok && (
-                        <div style={{ fontSize: 11, color: 'var(--j-text-muted)', marginTop: 2 }}>
-                          human {fmt(data.performance.clicks_human_24h)}
-                        </div>
-                      )}
-                    </div>
-                    <Stat
-                      label="Complaints 24h"
-                      value={fmt(data.performance.complaints_24h)}
-                      color={data.performance.complaints_24h > 0 ? 'var(--j-danger)' : 'var(--j-text)'}
-                      title="Spam-complaint events recorded in tracking over the last 24h"
-                    />
-                    <Stat
-                      label="Conversions 24h"
-                      value={fmt(data.performance.conversions_24h)}
-                      color={data.performance.conversions_24h > 0 ? 'var(--j-success-soft)' : 'var(--j-text)'}
-                      title="Everflow conversion postbacks received in the last 24h"
-                    />
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--j-text-faint)', marginTop: 12, lineHeight: 1.5 }}>
-                    Rates divide by delivered. Raw opens/clicks include machine and Apple-MPP traffic;
-                    "human" is the verdict-filtered count. Refreshes every ~5 minutes.
-                  </div>
-                </>
-              )}
-            </div>
-          </section>
-
-          {/* ---- Background workers — one card per worker ---- */}
-          <section style={{ ...panelStyle, marginBottom: 14 }}>
-            <h2 style={panelTitleStyle}>
-              <FontAwesomeIcon icon={faHeartPulse} style={{ color: 'var(--j-violet)' }} />
-              Background Workers
-            </h2>
-            {!data.workers.ok ? (
-              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', marginTop: 10 }}>
-                Worker status not available in this environment.
-              </div>
-            ) : data.workers.workers.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--j-text-faint)', marginTop: 10 }}>No heartbeats recorded yet.</div>
-            ) : (
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                  gap: 10,
-                  marginTop: 12,
-                }}
-              >
-                {data.workers.workers.map((wkr) => {
-                  const color = wkr.stalled ? 'var(--j-hard)' : wkr.last_status === 'error' ? 'var(--j-soft)' : 'var(--j-success)';
-                  return (
-                    <div
-                      key={wkr.name}
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: 8,
-                        background: wkr.stalled ? 'rgba(239,68,68,0.10)' : 'color-mix(in srgb, var(--j-violet-strong) 6%, transparent)',
-                        border: `1px solid ${wkr.stalled ? 'rgba(239,68,68,0.4)' : 'color-mix(in srgb, var(--j-violet-strong) 15%, transparent)'}`,
-                      }}
-                      title={wkr.last_error || undefined}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--j-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {wkr.name}
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 18,
-                          fontWeight: 700,
-                          fontVariantNumeric: 'tabular-nums',
-                          color: wkr.stalled ? 'var(--j-danger-soft)' : 'var(--j-text)',
-                          marginTop: 6,
-                        }}
-                      >
-                        {fmtDuration(wkr.seconds_since_beat)} ago
-                      </div>
-                      <div style={{ fontSize: 10, color: wkr.stalled ? 'var(--j-danger-soft)' : 'var(--j-text-faint)', marginTop: 3 }}>
-                        {wkr.stalled
-                          ? 'NOT RESPONDING'
-                          : wkr.expected_interval_seconds > 0
-                            ? `expected every ${fmtDuration(wkr.expected_interval_seconds)}`
-                            : 'healthy'}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             )}
           </section>
 

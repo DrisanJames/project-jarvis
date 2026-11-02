@@ -1,0 +1,64 @@
+.account { padding: 24px; color: var(--j-text); }
+.account__head { margin-bottom: 16px; }
+.account__head h2 { margin: 0 0 4px; font-family: var(--j-font-display); font-size: 20px; color: var(--j-text); }
+.account__head p { margin: 0; font-size: 13px; color: var(--j-text-muted); }
+.account__tabs { max-width: 100%; overflow-x: auto; }
+.account__stack { display: flex; flex-direction: column; gap: 14px; max-width: 960px; }
+.account__stats { display: flex; flex-wrap: wrap; gap: 20px 32px; }
+.account__muted { margin: 0; font-size: 13px; color: var(--j-text-muted); }
+.account__line { margin: 10px 0 0; font-size: 13px; color: var(--j-text-2); }
+.account__loading { padding: 24px 0; font-size: 13px; color: var(--j-text-muted); }
+.account__error { margin: 8px 0 0; font-size: 12px; color: var(--j-danger-soft); }
+
+.account__person { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.account__photo { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; flex-shrink: 0; border: 1px solid var(--j-border); }
+.account__initials { display: flex; align-items: center; justify-content: center; background: var(--j-surface-2); color: var(--j-text-2); font-size: 22px; font-weight: 700; }
+.account__who { min-width: 0; flex: 1 1 200px; }
+.account__name { font-size: 16px; font-weight: 700; color: var(--j-text); overflow-wrap: anywhere; }
+.account__email { font-size: 13px; color: var(--j-text-muted); overflow-wrap: anywhere; }
+
+.account__facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 24px; margin: 16px 0 0; }
+.account__facts dt { font-size: 11px; color: var(--j-text-muted); }
+.account__facts dd { margin: 2px 0 0; font-size: 14px; color: var(--j-text); overflow-wrap: anywhere; }
+
+.account__form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.account__form label { display: flex; flex-direction: column; gap: 4px; flex: 1 1 200px; min-width: 0; font-size: 12px; color: var(--j-text-muted); }
+.account__form label.account__narrow { flex: 0 1 140px; }
+.account input, .account select { width: 100%; box-sizing: border-box; background: var(--j-surface); color: var(--j-text); border: 1px solid var(--j-border-strong); border-radius: 6px; padding: 7px 8px; font-size: 16px; }
+.account__action { flex-shrink: 0; }
+.account__action:disabled { opacity: .6; cursor: default; }
+
+.account__table td { vertical-align: middle; }
+.account__userCell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.account__userCell .account__photo { width: 32px; height: 32px; }
+.account__userCell .account__initials { font-size: 12px; }
+.account__rowActions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+.account__key { padding: 14px 0; border-top: 1px solid var(--j-border-subtle); }
+.account__keyHead { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.account__keyName { font-size: 14px; font-weight: 700; color: var(--j-text); }
+.account__keyUse { font-size: 13px; color: var(--j-text-2); margin-top: 2px; }
+.account__keyMeta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--j-text-muted); }
+.account__tail { font-family: monospace; color: var(--j-text); }
+.account__keyNote { margin: 8px 0 0; font-size: 12px; color: var(--j-text-muted); }
+.account__keyWarn { margin: 8px 0 0; font-size: 12px; color: var(--j-warn); }
+.account__replace { margin-top: 12px; padding: 12px; border: 1px solid var(--j-border); border-radius: 8px; background: var(--j-bg); }
+.account__replace p { margin: 0 0 10px; font-size: 13px; color: var(--j-text-2); }
+
+.account__agents { margin: 0; padding: 0; list-style: none; }
+.account__agents li { padding: 8px 0; border-top: 1px solid var(--j-border-subtle); font-size: 13px; color: var(--j-text-2); }
+.account__agents li:first-child { border-top: 0; }
+.account__agents strong { display: block; color: var(--j-text); font-weight: 600; }
+
+@media (max-width: 640px) {
+  .account { padding: 16px; }
+  /* Wrap so every tab stays visible; !important: SubNav's style is inline */
+  .account__tabs [role="tablist"] { flex-wrap: wrap; border-radius: 16px !important; }
+  .account__table thead { display: none; }
+  .account__table, .account__table tbody, .account__table tr, .account__table td { display: block; width: 100%; box-sizing: border-box; }
+  .account__table tr { padding: 10px 0; border-top: 1px solid var(--j-border-subtle); }
+  /* !important: the shared tdStyle is inline */
+  .account__table td { padding: 3px 0 !important; border: 0 !important; }
+  .account__table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--j-text-muted); }
+  .account__rowActions { justify-content: flex-start; }
+}
