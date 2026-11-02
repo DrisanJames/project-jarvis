@@ -374,20 +374,22 @@ func TestHandleCreatePartner_DuplicateConflict(t *testing.T) {
 
 // ---------------- HandleListDatasets ----------------
 
+const datasetRosterID = "00000000-0000-0000-0000-0000000abc01"
+
 // datasetRosterRows is the shape every HandleListDatasets variant returns.
-func datasetRosterRows(batchCount, readyCount, mailedCount int) *sqlmock.Rows {
+func datasetRosterRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
 		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
 		"paused_emergency", "paused_reason", "status", "created_at",
 		"intake_paused", "intake_paused_reason",
-		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
+		"partner_name", "partner_slug",
 	}).AddRow(
-		"00000000-0000-0000-0000-0000000abc01",
+		datasetRosterID,
 		"00000000-0000-0000-0000-000000000abc",
 		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
 		false, "", "active", time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC),
 		false, "",
-		"Attribits", "attribits", batchCount, readyCount, mailedCount,
+		"Attribits", "attribits",
 	)
 }
 
@@ -400,8 +402,7 @@ func datasetRosterRows(batchCount, readyCount, mailedCount int) *sqlmock.Rows {
 // columns, so reinstating the subqueries on this path fails the test.
 func TestHandleListDatasets_CountsZeroSkipsTheExpensiveAggregates(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	mock.ExpectQuery(`0 AS batch_count, 0 AS ready_count, 0 AS mailed_count`).
-		WillReturnRows(datasetRosterRows(0, 0, 0))
+	mock.ExpectQuery(`SELECT d\.id, d\.partner_id`).WillReturnRows(datasetRosterRows())
 
 	h := NewPartnerAdminHandler(db)
 	rec := httptest.NewRecorder()
@@ -417,19 +418,49 @@ func TestHandleListDatasets_CountsZeroSkipsTheExpensiveAggregates(t *testing.T) 
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// The default path keeps the counts — ?counts=0 is opt-in, so existing callers
-// (the Data Partners dataset table) are unaffected.
-func TestHandleListDatasets_DefaultKeepsTheCounts(t *testing.T) {
+// The default path fills the counts from the background snapshot and never
+// aggregates per dataset: those subqueries are what timed the screen out.
+func TestHandleListDatasets_CountsComeFromTheSnapshot(t *testing.T) {
 	db, mock := newPartnerMockDB(t)
-	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM partner_inbound_batches`).
-		WillReturnRows(datasetRosterRows(3, 1500, 4500))
+	mock.ExpectQuery(`SELECT d\.id, d\.partner_id`).WillReturnRows(datasetRosterRows())
 
+	asOf := mustParseTime(t, "2026-11-02T00:00:00Z")
 	h := NewPartnerAdminHandler(db)
+	h.queueCounts = func() (map[string]map[string]int64, time.Time, bool) {
+		return map[string]map[string]int64{datasetRosterID: {"ready": 1500, "mailed": 4500}}, asOf, true
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/mailing/data-partners/datasets", nil)
 	h.HandleListDatasets(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	first := body["datasets"].([]interface{})[0].(map[string]interface{})
+	require.Equal(t, float64(1500), first["ready_queue_count"])
+	require.Equal(t, float64(4500), first["mailed_count"])
+	require.NotNil(t, body["counts_as_of"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// With no snapshot yet the response says so: counts_as_of null, never a
+// measured-looking zero.
+func TestHandleListDatasets_NoSnapshotMarksCountsUnmeasured(t *testing.T) {
+	db, mock := newPartnerMockDB(t)
+	mock.ExpectQuery(`SELECT d\.id, d\.partner_id`).WillReturnRows(datasetRosterRows())
+
+	h := NewPartnerAdminHandler(db)
+	h.queueCounts = func() (map[string]map[string]int64, time.Time, bool) {
+		return nil, time.Time{}, false
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/mailing/data-partners/datasets", nil)
+	h.HandleListDatasets(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Nil(t, body["counts_as_of"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -439,14 +470,14 @@ func TestHandleListDatasets(t *testing.T) {
 		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
 		"paused_emergency", "paused_reason", "status", "created_at",
 		"intake_paused", "intake_paused_reason",
-		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
+		"partner_name", "partner_slug",
 	}).AddRow(
-		"00000000-0000-0000-0000-0000000abc01",
+		datasetRosterID,
 		"00000000-0000-0000-0000-000000000abc",
 		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
 		false, "", "active", mustParseTime(t, "2026-05-12T00:00:00Z"),
 		false, "",
-		"Attribits", "attribits", 3, 1500, 4500,
+		"Attribits", "attribits",
 	)
 	mock.ExpectQuery(`SELECT d\.id, d\.partner_id.*FROM partner_datasets d\s*JOIN data_partners p`).
 		WillReturnRows(rows)
@@ -465,8 +496,6 @@ func TestHandleListDatasets(t *testing.T) {
 	require.Equal(t, "Attribits-HELOC", d["name"])
 	require.Equal(t, "refi_heloc", d["vertical"])
 	require.Equal(t, float64(24), d["flush_window_hours"])
-	require.Equal(t, float64(1500), d["ready_queue_count"])
-	require.Equal(t, float64(4500), d["mailed_count"])
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -767,7 +796,7 @@ func TestHandleGetDashboard(t *testing.T) {
 		"slicing_complete", 5000,
 		mustParseTime(t, "2026-05-12T00:00:00Z"), nil, false,
 		"Attribits-HELOC", "refi_heloc", "Attribits")
-	mock.ExpectQuery(`SELECT b\.id, b\.dataset_id, b\.partner_id.*FROM partner_inbound_batches b`).
+	mock.ExpectQuery(`SELECT b\.id, b\.dataset_id, b\.partner_id.*JOIN LATERAL`).
 		WillReturnRows(batchRows)
 
 	h := NewPartnerAdminHandler(db)

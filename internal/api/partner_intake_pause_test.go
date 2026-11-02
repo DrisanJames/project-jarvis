@@ -227,14 +227,14 @@ func TestHandleListDatasets_CarriesIntakeFlags(t *testing.T) {
 		"id", "partner_id", "name", "slug", "vertical", "flush_window_hours",
 		"paused_emergency", "paused_reason", "status", "created_at",
 		"intake_paused", "intake_paused_reason",
-		"partner_name", "partner_slug", "batch_count", "ready_count", "mailed_count",
+		"partner_name", "partner_slug",
 	}).AddRow(
 		"00000000-0000-0000-0000-0000000abc01",
 		"00000000-0000-0000-0000-000000000abc",
 		"Attribits-HELOC", "attribits-heloc", "refi_heloc", 24,
 		true, "sending stopped", "active", mustParseTime(t, "2026-05-12T00:00:00Z"),
 		true, "partner migrating feeds",
-		"Attribits", "attribits", 3, 1500, 4500,
+		"Attribits", "attribits",
 	)
 	mock.ExpectQuery(`SELECT d\.id, d\.partner_id.*COALESCE\(d\.intake_paused, false\), COALESCE\(d\.intake_paused_reason, ''\).*FROM partner_datasets d`).
 		WillReturnRows(rows)

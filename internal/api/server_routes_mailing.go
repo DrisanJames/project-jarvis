@@ -37,6 +37,14 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 		s.OfferSuppMgr.db = db
 	}
 	if s.apiRouter != nil && db != nil {
+		// Account screen. The access gate and key refresh arm first: route
+		// registration below takes ~100s and neither depends on it.
+		accountSvc := NewAccountService(db, s.authManager)
+		if s.authManager != nil {
+			s.authManager.SetAccessGate(accountSvc.AccessAllowed)
+		}
+		accountSvc.StartKeyRefresher(context.Background())
+
 		// Register mailing routes INSIDE the /api sub-router so they
 		// automatically inherit the auth middleware from SetupRoutes.
 		// Path is /mailing (relative to /api), so final URL is /api/mailing/*.
@@ -624,6 +632,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// send load) runs in the background from here on; no request
 			// path ever executes it (operator: "doesn't load the database").
 			diSvc.StartQueueStateRefresher(context.Background())
+			partnerAdmin.queueCounts = diSvc.queueCountsSnapshot
 			// Cross-task SSE fan-out: deltas applied by the other task reach
 			// this task's /stream subscribers via Redis pub/sub.
 			dataingest.StartDeltaRelay(context.Background(), s.redisClient, dataingest.DefaultHub())
@@ -1179,6 +1188,10 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			// day-over-day deltas. GET /api/mailing/growth/daily|filters.
 			growthSvc := NewGrowthService(db)
 			growthSvc.RegisterRoutes(r)
+
+			// === ACCOUNT (profile, company, subscription, users, provider keys) ===
+			// GET /api/mailing/account/me and siblings. See account_handlers.go.
+			accountSvc.RegisterRoutes(r)
 
 			// === DRIP LANE ONBOARDING (operator ask 2026-08-21) ===
 			// Turn an INGESTED lead file into a lane that actually mails:

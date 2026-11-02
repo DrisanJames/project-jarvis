@@ -27,6 +27,10 @@ import (
 // PartnerAdminHandler holds the deps needed by the admin endpoints.
 type PartnerAdminHandler struct {
 	db *sql.DB
+	// queueCounts reads the Data Ingest background snapshot of
+	// partner_clean_queue: dataset id -> status -> rows, and when it was
+	// measured. ok=false until the first scan lands.
+	queueCounts func() (byDataset map[string]map[string]int64, asOf time.Time, ok bool)
 }
 
 func NewPartnerAdminHandler(db *sql.DB) *PartnerAdminHandler {
@@ -245,15 +249,15 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 	})
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"dataset_id":          datasetID,
-		"partner_id":          partnerID,
-		"name":                req.Name,
-		"slug":                slug,
-		"vertical":            req.Vertical,
-		"flush_window_hours":  flushWindow,
-		"api_key":             rawKey,
-		"api_key_prefix":      prefix,
-		"api_key_warning":     "Show this key to the partner ONCE — it cannot be retrieved later. Only the prefix is stored.",
+		"dataset_id":         datasetID,
+		"partner_id":         partnerID,
+		"name":               req.Name,
+		"slug":               slug,
+		"vertical":           req.Vertical,
+		"flush_window_hours": flushWindow,
+		"api_key":            rawKey,
+		"api_key_prefix":     prefix,
+		"api_key_warning":    "Show this key to the partner ONCE — it cannot be retrieved later. Only the prefix is stored.",
 	})
 }
 
@@ -262,29 +266,22 @@ func (h *PartnerAdminHandler) HandleCreateDataset(w http.ResponseWriter, r *http
 func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	partnerFilter := strings.TrimSpace(q.Get("partner_id"))
-	// The three per-dataset counts are correlated aggregates over
-	// partner_clean_queue (15.0M rows) and partner_inbound_batches (11.2M).
-	// Measured against prod 2026-09-16: the mailed count for ONE dataset took
-	// 4.0s, and across 62 datasets the whole statement blew the pool's 30s
-	// statement_timeout — this endpoint was answering
-	// 500 "list_datasets_failed: canceling statement due to statement timeout",
-	// which silently emptied every dataset picker in the portal.
-	// ?counts=0 returns the same shape with the counts zeroed, in ~0.5s, for
-	// callers that only need the roster (the upload target pickers).
-	countCols := `
-		       (SELECT COUNT(*) FROM partner_inbound_batches b WHERE b.dataset_id = d.id) AS batch_count,
-		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'ready') AS ready_count,
-		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.dataset_id = d.id AND q.status = 'mailed') AS mailed_count`
-	countsOmitted := q.Get("counts") == "0"
-	if countsOmitted {
-		countCols = `
-		       0 AS batch_count, 0 AS ready_count, 0 AS mailed_count`
+	// Counts come from the Data Ingest background snapshot of
+	// partner_clean_queue. The per-dataset aggregates this used to run blew
+	// the 30s statement_timeout (19.5M + 13.2M rows, 2026-11-02) and the
+	// portal repeated them every 30s, so the screen timed out.
+	var counts map[string]map[string]int64
+	var countsAsOf *time.Time
+	if h.queueCounts != nil && q.Get("counts") != "0" {
+		if byDataset, at, ok := h.queueCounts(); ok {
+			counts, countsAsOf = byDataset, &at
+		}
 	}
 	rows, err := h.db.QueryContext(r.Context(), `
 		SELECT d.id, d.partner_id, d.name, d.slug, d.vertical, d.flush_window_hours,
 		       d.paused_emergency, COALESCE(d.paused_reason, ''), d.status, d.created_at,
 		       COALESCE(d.intake_paused, false), COALESCE(d.intake_paused_reason, ''),
-		       p.name AS partner_name, p.slug AS partner_slug,`+countCols+`
+		       p.name AS partner_name, p.slug AS partner_slug
 		FROM partner_datasets d
 		JOIN data_partners p ON p.id = d.partner_id
 		WHERE ($1 = '' OR d.partner_id::text = $1)
@@ -299,41 +296,39 @@ func (h *PartnerAdminHandler) HandleListDatasets(w http.ResponseWriter, r *http.
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var (
-			id, partnerID, name, slug, vertical, status   string
-			pausedReason, partnerName, partnerSlug         string
-			intakePausedReason                             string
-			flushWindow                                    int
-			pausedEmergency, intakePaused                  bool
-			createdAt                                      time.Time
-			batchCount, readyCount, mailedCount            int
+			id, partnerID, name, slug, vertical, status string
+			pausedReason, partnerName, partnerSlug      string
+			intakePausedReason                          string
+			flushWindow                                 int
+			pausedEmergency, intakePaused               bool
+			createdAt                                   time.Time
 		)
 		if err := rows.Scan(&id, &partnerID, &name, &slug, &vertical, &flushWindow,
 			&pausedEmergency, &pausedReason, &status, &createdAt,
 			&intakePaused, &intakePausedReason,
-			&partnerName, &partnerSlug, &batchCount, &readyCount, &mailedCount); err != nil {
+			&partnerName, &partnerSlug); err != nil {
 			continue
 		}
 		out = append(out, map[string]interface{}{
-			"id":                  id,
-			"partner_id":          partnerID,
-			"partner_name":        partnerName,
-			"partner_slug":        partnerSlug,
-			"name":                name,
-			"slug":                slug,
-			"vertical":            vertical,
-			"flush_window_hours":  flushWindow,
-			"paused_emergency":    pausedEmergency,
-			"paused_reason":       pausedReason,
+			"id":                   id,
+			"partner_id":           partnerID,
+			"partner_name":         partnerName,
+			"partner_slug":         partnerSlug,
+			"name":                 name,
+			"slug":                 slug,
+			"vertical":             vertical,
+			"flush_window_hours":   flushWindow,
+			"paused_emergency":     pausedEmergency,
+			"paused_reason":        pausedReason,
 			"intake_paused":        intakePaused,
 			"intake_paused_reason": intakePausedReason,
-			"status":              status,
-			"created_at":          createdAt.Format(time.RFC3339),
-			"batch_count":         batchCount,
-			"ready_queue_count":   readyCount,
-			"mailed_count":        mailedCount,
+			"status":               status,
+			"created_at":           createdAt.Format(time.RFC3339),
+			"ready_queue_count":    counts[id]["ready"],
+			"mailed_count":         counts[id]["mailed"],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"datasets": out})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"datasets": out, "counts_as_of": countsAsOf})
 }
 
 // ============ POST /api/mailing/data-partners/datasets/{id}/emergency-stop ============
@@ -879,7 +874,9 @@ func (h *PartnerAdminHandler) HandleListCreatives(w http.ResponseWriter, r *http
 // landing page: per-vertical queue depth, last wave, drip-state, and the
 // recent batch list.
 func (h *PartnerAdminHandler) HandleGetDashboard(w http.ResponseWriter, r *http.Request) {
-	verticalRows, err := h.db.QueryContext(r.Context(), `
+	verticals := make([]map[string]interface{}, 0, 4)
+	if r.URL.Query().Get("verticals") != "0" {
+		verticalRows, err := h.db.QueryContext(r.Context(), `
 		SELECT s.vertical, s.next_brand_index, s.last_wave_at, s.last_wave_brand, s.last_wave_size,
 		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.vertical = s.vertical AND q.status = 'ready') AS ready_q,
 		       (SELECT COUNT(*) FROM partner_clean_queue q WHERE q.vertical = s.vertical AND q.status = 'pending_eo') AS pending_eo,
@@ -887,41 +884,46 @@ func (h *PartnerAdminHandler) HandleGetDashboard(w http.ResponseWriter, r *http.
 		FROM partner_drip_state s
 		ORDER BY s.vertical
 	`)
-	if err != nil {
-		writeJSONError(w, "dashboard_query_failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer verticalRows.Close()
-
-	verticals := make([]map[string]interface{}, 0, 4)
-	for verticalRows.Next() {
-		var vertical string
-		var brandIdx int
-		var lastWave sql.NullTime
-		var lastBrand sql.NullString
-		var lastSize sql.NullInt64
-		var readyQ, pendingEO, mailed int
-		if err := verticalRows.Scan(&vertical, &brandIdx, &lastWave, &lastBrand, &lastSize, &readyQ, &pendingEO, &mailed); err != nil {
-			continue
+		if err != nil {
+			writeJSONError(w, "dashboard_query_failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
-		verticals = append(verticals, map[string]interface{}{
-			"vertical":          vertical,
-			"next_brand_index":  brandIdx,
-			"last_wave_at":      formatNullTime(lastWave),
-			"last_wave_brand":   nullStringValue(lastBrand),
-			"last_wave_size":    nullIntValue(lastSize),
-			"ready_queue":       readyQ,
-			"pending_eo":        pendingEO,
-			"mailed_total":      mailed,
-		})
+		defer verticalRows.Close()
+
+		for verticalRows.Next() {
+			var vertical string
+			var brandIdx int
+			var lastWave sql.NullTime
+			var lastBrand sql.NullString
+			var lastSize sql.NullInt64
+			var readyQ, pendingEO, mailed int
+			if err := verticalRows.Scan(&vertical, &brandIdx, &lastWave, &lastBrand, &lastSize, &readyQ, &pendingEO, &mailed); err != nil {
+				continue
+			}
+			verticals = append(verticals, map[string]interface{}{
+				"vertical":         vertical,
+				"next_brand_index": brandIdx,
+				"last_wave_at":     formatNullTime(lastWave),
+				"last_wave_brand":  nullStringValue(lastBrand),
+				"last_wave_size":   nullIntValue(lastSize),
+				"ready_queue":      readyQ,
+				"pending_eo":       pendingEO,
+				"mailed_total":     mailed,
+			})
+		}
 	}
 
 	batchRows, _ := h.db.QueryContext(r.Context(), `
 		SELECT b.id, b.dataset_id, b.partner_id, b.status, b.record_count,
 		       b.received_at, b.completed_at, b.emergency_stopped,
 		       d.name, d.vertical, p.name
-		FROM partner_inbound_batches b
-		JOIN partner_datasets d ON d.id = b.dataset_id
+		FROM partner_datasets d
+		JOIN LATERAL (
+			SELECT * FROM partner_inbound_batches pb
+			WHERE pb.dataset_id = d.id
+			ORDER BY pb.received_at DESC
+			LIMIT 25
+		) b ON TRUE
 		JOIN data_partners p ON p.id = b.partner_id
 		ORDER BY b.received_at DESC
 		LIMIT 25
@@ -1078,10 +1080,10 @@ func (h *PartnerAdminHandler) HandleGetDripPerformance(w http.ResponseWriter, r 
 // campaign rows per event and corrupt COUNT/SUM).
 func (h *PartnerAdminHandler) dripRollup(ctx context.Context, hours int) ([]map[string]interface{}, error) {
 	type group struct {
-		vertical, brand, partnerSlug                          string
-		waves, recipients, active                             int
-		lastWaveAt                                            sql.NullTime
-		sent, delivered, opens, clicks, hard, soft, deferred  int
+		vertical, brand, partnerSlug                         string
+		waves, recipients, active                            int
+		lastWaveAt                                           sql.NullTime
+		sent, delivered, opens, clicks, hard, soft, deferred int
 	}
 	groups := map[string]*group{}
 	var order []string
@@ -1478,17 +1480,17 @@ func (h *PartnerAdminHandler) dripFunnel(ctx context.Context) ([]map[string]inte
 		// three rates by this so they total 100%.
 		dripTotal := a.engaged + a.inProgress + a.churned
 		verticals = append(verticals, map[string]interface{}{
-			"vertical":      v,
-			"pending_eo":    a.pendingEO,
-			"hold":          a.hold,
-			"ready":         a.ready,
-			"claimed":       a.claimed,
-			"mailed":        a.mailed,
-			"sent_24h":      a.sent24h,
-			"touch_1":       a.t1,
-			"touch_2":       a.t2,
-			"touch_3":       a.t3,
-			"touch_4":       a.t4,
+			"vertical":         v,
+			"pending_eo":       a.pendingEO,
+			"hold":             a.hold,
+			"ready":            a.ready,
+			"claimed":          a.claimed,
+			"mailed":           a.mailed,
+			"sent_24h":         a.sent24h,
+			"touch_1":          a.t1,
+			"touch_2":          a.t2,
+			"touch_3":          a.t3,
+			"touch_4":          a.t4,
 			"engaged":          a.engaged,
 			"completed":        a.completed,
 			"in_progress":      a.inProgress,
@@ -1951,11 +1953,11 @@ const warmupISPExpr = `
 // known-stale and never used. Four sections:
 //
 //   - domains[]:        per (brand, sending_domain) window roll-up. Bounces are
-//                       split hard vs soft per bounce-metrics doctrine.
+//     split hard vs soft per bounce-metrics doctrine.
 //   - by_isp[]:         per (brand, derived ISP) window roll-up. The warm-up is
-//                       Yahoo/AOL only, so most volume lands in those families.
+//     Yahoo/AOL only, so most volume lands in those families.
 //   - recovery_curve[]: per UTC hour bucket, overall + per-brand, the
-//                       delivered/sent ramp (the "recovery" the operator watches).
+//     delivered/sent ramp (the "recovery" the operator watches).
 //   - caps[]:           current per-wave ISP caps from the dataset's overrides.
 //
 // Default window 72h; ?hours=N (1..168) overrides. Read-only: no writes, no
@@ -2323,7 +2325,6 @@ func pathBaseForCreative(p string) string {
 	return path.Base(p)
 }
 
-
 // ============ GET /api/mailing/data-partners/previous-activations ============
 
 // HandleGetPreviousActivations reports, per previous data activation (dataset),
@@ -2583,6 +2584,7 @@ func (h *PartnerAdminHandler) HandleGetPreviousActivations(w http.ResponseWriter
 //     Verdict-filtered to HUMAN clicks (raw money-link clicks include scanner detonations).
 //   - convs   -> mailing_offer_suppressions(reason='converted').offer_id (postback truth;
 //     the manual-import sink has no offer_id, hence the parent "Conv" may differ).
+//
 // Denominator for every rate is the dataset's distinct mailed reach (shared across offers,
 // since the per-offer mailed split isn't recoverable without offer_id on campaigns).
 func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWriter, r *http.Request) {
@@ -2614,8 +2616,8 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 	}
 
 	type offerMeta struct{ name, everflow string }
-	idToOffer := map[string]offerMeta{}  // mailing_offers.id -> meta
-	efToIDs := map[string][]string{}     // everflow_offer_id -> ids (NOT unique: ef can map to several offers)
+	idToOffer := map[string]offerMeta{} // mailing_offers.id -> meta
+	efToIDs := map[string][]string{}    // everflow_offer_id -> ids (NOT unique: ef can map to several offers)
 	nameCount := map[string]int{}
 	nameToID := map[string]string{} // normalized name -> id, kept ONLY when unambiguous
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -2840,9 +2842,9 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		EverflowID     string  `json:"everflow_offer_id"`
 		Clickers       int     `json:"clickers"`
 		Clicks         int     `json:"clicks"`
-		CTRPct         float64 `json:"ctr_pct"`         // clickers / mailed
-		Conversions    int     `json:"conversions"`     // postback converters
-		ConvPct        float64 `json:"conv_pct"`        // conversions / mailed
+		CTRPct         float64 `json:"ctr_pct"`           // clickers / mailed
+		Conversions    int     `json:"conversions"`       // postback converters
+		ConvPct        float64 `json:"conv_pct"`          // conversions / mailed
 		ClickToConvPct float64 `json:"click_to_conv_pct"` // conversions / clickers
 	}
 	out := make([]offerRow, 0, len(offers))
@@ -2870,10 +2872,10 @@ func (h *PartnerAdminHandler) HandleGetDatasetOfferPerformance(w http.ResponseWr
 		"mailed":       mailed,
 		"offers":       out,
 		"notes": map[string]interface{}{
-			"attribution":  "lineage: subscribers acquired/mailed from this dataset (partner_clean_queue). Captures conversions on ANY offer they were later mailed, not just partner-drip.",
-			"clicks":       "HUMAN clicks (verdict-filtered) anchored to the cratoolpro money-slug in link_url, resolved via mailing_offer_slug_map — exact offer attribution.",
-			"conversions":  "CSV-imported CPM conversions (mailing_cpm_manual_conversions), the SAME source as the parent row's 'Conv', attributed to offer via the conversion's deal — sums exactly to the row. '(unattributed)' = a conversion whose deal carries no offer.",
-			"rate_basis":   "CTR and Conv% are over the dataset's distinct mailed reach (per-offer mailed isn't recoverable — campaigns carry no offer_id); click→conv is conversions/clickers.",
+			"attribution": "lineage: subscribers acquired/mailed from this dataset (partner_clean_queue). Captures conversions on ANY offer they were later mailed, not just partner-drip.",
+			"clicks":      "HUMAN clicks (verdict-filtered) anchored to the cratoolpro money-slug in link_url, resolved via mailing_offer_slug_map — exact offer attribution.",
+			"conversions": "CSV-imported CPM conversions (mailing_cpm_manual_conversions), the SAME source as the parent row's 'Conv', attributed to offer via the conversion's deal — sums exactly to the row. '(unattributed)' = a conversion whose deal carries no offer.",
+			"rate_basis":  "CTR and Conv% are over the dataset's distinct mailed reach (per-offer mailed isn't recoverable — campaigns carry no offer_id); click→conv is conversions/clickers.",
 		},
 	})
 }

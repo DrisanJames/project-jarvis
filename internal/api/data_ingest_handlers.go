@@ -416,6 +416,17 @@ func (s *DataIngestService) queueState(ctx context.Context, force bool) (*queueS
 	return snap, err
 }
 
+// queueCountsSnapshot hands the last background scan to other screens. It
+// never scans: ok=false until the first snapshot lands.
+func (s *DataIngestService) queueCountsSnapshot() (map[string]map[string]int64, time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cached == nil {
+		return nil, time.Time{}, false
+	}
+	return s.cached.ByDataset, s.cached.GeneratedAt, true
+}
+
 // StartQueueStateRefresher moves the reservoir scan off the request path for
 // the life of the process: one scan now, then one every dataIngestRefreshEvery,
 // single-flighted with any ?refresh=1 kick. Called once from the route
