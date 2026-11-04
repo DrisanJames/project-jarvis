@@ -15,6 +15,8 @@ type ReputationAgent struct {
 	memory      *MemoryStore
 	convictions *ConvictionStore
 	alertCh     chan<- Decision
+	wontGate    wontQuarantineGate // "WONT keep IP" (complaint quarantine)
+	bounceGate  wontQuarantineGate // "WONT allow IP ... to send" (bounce action)
 }
 
 // NewReputationAgent creates a new ISP-scoped reputation agent.
@@ -44,6 +46,10 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 	ctx := context.Background()
 
 	for ip, metrics := range snap.IPMetrics {
+		if metrics.BounceRate1h <= a.Config.BounceActionPct {
+			a.bounceGate.clear(ip)
+		}
+
 		if metrics.BounceRate1h > a.Config.BounceActionPct {
 			// Use deprioritize (backoff) for moderate issues; only fully disable for
 			// extreme bounce rates (2x the action threshold) where the ISP is clearly
@@ -66,7 +72,7 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 				CreatedAt:   now,
 			})
 
-			if a.convictions != nil {
+			if a.convictions != nil && a.bounceGate.allow(ip, now) {
 				a.convictions.Record(ctx, Conviction{
 					AgentType: AgentReputation,
 					ISP:       a.ID.ISP,
@@ -108,6 +114,10 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 			})
 		}
 
+		if metrics.ComplaintRate <= a.Config.ComplaintActionPct {
+			a.wontGate.clear(ip)
+		}
+
 		if metrics.ComplaintRate > a.Config.ComplaintActionPct {
 			decisions = append(decisions, Decision{
 				ISP:         a.ID.ISP,
@@ -123,7 +133,7 @@ func (a *ReputationAgent) Evaluate(snap SignalSnapshot) []Decision {
 				CreatedAt:   now,
 			})
 
-			if a.convictions != nil {
+			if a.convictions != nil && a.wontGate.allow(ip, now) {
 				a.convictions.Record(ctx, Conviction{
 					AgentType: AgentReputation,
 					ISP:       a.ID.ISP,

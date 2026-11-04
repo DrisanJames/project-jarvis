@@ -1489,7 +1489,7 @@ func (s *Server) SetMailingDB(db *sql.DB) {
 			convictionStore.SetDB(db)
 			if enginePersistDisabled {
 				convictionStore.DisableDBPersist()
-				log.Printf("[engine] DB persistence DISABLED for convictions/decisions (ENGINE_DECISION_PERSIST_DISABLED=true) — S3 archival continues, RDS write-IO relieved")
+				log.Printf("[engine] DB persistence DISABLED for convictions/decisions (ENGINE_DECISION_PERSIST_DISABLED=true) — RDS write-IO relieved; S3 conviction/decision streams are separately gated by ENGINE_MEMORY_STREAMS_S3_ENABLED=true (engine/memory.go memoryStreamsS3Enabled, default off)")
 			}
 			// Restore convictions from S3 + DB in the background. This work
 			// can take 10–20 minutes under DB load (60 ISP × agent-type
