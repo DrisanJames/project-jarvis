@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -132,19 +133,18 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	// oldest-updated_at queue and burn expensive recalculation cycles on
 	// audiences no campaign references anymore. Pinned segments are always kept
 	// fresh. 30d mirrors the default inactive_days_threshold.
-	rows, err := w.db.QueryContext(ctx, `
-		SELECT s.id, s.list_id, s.name,
-		       COALESCE(s.conditions::text, '[]'),
-		       s.organization_id::text,
-		       COALESCE(s.subscriber_count, 0)
-		FROM mailing_segments s
-		WHERE s.status = 'active'
-		  AND s.segment_type = 'dynamic'
-		  AND (s.keep_active = TRUE
-		       OR COALESCE(s.last_used_at, s.created_at) > NOW() - INTERVAL '30 days')
-		ORDER BY s.updated_at ASC
-		LIMIT 200
-	`)
+	//
+	// SCOPE = WHAT CLEANUP KEEPS (2026-11-04, WP-F). The guard's premise is
+	// "SegmentCleanupWorker will archive them", but autoArchiveUnreferencedSegments
+	// (segment_cleanup.go) never archives a segment whose name matches an active
+	// keep_policy='protect' registry family. Those segments stayed active, were
+	// rebuilt daily by the materializer, and were never refreshed here: on
+	// 2026-11-04 the worker selected 91 of 218 active dynamic segments (log
+	// "refreshed 91/91") while all 78 stale engagement segments jarvis_ops
+	// flagged were outside the guard and 78/78 registry-protected. The
+	// predicate below is copied from that cleanup query, so refresh scope ==
+	// cleanup keep-set. SEGMENT_REFRESH_LEGACY_SCOPE=1 restores the old guard.
+	rows, err := w.db.QueryContext(ctx, segmentRefreshSelectSQL(segmentRefreshLegacyScope()))
 	if err != nil {
 		hbStatus, hbErr = "error", err.Error()
 		log.Printf("SegmentRefreshWorker: query error: %v", err)
@@ -186,25 +186,205 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 	// The heavy recalculate()/buildCTEQuery()/buildRefreshWhereClause() helpers
 	// are intentionally retained (covered by segment_refresh_test.go and
 	// available as a fallback) but are no longer on the hot cycle path.
-	ids := make([]uuid.UUID, len(segments))
-	for i, s := range segments {
-		ids[i] = s.ID
+
+	// BOUNDED COUNT CHUNKS (2026-11-04, WP-F). One GROUP BY over every
+	// segment's members exceeded the prod 30s statement_timeout on 38 of 96
+	// cycles in 24h ("member-count read truncated after 40-84/91 segments ...
+	// canceling statement due to statement timeout"), aborting the whole pass.
+	// Counting in chunks of ~segmentRefreshChunkMembers cached members, each
+	// with its own deadline, keeps every statement well under the budget; a
+	// chunk that fails or truncates writes NOTHING for its own segments (the
+	// partial-read guard below, per chunk) while clean chunks still land. The
+	// failed chunk's segments keep their old updated_at, so they sort first
+	// next cycle (ORDER BY updated_at ASC) — retry ordering for free.
+	var chunkErrs []string
+	writeChunk := func(chunk []segmentRow, counts map[uuid.UUID]int) {
+		// The chunk's result set is verified complete: segments with no row
+		// genuinely have zero materialized members (empty, or created since the
+		// last materialization pass — they fill in on the next SegmentMaterializer run).
+		for _, seg := range chunk {
+			if ctx.Err() != nil {
+				return
+			}
+			newCount := counts[seg.ID]
+			if _, err := w.writeDB.ExecContext(ctx, `
+				UPDATE mailing_segments
+				SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
+				WHERE id = $1
+			`, seg.ID, newCount); err != nil {
+				log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", seg.Name, seg.ID, err)
+				atomic.AddInt64(&failed, 1)
+				continue
+			}
+			if newCount != seg.OldCount {
+				log.Printf("SegmentRefreshWorker: %s — %d → %d", seg.Name, seg.OldCount, newCount)
+			}
+			atomic.AddInt64(&refreshed, 1)
+		}
+	}
+	for _, chunk := range segmentRefreshCountChunks(segments, segmentRefreshChunkMembers, segmentRefreshChunkMaxSegments) {
+		if ctx.Err() != nil {
+			break
+		}
+		counts, cErr := w.countMaterializedMembers(ctx, chunk)
+		if cErr == nil {
+			writeChunk(chunk, counts)
+			continue
+		}
+		if len(chunk) < 2 {
+			chunkErrs = append(chunkErrs, cErr.Error())
+			log.Printf("SegmentRefreshWorker: member-count chunk of 1 segment failed (no counts written) ids=%s: %v",
+				segmentRefreshIDList(chunk), cErr)
+			continue
+		}
+		log.Printf("SegmentRefreshWorker: member-count chunk of %d segments failed (no counts written for them; splitting once): %v",
+			len(chunk), cErr)
+		// One split level: OldCount (the chunk-sizing input) is stale or 0 for
+		// segments this worker has not counted recently, so an oversized chunk
+		// would otherwise re-form and fail identically every cycle. Each half is
+		// retried once; ≤2 extra statements per failed chunk.
+		mid := len(chunk) / 2
+		for _, half := range [][]segmentRow{chunk[:mid], chunk[mid:]} {
+			if ctx.Err() != nil {
+				break
+			}
+			hc, hErr := w.countMaterializedMembers(ctx, half)
+			if hErr != nil {
+				chunkErrs = append(chunkErrs, hErr.Error())
+				log.Printf("SegmentRefreshWorker: member-count half-chunk of %d segments still failing (no counts written) ids=%s: %v",
+					len(half), segmentRefreshIDList(half), hErr)
+				continue
+			}
+			writeChunk(half, hc)
+		}
+	}
+	if len(chunkErrs) > 0 {
+		hbStatus, hbErr = "error", truncateRunDetail(fmt.Sprintf("member-count read truncated in %d chunk(s): %s",
+			len(chunkErrs), strings.Join(chunkErrs, "; ")))
 	}
 
-	counts := make(map[uuid.UUID]int, len(segments))
-	cctx, ccancel := context.WithTimeout(ctx, 120*time.Second)
-	mrows, mErr := w.db.QueryContext(cctx, `
+	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments from materialized members in %s",
+		atomic.LoadInt64(&refreshed), len(segments), time.Since(start).Round(time.Millisecond))
+}
+
+// segmentRefreshChunkMembers is the cached-member budget per count statement.
+// 2026-11-04 the replica counted roughly 1.2-1.6M member rows before the 30s
+// statement_timeout fired under send-day IO, so 250k leaves ~5x headroom.
+const segmentRefreshChunkMembers = 250000
+
+// segmentRefreshChunkMaxSegments caps segments per count statement, so a run
+// of segments whose cached count is 0 or stale cannot make a chunk unbounded.
+const segmentRefreshChunkMaxSegments = 25
+
+// segmentRefreshChunkTimeout bounds one chunk's count statement below the
+// prod 30s statement_timeout, so our own deadline fires first.
+const segmentRefreshChunkTimeout = 25 * time.Second
+
+// segmentRefreshLegacyScope is the kill switch: SEGMENT_REFRESH_LEGACY_SCOPE=1
+// restores the pre-2026-11-04 guard (keep_active OR used within 30d), which
+// skips registry-protected segments.
+func segmentRefreshLegacyScope() bool {
+	v := strings.TrimSpace(os.Getenv("SEGMENT_REFRESH_LEGACY_SCOPE"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// segmentRefreshSelectSQL returns the refresh cycle's segment-list SELECT.
+// The protect-family EXISTS is the same predicate SegmentCleanupWorker's
+// autoArchiveUnreferencedSegments uses to keep a segment from archival.
+func segmentRefreshSelectSQL(legacyScope bool) string {
+	protected := `
+		       OR EXISTS (
+				SELECT 1 FROM mailing_segment_registry r
+				WHERE r.organization_id = s.organization_id
+				  AND r.active = TRUE
+				  AND r.keep_policy = 'protect'
+				  AND s.name LIKE r.family_pattern
+		       )`
+	if legacyScope {
+		protected = ""
+	}
+	return `
+		SELECT s.id, s.list_id, s.name,
+		       COALESCE(s.conditions::text, '[]'),
+		       s.organization_id::text,
+		       COALESCE(s.subscriber_count, 0)
+		FROM mailing_segments s
+		WHERE s.status = 'active'
+		  AND s.segment_type = 'dynamic'
+		  AND (s.keep_active = TRUE
+		       OR COALESCE(s.last_used_at, s.created_at) > NOW() - INTERVAL '30 days'` + protected + `)
+		ORDER BY s.updated_at ASC
+		LIMIT 200
+	`
+}
+
+// segmentRefreshCountChunks splits segments, in order, into chunks whose
+// cached member counts sum to at most budget and that hold at most maxSegs
+// segments (a single segment larger than budget forms its own chunk). Order
+// is preserved so the oldest-updated segments are counted first.
+func segmentRefreshCountChunks(segments []segmentRow, budget, maxSegs int) [][]segmentRow {
+	if maxSegs < 1 {
+		maxSegs = 1
+	}
+	var chunks [][]segmentRow
+	var cur []segmentRow
+	sum := 0
+	for _, s := range segments {
+		n := s.OldCount
+		if n < 0 {
+			n = 0
+		}
+		if len(cur) > 0 && (sum+n > budget || len(cur) >= maxSegs) {
+			chunks = append(chunks, cur)
+			cur, sum = nil, 0
+		}
+		cur = append(cur, s)
+		sum += n
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
+}
+
+// segmentRefreshIDList renders a chunk's segment ids for a failure log line.
+func segmentRefreshIDList(chunk []segmentRow) string {
+	ids := make([]string, len(chunk))
+	for i, s := range chunk {
+		ids[i] = s.ID.String()
+	}
+	return strings.Join(ids, ",")
+}
+
+// countMaterializedMembers counts mailing_segment_members for one chunk under
+// its own deadline. It returns an error — and no map — unless the result set
+// is VERIFIED complete.
+//
+// PARTIAL-READ GUARD (2026-08-21 incident). lib/pq streams result rows
+// lazily, so the QueryContext error check only covers query-time failure:
+// a deadline expiring mid-iteration, a replica recovery cancellation, or a
+// dropped connection ends the Next() loop SILENTLY with a truncated map. The
+// caller treats every absent segment as "genuinely empty" and stamps 0 — on
+// 2026-08-21 one such pass zeroed 118 of 250 active Opener/Clicker segments.
+// Absence of measurement is not zero: rows.Err() and every Scan must be clean.
+func (w *SegmentRefreshWorker) countMaterializedMembers(ctx context.Context, chunk []segmentRow) (map[uuid.UUID]int, error) {
+	ids := make([]uuid.UUID, len(chunk))
+	for i, s := range chunk {
+		ids[i] = s.ID
+	}
+	cctx, ccancel := context.WithTimeout(ctx, segmentRefreshChunkTimeout)
+	defer ccancel()
+	mrows, err := w.db.QueryContext(cctx, `
 		SELECT segment_id, COUNT(*)
 		FROM mailing_segment_members
 		WHERE segment_id = ANY($1)
 		GROUP BY segment_id
 	`, pq.Array(ids))
-	if mErr != nil {
-		ccancel()
-		hbStatus, hbErr = "error", mErr.Error()
-		log.Printf("SegmentRefreshWorker: member-count query error: %v", mErr)
-		return
+	if err != nil {
+		return nil, fmt.Errorf("member-count query error: %w", err)
 	}
+	defer mrows.Close()
+	counts := make(map[uuid.UUID]int, len(chunk))
 	var scanErr error
 	for mrows.Next() {
 		var id uuid.UUID
@@ -215,61 +395,13 @@ func (w *SegmentRefreshWorker) refreshAll(ctx context.Context) {
 		}
 		counts[id] = n
 	}
-	// PARTIAL-READ GUARD (2026-08-21 incident). lib/pq streams result rows
-	// lazily, so the QueryContext error check above only covers query-time
-	// failure: the 120s cctx expiring mid-iteration, a replica recovery
-	// cancellation, or a dropped connection ends the Next() loop SILENTLY with
-	// a truncated counts map. The write loop below then treats every absent
-	// segment as "genuinely empty" and stamps subscriber_count = 0 — on
-	// 2026-08-21 one such pass zeroed 118 of 250 active Opener/Clicker
-	// segments whose member tables held tens of thousands of fresh rows,
-	// which the operator read as "segments are not refreshing".
-	//
-	// Absence of measurement is not zero: an absent segment may only be
-	// written 0 when the result set is VERIFIED complete (rows.Err() == nil
-	// and every row scanned). Any partial read aborts the pass with no writes
-	// — the previous counts stand until a clean cycle.
 	if err := mrows.Err(); err != nil {
-		mrows.Close()
-		ccancel()
-		hbStatus, hbErr = "error", "member-count read truncated: "+err.Error()
-		log.Printf("SegmentRefreshWorker: member-count read truncated after %d/%d segments (no counts written): %v",
-			len(counts), len(segments), err)
-		return
+		return nil, fmt.Errorf("member-count read truncated after %d/%d segments: %w", len(counts), len(chunk), err)
 	}
-	mrows.Close()
-	ccancel()
 	if scanErr != nil {
-		hbStatus, hbErr = "error", "member-count scan error: "+scanErr.Error()
-		log.Printf("SegmentRefreshWorker: member-count scan error (no counts written): %v", scanErr)
-		return
+		return nil, fmt.Errorf("member-count scan error: %w", scanErr)
 	}
-
-	// The result set is verified complete: segments with no row genuinely have
-	// zero materialized members (empty, or created since the last
-	// materialization pass — they fill in on the next SegmentMaterializer run).
-	for _, seg := range segments {
-		if ctx.Err() != nil {
-			break
-		}
-		newCount := counts[seg.ID]
-		if _, err := w.writeDB.ExecContext(ctx, `
-			UPDATE mailing_segments
-			SET subscriber_count = $2, last_calculated_at = NOW(), updated_at = NOW()
-			WHERE id = $1
-		`, seg.ID, newCount); err != nil {
-			log.Printf("SegmentRefreshWorker: update error for %s (%s): %v", seg.Name, seg.ID, err)
-			atomic.AddInt64(&failed, 1)
-			continue
-		}
-		if newCount != seg.OldCount {
-			log.Printf("SegmentRefreshWorker: %s — %d → %d", seg.Name, seg.OldCount, newCount)
-		}
-		atomic.AddInt64(&refreshed, 1)
-	}
-
-	log.Printf("SegmentRefreshWorker: refreshed %d/%d segments from materialized members in %s",
-		atomic.LoadInt64(&refreshed), len(segments), time.Since(start).Round(time.Millisecond))
+	return counts, nil
 }
 
 // loadSeedListIDs returns the UUIDs of all lists whose name contains "seed".
