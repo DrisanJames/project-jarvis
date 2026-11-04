@@ -151,3 +151,16 @@ func TestInterval(t *testing.T) {
 	cfg := PollingConfig{IntervalSeconds: 120}
 	assert.Equal(t, 120*1000000000, int(cfg.Interval().Nanoseconds()))
 }
+
+// The image ships config/config.example.yaml as config/config.yaml
+// (Dockerfile COPY) and the Go default only applies when the YAML value is 0,
+// so the YAML is what prod runs. Pin it through the real loader.
+func TestConfigExampleYAML_CampaignLatenessDefaults(t *testing.T) {
+	t.Setenv("ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES", "")
+	t.Setenv("ALERT_CAMPAIGN_LATENESS_REALERT_HOURS", "")
+
+	cfg, err := LoadFromEnv(filepath.Join("..", "..", "config", "config.example.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, 15, cfg.Alerting.CampaignLateness.ThresholdMinutes, "late pager threshold (minutes)")
+	assert.Equal(t, 24, cfg.Alerting.CampaignLateness.ReAlertAfterHours, "late pager re-alert (hours)")
+}

@@ -159,8 +159,8 @@ alerting:
   # alerts suppressed for `realert_after_hours`.
   campaign_lateness:
     enabled: false               # ALERT_CAMPAIGN_LATENESS_ENABLED=1
-    threshold_minutes: 5         # ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES
-    realert_after_hours: 6       # ALERT_CAMPAIGN_LATENESS_REALERT_HOURS
+    threshold_minutes: 15        # ALERT_CAMPAIGN_LATENESS_THRESHOLD_MINUTES (roll-up pager, 2026-11-04)
+    realert_after_hours: 24      # ALERT_CAMPAIGN_LATENESS_REALERT_HOURS (once a day per campaign, operator 2026-10-26)
 
   twilio:
     enabled: false

@@ -495,7 +495,7 @@ func Load(path string) (*Config, error) {
 	}
 	// Alerting defaults: safe no-op unless explicitly enabled.
 	if cfg.Alerting.CampaignLateness.ThresholdMinutes == 0 {
-		cfg.Alerting.CampaignLateness.ThresholdMinutes = 5
+		cfg.Alerting.CampaignLateness.ThresholdMinutes = 15 // roll-up pager; median start is 6-8 min late (2026-11-04)
 	}
 	if cfg.Alerting.CampaignLateness.ReAlertAfterHours == 0 {
 		cfg.Alerting.CampaignLateness.ReAlertAfterHours = 24 // pager: once a day per campaign (operator 2026-10-26)

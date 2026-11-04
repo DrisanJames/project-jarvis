@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type CampaignHealthMonitor struct {
@@ -24,6 +26,10 @@ type CampaignHealthMonitor struct {
 	latenessReAlert    time.Duration // e.g. 6 * time.Hour
 	latenessAlerter    SMSAlerter    // nil = feature disabled
 	latenessRecipients []string      // SMS recipients (E.164)
+
+	// checkStalledDrain dedup: campaign id → last alert time (in-memory,
+	// 1h cooldown). Only touched from the monitor loop goroutine.
+	drainAlertedAt map[string]time.Time
 }
 
 // SMSAlerter is the minimum surface the health monitor needs in order to
@@ -85,16 +91,25 @@ func (m *CampaignHealthMonitor) loop() {
 	defer m.wg.Done()
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
+	var tick int
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
+			tick++
 			m.checkCampaigns()
 			m.checkISPThresholds()
 			m.recordCompletedMetrics()
 			m.recordListQualityMetrics()
 			m.checkLateCampaigns()
+			// Every stalledDrainEveryTicks ticks (5 min at the 60s interval):
+			// the drain probe reads the queue on a saturated primary from
+			// every replica, and a 5-min resolution is enough for an alert
+			// whose criterion is already 30 min stale.
+			if tick%stalledDrainEveryTicks == 0 {
+				m.checkStalledDrain()
+			}
 		}
 	}
 }
@@ -488,15 +503,20 @@ func (m *CampaignHealthMonitor) recordCompletedMetrics() {
 	}
 }
 
-// checkLateCampaigns pages the on-call operator via SMS when a campaign is
-// still stuck in 'scheduled' or 'preparing' longer than latenessThreshold
-// after its scheduled_at. The CAMPAIGN status transitions to 'sending' only
-// when the first wave's EnqueuePMTAWave runs (pmta_wave_dispatcher.go) —
-// so a stale status here means the wave pipeline is not making progress.
+// checkLateCampaigns pages the on-call operator when campaigns are still
+// stuck in 'scheduled' or 'preparing' longer than latenessThreshold after their
+// scheduled_at. The CAMPAIGN status transitions to 'sending' only when the
+// first wave's EnqueuePMTAWave runs (pmta_wave_dispatcher.go) — so a stale
+// status here means the wave pipeline is not making progress.
 //
-// Dedup: late_alert_sent_at column on mailing_campaigns is stamped after a
-// successful SMS. We suppress re-alerts until latenessReAlert has elapsed so
-// a stuck campaign doesn't spam the pager every 60s.
+// Roll-up: ONE message per tick, "N campaigns late · worst +Xm", with the top
+// lateLimitBodyLines campaigns by delay as body lines. N is counted separately
+// so the headline is true even when more than 25 are late.
+//
+// Dedup: late_alert_sent_at on mailing_campaigns is stamped (one UPDATE for
+// every reported id) after a successful post. Re-alerts are suppressed until
+// latenessReAlert has elapsed. Campaigns beyond the LIMIT 25 select are not
+// stamped, so they surface in the next tick's roll-up.
 func (m *CampaignHealthMonitor) checkLateCampaigns() {
 	if !m.latenessEnabled || m.latenessAlerter == nil || len(m.latenessRecipients) == 0 {
 		return
@@ -508,14 +528,16 @@ func (m *CampaignHealthMonitor) checkLateCampaigns() {
 	thresholdSecs := int(m.latenessThreshold.Seconds())
 	reAlertSecs := int(m.latenessReAlert.Seconds())
 
-	rows, err := m.db.QueryContext(ctx, `
-		SELECT id, COALESCE(name, ''), scheduled_at
+	const latePredicate = `
 		FROM mailing_campaigns
 		WHERE status IN ('scheduled', 'preparing')
 		  AND scheduled_at IS NOT NULL
 		  AND scheduled_at < NOW() - make_interval(secs => $1)
 		  AND (late_alert_sent_at IS NULL
-		       OR late_alert_sent_at < NOW() - make_interval(secs => $2))
+		       OR late_alert_sent_at < NOW() - make_interval(secs => $2))`
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT id, COALESCE(name, ''), scheduled_at`+latePredicate+`
 		ORDER BY scheduled_at ASC
 		LIMIT 25
 	`, thresholdSecs, reAlertSecs)
@@ -543,46 +565,234 @@ func (m *CampaignHealthMonitor) checkLateCampaigns() {
 	if err := rows.Err(); err != nil {
 		log.Printf("[HealthMonitor] lateness rows error: %v", err)
 	}
+	rows.Close()
+	if len(late) == 0 {
+		return
+	}
 
-	for _, lc := range late {
-		delay := time.Since(lc.ScheduledAt).Round(time.Minute)
+	total := len(late)
+	if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*)`+latePredicate, thresholdSecs, reAlertSecs).Scan(&total); err != nil {
+		log.Printf("[HealthMonitor] lateness count error (headline uses %d): %v", len(late), err)
+		total = len(late)
+	}
+	if total < len(late) {
+		total = len(late)
+	}
+
+	// Ordered by scheduled_at ASC, so late[0] is the worst delay.
+	noun := "campaigns"
+	if total == 1 {
+		noun = "campaign"
+	}
+	// Standard shape (docs/SLACK_MESSAGE_STANDARD.md): first line is the
+	// headline, the rest is the body. SlackAlerter splits on the first "\n".
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d %s late · worst +%dm", total, noun, minutesSince(late[0].ScheduledAt))
+	ids := make([]string, 0, len(late))
+	for i, lc := range late {
+		ids = append(ids, lc.ID)
+		if i >= lateLimitBodyLines {
+			continue
+		}
 		name := lc.Name
 		if name == "" {
 			name = lc.ID
 		}
-		// Standard shape (docs/SLACK_MESSAGE_STANDARD.md): first line is the
-		// headline, the rest is the ≤6-line body. SlackAlerter splits on it.
-		body := fmt.Sprintf(
-			"campaign late · `%s` · *+%s*\nScheduled: %s UTC\nCampaign id: `%s`",
-			truncateName(name, 48),
-			delay,
-			lc.ScheduledAt.UTC().Format("2006-01-02 15:04"),
-			lc.ID,
-		)
+		fmt.Fprintf(&b, "\n`%s` · +%dm", truncateName(name, 48), minutesSince(lc.ScheduledAt))
+	}
+	body := b.String()
 
-		var anySuccess bool
-		for _, to := range m.latenessRecipients {
-			sid, err := m.latenessAlerter.SendSMS(ctx, to, body)
-			if err != nil {
-				log.Printf("[HealthMonitor] late-alert SMS FAILED campaign=%s to=%s err=%v", lc.ID, to, err)
-				continue
-			}
-			anySuccess = true
-			log.Printf("[HealthMonitor] late-alert SMS sent campaign=%s to=%s sid=%s", lc.ID, to, sid)
+	var anySuccess bool
+	for _, to := range m.latenessRecipients {
+		sid, err := m.latenessAlerter.SendSMS(ctx, to, body)
+		if err != nil {
+			log.Printf("[HealthMonitor] late-alert FAILED campaigns=%d to=%s err=%v", total, to, err)
+			continue
 		}
+		anySuccess = true
+		log.Printf("[HealthMonitor] late-alert sent campaigns=%d reported=%d to=%s sid=%s", total, len(ids), to, sid)
+	}
 
-		// Only stamp the dedup column if at least one SMS actually went out —
-		// otherwise we want to retry on the next tick.
-		if anySuccess {
-			if _, err := m.db.ExecContext(ctx, `
-				UPDATE mailing_campaigns
-				SET late_alert_sent_at = NOW(), updated_at = NOW()
-				WHERE id = $1
-			`, lc.ID); err != nil {
-				log.Printf("[HealthMonitor] late-alert dedup stamp error campaign=%s: %v", lc.ID, err)
-			}
+	// Only stamp the dedup column if at least one post actually went out —
+	// otherwise we want to retry on the next tick.
+	if anySuccess {
+		if _, err := m.db.ExecContext(ctx, `
+			UPDATE mailing_campaigns
+			SET late_alert_sent_at = NOW(), updated_at = NOW()
+			WHERE id = ANY($1::uuid[])
+		`, pq.Array(ids)); err != nil {
+			log.Printf("[HealthMonitor] late-alert dedup stamp error campaigns=%d: %v", len(ids), err)
 		}
 	}
+}
+
+// lateLimitBodyLines caps the per-campaign body lines of a roll-up alert
+// (SLACK_MESSAGE_STANDARD: ≤6 body lines).
+const lateLimitBodyLines = 5
+
+// stalledDrainCooldown is how long a campaign stays muted after it has been
+// reported by checkStalledDrain.
+const stalledDrainCooldown = time.Hour
+
+// stalledDrainLimit caps the rows checkStalledDrain reads per tick.
+const stalledDrainLimit = 25
+
+// stalledDrainEveryTicks: checkStalledDrain runs on every Nth monitor tick.
+const stalledDrainEveryTicks = 5
+
+// stalledDrainFrom is shared by the row select and the companion aggregate.
+// Driven from the queue side: the partial index
+// idx_queue_campaign_status_scheduled (WHERE status='queued') yields the
+// overdue queued rows, and idx_waves_active_by_campaign answers the
+// planned-wave probe — no scan of every wave of every sending campaign (the
+// MAX(window_end_at) shape timed out at 120s on prod, 2026-11-04).
+// $1 = campaign ids still inside the alert cooldown (excluded).
+const stalledDrainFrom = `
+		WITH q AS (
+			SELECT campaign_id, COUNT(*) AS queued, MIN(scheduled_at) AS oldest_due
+			FROM mailing_campaign_queue
+			WHERE status = 'queued'
+			  AND scheduled_at < NOW() - interval '30 minutes'
+			GROUP BY campaign_id
+		)
+		FROM q
+		JOIN mailing_campaigns c ON c.id = q.campaign_id
+		WHERE c.status = 'sending'
+		  AND c.scheduled_at > NOW() - interval '2 days'
+		  AND NOT (c.id = ANY($1::uuid[]))
+		  AND NOT EXISTS (
+			SELECT 1 FROM mailing_campaign_waves wv
+			WHERE wv.campaign_id = c.id AND wv.status = 'planned'
+		  )`
+
+// checkStalledDrain alerts on queued rows >30 min past their own scheduled_at
+// on a sending campaign (scheduled within the last 2 days) with no planned
+// waves left. It does NOT read wave window_end_at — "past window" means the
+// queue rows' own scheduled_at. The 2-day age bound keeps a zombie 'sending'
+// campaign with old queued rows from paging hourly forever. ONE roll-up
+// message per run (every stalledDrainEveryTicks ticks):
+// "N campaigns past window still draining · M recipients · oldest due HH:MM UTC".
+//
+// Dedup is an in-memory map (campaign id → last alert time) with a 1h
+// cooldown; no schema change. Muted ids are excluded in SQL so N, M and the
+// LIMIT cover only reportable campaigns. Trade-off: the map is per process.
+// A restart forgets it, so a campaign can be reported again — at most one
+// duplicate per boot per campaign, which is accepted. The monitor is not
+// leader-gated (cmd/server/main.go starts it on every task), so each running
+// replica keeps its own map and posts its own roll-up: R replicas → up to R
+// posts per campaign per cooldown window.
+func (m *CampaignHealthMonitor) checkStalledDrain() {
+	if !m.latenessEnabled || m.latenessAlerter == nil || len(m.latenessRecipients) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(m.ctx, 20*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	if m.drainAlertedAt == nil {
+		m.drainAlertedAt = make(map[string]time.Time)
+	}
+	muted := make([]string, 0, len(m.drainAlertedAt))
+	for id, at := range m.drainAlertedAt {
+		if now.Sub(at) >= stalledDrainCooldown {
+			delete(m.drainAlertedAt, id)
+			continue
+		}
+		muted = append(muted, id)
+	}
+
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT c.id, COALESCE(c.name, ''), q.queued, q.oldest_due`+stalledDrainFrom+`
+		ORDER BY q.oldest_due ASC
+		LIMIT `+fmt.Sprint(stalledDrainLimit), pq.Array(muted))
+	if err != nil {
+		if !strings.Contains(err.Error(), "does not exist") {
+			log.Printf("[HealthMonitor] stalled-drain query error: %v", err)
+		}
+		return
+	}
+	defer rows.Close()
+
+	type drainCampaign struct {
+		ID        string
+		Name      string
+		Queued    int64
+		OldestDue time.Time
+	}
+	var stalled []drainCampaign
+	var recipients int64
+	for rows.Next() {
+		var dc drainCampaign
+		if err := rows.Scan(&dc.ID, &dc.Name, &dc.Queued, &dc.OldestDue); err != nil {
+			continue
+		}
+		stalled = append(stalled, dc)
+		recipients += dc.Queued
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[HealthMonitor] stalled-drain rows error: %v", err)
+	}
+	rows.Close()
+	if len(stalled) == 0 {
+		return
+	}
+
+	// N and M come from the returned rows unless the LIMIT was hit; only then
+	// pay for the companion aggregate over the same CTE.
+	total := len(stalled)
+	if len(stalled) >= stalledDrainLimit {
+		var n, sum int64
+		if err := m.db.QueryRowContext(ctx, `
+			SELECT COUNT(*), COALESCE(SUM(q.queued), 0)`+stalledDrainFrom, pq.Array(muted)).Scan(&n, &sum); err != nil {
+			log.Printf("[HealthMonitor] stalled-drain count error (headline uses %d rows): %v", len(stalled), err)
+		} else if int(n) >= total {
+			total, recipients = int(n), sum
+		}
+	}
+
+	noun := "campaigns"
+	if total == 1 {
+		noun = "campaign"
+	}
+	// Ordered by oldest_due ASC, so stalled[0] holds the oldest due row.
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d %s past window still draining · %d recipients · oldest due %s UTC",
+		total, noun, recipients, stalled[0].OldestDue.UTC().Format("15:04"))
+	for i, dc := range stalled {
+		if i >= lateLimitBodyLines {
+			break
+		}
+		name := dc.Name
+		if name == "" {
+			name = dc.ID
+		}
+		fmt.Fprintf(&b, "\n`%s` · %d queued · oldest due %s UTC",
+			truncateName(name, 48), dc.Queued, dc.OldestDue.UTC().Format("15:04"))
+	}
+	body := b.String()
+
+	var anySuccess bool
+	for _, to := range m.latenessRecipients {
+		sid, err := m.latenessAlerter.SendSMS(ctx, to, body)
+		if err != nil {
+			log.Printf("[HealthMonitor] stalled-drain alert FAILED campaigns=%d to=%s err=%v", total, to, err)
+			continue
+		}
+		anySuccess = true
+		log.Printf("[HealthMonitor] stalled-drain alert sent campaigns=%d recipients=%d to=%s sid=%s", total, recipients, to, sid)
+	}
+	// Mute only after a successful post — otherwise retry next tick. Only the
+	// returned rows are muted; campaigns beyond the LIMIT surface next tick.
+	if anySuccess {
+		for _, dc := range stalled {
+			m.drainAlertedAt[dc.ID] = now
+		}
+	}
+}
+
+func minutesSince(t time.Time) int {
+	return int(time.Since(t).Round(time.Minute) / time.Minute)
 }
 
 func truncateName(s string, n int) string {

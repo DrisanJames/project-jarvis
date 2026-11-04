@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -148,10 +151,13 @@ func TestCheckLateCampaigns_FiresSMSAndStampsDedup(t *testing.T) {
 		WithArgs(300, 21600). // 5min threshold, 6h realert
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
 			AddRow("camp-late-1", "Apr22 QF Welcome", scheduled))
+	mock.ExpectQuery(`SELECT COUNT\(\*\)\s+FROM mailing_campaigns`).
+		WithArgs(300, 21600).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	// Only one recipient → expect exactly one stamp after one successful SMS.
-	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at`).
-		WithArgs("camp-late-1").
+	// Only one recipient → expect exactly one stamp after one successful post.
+	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at = NOW\(\), updated_at = NOW\(\)\s+WHERE id = ANY\(\$1::uuid\[\]\)`).
+		WithArgs(pq.Array([]string{"camp-late-1"})).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	alerter := &fakeAlerter{}
@@ -161,10 +167,56 @@ func TestCheckLateCampaigns_FiresSMSAndStampsDedup(t *testing.T) {
 	m.SetLatenessAlerter(alerter, []string{"+18777804236"}, 5*time.Minute, 6*time.Hour)
 	m.checkLateCampaigns()
 
-	require.Len(t, alerter.calls, 1, "expected one SMS")
+	require.Len(t, alerter.calls, 1, "expected one post")
 	assert.Equal(t, "+18777804236", alerter.calls[0].To)
-	assert.Contains(t, alerter.calls[0].Body, "campaign late")
-	assert.Contains(t, alerter.calls[0].Body, "camp-late-1")
+	lines := strings.Split(alerter.calls[0].Body, "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "1 campaign late · worst +12m", lines[0])
+	assert.Equal(t, "`Apr22 QF Welcome` · +12m", lines[1])
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Roll-up shape: 7 late in the LIMIT-25 select, 31 late in total →
+// ONE post, headline carries the separate COUNT and the worst delay, body is
+// the top 5 by delay, and ONE UPDATE stamps all 7 reported ids.
+func TestCheckLateCampaigns_RollUpShape(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "name", "scheduled_at"})
+	var ids []string
+	for i := 0; i < 7; i++ {
+		id := fmt.Sprintf("camp-%d", i)
+		ids = append(ids, id)
+		// ORDER BY scheduled_at ASC: camp-0 is the oldest (worst).
+		rows.AddRow(id, fmt.Sprintf("Cell %d", i), now.Add(-time.Duration(90-i*10)*time.Minute))
+	}
+	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
+		WithArgs(900, 86400).
+		WillReturnRows(rows)
+	mock.ExpectQuery(`SELECT COUNT\(\*\)\s+FROM mailing_campaigns`).
+		WithArgs(900, 86400).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(31))
+	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at`).
+		WithArgs(pq.Array(ids)).
+		WillReturnResult(sqlmock.NewResult(0, 7))
+
+	alerter := &fakeAlerter{}
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	m.SetLatenessAlerter(alerter, []string{"slack"}, 15*time.Minute, 24*time.Hour)
+	m.checkLateCampaigns()
+
+	require.Len(t, alerter.calls, 1, "one roll-up per tick, not one per campaign")
+	lines := strings.Split(alerter.calls[0].Body, "\n")
+	require.Len(t, lines, 1+lateLimitBodyLines, "headline + top 5")
+	assert.Equal(t, "31 campaigns late · worst +90m", lines[0])
+	assert.Equal(t, "`Cell 0` · +90m", lines[1])
+	assert.Equal(t, "`Cell 4` · +50m", lines[5])
+	assert.NotContains(t, alerter.calls[0].Body, "Cell 5")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -191,6 +243,7 @@ func TestCheckLateCampaigns_AllSMSFailed_DoesNotStampDedup(t *testing.T) {
 	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
 			AddRow("camp-late-2", "stuck", scheduled))
+	mock.ExpectQuery(`SELECT COUNT`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	// NO UPDATE expected — dedup is only stamped after a successful SMS.
 
 	alerter := &fakeAlerter{err: assertErr("twilio down")}
@@ -213,8 +266,9 @@ func TestCheckLateCampaigns_MultipleRecipients_OneSuccessStillStamps(t *testing.
 	mock.ExpectQuery(`SELECT id, COALESCE\(name, ''\), scheduled_at\s+FROM mailing_campaigns`).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "scheduled_at"}).
 			AddRow("camp-late-3", "", scheduled))
+	mock.ExpectQuery(`SELECT COUNT`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 	mock.ExpectExec(`UPDATE mailing_campaigns\s+SET late_alert_sent_at`).
-		WithArgs("camp-late-3").
+		WithArgs(pq.Array([]string{"camp-late-3"})).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Fail first recipient, succeed second. We simulate this by flipping the
@@ -248,3 +302,148 @@ func (f *flakyAlerter) SendSMS(ctx context.Context, to, body string) (string, er
 type assertErr string
 
 func (a assertErr) Error() string { return string(a) }
+
+const stalledDrainSQL = `SELECT c.id, COALESCE\(c.name, ''\), q.queued, q.oldest_due\s+WITH q AS \(\s+SELECT campaign_id, COUNT\(\*\) AS queued, MIN\(scheduled_at\) AS oldest_due\s+FROM mailing_campaign_queue\s+WHERE status = 'queued'\s+AND scheduled_at < NOW\(\) - interval '30 minutes'`
+
+const stalledDrainCountSQL = `SELECT COUNT\(\*\), COALESCE\(SUM\(q.queued\), 0\)\s+WITH q AS`
+
+func drainRows(now time.Time) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}).
+		AddRow("camp-d1", "11042026 - DB - InsHome", int64(3585), now.Add(-7*time.Hour)).
+		AddRow("camp-d2", "11042026 - MH - InsHome", int64(415), now.Add(-2*time.Hour))
+}
+
+func TestStalledDrainSQL_AgeBoundAndCriterion(t *testing.T) {
+	assert.Contains(t, stalledDrainFrom, "c.scheduled_at > NOW() - interval '2 days'")
+	assert.Contains(t, stalledDrainFrom, "scheduled_at < NOW() - interval '30 minutes'")
+	assert.Contains(t, stalledDrainFrom, "wv.status = 'planned'")
+	assert.NotContains(t, stalledDrainFrom, "window_end_at")
+	assert.Equal(t, 5, stalledDrainEveryTicks)
+}
+
+func newDrainMonitor(t *testing.T, alerter SMSAlerter) (*CampaignHealthMonitor, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	t.Cleanup(m.cancel)
+	m.SetLatenessAlerter(alerter, []string{"slack"}, 15*time.Minute, 24*time.Hour)
+	return m, mock
+}
+
+func TestCheckStalledDrain_PostsOneRollUp(t *testing.T) {
+	alerter := &fakeAlerter{}
+	m, mock := newDrainMonitor(t, alerter)
+
+	now := time.Now()
+	// < LIMIT rows → N/M from the rows, no companion aggregate.
+	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	m.checkStalledDrain()
+
+	require.Len(t, alerter.calls, 1)
+	lines := strings.Split(alerter.calls[0].Body, "\n")
+	require.Len(t, lines, 3)
+	assert.Equal(t, fmt.Sprintf("2 campaigns past window still draining · 4000 recipients · oldest due %s UTC",
+		now.Add(-7*time.Hour).UTC().Format("15:04")), lines[0])
+	assert.Contains(t, lines[1], "`11042026 - DB - InsHome` · 3585 queued")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// LIMIT hit → headline N/M come from the companion aggregate; body stays ≤5.
+func TestCheckStalledDrain_LimitHitUsesAggregate(t *testing.T) {
+	alerter := &fakeAlerter{}
+	m, mock := newDrainMonitor(t, alerter)
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"})
+	for i := 0; i < stalledDrainLimit; i++ {
+		rows.AddRow(fmt.Sprintf("camp-%d", i), fmt.Sprintf("Cell %d", i), int64(100), now.Add(-time.Duration(300-i)*time.Minute))
+	}
+	mock.ExpectQuery(stalledDrainSQL).WillReturnRows(rows)
+	mock.ExpectQuery(stalledDrainCountSQL).
+		WillReturnRows(sqlmock.NewRows([]string{"count", "sum"}).AddRow(40, 95768))
+	m.checkStalledDrain()
+
+	require.Len(t, alerter.calls, 1)
+	lines := strings.Split(alerter.calls[0].Body, "\n")
+	require.Len(t, lines, 1+lateLimitBodyLines)
+	assert.True(t, strings.HasPrefix(lines[0], "40 campaigns past window still draining · 95768 recipients · oldest due "), lines[0])
+	assert.Len(t, m.drainAlertedAt, stalledDrainLimit, "only returned rows are muted")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckStalledDrain_CooldownSuppressesSecondTick(t *testing.T) {
+	alerter := &fakeAlerter{}
+	m, mock := newDrainMonitor(t, alerter)
+
+	now := time.Now()
+	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	m.checkStalledDrain()
+	require.Len(t, alerter.calls, 1)
+	require.Len(t, m.drainAlertedAt, 2)
+
+	// Second tick inside the 1h cooldown: both ids are passed as excluded,
+	// the DB returns nothing reportable → no post.
+	mock.ExpectQuery(stalledDrainSQL).
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}))
+	m.checkStalledDrain()
+	require.Len(t, alerter.calls, 1, "second tick inside cooldown must not post")
+
+	// Cooldown expired → ids are no longer excluded and the next tick posts.
+	for id := range m.drainAlertedAt {
+		m.drainAlertedAt[id] = now.Add(-stalledDrainCooldown - time.Minute)
+	}
+	mock.ExpectQuery(stalledDrainSQL).WithArgs(pq.Array([]string{})).WillReturnRows(drainRows(now))
+	m.checkStalledDrain()
+	require.Len(t, alerter.calls, 2, "post again after cooldown")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckStalledDrain_MutedIdsPassedAsExcluded(t *testing.T) {
+	alerter := &fakeAlerter{}
+	m, mock := newDrainMonitor(t, alerter)
+	m.drainAlertedAt = map[string]time.Time{"camp-d1": time.Now()}
+
+	mock.ExpectQuery(stalledDrainSQL).
+		WithArgs(pq.Array([]string{"camp-d1"})).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "queued", "oldest_due"}))
+	m.checkStalledDrain()
+
+	assert.Empty(t, alerter.calls)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckStalledDrain_FailedPostDoesNotMute(t *testing.T) {
+	alerter := &fakeAlerter{err: assertErr("slack down")}
+	m, mock := newDrainMonitor(t, alerter)
+
+	mock.ExpectQuery(stalledDrainSQL).WillReturnRows(drainRows(time.Now()))
+	m.checkStalledDrain()
+
+	require.Len(t, alerter.calls, 1)
+	assert.Empty(t, m.drainAlertedAt, "failed post must retry next tick")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Negative path: latenessEnabled=false → neither check queries or posts.
+func TestLateAndDrain_Disabled_NoQueryNoPost(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	alerter := &fakeAlerter{}
+	m := NewCampaignHealthMonitor(db)
+	m.ctx, m.cancel = testContext()
+	defer m.cancel()
+	// nil recipients → SetLatenessAlerter leaves latenessEnabled=false.
+	m.SetLatenessAlerter(alerter, nil, 15*time.Minute, 24*time.Hour)
+	require.False(t, m.latenessEnabled)
+	m.checkLateCampaigns()
+	m.checkStalledDrain()
+
+	assert.Empty(t, alerter.calls)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
