@@ -2158,7 +2158,142 @@ func buildPMTAWaveSpecs(campaignID string, plan pmtaNormalizedPlan, recipientCou
 		}
 	}
 
+	if plan.Cadence.BatchSize <= 0 {
+		waves = consolidatePMTASmallWaves(waves, campaignID, plan.ISP, pmtaMinWaveRecipients())
+	}
 	return waves
+}
+
+// pmtaMinWaveRecipients returns the minimum average recipients per wave
+// (PMTA_MIN_WAVE_RECIPIENTS, default 50). 0 disables consolidation; an
+// unparseable or negative value falls back to the default. Read per call,
+// matching waveProcessorTimeout (internal/worker/pmta_wave_scheduler.go).
+func pmtaMinWaveRecipients() int {
+	const def = 50
+	v := strings.TrimSpace(os.Getenv("PMTA_MIN_WAVE_RECIPIENTS"))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
+// consolidatePMTASmallWaves reduces an auto-sized wave list whose average
+// wave carries fewer than minPerWave recipients. Each time span is
+// consolidated independently to max(1, ceil(spanTotal/minPerWave)) waves, so
+// every span keeps its original recipient share and at least one wave. Kept
+// waves are picked from the span's ORIGINAL slots, evenly by slot index: the
+// span's first wave stays at its anchor and its last at its original last
+// slot, so window bounds and the overall first→last span are unchanged.
+// Cells at/above smallISPThreshold never drop below minWavesPerISP waves
+// (whatever the env value), keeping the result waveSanityCheck-clean. Lists
+// that already average >= minPerWave (or minPerWave <= 0) are untouched.
+func consolidatePMTASmallWaves(waves []pmtaWaveSpec, campaignID, isp string, minPerWave int) []pmtaWaveSpec {
+	if minPerWave <= 0 || len(waves) <= 1 {
+		return waves
+	}
+	total := 0
+	for _, w := range waves {
+		total += w.PlannedRecipients
+	}
+	if total <= 0 || total >= minPerWave*len(waves) {
+		return waves
+	}
+
+	// Group contiguous waves by span (window bounds).
+	type spanGroup struct {
+		waves  []pmtaWaveSpec
+		total  int
+		target int
+	}
+	var groups []*spanGroup
+	for _, w := range waves {
+		if n := len(groups); n == 0 ||
+			!groups[n-1].waves[0].WindowStartAt.Equal(w.WindowStartAt) ||
+			!groups[n-1].waves[0].WindowEndAt.Equal(w.WindowEndAt) {
+			groups = append(groups, &spanGroup{})
+		}
+		g := groups[len(groups)-1]
+		g.waves = append(g.waves, w)
+		g.total += w.PlannedRecipients
+	}
+	sumTarget := 0
+	for _, g := range groups {
+		g.target = (g.total + minPerWave - 1) / minPerWave
+		if g.target < 1 {
+			g.target = 1
+		}
+		if g.target > len(g.waves) {
+			g.target = len(g.waves)
+		}
+		sumTarget += g.target
+	}
+	// Sanity floor: add waves to the span with the largest per-wave load
+	// until the cell has minWavesPerISP waves or every span is back at its
+	// original count.
+	if total >= smallISPThreshold {
+		for sumTarget < minWavesPerISP {
+			var best *spanGroup
+			for _, g := range groups {
+				if g.target >= len(g.waves) {
+					continue
+				}
+				if best == nil || g.total*best.target > best.total*g.target {
+					best = g
+				}
+			}
+			if best == nil {
+				break
+			}
+			best.target++
+			sumTarget++
+		}
+	}
+	if sumTarget >= len(waves) {
+		return waves
+	}
+
+	out := make([]pmtaWaveSpec, 0, sumTarget)
+	for _, g := range groups {
+		if g.target >= len(g.waves) {
+			for _, w := range g.waves {
+				w.WaveNumber = len(out) + 1
+				w.IdempotencyKey = fmt.Sprintf("%s:%s:%d", campaignID, isp, len(out)+1)
+				out = append(out, w)
+			}
+			continue
+		}
+		// Same allocation as buildPMTAWaveSpecs (full batches, remainder on
+		// the last wave) unless that would leave a trailing wave empty — only
+		// possible after the sanity floor raised the target — in which case
+		// the span's total is split evenly (every wave >= 1).
+		batch := (g.total + g.target - 1) / g.target
+		evenSplit := (g.target-1)*batch >= g.total
+		rem := g.total
+		for i := 0; i < g.target; i++ {
+			idx := 0
+			if g.target > 1 {
+				idx = (i*(len(g.waves)-1) + (g.target-1)/2) / (g.target - 1)
+			}
+			w := g.waves[idx]
+			w.WaveNumber = len(out) + 1
+			w.BatchSize = batch
+			w.PlannedRecipients = pmtaMinInt(batch, rem)
+			if evenSplit {
+				w.PlannedRecipients = g.total / g.target
+				if i < g.total%g.target {
+					w.PlannedRecipients++
+				}
+			}
+			w.IdempotencyKey = fmt.Sprintf("%s:%s:%d", campaignID, isp, len(out)+1)
+			rem -= w.PlannedRecipients
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func safePrefix(s string, n int) string {
@@ -2505,8 +2640,11 @@ func isUserExplicitSpan(source string) bool {
 // When the user explicitly set the delivery window (Source = "duration-calc"
 // or "manual"), the minimum-span enforcement is skipped for that ISP — the
 // user is deliberately choosing a shorter window.
+// smallISPThreshold: cells below this many planned recipients are exempt from
+// waveSanityCheck's minWavesPerISP / span rules (also the consolidation floor).
+const smallISPThreshold = 500
+
 func waveSanityCheck(plans []pmtaNormalizedPlan, wavesByISP map[string][]pmtaWaveSpec) error {
-	const smallISPThreshold = 500
 	var issues []string
 	for _, plan := range plans {
 		isp := plan.ISP
