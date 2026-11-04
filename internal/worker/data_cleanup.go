@@ -3,7 +3,11 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"hash/fnv"
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -83,6 +87,22 @@ const (
 	// statement timeout) no longer aborts the cycle; the batch is retried up
 	// to this many consecutive times before the cycle gives up.
 	terminalPurgeMaxBatchRetries = 3
+
+	// cleanupBatchFloor is the smallest LIMIT the adaptive batchDelete will
+	// shrink to after statement timeouts (2026-11-04 WP-C: 99/99 cycles in 48h
+	// failed "Error deleting from mailing_campaign_queue: statement timeout"
+	// at a fixed 10k LIMIT).
+	cleanupBatchFloor = 1000
+
+	// cleanupBatchGrowAfter is how many consecutive successful batchDelete
+	// statements it takes to double the batch size back toward
+	// cleanupBatchSize.
+	cleanupBatchGrowAfter = 3
+
+	// dataCleanupLeaseKey is the per-cycle leader-lease key. The advisory-lock
+	// id is derived from it the same way distlock.NewPGAdvisoryLock derives
+	// its id (fnv64a of the key -> int64).
+	dataCleanupLeaseKey = "data-cleanup-cycle"
 )
 
 // DataCleanupWorker periodically removes old data from the mailing tables.
@@ -95,6 +115,23 @@ type DataCleanupWorker struct {
 	// Zero values (as in tests constructing the struct directly) mean no wait.
 	purgeGateSampleGap time.Duration
 	purgeRetryDelay    time.Duration
+
+	// Adaptive DELETE LIMIT, PER TABLE KEY (batchDelete's table name,
+	// terminalPurgeKey, planRecipientsKey). A key missing from batchByTable
+	// uses cleanupBatchSize. A timeout halves that key's LIMIT at most ONCE
+	// per cycle (shrunkThisCycle, reset by resetCycleBatchState); only
+	// deletes that removed rows count toward regrowth (okByTable). The maps
+	// live on the worker, so a reduced size carries into the next cycle.
+	// Only the single Start goroutine touches them.
+	// Kill switch: DATA_CLEANUP_ADAPTIVE_BATCH_DISABLED=1 -> fixed
+	// cleanupBatchSize everywhere.
+	// It is halved on a statement timeout (floor cleanupBatchFloor) and
+	// doubled back after cleanupBatchGrowAfter consecutive successes. It lives
+	// on the worker, so a reduced size carries across the rest of the cycle
+	// AND into the next one. Only the single Start goroutine touches it.
+	batchByTable    map[string]int
+	okByTable       map[string]int
+	shrunkThisCycle map[string]bool
 }
 
 // NewDataCleanupWorker creates a new cleanup worker with default settings.
@@ -129,6 +166,16 @@ func (dc *DataCleanupWorker) Start(ctx context.Context) {
 }
 
 func (dc *DataCleanupWorker) cleanup(ctx context.Context) {
+	// One replica per cycle (2026-11-04 WP-C): ignite-service runs 2 tasks and
+	// both ran every cycle against the same rows, doubling DELETE IO on a
+	// saturated primary. The non-leader skips the whole cycle.
+	release, lead := dc.acquireCycleLease(ctx)
+	if !lead {
+		return
+	}
+	defer release()
+	dc.resetCycleBatchState()
+
 	start := time.Now()
 	log.Println("[DataCleanup] Cleanup cycle starting...")
 
@@ -216,6 +263,7 @@ func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
 		if ctx.Err() != nil {
 			break
 		}
+		batch := dc.batchSizeFor(terminalPurgeKey)
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		// ORDER BY the exact prefix of idx_mcq_terminal_cleanup so the victim
 		// SELECT is ALWAYS an index scan. Without it the planner pairs LIMIT
@@ -237,9 +285,17 @@ func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
 			DELETE FROM mailing_campaign_queue q
 			USING doomed
 			WHERE q.id = doomed.id
-		`, cleanupBatchSize)
+		`, batch)
 		cancel()
 		if err != nil {
+			// A timeout also halves this key's LIMIT (once per cycle, floor
+			// cleanupBatchFloor), so the retry below — and the next cycle —
+			// runs a smaller DELETE. The pre-existing retry budget
+			// (terminalPurgeMaxBatchRetries) is unchanged, so the purge issues
+			// no more statements per cycle than before the adaptive LIMIT.
+			if isBatchTimeoutError(err) {
+				dc.onBatchTimeout(terminalPurgeKey)
+			}
 			// One failed batch (a single 60s statement timeout under momentary
 			// load) used to forfeit the entire hour; retry a few times before
 			// giving up the cycle.
@@ -255,8 +311,9 @@ func (dc *DataCleanupWorker) cleanupTerminalQueueItems(ctx context.Context) {
 		}
 		batchErrs = 0
 		affected, _ := res.RowsAffected()
+		dc.onBatchSuccess(terminalPurgeKey, affected)
 		total += affected
-		if affected < int64(cleanupBatchSize) {
+		if affected < int64(batch) {
 			break
 		}
 		// Pace between batches to keep WAL/IO pressure low on the hot queue.
@@ -528,6 +585,10 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 			break
 		}
 		for {
+			if ctx.Err() != nil {
+				break
+			}
+			batch := dc.batchSizeFor(planRecipientsKey)
 			queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			res, err := dc.db.ExecContext(queryCtx, `
 				WITH doomed AS (
@@ -538,15 +599,22 @@ func (dc *DataCleanupWorker) cleanupPlanRecipients(ctx context.Context) {
 				DELETE FROM mailing_campaign_plan_recipients pr
 				USING doomed
 				WHERE pr.id = doomed.id
-			`, id, cleanupBatchSize)
+			`, id, batch)
 			cancel()
 			if err != nil {
+				// Timeout: halve this key's LIMIT and retry this campaign once
+				// at the smaller size; a second timeout this cycle (or at the
+				// floor) ends the pass as before.
+				if isBatchTimeoutError(err) && dc.onBatchTimeout(planRecipientsKey) {
+					continue
+				}
 				log.Printf("[DataCleanup] plan_recipients delete for campaign %s failed: %v", id, err)
 				return
 			}
 			affected, _ := res.RowsAffected()
+			dc.onBatchSuccess(planRecipientsKey, affected)
 			total += affected
-			if affected < int64(cleanupBatchSize) {
+			if affected < int64(batch) {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -693,10 +761,192 @@ func (dc *DataCleanupWorker) cleanupDeadLetterItems(ctx context.Context) {
 	}
 }
 
+// dataCleanupLeaseID mirrors distlock.NewPGAdvisoryLock's id derivation.
+func dataCleanupLeaseID() int64 {
+	h := fnv.New64a()
+	h.Write([]byte(dataCleanupLeaseKey))
+	return int64(h.Sum64())
+}
+
+// acquireCycleLease takes the single-leader lease for one cleanup cycle.
+// Returns a release func and whether this instance leads.
+//
+// Same pattern as PartnerDripOrchestrator.acquireTickLease (see its
+// 2026-08-22 incident note): the advisory lock is SESSION-scoped, so it is
+// taken and released on ONE DEDICATED *sql.Conn held for the cycle's
+// duration — never distlock's PG fallback on the pooled *sql.DB, where the
+// unlock lands on a different pooled connection, silently no-ops, and wedges
+// every later cycle on both tasks. If the task dies mid-cycle the dedicated
+// session dies with it and Postgres frees the lock.
+//
+// Fail-OPEN on lock-infrastructure error (conn checkout or acquire query):
+// the worst case is the pre-lease behavior (both replicas run the cycle).
+// Kill switch: DATA_CLEANUP_LEASE_DISABLED=1 restores both-replicas-run.
+func (dc *DataCleanupWorker) acquireCycleLease(ctx context.Context) (func(), bool) {
+	if v := strings.TrimSpace(os.Getenv("DATA_CLEANUP_LEASE_DISABLED")); v == "1" || strings.EqualFold(v, "true") {
+		return func() {}, true
+	}
+	conn, err := dc.db.Conn(ctx)
+	if err != nil {
+		log.Printf("[DataCleanup] cycle lease conn checkout error (fail-open, running cycle anyway): %v", err)
+		return func() {}, true
+	}
+	lockID := dataCleanupLeaseID()
+	var acquired bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired); err != nil {
+		conn.Close()
+		log.Printf("[DataCleanup] cycle lease acquire error (fail-open, running cycle anyway): %v", err)
+		return func() {}, true
+	}
+	if !acquired {
+		conn.Close()
+		log.Printf("[DataCleanup] cycle lease held by the other instance — skipping cycle")
+		return nil, false
+	}
+	return func() {
+		// Unlock on the SAME dedicated connection. Background context so the
+		// release runs even while ctx is being torn down.
+		var released bool
+		if rerr := conn.QueryRowContext(context.Background(), "SELECT pg_advisory_unlock($1)", lockID).Scan(&released); rerr != nil {
+			// The lock may still be held by this session. Returning the conn to
+			// the pool would park the lock on an idle pooled connection — the
+			// 2026-08-22 wedge. Discard it instead: ErrBadConn from Raw makes
+			// database/sql close the driver conn, and Postgres frees the lock
+			// with the session. Raw closes the *sql.Conn, so no Close after.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			log.Printf("[DataCleanup] cycle lease release error (connection discarded so the lock dies with the session): %v", rerr)
+			return
+		} else if !released {
+			log.Printf("[DataCleanup] WARNING: cycle lease pg_advisory_unlock returned false — lock was not held by this session")
+		}
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("[DataCleanup] cycle lease conn close error: %v", cerr)
+		}
+	}, true
+}
+
+// Adaptive-LIMIT keys for the two DELETE paths that don't go through
+// batchDelete (which keys by its table argument).
+const (
+	terminalPurgeKey  = "mailing_campaign_queue (terminal purge)"
+	planRecipientsKey = "mailing_campaign_plan_recipients"
+)
+
+// adaptiveBatchDisabled is the kill switch: DATA_CLEANUP_ADAPTIVE_BATCH_DISABLED=1
+// (or true) restores the fixed cleanupBatchSize on every path.
+func adaptiveBatchDisabled() bool {
+	v := strings.TrimSpace(os.Getenv("DATA_CLEANUP_ADAPTIVE_BATCH_DISABLED"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// resetCycleBatchState starts a new cycle's once-per-table shrink budget. The
+// per-table sizes themselves are kept.
+func (dc *DataCleanupWorker) resetCycleBatchState() {
+	dc.shrunkThisCycle = nil
+}
+
+// batchSizeFor is the LIMIT for key's next DELETE.
+func (dc *DataCleanupWorker) batchSizeFor(key string) int {
+	if adaptiveBatchDisabled() {
+		return cleanupBatchSize
+	}
+	if n, ok := dc.batchByTable[key]; ok && n > 0 {
+		return n
+	}
+	return cleanupBatchSize
+}
+
+// onBatchTimeout records a timed-out DELETE for key and reports whether the
+// caller should retry it ONCE at the (now halved) size. It halves at most once
+// per key per cycle, so a lookup-bound delete costs at most two timed-out
+// statements per cycle instead of walking the whole 10k->1k ladder; the
+// reduced size persists into the next cycle. Returns false (end the pass)
+// when disabled, already shrunk this cycle, or at the floor.
+func (dc *DataCleanupWorker) onBatchTimeout(key string) bool {
+	if adaptiveBatchDisabled() {
+		return false
+	}
+	if dc.shrunkThisCycle[key] {
+		return false
+	}
+	if dc.shrunkThisCycle == nil {
+		dc.shrunkThisCycle = map[string]bool{}
+	}
+	dc.shrunkThisCycle[key] = true
+	if dc.okByTable != nil {
+		delete(dc.okByTable, key)
+	}
+	cur := dc.batchSizeFor(key)
+	next := cur / 2
+	if next < cleanupBatchFloor {
+		next = cleanupBatchFloor
+	}
+	if next >= cur {
+		return false
+	}
+	if dc.batchByTable == nil {
+		dc.batchByTable = map[string]int{}
+	}
+	dc.batchByTable[key] = next
+	log.Printf("[DataCleanup] batch size %d -> %d after statement timeout on %s", cur, next, key)
+	return true
+}
+
+// onBatchSuccess counts a DELETE on key that removed rows (affected > 0;
+// zero-row deletes say nothing about cost and never count) and doubles key's
+// LIMIT back toward cleanupBatchSize after cleanupBatchGrowAfter in a row.
+func (dc *DataCleanupWorker) onBatchSuccess(key string, affected int64) {
+	if adaptiveBatchDisabled() || affected <= 0 {
+		return
+	}
+	cur := dc.batchSizeFor(key)
+	if cur >= cleanupBatchSize {
+		return
+	}
+	if dc.okByTable == nil {
+		dc.okByTable = map[string]int{}
+	}
+	dc.okByTable[key]++
+	if dc.okByTable[key] < cleanupBatchGrowAfter {
+		return
+	}
+	delete(dc.okByTable, key)
+	next := cur * 2
+	if next > cleanupBatchSize {
+		next = cleanupBatchSize
+	}
+	dc.batchByTable[key] = next
+	log.Printf("[DataCleanup] batch size %d -> %d on %s after %d consecutive successful batches", cur, next, key, cleanupBatchGrowAfter)
+}
+
+// isBatchTimeoutError reports whether a DELETE batch failed by running too
+// long — either the server-side statement_timeout (lib/pq "canceling
+// statement due to statement timeout", SQLSTATE 57014) or the 60s per-batch
+// client deadline (context.DeadlineExceeded / "context deadline exceeded").
+// Either one is a signal to shrink the LIMIT. Parent-context cancellation
+// (shutdown) is context.Canceled and does NOT match.
+func isBatchTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "statement timeout") || strings.Contains(msg, "context deadline exceeded")
+}
+
 // ---------------------------------------------------------------------------
-// batchDelete runs the given DELETE statement in a loop, passing
-// cleanupBatchSize as $1, until zero rows are affected. Returns the
-// cumulative number of deleted rows.
+// batchDelete runs the given DELETE statement in a loop, passing the adaptive
+// batch size (batchSizeFor(table), default cleanupBatchSize) as $1, until zero
+// rows are affected. Returns the cumulative number of deleted rows.
+//
+// On a batch timeout (isBatchTimeoutError) this table's LIMIT is halved
+// (floor cleanupBatchFloor) and the statement retried ONCE at the smaller
+// size; a second timeout in the same cycle ends this table's pass. The
+// reduced size persists for this table into the next cycle and grows back x2
+// after cleanupBatchGrowAfter consecutive deletes that removed rows. Bound:
+// at most 2 timed-out statements per table per cycle.
 //
 // If the target table does not exist (or any other permanent error occurs on
 // the first attempt), it logs once and returns 0 — this keeps the worker safe
@@ -711,7 +961,7 @@ func (dc *DataCleanupWorker) batchDelete(ctx context.Context, table, query strin
 		}
 
 		queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		res, err := dc.db.ExecContext(queryCtx, query, cleanupBatchSize)
+		res, err := dc.db.ExecContext(queryCtx, query, dc.batchSizeFor(table))
 		cancel()
 
 		if err != nil {
@@ -723,11 +973,14 @@ func (dc *DataCleanupWorker) batchDelete(ctx context.Context, table, query strin
 				}
 				return totalDeleted
 			}
+			if isBatchTimeoutError(err) && dc.onBatchTimeout(table) {
+				continue
+			}
 			log.Printf("[DataCleanup] Error deleting from %s: %v", table, err)
 			return totalDeleted
 		}
-
 		affected, _ := res.RowsAffected()
+		dc.onBatchSuccess(table, affected)
 		if affected == 0 {
 			return totalDeleted
 		}
