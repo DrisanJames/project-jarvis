@@ -521,6 +521,12 @@ type PartnerDripOrchestrator struct {
 	// opt-in sweep runs on its own cadence rather than every tick.
 	lastStampRecovery time.Time
 
+	// pauseShortCircuited is the last state reported by
+	// allDatasetsPausedShortCircuit, so the "all datasets paused" / "resumed"
+	// line is logged once per transition, not once per tick. Touched only by the
+	// single tick goroutine.
+	pauseShortCircuited bool
+
 	// REQ-118 WP5. mediator is the capacity Mediator (internal/worker/dripsupply).
 	// NIL, or DRIP_SUPPLY_CHAIN_MODE=off, leaves every cap decision below to the
 	// pre-REQ-118 chain — that is the rollback, and the golden test pins it.
@@ -862,6 +868,20 @@ func (po *PartnerDripOrchestrator) tickOnce() {
 		return
 	}
 	defer release()
+	// ALL-PAUSED SHORT-CIRCUIT (2026-11-04, WP-A). Emergency pause is enforced
+	// only inside the claim CTEs (datasetNotEmergencyPausedSQL), so with every
+	// dataset paused the tick still ran its full read set against
+	// partner_clean_queue (~29.4M block reads / 37 min measured) to claim
+	// nothing. partner_clean_queue.dataset_id is NOT NULL with an FK to
+	// partner_datasets, so "every dataset paused" means nothing is claimable.
+	// The mediator tick stamp and the ladder heartbeat still run so neither
+	// goes stale. Probe error → fail OPEN (full tick). Kill switch:
+	// PARTNER_DRIP_PAUSE_SHORTCIRCUIT_DISABLED=1 restores the full tick.
+	if po.allDatasetsPausedShortCircuit() {
+		po.mediator.TickStart(po.ctx, time.Now())
+		po.emitStampHeartbeat(po.ctx)
+		return
+	}
 	// Refresh the property-governor cache once per tick so operator edits to
 	// partner_property_governor (caps, subscriptions) take effect on the next
 	// tick without a deploy. Fail-safe: on load error the cache is emptied so
@@ -4263,6 +4283,41 @@ func partnerDripTickLockID() int64 {
 	h := fnv.New64a()
 	h.Write([]byte(partnerDripTickLockKey))
 	return int64(h.Sum64())
+}
+
+// partnerDripAllPausedProbeSQL is true when no partner dataset is unpaused —
+// a 64-row table, never partner_clean_queue.
+const partnerDripAllPausedProbeSQL = `SELECT NOT EXISTS (SELECT 1 FROM partner_datasets WHERE NOT COALESCE(paused_emergency, false))`
+
+func partnerDripPauseShortCircuitDisabled() bool {
+	v := strings.TrimSpace(os.Getenv("PARTNER_DRIP_PAUSE_SHORTCIRCUIT_DISABLED"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+// allDatasetsPausedShortCircuit reports whether this tick should stop after
+// its preamble because every partner dataset is emergency-paused. Fails OPEN:
+// the kill switch or any probe error returns false (run the full tick). Logs
+// one line per state transition only.
+func (po *PartnerDripOrchestrator) allDatasetsPausedShortCircuit() bool {
+	if partnerDripPauseShortCircuitDisabled() {
+		return false
+	}
+	qctx, cancel := context.WithTimeout(po.ctx, 10*time.Second)
+	defer cancel()
+	var allPaused bool
+	if err := po.db.QueryRowContext(qctx, partnerDripAllPausedProbeSQL).Scan(&allPaused); err != nil {
+		log.Printf("[PartnerDripOrchestrator] all-paused probe error (fail-open, running full tick): %v", err)
+		return false
+	}
+	if allPaused != po.pauseShortCircuited {
+		if allPaused {
+			log.Printf("[PartnerDripOrchestrator] all datasets paused — tick short-circuited (heartbeat + mediator tick only)")
+		} else {
+			log.Printf("[PartnerDripOrchestrator] a dataset is unpaused — resumed full tick")
+		}
+		po.pauseShortCircuited = allPaused
+	}
+	return allPaused
 }
 
 // acquireTickLease takes the single-leader lease for one tick. Returns a
