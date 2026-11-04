@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +37,37 @@ type CampaignEventTracker struct {
 
 	subMu       sync.RWMutex
 	subscribers map[string]chan CampaignEvent
+
+	// idleEvict is how long a campaign may go without a new event before
+	// FlushAll writes its final report and drops it from the map.
+	idleEvict time.Duration
+	// flush writes one campaign's report; FlushToS3 in production, swapped in tests.
+	flush func(ctx context.Context, campaignID string) error
+	now   func() time.Time
+	// evicted remembers recently evicted ids (id -> evictedAt, pruned after
+	// campaignEvictedTTL) so a late event's fresh-from-zero entry is never
+	// flushed over the campaign's real report. Guarded by mu.
+	evicted map[string]time.Time
+}
+
+// campaignEvictedTTL bounds how long an evicted id is remembered.
+const campaignEvictedTTL = 24 * time.Hour
+
+// defaultCampaignIdleEvict is the CAMPAIGN_EVENTS_IDLE_EVICT_MINUTES default.
+const defaultCampaignIdleEvict = 60 * time.Minute
+
+// campaignIdleEvictFromEnv reads CAMPAIGN_EVENTS_IDLE_EVICT_MINUTES (minutes, >0).
+func campaignIdleEvictFromEnv() time.Duration {
+	if v, err := strconv.Atoi(os.Getenv("CAMPAIGN_EVENTS_IDLE_EVICT_MINUTES")); err == nil && v > 0 {
+		return time.Duration(v) * time.Minute
+	}
+	return defaultCampaignIdleEvict
+}
+
+// campaignEvictDisabled restores the pre-2026-11-04 FlushAll: every campaign
+// ever seen is re-flushed every tick and never evicted.
+func campaignEvictDisabled() bool {
+	return os.Getenv("CAMPAIGN_EVENTS_EVICT_DISABLED") == "1"
 }
 
 // CampaignMetrics holds all aggregated metrics for a single campaign.
@@ -43,16 +76,16 @@ type CampaignMetrics struct {
 	StartedAt  time.Time `json:"started_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 
-	Sent       int `json:"sent"`
-	Delivered  int `json:"delivered"`
-	SoftBounce int `json:"soft_bounce"`
-	HardBounce int `json:"hard_bounce"`
-	Complaints int `json:"complaints"`
+	Sent         int `json:"sent"`
+	Delivered    int `json:"delivered"`
+	SoftBounce   int `json:"soft_bounce"`
+	HardBounce   int `json:"hard_bounce"`
+	Complaints   int `json:"complaints"`
 	Unsubscribes int `json:"unsubscribes"`
 
-	Opens       int `json:"opens"`
-	UniqueOpens int `json:"unique_opens"`
-	Clicks      int `json:"clicks"`
+	Opens        int `json:"opens"`
+	UniqueOpens  int `json:"unique_opens"`
+	Clicks       int `json:"clicks"`
 	UniqueClicks int `json:"unique_clicks"`
 
 	Inactive int `json:"inactive"`
@@ -62,7 +95,7 @@ type CampaignMetrics struct {
 	clickedRecipients map[string]bool `json:"-"`
 
 	// Per-recipient engagement tracking: email -> send count without engagement
-	recipientSends map[string]int  `json:"-"`
+	recipientSends   map[string]int  `json:"-"`
 	recipientEngaged map[string]bool `json:"-"`
 	inactiveSet      map[string]bool `json:"-"`
 
@@ -74,6 +107,15 @@ type CampaignMetrics struct {
 
 	// Event log for recent events
 	recentEvents []CampaignEvent `json:"-"`
+
+	// lastEventAt is wall-clock receipt time of the latest event (UpdatedAt is
+	// the event's own timestamp, which can be old). dirty is set by RecordEvent
+	// and cleared when FlushAll writes the report.
+	lastEventAt time.Time `json:"-"`
+	dirty       bool      `json:"-"`
+	// resumedAfterEvict marks an entry recreated by a late event after its
+	// campaign was evicted: a partial fragment that FlushAll never writes.
+	resumedAfterEvict bool `json:"-"`
 }
 
 // ISPCampaignMetrics tracks metrics per ISP within a campaign.
@@ -124,13 +166,13 @@ type CampaignEvent struct {
 
 // CampaignReport is the S3-persisted JSON report for a campaign.
 type CampaignReport struct {
-	CampaignID string    `json:"campaign_id"`
+	CampaignID  string    `json:"campaign_id"`
 	GeneratedAt time.Time `json:"generated_at"`
 
 	Summary CampaignReportSummary `json:"summary"`
 
 	ISPBreakdown     map[string]*ISPCampaignMetrics     `json:"isp_breakdown"`
-	VariantBreakdown map[string]*VariantCampaignMetrics  `json:"variant_breakdown"`
+	VariantBreakdown map[string]*VariantCampaignMetrics `json:"variant_breakdown"`
 
 	InactiveEmails []string `json:"inactive_emails,omitempty"`
 
@@ -154,14 +196,14 @@ type CampaignReportSummary struct {
 
 // CampaignRates holds computed rate percentages.
 type CampaignRates struct {
-	DeliveryRate   float64 `json:"delivery_rate"`
-	BounceRate     float64 `json:"bounce_rate"`
-	OpenRate       float64 `json:"open_rate"`
-	ClickRate      float64 `json:"click_rate"`
-	CTR            float64 `json:"click_through_rate"`
-	ComplaintRate  float64 `json:"complaint_rate"`
-	UnsubRate      float64 `json:"unsubscribe_rate"`
-	InactiveRate   float64 `json:"inactive_rate"`
+	DeliveryRate  float64 `json:"delivery_rate"`
+	BounceRate    float64 `json:"bounce_rate"`
+	OpenRate      float64 `json:"open_rate"`
+	ClickRate     float64 `json:"click_rate"`
+	CTR           float64 `json:"click_through_rate"`
+	ComplaintRate float64 `json:"complaint_rate"`
+	UnsubRate     float64 `json:"unsubscribe_rate"`
+	InactiveRate  float64 `json:"inactive_rate"`
 }
 
 // NewCampaignEventTracker creates a new tracker.
@@ -174,7 +216,11 @@ func NewCampaignEventTracker(s3Client *s3.Client, bucket string) *CampaignEventT
 		flushInterval:     5 * time.Minute,
 		stopCh:            make(chan struct{}),
 		subscribers:       make(map[string]chan CampaignEvent),
+		idleEvict:         campaignIdleEvictFromEnv(),
+		now:               time.Now,
+		evicted:           make(map[string]time.Time),
 	}
+	t.flush = t.FlushToS3
 	go t.flushLoop()
 	return t
 }
@@ -238,15 +284,18 @@ func (t *CampaignEventTracker) ensureCampaign(id string) *CampaignMetrics {
 		return m
 	}
 	m := &CampaignMetrics{
-		CampaignID:       id,
-		StartedAt:        time.Now(),
-		openedRecipients: make(map[string]bool),
+		CampaignID:        id,
+		StartedAt:         time.Now(),
+		openedRecipients:  make(map[string]bool),
 		clickedRecipients: make(map[string]bool),
-		recipientSends:   make(map[string]int),
-		recipientEngaged: make(map[string]bool),
-		inactiveSet:      make(map[string]bool),
-		ISPMetrics:       make(map[string]*ISPCampaignMetrics),
-		VariantMetrics:   make(map[string]*VariantCampaignMetrics),
+		recipientSends:    make(map[string]int),
+		recipientEngaged:  make(map[string]bool),
+		inactiveSet:       make(map[string]bool),
+		ISPMetrics:        make(map[string]*ISPCampaignMetrics),
+		VariantMetrics:    make(map[string]*VariantCampaignMetrics),
+	}
+	if at, ok := t.evicted[id]; ok && t.now().Sub(at) < campaignEvictedTTL {
+		m.resumedAfterEvict = true
 	}
 	t.campaigns[id] = m
 	return m
@@ -293,6 +342,8 @@ func (t *CampaignEventTracker) RecordEvent(e CampaignEvent) {
 	t.mu.Lock()
 	m := t.ensureCampaign(e.CampaignID)
 	m.UpdatedAt = e.Timestamp
+	m.lastEventAt = t.now()
+	m.dirty = true
 
 	ispM := m.ensureISP(e.ISP)
 	varM := m.ensureVariant(e.Variant)
@@ -532,19 +583,77 @@ func (t *CampaignEventTracker) FlushToS3(ctx context.Context, campaignID string)
 	return nil
 }
 
-// FlushAll writes all active campaign reports to S3.
+// FlushAll writes campaign reports to S3. A campaign is flushed only when it
+// has received events since its last flush; once it has been idle for
+// idleEvict it gets one final flush (if dirty) and is removed from the map.
+// CAMPAIGN_EVENTS_EVICT_DISABLED=1 restores flush-everything-every-tick.
 func (t *CampaignEventTracker) FlushAll(ctx context.Context) {
+	if campaignEvictDisabled() {
+		t.mu.Lock()
+		ids := make([]string, 0, len(t.campaigns))
+		for id := range t.campaigns {
+			ids = append(ids, id)
+		}
+		t.mu.Unlock()
+
+		for _, id := range ids {
+			if err := t.flush(ctx, id); err != nil {
+				log.Printf("[campaign-events] flush error campaign=%s: %v", id, err)
+			}
+		}
+		return
+	}
+
+	type pending struct {
+		id    string
+		m     *CampaignMetrics
+		evict bool
+		write bool
+	}
+	now := t.now()
 	t.mu.Lock()
-	ids := make([]string, 0, len(t.campaigns))
-	for id := range t.campaigns {
-		ids = append(ids, id)
+	for id, at := range t.evicted {
+		if now.Sub(at) >= campaignEvictedTTL {
+			delete(t.evicted, id)
+		}
+	}
+	work := make([]pending, 0, len(t.campaigns))
+	for id, m := range t.campaigns {
+		idle := now.Sub(m.lastEventAt) >= t.idleEvict
+		if !m.dirty && !idle {
+			continue // unchanged since last flush — nothing to write
+		}
+		// A resumed fragment stays in memory for the dashboard but is never
+		// written: it would overwrite latest.json with partial counts.
+		work = append(work, pending{id: id, m: m, evict: idle, write: m.dirty && !m.resumedAfterEvict})
+		m.dirty = false
 	}
 	t.mu.Unlock()
 
-	for _, id := range ids {
-		if err := t.FlushToS3(ctx, id); err != nil {
-			log.Printf("[campaign-events] flush error campaign=%s: %v", id, err)
+	evicted := 0
+	for _, p := range work {
+		if p.write {
+			if err := t.flush(ctx, p.id); err != nil {
+				log.Printf("[campaign-events] flush error campaign=%s: %v", p.id, err)
+				t.mu.Lock()
+				p.m.dirty = true // retry next tick; do not evict unflushed data
+				t.mu.Unlock()
+				continue
+			}
 		}
+		if p.evict {
+			t.mu.Lock()
+			// An event that arrived during the flush re-dirtied the entry: keep it.
+			if cur, ok := t.campaigns[p.id]; ok && cur == p.m && !p.m.dirty {
+				delete(t.campaigns, p.id)
+				t.evicted[p.id] = now
+				evicted++
+			}
+			t.mu.Unlock()
+		}
+	}
+	if evicted > 0 {
+		log.Printf("[campaign-events] evicted %d idle campaigns (no events for %s)", evicted, t.idleEvict)
 	}
 }
 
